@@ -40,3 +40,92 @@ pub trait Builder: Send + Sync {
     /// Check if an output path already exists (skip build).
     async fn output_exists(&self, path: &StorePath) -> Result<bool, BuildError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_error_failed_display() {
+        let e = BuildError::Failed("compiler error".to_string());
+        assert!(e.to_string().contains("compiler error"));
+        assert!(e.to_string().contains("build failed"));
+    }
+
+    #[test]
+    fn build_error_sandbox_display() {
+        let e = BuildError::Sandbox("mount failed".to_string());
+        assert!(e.to_string().contains("mount failed"));
+        assert!(e.to_string().contains("sandbox error"));
+    }
+
+    #[test]
+    fn build_error_derivation_display() {
+        let e = BuildError::Derivation("parse error".to_string());
+        assert!(e.to_string().contains("parse error"));
+    }
+
+    #[test]
+    fn build_error_not_implemented_display() {
+        let e = BuildError::NotImplemented("remote build".to_string());
+        assert!(e.to_string().contains("remote build"));
+    }
+
+    #[test]
+    fn build_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+        let build_err: BuildError = io_err.into();
+        assert!(build_err.to_string().contains("no such file"));
+    }
+
+    #[test]
+    fn build_result_construction_success() {
+        let output = StorePath::from_absolute_path(
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+
+        let result = BuildResult {
+            outputs: vec![output.clone()],
+            log: "build succeeded\n".to_string(),
+            success: true,
+            duration_secs: 42.5,
+        };
+
+        assert!(result.success);
+        assert_eq!(result.outputs.len(), 1);
+        assert_eq!(
+            result.outputs[0].to_absolute_path(),
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1"
+        );
+        assert!(result.log.contains("build succeeded"));
+        assert!((result.duration_secs - 42.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_result_construction_failure() {
+        let result = BuildResult {
+            outputs: vec![],
+            log: "error: builder for '/nix/store/abc.drv' failed\n".to_string(),
+            success: false,
+            duration_secs: 1.2,
+        };
+
+        assert!(!result.success);
+        assert!(result.outputs.is_empty());
+        assert!(result.log.contains("failed"));
+    }
+
+    #[test]
+    fn build_result_clone() {
+        let result = BuildResult {
+            outputs: vec![],
+            log: "ok".to_string(),
+            success: true,
+            duration_secs: 0.0,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.success, result.success);
+        assert_eq!(cloned.log, result.log);
+    }
+}

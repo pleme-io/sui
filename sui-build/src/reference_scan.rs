@@ -266,4 +266,94 @@ mod tests {
         let fs = MockFs::new();
         assert!(scan_file_with(&fs, Path::new("/nope"), &["x"]).is_err());
     }
+
+    // ── Overlapping hashes ──────────────────────────────────
+
+    #[test]
+    fn scan_overlapping_hashes_in_data() {
+        // Two hashes that share a prefix — both should be found independently
+        let h1 = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        let h2 = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll7"; // differs only in last char (valid nix base32)
+        let data = format!(
+            "/nix/store/{h1}-hello/lib:/nix/store/{h2}-world/lib"
+        );
+        let found = scan_references(data.as_bytes(), &[h1, h2]);
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&h1.to_string()));
+        assert!(found.contains(&h2.to_string()));
+    }
+
+    // ── Hash at start/end of data ───────────────────────────
+
+    #[test]
+    fn scan_hash_at_start_of_data() {
+        let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        // Hash is the very first bytes in the data
+        let data = format!("{hash}-hello/bin/hello");
+        let found = scan_references(data.as_bytes(), &[hash]);
+        assert_eq!(found, vec![hash.to_string()]);
+    }
+
+    #[test]
+    fn scan_hash_at_end_of_data() {
+        let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        // Hash is the last 32 bytes
+        let data = format!("path=/nix/store/{hash}");
+        let found = scan_references(data.as_bytes(), &[hash]);
+        assert_eq!(found, vec![hash.to_string()]);
+    }
+
+    // ── Aho-Corasick deduplication ──────────────────────────
+
+    #[test]
+    fn scan_same_hash_twice_returns_once() {
+        let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        let data = format!(
+            "/nix/store/{hash}-hello/bin/hello\0/nix/store/{hash}-hello/lib/libhello.so"
+        );
+        let found = scan_references(data.as_bytes(), &[hash]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], hash);
+    }
+
+    #[test]
+    fn scan_many_duplicates_still_unique() {
+        let hash = "3n58xw4373jp0ljirf06d8077j15pc4j";
+        let mut data = Vec::new();
+        for _ in 0..10 {
+            data.extend_from_slice(format!("/nix/store/{hash}-glibc/lib\n").as_bytes());
+        }
+        let found = scan_references(&data, &[hash]);
+        assert_eq!(found.len(), 1);
+    }
+
+    // ── Invalid hash length filtered out ────────────────────
+
+    #[test]
+    fn scan_ignores_wrong_length_hashes() {
+        let good = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6"; // 32 chars
+        let short = "sn5lbjww"; // 8 chars — too short
+        let long = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6x"; // 33 chars — too long
+        let data = format!("/nix/store/{good}-hello");
+        let found = scan_references(data.as_bytes(), &[good, short, long]);
+        // Only the valid-length hash should match
+        assert_eq!(found, vec![good.to_string()]);
+    }
+
+    // ── Empty known_hashes returns empty ─────────────────────
+
+    #[test]
+    fn scan_empty_known_hashes() {
+        let data = b"/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello";
+        let found = scan_references(data, &[]);
+        assert!(found.is_empty());
+    }
+
+    // ── FileSystem trait: object safety ──────────────────────
+
+    #[test]
+    fn filesystem_trait_is_object_safe() {
+        fn assert_obj_safe(_: &dyn FileSystem) {}
+        assert_obj_safe(&RealFileSystem);
+    }
 }

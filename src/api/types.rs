@@ -440,4 +440,272 @@ mod tests {
         let status: SystemStatus = result.into();
         assert_eq!(status.generation, 42);
     }
+
+    // ── From<PathInfo> — verify ALL fields including content_address ──
+
+    #[test]
+    fn path_info_from_core_all_fields() {
+        let core = sui_store::PathInfo {
+            path: "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1".to_string(),
+            nar_hash: "sha256:1b0ri5lsf45dknj8bfxi1syz35kmab77apxxg1yrf33la1qm3kc7".to_string(),
+            nar_size: 226552,
+            references: vec![
+                "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8".to_string(),
+                "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1".to_string(),
+            ],
+            deriver: Some("xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv".to_string()),
+            signatures: vec![
+                "cache.nixos.org-1:sig1==".to_string(),
+                "my-key:sig2==".to_string(),
+            ],
+            registration_time: 1700000000,
+            content_address: Some("fixed:out:r:sha256:deadbeef".to_string()),
+        };
+
+        let api: PathInfoResponse = core.clone().into();
+
+        assert_eq!(api.path, core.path);
+        assert_eq!(api.nar_hash, core.nar_hash);
+        assert_eq!(api.nar_size, core.nar_size);
+        assert_eq!(api.references, core.references);
+        assert_eq!(api.deriver, core.deriver);
+        assert_eq!(api.signatures, core.signatures);
+        assert_eq!(api.registration_time, core.registration_time);
+        assert_eq!(api.content_address, core.content_address);
+    }
+
+    #[test]
+    fn path_info_from_core_none_fields() {
+        let core = sui_store::PathInfo {
+            path: "/nix/store/abc-minimal".to_string(),
+            nar_hash: "sha256:000".to_string(),
+            nar_size: 0,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        };
+
+        let api: PathInfoResponse = core.into();
+
+        assert!(api.deriver.is_none());
+        assert!(api.content_address.is_none());
+        assert!(api.references.is_empty());
+        assert!(api.signatures.is_empty());
+    }
+
+    // ── From<Node> — verify ssh_target dropped, status stringified ──
+
+    #[test]
+    fn fleet_node_from_core_all_fields() {
+        let mut node = sui_orchestrate::Node::new("plo", ".#plo")
+            .with_ssh("root@10.0.0.1")
+            .with_groups(vec!["prod".to_string()])
+            .with_system("x86_64-linux");
+        node.status = sui_orchestrate::NodeStatus::Online;
+        node.current_generation = Some(99);
+        node.last_deployed = Some(1700000000);
+
+        let api: FleetNode = node.into();
+
+        assert_eq!(api.hostname, "plo");
+        assert_eq!(api.status, "online");
+        assert_eq!(api.last_deployed, Some(1700000000));
+        assert_eq!(api.current_generation, Some(99));
+        assert_eq!(api.system, Some("x86_64-linux".to_string()));
+        assert_eq!(api.flake_ref, Some(".#plo".to_string()));
+        // ssh_target is NOT in the API type — it's dropped during conversion
+    }
+
+    #[test]
+    fn fleet_node_from_core_unknown_status() {
+        let node = sui_orchestrate::Node::new("ghost", ".#ghost");
+        let api: FleetNode = node.into();
+        assert_eq!(api.status, "unknown");
+        assert!(api.last_deployed.is_none());
+        assert!(api.current_generation.is_none());
+        assert!(api.system.is_none());
+    }
+
+    #[test]
+    fn fleet_node_from_core_deploying_status() {
+        let mut node = sui_orchestrate::Node::new("node1", ".#node1");
+        node.status = sui_orchestrate::NodeStatus::Deploying;
+        let api: FleetNode = node.into();
+        assert_eq!(api.status, "deploying");
+    }
+
+    #[test]
+    fn fleet_node_from_core_failed_status() {
+        let mut node = sui_orchestrate::Node::new("node2", ".#node2");
+        node.status = sui_orchestrate::NodeStatus::Failed;
+        let api: FleetNode = node.into();
+        assert_eq!(api.status, "failed");
+    }
+
+    // ── From<DeployResult> — verify succeeded/failed mapping ──
+
+    #[test]
+    fn deploy_result_succeeded_maps_correctly() {
+        let result = sui_orchestrate::fleet::DeployResult {
+            target: "@prod".to_string(),
+            strategy: "rolling".to_string(),
+            total_nodes: 3,
+            succeeded: 3,
+            failed: 0,
+            results: vec![],
+            duration_secs: 10.0,
+        };
+
+        let api: FleetDeployStatus = result.into();
+
+        assert_eq!(api.target, "@prod");
+        assert_eq!(api.status, "succeeded");
+        assert!(api.id.is_empty()); // id is set externally
+        assert!(api.nodes.is_empty());
+    }
+
+    #[test]
+    fn deploy_result_failed_maps_correctly() {
+        let result = sui_orchestrate::fleet::DeployResult {
+            target: "node1".to_string(),
+            strategy: "parallel".to_string(),
+            total_nodes: 2,
+            succeeded: 1,
+            failed: 1,
+            results: vec![],
+            duration_secs: 5.0,
+        };
+
+        let api: FleetDeployStatus = result.into();
+
+        assert_eq!(api.target, "node1");
+        assert_eq!(api.status, "failed");
+    }
+
+    // ── From<BuildResult> — verify StorePath outputs become strings ──
+
+    #[test]
+    fn build_result_success_maps_correctly() {
+        let output = sui_compat::store_path::StorePath::from_absolute_path(
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+
+        let result = sui_build::BuildResult {
+            outputs: vec![output],
+            log: "building...\nfinished\n".to_string(),
+            success: true,
+            duration_secs: 30.0,
+        };
+
+        let api: BuildStatus = result.into();
+
+        assert_eq!(api.state, "succeeded");
+        assert!(api.id.is_empty()); // set externally
+        let paths = api.output_paths.unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0],
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1"
+        );
+        assert_eq!(api.log_lines, vec!["building...", "finished"]);
+    }
+
+    #[test]
+    fn build_result_failure_maps_correctly() {
+        let result = sui_build::BuildResult {
+            outputs: vec![],
+            log: "error: build failed\n".to_string(),
+            success: false,
+            duration_secs: 1.0,
+        };
+
+        let api: BuildStatus = result.into();
+
+        assert_eq!(api.state, "failed");
+        assert_eq!(api.output_paths, Some(vec![]));
+        assert_eq!(api.log_lines, vec!["error: build failed"]);
+    }
+
+    // ── From<RebuildResult> — verify generation mapping ──────
+
+    #[test]
+    fn rebuild_result_with_generation() {
+        let result = sui_orchestrate::RebuildResult {
+            success: true,
+            generation: Some(99),
+            action: "switch".to_string(),
+            log: "switched to generation 99\n".to_string(),
+            duration_secs: 45.0,
+        };
+
+        let status: SystemStatus = result.into();
+
+        assert_eq!(status.generation, 99);
+        assert!(status.config_path.is_empty());
+        assert!(status.boot_time.is_none());
+        assert!(status.nix_version.is_none());
+        assert!(status.system.is_none());
+    }
+
+    #[test]
+    fn rebuild_result_without_generation_defaults_to_zero() {
+        let result = sui_orchestrate::RebuildResult {
+            success: true,
+            generation: None,
+            action: "build".to_string(),
+            log: "built successfully\n".to_string(),
+            duration_secs: 20.0,
+        };
+
+        let status: SystemStatus = result.into();
+
+        assert_eq!(status.generation, 0);
+    }
+
+    // ── Roundtrip: construct core → From → verify every field ──
+
+    #[test]
+    fn path_info_roundtrip_all_fields() {
+        let core = sui_store::PathInfo {
+            path: "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-hierarchical-0.1.0.1".to_string(),
+            nar_hash: "sha256:abc123".to_string(),
+            nar_size: 999999,
+            references: vec![
+                "/nix/store/dep1".to_string(),
+                "/nix/store/dep2".to_string(),
+                "/nix/store/dep3".to_string(),
+            ],
+            deriver: Some("builder.drv".to_string()),
+            signatures: vec![
+                "key1:aaa==".to_string(),
+                "key2:bbb==".to_string(),
+            ],
+            registration_time: 1234567890,
+            content_address: Some("text:sha256:xyz".to_string()),
+        };
+
+        // core → API
+        let api: PathInfoResponse = core.clone().into();
+
+        // Verify every field survived the conversion
+        assert_eq!(api.path, core.path);
+        assert_eq!(api.nar_hash, core.nar_hash);
+        assert_eq!(api.nar_size, core.nar_size);
+        assert_eq!(api.references.len(), 3);
+        assert_eq!(api.references, core.references);
+        assert_eq!(api.deriver, core.deriver);
+        assert_eq!(api.signatures.len(), 2);
+        assert_eq!(api.signatures, core.signatures);
+        assert_eq!(api.registration_time, core.registration_time);
+        assert_eq!(api.content_address, core.content_address);
+
+        // API → JSON → API (serde roundtrip)
+        let json = serde_json::to_string(&api).unwrap();
+        let reparsed: PathInfoResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed.path, api.path);
+        assert_eq!(reparsed.content_address, api.content_address);
+    }
 }

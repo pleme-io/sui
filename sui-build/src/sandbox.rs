@@ -158,4 +158,197 @@ mod tests {
         assert!(!config.allow_network);
         assert_eq!(config.input_paths.len(), 1);
     }
+
+    // ── NoSandbox prepare/cleanup are no-ops ─────────────────
+
+    #[test]
+    fn no_sandbox_prepare_is_noop() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        assert!(sandbox.prepare(&config).is_ok());
+    }
+
+    #[test]
+    fn no_sandbox_cleanup_is_noop() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        assert!(sandbox.cleanup(&config).is_ok());
+    }
+
+    // ── NoSandbox execute with failing command ───────────────
+
+    #[test]
+    fn no_sandbox_execute_failing_command() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 42".to_string()],
+            env: vec![],
+        };
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 42);
+    }
+
+    #[test]
+    fn no_sandbox_execute_nonexistent_builder() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/nonexistent/builder/12345".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        // Should return Io error since the binary doesn't exist
+        assert!(sandbox.execute(&config).is_err());
+    }
+
+    // ── NoSandbox execute with env vars ──────────────────────
+
+    #[test]
+    fn no_sandbox_execute_passes_env() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "echo $MY_TEST_VAR".to_string()],
+            env: vec![("MY_TEST_VAR".to_string(), "test_value_42".to_string())],
+        };
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("test_value_42"));
+    }
+
+    // ── SandboxConfig from Derivation fields ─────────────────
+
+    #[test]
+    fn sandbox_config_from_derivation_fields() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: "/nix/store/out-hello".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+        let mut env = BTreeMap::new();
+        env.insert("HOME".to_string(), "/homeless-shelter".to_string());
+        env.insert("NIX_BUILD_TOP".to_string(), "/build".to_string());
+
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec!["/nix/store/src-file".to_string()],
+            system: "x86_64-linux".to_string(),
+            builder: "/nix/store/bash/bin/bash".to_string(),
+            args: vec!["-e".to_string(), "/nix/store/setup".to_string()],
+            env,
+        };
+
+        // Construct a SandboxConfig from derivation fields
+        let config = SandboxConfig {
+            input_paths: drv.input_sources.clone(),
+            build_dir: "/tmp/sui-build".to_string(),
+            output_paths: drv
+                .outputs
+                .values()
+                .map(|o| o.path.clone())
+                .collect(),
+            allow_network: drv
+                .env
+                .get("__noChroot")
+                .is_some_and(|v| v == "1"),
+            builder: drv.builder.clone(),
+            args: drv.args.clone(),
+            env: drv
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        };
+
+        assert_eq!(config.builder, "/nix/store/bash/bin/bash");
+        assert_eq!(config.args, vec!["-e", "/nix/store/setup"]);
+        assert_eq!(config.output_paths, vec!["/nix/store/out-hello"]);
+        assert!(!config.allow_network);
+        assert_eq!(config.input_paths, vec!["/nix/store/src-file"]);
+        assert!(config.env.contains(&("HOME".to_string(), "/homeless-shelter".to_string())));
+    }
+
+    // ── Sandbox trait: object safety ─────────────────────────
+
+    #[test]
+    fn sandbox_trait_is_object_safe() {
+        fn assert_obj_safe(_: &dyn Sandbox) {}
+        assert_obj_safe(&NoSandbox);
+    }
+
+    // ── SandboxError display messages ────────────────────────
+
+    #[test]
+    fn sandbox_error_display() {
+        let e = SandboxError::Setup("mount failed".to_string());
+        assert!(e.to_string().contains("mount failed"));
+
+        let e = SandboxError::Execution("process killed".to_string());
+        assert!(e.to_string().contains("process killed"));
+    }
+
+    #[test]
+    fn sandbox_error_from_io() {
+        let io_err = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "access denied",
+        );
+        let sandbox_err: SandboxError = io_err.into();
+        assert!(sandbox_err.to_string().contains("access denied"));
+    }
+
+    // ── SandboxResult fields ─────────────────────────────────
+
+    #[test]
+    fn sandbox_result_captures_stderr() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "echo err >&2".to_string()],
+            env: vec![],
+        };
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stderr).contains("err"));
+    }
 }

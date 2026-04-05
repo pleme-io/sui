@@ -374,4 +374,219 @@ mod tests {
         assert!(is_local_hostname("localhost"));
         assert!(is_local_hostname("127.0.0.1"));
     }
+
+    // ── DeployStrategy serialization/deserialization ─────────
+
+    #[test]
+    fn deploy_strategy_parallel_serde() {
+        let s = serde_json::to_string(&DeployStrategy::Parallel).unwrap();
+        assert_eq!(s, "\"parallel\"");
+        let parsed: DeployStrategy = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, DeployStrategy::Parallel);
+    }
+
+    #[test]
+    fn deploy_strategy_canary_serde() {
+        let s = serde_json::to_string(&DeployStrategy::Canary).unwrap();
+        assert_eq!(s, "\"canary\"");
+        let parsed: DeployStrategy = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, DeployStrategy::Canary);
+    }
+
+    // ── FleetError display ──────────────────────────────────
+
+    #[test]
+    fn fleet_error_no_nodes_display() {
+        let e = FleetError::NoNodes("@ghost".to_string());
+        assert!(e.to_string().contains("@ghost"));
+    }
+
+    #[test]
+    fn fleet_error_deploy_failed_display() {
+        let e = FleetError::DeployFailed {
+            hostname: "plo".to_string(),
+            message: "ssh timeout".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("plo"));
+        assert!(msg.contains("ssh timeout"));
+    }
+
+    #[test]
+    fn fleet_error_canary_failed_display() {
+        let e = FleetError::CanaryFailed;
+        assert!(e.to_string().contains("canary"));
+    }
+
+    // ── MockCommandRunner for fleet tests ────────────────────
+
+    use crate::command::{CommandError, CommandOutput};
+
+    struct MockCommandRunner {
+        response: CommandOutput,
+    }
+
+    impl MockCommandRunner {
+        fn succeeding() -> Self {
+            Self {
+                response: CommandOutput {
+                    success: true,
+                    stdout: "switched to generation 50\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                response: CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "build failed\n".to_string(),
+                    exit_code: Some(1),
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for MockCommandRunner {
+        async fn run(
+            &self,
+            _program: &str,
+            _args: &[&str],
+        ) -> Result<CommandOutput, CommandError> {
+            Ok(self.response.clone())
+        }
+    }
+
+    // ── FleetOrchestrator with MockCommandRunner ─────────────
+
+    #[tokio::test]
+    async fn deploy_rolling_with_mock_all_succeed() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.target, "@prod");
+        assert_eq!(result.strategy, "rolling");
+        assert_eq!(result.total_nodes, 2); // alpha + beta
+        assert_eq!(result.succeeded, 2);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.results.len(), 2);
+        for r in &result.results {
+            assert!(r.success);
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_parallel_with_mock_all_succeed() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded, 2);
+        assert_eq!(result.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn deploy_rolling_with_mock_all_fail() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 2);
+        for r in &result.results {
+            assert!(!r.success);
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_updates_node_status_on_success() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            orch.registry().get("alpha").unwrap().status,
+            NodeStatus::Online
+        );
+        assert!(orch.registry().get("alpha").unwrap().last_deployed.is_some());
+    }
+
+    #[tokio::test]
+    async fn deploy_updates_node_status_on_failure() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            orch.registry().get("alpha").unwrap().status,
+            NodeStatus::Failed
+        );
+    }
+
+    // ── FleetOrchestrator with_runner + registry_mut ─────────
+
+    #[test]
+    fn fleet_orchestrator_registry_mut() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::new(reg);
+        assert_eq!(orch.registry().len(), 3);
+
+        orch.registry_mut().add(
+            Node::new("delta", ".#delta").with_system("x86_64-linux"),
+        );
+        assert_eq!(orch.registry().len(), 4);
+    }
+
+    // ── NodeDeployResult serialization ───────────────────────
+
+    #[test]
+    fn node_deploy_result_serialization() {
+        let result = NodeDeployResult {
+            hostname: "plo".to_string(),
+            success: true,
+            log: "ok".to_string(),
+            duration_secs: 2.5,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"hostname\":\"plo\""));
+        assert!(json.contains("\"success\":true"));
+    }
 }

@@ -115,4 +115,77 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
+
+    // ── CommandOutput construction ────────────────────────────
+
+    #[test]
+    fn command_output_success_construction() {
+        let output = CommandOutput {
+            success: true,
+            stdout: "hello world\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        };
+        assert!(output.success);
+        assert_eq!(output.exit_code, Some(0));
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn command_output_failure_construction() {
+        let output = CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "permission denied\n".to_string(),
+            exit_code: Some(1),
+        };
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(1));
+        assert!(output.stderr.contains("permission denied"));
+    }
+
+    #[test]
+    fn command_output_no_exit_code() {
+        let output = CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "killed by signal".to_string(),
+            exit_code: None,
+        };
+        assert!(output.exit_code.is_none());
+    }
+
+    // ── CommandError display ─────────────────────────────────
+
+    #[test]
+    fn command_error_failed_display() {
+        let e = CommandError::Failed("timed out".to_string());
+        assert!(e.to_string().contains("timed out"));
+        assert!(e.to_string().contains("execution failed"));
+    }
+
+    // ── CommandRunner trait: object safety ────────────────────
+
+    #[test]
+    fn command_runner_trait_is_object_safe() {
+        fn assert_obj_safe(_: &dyn CommandRunner) {}
+        assert_obj_safe(&TokioCommandRunner::new());
+    }
+
+    // ── CommandOutput clone ──────────────────────────────────
+
+    #[test]
+    fn command_output_clone() {
+        let output = CommandOutput {
+            success: true,
+            stdout: "data".to_string(),
+            stderr: "warn".to_string(),
+            exit_code: Some(0),
+        };
+        let cloned = output.clone();
+        assert_eq!(cloned.success, output.success);
+        assert_eq!(cloned.stdout, output.stdout);
+        assert_eq!(cloned.stderr, output.stderr);
+        assert_eq!(cloned.exit_code, output.exit_code);
+    }
 }

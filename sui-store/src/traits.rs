@@ -224,4 +224,302 @@ mod tests {
         let e = StoreError::NotSupported("gc".to_string());
         assert!(e.to_string().contains("gc"));
     }
+
+    // ── TestStore: implements only required methods ───────────
+
+    /// Minimal store for exercising default trait methods.
+    struct TestStore {
+        infos: std::collections::HashMap<String, PathInfo>,
+    }
+
+    impl TestStore {
+        fn new() -> Self {
+            Self {
+                infos: std::collections::HashMap::new(),
+            }
+        }
+
+        fn with_path(mut self, info: PathInfo) -> Self {
+            self.infos.insert(info.path.clone(), info);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Store for TestStore {
+        async fn query_path_info(
+            &self,
+            path: &StorePath,
+        ) -> StoreResult<Option<PathInfo>> {
+            Ok(self.infos.get(&path.to_absolute_path()).cloned())
+        }
+
+        async fn is_valid_path(
+            &self,
+            path: &StorePath,
+        ) -> StoreResult<bool> {
+            Ok(self.infos.contains_key(&path.to_absolute_path()))
+        }
+
+        async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
+            self.infos
+                .keys()
+                .map(|p| {
+                    StorePath::from_absolute_path(p)
+                        .map_err(|e| StoreError::Database(e.to_string()))
+                })
+                .collect()
+        }
+    }
+
+    // Helper to create a real StorePath from the well-known hello hash.
+    fn hello_path() -> StorePath {
+        StorePath::from_absolute_path(
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap()
+    }
+
+    fn glibc_path() -> StorePath {
+        StorePath::from_absolute_path(
+            "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37",
+        )
+        .unwrap()
+    }
+
+    fn bash_path() -> StorePath {
+        StorePath::from_absolute_path(
+            "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2",
+        )
+        .unwrap()
+    }
+
+    fn hello_info() -> PathInfo {
+        PathInfo {
+            path: hello_path().to_absolute_path(),
+            nar_hash: "sha256:aaa".to_string(),
+            nar_size: 5000,
+            references: vec![glibc_path().to_absolute_path()],
+            deriver: Some("/nix/store/abc.drv".to_string()),
+            signatures: vec!["key:sig".to_string()],
+            registration_time: 1000,
+            content_address: None,
+        }
+    }
+
+    fn glibc_info() -> PathInfo {
+        PathInfo {
+            path: glibc_path().to_absolute_path(),
+            nar_hash: "sha256:bbb".to_string(),
+            nar_size: 30000,
+            references: vec![bash_path().to_absolute_path()],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 900,
+            content_address: None,
+        }
+    }
+
+    fn bash_info() -> PathInfo {
+        PathInfo {
+            path: bash_path().to_absolute_path(),
+            nar_hash: "sha256:ccc".to_string(),
+            nar_size: 8000,
+            references: vec![], // leaf — no deps
+            deriver: None,
+            signatures: vec![],
+            registration_time: 800,
+            content_address: None,
+        }
+    }
+
+    // ── Default method: query_references ─────────────────────
+
+    #[tokio::test]
+    async fn query_references_returns_refs_from_path_info() {
+        let store = TestStore::new()
+            .with_path(hello_info())
+            .with_path(glibc_info());
+
+        let refs = store.query_references(&hello_path()).await.unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].to_absolute_path(), glibc_path().to_absolute_path());
+    }
+
+    #[tokio::test]
+    async fn query_references_returns_empty_for_leaf() {
+        let store = TestStore::new().with_path(bash_info());
+
+        let refs = store.query_references(&bash_path()).await.unwrap();
+        assert!(refs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn query_references_errors_for_missing_path() {
+        let store = TestStore::new();
+
+        let result = store.query_references(&hello_path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::PathNotFound(p) => {
+                assert!(p.contains("hello-2.12.1"));
+            }
+            other => panic!("expected PathNotFound, got {other:?}"),
+        }
+    }
+
+    // ── Default method: compute_closure ──────────────────────
+
+    #[tokio::test]
+    async fn compute_closure_walks_transitive_deps() {
+        let store = TestStore::new()
+            .with_path(hello_info())
+            .with_path(glibc_info())
+            .with_path(bash_info());
+
+        let closure = store.compute_closure(&[hello_path()]).await.unwrap();
+        // Should contain hello, glibc, and bash (transitive)
+        assert_eq!(closure.len(), 3);
+        let paths: Vec<String> = closure.iter().map(|p| p.to_absolute_path()).collect();
+        assert!(paths.contains(&hello_path().to_absolute_path()));
+        assert!(paths.contains(&glibc_path().to_absolute_path()));
+        assert!(paths.contains(&bash_path().to_absolute_path()));
+    }
+
+    #[tokio::test]
+    async fn compute_closure_deduplicates() {
+        // Both hello and glibc depend on bash; bash should appear once
+        let store = TestStore::new()
+            .with_path(hello_info())
+            .with_path(glibc_info())
+            .with_path(bash_info());
+
+        let closure = store
+            .compute_closure(&[hello_path(), glibc_path()])
+            .await
+            .unwrap();
+        let bash_count = closure
+            .iter()
+            .filter(|p| p.to_absolute_path() == bash_path().to_absolute_path())
+            .count();
+        assert_eq!(bash_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compute_closure_empty_roots() {
+        let store = TestStore::new();
+        let closure = store.compute_closure(&[]).await.unwrap();
+        assert!(closure.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compute_closure_single_leaf() {
+        let store = TestStore::new().with_path(bash_info());
+
+        let closure = store.compute_closure(&[bash_path()]).await.unwrap();
+        assert_eq!(closure.len(), 1);
+        assert_eq!(closure[0].to_absolute_path(), bash_path().to_absolute_path());
+    }
+
+    // ── Default method: collect_garbage ──────────────────────
+
+    #[tokio::test]
+    async fn collect_garbage_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.collect_garbage(&GcOptions::default()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("garbage collection"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── Default method: add_to_store ─────────────────────────
+
+    #[tokio::test]
+    async fn add_to_store_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.add_to_store("test", b"data", &[]).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("add_to_store"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── Default method: register_path ────────────────────────
+
+    #[tokio::test]
+    async fn register_path_returns_not_supported() {
+        let store = TestStore::new();
+        let info = hello_info();
+        let result = store.register_path(&info).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("register_path"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── Default method: add_signatures ───────────────────────
+
+    #[tokio::test]
+    async fn add_signatures_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store
+            .add_signatures(&hello_path(), &["sig1".to_string()])
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("add_signatures"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── Default method: query_referrers ──────────────────────
+
+    #[tokio::test]
+    async fn query_referrers_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.query_referrers(&hello_path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("query_referrers"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── Store trait: object safety ───────────────────────────
+
+    #[test]
+    fn store_trait_is_object_safe() {
+        fn assert_obj_safe(_: &dyn Store) {}
+        let store = TestStore::new();
+        assert_obj_safe(&store);
+    }
+
+    // ── StoreError: Io variant ──────────────────────────────
+
+    #[test]
+    fn store_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let store_err: StoreError = io_err.into();
+        assert!(store_err.to_string().contains("denied"));
+    }
+
+    #[test]
+    fn store_error_database_display() {
+        let e = StoreError::Database("connection lost".to_string());
+        assert!(e.to_string().contains("connection lost"));
+    }
 }

@@ -122,4 +122,40 @@ mod tests {
         let client = MockHttpClient::new();
         assert!(client.get("http://missing", &[]).await.is_err());
     }
+
+    #[tokio::test]
+    async fn mock_client_get_bytes() {
+        let client = MockHttpClient::new().with_response(
+            "http://test/data",
+            HttpResponse {
+                status: 200,
+                body: "binary-ish content".to_string(),
+            },
+        );
+        let bytes = client.get_bytes("http://test/data").await.unwrap();
+        assert_eq!(bytes, b"binary-ish content");
+    }
+
+    #[tokio::test]
+    async fn mock_client_get_bytes_missing() {
+        let client = MockHttpClient::new();
+        assert!(client.get_bytes("http://missing").await.is_err());
+    }
+
+    #[test]
+    fn http_error_decode_display() {
+        let e = HttpError::Decode("invalid utf-8".to_string());
+        assert!(e.to_string().contains("invalid utf-8"));
+    }
+
+    #[test]
+    fn http_response_clone() {
+        let resp = HttpResponse {
+            status: 200,
+            body: "ok".to_string(),
+        };
+        let cloned = resp.clone();
+        assert_eq!(cloned.status, 200);
+        assert_eq!(cloned.body, "ok");
+    }
 }
