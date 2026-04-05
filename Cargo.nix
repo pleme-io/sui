@@ -216,7 +216,7 @@ rec {
           "perf-literal" = [ "dep:memchr" ];
           "std" = [ "memchr?/std" ];
         };
-        resolvedDefaultFeatures = [ "perf-literal" "std" ];
+        resolvedDefaultFeatures = [ "default" "perf-literal" "std" ];
       };
       "aliasable" = rec {
         crateName = "aliasable";
@@ -12757,6 +12757,10 @@ rec {
         libName = "sui_build";
         dependencies = [
           {
+            name = "aho-corasick";
+            packageId = "aho-corasick";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -12802,6 +12806,10 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-compat; };
         libName = "sui_compat";
         dependencies = [
+          {
+            name = "base64";
+            packageId = "base64";
+          }
           {
             name = "blake3";
             packageId = "blake3";
