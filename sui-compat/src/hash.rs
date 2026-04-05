@@ -71,37 +71,30 @@ impl NixHash {
     }
 
     /// Encode as SRI format: `<algo>-<base64>`.
-    ///
-    /// Full implementation with proper base64 encoding in Phase 2.
     pub fn to_sri(&self) -> String {
-        // Minimal base64 — replaced with proper crate in Phase 2
-        let b64 = minimal_base64_encode(&self.digest);
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&self.digest);
         format!("{}-{}", self.algorithm.as_nix_str(), b64)
     }
 }
 
-/// Minimal base64 encoding (replaced with proper crate in later phase).
+/// Base64 encode bytes (delegates to the `base64` crate).
+pub fn base64_encode(input: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(input)
+}
+
+/// Base64 decode a string (delegates to the `base64` crate).
+pub fn base64_decode(input: &str) -> Result<Vec<u8>, HashError> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .map_err(|_| HashError::InvalidEncoding)
+}
+
+// Keep the old name as an alias for backward compatibility
 pub fn minimal_base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        out.push(ALPHABET[((b0 >> 2) & 0x3f) as usize] as char);
-        out.push(ALPHABET[(((b0 & 0x03) << 4) | ((b1 >> 4) & 0x0f)) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[(((b1 & 0x0f) << 2) | ((b2 >> 6) & 0x03)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
+    base64_encode(input)
 }
 
 /// Minimal hex encoding (avoids external dep for now).

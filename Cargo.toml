@@ -75,7 +75,10 @@ futures-core = "0.3"
 rnix = "0.14"
 rowan = "0.16"
 nix-nar = "0.3"
-winnow = "1"
+
+# Performance
+aho-corasick = "1"
+base64 = "0.22"
 
 # Testing
 proptest = "1"

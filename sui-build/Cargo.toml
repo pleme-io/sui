@@ -11,6 +11,7 @@ description = "Nix builder with sandboxed execution"
 sui-compat.workspace = true
 sui-store.workspace = true
 sui-eval.workspace = true
+aho-corasick.workspace = true
 tokio.workspace = true
 serde.workspace = true
 thiserror.workspace = true

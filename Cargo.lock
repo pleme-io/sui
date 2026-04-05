@@ -3732,6 +3732,7 @@ dependencies = [
 name = "sui-build"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "serde",
  "sui-compat",
  "sui-eval",
@@ -3746,6 +3747,7 @@ dependencies = [
 name = "sui-compat"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "ed25519-dalek",
  "nix-nar",

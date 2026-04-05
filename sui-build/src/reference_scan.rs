@@ -4,34 +4,36 @@
 //! matching the 32-character hash portion of store paths. This determines
 //! the runtime closure (which paths the output actually references).
 
+use aho_corasick::AhoCorasick;
 use sui_compat::store_path::STORE_PATH_HASH_LEN;
 
 /// Scan a byte buffer for Nix store path hash references.
 ///
-/// Returns the set of 32-character hashes found in the buffer.
+/// Uses Aho-Corasick automaton for O(n + m) multi-pattern matching —
+/// scans the input once for all patterns simultaneously.
 pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
-    let mut found = Vec::new();
+    let valid: Vec<&str> = known_hashes
+        .iter()
+        .filter(|h| h.len() == STORE_PATH_HASH_LEN)
+        .copied()
+        .collect();
 
-    for hash in known_hashes {
-        if hash.len() != STORE_PATH_HASH_LEN {
-            continue;
-        }
-        let needle = hash.as_bytes();
-        // Simple byte search — later optimize with memchr/SIMD
-        if contains_subsequence(data, needle) {
-            found.push((*hash).to_string());
+    if valid.is_empty() || data.is_empty() {
+        return Vec::new();
+    }
+
+    let ac = AhoCorasick::new(&valid).expect("valid patterns");
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for mat in ac.find_iter(data) {
+        let idx = mat.pattern().as_usize();
+        if seen.insert(idx) {
+            found.push(valid[idx].to_string());
         }
     }
 
     found
-}
-
-/// Check if `data` contains `needle` as a contiguous subsequence.
-fn contains_subsequence(data: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > data.len() {
-        return false;
-    }
-    data.windows(needle.len()).any(|window| window == needle)
 }
 
 /// Scan a file for store path references.

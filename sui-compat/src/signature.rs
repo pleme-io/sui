@@ -83,42 +83,9 @@ pub fn compute_fingerprint(
     format!("1;{store_path};{nar_hash};{nar_size};{refs}")
 }
 
-/// Minimal base64 decoding (replaced with proper crate in later phase).
+/// Base64 decode using the `base64` crate.
 fn minimal_base64_decode(input: &str) -> Result<Vec<u8>, ()> {
-    const DECODE: [u8; 128] = {
-        let mut table = [0xffu8; 128];
-        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0;
-        while i < 64 {
-            table[alphabet[i] as usize] = i as u8;
-            i += 1;
-        }
-        table
-    };
-
-    let input = input.trim_end_matches('=');
-    let mut out = Vec::with_capacity(input.len() * 3 / 4);
-    let bytes: Vec<u8> = input.bytes().collect();
-
-    for chunk in bytes.chunks(4) {
-        let mut buf = [0u8; 4];
-        for (i, &b) in chunk.iter().enumerate() {
-            if b >= 128 || DECODE[b as usize] == 0xff {
-                return Err(());
-            }
-            buf[i] = DECODE[b as usize];
-        }
-
-        out.push((buf[0] << 2) | (buf[1] >> 4));
-        if chunk.len() > 2 {
-            out.push((buf[1] << 4) | (buf[2] >> 2));
-        }
-        if chunk.len() > 3 {
-            out.push((buf[2] << 6) | buf[3]);
-        }
-    }
-
-    Ok(out)
+    crate::hash::base64_decode(input).map_err(|_| ())
 }
 
 #[cfg(test)]
