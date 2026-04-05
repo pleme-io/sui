@@ -19,11 +19,12 @@
 //! # Trust
 //!
 //! Trust is determined from Unix peer credentials (UID). Root and the daemon's
-//! own UID are considered trusted.
+//! own UID are considered trusted. The [`PeerCredentials`] trait abstracts
+//! credential retrieval for testability.
 
 pub mod connection;
 pub mod server;
 pub mod trust;
 
 pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH};
-pub use trust::TrustLevel;
+pub use trust::{PeerCredentials, SystemPeerCredentials, TrustLevel};

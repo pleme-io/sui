@@ -103,6 +103,7 @@ impl LocalStore {
     }
 }
 
+#[async_trait::async_trait]
 impl Store for LocalStore {
     async fn query_path_info(&self, path: &StorePath) -> StoreResult<Option<PathInfo>> {
         let abs_path = path.to_absolute_path();

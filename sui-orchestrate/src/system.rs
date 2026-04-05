@@ -1,7 +1,6 @@
 //! System rebuild orchestration — darwin-rebuild/nixos-rebuild replacement.
 
-use std::process::Stdio;
-use tokio::process::Command;
+use crate::command::{CommandRunner, TokioCommandRunner};
 
 /// Rebuild action type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,6 +73,7 @@ impl Platform {
 /// System orchestrator.
 pub struct SystemOrchestrator {
     platform: Platform,
+    runner: Box<dyn CommandRunner>,
 }
 
 /// Errors from system operations.
@@ -87,18 +87,31 @@ pub enum SystemError {
     CommandNotFound(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("command error: {0}")]
+    Command(#[from] crate::command::CommandError),
 }
 
 impl SystemOrchestrator {
     /// Create a new orchestrator, auto-detecting the platform.
     pub fn new() -> Result<Self, SystemError> {
         let platform = Platform::detect().ok_or(SystemError::UnsupportedPlatform)?;
-        Ok(Self { platform })
+        Ok(Self {
+            platform,
+            runner: Box::new(TokioCommandRunner::new()),
+        })
     }
 
     /// Create with an explicit platform.
     pub fn with_platform(platform: Platform) -> Self {
-        Self { platform }
+        Self {
+            platform,
+            runner: Box::new(TokioCommandRunner::new()),
+        }
+    }
+
+    /// Create with an explicit platform and command runner.
+    pub fn with_runner(platform: Platform, runner: Box<dyn CommandRunner>) -> Self {
+        Self { platform, runner }
     }
 
     pub fn platform(&self) -> Platform {
@@ -114,33 +127,27 @@ impl SystemOrchestrator {
         let start = std::time::Instant::now();
         let cmd_name = self.platform.rebuild_command();
 
-        let mut cmd = Command::new(cmd_name);
-        cmd.arg(action.as_str());
-
+        let mut args: Vec<&str> = vec![action.as_str()];
+        // We need to own the combined string for the flake args
+        let flake_flag;
         if let Some(flake_ref) = flake {
-            cmd.arg("--flake").arg(flake_ref);
+            flake_flag = flake_ref.to_string();
+            args.push("--flake");
+            args.push(&flake_flag);
         }
 
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        tracing::info!("running: {cmd_name} {}", args.join(" "));
 
-        tracing::info!("running: {cmd_name} {action} {}", flake.unwrap_or(""));
-
-        let output = cmd.output().await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                SystemError::CommandNotFound(cmd_name.to_string())
-            } else {
-                SystemError::Io(e)
-            }
+        let output = self.runner.run(cmd_name, &args).await.map_err(|e| match e {
+            crate::command::CommandError::NotFound(cmd) => SystemError::CommandNotFound(cmd),
+            other => SystemError::Command(other),
         })?;
 
         let duration = start.elapsed().as_secs_f64();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let log = format!("{stdout}{stderr}");
-
+        let log = format!("{}{}", output.stdout, output.stderr);
         let generation = extract_generation(&log);
 
-        if output.status.success() {
+        if output.success {
             tracing::info!("rebuild succeeded in {duration:.1}s");
             Ok(RebuildResult {
                 success: true,
@@ -150,21 +157,30 @@ impl SystemOrchestrator {
                 duration_secs: duration,
             })
         } else {
-            tracing::error!("rebuild failed: {}", stderr.lines().last().unwrap_or("unknown error"));
+            tracing::error!(
+                "rebuild failed: {}",
+                output.stderr.lines().last().unwrap_or("unknown error")
+            );
             Err(SystemError::RebuildFailed(log))
         }
     }
 
     /// Get the current system generation number.
     pub async fn current_generation(&self) -> Result<i64, SystemError> {
-        let output = Command::new("nix-env")
-            .args(["--list-generations", "--profile", "/nix/var/nix/profiles/system"])
-            .output()
+        let output = self
+            .runner
+            .run(
+                "nix-env",
+                &[
+                    "--list-generations",
+                    "--profile",
+                    "/nix/var/nix/profiles/system",
+                ],
+            )
             .await?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         // Parse the last line to find current generation
-        for line in stdout.lines().rev() {
+        for line in output.stdout.lines().rev() {
             if line.contains("(current)") {
                 if let Some(num_str) = line.split_whitespace().next() {
                     if let Ok(n) = num_str.parse::<i64>() {
@@ -183,15 +199,14 @@ impl SystemOrchestrator {
             Platform::NixOS => "/nix/var/nix/profiles/system",
         };
 
-        let output = Command::new("nix-env")
-            .args(["--list-generations", "--profile", profile])
-            .output()
+        let output = self
+            .runner
+            .run("nix-env", &["--list-generations", "--profile", profile])
             .await?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let mut generations = Vec::new();
 
-        for line in stdout.lines() {
+        for line in output.stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 if let Ok(number) = parts[0].parse::<i64>() {
@@ -214,23 +229,16 @@ impl SystemOrchestrator {
         let start = std::time::Instant::now();
         let cmd_name = self.platform.rebuild_command();
 
-        let output = Command::new(cmd_name)
-            .arg("switch")
-            .arg("--rollback")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+        let output = self
+            .runner
+            .run(cmd_name, &["switch", "--rollback"])
             .await?;
 
         let duration = start.elapsed().as_secs_f64();
-        let log = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let log = format!("{}{}", output.stdout, output.stderr);
 
         Ok(RebuildResult {
-            success: output.status.success(),
+            success: output.success,
             generation: extract_generation(&log),
             action: "rollback".to_string(),
             log,
@@ -266,6 +274,35 @@ fn extract_generation(log: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CommandOutput, CommandError};
+
+    /// A mock command runner for testing.
+    struct MockCommandRunner {
+        responses: std::collections::HashMap<String, CommandOutput>,
+    }
+
+    impl MockCommandRunner {
+        fn new() -> Self {
+            Self {
+                responses: std::collections::HashMap::new(),
+            }
+        }
+
+        fn with_response(mut self, program: &str, output: CommandOutput) -> Self {
+            self.responses.insert(program.to_string(), output);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for MockCommandRunner {
+        async fn run(&self, program: &str, _args: &[&str]) -> Result<CommandOutput, CommandError> {
+            self.responses
+                .get(program)
+                .cloned()
+                .ok_or_else(|| CommandError::NotFound(program.to_string()))
+        }
+    }
 
     #[test]
     fn rebuild_action_display() {
@@ -308,5 +345,58 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"generation\":42"));
+    }
+
+    #[tokio::test]
+    async fn mock_rebuild_success() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "switched to generation 99\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Switch, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(99));
+    }
+
+    #[tokio::test]
+    async fn mock_rebuild_failure() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "build error\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Switch, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_rollback() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "rolled back to generation 41\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rollback().await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(41));
     }
 }

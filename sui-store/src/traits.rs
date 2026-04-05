@@ -62,83 +62,78 @@ pub struct GcResult {
 /// The core store interface.
 ///
 /// All store backends (local, remote, binary cache) implement this trait.
-/// Async methods return `Send` futures so they can be used from `tokio::spawn`.
+/// Uses `#[async_trait]` for object safety — enables `dyn Store`.
+#[async_trait::async_trait]
 pub trait Store: Send + Sync {
     /// Query information about a store path.
-    fn query_path_info(
+    async fn query_path_info(
         &self,
         path: &StorePath,
-    ) -> impl std::future::Future<Output = StoreResult<Option<PathInfo>>> + Send;
+    ) -> StoreResult<Option<PathInfo>>;
 
     /// Check whether a store path is valid (registered in the store).
-    fn is_valid_path(
+    async fn is_valid_path(
         &self,
         path: &StorePath,
-    ) -> impl std::future::Future<Output = StoreResult<bool>> + Send;
+    ) -> StoreResult<bool>;
 
     /// List all valid store paths.
-    fn query_all_valid_paths(
+    async fn query_all_valid_paths(
         &self,
-    ) -> impl std::future::Future<Output = StoreResult<Vec<StorePath>>> + Send;
+    ) -> StoreResult<Vec<StorePath>>;
 
     /// Query the runtime references (dependencies) of a store path.
-    fn query_references(
+    async fn query_references(
         &self,
         path: &StorePath,
-    ) -> impl std::future::Future<Output = StoreResult<Vec<StorePath>>> + Send {
-        async {
-            let info = self.query_path_info(path).await?;
-            match info {
-                Some(info) => {
-                    let refs: Vec<StorePath> = info
-                        .references
-                        .iter()
-                        .filter_map(|r| StorePath::from_absolute_path(r).ok())
-                        .collect();
-                    Ok(refs)
-                }
-                None => Err(StoreError::PathNotFound(path.to_absolute_path())),
+    ) -> StoreResult<Vec<StorePath>> {
+        let info = self.query_path_info(path).await?;
+        match info {
+            Some(info) => {
+                let refs: Vec<StorePath> = info
+                    .references
+                    .iter()
+                    .filter_map(|r| StorePath::from_absolute_path(r).ok())
+                    .collect();
+                Ok(refs)
             }
+            None => Err(StoreError::PathNotFound(path.to_absolute_path())),
         }
     }
 
     /// Compute the transitive closure of a set of store paths.
-    fn compute_closure(
+    async fn compute_closure(
         &self,
         roots: &[StorePath],
-    ) -> impl std::future::Future<Output = StoreResult<Vec<StorePath>>> + Send {
-        async {
-            let mut closure = Vec::new();
-            let mut stack: Vec<StorePath> = roots.to_vec();
-            let mut seen = std::collections::HashSet::new();
+    ) -> StoreResult<Vec<StorePath>> {
+        let mut closure = Vec::new();
+        let mut stack: Vec<StorePath> = roots.to_vec();
+        let mut seen = std::collections::HashSet::new();
 
-            while let Some(path) = stack.pop() {
-                let key = path.to_absolute_path();
-                if seen.contains(&key) {
-                    continue;
-                }
-                seen.insert(key);
-
-                let refs = self.query_references(&path).await?;
-                for r in &refs {
-                    stack.push(r.clone());
-                }
-                closure.push(path);
+        while let Some(path) = stack.pop() {
+            let key = path.to_absolute_path();
+            if seen.contains(&key) {
+                continue;
             }
-            Ok(closure)
+            seen.insert(key);
+
+            let refs = self.query_references(&path).await?;
+            for r in &refs {
+                stack.push(r.clone());
+            }
+            closure.push(path);
         }
+        Ok(closure)
     }
 
     /// Run garbage collection on the store.
-    fn collect_garbage(
+    async fn collect_garbage(
         &self,
         _options: &GcOptions,
-    ) -> impl std::future::Future<Output = StoreResult<GcResult>> + Send {
-        async {
-            Err(StoreError::NotSupported(
-                "garbage collection not implemented for this backend".to_string(),
-            ))
-        }
+    ) -> StoreResult<GcResult> {
+        Err(StoreError::NotSupported(
+            "garbage collection not implemented for this backend".to_string(),
+        ))
     }
 }
 

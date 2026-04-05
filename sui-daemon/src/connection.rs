@@ -429,6 +429,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Store for MockStore {
         async fn query_path_info(
             &self,

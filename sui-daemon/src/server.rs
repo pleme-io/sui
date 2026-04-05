@@ -121,11 +121,13 @@ where
 
 /// Resolve the trust level from Unix socket peer credentials.
 fn resolve_trust(stream: &tokio::net::UnixStream) -> TrustLevel {
+    use crate::trust::SystemPeerCredentials;
+
     // On macOS and Linux, we can get peer credentials from the socket.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         match stream.peer_cred() {
-            Ok(cred) => TrustLevel::from_uid(cred.uid()),
+            Ok(cred) => TrustLevel::from_uid(cred.uid(), &SystemPeerCredentials),
             Err(e) => {
                 tracing::warn!("failed to get peer credentials: {e}, defaulting to not-trusted");
                 TrustLevel::NotTrusted
@@ -164,6 +166,7 @@ mod tests {
     /// Minimal mock store for server-level tests.
     struct MockStore;
 
+    #[async_trait::async_trait]
     impl Store for MockStore {
         async fn query_path_info(
             &self,

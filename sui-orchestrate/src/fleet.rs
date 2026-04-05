@@ -2,9 +2,9 @@
 //!
 //! Supports parallel, rolling, and canary deploy strategies.
 
-use std::process::Stdio;
-use tokio::process::Command;
+use std::sync::Arc;
 
+use crate::command::{CommandRunner, TokioCommandRunner};
 use crate::node::{Node, NodeRegistry, NodeStatus};
 
 /// Deploy strategy.
@@ -43,6 +43,7 @@ pub struct NodeDeployResult {
 /// Fleet orchestrator.
 pub struct FleetOrchestrator {
     registry: NodeRegistry,
+    runner: Arc<dyn CommandRunner>,
 }
 
 /// Fleet errors.
@@ -60,7 +61,18 @@ pub enum FleetError {
 
 impl FleetOrchestrator {
     pub fn new(registry: NodeRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            runner: Arc::new(TokioCommandRunner::new()),
+        }
+    }
+
+    /// Create with a custom command runner for testing.
+    pub fn with_runner(registry: NodeRegistry, runner: Box<dyn CommandRunner>) -> Self {
+        Self {
+            registry,
+            runner: Arc::from(runner),
+        }
     }
 
     pub fn registry(&self) -> &NodeRegistry {
@@ -142,8 +154,9 @@ impl FleetOrchestrator {
         for node in nodes {
             let n = node.clone();
             let flake = flake_override.map(String::from);
+            let runner = Arc::clone(&self.runner);
             handles.push(tokio::spawn(async move {
-                deploy_single_node(&n, flake.as_deref()).await
+                deploy_single_node(&n, flake.as_deref(), &*runner).await
             }));
         }
 
@@ -170,7 +183,7 @@ impl FleetOrchestrator {
     ) -> Vec<NodeDeployResult> {
         let mut results = Vec::new();
         for node in nodes {
-            let result = deploy_single_node(node, flake_override).await;
+            let result = deploy_single_node(node, flake_override, &*self.runner).await;
             tracing::info!(
                 "deployed {} — {}",
                 result.hostname,
@@ -193,7 +206,7 @@ impl FleetOrchestrator {
 
         // First node is canary
         let canary = &nodes[0];
-        let canary_result = deploy_single_node(canary, flake_override).await;
+        let canary_result = deploy_single_node(canary, flake_override, &*self.runner).await;
         tracing::info!(
             "canary {} — {}",
             canary_result.hostname,
@@ -217,7 +230,11 @@ impl FleetOrchestrator {
 }
 
 /// Deploy to a single node via SSH + nixos-rebuild.
-async fn deploy_single_node(node: &Node, flake_override: Option<&str>) -> NodeDeployResult {
+async fn deploy_single_node(
+    node: &Node,
+    flake_override: Option<&str>,
+    runner: &dyn CommandRunner,
+) -> NodeDeployResult {
     let start = std::time::Instant::now();
     let flake_ref = flake_override.unwrap_or(&node.flake_ref);
     let target = node.deploy_target();
@@ -233,18 +250,18 @@ async fn deploy_single_node(node: &Node, flake_override: Option<&str>) -> NodeDe
 
     // For local node, run directly; for remote, use SSH
     let output = if target == node.hostname && is_local_hostname(target) {
-        Command::new("sh")
-            .args(["-c", &rebuild_cmd])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
+        runner.run("sh", &["-c", &rebuild_cmd]).await
     } else {
-        Command::new("ssh")
-            .args(["-o", "StrictHostKeyChecking=accept-new", target, &rebuild_cmd])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+        runner
+            .run(
+                "ssh",
+                &[
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    target,
+                    &rebuild_cmd,
+                ],
+            )
             .await
     };
 
@@ -253,12 +270,8 @@ async fn deploy_single_node(node: &Node, flake_override: Option<&str>) -> NodeDe
     match output {
         Ok(out) => NodeDeployResult {
             hostname: node.hostname.clone(),
-            success: out.status.success(),
-            log: format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
+            success: out.success,
+            log: format!("{}{}", out.stdout, out.stderr),
             duration_secs: duration,
         },
         Err(e) => NodeDeployResult {

@@ -2,10 +2,12 @@
 //!
 //! Replaces darwin-rebuild, nixos-rebuild, deploy-rs, and colmena.
 
+pub mod command;
 pub mod fleet;
 pub mod node;
 pub mod system;
 
+pub use command::{CommandError, CommandOutput, CommandRunner, TokioCommandRunner};
 pub use fleet::{DeployStrategy, FleetOrchestrator};
 pub use node::{Node, NodeStatus};
 pub use system::{RebuildAction, RebuildResult, SystemOrchestrator};

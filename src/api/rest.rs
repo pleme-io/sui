@@ -9,7 +9,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use sui_compat::store_path::StorePath;
-use sui_store::Store;
 
 use super::state::AppState;
 use super::types::*;

@@ -2,15 +2,15 @@
 //!
 //! Implements the NarInfo + NAR download protocol for substitution.
 
-use reqwest::Client;
 use sui_compat::narinfo::NarInfo;
 use sui_compat::store_path::StorePath;
 
+use crate::http::{HttpClient, ReqwestHttpClient};
 use crate::traits::{PathInfo, Store, StoreError, StoreResult};
 
 /// A read-only binary cache store accessed over HTTP.
 pub struct BinaryCacheStore {
-    client: Client,
+    client: Box<dyn HttpClient>,
     /// Base URL (e.g., `https://cache.nixos.org`).
     base_url: String,
     /// Trusted public keys for signature verification (`keyname:base64pubkey`).
@@ -18,10 +18,23 @@ pub struct BinaryCacheStore {
 }
 
 impl BinaryCacheStore {
-    /// Create a new binary cache client.
+    /// Create a new binary cache client with default HTTP backend.
     pub fn new(base_url: &str, trusted_keys: Vec<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: Box::new(ReqwestHttpClient::new()),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            trusted_keys,
+        }
+    }
+
+    /// Create a new binary cache client with a custom HTTP backend.
+    pub fn with_http_client(
+        base_url: &str,
+        trusted_keys: Vec<String>,
+        client: Box<dyn HttpClient>,
+    ) -> Self {
+        Self {
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
             trusted_keys,
         }
@@ -33,30 +46,22 @@ impl BinaryCacheStore {
 
         let response = self
             .client
-            .get(&url)
-            .header("Accept", "text/x-nix-narinfo")
-            .send()
+            .get(&url, &[("Accept", "text/x-nix-narinfo")])
             .await
             .map_err(|e| StoreError::Database(format!("HTTP error: {e}")))?;
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status == 404 {
             return Ok(None);
         }
 
-        if !response.status().is_success() {
+        if response.status < 200 || response.status >= 300 {
             return Err(StoreError::Database(format!(
                 "HTTP {}: {}",
-                response.status(),
-                url
+                response.status, url
             )));
         }
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| StoreError::Database(format!("read error: {e}")))?;
-
-        let info = NarInfo::parse(&body)
+        let info = NarInfo::parse(&response.body)
             .map_err(|e| StoreError::Database(format!("NarInfo parse error: {e}")))?;
 
         Ok(Some(info))
@@ -66,26 +71,10 @@ impl BinaryCacheStore {
     pub async fn fetch_nar(&self, url_path: &str) -> StoreResult<Vec<u8>> {
         let url = format!("{}/{url_path}", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
+        self.client
+            .get_bytes(&url)
             .await
-            .map_err(|e| StoreError::Database(format!("HTTP error: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(StoreError::Database(format!(
-                "HTTP {}: {}",
-                response.status(),
-                url
-            )));
-        }
-
-        response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| StoreError::Database(format!("read error: {e}")))
+            .map_err(|e| StoreError::Database(format!("HTTP error: {e}")))
     }
 
     /// Convert a NarInfo to our PathInfo type.
@@ -108,6 +97,7 @@ impl BinaryCacheStore {
     }
 }
 
+#[async_trait::async_trait]
 impl Store for BinaryCacheStore {
     async fn query_path_info(&self, path: &StorePath) -> StoreResult<Option<PathInfo>> {
         let hash = Self::store_path_hash(path);
@@ -163,5 +153,17 @@ mod tests {
         assert_eq!(info.path, "/nix/store/abc-hello");
         assert_eq!(info.nar_size, 5000);
         assert_eq!(info.references.len(), 1);
+    }
+
+    #[test]
+    fn with_http_client_constructor() {
+        // Verify the custom client constructor works
+        let client = Box::new(ReqwestHttpClient::new());
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org/",
+            vec![],
+            client,
+        );
+        assert_eq!(store.base_url, "https://cache.nixos.org");
     }
 }
