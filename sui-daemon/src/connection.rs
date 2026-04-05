@@ -423,6 +423,7 @@ mod tests {
                     deriver: None,
                     signatures: vec![],
                     registration_time: 0,
+                    content_address: None,
                 },
             ));
             self

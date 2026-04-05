@@ -331,3 +331,113 @@ pub struct SystemEvent {
     pub timestamp: i64,
     pub generation: Option<i64>,
 }
+
+// ── From impls: core types → API types ─────────────────
+
+impl From<sui_store::PathInfo> for PathInfoResponse {
+    fn from(i: sui_store::PathInfo) -> Self {
+        Self {
+            path: i.path,
+            nar_hash: i.nar_hash,
+            nar_size: i.nar_size,
+            references: i.references,
+            deriver: i.deriver,
+            signatures: i.signatures,
+            registration_time: i.registration_time,
+            content_address: i.content_address,
+        }
+    }
+}
+
+impl From<sui_orchestrate::Node> for FleetNode {
+    fn from(n: sui_orchestrate::Node) -> Self {
+        Self {
+            hostname: n.hostname,
+            status: n.status.to_string(),
+            last_deployed: n.last_deployed,
+            current_generation: n.current_generation,
+            system: n.system,
+            flake_ref: Some(n.flake_ref),
+        }
+    }
+}
+
+impl From<sui_orchestrate::fleet::DeployResult> for FleetDeployStatus {
+    fn from(r: sui_orchestrate::fleet::DeployResult) -> Self {
+        Self {
+            id: String::new(),
+            target: r.target,
+            status: if r.failed == 0 { "succeeded" } else { "failed" }.to_string(),
+            nodes: vec![],
+        }
+    }
+}
+
+impl From<sui_build::BuildResult> for BuildStatus {
+    fn from(r: sui_build::BuildResult) -> Self {
+        Self {
+            id: String::new(),
+            state: if r.success { "succeeded" } else { "failed" }.to_string(),
+            output_paths: Some(r.outputs.iter().map(|p| p.to_absolute_path()).collect()),
+            started_at: None,
+            completed_at: None,
+            log_lines: r.log.lines().map(String::from).collect(),
+        }
+    }
+}
+
+impl From<sui_orchestrate::RebuildResult> for SystemStatus {
+    fn from(r: sui_orchestrate::RebuildResult) -> Self {
+        Self {
+            generation: r.generation.unwrap_or(0),
+            config_path: String::new(),
+            boot_time: None,
+            nix_version: None,
+            system: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_info_from_core() {
+        let core = sui_store::PathInfo {
+            path: "/nix/store/abc-hello".to_string(),
+            nar_hash: "sha256:dead".to_string(),
+            nar_size: 1024,
+            references: vec!["/nix/store/dep".to_string()],
+            deriver: Some("/nix/store/abc.drv".to_string()),
+            signatures: vec!["key:sig".to_string()],
+            registration_time: 12345,
+            content_address: Some("fixed:out:r:sha256:beef".to_string()),
+        };
+        let api: PathInfoResponse = core.into();
+        assert_eq!(api.path, "/nix/store/abc-hello");
+        assert_eq!(api.content_address, Some("fixed:out:r:sha256:beef".to_string()));
+    }
+
+    #[test]
+    fn fleet_node_from_core() {
+        let node = sui_orchestrate::Node::new("plo", ".#plo")
+            .with_system("x86_64-linux");
+        let api: FleetNode = node.into();
+        assert_eq!(api.hostname, "plo");
+        assert_eq!(api.flake_ref, Some(".#plo".to_string()));
+    }
+
+    #[test]
+    fn rebuild_result_to_system_status() {
+        let result = sui_orchestrate::RebuildResult {
+            success: true,
+            generation: Some(42),
+            action: "switch".to_string(),
+            log: "ok".to_string(),
+            duration_secs: 1.5,
+        };
+        let status: SystemStatus = result.into();
+        assert_eq!(status.generation, 42);
+    }
+}

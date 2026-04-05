@@ -110,16 +110,7 @@ async fn get_path_info(
         if let Ok(sp) = parsed {
             match store.query_path_info(&sp).await {
                 Ok(Some(info)) => {
-                    return Ok(Json(PathInfoResponse {
-                        path: info.path,
-                        nar_hash: info.nar_hash,
-                        nar_size: info.nar_size,
-                        references: info.references,
-                        deriver: info.deriver,
-                        signatures: info.signatures,
-                        registration_time: info.registration_time,
-                        content_address: None,
-                    }));
+                    return Ok(Json(PathInfoResponse::from(info)));
                 }
                 Ok(None) => return Err(StatusCode::NOT_FOUND),
                 Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),

@@ -5,6 +5,7 @@
 
 pub mod content_address;
 pub mod derivation;
+pub mod flake;
 pub mod hash;
 pub mod nar;
 pub mod narinfo;

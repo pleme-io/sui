@@ -39,6 +39,8 @@ pub struct PathInfo {
     pub signatures: Vec<String>,
     /// Unix timestamp of when this path was registered.
     pub registration_time: i64,
+    /// Content-address assertion (e.g., `fixed:out:r:sha256:...`).
+    pub content_address: Option<String>,
 }
 
 /// Garbage collection options.
@@ -194,6 +196,7 @@ mod tests {
             deriver: Some("/nix/store/abc.drv".to_string()),
             signatures: vec!["key:sig".to_string()],
             registration_time: 1234567890,
+            content_address: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: PathInfo = serde_json::from_str(&json).unwrap();

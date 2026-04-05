@@ -87,6 +87,7 @@ impl BinaryCacheStore {
             deriver: info.deriver.clone(),
             signatures: info.signatures.clone(),
             registration_time: 0,
+            content_address: info.ca.clone(),
         }
     }
 

@@ -98,7 +98,7 @@ impl LocalStore {
             references,
             deriver: model.deriver.clone(),
             signatures,
-            registration_time: model.registration_time,
+            registration_time: model.registration_time, content_address: model.ca.clone(),
         })
     }
 }

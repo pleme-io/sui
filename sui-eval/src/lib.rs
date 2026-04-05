@@ -7,8 +7,12 @@
 
 pub mod builtins;
 pub mod eval;
-pub mod flake;
 pub mod value;
+
+/// Re-export flake lock types from sui-compat where they canonically live.
+pub mod flake {
+    pub use sui_compat::flake::*;
+}
 
 pub use eval::eval;
 pub use value::{EvalError, Value};
