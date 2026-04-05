@@ -291,4 +291,117 @@ mod tests {
         let path_no_refs = compute_text_store_path("test.txt", b"hello", &[]).unwrap();
         assert_ne!(path.digest, path_no_refs.digest);
     }
+
+    // ── compute_text_store_path → StorePath can be used with Store ─
+
+    #[test]
+    fn text_store_path_roundtrips_through_absolute_path() {
+        let sp = compute_text_store_path("my-config.txt", b"config data", &[]).unwrap();
+        let abs = sp.to_absolute_path();
+
+        // Parse it back — verifies the StorePath is valid
+        let reparsed = StorePath::from_absolute_path(&abs).unwrap();
+        assert_eq!(reparsed.name, "my-config.txt");
+        assert_eq!(reparsed.digest, sp.digest);
+        assert_eq!(reparsed.to_absolute_path(), abs);
+    }
+
+    #[test]
+    fn text_store_path_basename_roundtrip() {
+        let sp = compute_text_store_path("script.sh", b"#!/bin/sh\necho hi", &[]).unwrap();
+        let basename = sp.to_basename();
+
+        let reparsed = StorePath::from_basename(&basename).unwrap();
+        assert_eq!(reparsed, sp);
+    }
+
+    // ── ContentAddress parse → roundtrip through NarInfo ────
+
+    #[test]
+    fn content_address_roundtrip_through_narinfo() {
+        use crate::narinfo::NarInfo;
+
+        let ca_str = "fixed:out:r:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let ca = ContentAddress::parse(ca_str).unwrap();
+
+        // Put CA into a NarInfo, serialize, reparse, extract CA
+        let narinfo = NarInfo {
+            store_path: "/nix/store/abc-test".to_string(),
+            url: "nar/test.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:000".to_string(),
+            file_size: 100,
+            nar_hash: "sha256:111".to_string(),
+            nar_size: 200,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: Some(ca.to_nix_string()),
+        };
+
+        let serialized = narinfo.serialize();
+        let reparsed = NarInfo::parse(&serialized).unwrap();
+        let ca_reparsed = ContentAddress::parse(reparsed.ca.as_ref().unwrap()).unwrap();
+
+        assert_eq!(ca_reparsed.method, ca.method);
+        assert_eq!(ca_reparsed.hash.algorithm, ca.hash.algorithm);
+        assert_eq!(ca_reparsed.hash.digest, ca.hash.digest);
+    }
+
+    #[test]
+    fn text_content_address_roundtrip_through_narinfo() {
+        use crate::narinfo::NarInfo;
+
+        let ca_str = "text:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let ca = ContentAddress::parse(ca_str).unwrap();
+        assert_eq!(ca.method, ContentAddressMethod::Text);
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/empty-text".to_string(),
+            url: "nar/empty.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:000".to_string(),
+            file_size: 0,
+            nar_hash: "sha256:000".to_string(),
+            nar_size: 0,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: Some(ca.to_nix_string()),
+        };
+
+        let serialized = narinfo.serialize();
+        let reparsed = NarInfo::parse(&serialized).unwrap();
+        let ca_reparsed = ContentAddress::parse(reparsed.ca.as_ref().unwrap()).unwrap();
+        assert_eq!(ca_reparsed, ca);
+    }
+
+    #[test]
+    fn flat_content_address_roundtrip_through_narinfo() {
+        use crate::narinfo::NarInfo;
+
+        let ca = ContentAddress {
+            method: ContentAddressMethod::Flat,
+            hash: NixHash::new(HashAlgorithm::Sha256, vec![0x42; 32]),
+        };
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/flat-file".to_string(),
+            url: "nar/flat.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:000".to_string(),
+            file_size: 100,
+            nar_hash: "sha256:000".to_string(),
+            nar_size: 100,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: Some(ca.to_nix_string()),
+        };
+
+        let serialized = narinfo.serialize();
+        let reparsed = NarInfo::parse(&serialized).unwrap();
+        let ca_reparsed = ContentAddress::parse(reparsed.ca.as_ref().unwrap()).unwrap();
+        assert_eq!(ca_reparsed, ca);
+    }
 }

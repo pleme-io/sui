@@ -80,4 +80,125 @@ mod tests {
     fn evaluator_trait_object_safe() {
         fn _assert(_: &dyn Evaluator) {}
     }
+
+    // ── TreeWalkEvaluator through Evaluator trait ────────────
+
+    #[test]
+    fn tree_walk_eval_integer_arithmetic() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("2 + 3").unwrap(), Value::Int(5));
+    }
+
+    #[test]
+    fn tree_walk_eval_string_literal() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr(r#""hello world""#).unwrap(),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_boolean() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("true && false").unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn tree_walk_eval_if_else() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("if true then 42 else 0").unwrap(),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_let_binding() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("let x = 10; in x * 2").unwrap(),
+            Value::Int(20),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_attrset() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let val = e.eval_expr("{ a = 1; b = 2; }.a").unwrap();
+        assert_eq!(val, Value::Int(1));
+    }
+
+    #[test]
+    fn tree_walk_eval_list() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let val = e.eval_expr("[1 2 3]").unwrap();
+        assert_eq!(
+            val,
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_lambda_application() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("(x: x + 1) 5").unwrap(),
+            Value::Int(6),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_builtin_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("builtins.length [1 2 3]").unwrap(),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_parse_error_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_expr("let in");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tree_walk_eval_null_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("null").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn tree_walk_eval_file_missing() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_file(std::path::Path::new("/nonexistent/file.nix"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tree_walk_eval_string_interpolation_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr(r#"let name = "world"; in "hello ${name}""#).unwrap(),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_comparison_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("3 > 2").unwrap(), Value::Bool(true));
+        assert_eq!(e.eval_expr("1 == 1").unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn tree_walk_eval_recursive_attrset_via_trait() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("rec { x = 1; y = x + 1; }.y").unwrap(),
+            Value::Int(2),
+        );
+    }
 }

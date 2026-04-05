@@ -436,4 +436,117 @@ Sig: cache.nixos.org-1:sig==
         // but the URL should not have a trailing slash
         assert!(!store.base_url.ends_with('/'));
     }
+
+    // ── fetch_nar with MockHttpClient ───────────────────────
+
+    #[tokio::test]
+    async fn fetch_nar_returns_bytes() {
+        let nar_content = b"fake-nar-content-with-binary-data\x00\xff\xfe";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/nar/abc.nar.xz",
+            HttpResponse {
+                status: 200,
+                body: String::from_utf8_lossy(nar_content).to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let data = store.fetch_nar("nar/abc.nar.xz").await.unwrap();
+        assert!(!data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_nar_http_error() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let result = store.fetch_nar("nar/missing.nar.xz").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_nar_empty_body() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/nar/empty.nar",
+            HttpResponse {
+                status: 200,
+                body: String::new(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let data = store.fetch_nar("nar/empty.nar").await.unwrap();
+        assert!(data.is_empty());
+    }
+
+    // ── Store trait with dyn Store (Arc<dyn Store> pattern) ──
+
+    #[tokio::test]
+    async fn dyn_store_query_path_info() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: MOCK_NARINFO.to_string(),
+            },
+        );
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            BinaryCacheStore::with_http_client(
+                "https://cache.nixos.org",
+                vec![],
+                Box::new(client),
+            ),
+        );
+
+        let info = store.query_path_info(&hello_store_path()).await.unwrap();
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().nar_size, 5000);
+    }
+
+    #[tokio::test]
+    async fn dyn_store_is_valid_path() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: MOCK_NARINFO.to_string(),
+            },
+        );
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            BinaryCacheStore::with_http_client(
+                "https://cache.nixos.org",
+                vec![],
+                Box::new(client),
+            ),
+        );
+
+        assert!(store.is_valid_path(&hello_store_path()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn dyn_store_query_all_valid_paths_unsupported() {
+        let client = MockHttpClient::new();
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            BinaryCacheStore::with_http_client(
+                "https://cache.nixos.org",
+                vec![],
+                Box::new(client),
+            ),
+        );
+
+        let result = store.query_all_valid_paths().await;
+        assert!(result.is_err());
+    }
 }

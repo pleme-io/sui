@@ -671,4 +671,178 @@ mod tests {
         let msg_type = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(msg_type, StderrMsg::Error as u64);
     }
+
+    // ── Full data flow: IsValidPath true → response bytes contain true ──
+
+    #[tokio::test]
+    async fn is_valid_path_full_flow_store_returns_true() {
+        let test_path = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1";
+        let store = Arc::new(MockStore::new().with_path(test_path, "sha256:deadbeef"));
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(valid, "store contains the path, should return true");
+    }
+
+    // ── Full data flow: IsValidPath false → response bytes contain false ──
+
+    #[tokio::test]
+    async fn is_valid_path_full_flow_store_returns_false() {
+        let store = Arc::new(MockStore::new()); // empty store
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(
+            &mut input,
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(!valid, "store is empty, should return false");
+    }
+
+    // ── Full data flow: QueryPathInfo with all fields ──────────
+
+    /// A richer mock store that populates all PathInfo fields.
+    struct RichMockStore {
+        info: Option<PathInfo>,
+    }
+
+    impl RichMockStore {
+        fn with_info(info: PathInfo) -> Self {
+            Self { info: Some(info) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Store for RichMockStore {
+        async fn query_path_info(
+            &self,
+            _path: &StorePath,
+        ) -> StoreResult<Option<PathInfo>> {
+            Ok(self.info.clone())
+        }
+
+        async fn is_valid_path(&self, _path: &StorePath) -> StoreResult<bool> {
+            Ok(self.info.is_some())
+        }
+
+        async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn query_path_info_full_flow_all_fields() {
+        let test_path = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1";
+        let info = PathInfo {
+            path: test_path.to_string(),
+            nar_hash: "sha256:deadbeefcafe".to_string(),
+            nar_size: 226552,
+            references: vec![
+                "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37".to_string(),
+            ],
+            deriver: Some("xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv".to_string()),
+            signatures: vec![
+                "cache.nixos.org-1:sig123==".to_string(),
+                "my-key:sig456==".to_string(),
+            ],
+            registration_time: 1700000000,
+            content_address: None,
+        };
+        let store = Arc::new(RichMockStore::with_info(info));
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        // STDERR_LAST
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+        // valid = true
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(valid);
+        // deriver
+        let deriver = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(deriver, "xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv");
+        // nar_hash
+        let nar_hash = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(nar_hash, "sha256:deadbeefcafe");
+        // references
+        let refs = wire::read_string_list(&mut cursor).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert!(refs[0].contains("glibc-2.37"));
+        // registration_time
+        let reg_time = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(reg_time, 1700000000);
+        // nar_size
+        let nar_size = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(nar_size, 226552);
+        // ultimate (bool)
+        let ultimate = wire::read_bool(&mut cursor).unwrap();
+        assert!(!ultimate);
+        // signatures
+        let sigs = wire::read_string_list(&mut cursor).unwrap();
+        assert_eq!(sigs.len(), 2);
+        assert_eq!(sigs[0], "cache.nixos.org-1:sig123==");
+        assert_eq!(sigs[1], "my-key:sig456==");
+    }
+
+    #[tokio::test]
+    async fn query_path_info_full_flow_missing_returns_false() {
+        let store = Arc::new(MockStore::new()); // empty
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
+        wire::write_string(
+            &mut input,
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(!valid, "path not in store, should be false");
+    }
 }

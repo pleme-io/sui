@@ -399,4 +399,214 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.generation, Some(41));
     }
+
+    // ── rebuild() with flake ─────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_with_flake_ref() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "switched to generation 55\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys
+            .rebuild(RebuildAction::Switch, Some(".#cid"))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(55));
+        assert_eq!(result.action, "switch");
+    }
+
+    // ── rebuild() different actions ──────────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_boot_action() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "generation 10\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Boot, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "boot");
+        assert_eq!(result.generation, Some(10));
+    }
+
+    // ── rebuild() NixOS platform ────────────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_nixos_success() {
+        let runner = MockCommandRunner::new().with_response(
+            "nixos-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "activating generation 77\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Switch, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(77));
+    }
+
+    // ── rebuild() command not found ─────────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_command_not_found() {
+        let runner = MockCommandRunner::new(); // no responses
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Switch, None).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SystemError::CommandNotFound(cmd) => assert_eq!(cmd, "darwin-rebuild"),
+            other => panic!("expected CommandNotFound, got {other:?}"),
+        }
+    }
+
+    // ── current_generation() parsing ────────────────────────
+
+    #[tokio::test]
+    async fn mock_current_generation_parses_output() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  41   2024-01-01\n  42   2024-01-02 (current)\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let current = sys.current_generation().await.unwrap();
+        assert_eq!(current, 42);
+    }
+
+    #[tokio::test]
+    async fn mock_current_generation_no_current_marker() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  41   2024-01-01\n  42   2024-01-02\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let current = sys.current_generation().await.unwrap();
+        assert_eq!(current, 0); // no (current) marker found
+    }
+
+    // ── list_generations() parsing ──────────────────────────
+
+    #[tokio::test]
+    async fn mock_list_generations_multi_line() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  1  2024-01-01\n  2  2024-01-15 (current)\n  3  2024-02-01\n"
+                    .to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let gens = sys.list_generations().await.unwrap();
+        assert_eq!(gens.len(), 3);
+        assert_eq!(gens[0].number, 1);
+        assert!(!gens[0].current);
+        assert_eq!(gens[1].number, 2);
+        assert!(gens[1].current);
+        assert_eq!(gens[2].number, 3);
+        assert!(!gens[2].current);
+    }
+
+    #[tokio::test]
+    async fn mock_list_generations_empty_output() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let gens = sys.list_generations().await.unwrap();
+        assert!(gens.is_empty());
+    }
+
+    // ── rollback() success with NixOS ───────────────────────
+
+    #[tokio::test]
+    async fn mock_rollback_nixos() {
+        let runner = MockCommandRunner::new().with_response(
+            "nixos-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "rolled back to generation 20\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys.rollback().await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(20));
+        assert_eq!(result.action, "rollback");
+    }
+
+    // ── rollback() failure ──────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_rollback_failure() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "rollback failed\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rollback().await.unwrap();
+        assert!(!result.success);
+    }
+
+    // ── Platform helper tests ───────────────────────────────
+
+    #[test]
+    fn platform_rebuild_command_darwin() {
+        assert_eq!(Platform::Darwin.rebuild_command(), "darwin-rebuild");
+    }
+
+    #[test]
+    fn platform_rebuild_command_nixos() {
+        assert_eq!(Platform::NixOS.rebuild_command(), "nixos-rebuild");
+    }
 }

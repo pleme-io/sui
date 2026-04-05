@@ -3871,6 +3871,7 @@ dependencies = [
  "anyhow",
  "async-graphql",
  "async-graphql-axum",
+ "async-trait",
  "axum 0.8.8",
  "clap",
  "figment",

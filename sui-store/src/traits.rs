@@ -522,4 +522,72 @@ mod tests {
         let e = StoreError::Database("connection lost".to_string());
         assert!(e.to_string().contains("connection lost"));
     }
+
+    // ── Arc<dyn Store> dispatch (the AppState pattern) ──────
+
+    #[tokio::test]
+    async fn arc_dyn_store_query_path_info() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new().with_path(hello_info()),
+        );
+        let info = store.query_path_info(&hello_path()).await.unwrap();
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().nar_hash, "sha256:aaa");
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_store_is_valid_path() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new().with_path(hello_info()),
+        );
+        assert!(store.is_valid_path(&hello_path()).await.unwrap());
+        assert!(!store.is_valid_path(&bash_path()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_store_query_all_valid_paths() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new()
+                .with_path(hello_info())
+                .with_path(glibc_info()),
+        );
+        let paths = store.query_all_valid_paths().await.unwrap();
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_store_query_references() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new()
+                .with_path(hello_info())
+                .with_path(glibc_info()),
+        );
+        let refs = store.query_references(&hello_path()).await.unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].to_absolute_path(), glibc_path().to_absolute_path());
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_store_compute_closure() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new()
+                .with_path(hello_info())
+                .with_path(glibc_info())
+                .with_path(bash_info()),
+        );
+        let closure = store.compute_closure(&[hello_path()]).await.unwrap();
+        assert_eq!(closure.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn arc_dyn_store_default_methods_not_supported() {
+        let store: std::sync::Arc<dyn Store> = std::sync::Arc::new(
+            TestStore::new(),
+        );
+        assert!(store.collect_garbage(&GcOptions::default()).await.is_err());
+        assert!(store.add_to_store("x", b"data", &[]).await.is_err());
+        assert!(store.register_path(&hello_info()).await.is_err());
+        assert!(store.add_signatures(&hello_path(), &["sig".to_string()]).await.is_err());
+        assert!(store.query_referrers(&hello_path()).await.is_err());
+    }
 }
