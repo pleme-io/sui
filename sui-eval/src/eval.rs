@@ -1116,4 +1116,1408 @@ mod tests {
         assert_eq!(ev("{ a = 1; } == { a = 1; }"), Value::Bool(true));
         assert_eq!(ev("{ a = 1; } == { a = 2; }"), Value::Bool(false));
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // 1. LITERAL TYPES
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn literal_int_large_zero_negative() {
+        // Large positive integer (within i64 range)
+        assert_eq!(ev("9223372036854775807"), Value::Int(i64::MAX));
+        // Zero
+        assert_eq!(ev("0"), Value::Int(0));
+        // Negative via unary negate
+        assert_eq!(ev("-1"), Value::Int(-1));
+        assert_eq!(ev("-999999"), Value::Int(-999999));
+    }
+
+    #[test]
+    fn literal_float_small_large() {
+        assert_eq!(ev("0.001"), Value::Float(0.001));
+        assert_eq!(ev("999999.999"), Value::Float(999999.999));
+        // Float with scientific notation via expression (1e6 parsed by rnix)
+        assert_eq!(ev("1.0e3"), Value::Float(1000.0));
+        assert_eq!(ev("1.5e2"), Value::Float(150.0));
+    }
+
+    #[test]
+    fn literal_string_empty_and_escapes() {
+        assert_eq!(ev(r#""""#), Value::String("".to_string()));
+        // Escape sequences within strings
+        assert_eq!(ev(r#""hello\nworld""#), Value::String("hello\nworld".to_string()));
+        assert_eq!(ev(r#""tab\there""#), Value::String("tab\there".to_string()));
+    }
+
+    #[test]
+    fn literal_multiline_string() {
+        // Indented string ('' ... '')
+        assert_eq!(
+            ev("''hello''"),
+            Value::String("hello".to_string()),
+        );
+        // Multiline indented string strips common indentation
+        assert_eq!(
+            ev("''\n  line1\n  line2\n''"),
+            Value::String("line1\nline2\n".to_string()),
+        );
+    }
+
+    #[test]
+    fn literal_paths() {
+        // Relative path
+        assert_eq!(ev("./foo"), Value::Path("./foo".to_string()));
+        // Absolute path
+        assert_eq!(ev("/nix/store/abc"), Value::Path("/nix/store/abc".to_string()));
+        // Home path
+        assert_eq!(ev("~/myfile"), Value::Path("~/myfile".to_string()));
+    }
+
+    #[test]
+    fn literal_null_true_false_standalone() {
+        assert_eq!(ev("null"), Value::Null);
+        assert_eq!(ev("true"), Value::Bool(true));
+        assert_eq!(ev("false"), Value::Bool(false));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 2. OPERATORS — COMPLETE COVERAGE
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn op_arithmetic_int() {
+        assert_eq!(ev("100 + 200"), Value::Int(300));
+        assert_eq!(ev("50 - 30"), Value::Int(20));
+        assert_eq!(ev("7 * 8"), Value::Int(56));
+        assert_eq!(ev("17 / 3"), Value::Int(5)); // integer division
+    }
+
+    #[test]
+    fn op_arithmetic_float() {
+        assert_eq!(ev("1.5 + 2.5"), Value::Float(4.0));
+        assert_eq!(ev("5.0 - 1.5"), Value::Float(3.5));
+        assert_eq!(ev("2.0 * 3.0"), Value::Float(6.0));
+        assert_eq!(ev("7.0 / 2.0"), Value::Float(3.5));
+    }
+
+    #[test]
+    fn op_arithmetic_mixed_int_float() {
+        // int + float => float
+        assert_eq!(ev("1 + 2.5"), Value::Float(3.5));
+        assert_eq!(ev("2.5 + 1"), Value::Float(3.5));
+        // int * float => float
+        assert_eq!(ev("2 * 1.5"), Value::Float(3.0));
+        // float - int => float
+        assert_eq!(ev("5.5 - 2"), Value::Float(3.5));
+    }
+
+    #[test]
+    fn op_string_concat() {
+        assert_eq!(ev(r#""foo" + "bar""#), Value::String("foobar".to_string()));
+        assert_eq!(ev(r#""" + "x""#), Value::String("x".to_string()));
+        assert_eq!(ev(r#""a" + "" + "b""#), Value::String("ab".to_string()));
+    }
+
+    #[test]
+    fn op_path_concat() {
+        // path + string
+        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path("./foo/bar".to_string()));
+        // path + path (should join with /)
+        assert_eq!(ev("./a + ./b"), Value::Path("./a/./b".to_string()));
+    }
+
+    #[test]
+    fn op_comparison_ints() {
+        assert_eq!(ev("1 < 2"), Value::Bool(true));
+        assert_eq!(ev("2 < 1"), Value::Bool(false));
+        assert_eq!(ev("2 > 1"), Value::Bool(true));
+        assert_eq!(ev("1 > 2"), Value::Bool(false));
+        assert_eq!(ev("2 <= 2"), Value::Bool(true));
+        assert_eq!(ev("3 <= 2"), Value::Bool(false));
+        assert_eq!(ev("2 >= 2"), Value::Bool(true));
+        assert_eq!(ev("1 >= 2"), Value::Bool(false));
+    }
+
+    #[test]
+    fn op_comparison_floats() {
+        assert_eq!(ev("1.5 < 2.5"), Value::Bool(true));
+        assert_eq!(ev("2.5 > 1.5"), Value::Bool(true));
+        assert_eq!(ev("1.5 <= 1.5"), Value::Bool(true));
+        assert_eq!(ev("1.5 >= 1.5"), Value::Bool(true));
+    }
+
+    #[test]
+    fn op_comparison_strings() {
+        assert_eq!(ev(r#""apple" < "banana""#), Value::Bool(true));
+        assert_eq!(ev(r#""banana" > "apple""#), Value::Bool(true));
+        assert_eq!(ev(r#""abc" == "abc""#), Value::Bool(true));
+        assert_eq!(ev(r#""abc" != "xyz""#), Value::Bool(true));
+        assert_eq!(ev(r#""abc" <= "abd""#), Value::Bool(true));
+        assert_eq!(ev(r#""abc" >= "abb""#), Value::Bool(true));
+    }
+
+    #[test]
+    fn op_equality_various_types() {
+        assert_eq!(ev("null == null"), Value::Bool(true));
+        assert_eq!(ev("true == true"), Value::Bool(true));
+        assert_eq!(ev("false == false"), Value::Bool(true));
+        assert_eq!(ev("true == false"), Value::Bool(false));
+        assert_eq!(ev("1 == 1"), Value::Bool(true));
+        assert_eq!(ev("1 != 2"), Value::Bool(true));
+        // Different types are not equal
+        assert_eq!(ev(r#"1 == "1""#), Value::Bool(false));
+        assert_eq!(ev("null == false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn op_logic_short_circuit() {
+        // false && <error> should NOT evaluate the RHS
+        assert_eq!(ev("false && (1 / 0 == 0)"), Value::Bool(false));
+        // true || <error> should NOT evaluate the RHS
+        assert_eq!(ev("true || (1 / 0 == 0)"), Value::Bool(true));
+    }
+
+    #[test]
+    fn op_logic_full() {
+        assert_eq!(ev("true && true"), Value::Bool(true));
+        assert_eq!(ev("true && false"), Value::Bool(false));
+        assert_eq!(ev("false && true"), Value::Bool(false));
+        assert_eq!(ev("false && false"), Value::Bool(false));
+        assert_eq!(ev("true || true"), Value::Bool(true));
+        assert_eq!(ev("true || false"), Value::Bool(true));
+        assert_eq!(ev("false || true"), Value::Bool(true));
+        assert_eq!(ev("false || false"), Value::Bool(false));
+        assert_eq!(ev("!true"), Value::Bool(false));
+        assert_eq!(ev("!false"), Value::Bool(true));
+    }
+
+    #[test]
+    fn op_implication_truth_table() {
+        // false -> anything = true
+        assert_eq!(ev("false -> false"), Value::Bool(true));
+        assert_eq!(ev("false -> true"), Value::Bool(true));
+        // true -> x = x
+        assert_eq!(ev("true -> true"), Value::Bool(true));
+        assert_eq!(ev("true -> false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn op_implication_short_circuit() {
+        // false -> <error> should NOT evaluate the RHS
+        assert_eq!(ev("false -> (1 / 0 == 0)"), Value::Bool(true));
+    }
+
+    #[test]
+    fn op_update_merge() {
+        let v = ev("{ a = 1; } // { b = 2; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn op_update_right_wins() {
+        assert_eq!(ev("({ a = 1; } // { a = 2; }).a"), Value::Int(2));
+    }
+
+    #[test]
+    fn op_list_concat() {
+        assert_eq!(
+            ev("[1 2] ++ [3 4]"),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]),
+        );
+        // Empty list concat
+        assert_eq!(ev("[] ++ [1]"), Value::List(vec![Value::Int(1)]));
+        assert_eq!(ev("[1] ++ []"), Value::List(vec![Value::Int(1)]));
+    }
+
+    #[test]
+    fn op_has_attr_present_and_absent() {
+        assert_eq!(ev("{ x = 1; y = 2; } ? x"), Value::Bool(true));
+        assert_eq!(ev("{ x = 1; } ? z"), Value::Bool(false));
+        assert_eq!(ev("{} ? anything"), Value::Bool(false));
+    }
+
+    #[test]
+    fn op_unary_negate() {
+        assert_eq!(ev("-42"), Value::Int(-42));
+        assert_eq!(ev("-3.14"), Value::Float(-3.14));
+        // Double negate
+        assert_eq!(ev("- -5"), Value::Int(5));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 3. CONTROL FLOW
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn control_if_true_branch() {
+        assert_eq!(ev("if true then 42 else 0"), Value::Int(42));
+    }
+
+    #[test]
+    fn control_if_false_branch() {
+        assert_eq!(ev("if false then 42 else 0"), Value::Int(0));
+    }
+
+    #[test]
+    fn control_if_nested() {
+        assert_eq!(
+            ev("if true then (if false then 1 else 2) else 3"),
+            Value::Int(2),
+        );
+        assert_eq!(
+            ev("if false then 1 else (if true then 2 else 3)"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn control_assert_passing() {
+        assert_eq!(ev("assert 1 == 1; 42"), Value::Int(42));
+        assert_eq!(ev("assert true; true"), Value::Bool(true));
+    }
+
+    #[test]
+    fn control_assert_failing() {
+        assert!(eval("assert false; 42").is_err());
+        assert!(eval("assert 1 == 2; 42").is_err());
+    }
+
+    #[test]
+    fn control_with_basic_scope() {
+        assert_eq!(ev("with { a = 1; b = 2; }; a + b"), Value::Int(3));
+    }
+
+    #[test]
+    fn control_with_lexical_precedence() {
+        // let binding takes precedence over with scope
+        assert_eq!(
+            ev("let x = 10; in with { x = 99; }; x"),
+            Value::Int(10),
+        );
+    }
+
+    #[test]
+    fn control_with_nested() {
+        assert_eq!(
+            ev("with { a = 1; }; with { b = 2; }; a + b"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn control_let_simple_and_multiple() {
+        assert_eq!(ev("let x = 5; in x"), Value::Int(5));
+        assert_eq!(ev("let x = 1; y = 2; z = 3; in x + y + z"), Value::Int(6));
+    }
+
+    #[test]
+    fn control_let_shadow_outer() {
+        assert_eq!(
+            ev("let x = 1; in let x = 2; in x"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn control_let_recursive_reference() {
+        assert_eq!(ev("let a = 1; b = a + 1; in b"), Value::Int(2));
+        assert_eq!(ev("let a = 1; b = a + 1; c = b + 1; in c"), Value::Int(3));
+    }
+
+    #[test]
+    fn control_nested_let_expression() {
+        assert_eq!(
+            ev("let a = let b = 1; in b; in a"),
+            Value::Int(1),
+        );
+        assert_eq!(
+            ev("let a = let b = 10; in b + 5; in a * 2"),
+            Value::Int(30),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 4. FUNCTIONS — COMPLETE COVERAGE
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn func_identity_lambda() {
+        assert_eq!(ev("(x: x) 42"), Value::Int(42));
+        assert_eq!(ev(r#"(x: x) "hello""#), Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn func_curried_two_args() {
+        assert_eq!(ev("(x: y: x + y) 3 4"), Value::Int(7));
+    }
+
+    #[test]
+    fn func_curried_three_args() {
+        assert_eq!(ev("(a: b: c: a + b + c) 1 2 3"), Value::Int(6));
+    }
+
+    #[test]
+    fn func_formals_basic() {
+        assert_eq!(ev("({ a, b }: a + b) { a = 3; b = 7; }"), Value::Int(10));
+    }
+
+    #[test]
+    fn func_formals_with_defaults() {
+        assert_eq!(ev("({ a, b ? 10 }: a + b) { a = 5; }"), Value::Int(15));
+        // Providing the default-able argument overrides the default
+        assert_eq!(ev("({ a, b ? 10 }: a + b) { a = 5; b = 20; }"), Value::Int(25));
+    }
+
+    #[test]
+    fn func_formals_with_ellipsis() {
+        assert_eq!(ev("({ a, ... }: a) { a = 1; b = 2; c = 3; }"), Value::Int(1));
+    }
+
+    #[test]
+    fn func_named_formals_at_before() {
+        // args @ { a, b }: ...
+        assert_eq!(
+            ev("(args @ { a, b }: args.a + args.b) { a = 3; b = 4; }"),
+            Value::Int(7),
+        );
+    }
+
+    #[test]
+    fn func_named_formals_at_after() {
+        // { a, b } @ args: ...
+        assert_eq!(
+            ev("({ a, b } @ args: args.a + args.b) { a = 10; b = 20; }"),
+            Value::Int(30),
+        );
+    }
+
+    #[test]
+    fn func_nested_application() {
+        // Explicit parenthesized application
+        assert_eq!(ev("((x: y: x * y) 3) 4"), Value::Int(12));
+    }
+
+    #[test]
+    fn func_higher_order_map() {
+        assert_eq!(
+            ev("builtins.map (x: x * 2) [1 2 3]"),
+            Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
+        );
+    }
+
+    #[test]
+    fn func_higher_order_filter() {
+        assert_eq!(
+            ev("builtins.filter (x: x > 2) [1 2 3 4 5]"),
+            Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+        );
+    }
+
+    #[test]
+    fn func_higher_order_foldl() {
+        // Sum of list via foldl'
+        assert_eq!(
+            ev("builtins.foldl' (acc: x: acc + x) 0 [1 2 3 4]"),
+            Value::Int(10),
+        );
+    }
+
+    #[test]
+    fn func_as_attrset_value() {
+        assert_eq!(
+            ev("let s = { f = x: x + 1; }; in s.f 5"),
+            Value::Int(6),
+        );
+    }
+
+    #[test]
+    fn func_immediate_application() {
+        assert_eq!(ev("(x: x * x) 7"), Value::Int(49));
+    }
+
+    #[test]
+    fn func_in_let_binding() {
+        assert_eq!(
+            ev("let double = x: x * 2; in double 21"),
+            Value::Int(42),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 5. ATTRIBUTE SETS — COMPLETE COVERAGE
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn attrs_empty_set() {
+        let v = ev("{}");
+        if let Value::Attrs(attrs) = v {
+            assert!(attrs.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn attrs_simple() {
+        assert_eq!(ev("{ a = 1; }.a"), Value::Int(1));
+    }
+
+    #[test]
+    fn attrs_nested_access() {
+        assert_eq!(ev("{ a = { b = { c = 42; }; }; }.a.b.c"), Value::Int(42));
+    }
+
+    #[test]
+    fn attrs_recursive_set() {
+        assert_eq!(ev("(rec { a = 1; b = a + 1; c = b + 1; }).c"), Value::Int(3));
+    }
+
+    #[test]
+    fn attrs_update_disjoint() {
+        let v = ev("{ a = 1; } // { b = 2; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.len(), 2);
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn attrs_update_override() {
+        assert_eq!(ev("({ a = 1; } // { a = 2; }).a"), Value::Int(2));
+    }
+
+    #[test]
+    fn attrs_has_attr_operator() {
+        assert_eq!(ev("{ a = 1; } ? a"), Value::Bool(true));
+        assert_eq!(ev("{ a = 1; } ? b"), Value::Bool(false));
+    }
+
+    #[test]
+    fn attrs_select_with_default() {
+        assert_eq!(ev("{ a = 1; }.a or 99"), Value::Int(1));
+        assert_eq!(ev("{}.missing or 99"), Value::Int(99));
+        assert_eq!(ev("{ a = 1; }.b or 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn attrs_nested_attr_path_in_binding() {
+        // { a.b = 1; } creates { a = { b = 1; }; }
+        assert_eq!(ev("{ a.b = 1; }.a.b"), Value::Int(1));
+    }
+
+    #[test]
+    fn attrs_inherit_from_scope() {
+        assert_eq!(ev("let x = 1; y = 2; in { inherit x y; }.x"), Value::Int(1));
+        assert_eq!(ev("let x = 1; y = 2; in { inherit x y; }.y"), Value::Int(2));
+    }
+
+    #[test]
+    fn attrs_inherit_from_expr() {
+        assert_eq!(
+            ev("{ inherit ({ a = 42; b = 10; }) a; }.a"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn attrs_dynamic_attr_name() {
+        assert_eq!(
+            ev(r#"let name = "x"; in { ${name} = 42; }.x"#),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn attrs_attr_names_sorted() {
+        assert_eq!(
+            ev("builtins.attrNames { z = 1; m = 2; a = 3; }"),
+            Value::List(vec![
+                Value::String("a".to_string()),
+                Value::String("m".to_string()),
+                Value::String("z".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn attrs_attr_values_follow_key_order() {
+        // BTreeMap iteration order: a=1, b=2, c=3
+        assert_eq!(
+            ev("builtins.attrValues { c = 3; a = 1; b = 2; }"),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn attrs_update_is_shallow() {
+        // // is a shallow merge; nested attrs are replaced, not merged
+        assert_eq!(
+            ev("({ a = { x = 1; }; } // { a = { y = 2; }; }).a ? x"),
+            Value::Bool(false),
+        );
+        assert_eq!(
+            ev("({ a = { x = 1; }; } // { a = { y = 2; }; }).a.y"),
+            Value::Int(2),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 6. LISTS — COMPLETE COVERAGE
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn list_empty() {
+        assert_eq!(ev("[]"), Value::List(vec![]));
+    }
+
+    #[test]
+    fn list_single_element() {
+        assert_eq!(ev("[1]"), Value::List(vec![Value::Int(1)]));
+    }
+
+    #[test]
+    fn list_mixed_types() {
+        assert_eq!(
+            ev(r#"[1 "two" true null]"#),
+            Value::List(vec![
+                Value::Int(1),
+                Value::String("two".to_string()),
+                Value::Bool(true),
+                Value::Null,
+            ]),
+        );
+    }
+
+    #[test]
+    fn list_nested() {
+        assert_eq!(
+            ev("[[1 2] [3 4]]"),
+            Value::List(vec![
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+            ]),
+        );
+    }
+
+    #[test]
+    fn list_concat_operator() {
+        assert_eq!(
+            ev("[1] ++ [2] ++ [3]"),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn list_builtins_length() {
+        assert_eq!(ev("builtins.length [1 2 3]"), Value::Int(3));
+        assert_eq!(ev("builtins.length []"), Value::Int(0));
+    }
+
+    #[test]
+    fn list_builtins_elem_at() {
+        assert_eq!(ev("builtins.elemAt [10 20 30] 0"), Value::Int(10));
+        assert_eq!(ev("builtins.elemAt [10 20 30] 1"), Value::Int(20));
+        assert_eq!(ev("builtins.elemAt [10 20 30] 2"), Value::Int(30));
+    }
+
+    #[test]
+    fn list_equality() {
+        assert_eq!(ev("[1 2 3] == [1 2 3]"), Value::Bool(true));
+        assert_eq!(ev("[1 2] == [1 2 3]"), Value::Bool(false));
+        assert_eq!(ev("[] == []"), Value::Bool(true));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 7. STRING INTERPOLATION
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn interp_simple_variable() {
+        assert_eq!(
+            ev(r#"let name = "world"; in "hello ${name}""#),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_nested_expression() {
+        assert_eq!(
+            ev(r#""result: ${builtins.toString (1 + 2)}""#),
+            Value::String("result: 3".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_int_coercion() {
+        // Ints are coerced to string in interpolation
+        assert_eq!(
+            ev(r#"let x = 42; in "count: ${builtins.toString x}""#),
+            Value::String("count: 42".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_multiple() {
+        assert_eq!(
+            ev(r#"let a = "foo"; b = "bar"; in "${a} and ${b}""#),
+            Value::String("foo and bar".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_in_let() {
+        assert_eq!(
+            ev(r#"let x = "world"; in "hello ${x}""#),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_empty_result() {
+        assert_eq!(
+            ev(r#"let x = ""; in "a${x}b""#),
+            Value::String("ab".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_path_in_string_context() {
+        // Paths are coerced to strings in interpolation
+        assert_eq!(
+            ev(r#""path: ${./foo}""#),
+            Value::String("path: ./foo".to_string()),
+        );
+    }
+
+    #[test]
+    fn interp_adjacent_interpolations() {
+        assert_eq!(
+            ev(r#"let a = "x"; b = "y"; in "${a}${b}""#),
+            Value::String("xy".to_string()),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 8. BUILTINS — VERIFY ALL MAJOR ONES
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn builtins_map_filter_foldl() {
+        // map
+        assert_eq!(
+            ev("builtins.map (x: x + 10) [1 2 3]"),
+            Value::List(vec![Value::Int(11), Value::Int(12), Value::Int(13)]),
+        );
+        // filter
+        assert_eq!(
+            ev("builtins.filter (x: x > 1) [1 2 3]"),
+            Value::List(vec![Value::Int(2), Value::Int(3)]),
+        );
+        // foldl' — product
+        assert_eq!(
+            ev("builtins.foldl' (a: b: a * b) 1 [2 3 4]"),
+            Value::Int(24),
+        );
+    }
+
+    #[test]
+    fn builtins_map_attrs() {
+        assert_eq!(
+            ev("(builtins.mapAttrs (name: value: value * 2) { a = 1; b = 2; }).a"),
+            Value::Int(2),
+        );
+        assert_eq!(
+            ev("(builtins.mapAttrs (name: value: value * 2) { a = 1; b = 2; }).b"),
+            Value::Int(4),
+        );
+    }
+
+    #[test]
+    fn builtins_list_to_attrs() {
+        assert_eq!(
+            ev(r#"(builtins.listToAttrs [{ name = "x"; value = 1; } { name = "y"; value = 2; }]).x"#),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn builtins_concat_map() {
+        assert_eq!(
+            ev("builtins.concatMap (x: [x (x * 2)]) [1 2 3]"),
+            Value::List(vec![
+                Value::Int(1), Value::Int(2),
+                Value::Int(2), Value::Int(4),
+                Value::Int(3), Value::Int(6),
+            ]),
+        );
+    }
+
+    #[test]
+    fn builtins_concat_lists() {
+        assert_eq!(
+            ev("builtins.concatLists [[1 2] [3] [4 5]]"),
+            Value::List(vec![
+                Value::Int(1), Value::Int(2), Value::Int(3),
+                Value::Int(4), Value::Int(5),
+            ]),
+        );
+    }
+
+    #[test]
+    fn builtins_concat_strings_sep() {
+        assert_eq!(
+            ev(r#"builtins.concatStringsSep ", " ["a" "b" "c"]"#),
+            Value::String("a, b, c".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.concatStringsSep "" ["x" "y"]"#),
+            Value::String("xy".to_string()),
+        );
+    }
+
+    #[test]
+    fn builtins_replace_strings() {
+        assert_eq!(
+            ev(r#"builtins.replaceStrings ["o"] ["0"] "foobar""#),
+            Value::String("f00bar".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.replaceStrings ["hello"] ["goodbye"] "hello world""#),
+            Value::String("goodbye world".to_string()),
+        );
+    }
+
+    #[test]
+    fn builtins_has_prefix_has_suffix() {
+        assert_eq!(ev(r#"builtins.hasPrefix "he" "hello""#), Value::Bool(true));
+        assert_eq!(ev(r#"builtins.hasPrefix "xx" "hello""#), Value::Bool(false));
+        assert_eq!(ev(r#"builtins.hasSuffix "lo" "hello""#), Value::Bool(true));
+        assert_eq!(ev(r#"builtins.hasSuffix "xx" "hello""#), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_all_any() {
+        assert_eq!(ev("builtins.all (x: x > 0) [1 2 3]"), Value::Bool(true));
+        assert_eq!(ev("builtins.all (x: x > 1) [1 2 3]"), Value::Bool(false));
+        assert_eq!(ev("builtins.any (x: x > 2) [1 2 3]"), Value::Bool(true));
+        assert_eq!(ev("builtins.any (x: x > 5) [1 2 3]"), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_sort() {
+        assert_eq!(
+            ev("builtins.sort (a: b: a < b) [3 1 2]"),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn builtins_remove_attrs() {
+        let v = ev(r#"builtins.removeAttrs { a = 1; b = 2; c = 3; } ["b" "c"]"#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.len(), 1);
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert!(attrs.get("b").is_none());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_intersect_attrs() {
+        let v = ev("builtins.intersectAttrs { a = 1; b = 2; } { b = 20; c = 30; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.len(), 1);
+            // intersectAttrs returns values from the second set
+            assert_eq!(attrs.get("b"), Some(&Value::Int(20)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_type_of_all_types() {
+        assert_eq!(ev("builtins.typeOf null"), Value::String("null".to_string()));
+        assert_eq!(ev("builtins.typeOf true"), Value::String("bool".to_string()));
+        assert_eq!(ev("builtins.typeOf 42"), Value::String("int".to_string()));
+        assert_eq!(ev("builtins.typeOf 3.14"), Value::String("float".to_string()));
+        assert_eq!(ev(r#"builtins.typeOf "hi""#), Value::String("string".to_string()));
+        assert_eq!(ev("builtins.typeOf [1]"), Value::String("list".to_string()));
+        assert_eq!(ev("builtins.typeOf {}"), Value::String("set".to_string()));
+        assert_eq!(ev("builtins.typeOf (x: x)"), Value::String("lambda".to_string()));
+    }
+
+    #[test]
+    fn builtins_is_type_checks() {
+        assert_eq!(ev("builtins.isNull null"), Value::Bool(true));
+        assert_eq!(ev("builtins.isNull 0"), Value::Bool(false));
+        assert_eq!(ev("builtins.isInt 42"), Value::Bool(true));
+        assert_eq!(ev("builtins.isInt 3.14"), Value::Bool(false));
+        assert_eq!(ev("builtins.isBool true"), Value::Bool(true));
+        assert_eq!(ev("builtins.isBool 1"), Value::Bool(false));
+        assert_eq!(ev(r#"builtins.isString "x""#), Value::Bool(true));
+        assert_eq!(ev("builtins.isString 1"), Value::Bool(false));
+        assert_eq!(ev("builtins.isList []"), Value::Bool(true));
+        assert_eq!(ev("builtins.isList {}"), Value::Bool(false));
+        assert_eq!(ev("builtins.isAttrs {}"), Value::Bool(true));
+        assert_eq!(ev("builtins.isAttrs []"), Value::Bool(false));
+        assert_eq!(ev("builtins.isFunction (x: x)"), Value::Bool(true));
+        assert_eq!(ev("builtins.isFunction 1"), Value::Bool(false));
+        assert_eq!(ev("builtins.isFloat 3.14"), Value::Bool(true));
+        assert_eq!(ev("builtins.isFloat 1"), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_to_json_from_json_roundtrip() {
+        // int roundtrip
+        assert_eq!(ev("builtins.fromJSON (builtins.toJSON 42)"), Value::Int(42));
+        // string roundtrip
+        assert_eq!(
+            ev(r#"builtins.fromJSON (builtins.toJSON "hello")"#),
+            Value::String("hello".to_string()),
+        );
+        // list roundtrip
+        assert_eq!(
+            ev("builtins.fromJSON (builtins.toJSON [1 2 3])"),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+        // null roundtrip
+        assert_eq!(ev("builtins.fromJSON (builtins.toJSON null)"), Value::Null);
+        // bool roundtrip
+        assert_eq!(ev("builtins.fromJSON (builtins.toJSON true)"), Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_to_string_various() {
+        assert_eq!(ev("builtins.toString 42"), Value::String("42".to_string()));
+        assert_eq!(ev("builtins.toString true"), Value::String("1".to_string()));
+        assert_eq!(ev("builtins.toString false"), Value::String("".to_string()));
+        assert_eq!(ev("builtins.toString null"), Value::String("".to_string()));
+        assert_eq!(ev(r#"builtins.toString "hello""#), Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn builtins_function_args() {
+        let v = ev("builtins.functionArgs ({ a, b ? 1 }: a)");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Bool(false))); // no default
+            assert_eq!(attrs.get("b"), Some(&Value::Bool(true)));  // has default
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_gen_list() {
+        assert_eq!(
+            ev("builtins.genList (x: x * x) 5"),
+            Value::List(vec![
+                Value::Int(0), Value::Int(1), Value::Int(4),
+                Value::Int(9), Value::Int(16),
+            ]),
+        );
+        assert_eq!(ev("builtins.genList (x: x) 0"), Value::List(vec![]));
+    }
+
+    #[test]
+    fn builtins_elem() {
+        assert_eq!(ev("builtins.elem 2 [1 2 3]"), Value::Bool(true));
+        assert_eq!(ev("builtins.elem 5 [1 2 3]"), Value::Bool(false));
+        assert_eq!(ev("builtins.elem 1 []"), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_head_tail() {
+        assert_eq!(ev("builtins.head [10 20 30]"), Value::Int(10));
+        assert_eq!(
+            ev("builtins.tail [10 20 30]"),
+            Value::List(vec![Value::Int(20), Value::Int(30)]),
+        );
+    }
+
+    #[test]
+    fn builtins_string_length() {
+        assert_eq!(ev(r#"builtins.stringLength "hello""#), Value::Int(5));
+        assert_eq!(ev(r#"builtins.stringLength """#), Value::Int(0));
+        assert_eq!(ev(r#"builtins.stringLength "abc def""#), Value::Int(7));
+    }
+
+    #[test]
+    fn builtins_ceil_floor() {
+        assert_eq!(ev("builtins.ceil 2.3"), Value::Int(3));
+        assert_eq!(ev("builtins.ceil 2.0"), Value::Int(2));
+        assert_eq!(ev("builtins.floor 2.9"), Value::Int(2));
+        assert_eq!(ev("builtins.floor 2.0"), Value::Int(2));
+        // Int coercion: ceil/floor on int should work via as_float()
+        assert_eq!(ev("builtins.ceil 5"), Value::Int(5));
+        assert_eq!(ev("builtins.floor 5"), Value::Int(5));
+    }
+
+    #[test]
+    fn builtins_try_eval() {
+        let v = ev("builtins.tryEval 42");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("success"), Some(&Value::Bool(true)));
+            assert_eq!(attrs.get("value"), Some(&Value::Int(42)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_throw() {
+        let result = eval(r#"builtins.throw "oops""#);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("oops"));
+    }
+
+    #[test]
+    fn builtins_seq_deep_seq() {
+        // seq forces first arg, returns second
+        assert_eq!(ev("builtins.seq 1 42"), Value::Int(42));
+        // deepSeq similarly
+        assert_eq!(ev("builtins.deepSeq [1 2 3] 99"), Value::Int(99));
+    }
+
+    #[test]
+    fn builtins_current_system() {
+        let v = ev("builtins.currentSystem");
+        if let Value::String(s) = v {
+            // Should be a valid system string
+            assert!(
+                s == "aarch64-darwin"
+                    || s == "x86_64-darwin"
+                    || s == "aarch64-linux"
+                    || s == "x86_64-linux",
+                "unexpected system: {s}",
+            );
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 9. REAL-WORLD NIXPKGS PATTERNS
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn pattern_mkif_like() {
+        // lib.mkIf pattern: if condition then { key = value; } else {}
+        assert_eq!(
+            ev("(if true then { x = 1; } else {}).x"),
+            Value::Int(1),
+        );
+        let v = ev("if false then { x = 1; } else {}");
+        if let Value::Attrs(attrs) = v {
+            assert!(attrs.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn pattern_optional_attrs() {
+        // lib.optionalAttrs pattern
+        assert_eq!(
+            ev("let optionalAttrs = cond: attrs: if cond then attrs else {}; in (optionalAttrs true { a = 1; }).a"),
+            Value::Int(1),
+        );
+        let v = ev("let optionalAttrs = cond: attrs: if cond then attrs else {}; in optionalAttrs false { a = 1; }");
+        if let Value::Attrs(attrs) = v {
+            assert!(attrs.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn pattern_filter_attrs_via_remove() {
+        // lib.filterAttrs pattern via removeAttrs
+        assert_eq!(
+            ev(r#"(builtins.removeAttrs { a = 1; b = 2; c = 3; } ["b"]).a"#),
+            Value::Int(1),
+        );
+        assert_eq!(
+            ev(r#"(builtins.removeAttrs { a = 1; b = 2; c = 3; } ["b"]) ? b"#),
+            Value::Bool(false),
+        );
+    }
+
+    #[test]
+    fn pattern_override() {
+        // default // overrides pattern
+        let v = ev(r#"
+            let
+                defaults = { debug = false; port = 8080; host = "localhost"; };
+                overrides = { debug = true; port = 9090; };
+            in defaults // overrides
+        "#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("debug"), Some(&Value::Bool(true)));
+            assert_eq!(attrs.get("port"), Some(&Value::Int(9090)));
+            assert_eq!(attrs.get("host"), Some(&Value::String("localhost".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    #[ignore = "functor (__functor) pattern not implemented"]
+    fn pattern_functor() {
+        // { __functor = self: x: self.value + x; value = 10; } 5
+        assert_eq!(
+            ev("let s = { __functor = self: x: self.value + x; value = 10; }; in s 5"),
+            Value::Int(15),
+        );
+    }
+
+    #[test]
+    fn pattern_platform_check() {
+        // Check pattern: if builtins.currentSystem == "..." then ... else ...
+        let v = ev(r#"if builtins.currentSystem == "aarch64-darwin" then "arm" else "other""#);
+        // We just verify it evaluates without error and produces a string
+        if let Value::String(_) = v {
+            // ok
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn pattern_recursive_overlay_lambda_structure() {
+        // Test the lambda structure of an overlay (self: super: { ... })
+        let v = ev("let overlay = self: super: { pkg = 42; }; in overlay {} {}");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("pkg"), Some(&Value::Int(42)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn pattern_call_package_simplified() {
+        // Simplified callPackage: f: f { inherit lib; }
+        assert_eq!(
+            ev("let callPkg = f: f { lib = { id = x: x; }; }; lib = { id = x: x; }; in callPkg ({ lib }: lib.id 42)"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn pattern_derivation_like_attrset() {
+        let v = ev(r#"{ type = "derivation"; name = "hello"; system = builtins.currentSystem; builder = "/bin/sh"; }"#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("type"), Some(&Value::String("derivation".to_string())));
+            assert_eq!(attrs.get("name"), Some(&Value::String("hello".to_string())));
+            assert_eq!(attrs.get("builder"), Some(&Value::String("/bin/sh".to_string())));
+            // system should be a string
+            assert!(matches!(attrs.get("system"), Some(Value::String(_))));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn pattern_module_system_simplified() {
+        // Simplified NixOS module evaluation
+        assert_eq!(
+            ev(r#"
+                let
+                    eval = m: m { config = {}; lib = { mkDefault = x: x; }; };
+                in eval ({ config, lib }: { result = lib.mkDefault 42; })
+            "#),
+            {
+                let mut attrs = NixAttrs::new();
+                attrs.insert("result".to_string(), Value::Int(42));
+                Value::Attrs(attrs)
+            },
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 10. ERROR HANDLING
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn error_undefined_variable() {
+        let result = eval("nonexistent_var");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("undefined variable") || msg.contains("nonexistent_var"));
+    }
+
+    #[test]
+    fn error_type_mismatch_arithmetic() {
+        let result = eval(r#"1 + "hello""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_missing_attribute() {
+        let result = eval("{}.nonexistent");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("nonexistent") || msg.contains("not found"));
+    }
+
+    #[test]
+    fn error_division_by_zero() {
+        assert!(eval("1 / 0").is_err());
+        assert!(eval("100 / 0").is_err());
+    }
+
+    #[test]
+    fn error_missing_required_function_arg() {
+        let result = eval("({ a, b }: a + b) { a = 1; }");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("missing argument"));
+    }
+
+    #[test]
+    fn error_unexpected_function_arg() {
+        let result = eval("({ a }: a) { a = 1; b = 2; }");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("unexpected argument"));
+    }
+
+    #[test]
+    fn error_assertion_failure() {
+        assert!(eval("assert false; 1").is_err());
+        assert!(eval("assert 1 == 2; 1").is_err());
+    }
+
+    #[test]
+    #[ignore = "infinite recursion detection not implemented (would loop forever)"]
+    fn error_infinite_recursion() {
+        let result = eval("let x = x; in x");
+        assert!(result.is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ADDITIONAL COVERAGE: edge cases and integration
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn integration_let_with_function_returning_attrset() {
+        assert_eq!(
+            ev("let mkPkg = name: { inherit name; version = 1; }; in (mkPkg \"hello\").name"),
+            Value::String("hello".to_string()),
+        );
+    }
+
+    #[test]
+    fn integration_chained_updates() {
+        assert_eq!(
+            ev("({ a = 1; } // { b = 2; } // { c = 3; }).c"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn integration_map_over_attrnames() {
+        // Common nixpkgs pattern: map over attrNames
+        assert_eq!(
+            ev(r#"
+                let
+                    set = { a = 1; b = 2; };
+                    names = builtins.attrNames set;
+                in builtins.length names
+            "#),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn integration_compose_functions() {
+        // Function composition
+        assert_eq!(
+            ev("let compose = f: g: x: f (g x); double = x: x * 2; inc = x: x + 1; in compose double inc 5"),
+            Value::Int(12), // (5 + 1) * 2
+        );
+    }
+
+    #[test]
+    fn integration_recursive_list_building() {
+        // Build a list using genList and map
+        assert_eq!(
+            ev("builtins.map (x: x * x) (builtins.genList (x: x + 1) 4)"),
+            Value::List(vec![Value::Int(1), Value::Int(4), Value::Int(9), Value::Int(16)]),
+        );
+    }
+
+    #[test]
+    fn integration_attrset_from_list() {
+        // Convert list to attrset via listToAttrs + map
+        let v = ev(r#"
+            builtins.listToAttrs (builtins.map (x: { name = x; value = true; }) ["a" "b" "c"])
+        "#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Bool(true)));
+            assert_eq!(attrs.get("b"), Some(&Value::Bool(true)));
+            assert_eq!(attrs.get("c"), Some(&Value::Bool(true)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn integration_nested_with_and_let() {
+        assert_eq!(
+            ev("let x = 10; in with { y = 20; }; x + y"),
+            Value::Int(30),
+        );
+    }
+
+    #[test]
+    fn integration_complex_pattern_match() {
+        // Complex function with defaults, ellipsis, and @ pattern
+        assert_eq!(
+            ev("(args @ { a, b ? 5, ... }: a + b + (if args ? c then args.c else 0)) { a = 1; c = 10; }"),
+            Value::Int(16), // 1 + 5 + 10
+        );
+    }
+
+    #[test]
+    fn integration_substring() {
+        assert_eq!(
+            ev(r#"builtins.substring 0 5 "hello world""#),
+            Value::String("hello".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.substring 6 5 "hello world""#),
+            Value::String("world".to_string()),
+        );
+    }
+
+    #[test]
+    fn integration_has_attr_on_nested() {
+        // ? on nested attr paths
+        assert_eq!(ev("{ a = { b = 1; }; } ? a"), Value::Bool(true));
+        assert_eq!(
+            ev("({ a = { b = 1; }; }.a) ? b"),
+            Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn integration_cat_attrs() {
+        assert_eq!(
+            ev(r#"builtins.catAttrs "x" [{ x = 1; } { y = 2; } { x = 3; }]"#),
+            Value::List(vec![Value::Int(1), Value::Int(3)]),
+        );
+    }
+
+    #[test]
+    fn integration_get_attr_builtin() {
+        assert_eq!(
+            ev(r#"builtins.getAttr "a" { a = 42; b = 10; }"#),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn integration_has_attr_builtin() {
+        assert_eq!(
+            ev(r#"builtins.hasAttr "a" { a = 1; }"#),
+            Value::Bool(true),
+        );
+        assert_eq!(
+            ev(r#"builtins.hasAttr "z" { a = 1; }"#),
+            Value::Bool(false),
+        );
+    }
+
+    #[test]
+    fn integration_is_path() {
+        assert_eq!(ev("builtins.isPath ./foo"), Value::Bool(true));
+        assert_eq!(ev("builtins.isPath 42"), Value::Bool(false));
+    }
+
+    #[test]
+    fn integration_builtins_trace() {
+        // trace prints the first arg (as debug) and returns the second
+        assert_eq!(ev(r#"builtins.trace "debug msg" 42"#), Value::Int(42));
+    }
+
+    #[test]
+    fn integration_builtins_split() {
+        assert_eq!(
+            ev(r#"builtins.split "/" "a/b/c""#),
+            Value::List(vec![
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("c".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn integration_deeply_nested_let() {
+        // Deeply nested let-in expressions
+        assert_eq!(
+            ev("let a = let b = let c = 10; in c * 2; in b + 1; in a"),
+            Value::Int(21),
+        );
+    }
+
+    #[test]
+    fn integration_if_in_attrset_value() {
+        assert_eq!(
+            ev("{ x = if true then 1 else 2; }.x"),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn integration_lambda_in_list() {
+        // Store lambdas in a list and apply them
+        assert_eq!(
+            ev("let fs = [(x: x + 1) (x: x * 2)]; in (builtins.elemAt fs 0) 5"),
+            Value::Int(6),
+        );
+        assert_eq!(
+            ev("let fs = [(x: x + 1) (x: x * 2)]; in (builtins.elemAt fs 1) 5"),
+            Value::Int(10),
+        );
+    }
+
+    #[test]
+    fn integration_nixpkgs_lib_id() {
+        // lib.id = x: x
+        assert_eq!(
+            ev("let lib = { id = x: x; const = a: b: a; }; in lib.id 42"),
+            Value::Int(42),
+        );
+        assert_eq!(
+            ev("let lib = { id = x: x; const = a: b: a; }; in lib.const 1 2"),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn integration_multiple_inherit() {
+        assert_eq!(
+            ev("let a = 1; b = 2; c = 3; in { inherit a b c; }.b"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn integration_rec_set_with_builtins() {
+        assert_eq!(
+            ev(r#"(rec { a = "hello"; b = builtins.stringLength a; }).b"#),
+            Value::Int(5),
+        );
+    }
 }
