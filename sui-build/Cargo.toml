@@ -1,0 +1,20 @@
+[package]
+name = "sui-build"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Nix builder with sandboxed execution"
+
+[dependencies]
+sui-compat.workspace = true
+sui-store.workspace = true
+sui-eval.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

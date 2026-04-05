@@ -1,0 +1,29 @@
+//! Nix daemon replacement — worker protocol server.
+//!
+//! Clean-room implementation of the Nix worker protocol over Unix sockets.
+//!
+//! # Architecture
+//!
+//! ```text
+//! UnixListener (server.rs)
+//!     └── per-connection task
+//!             └── Connection (connection.rs)
+//!                     ├── handshake()   — magic + version negotiation
+//!                     └── run()         — opcode dispatch loop
+//! ```
+//!
+//! The daemon listens on a Unix socket (default: `/nix/var/nix/daemon-socket/socket`),
+//! accepts client connections, and handles the binary worker protocol. Each
+//! connection gets a dedicated tokio task.
+//!
+//! # Trust
+//!
+//! Trust is determined from Unix peer credentials (UID). Root and the daemon's
+//! own UID are considered trusted.
+
+pub mod connection;
+pub mod server;
+pub mod trust;
+
+pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH};
+pub use trust::TrustLevel;

@@ -1,0 +1,21 @@
+[package]
+name = "sui-orchestrate"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "System and fleet orchestration for Nix deployments"
+
+[dependencies]
+sui-eval.workspace = true
+sui-store.workspace = true
+sui-build.workspace = true
+tokio = { workspace = true, features = ["process"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2"

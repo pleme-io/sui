@@ -1,0 +1,28 @@
+[spec]
+path = "spec/openapi.yaml"
+
+[output]
+dir = "generated"
+
+[mcp]
+targets = ["mcp-rust"]
+name = "sui"
+description = "MCP server for Sui Nix management"
+
+[completions]
+targets = ["skim-tab", "fish"]
+name = "sui"
+
+[iac]
+targets = ["terraform", "pulumi"]
+provider_name = "sui"
+
+[sdks]
+targets = ["rust", "python", "typescript", "go"]
+name = "sui"
+
+[schemas]
+targets = ["json-schema"]
+
+[docs]
+targets = ["markdown"]

@@ -1,0 +1,8 @@
+/target
+*.swp
+*.swo
+.direnv/
+.envrc
+result
+result-*
+generated/

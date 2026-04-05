@@ -1,0 +1,50 @@
+syntax = "proto3";
+package sui.v1;
+
+service BuilderService {
+  rpc Build(BuildRequest) returns (BuildResponse);
+  rpc GetBuildStatus(GetBuildStatusRequest) returns (BuildResponse);
+  rpc StreamBuildLog(GetBuildStatusRequest) returns (stream LogLine);
+  rpc CancelBuild(CancelBuildRequest) returns (CancelBuildResponse);
+}
+
+message BuildRequest {
+  string installable = 1;
+  optional string system = 2;
+  int32 max_jobs = 3;
+  bool keep_going = 4;
+}
+
+message BuildResponse {
+  string id = 1;
+  BuildState state = 2;
+  repeated string output_paths = 3;
+  optional int64 started_at = 4;
+  optional int64 completed_at = 5;
+}
+
+enum BuildState {
+  BUILD_STATE_UNSPECIFIED = 0;
+  BUILD_STATE_PENDING = 1;
+  BUILD_STATE_BUILDING = 2;
+  BUILD_STATE_SUCCEEDED = 3;
+  BUILD_STATE_FAILED = 4;
+  BUILD_STATE_CANCELLED = 5;
+}
+
+message GetBuildStatusRequest {
+  string build_id = 1;
+}
+
+message LogLine {
+  string line = 1;
+  int64 timestamp = 2;
+}
+
+message CancelBuildRequest {
+  string build_id = 1;
+}
+
+message CancelBuildResponse {
+  bool cancelled = 1;
+}

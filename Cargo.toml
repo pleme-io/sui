@@ -1,0 +1,124 @@
+[workspace]
+members = [
+    "sui-compat",
+    "sui-store",
+    "sui-eval",
+    "sui-build",
+    "sui-daemon",
+    "sui-orchestrate",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT"
+repository = "https://github.com/pleme-io/sui"
+
+[workspace.dependencies]
+# Internal crates
+sui-compat = { path = "sui-compat" }
+sui-store = { path = "sui-store" }
+sui-eval = { path = "sui-eval" }
+sui-build = { path = "sui-build" }
+sui-daemon = { path = "sui-daemon" }
+sui-orchestrate = { path = "sui-orchestrate" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# API stack
+axum = { version = "0.8", features = ["macros"] }
+async-graphql = { version = "7.0", features = ["chrono"] }
+async-graphql-axum = "7.0"
+tonic = "0.12"
+prost = "0.13"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Database
+sea-orm = { version = "1", features = ["runtime-tokio-rustls", "sqlx-sqlite", "macros"] }
+sea-orm-migration = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Crypto
+ed25519-dalek = { version = "2", features = ["std"] }
+sha2 = "0.10"
+blake3 = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP client (for binary cache, fetchers)
+reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
+
+# Config
+figment = { version = "0.10", features = ["yaml", "toml", "env"] }
+
+# Streaming
+tokio-stream = "0.1"
+futures-core = "0.3"
+
+# Testing
+proptest = "1"
+tempfile = "3"
+
+[package]
+name = "sui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust-native Nix replacement with API-first design"
+
+[[bin]]
+name = "sui"
+path = "src/main.rs"
+
+[dependencies]
+sui-compat.workspace = true
+sui-store.workspace = true
+sui-eval.workspace = true
+sui-build.workspace = true
+sui-daemon.workspace = true
+sui-orchestrate.workspace = true
+tokio.workspace = true
+axum.workspace = true
+async-graphql.workspace = true
+async-graphql-axum.workspace = true
+tonic.workspace = true
+prost.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+figment.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio-stream.workspace = true
+futures-core.workspace = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+
+[lints.clippy]
+pedantic = "warn"

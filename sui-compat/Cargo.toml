@@ -1,0 +1,20 @@
+[package]
+name = "sui-compat"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Clean-room Nix format and protocol compatibility layer"
+
+[dependencies]
+ed25519-dalek.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

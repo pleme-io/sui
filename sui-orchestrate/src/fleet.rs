@@ -1,0 +1,364 @@
+//! Fleet deployment orchestration.
+//!
+//! Supports parallel, rolling, and canary deploy strategies.
+
+use std::process::Stdio;
+use tokio::process::Command;
+
+use crate::node::{Node, NodeRegistry, NodeStatus};
+
+/// Deploy strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeployStrategy {
+    /// Deploy to all nodes simultaneously.
+    Parallel,
+    /// Deploy one node at a time, rolling forward.
+    Rolling,
+    /// Deploy to one node first, then the rest if healthy.
+    Canary,
+}
+
+/// Result of a fleet deployment.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeployResult {
+    pub target: String,
+    pub strategy: String,
+    pub total_nodes: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub results: Vec<NodeDeployResult>,
+    pub duration_secs: f64,
+}
+
+/// Per-node deploy result.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeDeployResult {
+    pub hostname: String,
+    pub success: bool,
+    pub log: String,
+    pub duration_secs: f64,
+}
+
+/// Fleet orchestrator.
+pub struct FleetOrchestrator {
+    registry: NodeRegistry,
+}
+
+/// Fleet errors.
+#[derive(Debug, thiserror::Error)]
+pub enum FleetError {
+    #[error("no nodes match target: {0}")]
+    NoNodes(String),
+    #[error("deploy failed on {hostname}: {message}")]
+    DeployFailed { hostname: String, message: String },
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("canary failed — aborting remaining deploys")]
+    CanaryFailed,
+}
+
+impl FleetOrchestrator {
+    pub fn new(registry: NodeRegistry) -> Self {
+        Self { registry }
+    }
+
+    pub fn registry(&self) -> &NodeRegistry {
+        &self.registry
+    }
+
+    pub fn registry_mut(&mut self) -> &mut NodeRegistry {
+        &mut self.registry
+    }
+
+    /// Deploy to a target using the given strategy.
+    pub async fn deploy(
+        &mut self,
+        target: &str,
+        strategy: DeployStrategy,
+        flake_override: Option<&str>,
+    ) -> Result<DeployResult, FleetError> {
+        let start = std::time::Instant::now();
+
+        let nodes: Vec<Node> = self
+            .registry
+            .resolve_target(target)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        if nodes.is_empty() {
+            return Err(FleetError::NoNodes(target.to_string()));
+        }
+
+        // Mark all as deploying
+        for node in &nodes {
+            if let Some(n) = self.registry.get_mut(&node.hostname) {
+                n.status = NodeStatus::Deploying;
+            }
+        }
+
+        let results = match strategy {
+            DeployStrategy::Parallel => self.deploy_parallel(&nodes, flake_override).await,
+            DeployStrategy::Rolling => self.deploy_rolling(&nodes, flake_override).await,
+            DeployStrategy::Canary => self.deploy_canary(&nodes, flake_override).await?,
+        };
+
+        let succeeded = results.iter().filter(|r| r.success).count();
+        let failed = results.iter().filter(|r| !r.success).count();
+
+        // Update node statuses
+        for result in &results {
+            if let Some(n) = self.registry.get_mut(&result.hostname) {
+                n.status = if result.success {
+                    NodeStatus::Online
+                } else {
+                    NodeStatus::Failed
+                };
+                if result.success {
+                    n.last_deployed = Some(chrono::Utc::now().timestamp());
+                }
+            }
+        }
+
+        Ok(DeployResult {
+            target: target.to_string(),
+            strategy: format!("{strategy:?}").to_lowercase(),
+            total_nodes: nodes.len(),
+            succeeded,
+            failed,
+            results,
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Deploy to all nodes in parallel.
+    async fn deploy_parallel(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+    ) -> Vec<NodeDeployResult> {
+        let mut handles = Vec::new();
+        for node in nodes {
+            let n = node.clone();
+            let flake = flake_override.map(String::from);
+            handles.push(tokio::spawn(async move {
+                deploy_single_node(&n, flake.as_deref()).await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(e) => results.push(NodeDeployResult {
+                    hostname: "unknown".to_string(),
+                    success: false,
+                    log: format!("task panicked: {e}"),
+                    duration_secs: 0.0,
+                }),
+            }
+        }
+        results
+    }
+
+    /// Deploy one node at a time.
+    async fn deploy_rolling(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+    ) -> Vec<NodeDeployResult> {
+        let mut results = Vec::new();
+        for node in nodes {
+            let result = deploy_single_node(node, flake_override).await;
+            tracing::info!(
+                "deployed {} — {}",
+                result.hostname,
+                if result.success { "ok" } else { "FAILED" }
+            );
+            results.push(result);
+        }
+        results
+    }
+
+    /// Deploy canary first, then remaining if healthy.
+    async fn deploy_canary(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+    ) -> Result<Vec<NodeDeployResult>, FleetError> {
+        if nodes.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // First node is canary
+        let canary = &nodes[0];
+        let canary_result = deploy_single_node(canary, flake_override).await;
+        tracing::info!(
+            "canary {} — {}",
+            canary_result.hostname,
+            if canary_result.success { "ok" } else { "FAILED" }
+        );
+
+        if !canary_result.success {
+            return Err(FleetError::CanaryFailed);
+        }
+
+        let mut results = vec![canary_result];
+
+        // Deploy remaining in parallel
+        if nodes.len() > 1 {
+            let remaining = self.deploy_parallel(&nodes[1..], flake_override).await;
+            results.extend(remaining);
+        }
+
+        Ok(results)
+    }
+}
+
+/// Deploy to a single node via SSH + nixos-rebuild.
+async fn deploy_single_node(node: &Node, flake_override: Option<&str>) -> NodeDeployResult {
+    let start = std::time::Instant::now();
+    let flake_ref = flake_override.unwrap_or(&node.flake_ref);
+    let target = node.deploy_target();
+
+    // Build the remote rebuild command
+    let rebuild_cmd = if node.system.as_deref() == Some("aarch64-darwin")
+        || node.system.as_deref() == Some("x86_64-darwin")
+    {
+        format!("darwin-rebuild switch --flake {flake_ref}")
+    } else {
+        format!("nixos-rebuild switch --flake {flake_ref}")
+    };
+
+    // For local node, run directly; for remote, use SSH
+    let output = if target == node.hostname && is_local_hostname(target) {
+        Command::new("sh")
+            .args(["-c", &rebuild_cmd])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+    } else {
+        Command::new("ssh")
+            .args(["-o", "StrictHostKeyChecking=accept-new", target, &rebuild_cmd])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+    };
+
+    let duration = start.elapsed().as_secs_f64();
+
+    match output {
+        Ok(out) => NodeDeployResult {
+            hostname: node.hostname.clone(),
+            success: out.status.success(),
+            log: format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            duration_secs: duration,
+        },
+        Err(e) => NodeDeployResult {
+            hostname: node.hostname.clone(),
+            success: false,
+            log: format!("failed to execute: {e}"),
+            duration_secs: duration,
+        },
+    }
+}
+
+fn is_local_hostname(hostname: &str) -> bool {
+    hostname == "localhost"
+        || hostname == "127.0.0.1"
+        || gethostname().is_some_and(|h| h == hostname)
+}
+
+fn gethostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+        if result == 0 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            return Some(String::from_utf8_lossy(&buf[..len]).to_string());
+        }
+    }
+    let _ = buf;
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_registry() -> NodeRegistry {
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("alpha", ".#alpha")
+                .with_ssh("root@10.0.0.1")
+                .with_groups(vec!["prod".to_string()])
+                .with_system("x86_64-linux"),
+        );
+        reg.add(
+            Node::new("beta", ".#beta")
+                .with_ssh("root@10.0.0.2")
+                .with_groups(vec!["prod".to_string()])
+                .with_system("x86_64-linux"),
+        );
+        reg.add(
+            Node::new("gamma", ".#gamma")
+                .with_groups(vec!["staging".to_string()])
+                .with_system("aarch64-darwin"),
+        );
+        reg
+    }
+
+    #[test]
+    fn deploy_strategy_serialization() {
+        let s = serde_json::to_string(&DeployStrategy::Rolling).unwrap();
+        assert_eq!(s, "\"rolling\"");
+        let parsed: DeployStrategy = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed, DeployStrategy::Rolling);
+    }
+
+    #[test]
+    fn fleet_orchestrator_creation() {
+        let reg = test_registry();
+        let orch = FleetOrchestrator::new(reg);
+        assert_eq!(orch.registry().len(), 3);
+    }
+
+    #[test]
+    fn no_nodes_error() {
+        let reg = NodeRegistry::new();
+        let mut orch = FleetOrchestrator::new(reg);
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(
+            orch.deploy("nonexistent", DeployStrategy::Parallel, None),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_result_serialization() {
+        let result = DeployResult {
+            target: "@prod".to_string(),
+            strategy: "rolling".to_string(),
+            total_nodes: 2,
+            succeeded: 2,
+            failed: 0,
+            results: vec![],
+            duration_secs: 5.5,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"succeeded\":2"));
+    }
+
+    #[test]
+    fn local_hostname_detection() {
+        assert!(is_local_hostname("localhost"));
+        assert!(is_local_hostname("127.0.0.1"));
+    }
+}

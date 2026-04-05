@@ -1,0 +1,1001 @@
+openapi: 3.0.3
+info:
+  title: Sui Nix Management API
+  description: |
+    Rust-native Nix replacement API. Exposes every Nix operation via REST, GraphQL, and gRPC.
+    This spec is the source of truth — forge-gen auto-generates SDKs, IaC providers, MCP server,
+    shell completions, and documentation from it.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: store
+    description: Nix store operations (paths, GC, verification)
+  - name: eval
+    description: Nix expression evaluation
+  - name: build
+    description: Derivation building
+  - name: daemon
+    description: Daemon management
+  - name: system
+    description: System operations (rebuild, switch, rollback)
+  - name: fleet
+    description: Fleet orchestration (multi-node deploy)
+  - name: profile
+    description: User profile management
+  - name: cache
+    description: Binary cache operations
+
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      tags: [daemon]
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  # ── Store ──────────────────────────────────────────────
+
+  /api/v1/store/paths:
+    get:
+      operationId: listStorePaths
+      summary: List all valid store paths
+      tags: [store]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of store paths
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/v1/store/path-info/{storePath}:
+    get:
+      operationId: getPathInfo
+      summary: Query information about a store path
+      tags: [store]
+      parameters:
+        - name: storePath
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Store path hash (32-char base32)
+      responses:
+        "200":
+          description: Path info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PathInfo"
+        "404":
+          description: Path not found
+
+  /api/v1/store/closure:
+    post:
+      operationId: computeClosure
+      summary: Compute the closure of store paths
+      tags: [store]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths]
+              properties:
+                paths:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Closure paths
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/v1/store/gc:
+    post:
+      operationId: collectGarbage
+      summary: Run garbage collection
+      tags: [store]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GcRequest"
+      responses:
+        "200":
+          description: GC result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GcResult"
+
+  /api/v1/store/verify:
+    post:
+      operationId: verifyStore
+      summary: Verify store integrity
+      tags: [store]
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResult"
+
+  /api/v1/store/add:
+    post:
+      operationId: addToStore
+      summary: Add a path to the store
+      tags: [store]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Path added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PathInfo"
+
+  # ── Eval ───────────────────────────────────────────────
+
+  /api/v1/eval:
+    post:
+      operationId: evalExpression
+      summary: Evaluate a Nix expression
+      tags: [eval]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvalRequest"
+      responses:
+        "200":
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvalResult"
+
+  /api/v1/eval/flake/{flakeRef}:
+    get:
+      operationId: evalFlake
+      summary: Evaluate a flake reference
+      tags: [eval]
+      parameters:
+        - name: flakeRef
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: attribute
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Flake evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvalResult"
+
+  /api/v1/eval/flake/{flakeRef}/show:
+    get:
+      operationId: flakeShow
+      summary: Show flake outputs
+      tags: [eval]
+      parameters:
+        - name: flakeRef
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Flake output tree
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/eval/flake/{flakeRef}/metadata:
+    get:
+      operationId: flakeMetadata
+      summary: Show flake metadata
+      tags: [eval]
+      parameters:
+        - name: flakeRef
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Flake metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlakeMetadata"
+
+  /api/v1/eval/flake/lock:
+    post:
+      operationId: flakeLock
+      summary: Update flake lock file
+      tags: [eval]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flakeRef:
+                  type: string
+                updateInputs:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Lock file updated
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/eval/search:
+    get:
+      operationId: searchPackages
+      summary: Search flake packages
+      tags: [eval]
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: flakeRef
+          in: query
+          schema:
+            type: string
+            default: nixpkgs
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SearchResult"
+
+  # ── Build ──────────────────────────────────────────────
+
+  /api/v1/build:
+    post:
+      operationId: buildDerivation
+      summary: Build a derivation
+      tags: [build]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildRequest"
+      responses:
+        "202":
+          description: Build started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildStatus"
+
+  /api/v1/build/{buildId}:
+    get:
+      operationId: getBuildStatus
+      summary: Get build status
+      tags: [build]
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Build status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildStatus"
+
+  /api/v1/build/{buildId}/log:
+    get:
+      operationId: getBuildLog
+      summary: Get build log (streaming)
+      tags: [build]
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Build log lines
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/build/{buildId}/cancel:
+    post:
+      operationId: cancelBuild
+      summary: Cancel a running build
+      tags: [build]
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Build cancelled
+
+  # ── Daemon ─────────────────────────────────────────────
+
+  /api/v1/daemon/status:
+    get:
+      operationId: getDaemonStatus
+      summary: Get daemon status
+      tags: [daemon]
+      responses:
+        "200":
+          description: Daemon status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DaemonStatus"
+
+  /api/v1/daemon/connections:
+    get:
+      operationId: listConnections
+      summary: List active daemon connections
+      tags: [daemon]
+      responses:
+        "200":
+          description: Active connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DaemonConnection"
+
+  # ── System ─────────────────────────────────────────────
+
+  /api/v1/system/rebuild:
+    post:
+      operationId: systemRebuild
+      summary: Rebuild and switch system configuration
+      tags: [system]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemRebuildRequest"
+      responses:
+        "202":
+          description: Rebuild started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+
+  /api/v1/system/status:
+    get:
+      operationId: getSystemStatus
+      summary: Get current system status
+      tags: [system]
+      responses:
+        "200":
+          description: System status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+
+  /api/v1/system/generations:
+    get:
+      operationId: listGenerations
+      summary: List system generations
+      tags: [system]
+      responses:
+        "200":
+          description: Generation list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Generation"
+
+  /api/v1/system/rollback:
+    post:
+      operationId: systemRollback
+      summary: Rollback to previous generation
+      tags: [system]
+      responses:
+        "200":
+          description: Rollback complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+
+  # ── Fleet ──────────────────────────────────────────────
+
+  /api/v1/fleet/nodes:
+    get:
+      operationId: listFleetNodes
+      summary: List fleet nodes
+      tags: [fleet]
+      responses:
+        "200":
+          description: Fleet nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FleetNode"
+
+  /api/v1/fleet/deploy:
+    post:
+      operationId: fleetDeploy
+      summary: Deploy to fleet nodes
+      tags: [fleet]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FleetDeployRequest"
+      responses:
+        "202":
+          description: Deploy started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetDeployStatus"
+
+  /api/v1/fleet/status:
+    get:
+      operationId: getFleetStatus
+      summary: Get fleet-wide status
+      tags: [fleet]
+      responses:
+        "200":
+          description: Fleet status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetStatus"
+
+  /api/v1/fleet/rollback:
+    post:
+      operationId: fleetRollback
+      summary: Rollback fleet deployment
+      tags: [fleet]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target:
+                  type: string
+      responses:
+        "200":
+          description: Rollback initiated
+
+  # ── Profile ────────────────────────────────────────────
+
+  /api/v1/profiles:
+    get:
+      operationId: listProfiles
+      summary: List user profiles
+      tags: [profile]
+      responses:
+        "200":
+          description: Profile list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Profile"
+
+  /api/v1/profiles/install:
+    post:
+      operationId: installProfile
+      summary: Install packages to profile
+      tags: [profile]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packages]
+              properties:
+                packages:
+                  type: array
+                  items:
+                    type: string
+                profile:
+                  type: string
+      responses:
+        "200":
+          description: Packages installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /api/v1/profiles/rollback:
+    post:
+      operationId: rollbackProfile
+      summary: Rollback profile to previous generation
+      tags: [profile]
+      responses:
+        "200":
+          description: Profile rolled back
+
+  # ── Cache ──────────────────────────────────────────────
+
+  /api/v1/cache/info:
+    get:
+      operationId: getCacheInfo
+      summary: Get binary cache info
+      tags: [cache]
+      responses:
+        "200":
+          description: Cache info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheInfo"
+
+  /api/v1/cache/push:
+    post:
+      operationId: pushToCache
+      summary: Push store paths to binary cache
+      tags: [cache]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths, cacheUrl]
+              properties:
+                paths:
+                  type: array
+                  items:
+                    type: string
+                cacheUrl:
+                  type: string
+      responses:
+        "200":
+          description: Paths pushed
+
+  /api/v1/cache/sign:
+    post:
+      operationId: signPaths
+      summary: Sign store paths
+      tags: [cache]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths, keyName]
+              properties:
+                paths:
+                  type: array
+                  items:
+                    type: string
+                keyName:
+                  type: string
+      responses:
+        "200":
+          description: Paths signed
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+
+    PathInfo:
+      type: object
+      required: [path, narHash, narSize, references]
+      properties:
+        path:
+          type: string
+        narHash:
+          type: string
+        narSize:
+          type: integer
+          format: int64
+        references:
+          type: array
+          items:
+            type: string
+        deriver:
+          type: string
+        signatures:
+          type: array
+          items:
+            type: string
+        registrationTime:
+          type: integer
+          format: int64
+        contentAddress:
+          type: string
+
+    GcRequest:
+      type: object
+      properties:
+        maxFreed:
+          type: integer
+          format: int64
+          description: Maximum bytes to free (0 = unlimited)
+        deleteOlderThan:
+          type: string
+          description: Delete generations older than this duration (e.g., "30d")
+
+    GcResult:
+      type: object
+      required: [pathsDeleted, bytesFreed]
+      properties:
+        pathsDeleted:
+          type: integer
+        bytesFreed:
+          type: integer
+          format: int64
+
+    VerifyResult:
+      type: object
+      required: [valid, invalid, missing]
+      properties:
+        valid:
+          type: integer
+        invalid:
+          type: integer
+        missing:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    EvalRequest:
+      type: object
+      required: [expression]
+      properties:
+        expression:
+          type: string
+        flakeRef:
+          type: string
+        attribute:
+          type: string
+        pure:
+          type: boolean
+          default: true
+
+    EvalResult:
+      type: object
+      required: [value]
+      properties:
+        value: {}
+        errors:
+          type: array
+          items:
+            type: string
+        drvPath:
+          type: string
+        outPath:
+          type: string
+
+    FlakeMetadata:
+      type: object
+      required: [description, lastModified, locked]
+      properties:
+        description:
+          type: string
+        lastModified:
+          type: integer
+          format: int64
+        locked:
+          type: object
+        resolvedUrl:
+          type: string
+        url:
+          type: string
+
+    SearchResult:
+      type: object
+      required: [attribute, name]
+      properties:
+        attribute:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        description:
+          type: string
+
+    BuildRequest:
+      type: object
+      required: [installable]
+      properties:
+        installable:
+          type: string
+          description: Installable reference (e.g., nixpkgs#hello)
+        system:
+          type: string
+          description: Target system (e.g., x86_64-linux)
+        maxJobs:
+          type: integer
+        keepGoing:
+          type: boolean
+          default: false
+
+    BuildStatus:
+      type: object
+      required: [id, state]
+      properties:
+        id:
+          type: string
+        state:
+          type: string
+          enum: [pending, building, succeeded, failed, cancelled]
+        outputPaths:
+          type: array
+          items:
+            type: string
+        startedAt:
+          type: integer
+          format: int64
+        completedAt:
+          type: integer
+          format: int64
+        logLines:
+          type: array
+          items:
+            type: string
+
+    DaemonStatus:
+      type: object
+      required: [version, storeDir]
+      properties:
+        version:
+          type: string
+        storeDir:
+          type: string
+        activeConnections:
+          type: integer
+        trustedUsers:
+          type: array
+          items:
+            type: string
+        protocolVersion:
+          type: string
+
+    DaemonConnection:
+      type: object
+      required: [id, user, trusted]
+      properties:
+        id:
+          type: string
+        user:
+          type: string
+        trusted:
+          type: boolean
+        connectedAt:
+          type: integer
+          format: int64
+
+    SystemRebuildRequest:
+      type: object
+      properties:
+        flake:
+          type: string
+          description: Flake reference (e.g., .#cid)
+        action:
+          type: string
+          enum: [switch, boot, test, build]
+          default: switch
+        hostname:
+          type: string
+
+    SystemStatus:
+      type: object
+      required: [generation, configPath]
+      properties:
+        generation:
+          type: integer
+          format: int64
+        configPath:
+          type: string
+        bootTime:
+          type: integer
+          format: int64
+        nixVersion:
+          type: string
+        system:
+          type: string
+
+    Generation:
+      type: object
+      required: [number, date, current]
+      properties:
+        number:
+          type: integer
+        date:
+          type: integer
+          format: int64
+        current:
+          type: boolean
+        configurationRevision:
+          type: string
+
+    FleetNode:
+      type: object
+      required: [hostname, status]
+      properties:
+        hostname:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, deploying, failed, unknown]
+        lastDeployed:
+          type: integer
+          format: int64
+        currentGeneration:
+          type: integer
+          format: int64
+        system:
+          type: string
+        flakeRef:
+          type: string
+
+    FleetDeployRequest:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: string
+          description: Node name or @group
+        flake:
+          type: string
+        strategy:
+          type: string
+          enum: [parallel, rolling, canary]
+          default: rolling
+
+    FleetDeployStatus:
+      type: object
+      required: [id, target, status]
+      properties:
+        id:
+          type: string
+        target:
+          type: string
+        status:
+          type: string
+          enum: [pending, deploying, succeeded, failed, rolled_back]
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FleetNode"
+
+    FleetStatus:
+      type: object
+      required: [totalNodes, onlineNodes]
+      properties:
+        totalNodes:
+          type: integer
+        onlineNodes:
+          type: integer
+        deployingNodes:
+          type: integer
+        failedNodes:
+          type: integer
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/FleetNode"
+
+    Profile:
+      type: object
+      required: [name, generation]
+      properties:
+        name:
+          type: string
+        generation:
+          type: integer
+        packages:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: integer
+          format: int64
+
+    CacheInfo:
+      type: object
+      required: [storeDir, priority]
+      properties:
+        storeDir:
+          type: string
+        wantMassQuery:
+          type: boolean
+        priority:
+          type: integer

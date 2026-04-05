@@ -1,0 +1,22 @@
+[package]
+name = "sui-daemon"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Nix daemon replacement (worker protocol server)"
+
+[dependencies]
+sui-compat.workspace = true
+sui-store.workspace = true
+sui-build.workspace = true
+sui-eval.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

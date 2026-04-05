@@ -1,0 +1,72 @@
+syntax = "proto3";
+package sui.v1;
+
+service EvaluatorService {
+  rpc Eval(EvalRequest) returns (EvalResponse);
+  rpc EvalFlake(EvalFlakeRequest) returns (EvalResponse);
+  rpc FlakeShow(FlakeShowRequest) returns (FlakeShowResponse);
+  rpc FlakeMetadata(FlakeMetadataRequest) returns (FlakeMetadataResponse);
+  rpc FlakeLock(FlakeLockRequest) returns (FlakeLockResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+message EvalRequest {
+  string expression = 1;
+  bool pure = 2;
+}
+
+message EvalResponse {
+  string value_json = 1;
+  repeated string errors = 2;
+  optional string drv_path = 3;
+  optional string out_path = 4;
+}
+
+message EvalFlakeRequest {
+  string flake_ref = 1;
+  optional string attribute = 2;
+}
+
+message FlakeShowRequest {
+  string flake_ref = 1;
+}
+
+message FlakeShowResponse {
+  string outputs_json = 1;
+}
+
+message FlakeMetadataRequest {
+  string flake_ref = 1;
+}
+
+message FlakeMetadataResponse {
+  string description = 1;
+  int64 last_modified = 2;
+  string locked_json = 3;
+  string resolved_url = 4;
+}
+
+message FlakeLockRequest {
+  string flake_ref = 1;
+  repeated string update_inputs = 2;
+}
+
+message FlakeLockResponse {
+  string lock_json = 1;
+}
+
+message SearchRequest {
+  string query = 1;
+  string flake_ref = 2;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string attribute = 1;
+  string name = 2;
+  optional string version = 3;
+  optional string description = 4;
+}

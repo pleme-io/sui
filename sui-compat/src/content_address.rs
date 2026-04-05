@@ -1,0 +1,294 @@
+//! Content-addressed store path types.
+//!
+//! Nix supports several content-addressing methods for store paths.
+
+use crate::hash::{HashAlgorithm, NixHash};
+use crate::store_path::{nix_base32_encode, StorePath, StorePathError};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ContentAddressError {
+    #[error("invalid content address format: {0}")]
+    InvalidFormat(String),
+    #[error("store path error: {0}")]
+    StorePath(#[from] StorePathError),
+}
+
+/// Content-addressing method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentAddressMethod {
+    /// Text content (for derivation files and string-to-store).
+    /// Format: `text:<algo>:<hash>`
+    Text,
+    /// Flat file hashing (no NAR wrapping).
+    /// Format: `fixed:out:<algo>:<hash>`
+    Flat,
+    /// Recursive NAR hashing.
+    /// Format: `fixed:out:r:<algo>:<hash>`
+    Recursive,
+}
+
+/// A content address assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentAddress {
+    pub method: ContentAddressMethod,
+    pub hash: NixHash,
+}
+
+impl ContentAddress {
+    /// Parse from the string format used in NarInfo CA field.
+    pub fn parse(s: &str) -> Result<Self, ContentAddressError> {
+        if let Some(rest) = s.strip_prefix("text:") {
+            let hash = parse_hash_with_algo(rest)?;
+            Ok(Self {
+                method: ContentAddressMethod::Text,
+                hash,
+            })
+        } else if let Some(rest) = s.strip_prefix("fixed:out:r:") {
+            let hash = parse_hash_with_algo(rest)?;
+            Ok(Self {
+                method: ContentAddressMethod::Recursive,
+                hash,
+            })
+        } else if let Some(rest) = s.strip_prefix("fixed:out:") {
+            let hash = parse_hash_with_algo(rest)?;
+            Ok(Self {
+                method: ContentAddressMethod::Flat,
+                hash,
+            })
+        } else {
+            Err(ContentAddressError::InvalidFormat(s.to_string()))
+        }
+    }
+
+    /// Serialize to the string format.
+    pub fn to_nix_string(&self) -> String {
+        let prefix = match self.method {
+            ContentAddressMethod::Text => "text:",
+            ContentAddressMethod::Flat => "fixed:out:",
+            ContentAddressMethod::Recursive => "fixed:out:r:",
+        };
+        format!("{}{}", prefix, self.hash.to_nix_string())
+    }
+}
+
+/// Compute a store path for text content (like `builtins.toFile`).
+///
+/// The fingerprint is: `text:<sha256hash>:<references...>:/nix/store:<name>`
+pub fn compute_text_store_path(
+    name: &str,
+    contents: &[u8],
+    references: &[String],
+) -> Result<StorePath, StorePathError> {
+    let content_hash = Sha256::digest(contents);
+
+    let mut fingerprint = String::from("text:sha256:");
+    fingerprint.push_str(&hex_encode(&content_hash));
+    for r in references {
+        fingerprint.push(':');
+        fingerprint.push_str(r);
+    }
+    fingerprint.push_str(":/nix/store:");
+    fingerprint.push_str(name);
+
+    let path_hash = compress_hash(&Sha256::digest(fingerprint.as_bytes()), 20);
+    let digest: [u8; 20] = path_hash.try_into().unwrap();
+
+    Ok(StorePath {
+        digest,
+        name: name.to_string(),
+    })
+}
+
+/// Compress a hash to the specified number of bytes by XOR-folding.
+fn compress_hash(hash: &[u8], target_len: usize) -> Vec<u8> {
+    let mut result = vec![0u8; target_len];
+    for (i, &byte) in hash.iter().enumerate() {
+        result[i % target_len] ^= byte;
+    }
+    result
+}
+
+/// Hex-encode bytes.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Parse `<algo>:<hex-hash>` format.
+fn parse_hash_with_algo(s: &str) -> Result<NixHash, ContentAddressError> {
+    let (algo_str, hash_hex) = s
+        .split_once(':')
+        .ok_or_else(|| ContentAddressError::InvalidFormat(s.to_string()))?;
+
+    let algorithm = HashAlgorithm::from_nix_str(algo_str)
+        .map_err(|e| ContentAddressError::InvalidFormat(e.to_string()))?;
+
+    let digest = hex_decode(hash_hex)
+        .map_err(|_| ContentAddressError::InvalidFormat(format!("invalid hex: {hash_hex}")))?;
+
+    Ok(NixHash::new(algorithm, digest))
+}
+
+/// Hex-decode a string.
+fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
+    if s.len() % 2 != 0 {
+        return Err(());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_text_ca() {
+        let ca = ContentAddress::parse("text:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855").unwrap();
+        assert_eq!(ca.method, ContentAddressMethod::Text);
+        assert_eq!(ca.hash.algorithm, HashAlgorithm::Sha256);
+    }
+
+    #[test]
+    fn parse_fixed_flat() {
+        let ca = ContentAddress::parse("fixed:out:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789").unwrap();
+        assert_eq!(ca.method, ContentAddressMethod::Flat);
+    }
+
+    #[test]
+    fn parse_fixed_recursive() {
+        let ca = ContentAddress::parse("fixed:out:r:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789").unwrap();
+        assert_eq!(ca.method, ContentAddressMethod::Recursive);
+    }
+
+    #[test]
+    fn roundtrip_ca() {
+        let ca = ContentAddress {
+            method: ContentAddressMethod::Recursive,
+            hash: NixHash::new(HashAlgorithm::Sha256, vec![0xab; 32]),
+        };
+        let s = ca.to_nix_string();
+        let parsed = ContentAddress::parse(&s).unwrap();
+        assert_eq!(parsed, ca);
+    }
+
+    #[test]
+    fn text_store_path_deterministic() {
+        let path1 = compute_text_store_path("test.txt", b"hello", &[]).unwrap();
+        let path2 = compute_text_store_path("test.txt", b"hello", &[]).unwrap();
+        assert_eq!(path1, path2);
+
+        // Different content produces different path
+        let path3 = compute_text_store_path("test.txt", b"world", &[]).unwrap();
+        assert_ne!(path1.digest, path3.digest);
+    }
+
+    #[test]
+    fn text_store_path_format() {
+        let path = compute_text_store_path("hello.txt", b"Hello, World!", &[]).unwrap();
+        let abs = path.to_absolute_path();
+        assert!(abs.starts_with("/nix/store/"));
+        assert!(abs.ends_with("-hello.txt"));
+        // Hash portion should be 32 chars
+        let basename = abs.strip_prefix("/nix/store/").unwrap();
+        let hash_part = &basename[..32];
+        assert_eq!(hash_part.len(), 32);
+    }
+
+    #[test]
+    fn compress_hash_xor_fold() {
+        let hash = vec![0xff; 32];
+        let compressed = compress_hash(&hash, 20);
+        assert_eq!(compressed.len(), 20);
+        // 32 bytes XOR-folded to 20: first 12 bytes get XOR'd with bytes 20-31
+        // 0xff ^ 0xff = 0 for those 12, rest stays 0xff
+        for &b in &compressed[..12] {
+            assert_eq!(b, 0);
+        }
+        for &b in &compressed[12..] {
+            assert_eq!(b, 0xff);
+        }
+    }
+
+    #[test]
+    fn invalid_format() {
+        assert!(ContentAddress::parse("garbage").is_err());
+        assert!(ContentAddress::parse("text:").is_err());
+        assert!(ContentAddress::parse("fixed:out:badformat").is_err());
+    }
+
+    #[test]
+    fn all_three_ca_method_types_roundtrip() {
+        let methods = [
+            (ContentAddressMethod::Text, "text:"),
+            (ContentAddressMethod::Flat, "fixed:out:"),
+            (ContentAddressMethod::Recursive, "fixed:out:r:"),
+        ];
+        for (method, expected_prefix) in methods {
+            let ca = ContentAddress {
+                method: method.clone(),
+                hash: NixHash::new(HashAlgorithm::Sha256, vec![0xcd; 32]),
+            };
+            let s = ca.to_nix_string();
+            assert!(s.starts_with(expected_prefix), "failed for {method:?}: {s}");
+            let parsed = ContentAddress::parse(&s).unwrap();
+            assert_eq!(parsed, ca);
+        }
+    }
+
+    #[test]
+    fn invalid_prefix_error() {
+        match ContentAddress::parse("nope:sha256:abc") {
+            Err(ContentAddressError::InvalidFormat(s)) => {
+                assert_eq!(s, "nope:sha256:abc");
+            }
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+
+        // "fixed:" without "out:" is invalid
+        match ContentAddress::parse("fixed:sha256:abc") {
+            Err(ContentAddressError::InvalidFormat(_)) => {}
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hash_with_all_algorithms() {
+        let algos = [
+            (HashAlgorithm::Sha256, 32),
+            (HashAlgorithm::Sha512, 64),
+            (HashAlgorithm::Sha1, 20),
+            (HashAlgorithm::Md5, 16),
+        ];
+        for (algo, digest_len) in algos {
+            let ca = ContentAddress {
+                method: ContentAddressMethod::Recursive,
+                hash: NixHash::new(algo, vec![0x42; digest_len]),
+            };
+            let s = ca.to_nix_string();
+            let parsed = ContentAddress::parse(&s).unwrap();
+            assert_eq!(parsed.hash.algorithm, algo);
+            assert_eq!(parsed.hash.digest.len(), digest_len);
+            assert_eq!(parsed, ca);
+        }
+    }
+
+    #[test]
+    fn text_store_path_with_references() {
+        let refs = vec![
+            "/nix/store/aaa-glibc-2.37".to_string(),
+            "/nix/store/bbb-bash-5.2".to_string(),
+        ];
+        let path = compute_text_store_path("test.txt", b"hello", &refs).unwrap();
+        let abs = path.to_absolute_path();
+        assert!(abs.starts_with("/nix/store/"));
+        assert!(abs.ends_with("-test.txt"));
+
+        // Different references should produce a different path
+        let path_no_refs = compute_text_store_path("test.txt", b"hello", &[]).unwrap();
+        assert_ne!(path.digest, path_no_refs.digest);
+    }
+}

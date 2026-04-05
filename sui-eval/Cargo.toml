@@ -1,0 +1,17 @@
+[package]
+name = "sui-eval"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Clean-room Nix language evaluator (bytecode VM)"
+
+[dependencies]
+sui-compat.workspace = true
+sui-store.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,69 @@
+syntax = "proto3";
+package sui.v1;
+
+service StoreService {
+  rpc GetPathInfo(GetPathInfoRequest) returns (PathInfoResponse);
+  rpc ListPaths(ListPathsRequest) returns (ListPathsResponse);
+  rpc ComputeClosure(ComputeClosureRequest) returns (ComputeClosureResponse);
+  rpc CollectGarbage(GcRequest) returns (GcResponse);
+  rpc VerifyStore(VerifyRequest) returns (VerifyResponse);
+  rpc IsValidPath(IsValidPathRequest) returns (IsValidPathResponse);
+}
+
+message GetPathInfoRequest {
+  string store_path = 1;
+}
+
+message PathInfoResponse {
+  string path = 1;
+  string nar_hash = 2;
+  int64 nar_size = 3;
+  repeated string references = 4;
+  optional string deriver = 5;
+  repeated string signatures = 6;
+  int64 registration_time = 7;
+  optional string content_address = 8;
+}
+
+message ListPathsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ListPathsResponse {
+  repeated string paths = 1;
+}
+
+message ComputeClosureRequest {
+  repeated string paths = 1;
+}
+
+message ComputeClosureResponse {
+  repeated string closure = 1;
+}
+
+message GcRequest {
+  int64 max_freed = 1;
+}
+
+message GcResponse {
+  int32 paths_deleted = 1;
+  int64 bytes_freed = 2;
+}
+
+message VerifyRequest {}
+
+message VerifyResponse {
+  int32 valid = 1;
+  int32 invalid = 2;
+  int32 missing = 3;
+  repeated string errors = 4;
+}
+
+message IsValidPathRequest {
+  string path = 1;
+}
+
+message IsValidPathResponse {
+  bool valid = 1;
+}

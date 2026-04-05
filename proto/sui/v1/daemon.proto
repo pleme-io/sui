@@ -1,0 +1,30 @@
+syntax = "proto3";
+package sui.v1;
+
+service DaemonService {
+  rpc GetStatus(GetDaemonStatusRequest) returns (DaemonStatusResponse);
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+}
+
+message GetDaemonStatusRequest {}
+
+message DaemonStatusResponse {
+  string version = 1;
+  string store_dir = 2;
+  int32 active_connections = 3;
+  repeated string trusted_users = 4;
+  string protocol_version = 5;
+}
+
+message ListConnectionsRequest {}
+
+message ListConnectionsResponse {
+  repeated DaemonConnection connections = 1;
+}
+
+message DaemonConnection {
+  string id = 1;
+  string user = 2;
+  bool trusted = 3;
+  int64 connected_at = 4;
+}

@@ -1,0 +1,105 @@
+syntax = "proto3";
+package sui.v1;
+
+service OrchestratorService {
+  rpc SystemRebuild(SystemRebuildRequest) returns (SystemStatusResponse);
+  rpc GetSystemStatus(GetSystemStatusRequest) returns (SystemStatusResponse);
+  rpc ListGenerations(ListGenerationsRequest) returns (ListGenerationsResponse);
+  rpc SystemRollback(SystemRollbackRequest) returns (SystemStatusResponse);
+  rpc ListFleetNodes(ListFleetNodesRequest) returns (ListFleetNodesResponse);
+  rpc FleetDeploy(FleetDeployRequest) returns (FleetDeployResponse);
+  rpc GetFleetStatus(GetFleetStatusRequest) returns (FleetStatusResponse);
+  rpc FleetRollback(FleetRollbackRequest) returns (FleetRollbackResponse);
+}
+
+message SystemRebuildRequest {
+  optional string flake = 1;
+  string action = 2; // switch, boot, test, build
+  optional string hostname = 3;
+}
+
+message GetSystemStatusRequest {}
+
+message SystemStatusResponse {
+  int64 generation = 1;
+  string config_path = 2;
+  int64 boot_time = 3;
+  string nix_version = 4;
+  string system = 5;
+}
+
+message ListGenerationsRequest {}
+
+message ListGenerationsResponse {
+  repeated Generation generations = 1;
+}
+
+message Generation {
+  int32 number = 1;
+  int64 date = 2;
+  bool current = 3;
+  optional string configuration_revision = 4;
+}
+
+message SystemRollbackRequest {}
+
+message ListFleetNodesRequest {}
+
+message ListFleetNodesResponse {
+  repeated FleetNode nodes = 1;
+}
+
+message FleetNode {
+  string hostname = 1;
+  NodeStatus status = 2;
+  optional int64 last_deployed = 3;
+  optional int64 current_generation = 4;
+  optional string system = 5;
+  optional string flake_ref = 6;
+}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_ONLINE = 1;
+  NODE_STATUS_OFFLINE = 2;
+  NODE_STATUS_DEPLOYING = 3;
+  NODE_STATUS_FAILED = 4;
+}
+
+message FleetDeployRequest {
+  string target = 1;
+  optional string flake = 2;
+  DeployStrategy strategy = 3;
+}
+
+enum DeployStrategy {
+  DEPLOY_STRATEGY_UNSPECIFIED = 0;
+  DEPLOY_STRATEGY_PARALLEL = 1;
+  DEPLOY_STRATEGY_ROLLING = 2;
+  DEPLOY_STRATEGY_CANARY = 3;
+}
+
+message FleetDeployResponse {
+  string id = 1;
+  string target = 2;
+  string status = 3;
+  repeated FleetNode nodes = 4;
+}
+
+message GetFleetStatusRequest {}
+
+message FleetStatusResponse {
+  int32 total_nodes = 1;
+  int32 online_nodes = 2;
+  int32 deploying_nodes = 3;
+  int32 failed_nodes = 4;
+  repeated FleetNode nodes = 5;
+}
+
+message FleetRollbackRequest {
+  string target = 1;
+}
+
+message FleetRollbackResponse {
+  bool success = 1;
+}
