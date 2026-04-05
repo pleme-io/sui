@@ -7,6 +7,7 @@
 
 pub mod builtins;
 pub mod eval;
+pub mod flake;
 pub mod value;
 
 pub use eval::eval;
