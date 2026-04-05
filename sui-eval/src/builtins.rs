@@ -184,7 +184,17 @@ pub fn register(env: &mut Env) {
             Value::Null => String::new(),
             Value::Path(p) => p.clone(),
             Value::List(_) => return Err(EvalError::TypeError("toString: cannot convert list".to_string())),
-            Value::Attrs(_) => return Err(EvalError::TypeError("toString: cannot convert set".to_string())),
+            Value::Attrs(attrs) => {
+                // __toString protocol: call __toString with self
+                if let Some(to_str) = attrs.get("__toString") {
+                    let result = crate::eval::apply(to_str.clone(), args[0].clone())?;
+                    match result {
+                        Value::String(s) => return Ok(Value::String(s)),
+                        _ => return Err(EvalError::TypeError("__toString must return a string".to_string())),
+                    }
+                }
+                return Err(EvalError::TypeError("toString: cannot convert set".to_string()));
+            }
             Value::Lambda(_) | Value::Builtin(_) => return Err(EvalError::TypeError("toString: cannot convert function".to_string())),
         }))
     });
@@ -497,6 +507,167 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // concatStrings — concat without separator
+    register_builtin(&mut builtins_set, "concatStrings", |args| {
+        let list = args[0].as_list()?;
+        let mut result = String::new();
+        for v in list {
+            result.push_str(v.as_string()?);
+        }
+        Ok(Value::String(result))
+    });
+
+    // partition — split list by predicate into { right, wrong }
+    register_builtin(&mut builtins_set, "partition", |args| {
+        let pred = args[0].clone();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "partition<partial>",
+            func: Arc::new(move |args2| {
+                let list = args2[0].as_list()?;
+                let mut right = Vec::new();
+                let mut wrong = Vec::new();
+                for v in list {
+                    if crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
+                        right.push(v.clone());
+                    } else {
+                        wrong.push(v.clone());
+                    }
+                }
+                let mut result = NixAttrs::new();
+                result.insert("right".to_string(), Value::List(right));
+                result.insert("wrong".to_string(), Value::List(wrong));
+                Ok(Value::Attrs(result))
+            }),
+        }))
+    });
+
+    // groupBy — group list elements by key function
+    register_builtin(&mut builtins_set, "groupBy", |args| {
+        let func = args[0].clone();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "groupBy<partial>",
+            func: Arc::new(move |args2| {
+                let list = args2[0].as_list()?;
+                let mut groups: std::collections::BTreeMap<String, Vec<Value>> =
+                    std::collections::BTreeMap::new();
+                for v in list {
+                    let key = crate::eval::apply(func.clone(), v.clone())?;
+                    let key_str = key.as_string()?.to_string();
+                    groups.entry(key_str).or_default().push(v.clone());
+                }
+                let mut result = NixAttrs::new();
+                for (k, vs) in groups {
+                    result.insert(k, Value::List(vs));
+                }
+                Ok(Value::Attrs(result))
+            }),
+        }))
+    });
+
+    // zipAttrsWith — zip attrsets with a combining function
+    register_builtin(&mut builtins_set, "zipAttrsWith", |args| {
+        let func = args[0].clone();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "zipAttrsWith<partial>",
+            func: Arc::new(move |args2| {
+                let list = args2[0].as_list()?;
+                // Collect all keys and their values across all attrsets
+                let mut collected: std::collections::BTreeMap<String, Vec<Value>> =
+                    std::collections::BTreeMap::new();
+                for item in list {
+                    let attrs = item.as_attrs()?;
+                    for (k, v) in attrs.iter() {
+                        collected.entry(k.clone()).or_default().push(v.clone());
+                    }
+                }
+                let mut result = NixAttrs::new();
+                for (k, vs) in collected {
+                    let partial = crate::eval::apply(
+                        func.clone(),
+                        Value::String(k.clone()),
+                    )?;
+                    let val = crate::eval::apply(partial, Value::List(vs))?;
+                    result.insert(k, val);
+                }
+                Ok(Value::Attrs(result))
+            }),
+        }))
+    });
+
+    // compareVersions — compare version strings
+    register_builtin(&mut builtins_set, "compareVersions", |args| {
+        let a = args[0].as_string()?.to_string();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "compareVersions<partial>",
+            func: Arc::new(move |args2| {
+                let b = args2[0].as_string()?;
+                let result = compare_versions(&a, b);
+                Ok(Value::Int(result))
+            }),
+        }))
+    });
+
+    // parseDrvName — parse "name-version" from package name
+    register_builtin(&mut builtins_set, "parseDrvName", |args| {
+        let s = args[0].as_string()?;
+        let (name, version) = parse_drv_name(s);
+        let mut result = NixAttrs::new();
+        result.insert("name".to_string(), Value::String(name));
+        result.insert("version".to_string(), Value::String(version));
+        Ok(Value::Attrs(result))
+    });
+
+    // baseNameOf — extract filename from path
+    register_builtin(&mut builtins_set, "baseNameOf", |args| {
+        let s = match &args[0] {
+            Value::String(s) => s.clone(),
+            Value::Path(p) => p.clone(),
+            _ => return Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
+        };
+        let base = s.rsplit('/').next().unwrap_or(&s);
+        Ok(Value::String(base.to_string()))
+    });
+
+    // dirOf — extract directory from path
+    register_builtin(&mut builtins_set, "dirOf", |args| {
+        let (s, is_path) = match &args[0] {
+            Value::String(s) => (s.clone(), false),
+            Value::Path(p) => (p.clone(), true),
+            _ => return Err(EvalError::TypeError("dirOf: expected string or path".to_string())),
+        };
+        let dir = match s.rfind('/') {
+            Some(0) => "/".to_string(),
+            Some(i) => s[..i].to_string(),
+            None => ".".to_string(),
+        };
+        if is_path {
+            Ok(Value::Path(dir))
+        } else {
+            Ok(Value::String(dir))
+        }
+    });
+
+    // readFile — read file contents to string
+    register_builtin(&mut builtins_set, "readFile", |args| {
+        let path = match &args[0] {
+            Value::Path(p) => p.clone(),
+            Value::String(s) => s.clone(),
+            _ => return Err(EvalError::TypeError("readFile: expected path or string".to_string())),
+        };
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|e| EvalError::TypeError(format!("readFile: {e}")))?;
+        Ok(Value::String(contents))
+    });
+
+    // addErrorContext — wraps an expression with error context (passthrough in our impl)
+    register_builtin(&mut builtins_set, "addErrorContext", |args| {
+        let _ctx = args[0].as_string()?.to_string();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "addErrorContext<partial>",
+            func: Arc::new(|args2| Ok(args2[0].clone())),
+        }))
+    });
+
     // Numeric
     register_builtin(&mut builtins_set, "ceil", |args| {
         Ok(Value::Int(args[0].as_float()?.ceil() as i64))
@@ -658,6 +829,79 @@ fn current_system() -> &'static str {
     } else {
         "x86_64-linux"
     }
+}
+
+/// Compare two version strings, returning -1, 0, or 1.
+///
+/// Splits on `.`, `-`, AND digit/letter boundaries (matching Nix behavior).
+/// Compares components numerically where possible, lexicographically otherwise.
+/// The special component `"pre"` is less than everything except itself and empty.
+fn compare_versions(a: &str, b: &str) -> i64 {
+    let split = |s: &str| -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut prev_digit: Option<bool> = None;
+        for ch in s.chars() {
+            if ch == '.' || ch == '-' {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                    prev_digit = None;
+                }
+            } else {
+                let is_digit = ch.is_ascii_digit();
+                if let Some(was_digit) = prev_digit {
+                    if is_digit != was_digit && !current.is_empty() {
+                        parts.push(std::mem::take(&mut current));
+                    }
+                }
+                current.push(ch);
+                prev_digit = Some(is_digit);
+            }
+        }
+        if !current.is_empty() {
+            parts.push(current);
+        }
+        parts
+    };
+    let pa = split(a);
+    let pb = split(b);
+    let max_len = pa.len().max(pb.len());
+    for i in 0..max_len {
+        let ca = pa.get(i).map(|s| s.as_str()).unwrap_or("");
+        let cb = pb.get(i).map(|s| s.as_str()).unwrap_or("");
+        // Try numeric comparison first
+        let ord = match (ca.parse::<i64>(), cb.parse::<i64>()) {
+            (Ok(na), Ok(nb)) => na.cmp(&nb),
+            _ => {
+                // Nix: "pre" is less than everything except itself and empty
+                match (ca, cb) {
+                    ("pre", "pre") => std::cmp::Ordering::Equal,
+                    ("pre", _) => std::cmp::Ordering::Less,
+                    (_, "pre") => std::cmp::Ordering::Greater,
+                    _ => ca.cmp(cb),
+                }
+            }
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return if ord == std::cmp::Ordering::Less { -1 } else { 1 };
+        }
+    }
+    0
+}
+
+/// Parse a derivation name into (name, version).
+///
+/// The version starts at the last `-` followed by a digit.
+/// e.g. "hello-2.10" => ("hello", "2.10"), "openssl-1.1.1k" => ("openssl", "1.1.1k")
+fn parse_drv_name(s: &str) -> (String, String) {
+    // Find the last '-' that is followed by a digit
+    let bytes = s.as_bytes();
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            return (s[..i].to_string(), s[i + 1..].to_string());
+        }
+    }
+    (s.to_string(), String::new())
 }
 
 #[cfg(test)]
@@ -935,5 +1179,414 @@ mod tests {
             ev(r#"builtins.catAttrs "a" [{ a = 1; } { b = 2; } { a = 3; }]"#),
             Value::List(vec![Value::Int(1), Value::Int(3)]),
         );
+    }
+
+    // ── New builtins: concatStrings ─────────────────────────
+
+    #[test]
+    fn builtins_concat_strings() {
+        assert_eq!(
+            ev(r#"builtins.concatStrings ["hello" " " "world"]"#),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn builtins_concat_strings_empty() {
+        assert_eq!(
+            ev(r#"builtins.concatStrings []"#),
+            Value::String("".to_string()),
+        );
+    }
+
+    // ── New builtins: partition ──────────────────────────────
+
+    #[test]
+    fn builtins_partition_basic() {
+        let v = ev("builtins.partition (x: x > 2) [1 2 3 4 5]");
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("right"),
+                Some(&Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)])),
+            );
+            assert_eq!(
+                a.get("wrong"),
+                Some(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            );
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_partition_all_right() {
+        let v = ev("builtins.partition (x: true) [1 2 3]");
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("right"),
+                Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
+            );
+            assert_eq!(a.get("wrong"), Some(&Value::List(vec![])));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_partition_empty() {
+        let v = ev("builtins.partition (x: true) []");
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("right"), Some(&Value::List(vec![])));
+            assert_eq!(a.get("wrong"), Some(&Value::List(vec![])));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── New builtins: groupBy ───────────────────────────────
+
+    #[test]
+    fn builtins_group_by_basic() {
+        let v = ev(r#"builtins.groupBy (x: x) ["a" "b" "a" "c" "b"]"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("a"),
+                Some(&Value::List(vec![
+                    Value::String("a".to_string()),
+                    Value::String("a".to_string()),
+                ])),
+            );
+            assert_eq!(
+                a.get("b"),
+                Some(&Value::List(vec![
+                    Value::String("b".to_string()),
+                    Value::String("b".to_string()),
+                ])),
+            );
+            assert_eq!(
+                a.get("c"),
+                Some(&Value::List(vec![Value::String("c".to_string())])),
+            );
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_group_by_empty() {
+        let v = ev(r#"builtins.groupBy (x: x) []"#);
+        if let Value::Attrs(a) = v {
+            assert!(a.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── New builtins: zipAttrsWith ──────────────────────────
+
+    #[test]
+    fn builtins_zip_attrs_with_basic() {
+        // zipAttrsWith (name: values: values) [{ a = 1; } { a = 2; b = 3; }]
+        let v = ev("builtins.zipAttrsWith (name: values: values) [{ a = 1; } { a = 2; b = 3; }]");
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("a"),
+                Some(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            );
+            assert_eq!(
+                a.get("b"),
+                Some(&Value::List(vec![Value::Int(3)])),
+            );
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_zip_attrs_with_sum() {
+        // Sum values for each key
+        let v = ev(r#"builtins.zipAttrsWith (name: values: builtins.foldl' (a: b: a + b) 0 values) [{ x = 1; } { x = 2; } { x = 3; }]"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("x"), Some(&Value::Int(6)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── New builtins: compareVersions ─────────��─────────────
+
+    #[test]
+    fn builtins_compare_versions_equal() {
+        assert_eq!(ev(r#"builtins.compareVersions "1.2.3" "1.2.3""#), Value::Int(0));
+    }
+
+    #[test]
+    fn builtins_compare_versions_less() {
+        assert_eq!(ev(r#"builtins.compareVersions "1.2.3" "1.2.4""#), Value::Int(-1));
+        assert_eq!(ev(r#"builtins.compareVersions "1.2" "1.3""#), Value::Int(-1));
+    }
+
+    #[test]
+    fn builtins_compare_versions_greater() {
+        assert_eq!(ev(r#"builtins.compareVersions "1.3.0" "1.2.9""#), Value::Int(1));
+    }
+
+    #[test]
+    fn builtins_compare_versions_pre() {
+        // "pre" is less than anything except itself
+        assert_eq!(ev(r#"builtins.compareVersions "1.0pre1" "1.0.1""#), Value::Int(-1));
+    }
+
+    // ── New builtins: parseDrvName ──────────────────────────
+
+    #[test]
+    fn builtins_parse_drv_name_basic() {
+        let v = ev(r#"builtins.parseDrvName "hello-2.10""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("name"), Some(&Value::String("hello".to_string())));
+            assert_eq!(a.get("version"), Some(&Value::String("2.10".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_drv_name_no_version() {
+        let v = ev(r#"builtins.parseDrvName "hello""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("name"), Some(&Value::String("hello".to_string())));
+            assert_eq!(a.get("version"), Some(&Value::String("".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_drv_name_complex() {
+        let v = ev(r#"builtins.parseDrvName "openssl-1.1.1k""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("name"), Some(&Value::String("openssl".to_string())));
+            assert_eq!(a.get("version"), Some(&Value::String("1.1.1k".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── New builtins: baseNameOf / dirOf ────────────────────
+
+    #[test]
+    fn builtins_base_name_of() {
+        assert_eq!(
+            ev(r#"builtins.baseNameOf "/nix/store/abc-hello""#),
+            Value::String("abc-hello".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.baseNameOf "hello.txt""#),
+            Value::String("hello.txt".to_string()),
+        );
+    }
+
+    #[test]
+    fn builtins_dir_of_string() {
+        assert_eq!(
+            ev(r#"builtins.dirOf "/nix/store/abc""#),
+            Value::String("/nix/store".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.dirOf "/foo""#),
+            Value::String("/".to_string()),
+        );
+    }
+
+    #[test]
+    fn builtins_dir_of_path() {
+        assert_eq!(
+            ev("builtins.dirOf /nix/store/abc"),
+            Value::Path("/nix/store".to_string()),
+        );
+    }
+
+    // ── New builtins: readFile ──────────────────────────────
+
+    #[test]
+    fn builtins_read_file() {
+        // Create a temp file and read it
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_eval_test_read_file.txt");
+        std::fs::write(&path, "hello from test").unwrap();
+        let expr = format!(r#"builtins.readFile "{}""#, path.display());
+        let v = eval(&expr).unwrap();
+        if let Value::String(s) = v {
+            assert_eq!(s, "hello from test");
+        } else {
+            panic!("expected string");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn builtins_read_file_missing() {
+        let result = eval(r#"builtins.readFile "/nonexistent/path/file.txt""#);
+        assert!(result.is_err());
+    }
+
+    // ── New builtins: addErrorContext ────────────────────────
+
+    #[test]
+    fn builtins_add_error_context_passthrough() {
+        // addErrorContext just passes through the value
+        assert_eq!(
+            ev(r#"builtins.addErrorContext "context msg" 42"#),
+            Value::Int(42),
+        );
+    }
+
+    // ── __functor protocol ──────────────────────────────────
+
+    #[test]
+    fn functor_basic() {
+        assert_eq!(
+            ev("let s = { __functor = self: x: self.value + x; value = 10; }; in s 5"),
+            Value::Int(15),
+        );
+    }
+
+    #[test]
+    fn functor_nested() {
+        // The functor can return another functor
+        assert_eq!(
+            ev("let s = { __functor = self: x: x * 2; }; in s 21"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn functor_with_update() {
+        // Common pattern: { __functor = ...; } // { value = ...; }
+        assert_eq!(
+            ev(r#"
+                let
+                    base = { __functor = self: x: self.v + x; v = 0; };
+                    extended = base // { v = 100; };
+                in extended 5
+            "#),
+            Value::Int(105),
+        );
+    }
+
+    // ── __toString protocol ─────────────────────────────────
+
+    #[test]
+    fn to_string_protocol_interpolation() {
+        assert_eq!(
+            ev(r#"let s = { __toString = self: "hello"; }; in "${s}""#),
+            Value::String("hello".to_string()),
+        );
+    }
+
+    #[test]
+    fn to_string_protocol_with_self() {
+        assert_eq!(
+            ev(r#"let s = { __toString = self: self.name; name = "world"; }; in "${s}""#),
+            Value::String("world".to_string()),
+        );
+    }
+
+    #[test]
+    fn to_string_protocol_via_builtin() {
+        assert_eq!(
+            ev(r#"builtins.toString { __toString = self: "custom"; }"#),
+            Value::String("custom".to_string()),
+        );
+    }
+
+    // ── Ignored tests for features needing major work ───────
+
+    #[test]
+    #[ignore = "builtins.hashString needs sha256 dependency"]
+    fn builtins_hash_string() {
+        // hashString "sha256" "hello" should return the sha256 hex digest
+        let v = ev(r#"builtins.hashString "sha256" "hello""#);
+        if let Value::String(s) = v {
+            assert_eq!(s.len(), 64); // SHA-256 hex is 64 chars
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    #[ignore = "builtins.match needs POSIX regex support"]
+    fn builtins_match_regex() {
+        // match returns null on no match, list of groups on match
+        assert_eq!(
+            ev(r#"builtins.match "([0-9]+)\\.([0-9]+)" "1.23""#),
+            Value::List(vec![Value::String("1".to_string()), Value::String("23".to_string())]),
+        );
+        assert_eq!(
+            ev(r#"builtins.match "([0-9]+)" "abc""#),
+            Value::Null,
+        );
+    }
+
+    #[test]
+    #[ignore = "builtins.import needs file evaluation pipeline"]
+    fn builtins_import() {
+        // import should read and evaluate a Nix file
+        let _v = eval(r#"builtins.import ./test.nix"#);
+    }
+
+    #[test]
+    #[ignore = "builtins.derivation needs store integration"]
+    fn builtins_derivation() {
+        // derivation requires the Nix store
+        let _v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#);
+    }
+
+    #[test]
+    #[ignore = "builtins.fetchurl needs network access"]
+    fn builtins_fetchurl() {
+        let _v = eval(r#"builtins.fetchurl "https://example.com""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.readDir needs filesystem enumeration"]
+    fn builtins_read_dir() {
+        let _v = eval(r#"builtins.readDir ./."#);
+    }
+
+    #[test]
+    #[ignore = "builtins.path needs path hashing"]
+    fn builtins_path() {
+        let _v = eval(r#"builtins.path { path = ./.; name = "test"; }"#);
+    }
+
+    #[test]
+    #[ignore = "builtins.placeholder needs store output path resolution"]
+    fn builtins_placeholder() {
+        let _v = eval(r#"builtins.placeholder "out""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.getFlake needs flake evaluation infrastructure"]
+    fn builtins_get_flake() {
+        let _v = eval(r#"builtins.getFlake "nixpkgs""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.toPath is deprecated but should convert string to path"]
+    fn builtins_to_path() {
+        let _v = eval(r#"builtins.toPath "/foo/bar""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.storePath needs store integration"]
+    fn builtins_store_path() {
+        let _v = eval(r#"builtins.storePath "/nix/store/abc-hello""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.fetchTarball needs network access"]
+    fn builtins_fetch_tarball() {
+        let _v = eval(r#"builtins.fetchTarball "https://example.com/archive.tar.gz""#);
     }
 }

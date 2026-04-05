@@ -295,6 +295,26 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                     Value::Bool(false) => {}
                     Value::Null => {}
                     Value::Path(p) => result.push_str(&p),
+                    Value::Attrs(ref attrs) => {
+                        // __toString protocol: if the attrset has __toString,
+                        // call it with `self` to produce a string.
+                        if let Some(to_str) = attrs.get("__toString") {
+                            let s = apply(to_str.clone(), val.clone())?;
+                            match s {
+                                Value::String(s) => result.push_str(&s),
+                                _ => {
+                                    return Err(EvalError::TypeError(
+                                        "__toString must return a string".to_string(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            return Err(EvalError::TypeError(format!(
+                                "cannot coerce {} to string in interpolation",
+                                val.type_name()
+                            )));
+                        }
+                    }
                     _ => {
                         return Err(EvalError::TypeError(format!(
                             "cannot coerce {} to string in interpolation",
@@ -634,6 +654,9 @@ fn compare(
 }
 
 /// Apply a function to an argument.
+///
+/// Supports `__functor`: if `func` is an attrset with a `__functor` key,
+/// calls `__functor self arg` (the Nix `__functor` protocol).
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     match func {
         Value::Lambda(closure) => {
@@ -642,6 +665,18 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             eval_expr(&closure.body, &call_env)
         }
         Value::Builtin(b) => (b.func)(&[arg]),
+        Value::Attrs(ref attrs) => {
+            if let Some(functor) = attrs.get("__functor") {
+                // __functor protocol: (functor self) arg
+                let partial = apply(functor.clone(), func.clone())?;
+                apply(partial, arg)
+            } else {
+                Err(EvalError::TypeError(format!(
+                    "cannot call {} (missing __functor)",
+                    func.type_name()
+                )))
+            }
+        }
         _ => Err(EvalError::TypeError(format!(
             "cannot call {}",
             func.type_name()
@@ -2171,7 +2206,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "functor (__functor) pattern not implemented"]
     fn pattern_functor() {
         // { __functor = self: x: self.value + x; value = 10; } 5
         assert_eq!(
@@ -2519,5 +2553,280 @@ mod tests {
             ev(r#"(rec { a = "hello"; b = builtins.stringLength a; }).b"#),
             Value::Int(5),
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 11. __FUNCTOR PROTOCOL
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn functor_simple_callable_attrset() {
+        assert_eq!(
+            ev("let s = { __functor = self: x: x + 1; }; in s 41"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn functor_with_self_reference() {
+        assert_eq!(
+            ev("let s = { __functor = self: x: self.base + x; base = 100; }; in s 23"),
+            Value::Int(123),
+        );
+    }
+
+    #[test]
+    fn functor_updated_attrset() {
+        // Override a field in the attrset, functor still works
+        assert_eq!(
+            ev(r#"
+                let
+                    mk = { __functor = self: x: self.n + x; n = 0; };
+                    s = mk // { n = 50; };
+                in s 7
+            "#),
+            Value::Int(57),
+        );
+    }
+
+    #[test]
+    fn functor_error_on_non_callable_attrset() {
+        // Attrset without __functor should produce error when called
+        let result = eval("let s = { a = 1; }; in s 5");
+        assert!(result.is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 12. __TOSTRING PROTOCOL
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn to_string_protocol_in_interpolation() {
+        assert_eq!(
+            ev(r#"let s = { __toString = self: "world"; }; in "hello ${s}""#),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn to_string_protocol_accesses_self() {
+        assert_eq!(
+            ev(r#"let s = { __toString = self: self.val; val = "abc"; }; in "${s}""#),
+            Value::String("abc".to_string()),
+        );
+    }
+
+    #[test]
+    fn to_string_protocol_via_builtin_to_string() {
+        assert_eq!(
+            ev(r#"builtins.toString { __toString = self: "via-builtin"; }"#),
+            Value::String("via-builtin".to_string()),
+        );
+    }
+
+    #[test]
+    fn to_string_protocol_attrset_without_toString_fails() {
+        // An attrset without __toString should fail in string context
+        let result = eval(r#""${{}}"#);
+        assert!(result.is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 13. NEWLY IMPLEMENTED BUILTINS (eval-level tests)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn eval_builtins_concat_strings() {
+        assert_eq!(
+            ev(r#"builtins.concatStrings ["a" "b" "c"]"#),
+            Value::String("abc".to_string()),
+        );
+        assert_eq!(
+            ev(r#"builtins.concatStrings []"#),
+            Value::String("".to_string()),
+        );
+    }
+
+    #[test]
+    fn eval_builtins_partition() {
+        let v = ev("builtins.partition (x: x > 3) [1 2 3 4 5]");
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("right"), Some(&Value::List(vec![Value::Int(4), Value::Int(5)])));
+            assert_eq!(a.get("wrong"), Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn eval_builtins_group_by() {
+        let v = ev(r#"builtins.groupBy (x: if x > 0 then "pos" else "neg") [1 (0 - 2) 3 (0 - 4)]"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("pos"), Some(&Value::List(vec![Value::Int(1), Value::Int(3)])));
+            assert_eq!(a.get("neg"), Some(&Value::List(vec![Value::Int(-2), Value::Int(-4)])));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn eval_builtins_zip_attrs_with() {
+        let v = ev("builtins.zipAttrsWith (n: vs: builtins.head vs) [{ a = 1; } { a = 2; b = 3; }]");
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+            assert_eq!(a.get("b"), Some(&Value::Int(3)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn eval_builtins_compare_versions() {
+        assert_eq!(ev(r#"builtins.compareVersions "2.0" "1.0""#), Value::Int(1));
+        assert_eq!(ev(r#"builtins.compareVersions "1.0" "2.0""#), Value::Int(-1));
+        assert_eq!(ev(r#"builtins.compareVersions "1.0" "1.0""#), Value::Int(0));
+    }
+
+    #[test]
+    fn eval_builtins_parse_drv_name() {
+        let v = ev(r#"builtins.parseDrvName "nix-2.3.4""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("name"), Some(&Value::String("nix".to_string())));
+            assert_eq!(a.get("version"), Some(&Value::String("2.3.4".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn eval_builtins_base_name_of() {
+        assert_eq!(
+            ev(r#"builtins.baseNameOf "/foo/bar/baz""#),
+            Value::String("baz".to_string()),
+        );
+    }
+
+    #[test]
+    fn eval_builtins_dir_of() {
+        assert_eq!(
+            ev(r#"builtins.dirOf "/foo/bar/baz""#),
+            Value::String("/foo/bar".to_string()),
+        );
+    }
+
+    #[test]
+    fn eval_builtins_add_error_context() {
+        assert_eq!(
+            ev(r#"builtins.addErrorContext "some context" 42"#),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn eval_builtins_abort() {
+        let result = eval(r#"builtins.abort "fatal error""#);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("fatal error"));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 14. INDENTED STRINGS ('' ... '')
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn indented_string_simple() {
+        assert_eq!(ev("''hello''"), Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn indented_string_multiline_strips_indent() {
+        assert_eq!(
+            ev("''\n  line1\n  line2\n''"),
+            Value::String("line1\nline2\n".to_string()),
+        );
+    }
+
+    #[test]
+    fn indented_string_with_interpolation() {
+        let code = "let x = \"world\"; in ''hello ${x}''";
+        assert_eq!(
+            ev(code),
+            Value::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn indented_string_deeper_indent_preserved() {
+        // Common indent is 2 spaces; the 4-space line keeps 2 extra
+        assert_eq!(
+            ev("''\n  a\n    b\n''"),
+            Value::String("a\n  b\n".to_string()),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 15. DYNAMIC ATTRIBUTE NAMES
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn dynamic_attr_name_in_set() {
+        assert_eq!(
+            ev(r#"let key = "mykey"; in { ${key} = 42; }.mykey"#),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn dynamic_attr_name_with_expression() {
+        assert_eq!(
+            ev(r#"let prefix = "foo"; in { ${"${prefix}bar"} = 1; }.foobar"#),
+            Value::Int(1),
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 16. IGNORED TESTS — features needing major infrastructure
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    #[ignore = "builtins.match needs POSIX regex support (no regex dep)"]
+    fn eval_builtins_match() {
+        assert_eq!(
+            ev(r#"builtins.match "([0-9]+)" "42""#),
+            Value::List(vec![Value::String("42".to_string())]),
+        );
+    }
+
+    #[test]
+    #[ignore = "builtins.hashString needs sha256 dependency"]
+    fn eval_builtins_hash_string() {
+        let _v = ev(r#"builtins.hashString "sha256" "hello""#);
+    }
+
+    #[test]
+    #[ignore = "builtins.import needs file evaluation pipeline"]
+    fn eval_builtins_import() {
+        let _v = eval(r#"import ./test.nix"#);
+    }
+
+    #[test]
+    #[ignore = "builtins.derivation needs store integration"]
+    fn eval_builtins_derivation() {
+        let _v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#);
+    }
+
+    #[test]
+    #[ignore = "mutual recursive let bindings need lazy evaluation"]
+    fn eval_mutual_recursive_let() {
+        // let a = { x = b; }; b = { y = a; }; in a.x.y.x.y
+        // This requires lazy evaluation to avoid infinite recursion
+        let _v = eval("let a = { x = b; }; b = { y = a; }; in a.x.y");
+    }
+
+    #[test]
+    #[ignore = "builtins.readDir needs directory enumeration"]
+    fn eval_builtins_read_dir() {
+        let _v = eval(r#"builtins.readDir ./."#);
     }
 }
