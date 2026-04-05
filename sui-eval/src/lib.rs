@@ -43,3 +43,41 @@ impl Evaluator for TreeWalkEvaluator {
         eval(&source)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockEvaluator(Result<Value, EvalError>);
+    impl Evaluator for MockEvaluator {
+        fn eval_expr(&self, _: &str) -> Result<Value, EvalError> {
+            match &self.0 { Ok(v) => Ok(v.clone()), Err(_) => Err(EvalError::NotImplemented("mock".into())) }
+        }
+        fn eval_file(&self, _: &std::path::Path) -> Result<Value, EvalError> {
+            self.eval_expr("")
+        }
+    }
+
+    #[test]
+    fn mock_evaluator_ok() {
+        let e = MockEvaluator(Ok(Value::Int(42)));
+        assert_eq!(e.eval_expr("anything").unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn mock_evaluator_err() {
+        let e = MockEvaluator(Err(EvalError::NotImplemented("x".into())));
+        assert!(e.eval_expr("anything").is_err());
+    }
+
+    #[test]
+    fn tree_walk_evaluator() {
+        let e = TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("1 + 2").unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn evaluator_trait_object_safe() {
+        fn _assert(_: &dyn Evaluator) {}
+    }
+}

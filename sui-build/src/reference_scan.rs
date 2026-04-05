@@ -199,11 +199,71 @@ mod tests {
 
     #[test]
     fn scan_binary_data() {
-        // Store path hash embedded in binary data
         let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
         let mut data = vec![0u8; 100];
         data[20..52].copy_from_slice(hash.as_bytes());
         let found = scan_references(&data, &[hash]);
         assert_eq!(found, vec![hash.to_string()]);
+    }
+
+    // ── MockFs ────────────────────────────────────────────
+
+    struct MockFs {
+        files: std::collections::HashMap<PathBuf, Vec<u8>>,
+    }
+
+    impl MockFs {
+        fn new() -> Self { Self { files: std::collections::HashMap::new() } }
+        fn with_file(mut self, path: &str, data: &[u8]) -> Self {
+            self.files.insert(PathBuf::from(path), data.to_vec());
+            self
+        }
+    }
+
+    impl FileSystem for MockFs {
+        fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            self.files.get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "mock"))
+        }
+        fn walk_dir(&self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+            let prefix = dir.to_string_lossy();
+            Ok(self.files.keys().filter(|p| p.to_string_lossy().starts_with(prefix.as_ref())).cloned().collect())
+        }
+        fn read_link(&self, _: &Path) -> std::io::Result<PathBuf> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "mock: not a symlink"))
+        }
+        fn is_file(&self, path: &Path) -> bool { self.files.contains_key(path) }
+        fn is_symlink(&self, _: &Path) -> bool { false }
+    }
+
+    #[test]
+    fn mock_fs_scan_file() {
+        let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        let fs = MockFs::new().with_file("/out/bin/hello", format!("/nix/store/{hash}-hello").as_bytes());
+        let found = scan_file_with(&fs, Path::new("/out/bin/hello"), &[hash]).unwrap();
+        assert_eq!(found, vec![hash.to_string()]);
+    }
+
+    #[test]
+    fn mock_fs_scan_directory() {
+        let h1 = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+        let h2 = "3n58xw4373jp0ljirf06d8077j15pc4j";
+        let fs = MockFs::new()
+            .with_file("/out/a", format!("/nix/store/{h1}-hello").as_bytes())
+            .with_file("/out/b", format!("/nix/store/{h2}-glibc").as_bytes());
+        let found = scan_directory_with(&fs, Path::new("/out"), &[h1, h2]).unwrap();
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn mock_fs_no_matches() {
+        let fs = MockFs::new().with_file("/out/x", b"no store paths");
+        let found = scan_directory_with(&fs, Path::new("/out"), &["sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6"]).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn mock_fs_missing_file() {
+        let fs = MockFs::new();
+        assert!(scan_file_with(&fs, Path::new("/nope"), &["x"]).is_err());
     }
 }

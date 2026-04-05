@@ -289,4 +289,36 @@ mod tests {
         assert_eq!(parsed.key_name, sig.key_name);
         assert_eq!(parsed.signature, sig.signature);
     }
+
+    // ── Mock verifiers ────────────────────────────────────
+
+    struct AlwaysValidVerifier;
+    impl SignatureVerifier for AlwaysValidVerifier {
+        fn verify(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), SignatureError> { Ok(()) }
+    }
+
+    struct AlwaysInvalidVerifier;
+    impl SignatureVerifier for AlwaysInvalidVerifier {
+        fn verify(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), SignatureError> {
+            Err(SignatureError::VerificationFailed)
+        }
+    }
+
+    #[test]
+    fn verify_with_always_valid() {
+        let sig = StorePathSignature { key_name: "k".into(), signature: vec![0; 64] };
+        assert!(sig.verify_with("fp", &[0; 32], &AlwaysValidVerifier).is_ok());
+    }
+
+    #[test]
+    fn verify_with_always_invalid() {
+        let sig = StorePathSignature { key_name: "k".into(), signature: vec![0; 64] };
+        assert!(sig.verify_with("fp", &[0; 32], &AlwaysInvalidVerifier).is_err());
+    }
+
+    #[test]
+    fn verifier_object_safe() {
+        fn _assert(_: &dyn SignatureVerifier) {}
+        _assert(&AlwaysValidVerifier);
+    }
 }

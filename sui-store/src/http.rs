@@ -83,4 +83,43 @@ mod tests {
         fn assert_obj_safe(_: &dyn HttpClient) {}
         assert_obj_safe(&ReqwestHttpClient::new());
     }
+
+    // ── MockHttpClient ────────────────────────────────────
+
+    pub(crate) struct MockHttpClient {
+        responses: std::collections::HashMap<String, HttpResponse>,
+    }
+
+    impl MockHttpClient {
+        pub fn new() -> Self { Self { responses: std::collections::HashMap::new() } }
+        pub fn with_response(mut self, url: &str, resp: HttpResponse) -> Self {
+            self.responses.insert(url.to_string(), resp);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpClient for MockHttpClient {
+        async fn get(&self, url: &str, _h: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+            self.responses.get(url).cloned().ok_or_else(|| HttpError::Request(format!("no mock: {url}")))
+        }
+        async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+            Ok(self.get(url, &[]).await?.body.into_bytes())
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_client_returns_canned() {
+        let client = MockHttpClient::new()
+            .with_response("http://test/foo", HttpResponse { status: 200, body: "hello".to_string() });
+        let resp = client.get("http://test/foo", &[]).await.unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, "hello");
+    }
+
+    #[tokio::test]
+    async fn mock_client_missing_url() {
+        let client = MockHttpClient::new();
+        assert!(client.get("http://missing", &[]).await.is_err());
+    }
 }
