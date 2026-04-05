@@ -22,9 +22,11 @@
 //! own UID are considered trusted. The [`PeerCredentials`] trait abstracts
 //! credential retrieval for testability.
 
+pub mod config;
 pub mod connection;
 pub mod server;
 pub mod trust;
 
-pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH};
+pub use config::SuiDaemonConfig;
+pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH, xdg_socket_path};
 pub use trust::{PeerCredentials, SystemPeerCredentials, TrustLevel};

@@ -1,21 +1,36 @@
 //! Unix socket daemon server.
 //!
-//! Listens on a configurable Unix socket path (default:
-//! `/nix/var/nix/daemon-socket/socket`), accepts connections, and
-//! spawns a tokio task per connection to handle the Nix worker protocol.
+//! Listens on a configurable Unix socket path (default: XDG-compliant via
+//! tsunagu, or `/nix/var/nix/daemon-socket/socket` as Nix-compat fallback),
+//! accepts connections, and spawns a tokio task per connection to handle the
+//! Nix worker protocol.
+//!
+//! Uses [`tsunagu::DaemonProcess`] for PID file management and
+//! [`tsunagu::HealthCheck`] for standardized health responses.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::net::UnixListener;
+use tsunagu::{DaemonProcess, HealthCheck, SocketPath};
 
 use sui_store::traits::Store;
 
 use crate::connection::Connection;
 use crate::trust::TrustLevel;
 
-/// Default daemon socket path (matches Nix).
+/// Default daemon socket path (Nix-compat legacy path).
 pub const DEFAULT_SOCKET_PATH: &str = "/nix/var/nix/daemon-socket/socket";
+
+/// XDG-compliant socket path resolved via tsunagu.
+///
+/// Returns the path from `tsunagu::SocketPath::for_app("sui")`, which
+/// resolves to `$XDG_RUNTIME_DIR/sui/sui.sock` or `/tmp/sui/sui.sock`.
+#[must_use]
+pub fn xdg_socket_path() -> PathBuf {
+    SocketPath::for_app("sui")
+}
 
 /// Configuration for the daemon server.
 #[derive(Debug, Clone)]
@@ -27,7 +42,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
+            socket_path: xdg_socket_path(),
         }
     }
 }
@@ -39,12 +54,21 @@ impl DaemonConfig {
             socket_path: path.into(),
         }
     }
+
+    /// Create a config using the Nix-compatible legacy socket path.
+    #[must_use]
+    pub fn nix_compat() -> Self {
+        Self {
+            socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
+        }
+    }
 }
 
 /// The daemon server — listens for connections and spawns handlers.
 pub struct DaemonServer<S> {
     config: DaemonConfig,
     store: Arc<S>,
+    start_time: Instant,
 }
 
 impl<S> DaemonServer<S>
@@ -56,14 +80,34 @@ where
         Self {
             config,
             store: Arc::new(store),
+            start_time: Instant::now(),
         }
+    }
+
+    /// Return a tsunagu health check for the daemon.
+    #[must_use]
+    pub fn health(&self) -> HealthCheck {
+        let uptime = self.start_time.elapsed().as_secs();
+        HealthCheck::healthy("sui-daemon", env!("CARGO_PKG_VERSION")).with_uptime(uptime)
     }
 
     /// Run the daemon — listen for connections and serve them.
     ///
-    /// This method runs indefinitely. It binds to the configured Unix socket,
-    /// removes any stale socket file first, then enters the accept loop.
+    /// Acquires a PID lock via [`tsunagu::DaemonProcess`], then binds
+    /// to the configured Unix socket, removes any stale socket file
+    /// first, and enters the accept loop. The PID file is automatically
+    /// cleaned up on drop.
     pub async fn run(&self) -> Result<(), DaemonError> {
+        // Acquire PID lock via tsunagu.
+        let daemon_process = DaemonProcess::with_paths(
+            "sui",
+            SocketPath::pid_file("sui"),
+            self.config.socket_path.clone(),
+        );
+        daemon_process.acquire().map_err(|e| {
+            DaemonError::Bind(format!("failed to acquire PID lock: {e}"))
+        })?;
+
         let socket_path = &self.config.socket_path;
 
         // Ensure parent directory exists.
@@ -116,6 +160,8 @@ where
                 }
             });
         }
+
+        // `daemon_process` dropped here — PID file and socket cleaned up.
     }
 }
 
@@ -286,8 +332,18 @@ mod tests {
     }
 
     #[test]
-    fn default_config() {
+    fn default_config_uses_xdg_socket_path() {
         let config = DaemonConfig::default();
+        // tsunagu resolves to $XDG_RUNTIME_DIR/sui/sui.sock or /tmp/sui/sui.sock
+        let expected = xdg_socket_path();
+        assert_eq!(config.socket_path, expected);
+        assert!(config.socket_path.to_string_lossy().contains("sui"));
+        assert!(config.socket_path.to_string_lossy().ends_with("sui.sock"));
+    }
+
+    #[test]
+    fn nix_compat_config() {
+        let config = DaemonConfig::nix_compat();
         assert_eq!(
             config.socket_path,
             Path::new("/nix/var/nix/daemon-socket/socket")
@@ -298,5 +354,15 @@ mod tests {
     fn custom_config() {
         let config = DaemonConfig::with_socket_path("/tmp/test.sock");
         assert_eq!(config.socket_path, Path::new("/tmp/test.sock"));
+    }
+
+    #[test]
+    fn health_check_reports_healthy() {
+        let config = DaemonConfig::with_socket_path("/tmp/health-test.sock");
+        let server = DaemonServer::new(config, MockStore);
+        let health = server.health();
+        assert!(health.is_healthy());
+        assert_eq!(health.service, "sui-daemon");
+        assert!(health.uptime_secs.is_some());
     }
 }

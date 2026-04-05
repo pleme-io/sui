@@ -5,7 +5,50 @@
 //! the runtime closure (which paths the output actually references).
 
 use aho_corasick::AhoCorasick;
+use std::path::{Path, PathBuf};
 use sui_compat::store_path::STORE_PATH_HASH_LEN;
+
+/// Filesystem abstraction for testable reference scanning.
+///
+/// The default implementation uses `std::fs`. Tests can provide
+/// an in-memory filesystem.
+pub trait FileSystem: Send + Sync {
+    /// Read a file's contents.
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    /// List all files recursively in a directory.
+    fn walk_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>>;
+    /// Read a symlink target.
+    fn read_link(&self, path: &Path) -> std::io::Result<PathBuf>;
+    /// Check if a path is a file.
+    fn is_file(&self, path: &Path) -> bool;
+    /// Check if a path is a symlink.
+    fn is_symlink(&self, path: &Path) -> bool;
+}
+
+/// Default filesystem using `std::fs`.
+pub struct RealFileSystem;
+
+impl FileSystem for RealFileSystem {
+    fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
+    fn walk_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
+        walkdir(path)
+    }
+
+    fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
+        std::fs::read_link(path)
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
+    }
+}
 
 /// Scan a byte buffer for Nix store path hash references.
 ///
@@ -36,35 +79,44 @@ pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
     found
 }
 
-/// Scan a file for store path references.
-pub fn scan_file(path: &std::path::Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
-    let data = std::fs::read(path)?;
+/// Scan a file for store path references (uses real filesystem).
+pub fn scan_file(path: &Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
+    scan_file_with(&RealFileSystem, path, known_hashes)
+}
+
+/// Scan a file using a custom filesystem implementation.
+pub fn scan_file_with(fs: &dyn FileSystem, path: &Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
+    let data = fs.read_file(path)?;
     Ok(scan_references(&data, known_hashes))
 }
 
-/// Scan an entire directory tree for store path references.
-pub fn scan_directory(
-    dir: &std::path::Path,
+/// Scan a directory tree for store path references (uses real filesystem).
+pub fn scan_directory(dir: &Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
+    scan_directory_with(&RealFileSystem, dir, known_hashes)
+}
+
+/// Scan a directory tree using a custom filesystem implementation.
+pub fn scan_directory_with(
+    fs: &dyn FileSystem,
+    dir: &Path,
     known_hashes: &[&str],
 ) -> std::io::Result<Vec<String>> {
     let mut all_refs = Vec::new();
 
-    if dir.is_file() {
-        return scan_file(dir, known_hashes);
+    if fs.is_file(dir) {
+        return scan_file_with(fs, dir, known_hashes);
     }
 
-    for entry in walkdir(dir)? {
-        let path = entry;
-        if path.is_file() {
-            let refs = scan_file(&path, known_hashes)?;
+    for path in fs.walk_dir(dir)? {
+        if fs.is_file(&path) {
+            let refs = scan_file_with(fs, &path, known_hashes)?;
             for r in refs {
                 if !all_refs.contains(&r) {
                     all_refs.push(r);
                 }
             }
-        } else if path.is_symlink() {
-            // Check symlink target for store path references
-            if let Ok(target) = std::fs::read_link(&path) {
+        } else if fs.is_symlink(&path) {
+            if let Ok(target) = fs.read_link(&path) {
                 let target_str = target.to_string_lossy();
                 let refs = scan_references(target_str.as_bytes(), known_hashes);
                 for r in refs {

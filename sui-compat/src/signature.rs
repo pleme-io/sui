@@ -5,7 +5,35 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use thiserror::Error;
 
-use crate::hash::minimal_base64_encode;
+use crate::hash::base64_encode;
+
+/// Trait for verifying store path signatures.
+///
+/// Implementations can use different Ed25519 backends (ed25519-dalek, ring, aws-lc-rs)
+/// or implement custom trust policies (multi-key quorum, key rotation, HSM).
+pub trait SignatureVerifier: Send + Sync {
+    /// Verify a signature against a fingerprint and public key.
+    fn verify(&self, fingerprint: &[u8], signature: &[u8], public_key: &[u8]) -> Result<(), SignatureError>;
+}
+
+/// Default Ed25519 signature verifier using ed25519-dalek.
+pub struct Ed25519Verifier;
+
+impl SignatureVerifier for Ed25519Verifier {
+    fn verify(&self, fingerprint: &[u8], signature: &[u8], public_key: &[u8]) -> Result<(), SignatureError> {
+        let key_bytes: [u8; 32] = public_key.try_into()
+            .map_err(|_| SignatureError::InvalidPublicKey)?;
+        let sig_bytes: [u8; 64] = signature.try_into()
+            .map_err(|_| SignatureError::InvalidFormat("signature must be 64 bytes".to_string()))?;
+
+        let verifying_key = VerifyingKey::from_bytes(&key_bytes)
+            .map_err(|_| SignatureError::InvalidPublicKey)?;
+        let sig = Signature::from_bytes(&sig_bytes);
+
+        verifying_key.verify(fingerprint, &sig)
+            .map_err(|_| SignatureError::VerificationFailed)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SignatureError {
@@ -35,7 +63,7 @@ impl StorePathSignature {
             .split_once(':')
             .ok_or_else(|| SignatureError::InvalidFormat("missing colon".to_string()))?;
 
-        let signature = minimal_base64_decode(b64)
+        let signature = b64_decode(b64)
             .map_err(|_| SignatureError::Base64Decode)?;
 
         Ok(Self {
@@ -46,27 +74,25 @@ impl StorePathSignature {
 
     /// Serialize to the `keyname:base64sig` format.
     pub fn to_string_repr(&self) -> String {
-        format!("{}:{}", self.key_name, minimal_base64_encode(&self.signature))
+        format!("{}:{}", self.key_name, base64_encode(&self.signature))
     }
 
     /// Verify this signature against a fingerprint and public key.
     ///
-    /// The fingerprint is the string that was signed, typically:
-    /// `1;{storePath};{narHash};{narSize};{references}`
+    /// Uses the default Ed25519 verifier. For custom verification strategies,
+    /// use `verify_with()` with a custom `SignatureVerifier` implementation.
     pub fn verify(&self, fingerprint: &str, public_key: &[u8; 32]) -> Result<(), SignatureError> {
-        let verifying_key = VerifyingKey::from_bytes(public_key)
-            .map_err(|_| SignatureError::InvalidPublicKey)?;
+        self.verify_with(fingerprint, public_key, &Ed25519Verifier)
+    }
 
-        let sig_bytes: [u8; 64] = self.signature
-            .as_slice()
-            .try_into()
-            .map_err(|_| SignatureError::InvalidFormat("signature must be 64 bytes".to_string()))?;
-
-        let signature = Signature::from_bytes(&sig_bytes);
-
-        verifying_key
-            .verify(fingerprint.as_bytes(), &signature)
-            .map_err(|_| SignatureError::VerificationFailed)
+    /// Verify using a custom `SignatureVerifier` implementation.
+    pub fn verify_with(
+        &self,
+        fingerprint: &str,
+        public_key: &[u8],
+        verifier: &dyn SignatureVerifier,
+    ) -> Result<(), SignatureError> {
+        verifier.verify(fingerprint.as_bytes(), &self.signature, public_key)
     }
 }
 
@@ -84,7 +110,7 @@ pub fn compute_fingerprint(
 }
 
 /// Base64 decode using the `base64` crate.
-fn minimal_base64_decode(input: &str) -> Result<Vec<u8>, ()> {
+fn b64_decode(input: &str) -> Result<Vec<u8>, ()> {
     crate::hash::base64_decode(input).map_err(|_| ())
 }
 

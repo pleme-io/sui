@@ -135,6 +135,49 @@ pub trait Store: Send + Sync {
             "garbage collection not implemented for this backend".to_string(),
         ))
     }
+
+    /// Add a store path with its NAR content. Returns the registered PathInfo.
+    async fn add_to_store(
+        &self,
+        _name: &str,
+        _nar_data: &[u8],
+        _references: &[String],
+    ) -> StoreResult<PathInfo> {
+        Err(StoreError::NotSupported(
+            "add_to_store not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Register a pre-built path in the store database.
+    async fn register_path(
+        &self,
+        _info: &PathInfo,
+    ) -> StoreResult<()> {
+        Err(StoreError::NotSupported(
+            "register_path not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Add signatures to an existing store path.
+    async fn add_signatures(
+        &self,
+        _path: &StorePath,
+        _signatures: &[String],
+    ) -> StoreResult<()> {
+        Err(StoreError::NotSupported(
+            "add_signatures not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Query paths that refer to the given path (reverse dependencies).
+    async fn query_referrers(
+        &self,
+        _path: &StorePath,
+    ) -> StoreResult<Vec<StorePath>> {
+        Err(StoreError::NotSupported(
+            "query_referrers not implemented for this backend".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
