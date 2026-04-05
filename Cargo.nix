@@ -12861,6 +12861,10 @@ rec {
         libName = "sui_daemon";
         dependencies = [
           {
+            name = "async-trait";
+            packageId = "async-trait";
+          }
+          {
             name = "libc";
             packageId = "libc";
           }
@@ -12963,6 +12967,10 @@ rec {
         libName = "sui_orchestrate";
         dependencies = [
           {
+            name = "async-trait";
+            packageId = "async-trait";
+          }
+          {
             name = "chrono";
             packageId = "chrono";
             features = [ "serde" ];
@@ -13020,6 +13028,10 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-store; };
         libName = "sui_store";
         dependencies = [
+          {
+            name = "async-trait";
+            packageId = "async-trait";
+          }
           {
             name = "reqwest";
             packageId = "reqwest";
