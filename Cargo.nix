@@ -557,7 +557,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
         ];
         features = {
@@ -723,7 +723,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
         ];
         features = {
@@ -1970,6 +1970,22 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "serde" "std" ];
       };
+      "camino" = rec {
+        crateName = "camino";
+        version = "1.2.2";
+        edition = "2021";
+        sha256 = "0j0ayqfbbl8bxg0795ssk1hzkjix3dvl2kk63hdgzf9cd5nscag6";
+        authors = [
+          "Without Boats <saoirse@without.boats>"
+          "Ashley Williams <ashley666ashley@gmail.com>"
+          "Steve Klabnik <steve@steveklabnik.com>"
+          "Rain <rain@sunshowers.io>"
+        ];
+        features = {
+          "proptest1" = [ "dep:proptest" ];
+          "serde1" = [ "dep:serde_core" ];
+        };
+      };
       "cc" = rec {
         crateName = "cc";
         version = "1.2.59";
@@ -2335,6 +2351,22 @@ rec {
           "default" = [ "link" ];
         };
         resolvedDefaultFeatures = [ "default" "link" ];
+      };
+      "countme" = rec {
+        crateName = "countme";
+        version = "3.0.1";
+        edition = "2018";
+        sha256 = "0dn62hhvgmwyxslh14r4nlbvz8h50cp5mnn1qhqsw63vs7yva13p";
+        authors = [
+          "Aleksey Kladov <aleksey.kladov@gmail.com>"
+        ];
+        features = {
+          "dashmap" = [ "dep:dashmap" ];
+          "enable" = [ "dashmap" "once_cell" "rustc-hash" ];
+          "once_cell" = [ "dep:once_cell" ];
+          "print_at_exit" = [ "enable" ];
+          "rustc-hash" = [ "dep:rustc-hash" ];
+        };
       };
       "cpufeatures 0.2.17" = rec {
         crateName = "cpufeatures";
@@ -4361,7 +4393,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
         ];
         features = {
@@ -4404,6 +4436,30 @@ rec {
           "serde" = [ "dep:serde" ];
         };
         resolvedDefaultFeatures = [ "ahash" "default" "inline-more" "raw" ];
+      };
+      "hashbrown 0.14.5" = rec {
+        crateName = "hashbrown";
+        version = "0.14.5";
+        edition = "2021";
+        sha256 = "1wa1vy1xs3mp11bn3z9dv0jricgr6a2j0zkf1g19yz3vw4il89z5";
+        authors = [
+          "Amanieu d'Antras <amanieu@gmail.com>"
+        ];
+        features = {
+          "ahash" = [ "dep:ahash" ];
+          "alloc" = [ "dep:alloc" ];
+          "allocator-api2" = [ "dep:allocator-api2" ];
+          "compiler_builtins" = [ "dep:compiler_builtins" ];
+          "core" = [ "dep:core" ];
+          "default" = [ "ahash" "inline-more" "allocator-api2" ];
+          "equivalent" = [ "dep:equivalent" ];
+          "nightly" = [ "allocator-api2?/nightly" "bumpalo/allocator_api" ];
+          "rayon" = [ "dep:rayon" ];
+          "rkyv" = [ "dep:rkyv" ];
+          "rustc-dep-of-std" = [ "nightly" "core" "compiler_builtins" "alloc" "rustc-internal-api" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "inline-more" ];
       };
       "hashbrown 0.15.5" = rec {
         crateName = "hashbrown";
@@ -5771,6 +5827,24 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "std" ];
       };
+      "is_executable" = rec {
+        crateName = "is_executable";
+        version = "1.0.5";
+        edition = "2021";
+        sha256 = "1i78ss45h94nwabbn6ki64a91djlli8zdwwbh56jj9kvhssbiaxs";
+        authors = [
+          "Nick Fitzgerald <fitzgen@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "windows-sys";
+            packageId = "windows-sys 0.60.2";
+            target = { target, features }: ("windows" == target."os" or null);
+            features = [ "Win32_Storage_FileSystem" ];
+          }
+        ];
+
+      };
       "is_terminal_polyfill" = rec {
         crateName = "is_terminal_polyfill";
         version = "1.70.2";
@@ -6480,6 +6554,35 @@ rec {
           "zerocopy" = [ "fs" "uio" ];
         };
         resolvedDefaultFeatures = [ "default" "memoffset" "net" "socket" ];
+      };
+      "nix-nar" = rec {
+        crateName = "nix-nar";
+        version = "0.3.1";
+        edition = "2021";
+        sha256 = "1q6rcbf0chjiz7hgva1f486zwk1lacfw5wazha1l57zqglazmnqm";
+        libName = "nix_nar";
+        authors = [
+          "Alexandru Scvortov <code@scvalex.net>"
+        ];
+        dependencies = [
+          {
+            name = "camino";
+            packageId = "camino";
+          }
+          {
+            name = "is_executable";
+            packageId = "is_executable";
+          }
+          {
+            name = "symlink";
+            packageId = "symlink";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 1.0.69";
+          }
+        ];
+
       };
       "nu-ansi-term" = rec {
         crateName = "nu-ansi-term";
@@ -7990,7 +8093,7 @@ rec {
           }
           {
             name = "rustc-hash";
-            packageId = "rustc-hash";
+            packageId = "rustc-hash 2.1.2";
           }
           {
             name = "rustls";
@@ -8006,7 +8109,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -8101,7 +8204,7 @@ rec {
           }
           {
             name = "rustc-hash";
-            packageId = "rustc-hash";
+            packageId = "rustc-hash 2.1.2";
           }
           {
             name = "rustls";
@@ -8122,7 +8225,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tinyvec";
@@ -9177,6 +9280,55 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" ];
       };
+      "rnix" = rec {
+        crateName = "rnix";
+        version = "0.14.0";
+        edition = "2021";
+        sha256 = "16sp7zzagxdk7wps74jfpqrilz6yny24bhsisc8dzv1f6wbvsqy1";
+        authors = [
+          "jD91mZM2 <me@krake.one>"
+        ];
+        dependencies = [
+          {
+            name = "rowan";
+            packageId = "rowan";
+          }
+        ];
+
+      };
+      "rowan" = rec {
+        crateName = "rowan";
+        version = "0.16.1";
+        edition = "2021";
+        sha256 = "08azddgq9f9nir996h0y46j8va0wsz4112hv0ls9hd1fb2gklyj1";
+        authors = [
+          "Aleksey Kladov <aleksey.kladov@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "countme";
+            packageId = "countme";
+          }
+          {
+            name = "hashbrown";
+            packageId = "hashbrown 0.14.5";
+            usesDefaultFeatures = false;
+            features = [ "inline-more" ];
+          }
+          {
+            name = "rustc-hash";
+            packageId = "rustc-hash 1.1.0";
+          }
+          {
+            name = "text-size";
+            packageId = "text-size";
+          }
+        ];
+        features = {
+          "serde" = [ "dep:serde" ];
+          "serde1" = [ "serde" "text-size/serde" ];
+        };
+      };
       "rsa" = rec {
         crateName = "rsa";
         version = "0.9.10";
@@ -9412,7 +9564,21 @@ rec {
         };
         resolvedDefaultFeatures = [ "maths" "serde" "std" ];
       };
-      "rustc-hash" = rec {
+      "rustc-hash 1.1.0" = rec {
+        crateName = "rustc-hash";
+        version = "1.1.0";
+        edition = "2015";
+        sha256 = "1qkc5khrmv5pqi5l5ca9p5nl5hs742cagrndhbrlk3dhlrx3zm08";
+        libName = "rustc_hash";
+        authors = [
+          "The Rust Project Developers"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "rustc-hash 2.1.2" = rec {
         crateName = "rustc-hash";
         version = "2.1.2";
         edition = "2021";
@@ -9912,7 +10078,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
             usesDefaultFeatures = false;
           }
           {
@@ -10458,7 +10624,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
             usesDefaultFeatures = false;
           }
         ];
@@ -11481,7 +11647,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "time";
@@ -11941,7 +12107,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "time";
@@ -12145,7 +12311,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "time";
@@ -12271,7 +12437,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "time";
@@ -12547,7 +12713,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12609,7 +12775,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12646,6 +12812,10 @@ rec {
             features = [ "std" ];
           }
           {
+            name = "nix-nar";
+            packageId = "nix-nar";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -12660,7 +12830,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
         ];
         devDependencies = [
@@ -12709,7 +12879,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12737,6 +12907,14 @@ rec {
         libName = "sui_eval";
         dependencies = [
           {
+            name = "rnix";
+            packageId = "rnix";
+          }
+          {
+            name = "rowan";
+            packageId = "rowan";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -12755,7 +12933,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12813,7 +12991,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12863,7 +13041,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "tokio";
@@ -12874,6 +13052,16 @@ rec {
             name = "tracing";
             packageId = "tracing";
           }
+        ];
+
+      };
+      "symlink" = rec {
+        crateName = "symlink";
+        version = "0.1.0";
+        edition = "2015";
+        sha256 = "02h1i0b81mxb4vns4xrvrfibpcvs7jqqav8p3yilwik8cv73r5x7";
+        authors = [
+          "Chris Morgan <me@chrismorgan.info>"
         ];
 
       };
@@ -13103,7 +13291,37 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "getrandom" ];
       };
-      "thiserror" = rec {
+      "text-size" = rec {
+        crateName = "text-size";
+        version = "1.1.1";
+        edition = "2018";
+        sha256 = "0cwjbkl7w3xc8mnkhg1nwij6p5y2qkcfldgss8ddnawvhf3s32pi";
+        libName = "text_size";
+        authors = [
+          "Aleksey Kladov <aleksey.kladov@gmail.com>"
+          "Christopher Durham (CAD97) <cad97@cad97.com>"
+        ];
+        features = {
+          "serde" = [ "dep:serde" ];
+        };
+      };
+      "thiserror 1.0.69" = rec {
+        crateName = "thiserror";
+        version = "1.0.69";
+        edition = "2021";
+        sha256 = "0lizjay08agcr5hs9yfzzj6axs53a2rgx070a1dsi3jpkcrzbamn";
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "thiserror-impl";
+            packageId = "thiserror-impl 1.0.69";
+          }
+        ];
+
+      };
+      "thiserror 2.0.18" = rec {
         crateName = "thiserror";
         version = "2.0.18";
         edition = "2021";
@@ -13114,7 +13332,7 @@ rec {
         dependencies = [
           {
             name = "thiserror-impl";
-            packageId = "thiserror-impl";
+            packageId = "thiserror-impl 2.0.18";
           }
         ];
         features = {
@@ -13122,7 +13340,33 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
-      "thiserror-impl" = rec {
+      "thiserror-impl 1.0.69" = rec {
+        crateName = "thiserror-impl";
+        version = "1.0.69";
+        edition = "2021";
+        sha256 = "1h84fmn2nai41cxbhk6pqf46bxqq1b344v8yz089w1chzi76rvjg";
+        procMacro = true;
+        libName = "thiserror_impl";
+        authors = [
+          "David Tolnay <dtolnay@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.117";
+          }
+        ];
+
+      };
+      "thiserror-impl 2.0.18" = rec {
         crateName = "thiserror-impl";
         version = "2.0.18";
         edition = "2021";
@@ -14789,7 +15033,7 @@ rec {
           }
           {
             name = "thiserror";
-            packageId = "thiserror";
+            packageId = "thiserror 2.0.18";
           }
           {
             name = "utf-8";
@@ -17175,7 +17419,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_System" "Win32_System_IO" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_IO" "default" ];
       };
       "windows-sys 0.61.2" = rec {
         crateName = "windows-sys";
