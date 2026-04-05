@@ -4,8 +4,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::ast::{Expr, Pattern};
-
 /// A Nix value.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -69,18 +67,23 @@ impl NixAttrs {
 }
 
 /// A closure — lambda + captured environment.
+///
+/// Stores rnix AST nodes so we can re-evaluate the body in the captured env.
 #[derive(Debug, Clone)]
 pub struct Closure {
-    pub pattern: Pattern,
-    pub body: Expr,
+    pub param: rnix::ast::Param,
+    pub body: rnix::ast::Expr,
     pub env: Env,
 }
 
 /// A builtin function.
+///
+/// Not `Send`/`Sync` because `Value` contains rnix AST nodes (rowan `SyntaxNode`)
+/// which use `NonNull` internally. The evaluator is single-threaded.
 #[derive(Clone)]
 pub struct BuiltinFn {
     pub name: &'static str,
-    pub func: Arc<dyn Fn(&[Value]) -> Result<Value, EvalError> + Send + Sync>,
+    pub func: Arc<dyn Fn(&[Value]) -> Result<Value, EvalError>>,
 }
 
 impl fmt::Debug for BuiltinFn {
@@ -357,9 +360,16 @@ mod tests {
 
     #[test]
     fn to_json_lambda() {
+        // Build a minimal rnix lambda for testing
+        let root = rnix::Root::parse("x: x");
+        let expr = root.tree().expr().unwrap();
+        let lambda = match expr {
+            rnix::ast::Expr::Lambda(l) => l,
+            _ => panic!("expected lambda"),
+        };
         let closure = Closure {
-            pattern: Pattern::Ident("x".to_string()),
-            body: Expr::Var("x".to_string()),
+            param: lambda.param().unwrap(),
+            body: lambda.body().unwrap(),
             env: Env::new(),
         };
         assert_eq!(
@@ -408,9 +418,15 @@ mod tests {
 
     #[test]
     fn type_name_lambda() {
+        let root = rnix::Root::parse("x: x");
+        let expr = root.tree().expr().unwrap();
+        let lambda = match expr {
+            rnix::ast::Expr::Lambda(l) => l,
+            _ => panic!("expected lambda"),
+        };
         let closure = Closure {
-            pattern: Pattern::Ident("x".to_string()),
-            body: Expr::Null,
+            param: lambda.param().unwrap(),
+            body: lambda.body().unwrap(),
             env: Env::new(),
         };
         assert_eq!(Value::Lambda(closure).type_name(), "lambda");
@@ -537,9 +553,15 @@ mod tests {
 
     #[test]
     fn display_lambda() {
+        let root = rnix::Root::parse("x: x");
+        let expr = root.tree().expr().unwrap();
+        let lambda = match expr {
+            rnix::ast::Expr::Lambda(l) => l,
+            _ => panic!("expected lambda"),
+        };
         let closure = Closure {
-            pattern: Pattern::Ident("x".to_string()),
-            body: Expr::Null,
+            param: lambda.param().unwrap(),
+            body: lambda.body().unwrap(),
             env: Env::new(),
         };
         assert_eq!(format!("{}", Value::Lambda(closure)), "<<lambda>>");

@@ -267,7 +267,7 @@ pub fn register(env: &mut Env) {
 fn register_builtin(
     attrs: &mut NixAttrs,
     name: &'static str,
-    func: impl Fn(&[Value]) -> Result<Value, EvalError> + Send + Sync + 'static,
+    func: impl Fn(&[Value]) -> Result<Value, EvalError> + 'static,
 ) {
     attrs.insert(
         name.to_string(),
@@ -281,7 +281,7 @@ fn register_builtin(
 fn register_curried(
     attrs: &mut NixAttrs,
     name: &'static str,
-    func: impl Fn(&Value, &Value) -> Result<Value, EvalError> + Send + Sync + Clone + 'static,
+    func: impl Fn(&Value, &Value) -> Result<Value, EvalError> + Clone + 'static,
 ) {
     let f = func.clone();
     attrs.insert(

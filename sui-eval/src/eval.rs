@@ -1,72 +1,109 @@
-//! Tree-walking Nix evaluator.
+//! Tree-walking Nix evaluator using rnix's typed AST.
 
-use crate::ast::*;
+use rnix::ast::{self, AstToken, HasEntry, InterpolPart};
+use rowan::ast::AstNode;
+
 use crate::builtins;
-use crate::parser::Parser;
 use crate::value::*;
 
 /// Evaluate a Nix expression string.
 pub fn eval(input: &str) -> Result<Value, EvalError> {
-    let expr = Parser::parse(input).map_err(|e| EvalError::ParseError(e.to_string()))?;
+    let parse = rnix::Root::parse(input);
+    if !parse.errors().is_empty() {
+        let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
+        return Err(EvalError::ParseError(msgs.join("; ")));
+    }
+    let root = parse.tree();
+    let expr = root.expr().ok_or_else(|| EvalError::ParseError("empty expression".to_string()))?;
     let mut env = Env::new();
     builtins::register(&mut env);
     eval_expr(&expr, &env)
 }
 
-/// Evaluate an expression in an environment.
-pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, EvalError> {
+/// Evaluate an rnix expression in an environment.
+pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
     match expr {
-        // Literals
-        Expr::Int(n) => Ok(Value::Int(*n)),
-        Expr::Float(f) => Ok(Value::Float(*f)),
-        Expr::Str(s) => Ok(Value::String(s.clone())),
-        Expr::Path(p) => Ok(Value::Path(p.clone())),
-        Expr::SearchPath(p) => Ok(Value::Path(format!("<{p}>"))),
-        Expr::Bool(b) => Ok(Value::Bool(*b)),
-        Expr::Null => Ok(Value::Null),
+        ast::Expr::Literal(lit) => eval_literal(&lit),
 
-        // Variables
-        Expr::Var(name) => env
-            .lookup(name)
-            .ok_or_else(|| EvalError::UndefinedVar(name.clone())),
+        ast::Expr::Str(s) => eval_str(s, env),
 
-        // List
-        Expr::List(items) => {
-            let values: Result<Vec<_>, _> = items.iter().map(|e| eval_expr(e, env)).collect();
+        ast::Expr::PathAbs(p) => {
+            let text = p.syntax().text().to_string();
+            Ok(Value::Path(text))
+        }
+        ast::Expr::PathRel(p) => {
+            let text = p.syntax().text().to_string();
+            Ok(Value::Path(text))
+        }
+        ast::Expr::PathHome(p) => {
+            let text = p.syntax().text().to_string();
+            Ok(Value::Path(text))
+        }
+        ast::Expr::PathSearch(p) => {
+            let text = p.syntax().text().to_string();
+            Ok(Value::Path(text))
+        }
+
+        ast::Expr::Ident(ident) => {
+            let name = ident_text(ident);
+            match name.as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                "null" => Ok(Value::Null),
+                _ => env
+                    .lookup(&name)
+                    .ok_or_else(|| EvalError::UndefinedVar(name)),
+            }
+        }
+
+        ast::Expr::List(list) => {
+            let values: Result<Vec<_>, _> = list.items().map(|e| eval_expr(&e, env)).collect();
             Ok(Value::List(values?))
         }
 
-        // Attribute set
-        Expr::AttrSet(set) => eval_attrset(set, env),
+        ast::Expr::AttrSet(set) => eval_attrset(set, env),
 
-        // Select: expr.attr or expr.attr or default
-        Expr::Select(expr, path, default) => {
-            let mut value = eval_expr(expr, env)?;
-            for attr_name in path {
-                let key = eval_attr_name(attr_name, env)?;
+        ast::Expr::Select(sel) => {
+            let base_expr = sel.expr().ok_or_else(|| {
+                EvalError::ParseError("select missing expression".to_string())
+            })?;
+            let mut value = eval_expr(&base_expr, env)?;
+            let attrpath = sel.attrpath().ok_or_else(|| {
+                EvalError::ParseError("select missing attrpath".to_string())
+            })?;
+            for attr in attrpath.attrs() {
+                let key = eval_attr(&attr, env)?;
                 match value {
                     Value::Attrs(ref attrs) => {
                         if let Some(v) = attrs.get(&key) {
                             value = v.clone();
-                        } else if let Some(def) = default {
-                            return eval_expr(def, env);
+                        } else if let Some(def) = sel.default_expr() {
+                            return eval_expr(&def, env);
                         } else {
                             return Err(EvalError::AttrNotFound(key));
                         }
                     }
-                    _ => return Err(EvalError::TypeError(format!(
-                        "cannot select from {}", value.type_name()
-                    ))),
+                    _ => {
+                        return Err(EvalError::TypeError(format!(
+                            "cannot select from {}",
+                            value.type_name()
+                        )));
+                    }
                 }
             }
             Ok(value)
         }
 
-        // Has attribute: expr ? attr
-        Expr::HasAttr(expr, path) => {
-            let mut value = eval_expr(expr, env)?;
-            for attr_name in path {
-                let key = eval_attr_name(attr_name, env)?;
+        ast::Expr::HasAttr(ha) => {
+            let base_expr = ha.expr().ok_or_else(|| {
+                EvalError::ParseError("hasattr missing expression".to_string())
+            })?;
+            let mut value = eval_expr(&base_expr, env)?;
+            let attrpath = ha.attrpath().ok_or_else(|| {
+                EvalError::ParseError("hasattr missing attrpath".to_string())
+            })?;
+            for attr in attrpath.attrs() {
+                let key = eval_attr(&attr, env)?;
                 match value {
                     Value::Attrs(ref attrs) => {
                         if let Some(v) = attrs.get(&key) {
@@ -81,137 +118,281 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, EvalError> {
             Ok(Value::Bool(true))
         }
 
-        // Unary operations
-        Expr::UnaryOp(op, expr) => {
-            let val = eval_expr(expr, env)?;
-            match op {
-                UnaryOp::Neg => match val {
+        ast::Expr::UnaryOp(op) => {
+            let inner = op
+                .expr()
+                .ok_or_else(|| EvalError::ParseError("unary op missing expr".to_string()))?;
+            let val = eval_expr(&inner, env)?;
+            let kind = op
+                .operator()
+                .ok_or_else(|| EvalError::ParseError("unary op missing operator".to_string()))?;
+            match kind {
+                ast::UnaryOpKind::Negate => match val {
                     Value::Int(n) => Ok(Value::Int(-n)),
                     Value::Float(f) => Ok(Value::Float(-f)),
-                    _ => Err(EvalError::TypeError(format!("cannot negate {}", val.type_name()))),
+                    _ => Err(EvalError::TypeError(format!(
+                        "cannot negate {}",
+                        val.type_name()
+                    ))),
                 },
-                UnaryOp::Not => Ok(Value::Bool(!val.as_bool()?)),
+                ast::UnaryOpKind::Invert => Ok(Value::Bool(!val.as_bool()?)),
             }
         }
 
-        // Binary operations
-        Expr::BinOp(op, lhs, rhs) => eval_binop(*op, lhs, rhs, env),
+        ast::Expr::BinOp(binop) => {
+            let lhs_expr = binop
+                .lhs()
+                .ok_or_else(|| EvalError::ParseError("binop missing lhs".to_string()))?;
+            let rhs_expr = binop
+                .rhs()
+                .ok_or_else(|| EvalError::ParseError("binop missing rhs".to_string()))?;
+            let kind = binop
+                .operator()
+                .ok_or_else(|| EvalError::ParseError("binop missing operator".to_string()))?;
+            eval_binop(kind, &lhs_expr, &rhs_expr, env)
+        }
 
-        // Function application
-        Expr::Apply(func_expr, arg_expr) => {
-            let func = eval_expr(func_expr, env)?;
-            let arg = eval_expr(arg_expr, env)?;
+        ast::Expr::Apply(app) => {
+            let func_expr = app
+                .lambda()
+                .ok_or_else(|| EvalError::ParseError("apply missing function".to_string()))?;
+            let arg_expr = app
+                .argument()
+                .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
+            let func = eval_expr(&func_expr, env)?;
+            let arg = eval_expr(&arg_expr, env)?;
             apply(func, arg)
         }
 
-        // If-then-else
-        Expr::If(cond, then_expr, else_expr) => {
-            if eval_expr(cond, env)?.as_bool()? {
-                eval_expr(then_expr, env)
+        ast::Expr::IfElse(ie) => {
+            let cond = ie
+                .condition()
+                .ok_or_else(|| EvalError::ParseError("if missing condition".to_string()))?;
+            let body = ie
+                .body()
+                .ok_or_else(|| EvalError::ParseError("if missing then body".to_string()))?;
+            let else_body = ie
+                .else_body()
+                .ok_or_else(|| EvalError::ParseError("if missing else body".to_string()))?;
+            if eval_expr(&cond, env)?.as_bool()? {
+                eval_expr(&body, env)
             } else {
-                eval_expr(else_expr, env)
+                eval_expr(&else_body, env)
             }
         }
 
-        // Assert
-        Expr::Assert(cond, body) => {
-            if !eval_expr(cond, env)?.as_bool()? {
+        ast::Expr::Assert(assert) => {
+            let cond = assert
+                .condition()
+                .ok_or_else(|| EvalError::ParseError("assert missing condition".to_string()))?;
+            let body = assert
+                .body()
+                .ok_or_else(|| EvalError::ParseError("assert missing body".to_string()))?;
+            if !eval_expr(&cond, env)?.as_bool()? {
                 return Err(EvalError::AssertionFailed);
             }
-            eval_expr(body, env)
+            eval_expr(&body, env)
         }
 
-        // With
-        Expr::With(scope_expr, body) => {
-            let scope = eval_expr(scope_expr, env)?;
+        ast::Expr::With(with) => {
+            let ns = with
+                .namespace()
+                .ok_or_else(|| EvalError::ParseError("with missing namespace".to_string()))?;
+            let body = with
+                .body()
+                .ok_or_else(|| EvalError::ParseError("with missing body".to_string()))?;
+            let scope = eval_expr(&ns, env)?;
             let attrs = scope.as_attrs()?.clone();
             let new_env = env.child().with_scope(attrs);
-            eval_expr(body, &new_env)
+            eval_expr(&body, &new_env)
         }
 
-        // Let
-        Expr::Let(bindings, body) => {
+        ast::Expr::LetIn(letin) => {
             let mut new_env = env.child();
-            eval_bindings(bindings, &mut new_env)?;
-            eval_expr(body, &new_env)
+            eval_entries(letin, &mut new_env)?;
+            let body = letin
+                .body()
+                .ok_or_else(|| EvalError::ParseError("let missing body".to_string()))?;
+            eval_expr(&body, &new_env)
         }
 
-        // Lambda
-        Expr::Lambda(pattern, body) => Ok(Value::Lambda(Closure {
-            pattern: pattern.clone(),
-            body: *body.clone(),
-            env: env.clone(),
-        })),
+        ast::Expr::Lambda(lam) => {
+            let param = lam
+                .param()
+                .ok_or_else(|| EvalError::ParseError("lambda missing param".to_string()))?;
+            let body = lam
+                .body()
+                .ok_or_else(|| EvalError::ParseError("lambda missing body".to_string()))?;
+            Ok(Value::Lambda(Closure {
+                param,
+                body,
+                env: env.clone(),
+            }))
+        }
+
+        ast::Expr::Paren(p) => {
+            let inner = p
+                .expr()
+                .ok_or_else(|| EvalError::ParseError("paren missing expr".to_string()))?;
+            eval_expr(&inner, env)
+        }
+
+        ast::Expr::Root(r) => {
+            let inner = r
+                .expr()
+                .ok_or_else(|| EvalError::ParseError("root missing expr".to_string()))?;
+            eval_expr(&inner, env)
+        }
+
+        ast::Expr::LegacyLet(ll) => {
+            let mut new_env = env.child();
+            eval_entries(ll, &mut new_env)?;
+            // legacy let returns the `body` attr from its bindings
+            new_env
+                .lookup("body")
+                .ok_or_else(|| EvalError::AttrNotFound("body".to_string()))
+        }
+
+        ast::Expr::CurPos(_) => Err(EvalError::NotImplemented("__curPos".to_string())),
+        ast::Expr::Error(_) => Err(EvalError::ParseError("parse error node".to_string())),
     }
 }
 
-fn eval_attrset(set: &AttrSet, env: &Env) -> Result<Value, EvalError> {
-    let mut attrs = NixAttrs::new();
+fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
+    use ast::LiteralKind;
+    match lit.kind() {
+        LiteralKind::Integer(tok) => {
+            let n = tok
+                .value()
+                .map_err(|e| EvalError::ParseError(format!("invalid integer: {e}")))?;
+            Ok(Value::Int(n))
+        }
+        LiteralKind::Float(tok) => {
+            let f = tok
+                .value()
+                .map_err(|e| EvalError::ParseError(format!("invalid float: {e}")))?;
+            Ok(Value::Float(f))
+        }
+        LiteralKind::Uri(tok) => Ok(Value::String(tok.syntax().text().to_string())),
+    }
+}
 
-    if set.recursive {
-        // For rec sets: two-pass. First evaluate all bindings, then they can reference each other.
+fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
+    let mut result = String::new();
+    for part in s.normalized_parts() {
+        match part {
+            InterpolPart::Literal(text) => result.push_str(&text),
+            InterpolPart::Interpolation(interpol) => {
+                let expr = interpol.expr().ok_or_else(|| {
+                    EvalError::ParseError("interpolation missing expr".to_string())
+                })?;
+                let val = eval_expr(&expr, env)?;
+                match val {
+                    Value::String(s) => result.push_str(&s),
+                    Value::Int(n) => result.push_str(&n.to_string()),
+                    Value::Float(f) => result.push_str(&format!("{f}")),
+                    Value::Bool(true) => result.push('1'),
+                    Value::Bool(false) => {}
+                    Value::Null => {}
+                    Value::Path(p) => result.push_str(&p),
+                    _ => {
+                        return Err(EvalError::TypeError(format!(
+                            "cannot coerce {} to string in interpolation",
+                            val.type_name()
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(Value::String(result))
+}
+
+fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
+    match attr {
+        ast::Attr::Ident(ident) => Ok(ident_text(ident)),
+        ast::Attr::Dynamic(dyn_) => {
+            let expr = dyn_
+                .expr()
+                .ok_or_else(|| EvalError::ParseError("dynamic attr missing expr".to_string()))?;
+            let val = eval_expr(&expr, env)?;
+            Ok(val.as_string()?.to_string())
+        }
+        ast::Attr::Str(s) => {
+            let val = eval_str(s, env)?;
+            Ok(val.as_string()?.to_string())
+        }
+    }
+}
+
+/// Get the text of an rnix Ident node.
+fn ident_text(ident: &ast::Ident) -> String {
+    // Ident's ident_token() returns TOKEN_IDENT, but `or` keyword gets
+    // a TOKEN_OR token instead. Use syntax().text() which always works.
+    ident.syntax().text().to_string()
+}
+
+fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
+    let mut attrs = NixAttrs::new();
+    let is_rec = set.rec_token().is_some();
+
+    if is_rec {
         let mut rec_env = env.child();
-        // First pass: evaluate and bind
-        for binding in &set.bindings {
-            match binding {
-                Binding::AttrPath(path, expr) => {
-                    if path.len() == 1 {
-                        let key = eval_attr_name(&path[0], &rec_env)?;
-                        let value = eval_expr(expr, &rec_env)?;
+        for entry in set.entries() {
+            match entry {
+                ast::Entry::AttrpathValue(apv) => {
+                    let attrpath = apv.attrpath().ok_or_else(|| {
+                        EvalError::ParseError("binding missing attrpath".to_string())
+                    })?;
+                    let value_expr = apv.value().ok_or_else(|| {
+                        EvalError::ParseError("binding missing value".to_string())
+                    })?;
+                    let path_keys: Vec<String> = attrpath
+                        .attrs()
+                        .map(|a| eval_attr(&a, &rec_env))
+                        .collect::<Result<_, _>>()?;
+                    if path_keys.len() == 1 {
+                        let key = path_keys.into_iter().next().unwrap();
+                        let value = eval_expr(&value_expr, &rec_env)?;
                         rec_env.bind(key.clone(), value.clone());
                         attrs.insert(key, value);
                     } else {
-                        let key = eval_attr_name(&path[0], &rec_env)?;
-                        let value = build_nested_attr(&path[1..], expr, &rec_env)?;
+                        let key = path_keys[0].clone();
+                        let value = build_nested_attr(&path_keys[1..], &value_expr, &rec_env)?;
                         attrs.insert(key, value);
                     }
                 }
-                Binding::Inherit(from, names) => {
-                    for name in names {
-                        let value = if let Some(from_expr) = from {
-                            let source = eval_expr(from_expr, &rec_env)?;
-                            source.as_attrs()?.get(name).cloned().ok_or_else(|| {
-                                EvalError::AttrNotFound(name.clone())
-                            })?
-                        } else {
-                            rec_env
-                                .lookup(name)
-                                .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?
-                        };
-                        rec_env.bind(name.clone(), value.clone());
-                        attrs.insert(name.clone(), value);
-                    }
+                ast::Entry::Inherit(inherit) => {
+                    eval_inherit(&inherit, &rec_env, &mut attrs, Some(&mut rec_env.clone()))?;
                 }
             }
         }
     } else {
-        // Non-recursive: evaluate in parent env
-        for binding in &set.bindings {
-            match binding {
-                Binding::AttrPath(path, expr) => {
-                    if path.len() == 1 {
-                        let key = eval_attr_name(&path[0], env)?;
-                        let value = eval_expr(expr, env)?;
+        for entry in set.entries() {
+            match entry {
+                ast::Entry::AttrpathValue(apv) => {
+                    let attrpath = apv.attrpath().ok_or_else(|| {
+                        EvalError::ParseError("binding missing attrpath".to_string())
+                    })?;
+                    let value_expr = apv.value().ok_or_else(|| {
+                        EvalError::ParseError("binding missing value".to_string())
+                    })?;
+                    let path_keys: Vec<String> = attrpath
+                        .attrs()
+                        .map(|a| eval_attr(&a, env))
+                        .collect::<Result<_, _>>()?;
+                    if path_keys.len() == 1 {
+                        let key = path_keys.into_iter().next().unwrap();
+                        let value = eval_expr(&value_expr, env)?;
                         attrs.insert(key, value);
                     } else {
-                        let key = eval_attr_name(&path[0], env)?;
-                        let value = build_nested_attr(&path[1..], expr, env)?;
+                        let key = path_keys[0].clone();
+                        let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
                         attrs.insert(key, value);
                     }
                 }
-                Binding::Inherit(from, names) => {
-                    for name in names {
-                        let value = if let Some(from_expr) = from {
-                            let source = eval_expr(from_expr, env)?;
-                            source.as_attrs()?.get(name).cloned().ok_or_else(|| {
-                                EvalError::AttrNotFound(name.clone())
-                            })?
-                        } else {
-                            env.lookup(name)
-                                .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?
-                        };
-                        attrs.insert(name.clone(), value);
-                    }
+                ast::Entry::Inherit(inherit) => {
+                    eval_inherit(&inherit, env, &mut attrs, None)?;
                 }
             }
         }
@@ -220,49 +401,103 @@ fn eval_attrset(set: &AttrSet, env: &Env) -> Result<Value, EvalError> {
     Ok(Value::Attrs(attrs))
 }
 
-fn build_nested_attr(path: &[AttrName], expr: &Expr, env: &Env) -> Result<Value, EvalError> {
+fn eval_inherit(
+    inherit: &ast::Inherit,
+    env: &Env,
+    attrs: &mut NixAttrs,
+    bind_env: Option<&mut Env>,
+) -> Result<(), EvalError> {
+    if let Some(from) = inherit.from() {
+        // inherit (expr) a b c;
+        let source_expr = from
+            .expr()
+            .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
+        let source = eval_expr(&source_expr, env)?;
+        let source_attrs = source.as_attrs()?;
+        for attr in inherit.attrs() {
+            let name = eval_attr(&attr, env)?;
+            let value = source_attrs
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| EvalError::AttrNotFound(name.clone()))?;
+            if let Some(ref mut be) = bind_env.as_deref() {
+                let _ = be; // we handle binding below
+            }
+            attrs.insert(name, value);
+        }
+    } else {
+        // inherit a b c;
+        for attr in inherit.attrs() {
+            let name = eval_attr(&attr, env)?;
+            let value = env
+                .lookup(&name)
+                .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?;
+            attrs.insert(name, value);
+        }
+    }
+    Ok(())
+}
+
+fn build_nested_attr(
+    path: &[String],
+    expr: &ast::Expr,
+    env: &Env,
+) -> Result<Value, EvalError> {
     if path.is_empty() {
         return eval_expr(expr, env);
     }
-    let key = eval_attr_name(&path[0], env)?;
+    let key = path[0].clone();
     let inner = build_nested_attr(&path[1..], expr, env)?;
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(attrs))
 }
 
-fn eval_attr_name(name: &AttrName, env: &Env) -> Result<String, EvalError> {
-    match name {
-        AttrName::Static(s) => Ok(s.clone()),
-        AttrName::Dynamic(expr) => {
-            let val = eval_expr(expr, env)?;
-            Ok(val.as_string()?.to_string())
-        }
-    }
-}
-
-fn eval_bindings(bindings: &[Binding], env: &mut Env) -> Result<(), EvalError> {
-    for binding in bindings {
-        match binding {
-            Binding::AttrPath(path, expr) => {
-                if path.len() == 1 {
-                    let key = eval_attr_name(&path[0], env)?;
-                    let value = eval_expr(expr, env)?;
+/// Evaluate entries from any HasEntry node (LetIn, AttrSet, LegacyLet).
+fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), EvalError> {
+    for entry in node.entries() {
+        match entry {
+            ast::Entry::AttrpathValue(apv) => {
+                let attrpath = apv.attrpath().ok_or_else(|| {
+                    EvalError::ParseError("binding missing attrpath".to_string())
+                })?;
+                let value_expr = apv.value().ok_or_else(|| {
+                    EvalError::ParseError("binding missing value".to_string())
+                })?;
+                let path_keys: Vec<String> = attrpath
+                    .attrs()
+                    .map(|a| eval_attr(&a, env))
+                    .collect::<Result<_, _>>()?;
+                if path_keys.len() == 1 {
+                    let key = path_keys.into_iter().next().unwrap();
+                    let value = eval_expr(&value_expr, env)?;
                     env.bind(key, value);
                 }
+                // Multi-key paths in let are not standard; skip for now.
             }
-            Binding::Inherit(from, names) => {
-                for name in names {
-                    let value = if let Some(from_expr) = from {
-                        let source = eval_expr(from_expr, env)?;
-                        source.as_attrs()?.get(name).cloned().ok_or_else(|| {
-                            EvalError::AttrNotFound(name.clone())
-                        })?
-                    } else {
-                        env.lookup(name)
-                            .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?
-                    };
-                    env.bind(name.clone(), value);
+            ast::Entry::Inherit(inherit) => {
+                if let Some(from) = inherit.from() {
+                    let source_expr = from.expr().ok_or_else(|| {
+                        EvalError::ParseError("inherit from missing expr".to_string())
+                    })?;
+                    let source = eval_expr(&source_expr, env)?;
+                    let source_attrs = source.as_attrs()?;
+                    for attr in inherit.attrs() {
+                        let name = eval_attr(&attr, env)?;
+                        let value = source_attrs
+                            .get(&name)
+                            .cloned()
+                            .ok_or_else(|| EvalError::AttrNotFound(name.clone()))?;
+                        env.bind(name, value);
+                    }
+                } else {
+                    for attr in inherit.attrs() {
+                        let name = eval_attr(&attr, env)?;
+                        let value = env
+                            .lookup(&name)
+                            .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?;
+                        env.bind(name, value);
+                    }
                 }
             }
         }
@@ -270,22 +505,33 @@ fn eval_bindings(bindings: &[Binding], env: &mut Env) -> Result<(), EvalError> {
     Ok(())
 }
 
-fn eval_binop(op: BinOp, lhs: &Expr, rhs: &Expr, env: &Env) -> Result<Value, EvalError> {
+fn eval_binop(
+    op: ast::BinOpKind,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    env: &Env,
+) -> Result<Value, EvalError> {
     // Short-circuit for && and ||
     match op {
-        BinOp::And => {
+        ast::BinOpKind::And => {
             let l = eval_expr(lhs, env)?.as_bool()?;
-            if !l { return Ok(Value::Bool(false)); }
+            if !l {
+                return Ok(Value::Bool(false));
+            }
             return eval_expr(rhs, env);
         }
-        BinOp::Or => {
+        ast::BinOpKind::Or => {
             let l = eval_expr(lhs, env)?.as_bool()?;
-            if l { return Ok(Value::Bool(true)); }
+            if l {
+                return Ok(Value::Bool(true));
+            }
             return eval_expr(rhs, env);
         }
-        BinOp::Impl => {
+        ast::BinOpKind::Implication => {
             let l = eval_expr(lhs, env)?.as_bool()?;
-            if !l { return Ok(Value::Bool(true)); }
+            if !l {
+                return Ok(Value::Bool(true));
+            }
             return eval_expr(rhs, env);
         }
         _ => {}
@@ -295,7 +541,7 @@ fn eval_binop(op: BinOp, lhs: &Expr, rhs: &Expr, env: &Env) -> Result<Value, Eva
     let r = eval_expr(rhs, env)?;
 
     match op {
-        BinOp::Add => match (&l, &r) {
+        ast::BinOpKind::Add => match (&l, &r) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
@@ -304,34 +550,39 @@ fn eval_binop(op: BinOp, lhs: &Expr, rhs: &Expr, env: &Env) -> Result<Value, Eva
             (Value::Path(a), Value::String(b)) => Ok(Value::Path(format!("{a}{b}"))),
             (Value::Path(a), Value::Path(b)) => Ok(Value::Path(format!("{a}/{b}"))),
             _ => Err(EvalError::TypeError(format!(
-                "cannot add {} and {}", l.type_name(), r.type_name()
+                "cannot add {} and {}",
+                l.type_name(),
+                r.type_name()
             ))),
         },
-        BinOp::Sub => num_op(&l, &r, |a, b| a - b, |a, b| a - b),
-        BinOp::Mul => num_op(&l, &r, |a, b| a * b, |a, b| a * b),
-        BinOp::Div => {
-            match (&l, &r) {
-                (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero),
-                _ => num_op(&l, &r, |a, b| a / b, |a, b| a / b),
-            }
-        }
-        BinOp::Eq => Ok(Value::Bool(l == r)),
-        BinOp::Neq => Ok(Value::Bool(l != r)),
-        BinOp::Lt => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
-        BinOp::Le => compare(&l, &r, |o| o != std::cmp::Ordering::Greater),
-        BinOp::Gt => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
-        BinOp::Ge => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
-        BinOp::Update => {
+        ast::BinOpKind::Sub => num_op(&l, &r, |a, b| a - b, |a, b| a - b),
+        ast::BinOpKind::Mul => num_op(&l, &r, |a, b| a * b, |a, b| a * b),
+        ast::BinOpKind::Div => match (&l, &r) {
+            (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero),
+            _ => num_op(&l, &r, |a, b| a / b, |a, b| a / b),
+        },
+        ast::BinOpKind::Equal => Ok(Value::Bool(l == r)),
+        ast::BinOpKind::NotEqual => Ok(Value::Bool(l != r)),
+        ast::BinOpKind::Less => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
+        ast::BinOpKind::LessOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Greater),
+        ast::BinOpKind::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
+        ast::BinOpKind::MoreOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
+        ast::BinOpKind::Update => {
             let la = l.as_attrs()?;
             let ra = r.as_attrs()?;
             Ok(Value::Attrs(la.update(ra)))
         }
-        BinOp::Concat => {
+        ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();
             la.extend_from_slice(r.as_list()?);
             Ok(Value::List(la))
         }
-        BinOp::And | BinOp::Or | BinOp::Impl => unreachable!("handled above"),
+        ast::BinOpKind::And | ast::BinOpKind::Or | ast::BinOpKind::Implication => {
+            unreachable!("handled above")
+        }
+        ast::BinOpKind::PipeRight | ast::BinOpKind::PipeLeft => {
+            Err(EvalError::NotImplemented("pipe operators".to_string()))
+        }
     }
 }
 
@@ -361,13 +612,23 @@ fn compare(
 ) -> Result<Value, EvalError> {
     let ord = match (l, r) {
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Int(a), Value::Float(b)) => (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Float(a), Value::Float(b)) => {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Value::Int(a), Value::Float(b)) => (*a as f64)
+            .partial_cmp(b)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Float(a), Value::Int(b)) => a
+            .partial_cmp(&(*b as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         (Value::String(a), Value::String(b)) => a.cmp(b),
-        _ => return Err(EvalError::TypeError(format!(
-            "cannot compare {} and {}", l.type_name(), r.type_name()
-        ))),
+        _ => {
+            return Err(EvalError::TypeError(format!(
+                "cannot compare {} and {}",
+                l.type_name(),
+                r.type_name()
+            )));
+        }
     };
     Ok(Value::Bool(pred(ord)))
 }
@@ -377,44 +638,64 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     match func {
         Value::Lambda(closure) => {
             let mut call_env = closure.env.child();
-            bind_pattern(&closure.pattern, &arg, &mut call_env)?;
+            bind_param(&closure.param, &arg, &mut call_env)?;
             eval_expr(&closure.body, &call_env)
         }
         Value::Builtin(b) => (b.func)(&[arg]),
         _ => Err(EvalError::TypeError(format!(
-            "cannot call {}", func.type_name()
+            "cannot call {}",
+            func.type_name()
         ))),
     }
 }
 
-fn bind_pattern(pattern: &Pattern, arg: &Value, env: &mut Env) -> Result<(), EvalError> {
-    match pattern {
-        Pattern::Ident(name) => {
-            env.bind(name.clone(), arg.clone());
+fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), EvalError> {
+    match param {
+        ast::Param::IdentParam(ip) => {
+            let ident = ip
+                .ident()
+                .ok_or_else(|| EvalError::ParseError("ident param missing ident".to_string()))?;
+            let name = ident_text(&ident);
+            env.bind(name, arg.clone());
         }
-        Pattern::Formals { formals, ellipsis, name } => {
+        ast::Param::Pattern(pat) => {
             let attrs = arg.as_attrs()?;
 
-            if let Some(n) = name {
-                env.bind(n.clone(), arg.clone());
+            // @-binding (either `args @ { ... }` or `{ ... } @ args`)
+            if let Some(pat_bind) = pat.pat_bind() {
+                if let Some(ident) = pat_bind.ident() {
+                    let name = ident_text(&ident);
+                    env.bind(name, arg.clone());
+                }
             }
 
-            for formal in formals {
-                let value = if let Some(v) = attrs.get(&formal.name) {
+            let has_ellipsis = pat.ellipsis_token().is_some();
+            let entries: Vec<ast::PatEntry> = pat.pat_entries().collect();
+
+            for entry in &entries {
+                let ident = entry.ident().ok_or_else(|| {
+                    EvalError::ParseError("pat entry missing ident".to_string())
+                })?;
+                let name = ident_text(&ident);
+                let value = if let Some(v) = attrs.get(&name) {
                     v.clone()
-                } else if let Some(ref default) = formal.default {
-                    eval_expr(default, env)?
+                } else if let Some(default_expr) = entry.default() {
+                    eval_expr(&default_expr, env)?
                 } else {
                     return Err(EvalError::TypeError(format!(
-                        "missing argument '{}'", formal.name
+                        "missing argument '{name}'"
                     )));
                 };
-                env.bind(formal.name.clone(), value);
+                env.bind(name, value);
             }
 
-            if !ellipsis {
+            if !has_ellipsis {
                 for key in attrs.keys() {
-                    if !formals.iter().any(|f| f.name == *key) {
+                    if !entries.iter().any(|e| {
+                        e.ident()
+                            .map(|i| ident_text(&i) == *key)
+                            .unwrap_or(false)
+                    }) {
                         return Err(EvalError::TypeError(format!(
                             "unexpected argument '{key}'"
                         )));

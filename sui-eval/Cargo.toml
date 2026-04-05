@@ -10,6 +10,8 @@ description = "Clean-room Nix language evaluator (bytecode VM)"
 [dependencies]
 sui-compat.workspace = true
 sui-store.workspace = true
+rnix.workspace = true
+rowan.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,15 +1,12 @@
 //! Clean-room Nix language evaluator.
 //!
 //! Architecture:
-//! Nix source → Lexer (tokens) → Parser (AST) → Evaluator (values)
+//! Nix source → rnix parser (CST) → Evaluator (values)
 //!
-//! All code written from scratch. No vendored evaluator code.
+//! Parsing is delegated to the `rnix` crate (MIT).
 
-pub mod ast;
 pub mod builtins;
 pub mod eval;
-pub mod lexer;
-pub mod parser;
 pub mod value;
 
 pub use eval::eval;

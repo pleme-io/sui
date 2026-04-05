@@ -71,6 +71,12 @@ figment = { version = "0.10", features = ["yaml", "toml", "env"] }
 tokio-stream = "0.1"
 futures-core = "0.3"
 
+# Nix parsing (battle-tested MIT libraries)
+rnix = "0.14"
+rowan = "0.16"
+nix-nar = "0.3"
+winnow = "1"
+
 # Testing
 proptest = "1"
 tempfile = "3"
