@@ -3950,10 +3950,12 @@ dependencies = [
 name = "sui-eval"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "rnix",
  "rowan",
  "serde",
  "serde_json",
+ "sha2",
  "sui-compat",
  "sui-store",
  "thiserror 2.0.18",

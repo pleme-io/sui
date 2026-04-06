@@ -472,20 +472,6 @@ pub fn register(env: &mut Env) {
             }),
         }))
     });
-    register_builtin(&mut builtins_set, "split", |args| {
-        let regex_str = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
-            name: "split<partial>",
-            func: Arc::new(move |args2| {
-                let s = args2[0].as_string()?;
-                // Simple split on literal string (full regex in later phase)
-                let parts: Vec<Value> = s.split(&regex_str)
-                    .map(|p| Value::String(p.to_string()))
-                    .collect();
-                Ok(Value::List(parts))
-            }),
-        }))
-    });
     register_builtin(&mut builtins_set, "hasPrefix", |args| {
         let prefix = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
@@ -736,6 +722,172 @@ pub fn register(env: &mut Env) {
             name: "deepSeq<partial>",
             func: Arc::new(|args2| Ok(args2[0].clone())),
         }))
+    });
+
+    // ── Tier 1: hashString, match, split (regex-based) ────
+
+    register_curried(&mut builtins_set, "hashString", |algo, s| {
+        let algo_str = algo.as_string()?;
+        let input = s.as_string()?;
+        let hex = match algo_str {
+            "sha256" => {
+                use sha2::{Sha256, Digest};
+                format!("{:x}", Sha256::digest(input.as_bytes()))
+            }
+            "sha512" => {
+                use sha2::{Sha512, Digest};
+                format!("{:x}", Sha512::digest(input.as_bytes()))
+            }
+            _ => return Err(EvalError::TypeError(format!("hashString: unsupported algorithm: {algo_str}"))),
+        };
+        Ok(Value::String(hex))
+    });
+
+    register_curried(&mut builtins_set, "match", |pattern, s| {
+        let pat = pattern.as_string()?;
+        let input = s.as_string()?;
+        let re = regex::Regex::new(&format!("^{pat}$"))
+            .map_err(|e| EvalError::TypeError(format!("match: invalid regex: {e}")))?;
+        match re.captures(input) {
+            Some(caps) => {
+                let groups: Vec<Value> = (1..caps.len())
+                    .map(|i| match caps.get(i) {
+                        Some(m) => Value::String(m.as_str().to_string()),
+                        None => Value::Null,
+                    })
+                    .collect();
+                Ok(Value::List(groups))
+            }
+            None => Ok(Value::Null),
+        }
+    });
+
+    // Regex-based split per Nix spec: alternates non-match strings and match group lists.
+    register_curried(&mut builtins_set, "split", |pattern, s| {
+        let pat = pattern.as_string()?;
+        let input = s.as_string()?;
+        let re = regex::Regex::new(pat)
+            .map_err(|e| EvalError::TypeError(format!("split: invalid regex: {e}")))?;
+        let mut result: Vec<Value> = Vec::new();
+        let mut last_end = 0;
+        for m in re.find_iter(input) {
+            // Add the non-matching part before this match
+            result.push(Value::String(input[last_end..m.start()].to_string()));
+            // Add the match groups as a list
+            if let Some(caps) = re.captures(&input[m.start()..]) {
+                let groups: Vec<Value> = (1..caps.len())
+                    .map(|i| match caps.get(i) {
+                        Some(g) => Value::String(g.as_str().to_string()),
+                        None => Value::Null,
+                    })
+                    .collect();
+                // If no capture groups, wrap the whole match in a list
+                if groups.is_empty() {
+                    result.push(Value::List(vec![Value::String(m.as_str().to_string())]));
+                } else {
+                    result.push(Value::List(groups));
+                }
+            }
+            last_end = m.end();
+        }
+        // Add trailing non-matching part
+        result.push(Value::String(input[last_end..].to_string()));
+        Ok(Value::List(result))
+    });
+
+    // ── Tier 2: readDir, toPath, storePath, placeholder ────
+
+    register_builtin(&mut builtins_set, "readDir", |args| {
+        let path_str = match &args[0] {
+            Value::Path(p) => p.clone(),
+            Value::String(s) => s.clone(),
+            _ => return Err(EvalError::TypeError("readDir: expected path".into())),
+        };
+        let mut attrs = NixAttrs::new();
+        for entry in std::fs::read_dir(&path_str)
+            .map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?
+        {
+            let entry = entry.map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let ft = entry.file_type().map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?;
+            let type_str = if ft.is_dir() {
+                "directory"
+            } else if ft.is_symlink() {
+                "symlink"
+            } else {
+                "regular"
+            };
+            attrs.insert(name, Value::String(type_str.to_string()));
+        }
+        Ok(Value::Attrs(attrs))
+    });
+
+    register_builtin(&mut builtins_set, "toPath", |args| {
+        let s = args[0].as_string()?;
+        if !s.starts_with('/') {
+            return Err(EvalError::TypeError(format!("toPath: path must be absolute: {s}")));
+        }
+        Ok(Value::Path(s.to_string()))
+    });
+
+    register_builtin(&mut builtins_set, "storePath", |args| {
+        let s = args[0].as_string()?;
+        if !s.starts_with("/nix/store/") {
+            return Err(EvalError::TypeError(format!("storePath: not a store path: {s}")));
+        }
+        Ok(Value::Path(s.to_string()))
+    });
+
+    register_builtin(&mut builtins_set, "placeholder", |args| {
+        let output = args[0].as_string()?;
+        use sha2::{Sha256, Digest};
+        let hash = Sha256::digest(format!("nix-output:{output}").as_bytes());
+        let hash_str = format!("{:x}", hash);
+        Ok(Value::String(format!("/placeholder-{}", &hash_str[..32])))
+    });
+
+    // ── import ─────────────────────────────────────────────
+
+    register_builtin(&mut builtins_set, "import", |args| {
+        let path = match &args[0] {
+            Value::Path(p) => p.clone(),
+            Value::String(s) => s.clone(),
+            _ => return Err(EvalError::TypeError("import: expected path".into())),
+        };
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| EvalError::TypeError(format!("import {path}: {e}")))?;
+        crate::eval::eval(&source)
+    });
+
+    // ── derivation stub ────────────────────────────────────
+
+    register_builtin(&mut builtins_set, "derivation", |args| {
+        let input_attrs = args[0].as_attrs()?;
+        let name = input_attrs
+            .get("name")
+            .ok_or(EvalError::AttrNotFound("name".into()))?
+            .as_string()?
+            .to_string();
+        let _system = input_attrs
+            .get("system")
+            .ok_or(EvalError::AttrNotFound("system".into()))?
+            .as_string()?;
+        let _builder = input_attrs
+            .get("builder")
+            .ok_or(EvalError::AttrNotFound("builder".into()))?
+            .as_string()?;
+
+        let mut result = input_attrs.clone();
+        result.insert("type".to_string(), Value::String("derivation".to_string()));
+        result.insert(
+            "drvPath".to_string(),
+            Value::String(format!("/nix/store/stub-{name}.drv")),
+        );
+        result.insert(
+            "outPath".to_string(),
+            Value::String(format!("/nix/store/stub-{name}")),
+        );
+        Ok(Value::Attrs(result))
     });
 
     // true/false/null as builtins
@@ -1503,19 +1655,27 @@ mod tests {
     // ── Ignored tests for features needing major work ───────
 
     #[test]
-    #[ignore = "builtins.hashString needs sha256 dependency"]
-    fn builtins_hash_string() {
-        // hashString "sha256" "hello" should return the sha256 hex digest
+    fn builtins_hash_string_sha256() {
         let v = ev(r#"builtins.hashString "sha256" "hello""#);
         if let Value::String(s) = v {
             assert_eq!(s.len(), 64); // SHA-256 hex is 64 chars
+            assert_eq!(s, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
         } else {
             panic!("expected string");
         }
     }
 
     #[test]
-    #[ignore = "builtins.match needs POSIX regex support"]
+    fn builtins_hash_string_sha512() {
+        let v = ev(r#"builtins.hashString "sha512" "hello""#);
+        if let Value::String(s) = v {
+            assert_eq!(s.len(), 128); // SHA-512 hex is 128 chars
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
     fn builtins_match_regex() {
         // match returns null on no match, list of groups on match
         assert_eq!(
@@ -1529,17 +1689,54 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.import needs file evaluation pipeline"]
-    fn builtins_import() {
-        // import should read and evaluate a Nix file
-        let _v = eval(r#"builtins.import ./test.nix"#);
+    fn builtins_match_full_string() {
+        // match anchors to full string
+        assert_eq!(
+            ev(r#"builtins.match "([0-9]+)" "42""#),
+            Value::List(vec![Value::String("42".to_string())]),
+        );
+        // Partial match should return null (anchored)
+        assert_eq!(
+            ev(r#"builtins.match "([0-9]+)" "abc42def""#),
+            Value::Null,
+        );
     }
 
     #[test]
-    #[ignore = "builtins.derivation needs store integration"]
-    fn builtins_derivation() {
-        // derivation requires the Nix store
-        let _v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#);
+    fn builtins_import_file() {
+        // Create a temp file and import it
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_eval_test_import.nix");
+        std::fs::write(&path, "{ x = 42; }").unwrap();
+        let expr = format!(r#"(builtins.import "{}").x"#, path.display());
+        let v = eval(&expr).unwrap();
+        assert_eq!(v, Value::Int(42));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn builtins_import_expr() {
+        // Import a file that returns a simple expression
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_eval_test_import_expr.nix");
+        std::fs::write(&path, "1 + 2").unwrap();
+        let expr = format!(r#"builtins.import "{}""#, path.display());
+        let v = eval(&expr).unwrap();
+        assert_eq!(v, Value::Int(3));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn builtins_derivation_stub() {
+        let v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("type"), Some(&Value::String("derivation".to_string())));
+            assert_eq!(a.get("drvPath"), Some(&Value::String("/nix/store/stub-test.drv".to_string())));
+            assert_eq!(a.get("outPath"), Some(&Value::String("/nix/store/stub-test".to_string())));
+            assert_eq!(a.get("name"), Some(&Value::String("test".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
     }
 
     #[test]
@@ -1549,9 +1746,36 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.readDir needs filesystem enumeration"]
     fn builtins_read_dir() {
-        let _v = eval(r#"builtins.readDir ./."#);
+        let dir = std::env::temp_dir().join("sui_eval_test_readdir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "content").unwrap();
+        std::fs::create_dir(dir.join("subdir")).unwrap();
+        let expr = format!(r#"builtins.readDir "{}""#, dir.display());
+        let v = eval(&expr).unwrap();
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("file.txt"), Some(&Value::String("regular".to_string())));
+            assert_eq!(a.get("subdir"), Some(&Value::String("directory".to_string())));
+        } else {
+            panic!("expected attrs");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_read_dir_empty() {
+        let dir = std::env::temp_dir().join("sui_eval_test_readdir_empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let expr = format!(r#"builtins.readDir "{}""#, dir.display());
+        let v = eval(&expr).unwrap();
+        if let Value::Attrs(a) = v {
+            assert!(a.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1561,9 +1785,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.placeholder needs store output path resolution"]
     fn builtins_placeholder() {
-        let _v = eval(r#"builtins.placeholder "out""#);
+        let v = ev(r#"builtins.placeholder "out""#);
+        if let Value::String(s) = v {
+            assert!(s.starts_with("/placeholder-"));
+            assert_eq!(s.len(), "/placeholder-".len() + 32);
+        } else {
+            panic!("expected string");
+        }
     }
 
     #[test]
@@ -1573,15 +1802,27 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.toPath is deprecated but should convert string to path"]
     fn builtins_to_path() {
-        let _v = eval(r#"builtins.toPath "/foo/bar""#);
+        let v = ev(r#"builtins.toPath "/foo/bar""#);
+        assert_eq!(v, Value::Path("/foo/bar".to_string()));
     }
 
     #[test]
-    #[ignore = "builtins.storePath needs store integration"]
+    fn builtins_to_path_rejects_relative() {
+        let result = eval(r#"builtins.toPath "relative/path""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn builtins_store_path() {
-        let _v = eval(r#"builtins.storePath "/nix/store/abc-hello""#);
+        let v = ev(r#"builtins.storePath "/nix/store/abc-hello""#);
+        assert_eq!(v, Value::Path("/nix/store/abc-hello".to_string()));
+    }
+
+    #[test]
+    fn builtins_store_path_rejects_non_store() {
+        let result = eval(r#"builtins.storePath "/tmp/not-store""#);
+        assert!(result.is_err());
     }
 
     #[test]

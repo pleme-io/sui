@@ -80,6 +80,7 @@ nix-nar = "0.3"
 # Performance
 aho-corasick = "1"
 base64 = "0.22"
+regex = "1"
 
 # Testing
 proptest = "1"
