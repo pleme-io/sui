@@ -242,11 +242,20 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .argument()
                 .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
             let func = force_value(&eval_expr(&func_expr, env)?)?;
-            // Evaluate the argument eagerly for now. Making it a thunk
-            // would enable fully lazy function arguments but requires
-            // updating all builtins that call .as_string(), .as_attrs() etc
-            // to force first. We keep it eager to preserve backward compat.
-            let arg = eval_expr(&arg_expr, env)?;
+            // For most callees the argument is evaluated eagerly to
+            // keep backwards compat with builtins that don't yet
+            // force their arguments themselves.
+            //
+            // `tryEval` is the exception: it must catch any
+            // `throw` / `abort` from *evaluating* its argument, so
+            // we wrap the unevaluated expression in a fresh thunk
+            // and let `tryEval` drive the force itself (see the
+            // matching special-case in `apply`).
+            let arg = if matches!(&func, Value::Builtin(b) if b.name == "tryEval") {
+                Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+            } else {
+                eval_expr(&arg_expr, env)?
+            };
             apply(func, arg)
         }
 
@@ -867,8 +876,18 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             eval_expr(&closure.body, &call_env)
         }
         Value::Builtin(b) => {
-            let forced_arg = force_value(&arg)?;
-            (b.func)(&[forced_arg])
+            // Most builtins want their argument forced before they
+            // get to inspect it, since their body assumes a concrete
+            // value. `tryEval` is the one exception: it must catch
+            // any `throw` / `abort` that fires *during* the force,
+            // so we hand it the unforced thunk and let it call
+            // `force_value` itself.
+            if b.name == "tryEval" {
+                (b.func)(&[arg])
+            } else {
+                let forced_arg = force_value(&arg)?;
+                (b.func)(&[forced_arg])
+            }
         }
         Value::Attrs(ref attrs) => {
             if let Some(functor) = attrs.get("__functor") {

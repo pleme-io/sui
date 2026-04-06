@@ -377,11 +377,7 @@ fn diff_math() {
 // ── tryEval ──────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "sui tryEval does not catch `throw` — see sui_known_gaps.md"]
 fn diff_try_eval() {
-    // Real nix: (tryEval (throw "boom")).success == false
-    // sui:      propagates the throw out of tryEval as an EvalError
-    // That's a hard compat gap — tryEval must catch throw/abort.
     run_cases(
         "try_eval",
         &[

@@ -671,12 +671,28 @@ pub fn register(env: &mut Env) {
 
     // Misc
     register_builtin(&mut builtins_set, "tryEval", |args| {
-        // In our implementation, args are already evaluated, so tryEval
-        // just wraps the value. Real lazy eval would catch thunk errors.
-        let mut result = NixAttrs::new();
-        result.insert("success".to_string(), Value::Bool(true));
-        result.insert("value".to_string(), args[0].clone());
-        Ok(Value::Attrs(result))
+        // `tryEval` must catch `throw`/`abort` from the *evaluation*
+        // of its argument, not just wrap an already-forced value.
+        // The eval-side `apply` special-cases `tryEval` and hands
+        // us the unforced thunk so we can drive `force_value`
+        // ourselves and intercept the resulting error.
+        match crate::eval::force_value(&args[0]) {
+            Ok(v) => {
+                let mut result = NixAttrs::new();
+                result.insert("success".to_string(), Value::Bool(true));
+                result.insert("value".to_string(), v);
+                Ok(Value::Attrs(result))
+            }
+            Err(_) => {
+                // Real Nix discards the error message and returns
+                // `{ success = false; value = false; }`. We do the
+                // same.
+                let mut result = NixAttrs::new();
+                result.insert("success".to_string(), Value::Bool(false));
+                result.insert("value".to_string(), Value::Bool(false));
+                Ok(Value::Attrs(result))
+            }
+        }
     });
     register_builtin(&mut builtins_set, "trace", |args| {
         let msg = args[0].clone();
