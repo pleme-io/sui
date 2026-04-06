@@ -43,17 +43,22 @@ pub struct FlakeLock {
 pub struct FlakeNode {
     /// Inputs — maps input name to either a direct node reference or a follows
     /// path.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, InputRef>,
     /// Pinned revision information (absent on the root node).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked: Option<LockedInput>,
     /// Original (un-resolved) input reference (absent on the root node).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original: Option<OriginalInput>,
     /// Whether this node is a flake (defaults to `true` when absent).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flake: Option<bool>,
+    /// Unknown fields (e.g. `parent` for path-typed flakes) — captured
+    /// via `serde(flatten)` so they round-trip even when sui-compat
+    /// doesn't know about them yet.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// A reference to another node in the input graph.
@@ -76,28 +81,37 @@ pub enum InputRef {
 pub struct LockedInput {
     #[serde(rename = "type")]
     pub source_type: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
-    #[serde(default, rename = "narHash")]
+    #[serde(default, rename = "narHash", skip_serializing_if = "Option::is_none")]
     pub nar_hash: Option<String>,
-    #[serde(default, rename = "lastModified")]
+    #[serde(
+        default,
+        rename = "lastModified",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_modified: Option<u64>,
     /// For `type = "path"` inputs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// For `type = "tarball"` or `type = "file"` inputs.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// For specific git refs (e.g. `"refs/heads/main"`).
-    #[serde(default, rename = "ref")]
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub git_ref: Option<String>,
     /// Git directory (subdir within repo).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
+    /// Any other fields nix decides to add in the future (e.g.
+    /// `revCount`, `submodules`, `shallow`). Flattened so they
+    /// round-trip without losing data.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Original (un-locked) input specification.
@@ -105,19 +119,22 @@ pub struct LockedInput {
 pub struct OriginalInput {
     #[serde(rename = "type")]
     pub source_type: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     /// Branch/tag reference (e.g. `"nixos-unstable"`).
-    #[serde(default, rename = "ref")]
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
     pub git_ref: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Unknown fields (for forward compatibility).
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 // ── Parsing ─────────────────────────────────────────────────
