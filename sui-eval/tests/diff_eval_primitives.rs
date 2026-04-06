@@ -326,15 +326,14 @@ fn diff_json() {
 
 #[test]
 fn diff_versions() {
-    // Known gap: `builtins.splitVersion "1.2.3"` in sui returns
-    // ["1",".","2",".","3"] (separators kept); real nix returns
-    // ["1","2","3"]. See sui_known_gaps.md. Omitted here until fixed.
     run_cases(
         "versions",
         &[
             r#"builtins.compareVersions "1.0" "1.1""#,
             r#"builtins.compareVersions "1.1" "1.1""#,
             r#"builtins.compareVersions "2.0" "1.9""#,
+            r#"builtins.splitVersion "1.2.3""#,
+            r#"builtins.splitVersion "1.2-pre1""#,
             r#"builtins.parseDrvName "hello-1.0""#,
             r#"builtins.parseDrvName "firefox-beta-100.0""#,
         ],

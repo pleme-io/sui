@@ -1944,8 +1944,12 @@ fn toml_to_value(v: &toml::Value) -> Value {
     }
 }
 
-/// Split a version string on boundaries between digit/non-digit chars + separators.
-/// "1.2.3" → ["1", ".", "2", ".", "3"]
+/// Split a version string on `.` / `-` separators and on boundaries
+/// between digit and non-digit characters. Separators are dropped.
+///
+/// Matches CppNix `builtins.splitVersion`:
+///   "1.2.3"      → ["1", "2", "3"]
+///   "1.2-pre1"   → ["1", "2", "pre", "1"]
 fn split_version(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -1955,7 +1959,8 @@ fn split_version(s: &str) -> Vec<String> {
             if !current.is_empty() {
                 parts.push(std::mem::take(&mut current));
             }
-            parts.push(ch.to_string());
+            // Separators are NOT preserved as elements — real Nix
+            // splitVersion only emits the version components.
             prev_digit = None;
         } else {
             let is_digit = ch.is_ascii_digit();
@@ -3324,13 +3329,12 @@ mod tests {
 
     #[test]
     fn builtins_split_version_standard() {
+        // Real nix drops separators: "1.2.3" → ["1","2","3"]
         assert_eq!(
             ev(r#"builtins.splitVersion "1.2.3""#),
             Value::List(vec![
                 Value::string("1"),
-                Value::string("."),
                 Value::string("2"),
-                Value::string("."),
                 Value::string("3"),
             ]),
         );
@@ -3338,11 +3342,11 @@ mod tests {
 
     #[test]
     fn builtins_split_version_pre_release() {
+        // Digit/non-digit transitions still split, but the `.` is dropped.
         assert_eq!(
             ev(r#"builtins.splitVersion "1.0pre1""#),
             Value::List(vec![
                 Value::string("1"),
-                Value::string("."),
                 Value::string("0"),
                 Value::string("pre"),
                 Value::string("1"),
@@ -3489,7 +3493,7 @@ mod tests {
 
     #[test] fn builtins_split_version() {
         assert_eq!(ev(r#"builtins.splitVersion "1.2.3""#), Value::List(vec![
-            Value::string("1"), Value::string("."), Value::string("2"), Value::string("."), Value::string("3")
+            Value::string("1"), Value::string("2"), Value::string("3")
         ]));
     }
     #[test] fn builtins_split_version_pre() {
