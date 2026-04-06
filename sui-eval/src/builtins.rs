@@ -866,34 +866,14 @@ pub fn register(env: &mut Env) {
         crate::eval::eval(&source)
     });
 
-    // ── derivation stub ────────────────────────────────────
+    // ── derivation ─────────────────────────────────────────
+    //
+    // Computes real CppNix-compatible store paths for the resulting
+    // derivation by serializing an ATerm representation of the inputs and
+    // hashing it. See sui-compat::store_path for the hash algorithm details.
 
     register_builtin(&mut builtins_set, "derivation", |args| {
-        let input_attrs = args[0].as_attrs()?;
-        let name = input_attrs
-            .get("name")
-            .ok_or(EvalError::AttrNotFound("name".into()))?
-            .to_str()?;
-        let _system = input_attrs
-            .get("system")
-            .ok_or(EvalError::AttrNotFound("system".into()))?
-            .to_str()?;
-        let _builder = input_attrs
-            .get("builder")
-            .ok_or(EvalError::AttrNotFound("builder".into()))?
-            .to_str()?;
-
-        let mut result = input_attrs.clone();
-        result.insert("type".to_string(), Value::string("derivation"));
-        result.insert(
-            "drvPath".to_string(),
-            Value::string(format!("/nix/store/stub-{name}.drv")),
-        );
-        result.insert(
-            "outPath".to_string(),
-            Value::string(format!("/nix/store/stub-{name}")),
-        );
-        Ok(Value::Attrs(result))
+        build_derivation(&args[0])
     });
 
     // ── fetchurl ───────────────────────────────────────────
@@ -1263,21 +1243,11 @@ pub fn register(env: &mut Env) {
         Err(EvalError::TypeError(format!("findFile: file '{name}' not found in search path")))
     });
 
-    // derivationStrict — alias to derivation (real difference is internal)
+    // derivationStrict — alias to derivation (real difference is internal:
+    // CppNix's `derivation` is implemented in nixpkgs by calling
+    // `derivationStrict`, so they share the path computation logic).
     register_builtin(&mut builtins_set, "derivationStrict", |args| {
-        let forced = crate::eval::force_value(&args[0])?;
-        let input = forced.as_attrs()?;
-        let name_val = crate::eval::force_value(input.get("name").ok_or(EvalError::AttrNotFound("name".into()))?)?;
-        let name = name_val.as_string()?.to_string();
-        let mut result = input.clone();
-        result.insert("type".to_string(), Value::string("derivation"));
-        if !result.contains_key("drvPath") {
-            result.insert("drvPath".to_string(), Value::string(format!("/nix/store/stub-{name}.drv")));
-        }
-        if !result.contains_key("outPath") {
-            result.insert("outPath".to_string(), Value::string(format!("/nix/store/stub-{name}")));
-        }
-        Ok(Value::Attrs(result))
+        build_derivation(&args[0])
     });
 
     // toXML — convert value to XML representation
@@ -1375,6 +1345,307 @@ fn register_curried(
             }),
         }),
     );
+}
+
+// ── Derivation construction ────────────────────────────────────
+//
+// `derivation` and `derivationStrict` both delegate to `build_derivation`.
+// This function:
+//   1. Forces the input attrset and pulls out the special attributes
+//      (name, system, builder, args, outputs, outputHash*).
+//   2. Coerces all other attributes to strings to populate the env map.
+//   3. Builds an in-memory `Derivation` (sui-compat type) for ATerm
+//      serialization.
+//   4. Computes the .drv path from the ATerm bytes via SHA-256, then computes
+//      each output path from the inner hash. For fixed-output derivations,
+//      uses the dedicated `fixed:out:` fingerprint scheme instead.
+//   5. Returns an attrset with `type`, `drvPath`, `outPath`, plus per-output
+//      sub-attrsets, matching CppNix's interface.
+
+fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
+    use std::collections::BTreeMap;
+    use sui_compat::derivation::{Derivation, DerivationOutput};
+
+    let forced = crate::eval::force_value(arg)?;
+    let input = forced.as_attrs()?;
+
+    // Required attributes — present and must be coercible to string.
+    let name = force_attr_string(input, "name")?;
+    let system = force_attr_string(input, "system")?;
+    let builder = force_attr_string(input, "builder")?;
+
+    // Optional `args` list of strings.
+    let args_list: Vec<String> = if let Some(a) = input.get("args") {
+        let forced_args = crate::eval::force_value(a)?;
+        let list = forced_args.as_list()?;
+        let mut out = Vec::with_capacity(list.len());
+        for item in list {
+            out.push(coerce_drv_value_to_string(item)?);
+        }
+        out
+    } else {
+        Vec::new()
+    };
+
+    // Optional `outputs` list — defaults to ["out"].
+    let outputs: Vec<String> = if let Some(o) = input.get("outputs") {
+        let forced_o = crate::eval::force_value(o)?;
+        let list = forced_o.as_list()?;
+        let mut out = Vec::with_capacity(list.len());
+        for item in list {
+            let s = crate::eval::force_value(item)?
+                .as_string()
+                .map_err(|_| EvalError::TypeError(
+                    "derivation: outputs entries must be strings".into(),
+                ))?
+                .to_string();
+            out.push(s);
+        }
+        if out.is_empty() {
+            return Err(EvalError::TypeError(
+                "derivation: outputs list must not be empty".into(),
+            ));
+        }
+        out
+    } else {
+        vec!["out".to_string()]
+    };
+
+    // Build env vars from non-special attributes.
+    // Special attrs are skipped; everything else is coerced to string.
+    let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
+    for (k, v) in input.iter() {
+        if matches!(
+            k.as_str(),
+            "name"
+                | "system"
+                | "builder"
+                | "args"
+                | "outputs"
+                | "__impure"
+                | "__contentAddressed"
+                | "__structuredAttrs"
+        ) {
+            continue;
+        }
+        let forced_v = match crate::eval::force_value(v) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(s) = coerce_drv_value_to_string_opt(&forced_v) {
+            env_vars.insert(k.clone(), s);
+        }
+    }
+    // Always include the canonical attrs as env entries (matches CppNix).
+    env_vars.insert("name".to_string(), name.clone());
+    env_vars.insert("system".to_string(), system.clone());
+    env_vars.insert("builder".to_string(), builder.clone());
+
+    // Detect fixed-output derivation.
+    let is_fod = input.contains_key("outputHash");
+
+    // Build the Derivation skeleton (outputs map populated below).
+    let mut drv = Derivation {
+        outputs: BTreeMap::new(),
+        input_derivations: BTreeMap::new(),
+        input_sources: Vec::new(),
+        system,
+        builder,
+        args: args_list,
+        env: env_vars,
+    };
+
+    let (drv_path, out_paths) = if is_fod {
+        // Fixed-output: hash is determined by the declared outputHash, not by
+        // the build instructions. CppNix uses the `fixed:out:` fingerprint.
+        let output_hash = force_attr_string(input, "outputHash")?;
+        let output_hash_algo = optional_attr_string(input, "outputHashAlgo")?
+            .unwrap_or_else(|| "sha256".to_string());
+        let output_hash_mode = optional_attr_string(input, "outputHashMode")?
+            .unwrap_or_else(|| "flat".to_string());
+        let is_recursive =
+            output_hash_mode == "recursive" || output_hash_mode == "nar";
+
+        let out_path = sui_compat::store_path::compute_fixed_output_hash(
+            &output_hash_algo,
+            &output_hash,
+            is_recursive,
+            &name,
+        );
+
+        // Populate the single `out` output with the FOD metadata so the
+        // serialized drv carries the declared hash.
+        drv.outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: out_path.clone(),
+                hash_algo: if is_recursive {
+                    format!("r:{output_hash_algo}")
+                } else {
+                    output_hash_algo.clone()
+                },
+                hash: output_hash,
+            },
+        );
+
+        let drv_content = drv.serialize();
+        let drv_path = sui_compat::store_path::compute_drv_path(
+            drv_content.as_bytes(),
+            &name,
+        );
+
+        let mut out_paths = BTreeMap::new();
+        out_paths.insert("out".to_string(), out_path);
+        (drv_path, out_paths)
+    } else {
+        // Input-addressed: outputs are placeholders during ATerm hashing
+        // (CppNix replaces them with empty strings to break the chicken-and-
+        // egg cycle). After hashing, the output paths are derived from the
+        // resulting inner hash.
+        for o in &outputs {
+            drv.outputs.insert(
+                o.clone(),
+                DerivationOutput {
+                    path: String::new(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                },
+            );
+        }
+
+        let drv_content = drv.serialize();
+        let drv_path = sui_compat::store_path::compute_drv_path(
+            drv_content.as_bytes(),
+            &name,
+        );
+
+        // Compute each output path from the inner SHA-256 of the drv content.
+        use sha2::{Digest, Sha256};
+        let inner = Sha256::digest(drv_content.as_bytes());
+        let inner_hex: String =
+            inner.iter().map(|b| format!("{b:02x}")).collect();
+        let mut out_paths = BTreeMap::new();
+        for o in &outputs {
+            let p = sui_compat::store_path::compute_output_path(
+                &inner_hex, o, &name,
+            );
+            out_paths.insert(o.clone(), p);
+        }
+        (drv_path, out_paths)
+    };
+
+    // Assemble the result attrset (input + derivation metadata).
+    let mut result = input.clone();
+    result.insert("type".to_string(), Value::string("derivation"));
+    result.insert("drvPath".to_string(), Value::string(drv_path.clone()));
+
+    // The `outPath` exposed at the top-level is the `out` output (or the only
+    // output if there isn't one named `out` — fall back to the first).
+    let primary_out = out_paths
+        .get("out")
+        .cloned()
+        .or_else(|| out_paths.values().next().cloned())
+        .unwrap_or_default();
+    result.insert("outPath".to_string(), Value::string(primary_out.clone()));
+
+    // Per-output sub-attrsets so `mydrv.dev`, `mydrv.lib`, etc. work.
+    for (output_name, output_path) in &out_paths {
+        let mut out_attrs = NixAttrs::new();
+        out_attrs.insert(
+            "outPath".to_string(),
+            Value::string(output_path.clone()),
+        );
+        out_attrs.insert("drvPath".to_string(), Value::string(drv_path.clone()));
+        out_attrs.insert("type".to_string(), Value::string("derivation"));
+        out_attrs.insert(
+            "outputName".to_string(),
+            Value::string(output_name.clone()),
+        );
+        out_attrs.insert("name".to_string(), Value::string(name.clone()));
+        result.insert(output_name.clone(), Value::Attrs(out_attrs));
+    }
+
+    Ok(Value::Attrs(result))
+}
+
+/// Force an attribute and require it to be present + string-coercible.
+fn force_attr_string(
+    attrs: &NixAttrs,
+    key: &str,
+) -> Result<String, EvalError> {
+    let v = attrs
+        .get(key)
+        .ok_or_else(|| EvalError::AttrNotFound(key.into()))?;
+    let forced = crate::eval::force_value(v)?;
+    coerce_drv_value_to_string(&forced)
+}
+
+/// Force an optional attribute, returning `None` if absent.
+fn optional_attr_string(
+    attrs: &NixAttrs,
+    key: &str,
+) -> Result<Option<String>, EvalError> {
+    match attrs.get(key) {
+        None => Ok(None),
+        Some(v) => {
+            let forced = crate::eval::force_value(v)?;
+            Ok(Some(coerce_drv_value_to_string(&forced)?))
+        }
+    }
+}
+
+/// Coerce an already-forced value to a string the way CppNix does for
+/// derivation env vars. Errors on types that have no string form (lambdas,
+/// builtins, attrsets without `__toString`).
+fn coerce_drv_value_to_string(v: &Value) -> Result<String, EvalError> {
+    match v {
+        Value::String(s) => Ok(s.chars.clone()),
+        Value::Path(p) => Ok(p.clone()),
+        Value::Int(n) => Ok(n.to_string()),
+        Value::Float(f) => Ok(format!("{f}")),
+        Value::Bool(true) => Ok("1".to_string()),
+        Value::Bool(false) => Ok(String::new()),
+        Value::Null => Ok(String::new()),
+        Value::List(items) => {
+            // Space-joined coercion (matches CppNix derivation arg list
+            // handling for env exports).
+            let mut parts: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let forced = crate::eval::force_value(item)?;
+                parts.push(coerce_drv_value_to_string(&forced)?);
+            }
+            Ok(parts.join(" "))
+        }
+        Value::Attrs(attrs) => {
+            // Honor the `__toString` and `outPath` protocols, in that order.
+            if let Some(to_str) = attrs.get("__toString") {
+                let result =
+                    crate::eval::apply(to_str.clone(), Value::Attrs(attrs.clone()))?;
+                let forced = crate::eval::force_value(&result)?;
+                return coerce_drv_value_to_string(&forced);
+            }
+            if let Some(out_path) = attrs.get("outPath") {
+                let forced = crate::eval::force_value(out_path)?;
+                return coerce_drv_value_to_string(&forced);
+            }
+            Err(EvalError::TypeError(
+                "derivation: cannot coerce attrset to string (no __toString or outPath)".into(),
+            ))
+        }
+        Value::Lambda(_) | Value::Builtin(_) => Err(EvalError::TypeError(
+            "derivation: cannot coerce function to string".into(),
+        )),
+        Value::Thunk(_) => Err(EvalError::TypeError(
+            "derivation: unforced thunk after force_value".into(),
+        )),
+    }
+}
+
+/// Variant of `coerce_drv_value_to_string` that returns `None` for values
+/// that have no meaningful string form (used to skip env entries instead of
+/// erroring out).
+fn coerce_drv_value_to_string_opt(v: &Value) -> Option<String> {
+    coerce_drv_value_to_string(v).ok()
 }
 
 /// Fetch bytes from a URL. Supports `file://` scheme for local files and
@@ -2225,16 +2496,148 @@ mod tests {
     }
 
     #[test]
-    fn builtins_derivation_stub() {
+    fn builtins_derivation_returns_real_paths() {
         let v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
-        if let Value::Attrs(a) = v {
-            assert_eq!(a.get("type"), Some(&Value::string("derivation")));
-            assert_eq!(a.get("drvPath"), Some(&Value::string("/nix/store/stub-test.drv")));
-            assert_eq!(a.get("outPath"), Some(&Value::string("/nix/store/stub-test")));
-            assert_eq!(a.get("name"), Some(&Value::string("test")));
-        } else {
-            panic!("expected attrs");
+        let a = match v {
+            Value::Attrs(a) => a,
+            other => panic!("expected attrs, got {other:?}"),
+        };
+        assert_eq!(a.get("type"), Some(&Value::string("derivation")));
+        assert_eq!(a.get("name"), Some(&Value::string("test")));
+
+        // drvPath: /nix/store/<32 base32 chars>-test.drv
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        assert!(drv_path.starts_with("/nix/store/"), "drvPath: {drv_path}");
+        assert!(drv_path.ends_with("-test.drv"), "drvPath: {drv_path}");
+        let drv_basename = drv_path.strip_prefix("/nix/store/").unwrap();
+        assert_eq!(drv_basename.len(), 32 + 1 + "test.drv".len());
+
+        // outPath: /nix/store/<32 base32 chars>-test
+        let out_path = a.get("outPath").unwrap().as_string().unwrap();
+        assert!(out_path.starts_with("/nix/store/"));
+        assert!(out_path.ends_with("-test"));
+        assert_ne!(drv_path, out_path);
+    }
+
+    #[test]
+    fn builtins_derivation_is_deterministic() {
+        // Same inputs must always produce the same paths.
+        let expr = r#"builtins.derivation {
+            name = "hello";
+            system = "x86_64-linux";
+            builder = "/bin/sh";
+            args = [ "-e" "build.sh" ];
+        }"#;
+        let a1 = eval(expr).unwrap().as_attrs().unwrap().clone();
+        let a2 = eval(expr).unwrap().as_attrs().unwrap().clone();
+        assert_eq!(
+            a1.get("drvPath").unwrap().as_string().unwrap(),
+            a2.get("drvPath").unwrap().as_string().unwrap(),
+        );
+        assert_eq!(
+            a1.get("outPath").unwrap().as_string().unwrap(),
+            a2.get("outPath").unwrap().as_string().unwrap(),
+        );
+    }
+
+    #[test]
+    fn builtins_derivation_different_names_produce_different_paths() {
+        let v1 = eval(r#"builtins.derivation { name = "foo"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
+        let v2 = eval(r#"builtins.derivation { name = "bar"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
+        let p1 = v1.as_attrs().unwrap().get("drvPath").unwrap().as_string().unwrap().to_string();
+        let p2 = v2.as_attrs().unwrap().get("drvPath").unwrap().as_string().unwrap().to_string();
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn builtins_derivation_multiple_outputs() {
+        let v = eval(r#"builtins.derivation {
+            name = "multi";
+            system = "x86_64-linux";
+            builder = "/bin/sh";
+            outputs = [ "out" "dev" "lib" ];
+        }"#).unwrap();
+        let a = v.as_attrs().unwrap();
+        assert_eq!(a.get("type"), Some(&Value::string("derivation")));
+
+        // Each named output is a sub-attrset.
+        for out_name in ["out", "dev", "lib"] {
+            let sub = a
+                .get(out_name)
+                .unwrap_or_else(|| panic!("missing output {out_name}"));
+            let sub_attrs = sub.as_attrs().unwrap();
+            assert_eq!(sub_attrs.get("type"), Some(&Value::string("derivation")));
+            assert_eq!(
+                sub_attrs.get("outputName"),
+                Some(&Value::string(out_name)),
+            );
+            // Sub-attrset should have an outPath.
+            assert!(sub_attrs.contains_key("outPath"));
+            assert!(sub_attrs.contains_key("drvPath"));
         }
+
+        // The three outputs must have distinct paths.
+        let out_p = a.get("out").unwrap().as_attrs().unwrap()
+            .get("outPath").unwrap().as_string().unwrap().to_string();
+        let dev_p = a.get("dev").unwrap().as_attrs().unwrap()
+            .get("outPath").unwrap().as_string().unwrap().to_string();
+        let lib_p = a.get("lib").unwrap().as_attrs().unwrap()
+            .get("outPath").unwrap().as_string().unwrap().to_string();
+        assert_ne!(out_p, dev_p);
+        assert_ne!(out_p, lib_p);
+        assert_ne!(dev_p, lib_p);
+        assert!(dev_p.ends_with("-multi-dev"));
+        assert!(lib_p.ends_with("-multi-lib"));
+        assert!(out_p.ends_with("-multi"));
+    }
+
+    #[test]
+    fn builtins_derivation_fixed_output() {
+        let v = eval(r#"builtins.derivation {
+            name = "src.tar.gz";
+            system = "x86_64-linux";
+            builder = "/bin/curl";
+            outputHash = "1b0ri5lsf45dknj8bfxi1syz35kmab77apxxg1yrf33la1qm3kc7";
+            outputHashAlgo = "sha256";
+            outputHashMode = "flat";
+        }"#).unwrap();
+        let a = v.as_attrs().unwrap();
+        assert_eq!(a.get("type"), Some(&Value::string("derivation")));
+        let out_path = a.get("outPath").unwrap().as_string().unwrap();
+        assert!(out_path.ends_with("-src.tar.gz"));
+        assert!(a.get("drvPath").unwrap().as_string().unwrap().ends_with("-src.tar.gz.drv"));
+    }
+
+    #[test]
+    fn builtins_derivation_fixed_output_recursive_differs_from_flat() {
+        let flat = eval(r#"builtins.derivation {
+            name = "x";
+            system = "x86_64-linux";
+            builder = "/bin/sh";
+            outputHash = "abc";
+            outputHashAlgo = "sha256";
+            outputHashMode = "flat";
+        }"#).unwrap();
+        let rec = eval(r#"builtins.derivation {
+            name = "x";
+            system = "x86_64-linux";
+            builder = "/bin/sh";
+            outputHash = "abc";
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        }"#).unwrap();
+        let p1 = flat.as_attrs().unwrap().get("outPath").unwrap().as_string().unwrap().to_string();
+        let p2 = rec.as_attrs().unwrap().get("outPath").unwrap().as_string().unwrap().to_string();
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn builtins_derivation_returns_drv_and_out_path() {
+        // Sanity-check that the result attrset always has drvPath + outPath.
+        let v = eval(r#"builtins.derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
+        let a = v.as_attrs().unwrap();
+        assert!(a.contains_key("drvPath"));
+        assert!(a.contains_key("outPath"));
     }
 
     #[test]

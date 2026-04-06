@@ -1,5 +1,6 @@
 //! Nix store path parsing and computation.
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Length of the hash part in a store path (32 chars in Nix base-32).
@@ -137,6 +138,111 @@ pub fn nix_base32_decode(input: &str) -> Result<[u8; 20], StorePathError> {
     Ok(bytes)
 }
 
+// ── Store path hash computation ──────────────────────────────
+//
+// CppNix's store path computation works in three layers:
+//
+//   1. An "inner hash" describes the derivation/output identity.
+//      - For text refs (.drv files): SHA-256 of the .drv ATerm content.
+//      - For input-addressed outputs: SHA-256 of the .drv ATerm content
+//        (with the corresponding output path stubbed to "").
+//      - For fixed-output: SHA-256 of `fixed:out:<algo>:<hash>:`.
+//
+//   2. A "fingerprint" string is constructed from the inner hash and metadata,
+//      then SHA-256 hashed to produce a 32-byte digest.
+//
+//   3. The 32-byte digest is XOR-folded ("compressed") to 20 bytes,
+//      then encoded in Nix's custom base-32 alphabet to produce the
+//      32-character hash prefix of the store path.
+
+/// Compress an arbitrary-length hash into `output_len` bytes via XOR folding.
+///
+/// This is the algorithm CppNix calls `compressHash`: each input byte is XORed
+/// into `output[i % output_len]`. For SHA-256 (32 bytes) → 20 bytes, this folds
+/// the back 12 bytes onto the front 12.
+#[must_use]
+pub fn compress_hash(hash: &[u8], output_len: usize) -> Vec<u8> {
+    let mut out = vec![0u8; output_len];
+    for (i, b) in hash.iter().enumerate() {
+        out[i % output_len] ^= *b;
+    }
+    out
+}
+
+/// Hash a fingerprint string and produce a Nix store path.
+///
+/// The fingerprint is hashed with SHA-256, compressed to 20 bytes, encoded
+/// in Nix base-32, and then prefixed with `/nix/store/` and suffixed with
+/// the given `name`.
+#[must_use]
+pub fn compute_store_path_from_fingerprint(fingerprint: &str, name: &str) -> String {
+    let hash = Sha256::digest(fingerprint.as_bytes());
+    let compressed = compress_hash(&hash, 20);
+    let b32 = nix_base32_encode(&compressed);
+    format!("{DEFAULT_STORE_DIR}/{b32}-{name}")
+}
+
+/// Compute the `.drv` store path for a serialized derivation.
+///
+/// The fingerprint is `text:sha256:<hex_inner>:<store>:<name>.drv`, where the
+/// inner hash is SHA-256 of the ATerm bytes. This matches CppNix's text store
+/// path scheme used for .drv files.
+#[must_use]
+pub fn compute_drv_path(drv_content: &[u8], name: &str) -> String {
+    let inner = Sha256::digest(drv_content);
+    let inner_hex = hex_lower(&inner);
+    let drv_name = format!("{name}.drv");
+    let fingerprint =
+        format!("text:sha256:{inner_hex}:{DEFAULT_STORE_DIR}:{drv_name}");
+    compute_store_path_from_fingerprint(&fingerprint, &drv_name)
+}
+
+/// Compute an output store path from an inner hash hex string.
+///
+/// The fingerprint is `output:<output_name>:sha256:<inner_hex>:<store>:<full_name>`,
+/// where `full_name` is `name` for the `out` output and `name-<output_name>` otherwise.
+#[must_use]
+pub fn compute_output_path(inner_hash_hex: &str, output_name: &str, name: &str) -> String {
+    let full_name = if output_name == "out" {
+        name.to_string()
+    } else {
+        format!("{name}-{output_name}")
+    };
+    let fingerprint = format!(
+        "output:{output_name}:sha256:{inner_hash_hex}:{DEFAULT_STORE_DIR}:{full_name}"
+    );
+    compute_store_path_from_fingerprint(&fingerprint, &full_name)
+}
+
+/// Compute the output store path for a fixed-output derivation.
+///
+/// CppNix builds an inner hash string of the form
+/// `fixed:out:[r:]<algo>:<hash>:` and SHA-256 hashes it. The resulting hex
+/// digest is then fed through `compute_output_path` as the inner hash for the
+/// `out` output.
+#[must_use]
+pub fn compute_fixed_output_hash(
+    algo: &str,
+    hash: &str,
+    is_recursive: bool,
+    name: &str,
+) -> String {
+    let mode = if is_recursive { "r:" } else { "" };
+    let inner = format!("fixed:out:{mode}{algo}:{hash}:");
+    let inner_hash = Sha256::digest(inner.as_bytes());
+    let inner_hex = hex_lower(&inner_hash);
+    compute_output_path(&inner_hex, "out", name)
+}
+
+/// Lowercase hex encoding helper (avoids pulling in hex crate).
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +368,203 @@ mod tests {
             Err(StorePathError::InvalidHashLength { expected: 32, got: 3 }) => {}
             other => panic!("expected InvalidHashLength, got {other:?}"),
         }
+    }
+
+    // ── compress_hash ────────────────────────────────────────
+
+    #[test]
+    fn compress_hash_zero_input_zero_output() {
+        let zeros = [0u8; 32];
+        let out = compress_hash(&zeros, 20);
+        assert_eq!(out, vec![0u8; 20]);
+    }
+
+    #[test]
+    fn compress_hash_xor_fold_layout() {
+        // 32-byte input → 20-byte output: bytes 20..32 fold onto bytes 0..12.
+        let mut input = [0u8; 32];
+        input[0] = 0xAA;
+        input[20] = 0x55;
+        // After fold: out[0] = input[0] ^ input[20] = 0xAA ^ 0x55 = 0xFF.
+        let out = compress_hash(&input, 20);
+        assert_eq!(out[0], 0xFF);
+        // Bytes 12..20 stay as-is (they're not folded onto by anything).
+        for i in 12..20 {
+            assert_eq!(out[i], 0);
+        }
+    }
+
+    #[test]
+    fn compress_hash_identity_when_lengths_match() {
+        // If input length == output length, compress is just a copy.
+        let input: [u8; 20] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        ];
+        let out = compress_hash(&input, 20);
+        assert_eq!(out, input.to_vec());
+    }
+
+    #[test]
+    fn compress_hash_output_length_respected() {
+        let input = [0xFFu8; 64];
+        for &target_len in &[1usize, 5, 10, 20, 32] {
+            let out = compress_hash(&input, target_len);
+            assert_eq!(out.len(), target_len);
+        }
+    }
+
+    // ── compute_store_path_from_fingerprint ──────────────────
+
+    #[test]
+    fn fingerprint_path_format() {
+        let path = compute_store_path_from_fingerprint("text:sha256:abc:/nix/store:hello.drv", "hello.drv");
+        // Must start with /nix/store/, have 32-char hash, dash, name.
+        assert!(path.starts_with("/nix/store/"));
+        let basename = path.strip_prefix("/nix/store/").unwrap();
+        assert_eq!(basename.len(), STORE_PATH_HASH_LEN + 1 + "hello.drv".len());
+        assert!(basename.ends_with("-hello.drv"));
+        // Hash portion uses only nix base32 alphabet.
+        let hash = &basename[..STORE_PATH_HASH_LEN];
+        for c in hash.chars() {
+            assert!(NIX_BASE32_CHARS.contains(&(c as u8)), "invalid char: {c}");
+        }
+    }
+
+    #[test]
+    fn fingerprint_path_deterministic() {
+        let p1 = compute_store_path_from_fingerprint("text:sha256:abc:/nix/store:foo", "foo");
+        let p2 = compute_store_path_from_fingerprint("text:sha256:abc:/nix/store:foo", "foo");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn fingerprint_path_changes_with_input() {
+        let p1 = compute_store_path_from_fingerprint("a", "x");
+        let p2 = compute_store_path_from_fingerprint("b", "x");
+        assert_ne!(p1, p2);
+    }
+
+    // ── compute_drv_path ─────────────────────────────────────
+
+    #[test]
+    fn drv_path_format() {
+        let path = compute_drv_path(b"some-aterm-content", "hello");
+        assert!(path.starts_with("/nix/store/"));
+        assert!(path.ends_with("-hello.drv"));
+        let basename = path.strip_prefix("/nix/store/").unwrap();
+        assert_eq!(basename.len(), STORE_PATH_HASH_LEN + 1 + "hello.drv".len());
+    }
+
+    #[test]
+    fn drv_path_deterministic() {
+        let p1 = compute_drv_path(b"content", "name");
+        let p2 = compute_drv_path(b"content", "name");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn drv_path_changes_with_content() {
+        let p1 = compute_drv_path(b"a", "name");
+        let p2 = compute_drv_path(b"b", "name");
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn drv_path_changes_with_name() {
+        let p1 = compute_drv_path(b"content", "foo");
+        let p2 = compute_drv_path(b"content", "bar");
+        assert_ne!(p1, p2);
+    }
+
+    // ── compute_output_path ──────────────────────────────────
+
+    #[test]
+    fn output_path_out_uses_bare_name() {
+        let path = compute_output_path("0123456789abcdef", "out", "hello");
+        assert!(path.ends_with("-hello"));
+        // No -out suffix for the default output.
+        assert!(!path.ends_with("-hello-out"));
+    }
+
+    #[test]
+    fn output_path_named_output_uses_suffix() {
+        let path = compute_output_path("0123456789abcdef", "dev", "hello");
+        assert!(path.ends_with("-hello-dev"));
+    }
+
+    #[test]
+    fn output_path_deterministic() {
+        let p1 = compute_output_path("0123456789abcdef", "out", "hello");
+        let p2 = compute_output_path("0123456789abcdef", "out", "hello");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn output_path_changes_with_inner_hash() {
+        let p1 = compute_output_path("0000000000000000", "out", "hello");
+        let p2 = compute_output_path("ffffffffffffffff", "out", "hello");
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn multiple_outputs_produce_distinct_paths() {
+        let inner = "deadbeef";
+        let p_out = compute_output_path(inner, "out", "lib");
+        let p_dev = compute_output_path(inner, "dev", "lib");
+        let p_man = compute_output_path(inner, "man", "lib");
+        assert_ne!(p_out, p_dev);
+        assert_ne!(p_out, p_man);
+        assert_ne!(p_dev, p_man);
+    }
+
+    // ── compute_fixed_output_hash ────────────────────────────
+
+    #[test]
+    fn fixed_output_flat_path_format() {
+        let path = compute_fixed_output_hash(
+            "sha256",
+            "1b0ri5lsf45dknj8bfxi1syz35kmab77apxxg1yrf33la1qm3kc7",
+            false,
+            "src.tar.gz",
+        );
+        assert!(path.starts_with("/nix/store/"));
+        assert!(path.ends_with("-src.tar.gz"));
+    }
+
+    #[test]
+    fn fixed_output_recursive_differs_from_flat() {
+        let flat = compute_fixed_output_hash("sha256", "abc", false, "thing");
+        let rec = compute_fixed_output_hash("sha256", "abc", true, "thing");
+        assert_ne!(flat, rec);
+    }
+
+    #[test]
+    fn fixed_output_deterministic() {
+        let p1 = compute_fixed_output_hash("sha256", "deadbeef", false, "thing");
+        let p2 = compute_fixed_output_hash("sha256", "deadbeef", false, "thing");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn fixed_output_changes_with_hash_value() {
+        let p1 = compute_fixed_output_hash("sha256", "aaa", false, "thing");
+        let p2 = compute_fixed_output_hash("sha256", "bbb", false, "thing");
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn fixed_output_changes_with_algo() {
+        let p1 = compute_fixed_output_hash("sha256", "abc", false, "thing");
+        let p2 = compute_fixed_output_hash("sha1", "abc", false, "thing");
+        assert_ne!(p1, p2);
+    }
+
+    // ── hex_lower ────────────────────────────────────────────
+
+    #[test]
+    fn hex_lower_basic() {
+        assert_eq!(hex_lower(&[0x00, 0xff, 0xab]), "00ffab");
+        assert_eq!(hex_lower(&[]), "");
+        assert_eq!(hex_lower(&[0x12, 0x34, 0x56, 0x78]), "12345678");
     }
 }
