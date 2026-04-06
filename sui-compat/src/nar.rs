@@ -14,6 +14,16 @@ use thiserror::Error;
 /// NAR magic header.
 pub const NAR_MAGIC: &str = "nix-archive-1";
 
+/// Hard cap on a single length-prefixed string in a NAR. CppNix
+/// allows arbitrarily large NARs, but a single *string* (filename,
+/// type token, file contents) above this size is almost certainly
+/// either a corrupted file or a fuzz-input attack on the parser.
+/// Allocating multi-exabyte buffers triggers `abort()` from the
+/// system allocator, which `catch_unwind` cannot contain — so we
+/// reject up front instead. 4 GiB is a generous cap for any real
+/// file we'd encounter in `/nix/store`.
+pub const MAX_NAR_STRING: u64 = 4 * 1024 * 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum NarError {
     #[error("io error: {0}")]
@@ -47,7 +57,13 @@ fn write_str(w: &mut impl Write, s: &[u8]) -> io::Result<()> {
 }
 
 fn read_str(r: &mut impl Read) -> Result<Vec<u8>, NarError> {
-    let len = read_u64(r)? as usize;
+    let len_u64 = read_u64(r)?;
+    if len_u64 > MAX_NAR_STRING {
+        return Err(NarError::Invalid(format!(
+            "nar string too long: {len_u64} bytes exceeds {MAX_NAR_STRING} cap"
+        )));
+    }
+    let len = len_u64 as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     let pad = (8 - (len % 8)) % 8;

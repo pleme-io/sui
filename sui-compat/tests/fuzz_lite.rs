@@ -11,6 +11,7 @@
 use proptest::prelude::*;
 use sui_compat::derivation::Derivation;
 use sui_compat::flake::FlakeLock;
+use sui_compat::nar::NarReader;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -33,19 +34,35 @@ proptest! {
         prop_assert!(result.is_ok(), "Derivation::parse panicked on prefixed {} bytes", bytes.len());
     }
 
-    // NOTE (2026-04-06): NarReader fuzz targets are disabled
-    // because the reader trusts a u64 length prefix in the first
-    // 8 bytes of input. Random fuzz bytes make that u64 huge,
-    // causing `Vec::with_capacity(len)` to attempt a multi-exabyte
-    // allocation that the OS refuses — the process aborts (SIGABRT,
-    // not a catchable panic), so `catch_unwind` cannot contain it.
-    //
-    // This is a real hardening gap in sui-compat (tracked as
-    // Gap 11 in sui_known_gaps.md): NarReader::read_str should
-    // validate the length prefix against a sane cap (e.g., 4 GiB
-    // or remaining input length) before allocating. Once that
-    // hardening lands, restore both a "no magic" test and a
-    // "with magic" test to this file.
+    /// `NarReader::read_complete` must not panic on arbitrary bytes.
+    /// Restored after Gap 11 fix added a 4 GiB cap on length prefixes.
+    #[test]
+    fn nar_read_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+        let result = std::panic::catch_unwind(|| {
+            let mut cursor = std::io::Cursor::new(bytes.as_slice());
+            NarReader::read_complete(&mut cursor)
+        });
+        prop_assert!(result.is_ok(), "NarReader panicked on {} bytes", bytes.len());
+    }
+
+    /// NAR reader with a valid magic header (stress the body parser).
+    #[test]
+    fn nar_read_never_panics_with_magic(tail in prop::collection::vec(any::<u8>(), 0..512)) {
+        let magic = b"nix-archive-1";
+        let mut bytes = Vec::with_capacity(24 + tail.len());
+        bytes.extend_from_slice(&(magic.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(magic);
+        // Pad to 8-byte alignment.
+        while bytes.len() % 8 != 0 {
+            bytes.push(0);
+        }
+        bytes.extend(tail);
+        let result = std::panic::catch_unwind(|| {
+            let mut cursor = std::io::Cursor::new(bytes.as_slice());
+            NarReader::read_complete(&mut cursor)
+        });
+        prop_assert!(result.is_ok(), "NarReader panicked with magic on {} bytes", bytes.len());
+    }
 
     /// `FlakeLock::parse` must not panic on arbitrary UTF-8 strings.
     #[test]
