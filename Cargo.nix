@@ -13188,6 +13188,12 @@ rec {
             features = [ "env-filter" "json" ];
           }
         ];
+        devDependencies = [
+          {
+            name = "async-trait";
+            packageId = "async-trait";
+          }
+        ];
 
       };
       "sui-build" = rec {
@@ -13372,6 +13378,10 @@ rec {
         libName = "sui_eval";
         dependencies = [
           {
+            name = "regex";
+            packageId = "regex";
+          }
+          {
             name = "rnix";
             packageId = "rnix";
           }
@@ -13387,6 +13397,10 @@ rec {
           {
             name = "serde_json";
             packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
           }
           {
             name = "sui-compat";
