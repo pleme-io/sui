@@ -94,7 +94,7 @@ mod tests {
         let e: &dyn Evaluator = &TreeWalkEvaluator;
         assert_eq!(
             e.eval_expr(r#""hello world""#).unwrap(),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -182,7 +182,7 @@ mod tests {
         let e: &dyn Evaluator = &TreeWalkEvaluator;
         assert_eq!(
             e.eval_expr(r#"let name = "world"; in "hello ${name}""#).unwrap(),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 

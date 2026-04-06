@@ -4003,6 +4003,8 @@ dependencies = [
 name = "sui-eval"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "data-encoding",
  "flate2",
  "regex",
  "reqwest",
@@ -4017,6 +4019,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
 ]
 

@@ -1,10 +1,101 @@
 //! Nix value types and environments.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
+
+// ── Nix string context ─────────────────────────────────────────
+
+/// An element of a Nix string's context set.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContextElement {
+    /// Store path reference (e.g., "/nix/store/abc-hello").
+    Plain(String),
+    /// Derivation output reference.
+    Output { drv: String, output: String },
+    /// Entire derivation closure.
+    DrvDeep(String),
+}
+
+/// The context attached to a Nix string: a set of store-path references that
+/// the string depends on. Plain string literals have an empty context.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StringContext(pub BTreeSet<ContextElement>);
+
+impl StringContext {
+    pub fn new() -> Self {
+        Self(BTreeSet::new())
+    }
+
+    /// Merge another context into this one.
+    pub fn merge(&mut self, other: &StringContext) {
+        self.0.extend(other.0.iter().cloned());
+    }
+
+    /// Add a plain store-path reference.
+    pub fn add_plain(&mut self, path: String) {
+        self.0.insert(ContextElement::Plain(path));
+    }
+
+    /// Add a derivation output reference.
+    pub fn add_output(&mut self, drv: String, output: String) {
+        self.0.insert(ContextElement::Output { drv, output });
+    }
+
+    /// Add a derivation-deep reference.
+    pub fn add_drv_deep(&mut self, drv: String) {
+        self.0.insert(ContextElement::DrvDeep(drv));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A Nix string value with associated context (store-path references).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NixString {
+    /// The character data.
+    pub chars: String,
+    /// The context set (empty for plain string literals).
+    pub context: StringContext,
+}
+
+impl NixString {
+    /// Create a context-free string.
+    pub fn plain(s: impl Into<String>) -> Self {
+        Self {
+            chars: s.into(),
+            context: StringContext::default(),
+        }
+    }
+
+    /// Create a string with an explicit context.
+    pub fn with_context(s: impl Into<String>, ctx: StringContext) -> Self {
+        Self {
+            chars: s.into(),
+            context: ctx,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.chars
+    }
+
+    pub fn has_context(&self) -> bool {
+        !self.context.0.is_empty()
+    }
+}
+
+impl fmt::Display for NixString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.chars)
+    }
+}
+
+// ── Value enum ────────────────────────────────────────────────
 
 /// A Nix value.
 #[derive(Debug, Clone)]
@@ -13,7 +104,7 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    String(String),
+    String(NixString),
     Path(String),
     List(Vec<Value>),
     Attrs(NixAttrs),
@@ -274,6 +365,11 @@ pub enum EvalError {
 }
 
 impl Value {
+    /// Convenience constructor for a context-free string.
+    pub fn string(s: impl Into<String>) -> Self {
+        Value::String(NixString::plain(s))
+    }
+
     /// Convert a value to JSON for API output.
     pub fn to_json(&self) -> serde_json::Value {
         match self {
@@ -281,7 +377,7 @@ impl Value {
             Value::Bool(b) => serde_json::Value::Bool(*b),
             Value::Int(n) => serde_json::json!(n),
             Value::Float(f) => serde_json::json!(f),
-            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::String(s) => serde_json::Value::String(s.chars.clone()),
             Value::Path(p) => serde_json::Value::String(p.clone()),
             Value::List(items) => {
                 serde_json::Value::Array(items.iter().map(|v| v.to_json()).collect())
@@ -349,7 +445,7 @@ impl Value {
 
     pub fn as_string(&self) -> Result<&str, EvalError> {
         match self {
-            Value::String(s) => Ok(s),
+            Value::String(s) => Ok(&s.chars),
             // Note: we cannot return a reference into a forced thunk here
             // because the forced value is transient. Callers that go through
             // force_value() in eval.rs will match on the concrete value.
@@ -360,15 +456,39 @@ impl Value {
         }
     }
 
+    /// Return a reference to the full `NixString` (with context).
+    pub fn as_nix_string(&self) -> Result<&NixString, EvalError> {
+        match self {
+            Value::String(ns) => Ok(ns),
+            Value::Thunk(_) => Err(EvalError::TypeError(
+                "thunk in as_nix_string: force first via force_value()".into(),
+            )),
+            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+        }
+    }
+
     /// Force-aware string extraction. Returns an owned String by forcing
     /// thunks if needed. Use this instead of `as_string()` when you may
     /// be operating on thunked attrset values.
     pub fn to_str(&self) -> Result<String, EvalError> {
         match self {
-            Value::String(s) => Ok(s.clone()),
+            Value::String(s) => Ok(s.chars.clone()),
             Value::Thunk(thunk) => {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_str()
+            }
+            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+        }
+    }
+
+    /// Force-aware `NixString` extraction. Returns an owned `NixString`
+    /// (with context) by forcing thunks if needed.
+    pub fn to_nix_string(&self) -> Result<NixString, EvalError> {
+        match self {
+            Value::String(s) => Ok(s.clone()),
+            Value::Thunk(thunk) => {
+                let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
+                forced.to_nix_string()
             }
             _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
         }
@@ -451,7 +571,7 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => (*a as f64) == *b,
-            (Value::String(a), Value::String(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a.chars == b.chars,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Attrs(a), Value::Attrs(b)) => a.0 == b.0,
@@ -467,7 +587,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
             Value::Float(n) => write!(f, "{n}"),
-            Value::String(s) => write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            Value::String(s) => write!(f, "\"{}\"", s.chars.replace('\\', "\\\\").replace('"', "\\\"")),
             Value::Path(p) => write!(f, "{p}"),
             Value::List(items) => {
                 write!(f, "[ ")?;
@@ -526,7 +646,7 @@ mod tests {
     #[test]
     fn to_json_string() {
         assert_eq!(
-            Value::String("hello".to_string()).to_json(),
+            Value::string("hello").to_json(),
             serde_json::Value::String("hello".to_string()),
         );
     }
@@ -600,7 +720,7 @@ mod tests {
     fn type_name_float() { assert_eq!(Value::Float(0.0).type_name(), "float"); }
 
     #[test]
-    fn type_name_string() { assert_eq!(Value::String("".to_string()).type_name(), "string"); }
+    fn type_name_string() { assert_eq!(Value::string("").type_name(), "string"); }
 
     #[test]
     fn type_name_path() { assert_eq!(Value::Path("".to_string()).type_name(), "path"); }
@@ -641,7 +761,7 @@ mod tests {
     #[test]
     fn as_bool_error_on_non_bool() {
         assert!(Value::Int(1).as_bool().is_err());
-        assert!(Value::String("true".to_string()).as_bool().is_err());
+        assert!(Value::string("true").as_bool().is_err());
     }
 
     #[test]
@@ -674,7 +794,7 @@ mod tests {
     fn as_float_coerces_int() {
         assert_eq!(Value::Int(5).as_float().unwrap(), 5.0);
         assert_eq!(Value::Float(2.5).as_float().unwrap(), 2.5);
-        assert!(Value::String("x".to_string()).as_float().is_err());
+        assert!(Value::string("x").as_float().is_err());
     }
 
     // ── PartialEq ────────────────────────────────────────
@@ -688,7 +808,7 @@ mod tests {
 
     #[test]
     fn partial_eq_different_types_not_equal() {
-        assert_ne!(Value::Int(1), Value::String("1".to_string()));
+        assert_ne!(Value::Int(1), Value::string("1"));
         assert_ne!(Value::Bool(true), Value::Int(1));
         assert_ne!(Value::Null, Value::Bool(false));
         assert_ne!(Value::List(vec![]), Value::Attrs(NixAttrs::new()));
@@ -716,12 +836,12 @@ mod tests {
 
     #[test]
     fn display_string() {
-        assert_eq!(format!("{}", Value::String("hi".to_string())), "\"hi\"");
+        assert_eq!(format!("{}", Value::string("hi")), "\"hi\"");
     }
 
     #[test]
     fn display_string_with_escapes() {
-        let v = Value::String("a\"b\\c".to_string());
+        let v = Value::string("a\"b\\c");
         let s = format!("{v}");
         assert!(s.contains("\\\""));
         assert!(s.contains("\\\\"));

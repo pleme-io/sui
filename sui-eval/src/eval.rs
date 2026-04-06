@@ -403,12 +403,13 @@ fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
                 .map_err(|e| EvalError::ParseError(format!("invalid float: {e}")))?;
             Ok(Value::Float(f))
         }
-        LiteralKind::Uri(tok) => Ok(Value::String(tok.syntax().text().to_string())),
+        LiteralKind::Uri(tok) => Ok(Value::string(tok.syntax().text().to_string())),
     }
 }
 
 fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
     let mut result = String::new();
+    let mut ctx = StringContext::new();
     for part in s.normalized_parts() {
         match part {
             InterpolPart::Literal(text) => result.push_str(&text),
@@ -417,21 +418,32 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                     EvalError::ParseError("interpolation missing expr".to_string())
                 })?;
                 let val = force_value(&eval_expr(&expr, env)?)?;
-                match val {
-                    Value::String(s) => result.push_str(&s),
+                match &val {
+                    Value::String(ns) => {
+                        result.push_str(&ns.chars);
+                        ctx.merge(&ns.context);
+                    }
                     Value::Int(n) => result.push_str(&n.to_string()),
                     Value::Float(f) => result.push_str(&format!("{f}")),
                     Value::Bool(true) => result.push('1'),
                     Value::Bool(false) => {}
                     Value::Null => {}
-                    Value::Path(p) => result.push_str(&p),
+                    Value::Path(ref p) => {
+                        result.push_str(p);
+                        // A path interpolated into a string adds a Plain
+                        // context element for that path.
+                        ctx.add_plain(p.clone());
+                    }
                     Value::Attrs(ref attrs) => {
                         // __toString protocol: if the attrset has __toString,
                         // call it with `self` to produce a string.
                         if let Some(to_str) = attrs.get("__toString") {
                             let s = apply(to_str.clone(), val.clone())?;
                             match s {
-                                Value::String(s) => result.push_str(&s),
+                                Value::String(ref ns) => {
+                                    result.push_str(&ns.chars);
+                                    ctx.merge(&ns.context);
+                                }
                                 _ => {
                                     return Err(EvalError::TypeError(
                                         "__toString must return a string".to_string(),
@@ -455,7 +467,7 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
             }
         }
     }
-    Ok(Value::String(result))
+    Ok(Value::String(NixString::with_context(result, ctx)))
 }
 
 fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
@@ -711,8 +723,15 @@ fn eval_binop(
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
-            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
-            (Value::Path(a), Value::String(b)) => Ok(Value::Path(format!("{a}{b}"))),
+            (Value::String(a), Value::String(b)) => {
+                let mut ctx = a.context.clone();
+                ctx.merge(&b.context);
+                Ok(Value::String(NixString::with_context(
+                    format!("{}{}", a.chars, b.chars),
+                    ctx,
+                )))
+            }
+            (Value::Path(a), Value::String(b)) => Ok(Value::Path(format!("{a}{}", b.chars))),
             (Value::Path(a), Value::Path(b)) => Ok(Value::Path(format!("{a}/{b}"))),
             _ => Err(EvalError::TypeError(format!(
                 "cannot add {} and {}",
@@ -786,7 +805,7 @@ fn compare(
         (Value::Float(a), Value::Int(b)) => a
             .partial_cmp(&(*b as f64))
             .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
+        (Value::String(a), Value::String(b)) => a.chars.cmp(&b.chars),
         _ => {
             return Err(EvalError::TypeError(format!(
                 "cannot compare {} and {}",
@@ -922,7 +941,7 @@ mod tests {
     fn eval_float() { assert_eq!(ev("3.14"), Value::Float(3.14)); }
 
     #[test]
-    fn eval_string() { assert_eq!(ev(r#""hello""#), Value::String("hello".to_string())); }
+    fn eval_string() { assert_eq!(ev(r#""hello""#), Value::string("hello")); }
 
     #[test]
     fn eval_bool() { assert_eq!(ev("true"), Value::Bool(true)); }
@@ -961,7 +980,7 @@ mod tests {
 
     #[test]
     fn eval_string_concat() {
-        assert_eq!(ev(r#""hello" + " " + "world""#), Value::String("hello world".to_string()));
+        assert_eq!(ev(r#""hello" + " " + "world""#), Value::string("hello world"));
     }
 
     #[test]
@@ -1096,8 +1115,8 @@ mod tests {
 
     #[test]
     fn eval_builtins_available() {
-        assert_eq!(ev("builtins.typeOf 42"), Value::String("int".to_string()));
-        assert_eq!(ev("builtins.typeOf true"), Value::String("bool".to_string()));
+        assert_eq!(ev("builtins.typeOf 42"), Value::string("int"));
+        assert_eq!(ev("builtins.typeOf true"), Value::string("bool"));
     }
 
     #[test]
@@ -1118,7 +1137,7 @@ mod tests {
 
     #[test]
     fn eval_builtins_to_string() {
-        assert_eq!(ev("builtins.toString 42"), Value::String("42".to_string()));
+        assert_eq!(ev("builtins.toString 42"), Value::string("42"));
     }
 
     #[test]
@@ -1169,9 +1188,9 @@ mod tests {
         assert_eq!(
             v,
             Value::List(vec![
-                Value::String("a".to_string()),
-                Value::String("m".to_string()),
-                Value::String("z".to_string()),
+                Value::string("a"),
+                Value::string("m"),
+                Value::string("z"),
             ]),
         );
     }
@@ -1343,10 +1362,10 @@ mod tests {
 
     #[test]
     fn literal_string_empty_and_escapes() {
-        assert_eq!(ev(r#""""#), Value::String("".to_string()));
+        assert_eq!(ev(r#""""#), Value::string(""));
         // Escape sequences within strings
-        assert_eq!(ev(r#""hello\nworld""#), Value::String("hello\nworld".to_string()));
-        assert_eq!(ev(r#""tab\there""#), Value::String("tab\there".to_string()));
+        assert_eq!(ev(r#""hello\nworld""#), Value::string("hello\nworld"));
+        assert_eq!(ev(r#""tab\there""#), Value::string("tab\there"));
     }
 
     #[test]
@@ -1354,12 +1373,12 @@ mod tests {
         // Indented string ('' ... '')
         assert_eq!(
             ev("''hello''"),
-            Value::String("hello".to_string()),
+            Value::string("hello"),
         );
         // Multiline indented string strips common indentation
         assert_eq!(
             ev("''\n  line1\n  line2\n''"),
-            Value::String("line1\nline2\n".to_string()),
+            Value::string("line1\nline2\n"),
         );
     }
 
@@ -1413,9 +1432,9 @@ mod tests {
 
     #[test]
     fn op_string_concat() {
-        assert_eq!(ev(r#""foo" + "bar""#), Value::String("foobar".to_string()));
-        assert_eq!(ev(r#""" + "x""#), Value::String("x".to_string()));
-        assert_eq!(ev(r#""a" + "" + "b""#), Value::String("ab".to_string()));
+        assert_eq!(ev(r#""foo" + "bar""#), Value::string("foobar"));
+        assert_eq!(ev(r#""" + "x""#), Value::string("x"));
+        assert_eq!(ev(r#""a" + "" + "b""#), Value::string("ab"));
     }
 
     #[test]
@@ -1648,7 +1667,7 @@ mod tests {
     #[test]
     fn func_identity_lambda() {
         assert_eq!(ev("(x: x) 42"), Value::Int(42));
-        assert_eq!(ev(r#"(x: x) "hello""#), Value::String("hello".to_string()));
+        assert_eq!(ev(r#"(x: x) "hello""#), Value::string("hello"));
     }
 
     #[test]
@@ -1840,9 +1859,9 @@ mod tests {
         assert_eq!(
             ev("builtins.attrNames { z = 1; m = 2; a = 3; }"),
             Value::List(vec![
-                Value::String("a".to_string()),
-                Value::String("m".to_string()),
-                Value::String("z".to_string()),
+                Value::string("a"),
+                Value::string("m"),
+                Value::string("z"),
             ]),
         );
     }
@@ -1889,7 +1908,7 @@ mod tests {
             ev(r#"[1 "two" true null]"#),
             Value::List(vec![
                 Value::Int(1),
-                Value::String("two".to_string()),
+                Value::string("two"),
                 Value::Bool(true),
                 Value::Null,
             ]),
@@ -1943,7 +1962,7 @@ mod tests {
     fn interp_simple_variable() {
         assert_eq!(
             ev(r#"let name = "world"; in "hello ${name}""#),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -1951,7 +1970,7 @@ mod tests {
     fn interp_nested_expression() {
         assert_eq!(
             ev(r#""result: ${builtins.toString (1 + 2)}""#),
-            Value::String("result: 3".to_string()),
+            Value::string("result: 3"),
         );
     }
 
@@ -1960,7 +1979,7 @@ mod tests {
         // Ints are coerced to string in interpolation
         assert_eq!(
             ev(r#"let x = 42; in "count: ${builtins.toString x}""#),
-            Value::String("count: 42".to_string()),
+            Value::string("count: 42"),
         );
     }
 
@@ -1968,7 +1987,7 @@ mod tests {
     fn interp_multiple() {
         assert_eq!(
             ev(r#"let a = "foo"; b = "bar"; in "${a} and ${b}""#),
-            Value::String("foo and bar".to_string()),
+            Value::string("foo and bar"),
         );
     }
 
@@ -1976,7 +1995,7 @@ mod tests {
     fn interp_in_let() {
         assert_eq!(
             ev(r#"let x = "world"; in "hello ${x}""#),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -1984,7 +2003,7 @@ mod tests {
     fn interp_empty_result() {
         assert_eq!(
             ev(r#"let x = ""; in "a${x}b""#),
-            Value::String("ab".to_string()),
+            Value::string("ab"),
         );
     }
 
@@ -1993,7 +2012,7 @@ mod tests {
         // Paths are coerced to strings in interpolation
         assert_eq!(
             ev(r#""path: ${./foo}""#),
-            Value::String("path: ./foo".to_string()),
+            Value::string("path: ./foo"),
         );
     }
 
@@ -2001,7 +2020,7 @@ mod tests {
     fn interp_adjacent_interpolations() {
         assert_eq!(
             ev(r#"let a = "x"; b = "y"; in "${a}${b}""#),
-            Value::String("xy".to_string()),
+            Value::string("xy"),
         );
     }
 
@@ -2075,11 +2094,11 @@ mod tests {
     fn builtins_concat_strings_sep() {
         assert_eq!(
             ev(r#"builtins.concatStringsSep ", " ["a" "b" "c"]"#),
-            Value::String("a, b, c".to_string()),
+            Value::string("a, b, c"),
         );
         assert_eq!(
             ev(r#"builtins.concatStringsSep "" ["x" "y"]"#),
-            Value::String("xy".to_string()),
+            Value::string("xy"),
         );
     }
 
@@ -2087,11 +2106,11 @@ mod tests {
     fn builtins_replace_strings() {
         assert_eq!(
             ev(r#"builtins.replaceStrings ["o"] ["0"] "foobar""#),
-            Value::String("f00bar".to_string()),
+            Value::string("f00bar"),
         );
         assert_eq!(
             ev(r#"builtins.replaceStrings ["hello"] ["goodbye"] "hello world""#),
-            Value::String("goodbye world".to_string()),
+            Value::string("goodbye world"),
         );
     }
 
@@ -2145,14 +2164,14 @@ mod tests {
 
     #[test]
     fn builtins_type_of_all_types() {
-        assert_eq!(ev("builtins.typeOf null"), Value::String("null".to_string()));
-        assert_eq!(ev("builtins.typeOf true"), Value::String("bool".to_string()));
-        assert_eq!(ev("builtins.typeOf 42"), Value::String("int".to_string()));
-        assert_eq!(ev("builtins.typeOf 3.14"), Value::String("float".to_string()));
-        assert_eq!(ev(r#"builtins.typeOf "hi""#), Value::String("string".to_string()));
-        assert_eq!(ev("builtins.typeOf [1]"), Value::String("list".to_string()));
-        assert_eq!(ev("builtins.typeOf {}"), Value::String("set".to_string()));
-        assert_eq!(ev("builtins.typeOf (x: x)"), Value::String("lambda".to_string()));
+        assert_eq!(ev("builtins.typeOf null"), Value::string("null"));
+        assert_eq!(ev("builtins.typeOf true"), Value::string("bool"));
+        assert_eq!(ev("builtins.typeOf 42"), Value::string("int"));
+        assert_eq!(ev("builtins.typeOf 3.14"), Value::string("float"));
+        assert_eq!(ev(r#"builtins.typeOf "hi""#), Value::string("string"));
+        assert_eq!(ev("builtins.typeOf [1]"), Value::string("list"));
+        assert_eq!(ev("builtins.typeOf {}"), Value::string("set"));
+        assert_eq!(ev("builtins.typeOf (x: x)"), Value::string("lambda"));
     }
 
     #[test]
@@ -2182,7 +2201,7 @@ mod tests {
         // string roundtrip
         assert_eq!(
             ev(r#"builtins.fromJSON (builtins.toJSON "hello")"#),
-            Value::String("hello".to_string()),
+            Value::string("hello"),
         );
         // list roundtrip
         assert_eq!(
@@ -2197,11 +2216,11 @@ mod tests {
 
     #[test]
     fn builtins_to_string_various() {
-        assert_eq!(ev("builtins.toString 42"), Value::String("42".to_string()));
-        assert_eq!(ev("builtins.toString true"), Value::String("1".to_string()));
-        assert_eq!(ev("builtins.toString false"), Value::String("".to_string()));
-        assert_eq!(ev("builtins.toString null"), Value::String("".to_string()));
-        assert_eq!(ev(r#"builtins.toString "hello""#), Value::String("hello".to_string()));
+        assert_eq!(ev("builtins.toString 42"), Value::string("42"));
+        assert_eq!(ev("builtins.toString true"), Value::string("1"));
+        assert_eq!(ev("builtins.toString false"), Value::string(""));
+        assert_eq!(ev("builtins.toString null"), Value::string(""));
+        assert_eq!(ev(r#"builtins.toString "hello""#), Value::string("hello"));
     }
 
     #[test]
@@ -2291,7 +2310,8 @@ mod tests {
     #[test]
     fn builtins_current_system() {
         let v = ev("builtins.currentSystem");
-        if let Value::String(s) = v {
+        if let Value::String(ns) = v {
+            let s = &ns.chars;
             // Should be a valid system string
             assert!(
                 s == "aarch64-darwin"
@@ -2364,7 +2384,7 @@ mod tests {
         if let Value::Attrs(attrs) = v {
             assert_eq!(attrs.get("debug"), Some(&Value::Bool(true)));
             assert_eq!(attrs.get("port"), Some(&Value::Int(9090)));
-            assert_eq!(attrs.get("host"), Some(&Value::String("localhost".to_string())));
+            assert_eq!(attrs.get("host"), Some(&Value::string("localhost")));
         } else {
             panic!("expected attrs");
         }
@@ -2415,9 +2435,9 @@ mod tests {
     fn pattern_derivation_like_attrset() {
         let v = ev(r#"{ type = "derivation"; name = "hello"; system = builtins.currentSystem; builder = "/bin/sh"; }"#);
         if let Value::Attrs(attrs) = v {
-            assert_eq!(attrs.get("type"), Some(&Value::String("derivation".to_string())));
-            assert_eq!(attrs.get("name"), Some(&Value::String("hello".to_string())));
-            assert_eq!(attrs.get("builder"), Some(&Value::String("/bin/sh".to_string())));
+            assert_eq!(attrs.get("type"), Some(&Value::string("derivation")));
+            assert_eq!(attrs.get("name"), Some(&Value::string("hello")));
+            assert_eq!(attrs.get("builder"), Some(&Value::string("/bin/sh")));
             // system should be a string (may be a thunk that forces to string)
             let system = force_value(attrs.get("system").unwrap()).unwrap();
             assert!(matches!(system, Value::String(_)), "expected string, got {system:?}");
@@ -2524,7 +2544,7 @@ mod tests {
     fn integration_let_with_function_returning_attrset() {
         assert_eq!(
             ev("let mkPkg = name: { inherit name; version = 1; }; in (mkPkg \"hello\").name"),
-            Value::String("hello".to_string()),
+            Value::string("hello"),
         );
     }
 
@@ -2604,11 +2624,11 @@ mod tests {
     fn integration_substring() {
         assert_eq!(
             ev(r#"builtins.substring 0 5 "hello world""#),
-            Value::String("hello".to_string()),
+            Value::string("hello"),
         );
         assert_eq!(
             ev(r#"builtins.substring 6 5 "hello world""#),
-            Value::String("world".to_string()),
+            Value::string("world"),
         );
     }
 
@@ -2669,11 +2689,11 @@ mod tests {
         assert_eq!(
             ev(r#"builtins.split "/" "a/b/c""#),
             Value::List(vec![
-                Value::String("a".to_string()),
-                Value::List(vec![Value::String("/".to_string())]),
-                Value::String("b".to_string()),
-                Value::List(vec![Value::String("/".to_string())]),
-                Value::String("c".to_string()),
+                Value::string("a"),
+                Value::List(vec![Value::string("/")]),
+                Value::string("b"),
+                Value::List(vec![Value::string("/")]),
+                Value::string("c"),
             ]),
         );
     }
@@ -2786,7 +2806,7 @@ mod tests {
     fn to_string_protocol_in_interpolation() {
         assert_eq!(
             ev(r#"let s = { __toString = self: "world"; }; in "hello ${s}""#),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -2794,7 +2814,7 @@ mod tests {
     fn to_string_protocol_accesses_self() {
         assert_eq!(
             ev(r#"let s = { __toString = self: self.val; val = "abc"; }; in "${s}""#),
-            Value::String("abc".to_string()),
+            Value::string("abc"),
         );
     }
 
@@ -2802,7 +2822,7 @@ mod tests {
     fn to_string_protocol_via_builtin_to_string() {
         assert_eq!(
             ev(r#"builtins.toString { __toString = self: "via-builtin"; }"#),
-            Value::String("via-builtin".to_string()),
+            Value::string("via-builtin"),
         );
     }
 
@@ -2821,11 +2841,11 @@ mod tests {
     fn eval_builtins_concat_strings() {
         assert_eq!(
             ev(r#"builtins.concatStrings ["a" "b" "c"]"#),
-            Value::String("abc".to_string()),
+            Value::string("abc"),
         );
         assert_eq!(
             ev(r#"builtins.concatStrings []"#),
-            Value::String("".to_string()),
+            Value::string(""),
         );
     }
 
@@ -2873,8 +2893,8 @@ mod tests {
     fn eval_builtins_parse_drv_name() {
         let v = ev(r#"builtins.parseDrvName "nix-2.3.4""#);
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("name"), Some(&Value::String("nix".to_string())));
-            assert_eq!(a.get("version"), Some(&Value::String("2.3.4".to_string())));
+            assert_eq!(a.get("name"), Some(&Value::string("nix")));
+            assert_eq!(a.get("version"), Some(&Value::string("2.3.4")));
         } else {
             panic!("expected attrs");
         }
@@ -2884,7 +2904,7 @@ mod tests {
     fn eval_builtins_base_name_of() {
         assert_eq!(
             ev(r#"builtins.baseNameOf "/foo/bar/baz""#),
-            Value::String("baz".to_string()),
+            Value::string("baz"),
         );
     }
 
@@ -2892,7 +2912,7 @@ mod tests {
     fn eval_builtins_dir_of() {
         assert_eq!(
             ev(r#"builtins.dirOf "/foo/bar/baz""#),
-            Value::String("/foo/bar".to_string()),
+            Value::string("/foo/bar"),
         );
     }
 
@@ -2918,14 +2938,14 @@ mod tests {
 
     #[test]
     fn indented_string_simple() {
-        assert_eq!(ev("''hello''"), Value::String("hello".to_string()));
+        assert_eq!(ev("''hello''"), Value::string("hello"));
     }
 
     #[test]
     fn indented_string_multiline_strips_indent() {
         assert_eq!(
             ev("''\n  line1\n  line2\n''"),
-            Value::String("line1\nline2\n".to_string()),
+            Value::string("line1\nline2\n"),
         );
     }
 
@@ -2934,7 +2954,7 @@ mod tests {
         let code = "let x = \"world\"; in ''hello ${x}''";
         assert_eq!(
             ev(code),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -2943,7 +2963,7 @@ mod tests {
         // Common indent is 2 spaces; the 4-space line keeps 2 extra
         assert_eq!(
             ev("''\n  a\n    b\n''"),
-            Value::String("a\n  b\n".to_string()),
+            Value::string("a\n  b\n"),
         );
     }
 
@@ -2975,15 +2995,15 @@ mod tests {
     fn eval_builtins_match() {
         assert_eq!(
             ev(r#"builtins.match "([0-9]+)" "42""#),
-            Value::List(vec![Value::String("42".to_string())]),
+            Value::List(vec![Value::string("42")]),
         );
     }
 
     #[test]
     fn eval_builtins_hash_string() {
         let v = ev(r#"builtins.hashString "sha256" "hello""#);
-        if let Value::String(s) = v {
-            assert_eq!(s.len(), 64);
+        if let Value::String(ns) = v {
+            assert_eq!(ns.chars.len(), 64);
         } else {
             panic!("expected string");
         }
@@ -3004,7 +3024,7 @@ mod tests {
     fn eval_builtins_derivation() {
         let v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("type"), Some(&Value::String("derivation".to_string())));
+            assert_eq!(a.get("type"), Some(&Value::string("derivation")));
         } else {
             panic!("expected attrs");
         }
@@ -3047,7 +3067,7 @@ mod tests {
         let expr = format!(r#"builtins.readDir "{}""#, dir.display());
         let v = eval(&expr).unwrap();
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("a.txt"), Some(&Value::String("regular".to_string())));
+            assert_eq!(a.get("a.txt"), Some(&Value::string("regular")));
         } else {
             panic!("expected attrs");
         }

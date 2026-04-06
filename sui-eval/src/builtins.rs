@@ -11,7 +11,7 @@ pub fn register(env: &mut Env) {
     // Type checking -- args are already forced by apply() but type_name()
     // also handles thunks transparently.
     register_builtin(&mut builtins_set, "typeOf", |args| {
-        Ok(Value::String(args[0].type_name().to_string()))
+        Ok(Value::string(args[0].type_name()))
     });
     register_builtin(&mut builtins_set, "isNull", |args| {
         Ok(Value::Bool(matches!(args[0], Value::Null)))
@@ -131,7 +131,7 @@ pub fn register(env: &mut Env) {
     // Attrset operations
     register_builtin(&mut builtins_set, "attrNames", |args| {
         let attrs = args[0].as_attrs()?;
-        Ok(Value::List(attrs.keys().map(|k| Value::String(k.clone())).collect()))
+        Ok(Value::List(attrs.keys().map(|k| Value::string(k.clone())).collect()))
     });
     register_builtin(&mut builtins_set, "attrValues", |args| {
         let attrs = args[0].as_attrs()?;
@@ -180,12 +180,12 @@ pub fn register(env: &mut Env) {
         let val = &args[0];
         Ok(Value::String(match val {
             Value::String(s) => s.clone(),
-            Value::Int(n) => n.to_string(),
-            Value::Float(f) => format!("{f}"),
-            Value::Bool(true) => "1".to_string(),
-            Value::Bool(false) => String::new(),
-            Value::Null => String::new(),
-            Value::Path(p) => p.clone(),
+            Value::Int(n) => NixString::plain(n.to_string()),
+            Value::Float(f) => NixString::plain(format!("{f}")),
+            Value::Bool(true) => NixString::plain("1"),
+            Value::Bool(false) => NixString::plain(""),
+            Value::Null => NixString::plain(""),
+            Value::Path(p) => NixString::plain(p),
             Value::List(_) => return Err(EvalError::TypeError("toString: cannot convert list".to_string())),
             Value::Attrs(attrs) => {
                 // __toString protocol: call __toString with self
@@ -220,7 +220,7 @@ pub fn register(env: &mut Env) {
                         let s = args3[0].as_string()?;
                         let end = (start + len).min(s.len());
                         let start = start.min(s.len());
-                        Ok(Value::String(s[start..end].to_string()))
+                        Ok(Value::string(&s[start..end]))
                     }),
                 }))
             }),
@@ -229,7 +229,7 @@ pub fn register(env: &mut Env) {
 
     // Conversion
     register_builtin(&mut builtins_set, "toJSON", |args| {
-        Ok(Value::String(serde_json::to_string(&args[0].to_json())
+        Ok(Value::string(serde_json::to_string(&args[0].to_json())
             .unwrap_or_else(|_| "null".to_string())))
     });
     register_builtin(&mut builtins_set, "fromJSON", |args| {
@@ -380,7 +380,7 @@ pub fn register(env: &mut Env) {
                 let attrs = args2[0].as_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
-                    let partial = crate::eval::apply(func.clone(), Value::String(k.clone()))?;
+                    let partial = crate::eval::apply(func.clone(), Value::string(k.clone()))?;
                     let mapped = crate::eval::apply(partial, v.clone())?;
                     result.insert(k.clone(), mapped);
                 }
@@ -460,7 +460,7 @@ pub fn register(env: &mut Env) {
                                 s = s.replace(f.as_str(), t);
                             }
                         }
-                        Ok(Value::String(s))
+                        Ok(Value::string(s))
                     }),
                 }))
             }),
@@ -475,7 +475,7 @@ pub fn register(env: &mut Env) {
                 let strings: Result<Vec<_>, _> = list.iter()
                     .map(|v| v.as_string().map(|s| s.to_string()))
                     .collect();
-                Ok(Value::String(strings?.join(&sep)))
+                Ok(Value::string(strings?.join(&sep)))
             }),
         }))
     });
@@ -507,7 +507,7 @@ pub fn register(env: &mut Env) {
         for v in list {
             result.push_str(v.as_string()?);
         }
-        Ok(Value::String(result))
+        Ok(Value::string(result))
     });
 
     // partition — split list by predicate into { right, wrong }
@@ -577,7 +577,7 @@ pub fn register(env: &mut Env) {
                 for (k, vs) in collected {
                     let partial = crate::eval::apply(
                         func.clone(),
-                        Value::String(k.clone()),
+                        Value::string(k.clone()),
                     )?;
                     let val = crate::eval::apply(partial, Value::List(vs))?;
                     result.insert(k, val);
@@ -605,26 +605,26 @@ pub fn register(env: &mut Env) {
         let s = args[0].as_string()?;
         let (name, version) = parse_drv_name(s);
         let mut result = NixAttrs::new();
-        result.insert("name".to_string(), Value::String(name));
-        result.insert("version".to_string(), Value::String(version));
+        result.insert("name".to_string(), Value::string(name));
+        result.insert("version".to_string(), Value::string(version));
         Ok(Value::Attrs(result))
     });
 
     // baseNameOf — extract filename from path
     register_builtin(&mut builtins_set, "baseNameOf", |args| {
         let s = match &args[0] {
-            Value::String(s) => s.clone(),
+            Value::String(ns) => ns.chars.clone(),
             Value::Path(p) => p.clone(),
             _ => return Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
         };
         let base = s.rsplit('/').next().unwrap_or(&s);
-        Ok(Value::String(base.to_string()))
+        Ok(Value::string(base))
     });
 
     // dirOf — extract directory from path
     register_builtin(&mut builtins_set, "dirOf", |args| {
         let (s, is_path) = match &args[0] {
-            Value::String(s) => (s.clone(), false),
+            Value::String(ns) => (ns.chars.clone(), false),
             Value::Path(p) => (p.clone(), true),
             _ => return Err(EvalError::TypeError("dirOf: expected string or path".to_string())),
         };
@@ -636,7 +636,7 @@ pub fn register(env: &mut Env) {
         if is_path {
             Ok(Value::Path(dir))
         } else {
-            Ok(Value::String(dir))
+            Ok(Value::string(dir))
         }
     });
 
@@ -644,12 +644,12 @@ pub fn register(env: &mut Env) {
     register_builtin(&mut builtins_set, "readFile", |args| {
         let path = match &args[0] {
             Value::Path(p) => p.clone(),
-            Value::String(s) => s.clone(),
+            Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("readFile: expected path or string".to_string())),
         };
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::TypeError(format!("readFile: {e}")))?;
-        Ok(Value::String(contents))
+        Ok(Value::string(contents))
     });
 
     // addErrorContext — wraps an expression with error context (passthrough in our impl)
@@ -747,7 +747,7 @@ pub fn register(env: &mut Env) {
             }
             _ => return Err(EvalError::TypeError(format!("hashString: unsupported algorithm: {algo_str}"))),
         };
-        Ok(Value::String(hex))
+        Ok(Value::string(hex))
     });
 
     register_curried(&mut builtins_set, "match", |pattern, s| {
@@ -759,7 +759,7 @@ pub fn register(env: &mut Env) {
             Some(caps) => {
                 let groups: Vec<Value> = (1..caps.len())
                     .map(|i| match caps.get(i) {
-                        Some(m) => Value::String(m.as_str().to_string()),
+                        Some(m) => Value::string(m.as_str()),
                         None => Value::Null,
                     })
                     .collect();
@@ -779,18 +779,18 @@ pub fn register(env: &mut Env) {
         let mut last_end = 0;
         for m in re.find_iter(input) {
             // Add the non-matching part before this match
-            result.push(Value::String(input[last_end..m.start()].to_string()));
+            result.push(Value::string(&input[last_end..m.start()]));
             // Add the match groups as a list
             if let Some(caps) = re.captures(&input[m.start()..]) {
                 let groups: Vec<Value> = (1..caps.len())
                     .map(|i| match caps.get(i) {
-                        Some(g) => Value::String(g.as_str().to_string()),
+                        Some(g) => Value::string(g.as_str()),
                         None => Value::Null,
                     })
                     .collect();
                 // If no capture groups, wrap the whole match in a list
                 if groups.is_empty() {
-                    result.push(Value::List(vec![Value::String(m.as_str().to_string())]));
+                    result.push(Value::List(vec![Value::string(m.as_str())]));
                 } else {
                     result.push(Value::List(groups));
                 }
@@ -798,7 +798,7 @@ pub fn register(env: &mut Env) {
             last_end = m.end();
         }
         // Add trailing non-matching part
-        result.push(Value::String(input[last_end..].to_string()));
+        result.push(Value::string(&input[last_end..]));
         Ok(Value::List(result))
     });
 
@@ -807,7 +807,7 @@ pub fn register(env: &mut Env) {
     register_builtin(&mut builtins_set, "readDir", |args| {
         let path_str = match &args[0] {
             Value::Path(p) => p.clone(),
-            Value::String(s) => s.clone(),
+            Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("readDir: expected path".into())),
         };
         let mut attrs = NixAttrs::new();
@@ -824,7 +824,7 @@ pub fn register(env: &mut Env) {
             } else {
                 "regular"
             };
-            attrs.insert(name, Value::String(type_str.to_string()));
+            attrs.insert(name, Value::string(type_str));
         }
         Ok(Value::Attrs(attrs))
     });
@@ -850,7 +850,7 @@ pub fn register(env: &mut Env) {
         use sha2::{Sha256, Digest};
         let hash = Sha256::digest(format!("nix-output:{output}").as_bytes());
         let hash_str = format!("{:x}", hash);
-        Ok(Value::String(format!("/placeholder-{}", &hash_str[..32])))
+        Ok(Value::string(format!("/placeholder-{}", &hash_str[..32])))
     });
 
     // ── import ─────────────────────────────────────────────
@@ -858,7 +858,7 @@ pub fn register(env: &mut Env) {
     register_builtin(&mut builtins_set, "import", |args| {
         let path = match &args[0] {
             Value::Path(p) => p.clone(),
-            Value::String(s) => s.clone(),
+            Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("import: expected path".into())),
         };
         let source = std::fs::read_to_string(&path)
@@ -884,14 +884,14 @@ pub fn register(env: &mut Env) {
             .to_str()?;
 
         let mut result = input_attrs.clone();
-        result.insert("type".to_string(), Value::String("derivation".to_string()));
+        result.insert("type".to_string(), Value::string("derivation"));
         result.insert(
             "drvPath".to_string(),
-            Value::String(format!("/nix/store/stub-{name}.drv")),
+            Value::string(format!("/nix/store/stub-{name}.drv")),
         );
         result.insert(
             "outPath".to_string(),
-            Value::String(format!("/nix/store/stub-{name}")),
+            Value::string(format!("/nix/store/stub-{name}")),
         );
         Ok(Value::Attrs(result))
     });
@@ -903,7 +903,7 @@ pub fn register(env: &mut Env) {
 
     register_builtin(&mut builtins_set, "fetchurl", |args| {
         let (url, expected_sha256) = match &args[0] {
-            Value::String(s) => (s.clone(), None),
+            Value::String(ns) => (ns.chars.clone(), None),
             Value::Attrs(a) => {
                 let u = a
                     .get("url")
@@ -949,7 +949,7 @@ pub fn register(env: &mut Env) {
 
     register_builtin(&mut builtins_set, "fetchTarball", |args| {
         let (url, expected_sha256) = match &args[0] {
-            Value::String(s) => (s.clone(), None),
+            Value::String(ns) => (ns.chars.clone(), None),
             Value::Attrs(a) => {
                 let u = a
                     .get("url")
@@ -1029,7 +1029,7 @@ pub fn register(env: &mut Env) {
         let path_forced = crate::eval::force_value(path_val)?;
         let path_str = match &path_forced {
             Value::Path(p) => p.clone(),
-            Value::String(s) => s.clone(),
+            Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("path: expected path".into())),
         };
         let name = attrs
@@ -1070,12 +1070,20 @@ pub fn register(env: &mut Env) {
         Ok(Value::Path(store_path))
     });
 
+
+    // ── String context builtins ──
+    register_builtin(&mut builtins_set, "hasContext", |args| { match &args[0] { Value::String(ns) => Ok(Value::Bool(ns.has_context())), _ => Err(EvalError::TypeError("hasContext: expected string".into())) } });
+    register_builtin(&mut builtins_set, "getContext", |args| { let ns = match &args[0] { Value::String(ns) => ns, _ => return Err(EvalError::TypeError("getContext: expected string".into())) }; let mut plains: std::collections::BTreeSet<String> = std::collections::BTreeSet::new(); let mut om: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new(); let mut deep: std::collections::BTreeSet<String> = std::collections::BTreeSet::new(); for elem in &ns.context.0 { match elem { ContextElement::Plain(p) => { plains.insert(p.clone()); } ContextElement::Output { drv, output } => { om.entry(drv.clone()).or_default().push(output.clone()); } ContextElement::DrvDeep(d) => { deep.insert(d.clone()); } } } let mut result = NixAttrs::new(); for p in &plains { let mut a = NixAttrs::new(); a.insert("path".to_string(), Value::Bool(true)); result.insert(p.clone(), Value::Attrs(a)); } for (d, os) in &om { let mut a = NixAttrs::new(); a.insert("outputs".to_string(), Value::List(os.iter().map(|o| Value::string(o.clone())).collect())); result.insert(d.clone(), Value::Attrs(a)); } for d in &deep { let mut a = NixAttrs::new(); a.insert("allOutputs".to_string(), Value::Bool(true)); result.insert(d.clone(), Value::Attrs(a)); } Ok(Value::Attrs(result)) });
+    register_builtin(&mut builtins_set, "unsafeDiscardStringContext", |args| { match &args[0] { Value::String(ns) => Ok(Value::string(ns.chars.clone())), _ => Err(EvalError::TypeError("unsafeDiscardStringContext: expected string".into())) } });
+    register_builtin(&mut builtins_set, "unsafeDiscardOutputDependency", |args| { match &args[0] { Value::String(ns) => { let mut nc = StringContext::new(); for elem in &ns.context.0 { match elem { ContextElement::DrvDeep(d) | ContextElement::Output { drv: d, .. } => { nc.add_plain(d.clone()); } other => { nc.0.insert(other.clone()); } } } Ok(Value::String(NixString::with_context(ns.chars.clone(), nc))) } _ => Err(EvalError::TypeError("unsafeDiscardOutputDependency: expected string".into())) } });
+    register_builtin(&mut builtins_set, "addDrvOutputDependencies", |args| { match &args[0] { Value::String(ns) => { let mut nc = StringContext::new(); for elem in &ns.context.0 { match elem { ContextElement::Plain(p) if p.ends_with(".drv") => { nc.add_drv_deep(p.clone()); } ContextElement::Output { drv, .. } => { nc.add_drv_deep(drv.clone()); } other => { nc.0.insert(other.clone()); } } } Ok(Value::String(NixString::with_context(ns.chars.clone(), nc))) } _ => Err(EvalError::TypeError("addDrvOutputDependencies: expected string".into())) } });
+    register_curried(&mut builtins_set, "appendContext", |sv, cv| { let ns = match sv { Value::String(ns) => ns.clone(), _ => return Err(EvalError::TypeError("appendContext: expected string".into())) }; let ca = cv.to_attrs()?; let mut nc = ns.context.clone(); for (key, val) in ca.iter() { let ea = crate::eval::force_value(val)?.to_attrs()?; if ea.contains_key("path") { nc.add_plain(key.clone()); } if let Some(ov) = ea.get("outputs") { let ol = crate::eval::force_value(ov)?.to_list()?; for o in &ol { nc.add_output(key.clone(), crate::eval::force_value(o)?.to_str()?); } } if ea.contains_key("allOutputs") { nc.add_drv_deep(key.clone()); } } Ok(Value::String(NixString::with_context(ns.chars, nc))) });
     // true/false/null as builtins
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
     builtins_set.insert("null".to_string(), Value::Null);
-    builtins_set.insert("nixVersion".to_string(), Value::String("sui-0.1.0".to_string()));
-    builtins_set.insert("currentSystem".to_string(), Value::String(current_system().to_string()));
+    builtins_set.insert("nixVersion".to_string(), Value::string("sui-0.1.0"));
+    builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
 
     env.bind("builtins".to_string(), Value::Attrs(builtins_set.clone()));
@@ -1147,7 +1155,7 @@ fn json_to_value(json: &serde_json::Value) -> Value {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }
         }
-        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::String(s) => Value::string(s.clone()),
         serde_json::Value::Array(arr) => {
             Value::List(arr.iter().map(json_to_value).collect())
         }
@@ -1251,7 +1259,7 @@ fn parse_drv_name(s: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use crate::eval::eval;
-    use crate::value::Value;
+    use crate::value::{NixAttrs, NixString, StringContext, Value};
 
     fn ev(input: &str) -> Value {
         eval(input).unwrap()
@@ -1306,7 +1314,8 @@ mod tests {
     #[test]
     fn builtins_current_system_valid_string() {
         let v = ev("builtins.currentSystem");
-        if let Value::String(s) = v {
+        if let Value::String(ns) = v {
+            let s = &ns.chars;
             // Should match one of the known system strings
             assert!(
                 ["aarch64-darwin", "x86_64-darwin", "aarch64-linux", "x86_64-linux"]
@@ -1456,7 +1465,7 @@ mod tests {
     fn builtins_concat_strings_sep() {
         assert_eq!(
             ev(r#"builtins.concatStringsSep ", " ["a" "b" "c"]"#),
-            Value::String("a, b, c".to_string()),
+            Value::string("a, b, c"),
         );
     }
 
@@ -1476,7 +1485,7 @@ mod tests {
     fn builtins_replace_strings() {
         assert_eq!(
             ev(r#"builtins.replaceStrings ["foo" "bar"] ["FOO" "BAR"] "foobar""#),
-            Value::String("FOOBAR".to_string()),
+            Value::string("FOOBAR"),
         );
     }
 
@@ -1531,7 +1540,7 @@ mod tests {
     fn builtins_concat_strings() {
         assert_eq!(
             ev(r#"builtins.concatStrings ["hello" " " "world"]"#),
-            Value::String("hello world".to_string()),
+            Value::string("hello world"),
         );
     }
 
@@ -1539,7 +1548,7 @@ mod tests {
     fn builtins_concat_strings_empty() {
         assert_eq!(
             ev(r#"builtins.concatStrings []"#),
-            Value::String("".to_string()),
+            Value::string(""),
         );
     }
 
@@ -1596,20 +1605,20 @@ mod tests {
             assert_eq!(
                 a.get("a"),
                 Some(&Value::List(vec![
-                    Value::String("a".to_string()),
-                    Value::String("a".to_string()),
+                    Value::string("a"),
+                    Value::string("a"),
                 ])),
             );
             assert_eq!(
                 a.get("b"),
                 Some(&Value::List(vec![
-                    Value::String("b".to_string()),
-                    Value::String("b".to_string()),
+                    Value::string("b"),
+                    Value::string("b"),
                 ])),
             );
             assert_eq!(
                 a.get("c"),
-                Some(&Value::List(vec![Value::String("c".to_string())])),
+                Some(&Value::List(vec![Value::string("c")])),
             );
         } else {
             panic!("expected attrs");
@@ -1687,8 +1696,8 @@ mod tests {
     fn builtins_parse_drv_name_basic() {
         let v = ev(r#"builtins.parseDrvName "hello-2.10""#);
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("name"), Some(&Value::String("hello".to_string())));
-            assert_eq!(a.get("version"), Some(&Value::String("2.10".to_string())));
+            assert_eq!(a.get("name"), Some(&Value::string("hello")));
+            assert_eq!(a.get("version"), Some(&Value::string("2.10")));
         } else {
             panic!("expected attrs");
         }
@@ -1698,8 +1707,8 @@ mod tests {
     fn builtins_parse_drv_name_no_version() {
         let v = ev(r#"builtins.parseDrvName "hello""#);
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("name"), Some(&Value::String("hello".to_string())));
-            assert_eq!(a.get("version"), Some(&Value::String("".to_string())));
+            assert_eq!(a.get("name"), Some(&Value::string("hello")));
+            assert_eq!(a.get("version"), Some(&Value::string("")));
         } else {
             panic!("expected attrs");
         }
@@ -1709,8 +1718,8 @@ mod tests {
     fn builtins_parse_drv_name_complex() {
         let v = ev(r#"builtins.parseDrvName "openssl-1.1.1k""#);
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("name"), Some(&Value::String("openssl".to_string())));
-            assert_eq!(a.get("version"), Some(&Value::String("1.1.1k".to_string())));
+            assert_eq!(a.get("name"), Some(&Value::string("openssl")));
+            assert_eq!(a.get("version"), Some(&Value::string("1.1.1k")));
         } else {
             panic!("expected attrs");
         }
@@ -1722,11 +1731,11 @@ mod tests {
     fn builtins_base_name_of() {
         assert_eq!(
             ev(r#"builtins.baseNameOf "/nix/store/abc-hello""#),
-            Value::String("abc-hello".to_string()),
+            Value::string("abc-hello"),
         );
         assert_eq!(
             ev(r#"builtins.baseNameOf "hello.txt""#),
-            Value::String("hello.txt".to_string()),
+            Value::string("hello.txt"),
         );
     }
 
@@ -1734,11 +1743,11 @@ mod tests {
     fn builtins_dir_of_string() {
         assert_eq!(
             ev(r#"builtins.dirOf "/nix/store/abc""#),
-            Value::String("/nix/store".to_string()),
+            Value::string("/nix/store"),
         );
         assert_eq!(
             ev(r#"builtins.dirOf "/foo""#),
-            Value::String("/".to_string()),
+            Value::string("/"),
         );
     }
 
@@ -1760,8 +1769,8 @@ mod tests {
         std::fs::write(&path, "hello from test").unwrap();
         let expr = format!(r#"builtins.readFile "{}""#, path.display());
         let v = eval(&expr).unwrap();
-        if let Value::String(s) = v {
-            assert_eq!(s, "hello from test");
+        if let Value::String(ns) = v {
+            assert_eq!(ns.chars, "hello from test");
         } else {
             panic!("expected string");
         }
@@ -1824,7 +1833,7 @@ mod tests {
     fn to_string_protocol_interpolation() {
         assert_eq!(
             ev(r#"let s = { __toString = self: "hello"; }; in "${s}""#),
-            Value::String("hello".to_string()),
+            Value::string("hello"),
         );
     }
 
@@ -1832,7 +1841,7 @@ mod tests {
     fn to_string_protocol_with_self() {
         assert_eq!(
             ev(r#"let s = { __toString = self: self.name; name = "world"; }; in "${s}""#),
-            Value::String("world".to_string()),
+            Value::string("world"),
         );
     }
 
@@ -1840,7 +1849,7 @@ mod tests {
     fn to_string_protocol_via_builtin() {
         assert_eq!(
             ev(r#"builtins.toString { __toString = self: "custom"; }"#),
-            Value::String("custom".to_string()),
+            Value::string("custom"),
         );
     }
 
@@ -1849,9 +1858,10 @@ mod tests {
     #[test]
     fn builtins_hash_string_sha256() {
         let v = ev(r#"builtins.hashString "sha256" "hello""#);
-        if let Value::String(s) = v {
+        if let Value::String(ns) = v {
+            let s = &ns.chars;
             assert_eq!(s.len(), 64); // SHA-256 hex is 64 chars
-            assert_eq!(s, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+            assert_eq!(*s, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
         } else {
             panic!("expected string");
         }
@@ -1860,8 +1870,8 @@ mod tests {
     #[test]
     fn builtins_hash_string_sha512() {
         let v = ev(r#"builtins.hashString "sha512" "hello""#);
-        if let Value::String(s) = v {
-            assert_eq!(s.len(), 128); // SHA-512 hex is 128 chars
+        if let Value::String(ns) = v {
+            assert_eq!(ns.chars.len(), 128); // SHA-512 hex is 128 chars
         } else {
             panic!("expected string");
         }
@@ -1872,7 +1882,7 @@ mod tests {
         // match returns null on no match, list of groups on match
         assert_eq!(
             ev(r#"builtins.match "([0-9]+)\\.([0-9]+)" "1.23""#),
-            Value::List(vec![Value::String("1".to_string()), Value::String("23".to_string())]),
+            Value::List(vec![Value::string("1"), Value::string("23")]),
         );
         assert_eq!(
             ev(r#"builtins.match "([0-9]+)" "abc""#),
@@ -1885,7 +1895,7 @@ mod tests {
         // match anchors to full string
         assert_eq!(
             ev(r#"builtins.match "([0-9]+)" "42""#),
-            Value::List(vec![Value::String("42".to_string())]),
+            Value::List(vec![Value::string("42")]),
         );
         // Partial match should return null (anchored)
         assert_eq!(
@@ -1922,10 +1932,10 @@ mod tests {
     fn builtins_derivation_stub() {
         let v = eval(r#"builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("type"), Some(&Value::String("derivation".to_string())));
-            assert_eq!(a.get("drvPath"), Some(&Value::String("/nix/store/stub-test.drv".to_string())));
-            assert_eq!(a.get("outPath"), Some(&Value::String("/nix/store/stub-test".to_string())));
-            assert_eq!(a.get("name"), Some(&Value::String("test".to_string())));
+            assert_eq!(a.get("type"), Some(&Value::string("derivation")));
+            assert_eq!(a.get("drvPath"), Some(&Value::string("/nix/store/stub-test.drv")));
+            assert_eq!(a.get("outPath"), Some(&Value::string("/nix/store/stub-test")));
+            assert_eq!(a.get("name"), Some(&Value::string("test")));
         } else {
             panic!("expected attrs");
         }
@@ -1988,8 +1998,8 @@ mod tests {
         let expr = format!(r#"builtins.readDir "{}""#, dir.display());
         let v = eval(&expr).unwrap();
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("file.txt"), Some(&Value::String("regular".to_string())));
-            assert_eq!(a.get("subdir"), Some(&Value::String("directory".to_string())));
+            assert_eq!(a.get("file.txt"), Some(&Value::string("regular")));
+            assert_eq!(a.get("subdir"), Some(&Value::string("directory")));
         } else {
             panic!("expected attrs");
         }
@@ -2058,7 +2068,8 @@ mod tests {
     #[test]
     fn builtins_placeholder() {
         let v = ev(r#"builtins.placeholder "out""#);
-        if let Value::String(s) = v {
+        if let Value::String(ns) = v {
+            let s = &ns.chars;
             assert!(s.starts_with("/placeholder-"));
             assert_eq!(s.len(), "/placeholder-".len() + 32);
         } else {
@@ -2079,7 +2090,7 @@ mod tests {
         .unwrap();
         let expr = format!(r#"(builtins.getFlake "{}").description"#, dir.display());
         let v = eval(&expr).unwrap();
-        assert_eq!(v, Value::String("test flake".to_string()));
+        assert_eq!(v, Value::string("test flake"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2156,4 +2167,19 @@ mod tests {
         let result = eval("builtins.fetchTarball 42");
         assert!(result.is_err());
     }
+
+    #[test] fn sc_plain() { assert!(!NixString::plain("hello").has_context()); }
+    #[test] fn sc_merge() { let mut c = StringContext::new(); c.add_plain("/nix/store/abc".to_string()); assert!(NixString::with_context("hi", c).has_context()); }
+    #[test] fn has_ctx_false() { assert_eq!(ev(r#"builtins.hasContext "hello""#), Value::Bool(false)); }
+    #[test] fn discard_ctx() { assert_eq!(ev(r#"builtins.hasContext (builtins.unsafeDiscardStringContext "hello")"#), Value::Bool(false)); }
+    #[test] fn get_ctx_empty() { let v = ev(r#"builtins.getContext "hello""#); if let Value::Attrs(a) = v { assert!(a.is_empty()); } else { panic!(); } }
+    #[test] fn has_ctx_after_append() { assert_eq!(ev(r#"builtins.hasContext (builtins.appendContext "hello" { "/nix/store/abc" = { path = true; }; })"#), Value::Bool(true)); }
+    #[test] fn append_ctx_rt() { let v = ev(r#"builtins.getContext (builtins.appendContext "hello" { "/nix/store/abc" = { path = true; }; })"#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/abc")); } else { panic!(); } }
+    #[test] fn discard_ctx_all() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/abc" = { path = true; }; }; clean = builtins.unsafeDiscardStringContext s; in builtins.getContext clean"#); if let Value::Attrs(a) = v { assert!(a.is_empty()); } else { panic!(); } }
+    #[test] fn concat_merges_ctx() { let v = ev(r#"let a = builtins.appendContext "foo" { "/nix/store/a" = { path = true; }; }; b = builtins.appendContext "bar" { "/nix/store/b" = { path = true; }; }; in builtins.getContext (a + b)"#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/a")); assert!(a.contains_key("/nix/store/b")); } else { panic!(); } }
+    #[test] #[ignore = "context propagation through interpolation not yet wired in eval_str"] fn interp_merges_ctx() { assert_eq!(ev(r#"let s = builtins.appendContext "world" { "/nix/store/x" = { path = true; }; }; in builtins.hasContext "hello ""#), Value::Bool(true)); }
+    #[test] #[ignore = "path context propagation requires store integration"] fn path_interp_ctx() { assert_eq!(ev(r#"builtins.hasContext """#), Value::Bool(true)); }
+    #[test] #[ignore = "path context propagation requires store integration"] fn path_interp_ctx_content() { let v = ev(r#"builtins.getContext """#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/test")); } else { panic!(); } }
+    #[test] fn add_drv_out_deps() { let v = ev(r#"let s = builtins.appendContext "/nix/store/abc.drv" { "/nix/store/abc.drv" = { path = true; }; }; p = builtins.addDrvOutputDependencies s; in builtins.getContext p"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/abc.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("allOutputs"), Some(&Value::Bool(true))); } else { panic!(); } }
+    #[test] fn discard_out_dep() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/x.drv" = { allOutputs = true; }; }; d = builtins.unsafeDiscardOutputDependency s; in builtins.getContext d"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/x.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("path"), Some(&Value::Bool(true))); } else { panic!(); } }
 }
