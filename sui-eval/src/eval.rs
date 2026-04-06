@@ -428,13 +428,13 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                     Value::Bool(true) => result.push('1'),
                     Value::Bool(false) => {}
                     Value::Null => {}
-                    Value::Path(ref p) => {
+                    Value::Path(p) => {
                         result.push_str(p);
                         // A path interpolated into a string adds a Plain
                         // context element for that path.
                         ctx.add_plain(p.clone());
                     }
-                    Value::Attrs(ref attrs) => {
+                    Value::Attrs(attrs) => {
                         // __toString protocol: if the attrset has __toString,
                         // call it with `self` to produce a string.
                         if let Some(to_str) = attrs.get("__toString") {

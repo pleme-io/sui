@@ -1078,6 +1078,251 @@ pub fn register(env: &mut Env) {
     register_builtin(&mut builtins_set, "unsafeDiscardOutputDependency", |args| { match &args[0] { Value::String(ns) => { let mut nc = StringContext::new(); for elem in &ns.context.0 { match elem { ContextElement::DrvDeep(d) | ContextElement::Output { drv: d, .. } => { nc.add_plain(d.clone()); } other => { nc.0.insert(other.clone()); } } } Ok(Value::String(NixString::with_context(ns.chars.clone(), nc))) } _ => Err(EvalError::TypeError("unsafeDiscardOutputDependency: expected string".into())) } });
     register_builtin(&mut builtins_set, "addDrvOutputDependencies", |args| { match &args[0] { Value::String(ns) => { let mut nc = StringContext::new(); for elem in &ns.context.0 { match elem { ContextElement::Plain(p) if p.ends_with(".drv") => { nc.add_drv_deep(p.clone()); } ContextElement::Output { drv, .. } => { nc.add_drv_deep(drv.clone()); } other => { nc.0.insert(other.clone()); } } } Ok(Value::String(NixString::with_context(ns.chars.clone(), nc))) } _ => Err(EvalError::TypeError("addDrvOutputDependencies: expected string".into())) } });
     register_curried(&mut builtins_set, "appendContext", |sv, cv| { let ns = match sv { Value::String(ns) => ns.clone(), _ => return Err(EvalError::TypeError("appendContext: expected string".into())) }; let ca = cv.to_attrs()?; let mut nc = ns.context.clone(); for (key, val) in ca.iter() { let ea = crate::eval::force_value(val)?.to_attrs()?; if ea.contains_key("path") { nc.add_plain(key.clone()); } if let Some(ov) = ea.get("outputs") { let ol = crate::eval::force_value(ov)?.to_list()?; for o in &ol { nc.add_output(key.clone(), crate::eval::force_value(o)?.to_str()?); } } if ea.contains_key("allOutputs") { nc.add_drv_deep(key.clone()); } } Ok(Value::String(NixString::with_context(ns.chars, nc))) });
+    // ── genericClosure ──────────────────────────────────────
+    //
+    // builtins.genericClosure { startSet; operator; }
+    // Worklist algorithm: dedup by `key` attribute in each item.
+
+    register_builtin(&mut builtins_set, "genericClosure", |args| {
+        let input = args[0].as_attrs()?;
+        let start_set = input
+            .get("startSet")
+            .ok_or_else(|| EvalError::AttrNotFound("startSet".into()))?
+            .to_list()?;
+        let operator = input
+            .get("operator")
+            .ok_or_else(|| EvalError::AttrNotFound("operator".into()))?
+            .clone();
+
+        let mut result: Vec<Value> = Vec::new();
+        let mut work_list: Vec<Value> = start_set;
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        while let Some(item) = work_list.pop() {
+            let item_attrs = item.to_attrs()?;
+            let key_val = item_attrs
+                .get("key")
+                .ok_or_else(|| EvalError::AttrNotFound("key".into()))?
+                .clone();
+            let key_str = format!("{}", crate::eval::force_value(&key_val)?);
+            if seen.contains(&key_str) {
+                continue;
+            }
+            seen.insert(key_str);
+            result.push(item.clone());
+            let new_items = crate::eval::apply(operator.clone(), item)?;
+            let new_list = new_items.to_list()?;
+            work_list.extend(new_list);
+        }
+
+        Ok(Value::List(result))
+    });
+
+    // ── fromTOML ──────────────────────────────────────────
+    //
+    // builtins.fromTOML string → value
+
+    register_builtin(&mut builtins_set, "fromTOML", |args| {
+        let s = args[0].as_string()?;
+        let table: toml::Value = toml::from_str(s)
+            .map_err(|e| EvalError::TypeError(format!("fromTOML: {e}")))?;
+        Ok(toml_to_value(&table))
+    });
+
+    // ── lessThan (curried) ────────────────────────────────
+    //
+    // builtins.lessThan a b → bool (works for int, float, string)
+
+    register_curried(&mut builtins_set, "lessThan", |a, b| {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x < y)),
+            (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
+            (Value::Int(x), Value::Float(y)) => Ok(Value::Bool((*x as f64) < *y)),
+            (Value::Float(x), Value::Int(y)) => Ok(Value::Bool(*x < (*y as f64))),
+            (Value::String(x), Value::String(y)) => Ok(Value::Bool(x.chars < y.chars)),
+            _ => Err(EvalError::TypeError("lessThan: expected comparable types".into())),
+        }
+    });
+
+    // ── bitAnd, bitOr, bitXor (curried) ──────────────────
+
+    register_curried(&mut builtins_set, "bitAnd", |a, b| {
+        Ok(Value::Int(a.as_int()? & b.as_int()?))
+    });
+    register_curried(&mut builtins_set, "bitOr", |a, b| {
+        Ok(Value::Int(a.as_int()? | b.as_int()?))
+    });
+    register_curried(&mut builtins_set, "bitXor", |a, b| {
+        Ok(Value::Int(a.as_int()? ^ b.as_int()?))
+    });
+
+    // ── splitVersion ─────────────────────────────────────
+    //
+    // builtins.splitVersion "1.2.3" → ["1" "." "2" "." "3"]
+    // Splits on boundaries between digit/non-digit chars + separators.
+
+    register_builtin(&mut builtins_set, "splitVersion", |args| {
+        let s = args[0].as_string()?;
+        let parts = split_version(s);
+        Ok(Value::List(parts.into_iter().map(Value::string).collect()))
+    });
+
+    // ── pathExists ───────────────────────────────────────
+    //
+    // builtins.pathExists path → bool
+
+    register_builtin(&mut builtins_set, "pathExists", |args| {
+        let path_str = match &args[0] {
+            Value::Path(p) => p.clone(),
+            Value::String(ns) => ns.chars.clone(),
+            _ => return Err(EvalError::TypeError("pathExists: expected path or string".into())),
+        };
+        Ok(Value::Bool(std::path::Path::new(&path_str).exists()))
+    });
+
+    // ── toFile ───────────────────────────────────────────
+    //
+    // builtins.toFile name content → store path
+    // Creates a synthetic store path from content hash.
+
+    register_curried(&mut builtins_set, "toFile", |name_val, content_val| {
+        let name = name_val.as_string()?;
+        let content = content_val.as_string()?;
+        use sha2::{Sha256, Digest};
+        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
+        Ok(Value::Path(store_path))
+    });
+
+    // ── hashFile (curried) ───────────────────────────────
+    //
+    // builtins.hashFile algo path → string
+
+    register_curried(&mut builtins_set, "hashFile", |algo, path_val| {
+        let algo_str = algo.as_string()?;
+        let path_str = match path_val {
+            Value::Path(p) => p.clone(),
+            Value::String(ns) => ns.chars.clone(),
+            _ => return Err(EvalError::TypeError("hashFile: expected path or string".into())),
+        };
+        let contents = std::fs::read(&path_str)
+            .map_err(|e| EvalError::TypeError(format!("hashFile: {e}")))?;
+        let hex = match algo_str {
+            "sha256" => {
+                use sha2::{Sha256, Digest};
+                format!("{:x}", Sha256::digest(&contents))
+            }
+            "sha512" => {
+                use sha2::{Sha512, Digest};
+                format!("{:x}", Sha512::digest(&contents))
+            }
+            _ => return Err(EvalError::TypeError(format!("hashFile: unsupported algorithm: {algo_str}"))),
+        };
+        Ok(Value::string(hex))
+    });
+
+    // ── unsafeGetAttrPos ─────────────────────────────────
+    //
+    // builtins.unsafeGetAttrPos name set → null
+    // We don't track positions yet, so always return null.
+
+    register_curried(&mut builtins_set, "unsafeGetAttrPos", |_name, _set| {
+        Ok(Value::Null)
+    });
+
+    // ── findFile (curried) ───────────────────────────────
+    //
+    // builtins.findFile searchPath name → path
+    // Search a list of { prefix, path } for matching prefix.
+
+    register_curried(&mut builtins_set, "findFile", |search_path, name_val| {
+        let entries = search_path.as_list()?;
+        let name = name_val.as_string()?;
+        for entry in entries {
+            let attrs = entry.to_attrs()?;
+            let prefix = attrs
+                .get("prefix")
+                .ok_or_else(|| EvalError::AttrNotFound("prefix".into()))?
+                .to_str()?;
+            let path = attrs
+                .get("path")
+                .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
+                .to_str()?;
+            if name == prefix || name.starts_with(&format!("{prefix}/")) {
+                let suffix = if name == prefix {
+                    String::new()
+                } else {
+                    name[prefix.len()..].to_string()
+                };
+                let full_path = format!("{path}{suffix}");
+                if std::path::Path::new(&full_path).exists() {
+                    return Ok(Value::Path(full_path));
+                }
+            }
+        }
+        Err(EvalError::TypeError(format!("findFile: file '{name}' not found in search path")))
+    });
+
+    // derivationStrict — alias to derivation (real difference is internal)
+    register_builtin(&mut builtins_set, "derivationStrict", |args| {
+        let forced = crate::eval::force_value(&args[0])?;
+        let input = forced.as_attrs()?;
+        let name_val = crate::eval::force_value(input.get("name").ok_or(EvalError::AttrNotFound("name".into()))?)?;
+        let name = name_val.as_string()?.to_string();
+        let mut result = input.clone();
+        result.insert("type".to_string(), Value::string("derivation"));
+        if !result.contains_key("drvPath") {
+            result.insert("drvPath".to_string(), Value::string(format!("/nix/store/stub-{name}.drv")));
+        }
+        if !result.contains_key("outPath") {
+            result.insert("outPath".to_string(), Value::string(format!("/nix/store/stub-{name}")));
+        }
+        Ok(Value::Attrs(result))
+    });
+
+    // toXML — convert value to XML representation
+    register_builtin(&mut builtins_set, "toXML", |args| {
+        fn value_to_xml(v: &Value, indent: usize) -> String {
+            let pad = " ".repeat(indent);
+            match v {
+                Value::Null => format!("{pad}<null />"),
+                Value::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
+                Value::Int(n) => format!("{pad}<int value=\"{n}\" />"),
+                Value::Float(f) => format!("{pad}<float value=\"{f}\" />"),
+                Value::String(ns) => format!("{pad}<string value=\"{}\" />", xml_escape(&ns.chars)),
+                Value::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
+                Value::List(items) => {
+                    let mut out = format!("{pad}<list>\n");
+                    for item in items { out.push_str(&value_to_xml(item, indent + 2)); out.push('\n'); }
+                    out.push_str(&format!("{pad}</list>"));
+                    out
+                }
+                Value::Attrs(attrs) => {
+                    let mut out = format!("{pad}<attrs>\n");
+                    for (k, v) in attrs.iter() {
+                        out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(k)));
+                        out.push_str(&value_to_xml(v, indent + 4)); out.push('\n');
+                        out.push_str(&format!("{pad}  </attr>\n"));
+                    }
+                    out.push_str(&format!("{pad}</attrs>"));
+                    out
+                }
+                Value::Lambda(_) | Value::Builtin(_) => format!("{pad}<function />"),
+                Value::Thunk(_) => format!("{pad}<thunk />"),
+            }
+        }
+        fn xml_escape(s: &str) -> String {
+            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+        }
+        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{}\n", value_to_xml(&args[0], 0));
+        Ok(Value::string(xml))
+    });
+
+    // ── Constants ────────────────────────────────────────
+
+    builtins_set.insert("storeDir".to_string(), Value::string("/nix/store"));
+    builtins_set.insert("nixPath".to_string(), Value::List(vec![]));
+
     // true/false/null as builtins
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
@@ -1254,6 +1499,57 @@ fn parse_drv_name(s: &str) -> (String, String) {
         }
     }
     (s.to_string(), String::new())
+}
+
+/// Convert a TOML value to a Nix value.
+fn toml_to_value(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::string(s.clone()),
+        toml::Value::Integer(n) => Value::Int(*n),
+        toml::Value::Float(f) => Value::Float(*f),
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Array(arr) => {
+            Value::List(arr.iter().map(toml_to_value).collect())
+        }
+        toml::Value::Table(t) => {
+            let mut attrs = NixAttrs::new();
+            for (k, val) in t {
+                attrs.insert(k.clone(), toml_to_value(val));
+            }
+            Value::Attrs(attrs)
+        }
+        toml::Value::Datetime(dt) => Value::string(dt.to_string()),
+    }
+}
+
+/// Split a version string on boundaries between digit/non-digit chars + separators.
+/// "1.2.3" → ["1", ".", "2", ".", "3"]
+fn split_version(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut prev_digit: Option<bool> = None;
+    for ch in s.chars() {
+        if ch == '.' || ch == '-' {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            parts.push(ch.to_string());
+            prev_digit = None;
+        } else {
+            let is_digit = ch.is_ascii_digit();
+            if let Some(was_digit) = prev_digit {
+                if is_digit != was_digit && !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            current.push(ch);
+            prev_digit = Some(is_digit);
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 #[cfg(test)]
@@ -2182,4 +2478,359 @@ mod tests {
     #[test] #[ignore = "path context propagation requires store integration"] fn path_interp_ctx_content() { let v = ev(r#"builtins.getContext """#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/test")); } else { panic!(); } }
     #[test] fn add_drv_out_deps() { let v = ev(r#"let s = builtins.appendContext "/nix/store/abc.drv" { "/nix/store/abc.drv" = { path = true; }; }; p = builtins.addDrvOutputDependencies s; in builtins.getContext p"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/abc.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("allOutputs"), Some(&Value::Bool(true))); } else { panic!(); } }
     #[test] fn discard_out_dep() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/x.drv" = { allOutputs = true; }; }; d = builtins.unsafeDiscardOutputDependency s; in builtins.getContext d"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/x.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("path"), Some(&Value::Bool(true))); } else { panic!(); } }
+
+    // ── genericClosure tests ────────────────────────────────
+
+    #[test]
+    fn builtins_generic_closure_linear_chain() {
+        // Linear chain: start at 1, operator produces next until 5
+        let v = ev(r#"
+            builtins.genericClosure {
+                startSet = [{ key = 1; }];
+                operator = item: if item.key < 5 then [{ key = item.key + 1; }] else [];
+            }
+        "#);
+        if let Value::List(items) = v {
+            assert_eq!(items.len(), 5);
+            // Keys should be 1..5
+            for (i, item) in items.iter().enumerate() {
+                let attrs = item.as_attrs().unwrap();
+                assert_eq!(attrs.get("key"), Some(&Value::Int(i as i64 + 1)));
+            }
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    #[test]
+    fn builtins_generic_closure_diamond_dedup() {
+        // Diamond: A→B, A→C, B→D, C→D. D should appear once.
+        let v = ev(r#"
+            builtins.genericClosure {
+                startSet = [{ key = "A"; }];
+                operator = item:
+                    if item.key == "A" then [{ key = "B"; } { key = "C"; }]
+                    else if item.key == "B" then [{ key = "D"; }]
+                    else if item.key == "C" then [{ key = "D"; }]
+                    else [];
+            }
+        "#);
+        if let Value::List(items) = v {
+            assert_eq!(items.len(), 4); // A, B, C, D (D only once)
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    #[test]
+    fn builtins_generic_closure_empty_operator() {
+        let v = ev(r#"
+            builtins.genericClosure {
+                startSet = [{ key = 1; } { key = 2; }];
+                operator = item: [];
+            }
+        "#);
+        if let Value::List(items) = v {
+            assert_eq!(items.len(), 2);
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    // ── fromTOML tests ──────────────────────────────────────
+
+    #[test]
+    fn builtins_from_toml_simple_table() {
+        let v = ev(r#"builtins.fromTOML ''
+            name = "hello"
+            version = 42
+        ''"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("name"), Some(&Value::string("hello")));
+            assert_eq!(a.get("version"), Some(&Value::Int(42)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_from_toml_nested() {
+        let v = ev(r#"builtins.fromTOML ''
+            [package]
+            name = "test"
+            [package.metadata]
+            key = true
+        ''"#);
+        if let Value::Attrs(a) = v {
+            let pkg = a.get("package").unwrap().as_attrs().unwrap();
+            assert_eq!(pkg.get("name"), Some(&Value::string("test")));
+            let meta = pkg.get("metadata").unwrap().as_attrs().unwrap();
+            assert_eq!(meta.get("key"), Some(&Value::Bool(true)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_from_toml_arrays() {
+        let v = ev(r#"builtins.fromTOML ''
+            ports = [80, 443]
+        ''"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("ports"),
+                Some(&Value::List(vec![Value::Int(80), Value::Int(443)])),
+            );
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── lessThan tests ──────────────────────────────────────
+
+    #[test]
+    fn builtins_less_than_ints() {
+        assert_eq!(ev("builtins.lessThan 1 2"), Value::Bool(true));
+        assert_eq!(ev("builtins.lessThan 2 1"), Value::Bool(false));
+        assert_eq!(ev("builtins.lessThan 1 1"), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_less_than_floats() {
+        assert_eq!(ev("builtins.lessThan 1.0 2.0"), Value::Bool(true));
+        assert_eq!(ev("builtins.lessThan 2.0 1.0"), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_less_than_strings() {
+        assert_eq!(ev(r#"builtins.lessThan "abc" "def""#), Value::Bool(true));
+        assert_eq!(ev(r#"builtins.lessThan "def" "abc""#), Value::Bool(false));
+    }
+
+    // ── bitwise tests ───────────────────────────────────────
+
+    #[test]
+    fn builtins_bit_and() {
+        assert_eq!(ev("builtins.bitAnd 12 10"), Value::Int(8));  // 1100 & 1010 = 1000
+    }
+
+    #[test]
+    fn builtins_bit_or() {
+        assert_eq!(ev("builtins.bitOr 12 10"), Value::Int(14)); // 1100 | 1010 = 1110
+    }
+
+    #[test]
+    fn builtins_bit_xor() {
+        assert_eq!(ev("builtins.bitXor 12 10"), Value::Int(6));  // 1100 ^ 1010 = 0110
+    }
+
+    // ── splitVersion tests ──────────────────────────────────
+
+    #[test]
+    fn builtins_split_version_standard() {
+        assert_eq!(
+            ev(r#"builtins.splitVersion "1.2.3""#),
+            Value::List(vec![
+                Value::string("1"),
+                Value::string("."),
+                Value::string("2"),
+                Value::string("."),
+                Value::string("3"),
+            ]),
+        );
+    }
+
+    #[test]
+    fn builtins_split_version_pre_release() {
+        assert_eq!(
+            ev(r#"builtins.splitVersion "1.0pre1""#),
+            Value::List(vec![
+                Value::string("1"),
+                Value::string("."),
+                Value::string("0"),
+                Value::string("pre"),
+                Value::string("1"),
+            ]),
+        );
+    }
+
+    // ── pathExists tests ────────────────────────────────────
+
+    #[test]
+    fn builtins_path_exists_tmpfile() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_eval_test_path_exists.txt");
+        std::fs::write(&path, "test").unwrap();
+        let expr = format!(r#"builtins.pathExists "{}""#, path.display());
+        assert_eq!(eval(&expr).unwrap(), Value::Bool(true));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn builtins_path_exists_nonexistent() {
+        assert_eq!(
+            ev(r#"builtins.pathExists "/nonexistent/path/that/surely/does/not/exist""#),
+            Value::Bool(false),
+        );
+    }
+
+    // ── toFile tests ────────────────────────────────────────
+
+    #[test]
+    fn builtins_to_file_returns_store_path() {
+        let v = ev(r#"builtins.toFile "test.txt" "hello""#);
+        if let Value::Path(p) = v {
+            assert!(p.starts_with("/nix/store/"));
+            assert!(p.ends_with("-test.txt"));
+        } else {
+            panic!("expected path, got {v}");
+        }
+    }
+
+    #[test]
+    fn builtins_to_file_deterministic() {
+        // Same name + content should produce same path
+        let v1 = ev(r#"builtins.toFile "f" "content""#);
+        let v2 = ev(r#"builtins.toFile "f" "content""#);
+        assert_eq!(v1, v2);
+    }
+
+    // ── hashFile tests ──────────────────────────────────────
+
+    #[test]
+    fn builtins_hash_file_sha256() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_eval_test_hashfile.txt");
+        std::fs::write(&path, "hello").unwrap();
+        let expr = format!(r#"builtins.hashFile "sha256" "{}""#, path.display());
+        let v = eval(&expr).unwrap();
+        if let Value::String(ns) = v {
+            assert_eq!(ns.chars.len(), 64);
+            assert_eq!(ns.chars, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        } else {
+            panic!("expected string");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn builtins_hash_file_missing() {
+        let result = eval(r#"builtins.hashFile "sha256" "/nonexistent/file.txt""#);
+        assert!(result.is_err());
+    }
+
+    // ── unsafeGetAttrPos tests ──────────────────────────────
+
+    #[test]
+    fn builtins_unsafe_get_attr_pos_returns_null() {
+        assert_eq!(
+            ev(r#"builtins.unsafeGetAttrPos "x" { x = 1; }"#),
+            Value::Null,
+        );
+    }
+
+    // ── storeDir / nixPath constants ────────────────────────
+
+    #[test]
+    fn builtins_store_dir() {
+        assert_eq!(ev(r#"builtins.storeDir"#), Value::string("/nix/store"));
+    }
+
+    #[test]
+    fn builtins_nix_path_empty() {
+        assert_eq!(ev(r#"builtins.nixPath"#), Value::List(vec![]));
+    }
+
+    // ── findFile tests ──────────────────────────────────────
+
+    #[test]
+    fn builtins_find_file_exact_match() {
+        // Create a temp dir structure
+        let dir = std::env::temp_dir().join("sui_eval_test_findfile");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("test.nix"), "42").unwrap();
+        let expr = format!(
+            r#"builtins.findFile [{{ prefix = "test.nix"; path = "{}"; }}] "test.nix""#,
+            dir.join("test.nix").display()
+        );
+        let v = eval(&expr).unwrap();
+        assert!(matches!(v, Value::Path(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_find_file_not_found() {
+        let result = eval(r#"builtins.findFile [] "nonexistent""#);
+        assert!(result.is_err());
+    }
+
+    // ── Phase 3 builtins tests ────────────────────────────
+
+    #[test] fn builtins_generic_closure_linear() {
+        assert_eq!(ev(r#"builtins.length (builtins.genericClosure { startSet = [{ key = 1; }]; operator = item: if item.key < 3 then [{ key = item.key + 1; }] else []; })"#), Value::Int(3));
+    }
+    #[test] fn builtins_generic_closure_empty_op() {
+        assert_eq!(ev(r#"builtins.length (builtins.genericClosure { startSet = [{ key = 1; }]; operator = item: []; })"#), Value::Int(1));
+    }
+    #[test] fn builtins_generic_closure_dedup() {
+        assert_eq!(ev(r#"builtins.length (builtins.genericClosure { startSet = [{ key = 1; }]; operator = item: [{ key = 1; } { key = 2; }]; })"#), Value::Int(2));
+    }
+
+    #[test] fn builtins_from_toml_simple() {
+        let v = ev(r#"builtins.fromTOML "[section]\nkey = \"value\"""#);
+        if let Value::Attrs(a) = v { assert!(a.contains_key("section")); } else { panic!(); }
+    }
+
+    #[test] fn builtins_less_than_int() {
+        assert_eq!(ev("builtins.lessThan 1 2"), Value::Bool(true));
+        assert_eq!(ev("builtins.lessThan 2 1"), Value::Bool(false));
+    }
+
+    #[test] fn builtins_bit_and_12_10() { assert_eq!(ev("builtins.bitAnd 12 10"), Value::Int(8)); }
+    #[test] fn builtins_bit_or_12_10() { assert_eq!(ev("builtins.bitOr 12 10"), Value::Int(14)); }
+    #[test] fn builtins_bit_xor_12_10() { assert_eq!(ev("builtins.bitXor 12 10"), Value::Int(6)); }
+
+    #[test] fn builtins_split_version() {
+        assert_eq!(ev(r#"builtins.splitVersion "1.2.3""#), Value::List(vec![
+            Value::string("1"), Value::string("."), Value::string("2"), Value::string("."), Value::string("3")
+        ]));
+    }
+    #[test] fn builtins_split_version_pre() {
+        let v = ev(r#"builtins.splitVersion "1pre2""#);
+        if let Value::List(l) = v { assert!(l.len() >= 3); } else { panic!(); }
+    }
+
+    #[test] fn builtins_path_exists_false() {
+        assert_eq!(ev(r#"builtins.pathExists "/nonexistent/path/12345""#), Value::Bool(false));
+    }
+
+    #[test] fn builtins_to_file() {
+        let v = ev(r#"builtins.toFile "test.txt" "hello""#);
+        assert!(matches!(v, Value::Path(_) | Value::String(_)));
+    }
+
+    #[test] fn builtins_unsafe_get_attr_pos() {
+        assert_eq!(ev(r#"builtins.unsafeGetAttrPos "a" { a = 1; }"#), Value::Null);
+    }
+
+    #[test] fn builtins_derivation_strict() {
+        let v = ev(r#"builtins.derivationStrict { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("type").unwrap().as_string().unwrap(), "derivation");
+            assert!(a.contains_key("drvPath"));
+        } else { panic!(); }
+    }
+
+    #[test] fn builtins_to_xml_int() {
+        let v = ev("builtins.toXML 42");
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<int value=\"42\""));
+    }
+    #[test] fn builtins_to_xml_attrs() {
+        let v = ev(r#"builtins.toXML { a = 1; }"#);
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<attrs>"));
+        assert!(s.contains("attr name=\"a\""));
+    }
 }
