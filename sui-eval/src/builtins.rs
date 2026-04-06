@@ -1324,10 +1324,36 @@ pub fn register(env: &mut Env) {
 
     env.bind("builtins".to_string(), Value::Attrs(builtins_set.clone()));
 
-    // Also bind common builtins at top level (Nix does this)
-    for name in ["true", "false", "null", "throw", "abort", "toString", "import"] {
-        if let Some(v) = builtins_set.get(name) {
-            env.bind(name.to_string(), v.clone());
+    // Real Nix exposes a curated subset of builtins as bare
+    // identifiers in the default scope. The list below is taken from
+    // CppNix's `EvalState::createBaseEnv` and verified against
+    // `nix-instantiate --eval` for the version on this machine.
+    //
+    // It is INTENTIONALLY NOT every builtin — `filter`, `head`,
+    // `tail`, `attrNames` etc. are accessed only via `builtins.*`,
+    // and exposing them at top level would change semantics for any
+    // expression that shadows the name with a `let`.
+    const DEFAULT_SCOPE: &[&str] = &[
+        "abort",
+        "baseNameOf",
+        "derivation",
+        "derivationStrict",
+        "dirOf",
+        "false",
+        "fetchTarball",
+        "import",
+        "isNull",
+        "map",
+        "null",
+        "removeAttrs",
+        "scopedImport",
+        "throw",
+        "toString",
+        "true",
+    ];
+    for name in DEFAULT_SCOPE {
+        if let Some(v) = builtins_set.get(*name) {
+            env.bind((*name).to_string(), v.clone());
         }
     }
 }
