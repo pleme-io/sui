@@ -1328,7 +1328,25 @@ pub fn register(env: &mut Env) {
     // ── Constants ────────────────────────────────────────
 
     builtins_set.insert("storeDir".to_string(), Value::string("/nix/store"));
-    builtins_set.insert("nixPath".to_string(), Value::List(vec![]));
+
+    // Populate `builtins.nixPath` from the NIX_PATH environment
+    // variable. CppNix exposes it as `[ { prefix = "nixpkgs"; path =
+    // "/path/to/nixpkgs"; } ... ]`. The same parsing is reused below
+    // by `resolve_search_path` to back the `<name>` syntax.
+    let nix_path_value: Value = {
+        let entries = parse_nix_path(&std::env::var("NIX_PATH").unwrap_or_default());
+        let list: Vec<Value> = entries
+            .into_iter()
+            .map(|(prefix, path)| {
+                let mut a = NixAttrs::new();
+                a.insert("prefix".to_string(), Value::string(prefix));
+                a.insert("path".to_string(), Value::string(path));
+                Value::Attrs(a)
+            })
+            .collect();
+        Value::List(list)
+    };
+    builtins_set.insert("nixPath".to_string(), nix_path_value);
 
     // true/false/null as builtins
     builtins_set.insert("true".to_string(), Value::Bool(true));
@@ -1372,6 +1390,68 @@ pub fn register(env: &mut Env) {
             env.bind((*name).to_string(), v.clone());
         }
     }
+}
+
+/// Parse a `NIX_PATH` env var value into `(prefix, path)` pairs.
+///
+/// The format is `prefix1=path1:prefix2=path2:...`. An entry with
+/// no `=` is treated as having an empty prefix (CppNix-compatible).
+/// Empty entries are skipped.
+#[must_use]
+pub fn parse_nix_path(s: &str) -> Vec<(String, String)> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(':')
+        .filter(|e| !e.is_empty())
+        .map(|entry| match entry.split_once('=') {
+            Some((prefix, path)) => (prefix.to_string(), path.to_string()),
+            None => (String::new(), entry.to_string()),
+        })
+        .collect()
+}
+
+/// Resolve a `<name>` search-path token to an absolute filesystem
+/// path by walking the entries parsed from `NIX_PATH`. The token
+/// passed in is the *inner* part — `nixpkgs` for `<nixpkgs>`,
+/// `nixpkgs/lib/lists.nix` for `<nixpkgs/lib/lists.nix>`. The
+/// matched prefix is stripped and the remainder appended to the
+/// entry's filesystem path; the resulting path must exist.
+///
+/// Returns `None` if no entry matches or the resolved path doesn't
+/// exist on disk.
+#[must_use]
+pub fn resolve_search_path(name: &str) -> Option<String> {
+    let nix_path = std::env::var("NIX_PATH").ok()?;
+    for (prefix, path) in parse_nix_path(&nix_path) {
+        // Direct match: `nixpkgs` against `nixpkgs=/path` → `/path`.
+        if !prefix.is_empty() && name == prefix {
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+            continue;
+        }
+        // Sub-path match: `nixpkgs/lib/lists.nix` against `nixpkgs=/path`
+        // → `/path/lib/lists.nix`.
+        if !prefix.is_empty() {
+            let needle = format!("{prefix}/");
+            if let Some(rest) = name.strip_prefix(&needle) {
+                let full = format!("{path}/{rest}");
+                if std::path::Path::new(&full).exists() {
+                    return Some(full);
+                }
+                continue;
+            }
+        }
+        // Empty-prefix entries: try as a direct file in that dir.
+        if prefix.is_empty() {
+            let full = format!("{path}/{name}");
+            if std::path::Path::new(&full).exists() {
+                return Some(full);
+            }
+        }
+    }
+    None
 }
 
 fn register_builtin(

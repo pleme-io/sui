@@ -120,8 +120,21 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             Ok(Value::Path(text))
         }
         ast::Expr::PathSearch(p) => {
+            // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
+            // entries (parsed from the env var). If no NIX_PATH entry
+            // matches, fall through to the literal text so the error
+            // message points at the name the user wrote.
             let text = p.syntax().text().to_string();
-            Ok(Value::Path(text))
+            let inner = text
+                .strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .unwrap_or(&text);
+            if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
+                return Ok(Value::Path(resolved));
+            }
+            Err(EvalError::TypeError(format!(
+                "search path '{text}' not in NIX_PATH"
+            )))
         }
 
         ast::Expr::Ident(ident) => {
