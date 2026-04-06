@@ -395,11 +395,7 @@ fn diff_try_eval() {
 // ── genericClosure ───────────────────────────────────────────────────
 
 #[test]
-#[ignore = "sui genericClosure returns results in reverse-insertion order — see sui_known_gaps.md"]
 fn diff_generic_closure() {
-    // Real nix returns `[{key:1},{key:2}]` for startSet in lexical order;
-    // sui returns `[{key:2},{key:1}]`. Likely a HashMap worklist ordering
-    // bug — should be insertion-order preserving.
     run_cases(
         "generic_closure",
         &[

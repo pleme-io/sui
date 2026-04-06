@@ -1071,6 +1071,11 @@ pub fn register(env: &mut Env) {
     // Worklist algorithm: dedup by `key` attribute in each item.
 
     register_builtin(&mut builtins_set, "genericClosure", |args| {
+        // Real Nix genericClosure walks the start set in insertion
+        // order and appends operator-discovered items in discovery
+        // order — a FIFO worklist (BFS-ish), not LIFO. Using
+        // `Vec::pop` here gave the *reverse* order.
+        use std::collections::VecDeque;
         let input = args[0].as_attrs()?;
         let start_set = input
             .get("startSet")
@@ -1082,10 +1087,10 @@ pub fn register(env: &mut Env) {
             .clone();
 
         let mut result: Vec<Value> = Vec::new();
-        let mut work_list: Vec<Value> = start_set;
+        let mut work_list: VecDeque<Value> = start_set.into();
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-        while let Some(item) = work_list.pop() {
+        while let Some(item) = work_list.pop_front() {
             let item_attrs = item.to_attrs()?;
             let key_val = item_attrs
                 .get("key")
