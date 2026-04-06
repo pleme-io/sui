@@ -557,7 +557,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
-                        attrs.insert(key, value);
+                        merge_nested_insert(&mut attrs, key, value);
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
@@ -596,7 +596,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
-                        attrs.insert(key, value);
+                        merge_nested_insert(&mut attrs, key, value);
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
@@ -659,6 +659,36 @@ fn build_nested_attr(
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(attrs))
+}
+
+/// Insert `value` at `key` in `target`. If `target` already has a
+/// concrete `Value::Attrs` at that key AND `value` is also a
+/// concrete `Value::Attrs`, deep-merge them rather than overwriting.
+/// This is what makes `{ a.b.c = 1; a.b.d = 2; a.e = 3; }` produce
+/// `{ a = { b = { c = 1; d = 2; }; e = 3; }; }` instead of
+/// dropping siblings — every nixpkgs module relies on this.
+fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
+    let should_merge = matches!(target.get(&key), Some(Value::Attrs(_)))
+        && matches!(value, Value::Attrs(_));
+    if !should_merge {
+        target.insert(key, value);
+        return;
+    }
+    // Both sides are concrete attrs — merge in place. We pop the
+    // existing entry, then walk the new attrs and recursively
+    // merge each child onto it.
+    let mut existing_attrs = match target.get(&key).cloned() {
+        Some(Value::Attrs(a)) => a,
+        _ => unreachable!(),
+    };
+    let new_attrs = match value {
+        Value::Attrs(a) => a,
+        _ => unreachable!(),
+    };
+    for (k, v) in new_attrs.iter() {
+        merge_nested_insert(&mut existing_attrs, k.clone(), v.clone());
+    }
+    target.insert(key, Value::Attrs(existing_attrs));
 }
 
 /// Evaluate entries from any HasEntry node (LegacyLet).
