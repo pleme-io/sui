@@ -13,6 +13,28 @@ use crate::builtins;
 use crate::value::*;
 
 thread_local! { static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) }; }
+
+// ── Pure (hermetic) evaluation mode ────────────────────────────
+//
+// When pure mode is enabled, impure builtins (`storePath`, `fetchurl`/`fetchTarball`
+// without an explicit hash, `currentTime`, `getEnv`, etc.) should refuse to
+// produce non-deterministic results. The flag is thread-local so each evaluator
+// thread can opt in independently.
+
+thread_local! {
+    static PURE_MODE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Enable or disable hermetic (pure) evaluation mode for the current thread.
+pub fn set_pure_mode(pure: bool) {
+    PURE_MODE.with(|p| p.set(pure));
+}
+
+/// Whether the current thread is in hermetic (pure) evaluation mode.
+pub fn is_pure_mode() -> bool {
+    PURE_MODE.with(Cell::get)
+}
+
 /// Maximum evaluation depth before we report infinite recursion.
 ///
 /// In debug/test builds the stack frames are large (~20-40 KB each due to

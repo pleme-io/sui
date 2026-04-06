@@ -974,26 +974,33 @@ pub fn register(env: &mut Env) {
 
     // ── getFlake ──────────────────────────────────────────
     //
-    // Minimal implementation: supports path-based flake references only.
-    // Reads flake.nix from the given path and evaluates it.
+    // Path-based flake evaluation:
+    //   1. Read flake.nix and evaluate it as a bare attrset (description, inputs, outputs).
+    //   2. Parse flake.lock (if present) using sui-compat::flake::FlakeLock.
+    //   3. Build the inputs attrset from the lock — `self` plus one entry per locked input.
+    //   4. Apply the `outputs` function to the inputs attrset.
+    //   5. Merge top-level metadata (description) into the result so callers can
+    //      still access `.description` (matches Cpp Nix's user-facing behavior).
+    //
+    // Only path-style flake references are supported. Registry / git / github refs
+    // would require fetching and store-path materialization, which is out of scope
+    // for the in-process evaluator.
 
     register_builtin(&mut builtins_set, "getFlake", |args| {
-        let flake_ref = args[0].as_string()?.to_string();
-        let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
-            std::path::PathBuf::from(&flake_ref)
+        let flake_ref = crate::eval::force_value(&args[0])?;
+        let flake_ref_str = flake_ref.as_string()?.to_string();
+
+        let flake_dir = if flake_ref_str.starts_with('/') || flake_ref_str.starts_with('.') {
+            std::path::PathBuf::from(&flake_ref_str)
+        } else if let Some(path) = flake_ref_str.strip_prefix("path:") {
+            std::path::PathBuf::from(path)
         } else {
             return Err(EvalError::NotImplemented(format!(
-                "getFlake: only path-based flakes supported, got: {flake_ref}"
+                "getFlake: only path-based flakes supported, got: {flake_ref_str}"
             )));
         };
-        let flake_nix = flake_dir.join("flake.nix");
-        let source = std::fs::read_to_string(&flake_nix).map_err(|e| {
-            EvalError::TypeError(format!(
-                "getFlake: cannot read {}: {e}",
-                flake_nix.display()
-            ))
-        })?;
-        crate::eval::eval(&source)
+
+        evaluate_flake(&flake_dir)
     });
 
     // ── path ──────────────────────────────────────────────
@@ -1345,6 +1352,150 @@ fn register_curried(
             }),
         }),
     );
+}
+
+// ── Flake evaluation ────────────────────────────────────────────
+//
+// Implements the in-process equivalent of `nix eval --raw '(builtins.getFlake
+// "<dir>")'` for path-based flake references. The pipeline is:
+//
+//   flake.nix  → eval as bare attrset { description?; inputs?; outputs; }
+//   flake.lock → parse via sui_compat::flake::FlakeLock
+//   build inputs attrset { self; <input>: { outPath; rev?; narHash?; ... } }
+//   call outputs(inputs)
+//   merge top-level metadata (description) into the result
+//
+// Non-path flake references (`github:`, `git+`, registry refs, etc.) require
+// fetching and store-path materialization, which is out of scope here.
+
+fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
+    let flake_nix = flake_dir.join("flake.nix");
+    let flake_lock_path = flake_dir.join("flake.lock");
+
+    // 1. Read and evaluate flake.nix.
+    let source = std::fs::read_to_string(&flake_nix).map_err(|e| {
+        EvalError::TypeError(format!(
+            "getFlake: cannot read {}: {e}",
+            flake_nix.display()
+        ))
+    })?;
+    let flake_value = crate::eval::eval(&source)?;
+    let flake_attrs = flake_value.as_attrs()?.clone();
+
+    // 2. Pull out the outputs function (required by every flake).
+    let outputs_value = flake_attrs
+        .get("outputs")
+        .ok_or_else(|| EvalError::AttrNotFound("outputs".into()))?
+        .clone();
+    let outputs_fn = crate::eval::force_value(&outputs_value)?;
+
+    // 3. Parse flake.lock if it exists. Missing lock is allowed: a flake with
+    //    no inputs (only `self`) does not require a lock file.
+    let lock = if flake_lock_path.exists() {
+        let lock_content = std::fs::read_to_string(&flake_lock_path).map_err(|e| {
+            EvalError::TypeError(format!(
+                "getFlake: cannot read {}: {e}",
+                flake_lock_path.display()
+            ))
+        })?;
+        Some(
+            sui_compat::flake::FlakeLock::parse(&lock_content)
+                .map_err(|e| EvalError::TypeError(format!("getFlake: invalid flake.lock: {e}")))?,
+        )
+    } else {
+        None
+    };
+
+    // 4. Build the inputs attrset that will be passed to `outputs`.
+    let mut inputs_attrs = NixAttrs::new();
+
+    // `self` always exists. The minimum surface is `outPath`; we also expose a
+    // (possibly empty) `sourceInfo` so callers that destructure it do not crash.
+    let self_path = flake_dir.to_string_lossy().to_string();
+    let mut self_attrs = NixAttrs::new();
+    self_attrs.insert("outPath".to_string(), Value::string(self_path.clone()));
+    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
+    // Surface the original flake metadata on `self` so consumers can read e.g.
+    // `self.description` or `self.outputs` from inside their `outputs` lambda.
+    for (k, v) in flake_attrs.iter() {
+        if k != "outputs" {
+            self_attrs.insert(k.clone(), v.clone());
+        }
+    }
+    inputs_attrs.insert("self".to_string(), Value::Attrs(self_attrs));
+
+    // Each direct input of the root node becomes a top-level entry. We resolve
+    // follows so the consumer always sees a concrete locked node.
+    if let Some(ref lock) = lock {
+        if let Ok(root_node) = lock.root_node() {
+            let input_names: Vec<String> = root_node.inputs.keys().cloned().collect();
+            for input_name in input_names {
+                let segments = [input_name.as_str()];
+                let Ok(node) = lock.resolve_input(&segments) else {
+                    continue;
+                };
+
+                let mut input_val = NixAttrs::new();
+
+                // For path-type inputs, surface the real filesystem path. For
+                // remote sources (github, git, tarball, ...) we synthesize a
+                // placeholder path; the in-process evaluator never fetches.
+                let out_path = if let Some(ref locked) = node.locked {
+                    if locked.source_type == "path" {
+                        locked.path.clone().unwrap_or_default()
+                    } else {
+                        format!("/nix/store/flake-input-{input_name}")
+                    }
+                } else {
+                    format!("/nix/store/flake-input-{input_name}")
+                };
+                input_val.insert("outPath".to_string(), Value::string(out_path));
+
+                if let Some(ref locked) = node.locked {
+                    if let Some(ref rev) = locked.rev {
+                        input_val.insert("rev".to_string(), Value::string(rev.clone()));
+                        let short: String = rev.chars().take(7).collect();
+                        input_val.insert("shortRev".to_string(), Value::string(short));
+                    }
+                    if let Some(ref nar_hash) = locked.nar_hash {
+                        input_val.insert(
+                            "narHash".to_string(),
+                            Value::string(nar_hash.clone()),
+                        );
+                    }
+                    if let Some(last_modified) = locked.last_modified {
+                        input_val.insert(
+                            "lastModified".to_string(),
+                            Value::Int(last_modified as i64),
+                        );
+                    }
+                }
+
+                inputs_attrs.insert(input_name, Value::Attrs(input_val));
+            }
+        }
+    }
+
+    // 5. Call outputs(inputs) and force the result to a concrete attrset.
+    let result = crate::eval::apply(outputs_fn, Value::Attrs(inputs_attrs))?;
+    let result = crate::eval::force_value(&result)?;
+
+    // 6. Merge top-level flake metadata (description, etc.) into the outputs
+    //    attrset. Cpp Nix exposes `description` on the user-facing flake value,
+    //    so callers like `(builtins.getFlake "...").description` keep working.
+    if let Value::Attrs(out_attrs) = result {
+        let mut merged = out_attrs.clone();
+        for key in ["description"] {
+            if !merged.contains_key(key) {
+                if let Some(v) = flake_attrs.get(key) {
+                    merged.insert(key.to_string(), v.clone());
+                }
+            }
+        }
+        Ok(Value::Attrs(merged))
+    } else {
+        Ok(result)
+    }
 }
 
 // ── Derivation construction ────────────────────────────────────
@@ -2798,6 +2949,148 @@ mod tests {
         // Non-path flake references are not yet supported
         let result = eval(r#"builtins.getFlake "nixpkgs""#);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn flake_minimal_no_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "test flake";
+              outputs = { self }: { packages.default = "hello"; };
+            }"#,
+        )
+        .unwrap();
+
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").packages.default"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "hello");
+    }
+
+    #[test]
+    fn flake_with_self_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "test flake";
+              outputs = { self }: { result = self.outPath; };
+            }"#,
+        )
+        .unwrap();
+
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), flake_path);
+    }
+
+    #[test]
+    fn flake_description_accessible() {
+        // The description attr is on the flake attrset itself, not the outputs;
+        // evaluate_flake() merges it into the result so consumers can read it.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "my flake";
+              outputs = { self }: { packages.default = self.outPath; };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").packages.default"#);
+        assert!(eval(&expr).is_ok());
+    }
+
+    #[test]
+    fn flake_path_prefix_supported() {
+        // path: prefix should also resolve to a directory.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              outputs = { self }: { value = "ok"; };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "path:{flake_path}").value"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "ok");
+    }
+
+    #[test]
+    fn flake_with_locked_input_path() {
+        // A flake with a real path-typed input pinned in flake.lock.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { result = dep.outPath; };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-DEPDEPDEPDEPDEPDEPDEPDEPDEPDEPDEPDEPDEPDEPD=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": {
+                    "type": "path",
+                    "url": "/var/empty/dep"
+                  }
+                },
+                "root": {
+                  "inputs": {
+                    "dep": "dep"
+                  }
+                }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "/var/empty/dep");
+    }
+
+    #[test]
+    fn flake_missing_outputs_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{ description = "no outputs"; }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"builtins.getFlake "{flake_path}""#);
+        assert!(eval(&expr).is_err());
+    }
+
+    #[test]
+    fn pure_mode_toggle() {
+        use crate::eval::{is_pure_mode, set_pure_mode};
+        // Default is impure.
+        set_pure_mode(false);
+        assert!(!is_pure_mode());
+        set_pure_mode(true);
+        assert!(is_pure_mode());
+        // Restore so we don't poison neighbouring tests on the same thread.
+        set_pure_mode(false);
+        assert!(!is_pure_mode());
     }
 
     #[test]
