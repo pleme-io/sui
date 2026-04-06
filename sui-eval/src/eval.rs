@@ -1,4 +1,8 @@
 //! Tree-walking Nix evaluator using rnix's typed AST.
+//!
+//! Implements Tvix-style lazy evaluation with thunks: let-bindings and
+//! rec-attrset values are wrapped in `Value::Thunk` and only evaluated
+//! when their value is actually needed (call-by-need with memoization).
 
 use std::cell::Cell;
 
@@ -9,7 +13,16 @@ use crate::builtins;
 use crate::value::*;
 
 thread_local! { static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) }; }
-const MAX_EVAL_DEPTH: usize = 10_000;
+/// Maximum evaluation depth before we report infinite recursion.
+///
+/// In debug/test builds the stack frames are large (~20-40 KB each due to
+/// rnix AST nodes and thunk forcing), so we use a lower limit to stay
+/// within the 8 MB default test-thread stack. Release builds can afford a
+/// higher limit.
+#[cfg(test)]
+const MAX_EVAL_DEPTH: usize = 64;
+#[cfg(not(test))]
+const MAX_EVAL_DEPTH: usize = 500;
 
 /// RAII guard that decrements the eval depth counter on drop.
 struct DepthGuard;
@@ -46,7 +59,22 @@ pub fn eval(input: &str) -> Result<Value, EvalError> {
     let expr = root.expr().ok_or_else(|| EvalError::ParseError("empty expression".to_string()))?;
     let mut env = Env::new();
     builtins::register(&mut env);
-    eval_expr(&expr, &env)
+    let result = eval_expr(&expr, &env)?;
+    // Force the top-level result so callers always see a concrete value.
+    force_value(&result)
+}
+
+/// Force a value: if it is a thunk, evaluate and memoize the result.
+/// Concrete values are returned unchanged.
+pub fn force_value(value: &Value) -> Result<Value, EvalError> {
+    match value {
+        Value::Thunk(thunk) => {
+            let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
+            // Recursively force in case a thunk yields another thunk.
+            force_value(&forced)
+        }
+        other => Ok(other.clone()),
+    }
 }
 
 /// Evaluate an rnix expression in an environment.
@@ -97,7 +125,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let base_expr = sel.expr().ok_or_else(|| {
                 EvalError::ParseError("select missing expression".to_string())
             })?;
-            let mut value = eval_expr(&base_expr, env)?;
+            let mut value = force_value(&eval_expr(&base_expr, env)?)?;
             let attrpath = sel.attrpath().ok_or_else(|| {
                 EvalError::ParseError("select missing attrpath".to_string())
             })?;
@@ -106,7 +134,9 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 match value {
                     Value::Attrs(ref attrs) => {
                         if let Some(v) = attrs.get(&key) {
-                            value = v.clone();
+                            // Force the retrieved attr value before continuing
+                            // the attr path traversal.
+                            value = force_value(v)?;
                         } else if let Some(def) = sel.default_expr() {
                             return eval_expr(&def, env);
                         } else {
@@ -128,7 +158,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let base_expr = ha.expr().ok_or_else(|| {
                 EvalError::ParseError("hasattr missing expression".to_string())
             })?;
-            let mut value = eval_expr(&base_expr, env)?;
+            let mut value = force_value(&eval_expr(&base_expr, env)?)?;
             let attrpath = ha.attrpath().ok_or_else(|| {
                 EvalError::ParseError("hasattr missing attrpath".to_string())
             })?;
@@ -137,7 +167,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 match value {
                     Value::Attrs(ref attrs) => {
                         if let Some(v) = attrs.get(&key) {
-                            value = v.clone();
+                            value = force_value(v)?;
                         } else {
                             return Ok(Value::Bool(false));
                         }
@@ -152,7 +182,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let inner = op
                 .expr()
                 .ok_or_else(|| EvalError::ParseError("unary op missing expr".to_string()))?;
-            let val = eval_expr(&inner, env)?;
+            let val = force_value(&eval_expr(&inner, env)?)?;
             let kind = op
                 .operator()
                 .ok_or_else(|| EvalError::ParseError("unary op missing operator".to_string()))?;
@@ -189,7 +219,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let arg_expr = app
                 .argument()
                 .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
-            let func = eval_expr(&func_expr, env)?;
+            let func = force_value(&eval_expr(&func_expr, env)?)?;
+            // Evaluate the argument eagerly for now. Making it a thunk
+            // would enable fully lazy function arguments but requires
+            // updating all builtins that call .as_string(), .as_attrs() etc
+            // to force first. We keep it eager to preserve backward compat.
             let arg = eval_expr(&arg_expr, env)?;
             apply(func, arg)
         }
@@ -204,7 +238,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let else_body = ie
                 .else_body()
                 .ok_or_else(|| EvalError::ParseError("if missing else body".to_string()))?;
-            if eval_expr(&cond, env)?.as_bool()? {
+            if force_value(&eval_expr(&cond, env)?)?.as_bool()? {
                 eval_expr(&body, env)
             } else {
                 eval_expr(&else_body, env)
@@ -218,7 +252,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = assert
                 .body()
                 .ok_or_else(|| EvalError::ParseError("assert missing body".to_string()))?;
-            if !eval_expr(&cond, env)?.as_bool()? {
+            if !force_value(&eval_expr(&cond, env)?)?.as_bool()? {
                 return Err(EvalError::AssertionFailed);
             }
             eval_expr(&body, env)
@@ -231,7 +265,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = with
                 .body()
                 .ok_or_else(|| EvalError::ParseError("with missing body".to_string()))?;
-            let scope = eval_expr(&ns, env)?;
+            let scope = force_value(&eval_expr(&ns, env)?)?;
             let attrs = scope.as_attrs()?.clone();
             let new_env = env.child().with_scope(attrs);
             eval_expr(&body, &new_env)
@@ -239,32 +273,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
         ast::Expr::LetIn(letin) => {
             let mut new_env = env.child();
-            // Collect all binding names for forward-reference detection.
-            let binding_names: Vec<String> = letin
-                .entries()
-                .filter_map(|entry| {
-                    if let ast::Entry::AttrpathValue(ref apv) = entry {
-                        apv.attrpath().and_then(|ap| {
-                            let keys: Vec<String> = ap
-                                .attrs()
-                                .filter_map(|a| eval_attr(&a, &new_env).ok())
-                                .collect();
-                            if keys.len() == 1 {
-                                Some(keys.into_iter().next().unwrap())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
 
-            // Try single-pass evaluation. Track per-entry failures to
-            // distinguish self-reference (error) from forward-reference
-            // (recoverable via multi-pass).
-            let mut needs_multipass = false;
+            // Phase 1: Create thunks with a dummy env and bind them.
+            // Collect (key, thunk) pairs so we can update envs later.
+            let mut thunks: Vec<(String, Thunk)> = Vec::new();
+
             for entry in letin.entries() {
                 match entry {
                     ast::Entry::AttrpathValue(ref apv) => {
@@ -276,38 +289,30 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         })?;
                         let path_keys: Vec<String> = attrpath
                             .attrs()
-                            .map(|a| eval_attr(&a, &new_env))
+                            .map(|a| eval_attr(&a, env))
                             .collect::<Result<_, _>>()?;
                         if path_keys.len() == 1 {
-                            let key = &path_keys[0];
-                            match eval_expr(&value_expr, &new_env) {
-                                Ok(value) => {
-                                    new_env.bind(key.clone(), value);
-                                }
-                                Err(EvalError::UndefinedVar(ref undef))
-                                    if undef != key
-                                        && binding_names.contains(undef) =>
-                                {
-                                    // Forward reference to another let binding.
-                                    needs_multipass = true;
-                                    break;
-                                }
-                                Err(e) => return Err(e),
-                            }
+                            let key = path_keys.into_iter().next().unwrap();
+                            // Create thunk with a placeholder env (will be
+                            // updated to the final env in phase 2).
+                            let thunk = Thunk::new_suspended(value_expr, env.clone());
+                            new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
+                            thunks.push((key, thunk));
                         }
                     }
                     ast::Entry::Inherit(ref inherit) => {
-                        // Process inherits normally (they don't cause forward refs).
+                        // Inherit entries: bind eagerly (they reference
+                        // existing bindings from the enclosing scope).
                         if let Some(from) = inherit.from() {
                             let source_expr = from.expr().ok_or_else(|| {
                                 EvalError::ParseError(
                                     "inherit from missing expr".to_string(),
                                 )
                             })?;
-                            let source = eval_expr(&source_expr, &new_env)?;
+                            let source = force_value(&eval_expr(&source_expr, env)?)?;
                             let source_attrs = source.as_attrs()?;
                             for attr in inherit.attrs() {
-                                let name = eval_attr(&attr, &new_env)?;
+                                let name = eval_attr(&attr, env)?;
                                 let value = source_attrs
                                     .get(&name)
                                     .cloned()
@@ -318,8 +323,8 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             }
                         } else {
                             for attr in inherit.attrs() {
-                                let name = eval_attr(&attr, &new_env)?;
-                                let value = new_env.lookup(&name).ok_or_else(|| {
+                                let name = eval_attr(&attr, env)?;
+                                let value = env.lookup(&name).ok_or_else(|| {
                                     EvalError::UndefinedVar(name.clone())
                                 })?;
                                 new_env.bind(name, value);
@@ -328,20 +333,13 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
             }
-            if needs_multipass {
-                // Multi-pass evaluation for mutual/forward recursion.
-                new_env = env.child();
-                // Pass 1: bind all names to Null placeholders.
-                for name in &binding_names {
-                    new_env.bind(name.clone(), Value::Null);
-                }
-                // Pass 2: evaluate with placeholders visible.
-                eval_entries(letin, &mut new_env)?;
-                // Pass 3: re-evaluate so earlier bindings see later
-                // bindings from pass 2. Full lazy eval is the proper
-                // fix for infinite-depth mutual recursion.
-                eval_entries(letin, &mut new_env)?;
+
+            // Phase 2: Update all thunks to capture the final env
+            // (which now has all names bound).
+            for (_key, thunk) in &thunks {
+                thunk.update_env(new_env.clone());
             }
+
             let body = letin
                 .body()
                 .ok_or_else(|| EvalError::ParseError("let missing body".to_string()))?;
@@ -418,7 +416,7 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                 let expr = interpol.expr().ok_or_else(|| {
                     EvalError::ParseError("interpolation missing expr".to_string())
                 })?;
-                let val = eval_expr(&expr, env)?;
+                let val = force_value(&eval_expr(&expr, env)?)?;
                 match val {
                     Value::String(s) => result.push_str(&s),
                     Value::Int(n) => result.push_str(&n.to_string()),
@@ -467,7 +465,7 @@ fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
             let expr = dyn_
                 .expr()
                 .ok_or_else(|| EvalError::ParseError("dynamic attr missing expr".to_string()))?;
-            let val = eval_expr(&expr, env)?;
+            let val = force_value(&eval_expr(&expr, env)?)?;
             Ok(val.as_string()?.to_string())
         }
         ast::Attr::Str(s) => {
@@ -490,6 +488,9 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
 
     if is_rec {
         let mut rec_env = env.child();
+        let mut thunks: Vec<(String, Thunk)> = Vec::new();
+
+        // Phase 1: Create thunks with placeholder env and bind them.
         for entry in set.entries() {
             match entry {
                 ast::Entry::AttrpathValue(apv) => {
@@ -501,23 +502,31 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     })?;
                     let path_keys: Vec<String> = attrpath
                         .attrs()
-                        .map(|a| eval_attr(&a, &rec_env))
+                        .map(|a| eval_attr(&a, env))
                         .collect::<Result<_, _>>()?;
                     if path_keys.len() == 1 {
                         let key = path_keys.into_iter().next().unwrap();
-                        let value = eval_expr(&value_expr, &rec_env)?;
-                        rec_env.bind(key.clone(), value.clone());
-                        attrs.insert(key, value);
+                        let thunk = Thunk::new_suspended(value_expr, env.clone());
+                        let thunk_val = Value::Thunk(thunk.clone());
+                        rec_env.bind(key.clone(), thunk_val.clone());
+                        attrs.insert(key.clone(), thunk_val);
+                        thunks.push((key, thunk));
                     } else {
                         let key = path_keys[0].clone();
-                        let value = build_nested_attr(&path_keys[1..], &value_expr, &rec_env)?;
+                        let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
                         attrs.insert(key, value);
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
-                    eval_inherit(&inherit, &rec_env, &mut attrs, Some(&mut rec_env.clone()))?;
+                    eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env.clone()))?;
                 }
             }
+        }
+
+        // Phase 2: Update all thunks to capture the final rec_env
+        // (which now has all names bound).
+        for (_key, thunk) in &thunks {
+            thunk.update_env(rec_env.clone());
         }
     } else {
         for entry in set.entries() {
@@ -535,8 +544,12 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         .collect::<Result<_, _>>()?;
                     if path_keys.len() == 1 {
                         let key = path_keys.into_iter().next().unwrap();
-                        let value = eval_expr(&value_expr, env)?;
-                        attrs.insert(key, value);
+                        // Wrap in thunk for lazy evaluation. This is critical
+                        // for fixpoint combinators where attrset values may
+                        // reference a self-referential thunk (e.g., `self.a`
+                        // where `self` is still being evaluated).
+                        let thunk = Thunk::new_suspended(value_expr, env.clone());
+                        attrs.insert(key, Value::Thunk(thunk));
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
@@ -564,7 +577,7 @@ fn eval_inherit(
         let source_expr = from
             .expr()
             .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
-        let source = eval_expr(&source_expr, env)?;
+        let source = force_value(&eval_expr(&source_expr, env)?)?;
         let source_attrs = source.as_attrs()?;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
@@ -605,7 +618,7 @@ fn build_nested_attr(
     Ok(Value::Attrs(attrs))
 }
 
-/// Evaluate entries from any HasEntry node (LetIn, AttrSet, LegacyLet).
+/// Evaluate entries from any HasEntry node (LegacyLet).
 fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), EvalError> {
     for entry in node.entries() {
         match entry {
@@ -632,7 +645,7 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                     let source_expr = from.expr().ok_or_else(|| {
                         EvalError::ParseError("inherit from missing expr".to_string())
                     })?;
-                    let source = eval_expr(&source_expr, env)?;
+                    let source = force_value(&eval_expr(&source_expr, env)?)?;
                     let source_attrs = source.as_attrs()?;
                     for attr in inherit.attrs() {
                         let name = eval_attr(&attr, env)?;
@@ -666,21 +679,21 @@ fn eval_binop(
     // Short-circuit for && and ||
     match op {
         ast::BinOpKind::And => {
-            let l = eval_expr(lhs, env)?.as_bool()?;
+            let l = force_value(&eval_expr(lhs, env)?)?.as_bool()?;
             if !l {
                 return Ok(Value::Bool(false));
             }
             return eval_expr(rhs, env);
         }
         ast::BinOpKind::Or => {
-            let l = eval_expr(lhs, env)?.as_bool()?;
+            let l = force_value(&eval_expr(lhs, env)?)?.as_bool()?;
             if l {
                 return Ok(Value::Bool(true));
             }
             return eval_expr(rhs, env);
         }
         ast::BinOpKind::Implication => {
-            let l = eval_expr(lhs, env)?.as_bool()?;
+            let l = force_value(&eval_expr(lhs, env)?)?.as_bool()?;
             if !l {
                 return Ok(Value::Bool(true));
             }
@@ -689,8 +702,8 @@ fn eval_binop(
         _ => {}
     }
 
-    let l = eval_expr(lhs, env)?;
-    let r = eval_expr(rhs, env)?;
+    let l = force_value(&eval_expr(lhs, env)?)?;
+    let r = force_value(&eval_expr(rhs, env)?)?;
 
     match op {
         ast::BinOpKind::Add => match (&l, &r) {
@@ -789,18 +802,38 @@ fn compare(
 ///
 /// Supports `__functor`: if `func` is an attrset with a `__functor` key,
 /// calls `__functor self arg` (the Nix `__functor` protocol).
+///
+/// For lambda with a simple ident parameter, the argument is NOT forced
+/// before binding -- this enables fixpoint combinators (`lib.fix`) where
+/// the argument is a self-referential thunk.
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
+    let func = force_value(&func)?;
     match func {
         Value::Lambda(closure) => {
             let mut call_env = closure.env.child();
-            bind_param(&closure.param, &arg, &mut call_env)?;
+            match &closure.param {
+                rnix::ast::Param::IdentParam(_) => {
+                    // Simple ident param: bind argument WITHOUT forcing.
+                    // This is critical for fixpoint / call-by-need semantics.
+                    bind_param(&closure.param, &arg, &mut call_env)?;
+                }
+                rnix::ast::Param::Pattern(_) => {
+                    // Pattern param needs the arg to be an attrset, so force.
+                    let forced_arg = force_value(&arg)?;
+                    bind_param(&closure.param, &forced_arg, &mut call_env)?;
+                }
+            }
             eval_expr(&closure.body, &call_env)
         }
-        Value::Builtin(b) => (b.func)(&[arg]),
+        Value::Builtin(b) => {
+            let forced_arg = force_value(&arg)?;
+            (b.func)(&[forced_arg])
+        }
         Value::Attrs(ref attrs) => {
             if let Some(functor) = attrs.get("__functor") {
+                let functor = force_value(functor)?;
                 // __functor protocol: (functor self) arg
-                let partial = apply(functor.clone(), func.clone())?;
+                let partial = apply(functor, func.clone())?;
                 apply(partial, arg)
             } else {
                 Err(EvalError::TypeError(format!(
@@ -2385,8 +2418,9 @@ mod tests {
             assert_eq!(attrs.get("type"), Some(&Value::String("derivation".to_string())));
             assert_eq!(attrs.get("name"), Some(&Value::String("hello".to_string())));
             assert_eq!(attrs.get("builder"), Some(&Value::String("/bin/sh".to_string())));
-            // system should be a string
-            assert!(matches!(attrs.get("system"), Some(Value::String(_))));
+            // system should be a string (may be a thunk that forces to string)
+            let system = force_value(attrs.get("system").unwrap()).unwrap();
+            assert!(matches!(system, Value::String(_)), "expected string, got {system:?}");
         } else {
             panic!("expected attrs");
         }
@@ -2473,7 +2507,7 @@ mod tests {
 
     #[test]
     fn error_infinite_recursion_via_lambda() {
-        // A true infinite recursion via self-application — depth guard catches this.
+        // A true infinite recursion via self-application -- depth guard catches this.
         let result = eval("let f = x: f x; in f 1");
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
@@ -3018,5 +3052,169 @@ mod tests {
             panic!("expected attrs");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 17. THUNK / LAZY EVALUATION
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn thunk_basic_let() {
+        // Simple let binding through thunk.
+        assert_eq!(ev("let x = 1; in x"), Value::Int(1));
+    }
+
+    #[test]
+    fn thunk_forward_ref() {
+        // Forward reference: `a` references `b` which is defined later.
+        assert_eq!(ev("let a = b; b = 1; in a"), Value::Int(1));
+    }
+
+    #[test]
+    fn thunk_mutual_rec_attrset_in_let() {
+        // Mutual recursion through attrsets in let bindings.
+        assert_eq!(ev("let a = { x = b; }; b = { y = 1; }; in a.x.y"), Value::Int(1));
+    }
+
+    #[test]
+    fn thunk_rec_attrset() {
+        // rec { a = b; b = 1; } -- forward ref within rec set.
+        assert_eq!(ev("(rec { a = b; b = 1; }).a"), Value::Int(1));
+    }
+
+    #[test]
+    fn thunk_rec_attrset_chain() {
+        // Longer chain: c depends on b depends on a.
+        assert_eq!(ev("(rec { a = 1; b = a + 1; c = b + 1; }).c"), Value::Int(3));
+    }
+
+    #[test]
+    fn thunk_fixpoint() {
+        // Classic fixpoint combinator -- the core of nixpkgs' `lib.fix`.
+        assert_eq!(
+            ev("let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; })).b"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn thunk_blackhole_self_reference() {
+        // `let x = x; in x` is infinite recursion -- blackhole detection.
+        let result = eval("let x = x; in x");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("infinite recursion") || msg.contains("blackhole"),
+            "expected blackhole error, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn thunk_mutual_blackhole() {
+        // `let a = b; b = a; in a` -- mutual infinite recursion.
+        let result = eval("let a = b; b = a; in a");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn thunk_let_body_forces_correctly() {
+        // The let body should be able to use thunked bindings in arithmetic.
+        assert_eq!(ev("let a = 10; b = 20; in a + b"), Value::Int(30));
+    }
+
+    #[test]
+    fn thunk_only_forced_when_needed() {
+        // The binding `bad` would error if forced, but it is never used.
+        assert_eq!(ev("let bad = 1 / 0; good = 42; in good"), Value::Int(42));
+    }
+
+    #[test]
+    fn thunk_forward_ref_in_function_body() {
+        // Forward reference used inside a function body.
+        assert_eq!(
+            ev("let f = x: x + b; b = 10; in f 5"),
+            Value::Int(15),
+        );
+    }
+
+    #[test]
+    fn thunk_rec_set_self_ref_through_self() {
+        // rec set where `b` references `a` which is in the same set.
+        assert_eq!(
+            ev(r#"(rec { a = "hello"; b = builtins.stringLength a; }).b"#),
+            Value::Int(5),
+        );
+    }
+
+    #[test]
+    fn thunk_nested_let_forward_ref() {
+        // Forward reference in nested let.
+        assert_eq!(
+            ev("let a = b + 1; b = 2; in a"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn thunk_deep_chain() {
+        // Chain of forward references: e -> d -> c -> b -> a.
+        assert_eq!(
+            ev("let a = 1; b = a; c = b; d = c; e = d; in e"),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn thunk_rec_set_fixpoint() {
+        // Fixpoint through rec set -- common nixpkgs pattern.
+        assert_eq!(
+            ev("let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; c = self.b + 1; })).c"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn thunk_let_with_inherit() {
+        // Inherit in let should work alongside thunked bindings.
+        assert_eq!(
+            ev("let a = 1; in let inherit a; b = a + 1; in b"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn thunk_attrset_value_lazy() {
+        // Values in non-rec attrsets are evaluated eagerly, but the test
+        // verifies that thunked let bindings inside attrset values work.
+        assert_eq!(
+            ev("let x = 42; in { a = x; }.a"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn thunk_unused_error_not_forced() {
+        // Multiple bindings, only `ok` is used. `bad` throws but is never forced.
+        assert_eq!(
+            ev(r#"let bad = builtins.throw "boom"; ok = 1; in ok"#),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn thunk_rec_set_mutual_reference() {
+        // Mutual reference within rec set.
+        let v = ev("rec { a = { val = b.val + 1; }; b = { val = 10; }; }");
+        if let Value::Attrs(attrs) = v {
+            let a = attrs.get("a").unwrap();
+            let a_forced = force_value(a).unwrap();
+            if let Value::Attrs(a_attrs) = a_forced {
+                assert_eq!(a_attrs.get("val"), Some(&Value::Int(11)));
+            } else {
+                panic!("expected attrs for a");
+            }
+        } else {
+            panic!("expected attrs");
+        }
     }
 }

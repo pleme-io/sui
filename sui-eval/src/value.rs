@@ -1,7 +1,9 @@
 //! Nix value types and environments.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// A Nix value.
@@ -17,6 +19,108 @@ pub enum Value {
     Attrs(NixAttrs),
     Lambda(Closure),
     Builtin(BuiltinFn),
+    /// A lazy value (thunk) with memoization and blackhole detection.
+    Thunk(Thunk),
+}
+
+/// Internal representation of a thunk's state.
+pub enum ThunkRepr {
+    /// Not yet evaluated. Holds the AST expression and captured environment.
+    Suspended {
+        expr: rnix::ast::Expr,
+        env: Env,
+    },
+    /// Currently being evaluated -- detects infinite recursion.
+    Blackhole,
+    /// Already evaluated and memoized.
+    Evaluated(Box<Value>),
+}
+
+/// A lazy value with memoization and blackhole detection.
+#[derive(Clone)]
+pub struct Thunk(pub(crate) Rc<RefCell<ThunkRepr>>);
+
+impl Thunk {
+    /// Create a thunk that will evaluate `expr` in `env` when forced.
+    pub fn new_suspended(expr: rnix::ast::Expr, env: Env) -> Self {
+        Self(Rc::new(RefCell::new(ThunkRepr::Suspended { expr, env })))
+    }
+
+    /// Create a thunk that is already evaluated (an optimization).
+    pub fn new_evaluated(value: Value) -> Self {
+        Self(Rc::new(RefCell::new(ThunkRepr::Evaluated(Box::new(value)))))
+    }
+
+    /// Check whether this thunk has already been forced.
+    pub fn is_evaluated(&self) -> bool {
+        matches!(*self.0.borrow(), ThunkRepr::Evaluated(_))
+    }
+
+    /// Replace the environment captured in a suspended thunk.
+    /// No-op if the thunk is already evaluated or a blackhole.
+    pub fn update_env(&self, new_env: Env) {
+        let mut borrow = self.0.borrow_mut();
+        if let ThunkRepr::Suspended { env, .. } = &mut *borrow {
+            *env = new_env;
+        }
+    }
+
+    /// Force this thunk using the given evaluator function.
+    ///
+    /// On first force: transitions Suspended -> Blackhole -> Evaluated.
+    /// Re-entering a Blackhole signals infinite recursion.
+    /// If the evaluated result is itself a thunk, it is forced transitively.
+    pub fn force(
+        &self,
+        evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
+    ) -> Result<Value, EvalError> {
+        // Take the current repr, replacing with Blackhole.
+        let repr = std::mem::replace(&mut *self.0.borrow_mut(), ThunkRepr::Blackhole);
+
+        match repr {
+            ThunkRepr::Suspended { expr, env } => {
+                match evaluator(&expr, &env) {
+                    Ok(mut value) => {
+                        // Transitively force inner thunks.
+                        while let Value::Thunk(inner) = value {
+                            value = inner.force(evaluator)?;
+                        }
+                        // Store the deeply-forced value.
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        // Restore suspended state so the thunk can be retried or
+                        // at least not left as a permanent blackhole.
+                        *self.0.borrow_mut() = ThunkRepr::Suspended { expr, env };
+                        Err(e)
+                    }
+                }
+            }
+            ThunkRepr::Blackhole => {
+                // Already being evaluated -- infinite recursion.
+                Err(EvalError::TypeError(
+                    "infinite recursion (thunk blackhole)".into(),
+                ))
+            }
+            ThunkRepr::Evaluated(v) => {
+                // Put it back (was taken by replace).
+                let cloned = (*v).clone();
+                *self.0.borrow_mut() = ThunkRepr::Evaluated(v);
+                Ok(cloned)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for Thunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &*self.0.borrow() {
+            ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
+            ThunkRepr::Blackhole => write!(f, "<blackhole>"),
+            ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
+        }
+    }
 }
 
 /// A Nix attribute set.
@@ -191,6 +295,13 @@ impl Value {
             }
             Value::Lambda(_) => serde_json::Value::String("<lambda>".to_string()),
             Value::Builtin(b) => serde_json::Value::String(format!("<builtin {}>", b.name)),
+            Value::Thunk(thunk) => {
+                // Force the thunk for JSON conversion.
+                match thunk.force(&|expr, env| crate::eval::eval_expr(expr, env)) {
+                    Ok(v) => v.to_json(),
+                    Err(_) => serde_json::Value::String("<thunk:error>".to_string()),
+                }
+            }
         }
     }
 
@@ -206,12 +317,22 @@ impl Value {
             Value::Attrs(_) => "set",
             Value::Lambda(_) => "lambda",
             Value::Builtin(_) => "lambda",
+            Value::Thunk(thunk) => {
+                // Force and delegate.
+                match thunk.force(&|expr, env| crate::eval::eval_expr(expr, env)) {
+                    Ok(v) => v.type_name(),
+                    Err(_) => "thunk",
+                }
+            }
         }
     }
 
     pub fn as_bool(&self) -> Result<bool, EvalError> {
         match self {
             Value::Bool(b) => Ok(*b),
+            Value::Thunk(thunk) => {
+                thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_bool()
+            }
             _ => Err(EvalError::TypeError(format!("expected bool, got {}", self.type_name()))),
         }
     }
@@ -219,6 +340,9 @@ impl Value {
     pub fn as_int(&self) -> Result<i64, EvalError> {
         match self {
             Value::Int(n) => Ok(*n),
+            Value::Thunk(thunk) => {
+                thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_int()
+            }
             _ => Err(EvalError::TypeError(format!("expected int, got {}", self.type_name()))),
         }
     }
@@ -226,6 +350,26 @@ impl Value {
     pub fn as_string(&self) -> Result<&str, EvalError> {
         match self {
             Value::String(s) => Ok(s),
+            // Note: we cannot return a reference into a forced thunk here
+            // because the forced value is transient. Callers that go through
+            // force_value() in eval.rs will match on the concrete value.
+            Value::Thunk(_) => Err(EvalError::TypeError(
+                "thunk in as_string: force first via force_value()".into(),
+            )),
+            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+        }
+    }
+
+    /// Force-aware string extraction. Returns an owned String by forcing
+    /// thunks if needed. Use this instead of `as_string()` when you may
+    /// be operating on thunked attrset values.
+    pub fn to_str(&self) -> Result<String, EvalError> {
+        match self {
+            Value::String(s) => Ok(s.clone()),
+            Value::Thunk(thunk) => {
+                let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
+                forced.to_str()
+            }
             _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
         }
     }
@@ -233,6 +377,9 @@ impl Value {
     pub fn as_attrs(&self) -> Result<&NixAttrs, EvalError> {
         match self {
             Value::Attrs(a) => Ok(a),
+            Value::Thunk(_) => Err(EvalError::TypeError(
+                "thunk in as_attrs: force first via force_value()".into(),
+            )),
             _ => Err(EvalError::TypeError(format!("expected set, got {}", self.type_name()))),
         }
     }
@@ -240,6 +387,33 @@ impl Value {
     pub fn as_list(&self) -> Result<&[Value], EvalError> {
         match self {
             Value::List(l) => Ok(l),
+            Value::Thunk(_) => Err(EvalError::TypeError(
+                "thunk in as_list: force first via force_value()".into(),
+            )),
+            _ => Err(EvalError::TypeError(format!("expected list, got {}", self.type_name()))),
+        }
+    }
+
+    /// Force-aware attrs extraction. Forces the value if it is a thunk.
+    pub fn to_attrs(&self) -> Result<NixAttrs, EvalError> {
+        match self {
+            Value::Attrs(a) => Ok(a.clone()),
+            Value::Thunk(thunk) => {
+                let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
+                forced.to_attrs()
+            }
+            _ => Err(EvalError::TypeError(format!("expected set, got {}", self.type_name()))),
+        }
+    }
+
+    /// Force-aware list extraction. Forces the value if it is a thunk.
+    pub fn to_list(&self) -> Result<Vec<Value>, EvalError> {
+        match self {
+            Value::List(l) => Ok(l.clone()),
+            Value::Thunk(thunk) => {
+                let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
+                forced.to_list()
+            }
             _ => Err(EvalError::TypeError(format!("expected list, got {}", self.type_name()))),
         }
     }
@@ -249,6 +423,9 @@ impl Value {
         match self {
             Value::Float(f) => Ok(*f),
             Value::Int(n) => Ok(*n as f64),
+            Value::Thunk(thunk) => {
+                thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_float()
+            }
             _ => Err(EvalError::TypeError(format!("expected number, got {}", self.type_name()))),
         }
     }
@@ -256,7 +433,19 @@ impl Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
+        // Force thunks before comparing.
+        let force = |v: &Value| -> Value {
+            match v {
+                Value::Thunk(t) => t
+                    .force(&|e, env| crate::eval::eval_expr(e, env))
+                    .unwrap_or(Value::Null),
+                other => other.clone(),
+            }
+        };
+        let l = force(self);
+        let r = force(other);
+
+        match (&l, &r) {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
@@ -296,6 +485,12 @@ impl fmt::Display for Value {
             }
             Value::Lambda(_) => write!(f, "<<lambda>>"),
             Value::Builtin(b) => write!(f, "<<builtin {}>>" , b.name),
+            Value::Thunk(thunk) => {
+                match thunk.force(&|e, env| crate::eval::eval_expr(e, env)) {
+                    Ok(v) => write!(f, "{v}"),
+                    Err(_) => write!(f, "<<thunk:error>>"),
+                }
+            }
         }
     }
 }

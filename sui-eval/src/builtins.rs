@@ -8,7 +8,8 @@ use crate::value::*;
 pub fn register(env: &mut Env) {
     let mut builtins_set = NixAttrs::new();
 
-    // Type checking
+    // Type checking -- args are already forced by apply() but type_name()
+    // also handles thunks transparently.
     register_builtin(&mut builtins_set, "typeOf", |args| {
         Ok(Value::String(args[0].type_name().to_string()))
     });
@@ -175,7 +176,9 @@ pub fn register(env: &mut Env) {
 
     // String operations
     register_builtin(&mut builtins_set, "toString", |args| {
-        Ok(Value::String(match &args[0] {
+        // args are already forced by apply(), but handle thunks defensively.
+        let val = &args[0];
+        Ok(Value::String(match val {
             Value::String(s) => s.clone(),
             Value::Int(n) => n.to_string(),
             Value::Float(f) => format!("{f}"),
@@ -187,7 +190,7 @@ pub fn register(env: &mut Env) {
             Value::Attrs(attrs) => {
                 // __toString protocol: call __toString with self
                 if let Some(to_str) = attrs.get("__toString") {
-                    let result = crate::eval::apply(to_str.clone(), args[0].clone())?;
+                    let result = crate::eval::apply(to_str.clone(), val.clone())?;
                     match result {
                         Value::String(s) => return Ok(Value::String(s)),
                         _ => return Err(EvalError::TypeError("__toString must return a string".to_string())),
@@ -196,6 +199,10 @@ pub fn register(env: &mut Env) {
                 return Err(EvalError::TypeError("toString: cannot convert set".to_string()));
             }
             Value::Lambda(_) | Value::Builtin(_) => return Err(EvalError::TypeError("toString: cannot convert function".to_string())),
+            Value::Thunk(_) => {
+                // Should not happen since apply() forces args, but handle it.
+                return Err(EvalError::TypeError("toString: unexpected thunk".to_string()));
+            }
         }))
     });
     register_builtin(&mut builtins_set, "stringLength", |args| {
@@ -385,10 +392,10 @@ pub fn register(env: &mut Env) {
         let list = args[0].as_list()?;
         let mut attrs = NixAttrs::new();
         for item in list {
-            let item_attrs = item.as_attrs()?;
+            let item_attrs = item.to_attrs()?;
             let name = item_attrs.get("name")
                 .ok_or_else(|| EvalError::AttrNotFound("name".to_string()))?
-                .as_string()?.to_string();
+                .to_str()?;
             let value = item_attrs.get("value")
                 .ok_or_else(|| EvalError::AttrNotFound("value".to_string()))?
                 .clone();
@@ -866,16 +873,15 @@ pub fn register(env: &mut Env) {
         let name = input_attrs
             .get("name")
             .ok_or(EvalError::AttrNotFound("name".into()))?
-            .as_string()?
-            .to_string();
+            .to_str()?;
         let _system = input_attrs
             .get("system")
             .ok_or(EvalError::AttrNotFound("system".into()))?
-            .as_string()?;
+            .to_str()?;
         let _builder = input_attrs
             .get("builder")
             .ok_or(EvalError::AttrNotFound("builder".into()))?
-            .as_string()?;
+            .to_str()?;
 
         let mut result = input_attrs.clone();
         result.insert("type".to_string(), Value::String("derivation".to_string()));
@@ -902,11 +908,10 @@ pub fn register(env: &mut Env) {
                 let u = a
                     .get("url")
                     .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
-                    .as_string()?
-                    .to_string();
+                    .to_str()?;
                 let sha = a
                     .get("sha256")
-                    .map(|v| v.as_string().map(|s| s.to_string()))
+                    .map(|v| v.to_str())
                     .transpose()?;
                 (u, sha)
             }
@@ -949,11 +954,10 @@ pub fn register(env: &mut Env) {
                 let u = a
                     .get("url")
                     .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
-                    .as_string()?
-                    .to_string();
+                    .to_str()?;
                 let sha = a
                     .get("sha256")
-                    .map(|v| v.as_string().map(|s| s.to_string()))
+                    .map(|v| v.to_str())
                     .transpose()?;
                 (u, sha)
             }
@@ -1022,14 +1026,15 @@ pub fn register(env: &mut Env) {
         let path_val = attrs
             .get("path")
             .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
-        let path_str = match path_val {
+        let path_forced = crate::eval::force_value(path_val)?;
+        let path_str = match &path_forced {
             Value::Path(p) => p.clone(),
             Value::String(s) => s.clone(),
             _ => return Err(EvalError::TypeError("path: expected path".into())),
         };
         let name = attrs
             .get("name")
-            .map(|v| v.as_string().map(|s| s.to_string()))
+            .map(|v| v.to_str())
             .transpose()?
             .unwrap_or_else(|| {
                 std::path::Path::new(&path_str)
@@ -1052,9 +1057,9 @@ pub fn register(env: &mut Env) {
             hasher.update(path_str.as_bytes());
         }
         if let Some(expected) = attrs.get("sha256") {
-            let expected_str = expected.as_string()?;
+            let expected_str = expected.to_str()?;
             let actual = format!("{:x}", hasher.clone().finalize());
-            if expected_str != actual {
+            if &expected_str != &actual {
                 return Err(EvalError::TypeError(format!(
                     "path: sha256 mismatch: expected {expected_str}, got {actual}"
                 )));
