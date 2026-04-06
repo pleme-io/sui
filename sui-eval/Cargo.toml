@@ -28,3 +28,5 @@ tar.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+pretty_assertions.workspace = true
+test-case.workspace = true
