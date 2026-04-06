@@ -856,10 +856,19 @@ pub fn register(env: &mut Env) {
     // ── import ─────────────────────────────────────────────
 
     register_builtin(&mut builtins_set, "import", |args| {
-        let path = match &args[0] {
+        let raw_path = match &args[0] {
             Value::Path(p) => p.clone(),
             Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("import: expected path".into())),
+        };
+        // Real Nix: importing a directory is equivalent to importing
+        // `<dir>/default.nix`. nixpkgs and every flake-style consumer
+        // relies on this, so without it `import <nixpkgs>` errors
+        // immediately.
+        let path = if std::path::Path::new(&raw_path).is_dir() {
+            format!("{raw_path}/default.nix")
+        } else {
+            raw_path
         };
         let source = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::TypeError(format!("import {path}: {e}")))?;
