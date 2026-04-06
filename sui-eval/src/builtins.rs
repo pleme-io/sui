@@ -890,6 +890,181 @@ pub fn register(env: &mut Env) {
         Ok(Value::Attrs(result))
     });
 
+    // ── fetchurl ───────────────────────────────────────────
+    //
+    // Accepts a string URL or an attrset { url, sha256? }.
+    // Downloads the URL and writes it to a temp file, returning the path.
+
+    register_builtin(&mut builtins_set, "fetchurl", |args| {
+        let (url, expected_sha256) = match &args[0] {
+            Value::String(s) => (s.clone(), None),
+            Value::Attrs(a) => {
+                let u = a
+                    .get("url")
+                    .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                    .as_string()?
+                    .to_string();
+                let sha = a
+                    .get("sha256")
+                    .map(|v| v.as_string().map(|s| s.to_string()))
+                    .transpose()?;
+                (u, sha)
+            }
+            _ => {
+                return Err(EvalError::TypeError(
+                    "fetchurl: expected string or attrset".into(),
+                ))
+            }
+        };
+        let bytes = fetch_url_bytes(&url)
+            .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
+        use sha2::{Digest, Sha256};
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        if let Some(ref expected) = expected_sha256 {
+            if *expected != hash {
+                return Err(EvalError::TypeError(format!(
+                    "fetchurl: sha256 mismatch: expected {expected}, got {hash}"
+                )));
+            }
+        }
+        let dir = std::env::temp_dir().join("sui-fetchurl");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
+        let path = dir.join(&hash);
+        std::fs::write(&path, &bytes)
+            .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
+        Ok(Value::Path(path.to_string_lossy().to_string()))
+    });
+
+    // ── fetchTarball ──────────────────────────────────────
+    //
+    // Accepts a string URL or an attrset { url, sha256? }.
+    // Downloads the tarball, extracts it to a temp directory, and returns
+    // the path to the extracted contents.
+
+    register_builtin(&mut builtins_set, "fetchTarball", |args| {
+        let (url, expected_sha256) = match &args[0] {
+            Value::String(s) => (s.clone(), None),
+            Value::Attrs(a) => {
+                let u = a
+                    .get("url")
+                    .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                    .as_string()?
+                    .to_string();
+                let sha = a
+                    .get("sha256")
+                    .map(|v| v.as_string().map(|s| s.to_string()))
+                    .transpose()?;
+                (u, sha)
+            }
+            _ => {
+                return Err(EvalError::TypeError(
+                    "fetchTarball: expected string or attrset".into(),
+                ))
+            }
+        };
+        let bytes = fetch_url_bytes(&url)
+            .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
+        use sha2::{Digest, Sha256};
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        if let Some(ref expected) = expected_sha256 {
+            if *expected != hash {
+                return Err(EvalError::TypeError(format!(
+                    "fetchTarball: sha256 mismatch: expected {expected}, got {hash}"
+                )));
+            }
+        }
+        let base_dir = std::env::temp_dir().join("sui-fetchTarball");
+        let extract_dir = base_dir.join(&hash);
+        if !extract_dir.exists() {
+            std::fs::create_dir_all(&extract_dir)
+                .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
+            let decoder = flate2::read::GzDecoder::new(&bytes[..]);
+            let mut archive = tar::Archive::new(decoder);
+            archive
+                .unpack(&extract_dir)
+                .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
+        }
+        Ok(Value::Path(extract_dir.to_string_lossy().to_string()))
+    });
+
+    // ── getFlake ──────────────────────────────────────────
+    //
+    // Minimal implementation: supports path-based flake references only.
+    // Reads flake.nix from the given path and evaluates it.
+
+    register_builtin(&mut builtins_set, "getFlake", |args| {
+        let flake_ref = args[0].as_string()?.to_string();
+        let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
+            std::path::PathBuf::from(&flake_ref)
+        } else {
+            return Err(EvalError::NotImplemented(format!(
+                "getFlake: only path-based flakes supported, got: {flake_ref}"
+            )));
+        };
+        let flake_nix = flake_dir.join("flake.nix");
+        let source = std::fs::read_to_string(&flake_nix).map_err(|e| {
+            EvalError::TypeError(format!(
+                "getFlake: cannot read {}: {e}",
+                flake_nix.display()
+            ))
+        })?;
+        crate::eval::eval(&source)
+    });
+
+    // ── path ──────────────────────────────────────────────
+    //
+    // builtins.path { path; name?; sha256?; recursive?; }
+    // Hashes the path contents and returns a synthetic store path.
+
+    register_builtin(&mut builtins_set, "path", |args| {
+        let attrs = args[0].as_attrs()?;
+        let path_val = attrs
+            .get("path")
+            .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
+        let path_str = match path_val {
+            Value::Path(p) => p.clone(),
+            Value::String(s) => s.clone(),
+            _ => return Err(EvalError::TypeError("path: expected path".into())),
+        };
+        let name = attrs
+            .get("name")
+            .map(|v| v.as_string().map(|s| s.to_string()))
+            .transpose()?
+            .unwrap_or_else(|| {
+                std::path::Path::new(&path_str)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        let p = std::path::Path::new(&path_str);
+        if p.is_file() {
+            let content = std::fs::read(p)
+                .map_err(|e| EvalError::TypeError(format!("path: {e}")))?;
+            hasher.update(&content);
+        } else if p.is_dir() {
+            // Hash the directory name for deterministic output
+            hasher.update(path_str.as_bytes());
+        } else {
+            hasher.update(path_str.as_bytes());
+        }
+        if let Some(expected) = attrs.get("sha256") {
+            let expected_str = expected.as_string()?;
+            let actual = format!("{:x}", hasher.clone().finalize());
+            if expected_str != actual {
+                return Err(EvalError::TypeError(format!(
+                    "path: sha256 mismatch: expected {expected_str}, got {actual}"
+                )));
+            }
+        }
+        let hash = format!("{:x}", hasher.finalize());
+        let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
+        Ok(Value::Path(store_path))
+    });
+
     // true/false/null as builtins
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
@@ -942,6 +1117,18 @@ fn register_curried(
             }),
         }),
     );
+}
+
+/// Fetch bytes from a URL. Supports `file://` scheme for local files and
+/// delegates to `reqwest::blocking` for HTTP(S).
+fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
+    if let Some(path) = url.strip_prefix("file://") {
+        std::fs::read(path).map_err(|e| format!("{e}"))
+    } else {
+        let resp = reqwest::blocking::get(url).map_err(|e| format!("{e}"))?;
+        let bytes = resp.bytes().map_err(|e| format!("{e}"))?;
+        Ok(bytes.to_vec())
+    }
 }
 
 fn json_to_value(json: &serde_json::Value) -> Value {
@@ -1740,9 +1927,50 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.fetchurl needs network access"]
-    fn builtins_fetchurl() {
-        let _v = eval(r#"builtins.fetchurl "https://example.com""#);
+    fn builtins_fetchurl_exists_as_builtin() {
+        // Verify fetchurl is registered and callable.
+        // Test with a file:// URL served from a temp file to avoid network.
+        let dir = std::env::temp_dir().join("sui_eval_test_fetchurl");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload = b"fetchurl-test-content";
+        let file = dir.join("payload.txt");
+        std::fs::write(&file, payload).unwrap();
+        let file_url = format!("file://{}", file.display());
+        let expr = format!(r#"builtins.fetchurl "{}""#, file_url);
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            let content = std::fs::read_to_string(&p).unwrap();
+            assert_eq!(content, "fetchurl-test-content");
+        } else {
+            panic!("expected path, got {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_fetchurl_attrset_form() {
+        // Test the attrset form: { url, sha256? }
+        let dir = std::env::temp_dir().join("sui_eval_test_fetchurl_attr");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload = b"attr-form-content";
+        let file = dir.join("payload.txt");
+        std::fs::write(&file, payload).unwrap();
+        let file_url = format!("file://{}", file.display());
+        let expr = format!(
+            r#"builtins.fetchurl {{ url = "{}"; }}"#,
+            file_url
+        );
+        let v = eval(&expr).unwrap();
+        assert!(matches!(v, Value::Path(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_fetchurl_bad_type_errors() {
+        let result = eval("builtins.fetchurl 42");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1779,9 +2007,47 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.path needs path hashing"]
-    fn builtins_path() {
-        let _v = eval(r#"builtins.path { path = ./.; name = "test"; }"#);
+    fn builtins_path_with_file() {
+        // builtins.path on a real file returns a /nix/store/... path
+        let dir = std::env::temp_dir().join("sui_eval_test_builtins_path");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hello.txt");
+        std::fs::write(&file, "hello world").unwrap();
+        let expr = format!(
+            r#"builtins.path {{ path = "{}"; name = "test"; }}"#,
+            file.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(p.starts_with("/nix/store/"));
+            assert!(p.ends_with("-test"));
+        } else {
+            panic!("expected path, got {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_path_default_name() {
+        // Without explicit name, uses the file name component
+        let dir = std::env::temp_dir().join("sui_eval_test_builtins_path_dn");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("myfile.txt");
+        std::fs::write(&file, "content").unwrap();
+        let expr = format!(
+            r#"builtins.path {{ path = "{}"; }}"#,
+            file.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(p.starts_with("/nix/store/"));
+            assert!(p.ends_with("-myfile.txt"));
+        } else {
+            panic!("expected path, got {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1796,9 +2062,27 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.getFlake needs flake evaluation infrastructure"]
-    fn builtins_get_flake() {
-        let _v = eval(r#"builtins.getFlake "nixpkgs""#);
+    fn builtins_get_flake_path_based() {
+        // getFlake with a path-based flake reference reads and evaluates flake.nix
+        let dir = std::env::temp_dir().join("sui_eval_test_getflake");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("flake.nix"),
+            r#"{ description = "test flake"; outputs = { self }: { value = 42; }; }"#,
+        )
+        .unwrap();
+        let expr = format!(r#"(builtins.getFlake "{}").description"#, dir.display());
+        let v = eval(&expr).unwrap();
+        assert_eq!(v, Value::String("test flake".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_get_flake_rejects_registry_refs() {
+        // Non-path flake references are not yet supported
+        let result = eval(r#"builtins.getFlake "nixpkgs""#);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1826,8 +2110,45 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "builtins.fetchTarball needs network access"]
-    fn builtins_fetch_tarball() {
-        let _v = eval(r#"builtins.fetchTarball "https://example.com/archive.tar.gz""#);
+    fn builtins_fetch_tarball_from_file() {
+        // Create a .tar.gz in a temp dir, fetch it via file:// URL
+        let dir = std::env::temp_dir().join("sui_eval_test_fetchtarball");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Build a small tarball in memory
+        let tar_gz_path = dir.join("archive.tar.gz");
+        {
+            let file = std::fs::File::create(&tar_gz_path).unwrap();
+            let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut tar_builder = tar::Builder::new(enc);
+            let data = b"hello tarball";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("hello.txt").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_cksum();
+            tar_builder.append(&header, &data[..]).unwrap();
+            tar_builder.finish().unwrap();
+        }
+
+        let file_url = format!("file://{}", tar_gz_path.display());
+        let expr = format!(r#"builtins.fetchTarball "{}""#, file_url);
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            // The extracted directory should exist
+            assert!(
+                std::path::Path::new(&p).exists(),
+                "extracted dir should exist: {p}",
+            );
+        } else {
+            panic!("expected path, got {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_fetch_tarball_bad_type_errors() {
+        let result = eval("builtins.fetchTarball 42");
+        assert!(result.is_err());
     }
 }
