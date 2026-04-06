@@ -31,3 +31,8 @@ tempfile.workspace = true
 pretty_assertions.workspace = true
 test-case.workspace = true
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "eval"
+harness = false
