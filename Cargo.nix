@@ -13542,6 +13542,14 @@ rec {
         libName = "sui_eval";
         dependencies = [
           {
+            name = "base64";
+            packageId = "base64";
+          }
+          {
+            name = "data-encoding";
+            packageId = "data-encoding";
+          }
+          {
             name = "flate2";
             packageId = "flate2";
           }
@@ -13595,6 +13603,10 @@ rec {
             name = "tokio";
             packageId = "tokio";
             features = [ "full" ];
+          }
+          {
+            name = "toml";
+            packageId = "toml";
           }
           {
             name = "tracing";
