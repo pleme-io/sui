@@ -322,26 +322,40 @@ impl Env {
         self.bindings.insert(name, value);
     }
 
+    /// Two-pass lookup matching Nix semantics:
+    ///
+    /// 1. Walk the entire lexical-binding chain (own bindings → parent's
+    ///    bindings → … → root's bindings). Any explicit `let`/`rec`/
+    ///    function-arg binding wins over every `with` scope.
+    /// 2. If no lexical binding matched, walk the chain again looking only
+    ///    at `with_scope`s, **innermost first**. So `with X; with Y; x`
+    ///    finds `x` in Y if Y has it, otherwise in X.
+    ///
+    /// The previous single-pass implementation reached the *outer*
+    /// `with_scope` before the inner one (because the parent recursion
+    /// returned the parent's full lookup result, including its `with_scope`,
+    /// before the child's own `with_scope` got checked).
     pub fn lookup(&self, name: &str) -> Option<Value> {
-        // Check local bindings first
+        if let Some(v) = self.lookup_lexical(name) {
+            return Some(v);
+        }
+        self.lookup_with(name)
+    }
+
+    fn lookup_lexical(&self, name: &str) -> Option<Value> {
         if let Some(v) = self.bindings.get(name) {
             return Some(v.clone());
         }
-        // Check parent BEFORE `with` scope — lexical scope takes precedence.
-        // This matches Nix semantics: `with` only provides names not already
-        // bound in the lexical scope chain.
-        if let Some(ref parent) = self.parent {
-            if let Some(v) = parent.lookup(name) {
-                return Some(v);
-            }
-        }
-        // `with` scope is the last resort before giving up.
+        self.parent.as_ref().and_then(|p| p.lookup_lexical(name))
+    }
+
+    fn lookup_with(&self, name: &str) -> Option<Value> {
         if let Some(ref attrs) = self.with_scope {
             if let Some(v) = attrs.get(name) {
                 return Some(v.clone());
             }
         }
-        None
+        self.parent.as_ref().and_then(|p| p.lookup_with(name))
     }
 }
 
