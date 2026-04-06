@@ -94,6 +94,8 @@ tempfile = "3"
 pretty_assertions = "1"
 test-case = "3"
 assert_matches = "1"
+assert_cmd = "2"
+predicates = "3"
 
 [package]
 name = "sui"
@@ -136,6 +138,9 @@ futures-core.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true
+serde_json.workspace = true
 
 [profile.release]
 codegen-units = 1
