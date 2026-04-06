@@ -87,27 +87,35 @@ impl std::fmt::Display for StorePath {
 }
 
 /// Encode bytes to Nix's custom base-32 encoding.
+///
+/// Matches CppNix `printHash32`: characters are emitted in
+/// most-significant-first order, where the FIRST character
+/// represents the high bits of the LAST input byte. The previous
+/// implementation indexed bytes from the END of the input, which
+/// produced a (different) self-consistent encoding that did NOT
+/// match real Nix store paths — every store-path computation
+/// silently disagreed with CppNix.
 pub fn nix_base32_encode(input: &[u8]) -> String {
     let len = (input.len() * 8 + 4) / 5;
     let mut out = vec![0u8; len];
 
-    for i in 0..len {
-        let bit_offset = i * 5;
-        let byte_idx = bit_offset / 8;
-        let bit_idx = bit_offset % 8;
-
-        let mut val = u16::from(input[input.len() - 1 - byte_idx]) >> bit_idx;
-        if byte_idx + 1 < input.len() {
-            val |= u16::from(input[input.len() - 2 - byte_idx]) << (8 - bit_idx);
+    for n in 0..len {
+        let b = (len - 1 - n) * 5;
+        let i = b / 8;
+        let j = b % 8;
+        let mut c = u16::from(input[i]) >> j;
+        if i + 1 < input.len() {
+            c |= u16::from(input[i + 1]) << (8 - j);
         }
-
-        out[len - 1 - i] = NIX_BASE32_CHARS[(val & 0x1f) as usize];
+        out[n] = NIX_BASE32_CHARS[(c & 0x1f) as usize];
     }
 
     String::from_utf8(out).expect("base32 chars are ASCII")
 }
 
 /// Decode Nix's custom base-32 encoding to bytes.
+///
+/// Inverse of [`nix_base32_encode`].
 pub fn nix_base32_decode(input: &str) -> Result<[u8; 20], StorePathError> {
     let expected_len = 32; // 20 bytes * 8 bits / 5 bits = 32 chars
     if input.len() != expected_len {
@@ -118,20 +126,19 @@ pub fn nix_base32_decode(input: &str) -> Result<[u8; 20], StorePathError> {
     }
 
     let mut bytes = [0u8; 20];
+    let total = input.len();
 
-    for (i, c) in input.chars().rev().enumerate() {
+    for (n, c) in input.chars().enumerate() {
         let digit = NIX_BASE32_CHARS
             .iter()
             .position(|&x| x == c as u8)
             .ok_or(StorePathError::InvalidHashChar(c))?;
-
-        let bit_offset = i * 5;
-        let byte_idx = bit_offset / 8;
-        let bit_idx = bit_offset % 8;
-
-        bytes[bytes.len() - 1 - byte_idx] |= (digit as u8) << bit_idx;
-        if bit_idx > 3 && byte_idx + 1 < bytes.len() {
-            bytes[bytes.len() - 2 - byte_idx] |= (digit as u8) >> (8 - bit_idx);
+        let b = (total - 1 - n) * 5;
+        let i = b / 8;
+        let j = b % 8;
+        bytes[i] |= ((digit as u16) << j) as u8;
+        if i + 1 < bytes.len() {
+            bytes[i + 1] |= ((digit as u16) >> (8 - j)) as u8;
         }
     }
 
@@ -182,18 +189,63 @@ pub fn compute_store_path_from_fingerprint(fingerprint: &str, name: &str) -> Str
     format!("{DEFAULT_STORE_DIR}/{b32}-{name}")
 }
 
-/// Compute the `.drv` store path for a serialized derivation.
+/// Compute the `.drv` store path for a serialized derivation,
+/// without folding any references into the fingerprint.
 ///
-/// The fingerprint is `text:sha256:<hex_inner>:<store>:<name>.drv`, where the
-/// inner hash is SHA-256 of the ATerm bytes. This matches CppNix's text store
-/// path scheme used for .drv files.
+/// **This is only correct for source-only derivations** that have
+/// no input store paths whatsoever — every other derivation needs
+/// `compute_drv_path_with_refs`. Real `.drv` files always reference
+/// at least one input source or input derivation, so this function
+/// alone will mismatch CppNix on every realistic input. Kept for
+/// callers that don't have access to a parsed `Derivation`.
+///
+/// The fingerprint is `text:sha256:<hex_inner>:<store>:<name>.drv`.
 #[must_use]
 pub fn compute_drv_path(drv_content: &[u8], name: &str) -> String {
+    compute_drv_path_with_refs(drv_content, name, &[])
+}
+
+/// Compute the `.drv` store path including the derivation's
+/// references in the fingerprint.
+///
+/// CppNix's `makeTextPath` builds the fingerprint as:
+///
+/// ```text
+/// text:<ref1>:<ref2>:...:sha256:<hex_inner>:/nix/store:<name>.drv
+/// ```
+///
+/// where each `<refN>` is a store path mentioned anywhere in the
+/// `.drv` content (every entry of `Derivation::input_derivations`
+/// plus every entry of `Derivation::input_sources`). The list is
+/// sorted lexicographically and de-duplicated. Without these refs,
+/// every real-world drvPath mismatches the on-disk filename.
+///
+/// Pass refs sorted or unsorted — this function sorts and dedups
+/// internally so callers don't have to.
+#[must_use]
+pub fn compute_drv_path_with_refs(drv_content: &[u8], name: &str, refs: &[String]) -> String {
     let inner = Sha256::digest(drv_content);
     let inner_hex = hex_lower(&inner);
     let drv_name = format!("{name}.drv");
-    let fingerprint =
-        format!("text:sha256:{inner_hex}:{DEFAULT_STORE_DIR}:{drv_name}");
+
+    // Sort + dedup refs so two callers with the same set produce
+    // identical fingerprints regardless of input order.
+    let mut sorted_refs: Vec<&String> = refs.iter().collect();
+    sorted_refs.sort();
+    sorted_refs.dedup();
+
+    let mut fingerprint = String::from("text:");
+    for r in sorted_refs {
+        fingerprint.push_str(r);
+        fingerprint.push(':');
+    }
+    fingerprint.push_str("sha256:");
+    fingerprint.push_str(&inner_hex);
+    fingerprint.push(':');
+    fingerprint.push_str(DEFAULT_STORE_DIR);
+    fingerprint.push(':');
+    fingerprint.push_str(&drv_name);
+
     compute_store_path_from_fingerprint(&fingerprint, &drv_name)
 }
 
@@ -216,10 +268,19 @@ pub fn compute_output_path(inner_hash_hex: &str, output_name: &str, name: &str) 
 
 /// Compute the output store path for a fixed-output derivation.
 ///
-/// CppNix builds an inner hash string of the form
-/// `fixed:out:[r:]<algo>:<hash>:` and SHA-256 hashes it. The resulting hex
-/// digest is then fed through `compute_output_path` as the inner hash for the
-/// `out` output.
+/// CppNix has two distinct branches in `makeFixedOutputPath`:
+///
+/// 1. **Recursive SHA-256** (`r:sha256`, NAR-based content hashing):
+///    the path uses the `"source"` type and the inner hash is the
+///    user's hash *directly* (no `fixed:out:` wrapping):
+///    fingerprint = `source:sha256:<hex>:/nix/store:<name>`
+///
+/// 2. **Everything else** (flat sha256, md5, sha1, sha512, recursive
+///    non-sha256): the path uses the `"output:out"` type and the
+///    inner hash is `sha256(fixed:out:<r:?><algo>:<hex>:)`:
+///    fingerprint = `output:out:sha256:<wrapped_hex>:/nix/store:<name>`
+///
+/// `hash` here is the user-declared content hash in lowercase hex.
 #[must_use]
 pub fn compute_fixed_output_hash(
     algo: &str,
@@ -227,6 +288,15 @@ pub fn compute_fixed_output_hash(
     is_recursive: bool,
     name: &str,
 ) -> String {
+    if is_recursive && algo == "sha256" {
+        // "source" branch: the user's NAR hash is the inner hash
+        // directly. No "fixed:out:" wrapping, no sha256-of-sha256.
+        let fingerprint = format!(
+            "source:sha256:{hash}:{DEFAULT_STORE_DIR}:{name}"
+        );
+        return compute_store_path_from_fingerprint(&fingerprint, name);
+    }
+
     let mode = if is_recursive { "r:" } else { "" };
     let inner = format!("fixed:out:{mode}{algo}:{hash}:");
     let inner_hash = Sha256::digest(inner.as_bytes());

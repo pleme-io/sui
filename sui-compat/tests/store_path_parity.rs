@@ -30,7 +30,7 @@
 use std::path::PathBuf;
 use sui_compat::derivation::Derivation;
 use sui_compat::store_path::{
-    compute_drv_path, compute_fixed_output_hash, compute_output_path, StorePath,
+    compute_drv_path_with_refs, compute_fixed_output_hash, compute_output_path, StorePath,
 };
 
 /// How many `.drv` files to sample from `/nix/store`.
@@ -157,25 +157,16 @@ fn aterm_round_trip_byte_identical() {
     }
 }
 
-/// For pure derivations (no `input_derivations`), the .drv path is
-/// `text:sha256:<sha of content>:<store>:<name>.drv`. Assert our
-/// `compute_drv_path` matches the real filename hash.
-///
-/// **Known gap (2026-04-06):** `compute_drv_path` omits the
-/// reference list from the fingerprint. CppNix's real format is
-/// `text:<ref1>:<ref2>:...:sha256:<hex>:<store>:<name>.drv` — the
-/// references being every store path embedded in the .drv content
-/// (input sources + input derivations). Every real-world .drv file
-/// has references, so sui currently mismatches 100% of them. Gated
-/// behind `#[ignore]` until `compute_drv_path` is fixed; run with
-/// `cargo test -p sui-compat --test store_path_parity -- --ignored`
-/// to reproduce.
-#[ignore = "compute_drv_path omits references from fingerprint — see comment"]
+/// Recompute every sampled `.drv` path via
+/// `compute_drv_path_with_refs` (refs = input_derivations.keys() ∪
+/// input_sources) and assert the resulting basename matches the
+/// real filename. Real Nix's text-path scheme folds the references
+/// into the fingerprint; without them every real .drv mismatches.
 #[test]
-fn pure_drv_path_matches_filename() {
+fn drv_path_matches_filename() {
     let corpus = sample_drv_files(DRV_SAMPLE_SIZE);
     if corpus.is_empty() {
-        eprintln!("skip pure_drv_path_matches_filename: no corpus");
+        eprintln!("skip drv_path_matches_filename: no corpus");
         return;
     }
 
@@ -191,13 +182,16 @@ fn pure_drv_path_matches_filename() {
             Ok(d) => d,
             Err(_) => continue,
         };
-        if !parsed.input_derivations.is_empty() {
-            continue; // non-pure, skip this assertion
-        }
         let Some(name) = drv_human_name(&basename_of(path)) else {
             continue;
         };
-        let computed = compute_drv_path(&bytes, &name);
+        // refs = every input derivation path + every input source.
+        // CppNix sorts these lexicographically before splicing into
+        // the fingerprint; `compute_drv_path_with_refs` does that
+        // sort internally.
+        let mut refs: Vec<String> = parsed.input_derivations.keys().cloned().collect();
+        refs.extend(parsed.input_sources.iter().cloned());
+        let computed = compute_drv_path_with_refs(&bytes, &name, &refs);
         let computed_basename = computed
             .rsplit_once('/')
             .map(|(_, b)| b.to_string())
@@ -213,7 +207,7 @@ fn pure_drv_path_matches_filename() {
     }
 
     eprintln!(
-        "pure_drv_path_matches_filename: checked {}, mismatches {}",
+        "drv_path_matches_filename: checked {}, mismatches {}",
         checked,
         mismatches.len()
     );
@@ -226,7 +220,7 @@ fn pure_drv_path_matches_filename() {
             .collect::<Vec<_>>()
             .join("\n");
         panic!(
-            "{} / {} pure .drv files had drvPath mismatch. First {}:\n{}",
+            "{} / {} .drv files had drvPath mismatch. First {}:\n{}",
             mismatches.len(),
             checked,
             mismatches.len().min(5),
@@ -238,20 +232,6 @@ fn pure_drv_path_matches_filename() {
 /// For fixed-output derivations (those whose `out` output declares a
 /// non-empty `hash_algo`/`hash`), recompute the output path via
 /// `compute_fixed_output_hash` and assert it equals the declared path.
-///
-/// **Known gap (2026-04-06):** `compute_fixed_output_hash` produces
-/// the wrong path for both flat and recursive SHA-256 fixed outputs —
-/// 214/214 real-world fixed-output drvs mismatch on this machine. The
-/// formula in sui-compat looks algebraically identical to CppNix's
-/// `makeFixedOutputPath`, so the discrepancy is probably in either
-/// (a) the way the .drv's hash field is pre-processed before feeding
-/// it into the inner string, (b) the `"source"` vs `"output:out"`
-/// path-type distinction for recursive SHA-256, or (c) subtle
-/// handling of references. Gated behind `#[ignore]` until
-/// `compute_fixed_output_hash` is fixed; run with
-/// `cargo test -p sui-compat --test store_path_parity -- --ignored`
-/// to reproduce.
-#[ignore = "compute_fixed_output_hash produces wrong paths — see comment"]
 #[test]
 fn fixed_output_path_matches_declared() {
     let corpus = sample_drv_files(DRV_SAMPLE_SIZE);
