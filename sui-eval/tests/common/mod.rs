@@ -91,8 +91,19 @@ fn which(cmd: &str) -> Option<PathBuf> {
 ///
 /// Returns the parsed JSON on success, or an `__error` object on failure
 /// (so "both failed" comparisons still work).
+///
+/// Expressions whose first character is `-` would otherwise be
+/// parsed as a CLI flag; they are wrapped in an identity `(expr)`
+/// so real nix sees them as a value.
 pub fn nix_eval_json(expr: &str) -> serde_json::Value {
-    run_nix_instantiate(&["--eval", "--json", "--strict", "-E", expr])
+    let wrapped;
+    let passed: &str = if expr.trim_start().starts_with('-') {
+        wrapped = format!("({expr})");
+        &wrapped
+    } else {
+        expr
+    };
+    run_nix_instantiate(&["--eval", "--json", "--strict", "-E", passed])
 }
 
 /// Evaluate a file with real `nix-instantiate --eval --json --strict <file>`.
