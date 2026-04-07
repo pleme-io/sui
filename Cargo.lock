@@ -4363,6 +4363,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sui-build",
+ "sui-compat",
  "sui-eval",
  "sui-store",
  "thiserror 2.0.18",

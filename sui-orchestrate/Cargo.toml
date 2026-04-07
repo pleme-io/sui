@@ -8,6 +8,7 @@ repository.workspace = true
 description = "System and fleet orchestration for Nix deployments"
 
 [dependencies]
+sui-compat.workspace = true
 sui-eval.workspace = true
 sui-store.workspace = true
 sui-build.workspace = true

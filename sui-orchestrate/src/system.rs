@@ -171,6 +171,159 @@ impl SystemOrchestrator {
         self.platform
     }
 
+    /// Native rebuild: evaluate flake, build closure, activate system.
+    ///
+    /// Uses `nix eval` for evaluation and `nix build` for the actual build
+    /// (the full native build pipeline will be wired once the substitution
+    /// layer is production-ready). The key win is that `sui system rebuild`
+    /// becomes the user's single entry point.
+    pub async fn rebuild_native(
+        &self,
+        flake_ref_str: &str,
+        action: RebuildAction,
+    ) -> Result<RebuildResult, SystemError> {
+        let start = std::time::Instant::now();
+        let flake_ref = sui_compat::flake_ref::FlakeRef::parse(flake_ref_str)
+            .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+
+        // 1. Determine the attribute path based on platform
+        let platform_prefix = match self.platform {
+            Platform::Darwin => "darwinConfigurations",
+            Platform::NixOS => "nixosConfigurations",
+        };
+        let attr_path = format!(
+            "{platform_prefix}.{}.config.system.build.toplevel",
+            flake_ref.attribute
+        );
+
+        // 2. Evaluate the flake to get the derivation path (via nix delegation)
+        let eval_ref = format!(
+            "{}#{attr_path}.drvPath",
+            flake_ref.flake_dir.display()
+        );
+        let eval_output = self
+            .runner
+            .run("nix", &["eval", "--json", &eval_ref])
+            .await
+            .map_err(|e| SystemError::CommandNotFound(format!("nix: {e}")))?;
+
+        if !eval_output.success {
+            return Ok(RebuildResult {
+                success: false,
+                generation: None,
+                action: action.to_string(),
+                log: format!("eval failed: {}", eval_output.stderr),
+                duration_secs: start.elapsed().as_secs_f64(),
+            });
+        }
+
+        // 3. Build the system derivation (delegate to nix build for MVP)
+        let build_ref = format!(
+            "{}#{attr_path}",
+            flake_ref.flake_dir.display()
+        );
+        let build_output = self
+            .runner
+            .run(
+                "nix",
+                &["build", "--no-link", "--print-out-paths", &build_ref],
+            )
+            .await
+            .map_err(|e| SystemError::CommandNotFound(format!("nix: {e}")))?;
+
+        if !build_output.success {
+            return Ok(RebuildResult {
+                success: false,
+                generation: None,
+                action: action.to_string(),
+                log: build_output.stderr.clone(),
+                duration_secs: start.elapsed().as_secs_f64(),
+            });
+        }
+
+        let system_path = build_output.stdout.trim().to_string();
+
+        // 4. Activate the system profile
+        self.activate_system(&system_path, action).await?;
+
+        // 5. Get the new generation
+        let current_gen = self.current_generation().await.ok();
+
+        Ok(RebuildResult {
+            success: true,
+            generation: current_gen,
+            action: action.to_string(),
+            log: format!("native rebuild completed: {system_path}"),
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Activate a built system profile.
+    ///
+    /// Sets the system profile and runs activation scripts as appropriate
+    /// for the given [`RebuildAction`].
+    async fn activate_system(
+        &self,
+        system_path: &str,
+        action: RebuildAction,
+    ) -> Result<(), SystemError> {
+        match action {
+            RebuildAction::Switch | RebuildAction::Test => {
+                // Set the system profile
+                self.runner
+                    .run(
+                        "nix-env",
+                        &[
+                            "--profile",
+                            "/nix/var/nix/profiles/system",
+                            "--set",
+                            system_path,
+                        ],
+                    )
+                    .await
+                    .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+
+                // Run the activate script
+                let activate = format!("{system_path}/activate");
+                self.runner
+                    .run(&activate, &[])
+                    .await
+                    .map_err(|e| SystemError::RebuildFailed(format!("activate: {e}")))?;
+
+                if action == RebuildAction::Switch && self.platform == Platform::Darwin {
+                    let activate_user = format!("{system_path}/activate-user");
+                    if std::path::Path::new(&activate_user).exists() {
+                        self.runner
+                            .run(&activate_user, &[])
+                            .await
+                            .map_err(|e| {
+                                SystemError::RebuildFailed(format!("activate-user: {e}"))
+                            })?;
+                    }
+                }
+            }
+            RebuildAction::Boot => {
+                // Set profile but don't activate — takes effect on next boot
+                self.runner
+                    .run(
+                        "nix-env",
+                        &[
+                            "--profile",
+                            "/nix/var/nix/profiles/system",
+                            "--set",
+                            system_path,
+                        ],
+                    )
+                    .await
+                    .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+            }
+            RebuildAction::Build => {
+                // Build only — nothing to activate
+            }
+        }
+        Ok(())
+    }
+
     /// Execute a system rebuild.
     pub async fn rebuild(
         &self,
@@ -1498,5 +1651,329 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.generation, Some(0));
         assert_eq!(result.action, "rollback-to-0");
+    }
+
+    // ── rebuild_native() tests ───────────────────────────────
+
+    /// A multi-command mock that responds differently based on both the
+    /// program name and the first argument (to distinguish `nix eval` from
+    /// `nix build`).
+    struct MultiMockRunner {
+        responses: std::collections::BTreeMap<String, CommandOutput>,
+    }
+
+    impl MultiMockRunner {
+        fn new() -> Self {
+            Self {
+                responses: std::collections::BTreeMap::new(),
+            }
+        }
+
+        /// Register a response keyed by `"program:first_arg"` (e.g. `"nix:eval"`).
+        /// Falls back to `"program"` if no first-arg-specific key matches.
+        fn with_response(mut self, key: &str, output: CommandOutput) -> Self {
+            self.responses.insert(key.to_string(), output);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for MultiMockRunner {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            // Try program:first_arg first, then program alone
+            let compound_key = if let Some(first) = args.first() {
+                format!("{program}:{first}")
+            } else {
+                program.to_string()
+            };
+            self.responses
+                .get(&compound_key)
+                .or_else(|| self.responses.get(program))
+                .cloned()
+                .ok_or_else(|| CommandError::NotFound(program.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_success_build_only() {
+        let runner = MultiMockRunner::new()
+            .with_response(
+                "nix:eval",
+                CommandOutput {
+                    success: true,
+                    stdout: r#""/nix/store/abc-system.drv"
+"#
+                    .to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix:build",
+                CommandOutput {
+                    success: true,
+                    stdout: "/nix/store/xyz-system\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/my-flake#cid", RebuildAction::Build)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "build");
+        assert!(result.log.contains("/nix/store/xyz-system"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_eval_failure() {
+        let runner = MultiMockRunner::new().with_response(
+            "nix:eval",
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "error: attribute not found\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/flake#cid", RebuildAction::Switch)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.log.contains("eval failed"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_build_failure() {
+        let runner = MultiMockRunner::new()
+            .with_response(
+                "nix:eval",
+                CommandOutput {
+                    success: true,
+                    stdout: r#""/nix/store/abc.drv""#.to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix:build",
+                CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "builder for /nix/store/abc.drv failed\n".to_string(),
+                    exit_code: Some(1),
+                },
+            );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/flake#node", RebuildAction::Switch)
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.log.contains("builder for"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_invalid_flake_ref() {
+        let runner = MultiMockRunner::new();
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys
+            .rebuild_native("no-hash-here", RebuildAction::Switch)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SystemError::RebuildFailed(msg) => {
+                assert!(msg.contains("missing '#attribute'"));
+            }
+            other => panic!("expected RebuildFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_switch_activates_system() {
+        let runner = MultiMockRunner::new()
+            .with_response(
+                "nix:eval",
+                CommandOutput {
+                    success: true,
+                    stdout: r#""/nix/store/abc.drv""#.to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix:build",
+                CommandOutput {
+                    success: true,
+                    stdout: "/nix/store/xyz-system\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix-env",
+                CommandOutput {
+                    success: true,
+                    stdout: "  1   2024-01-01 (current)\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "/nix/store/xyz-system/activate",
+                CommandOutput {
+                    success: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/flake#node", RebuildAction::Switch)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "switch");
+        assert_eq!(result.generation, Some(1));
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_boot_sets_profile_without_activate() {
+        let runner = MultiMockRunner::new()
+            .with_response(
+                "nix:eval",
+                CommandOutput {
+                    success: true,
+                    stdout: r#""/nix/store/abc.drv""#.to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix:build",
+                CommandOutput {
+                    success: true,
+                    stdout: "/nix/store/xyz-system\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            )
+            .with_response(
+                "nix-env",
+                CommandOutput {
+                    success: true,
+                    stdout: "  5   2024-06-01 (current)\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/flake#node", RebuildAction::Boot)
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "boot");
+        assert_eq!(result.generation, Some(5));
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_nix_command_not_found() {
+        let runner = MultiMockRunner::new(); // no responses at all
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys
+            .rebuild_native("/tmp/flake#cid", RebuildAction::Build)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SystemError::CommandNotFound(msg) => assert!(msg.contains("nix")),
+            other => panic!("expected CommandNotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_darwin_attr_prefix() {
+        // Verify Darwin uses darwinConfigurations prefix
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: r#""/nix/store/abc.drv""#.to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder2(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder2 {
+            async fn run(
+                &self,
+                program: &str,
+                args: &[&str],
+            ) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Forwarder2(Arc::clone(&captor))),
+        );
+        // This will fail at the build step (CapturingRunner only has one
+        // response), but we can still verify the eval args.
+        let _ = sys
+            .rebuild_native("/tmp/flake#cid", RebuildAction::Build)
+            .await;
+        let calls = captor.calls();
+        assert!(!calls.is_empty());
+        let eval_args = &calls[0].1;
+        // The eval call should reference darwinConfigurations
+        let eval_ref = eval_args.iter().find(|a| a.contains("darwinConfigurations"));
+        assert!(
+            eval_ref.is_some(),
+            "expected darwinConfigurations in eval args: {eval_args:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_native_nixos_attr_prefix() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: r#""/nix/store/abc.drv""#.to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder3(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder3 {
+            async fn run(
+                &self,
+                program: &str,
+                args: &[&str],
+            ) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder3(Arc::clone(&captor))),
+        );
+        let _ = sys
+            .rebuild_native("/tmp/flake#node", RebuildAction::Build)
+            .await;
+        let calls = captor.calls();
+        assert!(!calls.is_empty());
+        let eval_args = &calls[0].1;
+        let eval_ref = eval_args.iter().find(|a| a.contains("nixosConfigurations"));
+        assert!(
+            eval_ref.is_some(),
+            "expected nixosConfigurations in eval args: {eval_args:?}"
+        );
     }
 }
