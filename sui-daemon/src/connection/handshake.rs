@@ -12,7 +12,6 @@ use super::{
     Connection, ConnectionError, PROTOCOL_MINOR_CPU_AFFINITY, PROTOCOL_MINOR_RESERVE_SPACE,
     PROTOCOL_MINOR_TRUST_EXCHANGE,
 };
-use crate::trust::TrustLevel;
 
 use sui_store::traits::Store;
 use tokio::io::AsyncRead;

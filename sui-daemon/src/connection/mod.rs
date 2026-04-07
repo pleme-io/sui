@@ -14,19 +14,8 @@ mod dispatch;
 mod handshake;
 pub(crate) mod wire;
 
-// Re-export wire helpers at module scope so existing tests (which use
-// `use super::*`) continue to compile unchanged.
-use wire::{
-    read_bytes, read_string, read_u64, write_bool, write_bytes, write_stderr_error,
-    write_stderr_last, write_string, write_string_list, write_u64,
-};
-
 use std::sync::Arc;
 
-use sui_compat::store_path::StorePath;
-use sui_compat::wire::{
-    StderrMsg, WorkerOp, PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2,
-};
 use sui_store::traits::Store;
 
 use crate::trust::TrustLevel;
@@ -105,9 +94,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::wire::{
+        read_bytes, read_string, read_u64, write_bool, write_bytes, write_stderr_error,
+        write_stderr_last, write_string, write_string_list, write_u64,
+    };
     use super::*;
     use std::io::Cursor;
-    use sui_compat::wire;
+    use sui_compat::store_path::StorePath;
+    use sui_compat::wire::{self, StderrMsg, WorkerOp, PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2};
     use sui_store::traits::{PathInfo, StoreResult};
 
     /// A mock store for testing.

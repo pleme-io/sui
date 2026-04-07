@@ -88,6 +88,7 @@ where
     /// Response format:
     /// - `STDERR_LAST`
     /// - valid (bool: 1 if found, 0 if not)
+    ///
     /// If found:
     /// - deriver (string, empty if none)
     /// - nar_hash (string)
