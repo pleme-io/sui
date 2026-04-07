@@ -672,6 +672,102 @@ mod tests {
         assert_eq!(msg_type, StderrMsg::Error as u64);
     }
 
+    // ── Handshake variant tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn handshake_old_client_no_cpu_affinity() {
+        // Protocol 1.10: no CPU affinity, no reserve space
+        let store = Arc::new(MockStore::new());
+        let client_version: u64 = 1 << 8 | 10;
+        let input = build_full_client_handshake(client_version);
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("old client handshake should succeed");
+        assert_eq!(conn.client_version, client_version);
+    }
+
+    #[tokio::test]
+    async fn handshake_old_client_with_reserve_no_affinity() {
+        // Protocol 1.11: has reserve space but no CPU affinity
+        let store = Arc::new(MockStore::new());
+        let client_version: u64 = 1 << 8 | 11;
+        let input = build_full_client_handshake(client_version);
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("1.11 handshake should succeed");
+        assert_eq!(conn.client_version, client_version);
+    }
+
+    #[tokio::test]
+    async fn handshake_old_client_no_trust_exchange() {
+        // Protocol 1.34: no trust level exchange
+        let store = Arc::new(MockStore::new());
+        let client_version: u64 = 1 << 8 | 34;
+        let input = build_full_client_handshake(client_version);
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("1.34 handshake should succeed");
+
+        // Verify response: magic2 + version + daemon string, but NO trust field
+        let out = &conn.writer;
+        let mut cursor = Cursor::new(out.as_slice());
+        let magic2 = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(magic2, WORKER_MAGIC_2);
+        let version = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(version, PROTOCOL_VERSION);
+        let daemon_str = wire::read_string(&mut cursor).unwrap();
+        assert!(daemon_str.starts_with("sui-daemon"));
+        // No more bytes (no trust level for < 1.35)
+        assert_eq!(cursor.position() as usize, out.len());
+    }
+
+    #[tokio::test]
+    async fn handshake_not_trusted_client() {
+        let store = Arc::new(MockStore::new());
+        let client_version = PROTOCOL_VERSION;
+        let input = build_full_client_handshake(client_version);
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::NotTrusted);
+        conn.handshake().await.expect("untrusted handshake should succeed");
+
+        // Verify trust level = 2 (NotTrusted)
+        let out = &conn.writer;
+        let mut cursor = Cursor::new(out.as_slice());
+        let _magic2 = wire::read_u64(&mut cursor).unwrap();
+        let _version = wire::read_u64(&mut cursor).unwrap();
+        let _daemon_str = wire::read_string(&mut cursor).unwrap();
+        let trust = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(trust, 2, "NotTrusted should be encoded as 2");
+    }
+
+    #[tokio::test]
+    async fn handshake_trusted_client() {
+        let store = Arc::new(MockStore::new());
+        let client_version = PROTOCOL_VERSION;
+        let input = build_full_client_handshake(client_version);
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("trusted handshake should succeed");
+
+        let out = &conn.writer;
+        let mut cursor = Cursor::new(out.as_slice());
+        let _magic2 = wire::read_u64(&mut cursor).unwrap();
+        let _version = wire::read_u64(&mut cursor).unwrap();
+        let _daemon_str = wire::read_string(&mut cursor).unwrap();
+        let trust = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(trust, 1, "Trusted should be encoded as 1");
+    }
+
     // ── Async wire primitive round-trip tests ──────────────────
 
     #[tokio::test]
