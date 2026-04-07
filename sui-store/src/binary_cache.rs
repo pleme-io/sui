@@ -124,16 +124,7 @@ impl BinaryCacheStore {
 
     /// Convert a NarInfo to our PathInfo type.
     fn narinfo_to_path_info(info: &NarInfo) -> PathInfo {
-        PathInfo {
-            path: info.store_path.clone(),
-            nar_hash: info.nar_hash.clone(),
-            nar_size: info.nar_size as i64,
-            references: info.references.clone(),
-            deriver: info.deriver.clone(),
-            signatures: info.signatures.clone(),
-            registration_time: 0,
-            content_address: info.ca.clone(),
-        }
+        PathInfo::from(info)
     }
 
     /// Get the store path hash (first 32 chars of the basename).

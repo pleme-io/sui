@@ -51,6 +51,27 @@ pub struct PathInfo {
     pub content_address: Option<String>,
 }
 
+impl std::fmt::Display for PathInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (nar_size={})", self.path, self.nar_size)
+    }
+}
+
+impl From<&sui_compat::narinfo::NarInfo> for PathInfo {
+    fn from(info: &sui_compat::narinfo::NarInfo) -> Self {
+        Self {
+            path: info.store_path.clone(),
+            nar_hash: info.nar_hash.clone(),
+            nar_size: info.nar_size as i64,
+            references: info.references.clone(),
+            deriver: info.deriver.clone(),
+            signatures: info.signatures.clone(),
+            registration_time: 0,
+            content_address: info.ca.clone(),
+        }
+    }
+}
+
 /// Garbage collection options.
 #[derive(Debug, Clone, Default)]
 pub struct GcOptions {
