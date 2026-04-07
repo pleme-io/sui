@@ -20,6 +20,12 @@ pub enum DeployStrategy {
     Canary,
 }
 
+impl Default for DeployStrategy {
+    fn default() -> Self {
+        Self::Rolling
+    }
+}
+
 impl std::fmt::Display for DeployStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
