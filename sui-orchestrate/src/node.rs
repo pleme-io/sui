@@ -98,6 +98,12 @@ pub struct Node {
     pub current_generation: Option<i64>,
     /// Unix timestamp of the last successful deployment.
     pub last_deployed: Option<i64>,
+    /// Hostnames this node depends on. When deploying with
+    /// [`DeployOrder::Dependency`](crate::fleet::DeployOrder), each node listed
+    /// here is deployed before this node. `#[serde(default)]` so existing
+    /// serialized nodes parse without modification.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 impl Node {
@@ -113,7 +119,19 @@ impl Node {
             status: NodeStatus::Unknown,
             current_generation: None,
             last_deployed: None,
+            depends_on: vec![],
         }
+    }
+
+    /// Set the dependency list for this node.
+    ///
+    /// Each entry should be the `hostname` of another node in the same
+    /// registry. When deploying with [`DeployOrder::Dependency`](crate::fleet::DeployOrder),
+    /// dependencies are deployed before this node.
+    #[must_use]
+    pub fn with_depends_on(mut self, deps: Vec<String>) -> Self {
+        self.depends_on = deps;
+        self
     }
 
     /// Set the SSH target for remote deployments.
@@ -632,6 +650,7 @@ mod tests {
         assert_eq!(node.status, NodeStatus::Unknown);
         assert_eq!(node.current_generation, None);
         assert_eq!(node.last_deployed, None);
+        assert!(node.depends_on.is_empty());
     }
 
     // ── resolve_target with multiple groups ───────────────────
