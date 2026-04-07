@@ -164,6 +164,9 @@ impl BinaryCacheStore {
     }
 
     /// Convert a NarInfo to our PathInfo type.
+    ///
+    /// Delegates to the [`From<&NarInfo>`](PathInfo::from) impl.
+    #[cfg(test)]
     fn narinfo_to_path_info(info: &NarInfo) -> PathInfo {
         PathInfo::from(info)
     }

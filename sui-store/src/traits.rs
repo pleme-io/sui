@@ -30,7 +30,7 @@ pub enum StoreError {
 }
 
 /// Information about a store path.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct PathInfo {
     /// Full absolute store path (e.g., `/nix/store/abc...-hello-2.12.1`).
@@ -71,27 +71,11 @@ impl From<crate::http::HttpError> for StoreError {
     }
 }
 
-impl Default for PathInfo {
-    fn default() -> Self {
-        Self {
-            path: String::new(),
-            nar_hash: String::new(),
-            nar_size: 0,
-            references: Vec::new(),
-            deriver: None,
-            signatures: Vec::new(),
-            registration_time: 0,
-            content_address: None,
-        }
-    }
-}
-
 impl PathInfo {
     /// Create a new `PathInfo` with the given path and NAR hash.
     ///
     /// All other fields default to zero/empty. Use the struct update syntax
     /// or setter calls to fill in remaining fields.
-    #[must_use]
     pub fn new(path: impl Into<String>, nar_hash: impl Into<String>) -> Self {
         Self {
             path: path.into(),
