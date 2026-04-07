@@ -86,6 +86,16 @@ where
         }
     }
 
+    /// Create a daemon server from a pre-wrapped `Arc<S>`.
+    #[must_use]
+    pub fn with_store_arc(config: DaemonConfig, store: Arc<S>) -> Self {
+        Self {
+            config,
+            store,
+            start_time: Instant::now(),
+        }
+    }
+
     /// Return a tsunagu health check for the daemon.
     #[must_use]
     pub fn health(&self) -> HealthCheck {
