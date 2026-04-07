@@ -672,6 +672,109 @@ mod tests {
         assert_eq!(msg_type, StderrMsg::Error as u64);
     }
 
+    // ── Async wire primitive round-trip tests ──────────────────
+
+    #[tokio::test]
+    async fn async_write_read_u64_round_trip() {
+        for val in [0u64, 1, 42, u64::MAX, WORKER_MAGIC_1, WORKER_MAGIC_2, PROTOCOL_VERSION] {
+            let mut buf = Vec::new();
+            write_u64(&mut buf, val).await.unwrap();
+            assert_eq!(buf.len(), 8);
+            let mut cursor = Cursor::new(buf);
+            let read_val = read_u64(&mut cursor).await.unwrap();
+            assert_eq!(read_val, val);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_read_bytes_round_trip() {
+        let cases: Vec<&[u8]> = vec![b"", b"a", b"hello", b"12345678", b"\x00\xff\x00"];
+        for data in cases {
+            let mut buf = Vec::new();
+            write_bytes(&mut buf, data).await.unwrap();
+            assert_eq!(buf.len() % 8, 0, "output must be 8-byte aligned");
+            let mut cursor = Cursor::new(buf);
+            let result = read_bytes(&mut cursor).await.unwrap();
+            assert_eq!(result, data);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_read_string_round_trip() {
+        let cases = ["", "hello", "nix/store/path", "utf-8: 日本語"];
+        for s in cases {
+            let mut buf = Vec::new();
+            write_string(&mut buf, s).await.unwrap();
+            let mut cursor = Cursor::new(buf);
+            let result = read_string(&mut cursor).await.unwrap();
+            assert_eq!(result, s);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_read_bool_round_trip() {
+        for val in [true, false] {
+            let mut buf = Vec::new();
+            write_bool(&mut buf, val).await.unwrap();
+            let mut cursor = Cursor::new(buf);
+            let read_val = read_u64(&mut cursor).await.unwrap();
+            assert_eq!(read_val != 0, val);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_string_list_round_trip() {
+        let list = vec!["foo".to_string(), "bar".to_string(), "baz".to_string()];
+        let mut buf = Vec::new();
+        write_string_list(&mut buf, &list).await.unwrap();
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let count = wire::read_u64(&mut cursor).unwrap() as usize;
+        assert_eq!(count, 3);
+        for expected in &list {
+            let s = wire::read_string(&mut cursor).unwrap();
+            assert_eq!(&s, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_string_list_empty() {
+        let list: Vec<String> = vec![];
+        let mut buf = Vec::new();
+        write_string_list(&mut buf, &list).await.unwrap();
+        assert_eq!(buf.len(), 8); // just the count
+        let mut cursor = Cursor::new(buf.as_slice());
+        let count = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ── Stderr protocol tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn stderr_last_writes_correct_marker() {
+        let mut buf = Vec::new();
+        write_stderr_last(&mut buf).await.unwrap();
+        let mut cursor = Cursor::new(buf.as_slice());
+        let val = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(val, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn stderr_error_writes_correct_frame() {
+        let mut buf = Vec::new();
+        write_stderr_error(&mut buf, "test error message").await.unwrap();
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let msg_type = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(msg_type, StderrMsg::Error as u64);
+        let error_type = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(error_type, "Error");
+        let error_msg = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(error_msg, "test error message");
+        let error_num = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(error_num, 0);
+    }
+
     // ── Full data flow: IsValidPath true → response bytes contain true ──
 
     #[tokio::test]
