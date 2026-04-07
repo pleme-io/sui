@@ -742,6 +742,57 @@ impl Value {
     }
 }
 
+// ── Conversions from foreign value types ────────────────────
+
+impl From<&serde_json::Value> for Value {
+    fn from(json: &serde_json::Value) -> Self {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(s) => Value::string(s.clone()),
+            serde_json::Value::Array(arr) => {
+                Value::List(arr.iter().map(Value::from).collect())
+            }
+            serde_json::Value::Object(obj) => {
+                let mut attrs = NixAttrs::new();
+                for (k, v) in obj {
+                    attrs.insert(k.clone(), Value::from(v));
+                }
+                Value::Attrs(attrs)
+            }
+        }
+    }
+}
+
+impl From<&toml::Value> for Value {
+    fn from(v: &toml::Value) -> Self {
+        match v {
+            toml::Value::String(s) => Value::string(s.clone()),
+            toml::Value::Integer(n) => Value::Int(*n),
+            toml::Value::Float(f) => Value::Float(*f),
+            toml::Value::Boolean(b) => Value::Bool(*b),
+            toml::Value::Array(arr) => {
+                Value::List(arr.iter().map(Value::from).collect())
+            }
+            toml::Value::Table(t) => {
+                let mut attrs = NixAttrs::new();
+                for (k, val) in t {
+                    attrs.insert(k.clone(), Value::from(val));
+                }
+                Value::Attrs(attrs)
+            }
+            toml::Value::Datetime(dt) => Value::string(dt.to_string()),
+        }
+    }
+}
+
 impl Default for Value {
     fn default() -> Self {
         Value::Null

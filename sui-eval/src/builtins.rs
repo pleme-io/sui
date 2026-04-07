@@ -2101,28 +2101,7 @@ fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
 }
 
 fn json_to_value(json: &serde_json::Value) -> Value {
-    match json {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => Value::string(s.clone()),
-        serde_json::Value::Array(arr) => {
-            Value::List(arr.iter().map(json_to_value).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            let mut attrs = NixAttrs::new();
-            for (k, v) in obj {
-                attrs.insert(k.clone(), json_to_value(v));
-            }
-            Value::Attrs(attrs)
-        }
-    }
+    Value::from(json)
 }
 
 fn current_system() -> &'static str {
@@ -2214,23 +2193,7 @@ fn parse_drv_name(s: &str) -> (String, String) {
 
 /// Convert a TOML value to a Nix value.
 fn toml_to_value(v: &toml::Value) -> Value {
-    match v {
-        toml::Value::String(s) => Value::string(s.clone()),
-        toml::Value::Integer(n) => Value::Int(*n),
-        toml::Value::Float(f) => Value::Float(*f),
-        toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Array(arr) => {
-            Value::List(arr.iter().map(toml_to_value).collect())
-        }
-        toml::Value::Table(t) => {
-            let mut attrs = NixAttrs::new();
-            for (k, val) in t {
-                attrs.insert(k.clone(), toml_to_value(val));
-            }
-            Value::Attrs(attrs)
-        }
-        toml::Value::Datetime(dt) => Value::string(dt.to_string()),
-    }
+    Value::from(v)
 }
 
 /// Split a version string on `.` / `-` separators and on boundaries
