@@ -26,6 +26,7 @@ pub enum WireError {
 
 /// Worker protocol operation codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 #[repr(u64)]
 pub enum WorkerOp {
     IsValidPath = 1,
@@ -134,6 +135,7 @@ impl TryFrom<u64> for WorkerOp {
 
 /// Stderr message types sent by the daemon during operation processing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 #[repr(u64)]
 pub enum StderrMsg {
     /// Write a string to stderr.

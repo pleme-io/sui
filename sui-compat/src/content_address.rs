@@ -17,6 +17,7 @@ pub enum ContentAddressError {
 
 /// Content-addressing method.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ContentAddressMethod {
     /// Text content (for derivation files and string-to-store).
     /// Format: `text:<algo>:<hash>`

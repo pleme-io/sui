@@ -12,6 +12,7 @@ pub enum HashError {
 
 /// Hash algorithms supported by Nix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum HashAlgorithm {
     Sha256,
     Sha512,
