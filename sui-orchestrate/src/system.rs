@@ -5,6 +5,7 @@ use crate::command::{CommandRunner, TokioCommandRunner};
 /// Rebuild action type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum RebuildAction {
     /// Build and activate immediately.
     Switch,
@@ -18,6 +19,7 @@ pub enum RebuildAction {
 
 impl RebuildAction {
     /// Returns the string representation used in CLI arguments.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Switch => "switch",
@@ -72,6 +74,7 @@ pub enum Platform {
 
 impl Platform {
     /// Detect the current platform.
+    #[must_use]
     pub fn detect() -> Option<Self> {
         if cfg!(target_os = "macos") {
             Some(Self::Darwin)
@@ -83,6 +86,7 @@ impl Platform {
     }
 
     /// Returns the platform-specific rebuild command name.
+    #[must_use]
     pub fn rebuild_command(&self) -> &'static str {
         match self {
             Self::Darwin => "darwin-rebuild",
@@ -120,6 +124,7 @@ pub struct SystemOrchestrator {
 
 /// Errors from system operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SystemError {
     #[error("unsupported platform")]
     UnsupportedPlatform,
@@ -144,6 +149,7 @@ impl SystemOrchestrator {
     }
 
     /// Create with an explicit platform.
+    #[must_use]
     pub fn with_platform(platform: Platform) -> Self {
         Self {
             platform,
@@ -152,11 +158,13 @@ impl SystemOrchestrator {
     }
 
     /// Create with an explicit platform and command runner.
+    #[must_use]
     pub fn with_runner(platform: Platform, runner: Box<dyn CommandRunner>) -> Self {
         Self { platform, runner }
     }
 
     /// Returns the detected platform.
+    #[must_use]
     pub fn platform(&self) -> Platform {
         self.platform
     }

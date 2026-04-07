@@ -10,6 +10,7 @@ use crate::node::{Node, NodeRegistry, NodeStatus};
 /// Deploy strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum DeployStrategy {
     /// Deploy to all nodes simultaneously.
     Parallel,
@@ -82,6 +83,7 @@ pub struct FleetOrchestrator {
 
 /// Fleet errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FleetError {
     #[error("no nodes match target: {0}")]
     NoNodes(String),
@@ -95,6 +97,7 @@ pub enum FleetError {
 
 impl FleetOrchestrator {
     /// Create a new fleet orchestrator with the default command runner.
+    #[must_use]
     pub fn new(registry: NodeRegistry) -> Self {
         Self {
             registry,
@@ -103,6 +106,7 @@ impl FleetOrchestrator {
     }
 
     /// Create with a custom command runner for testing.
+    #[must_use]
     pub fn with_runner(registry: NodeRegistry, runner: Box<dyn CommandRunner>) -> Self {
         Self {
             registry,
@@ -111,11 +115,13 @@ impl FleetOrchestrator {
     }
 
     /// Returns a reference to the node registry.
+    #[must_use]
     pub fn registry(&self) -> &NodeRegistry {
         &self.registry
     }
 
     /// Returns a mutable reference to the node registry.
+    #[must_use]
     pub fn registry_mut(&mut self) -> &mut NodeRegistry {
         &mut self.registry
     }

@@ -23,6 +23,7 @@ pub enum NodeError {
 /// Status of a fleet node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum NodeStatus {
     Online,
     Offline,
@@ -81,6 +82,7 @@ pub struct Node {
 
 impl Node {
     /// Create a new node with the given hostname and flake reference.
+    #[must_use]
     pub fn new(hostname: &str, flake_ref: &str) -> Self {
         Self {
             hostname: hostname.to_string(),
@@ -95,24 +97,28 @@ impl Node {
     }
 
     /// Set the SSH target for remote deployments.
+    #[must_use]
     pub fn with_ssh(mut self, target: &str) -> Self {
         self.ssh_target = Some(target.to_string());
         self
     }
 
     /// Set the groups this node belongs to.
+    #[must_use]
     pub fn with_groups(mut self, groups: Vec<String>) -> Self {
         self.groups = groups;
         self
     }
 
     /// Set the Nix system string (e.g. `x86_64-linux`).
+    #[must_use]
     pub fn with_system(mut self, system: &str) -> Self {
         self.system = Some(system.to_string());
         self
     }
 
     /// The SSH target for deployment (user@host or just host).
+    #[must_use]
     pub fn deploy_target(&self) -> &str {
         self.ssh_target.as_deref().unwrap_or(&self.hostname)
     }
@@ -132,6 +138,7 @@ impl Default for NodeRegistry {
 
 impl NodeRegistry {
     /// Create an empty node registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
@@ -207,11 +214,13 @@ impl NodeRegistry {
     }
 
     /// Returns the number of nodes in the registry.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns `true` if the registry contains no nodes.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -236,6 +245,7 @@ impl NodeRegistry {
     }
 
     /// Count nodes by status.
+    #[must_use]
     pub fn status_counts(&self) -> StatusCounts {
         let mut counts = StatusCounts::default();
         for node in self.nodes.values() {

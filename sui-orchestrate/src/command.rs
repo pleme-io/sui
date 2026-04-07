@@ -28,6 +28,7 @@ impl CommandOutput {
 
 /// Command execution errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CommandError {
     /// The command could not be found.
     #[error("command not found: {0}")]
@@ -52,6 +53,7 @@ pub struct TokioCommandRunner;
 
 impl TokioCommandRunner {
     /// Create a new runner.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
