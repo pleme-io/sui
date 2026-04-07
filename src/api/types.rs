@@ -200,9 +200,11 @@ pub struct SearchQuery {
     pub flake_ref: String,
 }
 
-/// Returns `"nixpkgs"` as the default flake reference for search queries.
+/// Default flake reference for search queries.
+const DEFAULT_FLAKE_REF: &str = "nixpkgs";
+
 fn default_flake_ref() -> String {
-    "nixpkgs".to_string()
+    DEFAULT_FLAKE_REF.to_string()
 }
 
 // ── Build ───────────────────────────────────────────────────
@@ -469,6 +471,9 @@ pub struct CacheSignRequest {
 
 // ── Pagination ──────────────────────────────────────────────
 
+/// Default page size for paginated endpoints.
+const DEFAULT_PAGE_LIMIT: i64 = 100;
+
 /// Common pagination query parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationQuery {
@@ -478,9 +483,17 @@ pub struct PaginationQuery {
     pub offset: i64,
 }
 
-/// Returns `100` as the default pagination limit.
+impl Default for PaginationQuery {
+    fn default() -> Self {
+        Self {
+            limit: DEFAULT_PAGE_LIMIT,
+            offset: 0,
+        }
+    }
+}
+
 fn default_limit() -> i64 {
-    100
+    DEFAULT_PAGE_LIMIT
 }
 
 // ── Subscription Events ─────────────────────────────────────
