@@ -195,51 +195,49 @@ impl Derivation {
         let mut out = String::from("Derive(");
 
         out.push('[');
-        for (i, (name, o)) in self.outputs.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push_str(&format!("({},{},{},{})", escape(name), escape(&o.path), escape(&o.hash_algo), escape(&o.hash)));
-        }
+        out.push_str(&join_comma(self.outputs.iter().map(|(name, o)| {
+            format!("({},{},{},{})", escape(name), escape(&o.path), escape(&o.hash_algo), escape(&o.hash))
+        })));
         out.push_str("],");
 
         out.push('[');
-        for (i, (path, outputs)) in self.input_derivations.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push('(');
-            out.push_str(&escape(path));
-            out.push_str(",[");
-            for (j, o) in outputs.iter().enumerate() {
-                if j > 0 { out.push(','); }
-                out.push_str(&escape(o));
-            }
-            out.push_str("])");
-        }
+        out.push_str(&join_comma(self.input_derivations.iter().map(|(path, outputs)| {
+            let outs = join_comma(outputs.iter().map(|o| escape(o)));
+            format!("({},[{outs}])", escape(path))
+        })));
         out.push_str("],");
 
-        out.push('[');
-        let mut sources = self.input_sources.clone();
+        let mut sources: Vec<_> = self.input_sources.iter().collect();
         sources.sort();
-        for (i, s) in sources.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push_str(&escape(s));
-        }
+        out.push('[');
+        out.push_str(&join_comma(sources.iter().map(|s| escape(s))));
         out.push_str("],");
 
         out.push_str(&escape(&self.system));
         out.push(',');
         out.push_str(&escape(&self.builder));
+
         out.push_str(",[");
-        for (i, a) in self.args.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push_str(&escape(a));
-        }
+        out.push_str(&join_comma(self.args.iter().map(|a| escape(a))));
         out.push_str("],[");
-        for (i, (k, v)) in self.env.iter().enumerate() {
-            if i > 0 { out.push(','); }
-            out.push_str(&format!("({},{})", escape(k), escape(v)));
-        }
+        out.push_str(&join_comma(self.env.iter().map(|(k, v)| {
+            format!("({},{})", escape(k), escape(v))
+        })));
         out.push_str("])");
         out
     }
+}
+
+/// Join an iterator of string fragments with commas.
+fn join_comma(items: impl Iterator<Item = String>) -> String {
+    let mut out = String::new();
+    for (i, item) in items.enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&item);
+    }
+    out
 }
 
 /// Escape a string for ATerm serialization (backslash-escaping special chars).
