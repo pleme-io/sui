@@ -295,7 +295,7 @@ impl SystemOrchestrator {
 }
 
 /// Information about a single system generation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GenerationInfo {
     /// The generation number.
     pub number: i64,

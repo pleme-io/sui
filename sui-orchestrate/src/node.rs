@@ -66,7 +66,7 @@ impl std::str::FromStr for NodeStatus {
 }
 
 /// A fleet node definition.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     /// The hostname used to identify this node.
     pub hostname: String,
