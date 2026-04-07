@@ -129,19 +129,11 @@ async fn compute_closure(Json(req): Json<ClosureRequest>) -> Json<Vec<String>> {
 
 async fn collect_garbage(body: Option<Json<GcRequest>>) -> Json<GcResult> {
     let _ = body;
-    Json(GcResult {
-        paths_deleted: 0,
-        bytes_freed: 0,
-    })
+    Json(GcResult::default())
 }
 
 async fn verify_store() -> Json<VerifyResult> {
-    Json(VerifyResult {
-        valid: 0,
-        invalid: 0,
-        missing: 0,
-        errors: vec![],
-    })
+    Json(VerifyResult::default())
 }
 
 async fn add_to_store(body: axum::body::Bytes) -> (StatusCode, Json<PathInfoResponse>) {
@@ -205,17 +197,7 @@ async fn search_packages(Query(query): Query<SearchQuery>) -> Json<Vec<SearchRes
 
 async fn build_derivation(Json(req): Json<BuildRequest>) -> (StatusCode, Json<BuildStatus>) {
     let _ = req;
-    (
-        StatusCode::ACCEPTED,
-        Json(BuildStatus {
-            id: "build-stub-0001".to_string(),
-            state: "pending".to_string(),
-            output_paths: None,
-            started_at: None,
-            completed_at: None,
-            log_lines: vec![],
-        }),
-    )
+    (StatusCode::ACCEPTED, Json(BuildStatus::pending_stub()))
 }
 
 async fn get_build_status(Path(build_id): Path<String>) -> Json<BuildStatus> {

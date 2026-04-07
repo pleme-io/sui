@@ -57,6 +57,15 @@ pub struct GcResult {
     pub bytes_freed: i64,
 }
 
+impl Default for GcResult {
+    fn default() -> Self {
+        Self {
+            paths_deleted: 0,
+            bytes_freed: 0,
+        }
+    }
+}
+
 /// Store verification result.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
 pub struct VerifyResult {
@@ -64,6 +73,17 @@ pub struct VerifyResult {
     pub invalid: i64,
     pub missing: i64,
     pub errors: Vec<String>,
+}
+
+impl Default for VerifyResult {
+    fn default() -> Self {
+        Self {
+            valid: 0,
+            invalid: 0,
+            missing: 0,
+            errors: vec![],
+        }
+    }
 }
 
 /// Closure request.
@@ -191,6 +211,21 @@ pub struct BuildStatus {
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
     pub log_lines: Vec<String>,
+}
+
+impl BuildStatus {
+    /// A pending build stub (used before real build engine integration).
+    #[must_use]
+    pub fn pending_stub() -> Self {
+        Self {
+            id: "build-stub-0001".to_string(),
+            state: "pending".to_string(),
+            output_paths: None,
+            started_at: None,
+            completed_at: None,
+            log_lines: vec![],
+        }
+    }
 }
 
 /// Build log query parameters.

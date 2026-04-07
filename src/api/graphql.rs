@@ -200,20 +200,12 @@ impl MutationRoot {
         request: Option<GcRequest>,
     ) -> GcResult {
         let _ = request;
-        GcResult {
-            paths_deleted: 0,
-            bytes_freed: 0,
-        }
+        GcResult::default()
     }
 
     /// Verify store integrity.
     async fn verify_store(&self, _ctx: &Context<'_>) -> VerifyResult {
-        VerifyResult {
-            valid: 0,
-            invalid: 0,
-            missing: 0,
-            errors: vec![],
-        }
+        VerifyResult::default()
     }
 
     // ── Eval ────────────────────────────────────────────
@@ -238,14 +230,7 @@ impl MutationRoot {
     /// Trigger a build.
     async fn build(&self, _ctx: &Context<'_>, request: BuildRequest) -> BuildStatus {
         let _ = request;
-        BuildStatus {
-            id: "build-stub-0001".to_string(),
-            state: "pending".to_string(),
-            output_paths: None,
-            started_at: None,
-            completed_at: None,
-            log_lines: vec![],
-        }
+        BuildStatus::pending_stub()
     }
 
     /// Cancel a running build.
