@@ -1174,4 +1174,237 @@ mod tests {
         let paths = wire::read_string_list(&mut cursor).unwrap();
         assert!(paths.is_empty());
     }
+
+    // ── Unimplemented WorkerOp coverage ─────────────────────────
+    //
+    // The daemon currently implements only a subset of opcodes; every other
+    // known opcode falls into the catch-all "not yet implemented" arm in
+    // dispatch.rs. These tests pin that behaviour for *every* unimplemented
+    // variant so that adding a real handler is an explicit, observable
+    // change (the test for that opcode will need updating).
+
+    /// Drive `Connection::run` with a single u64 opcode and verify that the
+    /// reply is the standard "not yet implemented" stderr-error frame
+    /// followed by `STDERR_LAST`.
+    async fn assert_op_unimplemented(op: WorkerOp) {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, op as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.expect("dispatch should not fail");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let msg_type = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(
+            msg_type,
+            StderrMsg::Error as u64,
+            "op {op:?} should produce STDERR_ERROR"
+        );
+        let error_type = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(error_type, "Error");
+        let msg = wire::read_string(&mut cursor).unwrap();
+        assert!(
+            msg.contains("not yet implemented"),
+            "op {op:?} message should mention not implemented, got {msg:?}"
+        );
+        let err_num = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(err_num, 0);
+        let last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn unimpl_has_substitutes() {
+        assert_op_unimplemented(WorkerOp::HasSubstitutes).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_path_hash() {
+        assert_op_unimplemented(WorkerOp::QueryPathHash).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_references() {
+        assert_op_unimplemented(WorkerOp::QueryReferences).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_referrers() {
+        assert_op_unimplemented(WorkerOp::QueryReferrers).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_to_store() {
+        assert_op_unimplemented(WorkerOp::AddToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_text_to_store() {
+        assert_op_unimplemented(WorkerOp::AddTextToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_build_paths() {
+        assert_op_unimplemented(WorkerOp::BuildPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_ensure_path() {
+        assert_op_unimplemented(WorkerOp::EnsurePath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_temp_root() {
+        assert_op_unimplemented(WorkerOp::AddTempRoot).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_indirect_root() {
+        assert_op_unimplemented(WorkerOp::AddIndirectRoot).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_sync_with_gc() {
+        assert_op_unimplemented(WorkerOp::SyncWithGC).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_find_roots() {
+        assert_op_unimplemented(WorkerOp::FindRoots).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_export_path() {
+        assert_op_unimplemented(WorkerOp::ExportPath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_deriver() {
+        assert_op_unimplemented(WorkerOp::QueryDeriver).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_collect_garbage() {
+        assert_op_unimplemented(WorkerOp::CollectGarbage).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_path_info() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfo).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_outputs() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputs).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_failed_paths() {
+        assert_op_unimplemented(WorkerOp::QueryFailedPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_clear_failed_paths() {
+        assert_op_unimplemented(WorkerOp::ClearFailedPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_import_paths() {
+        assert_op_unimplemented(WorkerOp::ImportPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_output_names() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputNames).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_path_from_hash_part() {
+        assert_op_unimplemented(WorkerOp::QueryPathFromHashPart).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_path_infos() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfos).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_valid_paths() {
+        assert_op_unimplemented(WorkerOp::QueryValidPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_paths() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_valid_derivers() {
+        assert_op_unimplemented(WorkerOp::QueryValidDerivers).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_optimise_store() {
+        assert_op_unimplemented(WorkerOp::OptimiseStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_verify_store() {
+        assert_op_unimplemented(WorkerOp::VerifyStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_build_derivation() {
+        assert_op_unimplemented(WorkerOp::BuildDerivation).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_signatures() {
+        assert_op_unimplemented(WorkerOp::AddSignatures).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_nar_from_path() {
+        assert_op_unimplemented(WorkerOp::NarFromPath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_to_store_nar() {
+        assert_op_unimplemented(WorkerOp::AddToStoreNar).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_missing() {
+        assert_op_unimplemented(WorkerOp::QueryMissing).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_output_map() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputMap).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_register_drv_output() {
+        assert_op_unimplemented(WorkerOp::RegisterDrvOutput).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_realisation() {
+        assert_op_unimplemented(WorkerOp::QueryRealisation).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_multiple_to_store() {
+        assert_op_unimplemented(WorkerOp::AddMultipleToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_build_log() {
+        assert_op_unimplemented(WorkerOp::AddBuildLog).await;
+    }
 }
