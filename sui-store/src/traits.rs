@@ -117,6 +117,22 @@ pub struct GcOptions {
     pub delete_older_than: Option<u64>,
 }
 
+impl GcOptions {
+    /// Set the maximum number of bytes to free.
+    #[must_use]
+    pub fn with_max_freed(mut self, bytes: u64) -> Self {
+        self.max_freed = bytes;
+        self
+    }
+
+    /// Delete store paths older than the given number of seconds.
+    #[must_use]
+    pub fn with_delete_older_than(mut self, seconds: u64) -> Self {
+        self.delete_older_than = Some(seconds);
+        self
+    }
+}
+
 /// Garbage collection result.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
