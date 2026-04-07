@@ -179,13 +179,6 @@ async fn eval_expression(Json(req): Json<EvalRequest>) -> Json<EvalResult> {
     }
 }
 
-/// Query parameters for flake evaluation.
-#[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)]
-struct FlakeEvalQuery {
-    attribute: Option<String>,
-}
-
 async fn eval_flake(
     Path(flake_ref): Path<String>,
     Query(query): Query<FlakeEvalQuery>,

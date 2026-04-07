@@ -114,6 +114,13 @@ pub struct SearchResult {
     pub description: Option<String>,
 }
 
+/// Query parameters for flake evaluation endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlakeEvalQuery {
+    /// Attribute path within the flake to evaluate.
+    pub attribute: Option<String>,
+}
+
 /// Search query parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
