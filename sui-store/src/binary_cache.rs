@@ -510,6 +510,233 @@ Sig: cache.nixos.org-1:sig==
         assert!(data.is_empty());
     }
 
+    // ── fetch_narinfo edge cases ──────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_unknown_fields_ignored() {
+        let narinfo_with_extra = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References: 3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8
+Deriver: abc.drv
+Sig: cache.nixos.org-1:sig==
+FutureField: should-be-ignored
+AnotherUnknown: 42
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_with_extra.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let narinfo = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap();
+        assert!(narinfo.is_some());
+        assert_eq!(narinfo.unwrap().nar_size, 5000);
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_malformed_body_returns_error() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 200,
+                body: "this is not valid narinfo content at all".to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let result = store
+            .fetch_narinfo("abc00000000000000000000000000000")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_missing_required_field() {
+        let incomplete_narinfo = "\
+StorePath: /nix/store/abc-hello
+Compression: xz
+NarHash: sha256:bbb
+NarSize: 5000
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 200,
+                body: incomplete_narinfo.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let result = store
+            .fetch_narinfo("abc00000000000000000000000000000")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_whitespace_in_body() {
+        let narinfo_with_whitespace = "\
+  StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+  URL: nar/abc.nar.xz
+  Compression: xz
+  FileHash: sha256:aaa
+  FileSize: 1000
+  NarHash: sha256:bbb
+  NarSize: 5000
+  References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_with_whitespace.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let narinfo = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap();
+        assert!(narinfo.is_some());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_http_client_error() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let result = store
+            .fetch_narinfo("nonexistent0000000000000000000000")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_302_redirect_returns_error() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 302,
+                body: String::new(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let result = store
+            .fetch_narinfo("abc00000000000000000000000000000")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_no_signatures() {
+        let narinfo_no_sigs = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_no_sigs.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let narinfo = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(narinfo.signatures.is_empty());
+        assert!(narinfo.references.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_multiple_signatures() {
+        let narinfo_multi_sigs = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+Sig: key1:aaa==
+Sig: key2:bbb==
+Sig: key3:ccc==
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_multi_sigs.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let narinfo = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(narinfo.signatures.len(), 3);
+        assert_eq!(narinfo.signatures[0], "key1:aaa==");
+        assert_eq!(narinfo.signatures[2], "key3:ccc==");
+    }
+
     // ── Store trait with dyn Store (Arc<dyn Store> pattern) ──
 
     #[tokio::test]
