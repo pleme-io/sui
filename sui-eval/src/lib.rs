@@ -7,8 +7,12 @@
 
 /// Core Nix builtins (90+ functions).
 pub mod builtins;
+/// MVP delegation to the real `nix` binary for complex evaluation.
+pub mod delegate;
 /// Tree-walking evaluator using rnix's typed AST.
 pub mod eval;
+/// Content-addressed input fetcher for flake.lock resolved inputs.
+pub mod fetcher;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 
