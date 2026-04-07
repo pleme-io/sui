@@ -1373,4 +1373,142 @@ mod tests {
         let host = gethostname().unwrap();
         assert!(is_local_hostname(&host));
     }
+
+    // ── is_local_hostname empty string is not local ───────────
+
+    #[test]
+    fn is_local_hostname_empty_string() {
+        assert!(!is_local_hostname(""));
+    }
+
+    // ── Custom DeployExecutor proves the trait extensibility ──
+
+    /// Always returns a synthetic "skipped" record for every node,
+    /// without invoking the runner. Demonstrates that callers can
+    /// supply arbitrary deployment patterns by implementing
+    /// [`DeployExecutor`].
+    struct SkipExecutor;
+
+    #[async_trait::async_trait]
+    impl DeployExecutor for SkipExecutor {
+        async fn execute(
+            &self,
+            nodes: &[Node],
+            _flake_override: Option<&str>,
+            _runner: &Arc<dyn CommandRunner>,
+        ) -> Result<Vec<NodeDeployResult>, FleetError> {
+            Ok(nodes
+                .iter()
+                .map(|n| NodeDeployResult {
+                    hostname: n.hostname.clone(),
+                    success: true,
+                    log: format!("skipped {}", n.hostname),
+                    duration_secs: 0.0,
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_with_custom_executor_via_trait() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let executor = SkipExecutor;
+        let result = orch
+            .deploy_with_executor("@all", &executor, None)
+            .await
+            .unwrap();
+        assert_eq!(result.total_nodes, 3);
+        assert_eq!(result.succeeded, 3);
+        assert_eq!(result.strategy, "custom");
+        for r in &result.results {
+            assert!(r.log.contains("skipped"));
+        }
+    }
+
+    /// Always rejects with a typed error. Used to test error propagation
+    /// from a custom executor through deploy_with_executor.
+    struct AlwaysRejectExecutor;
+
+    #[async_trait::async_trait]
+    impl DeployExecutor for AlwaysRejectExecutor {
+        async fn execute(
+            &self,
+            _nodes: &[Node],
+            _flake_override: Option<&str>,
+            _runner: &Arc<dyn CommandRunner>,
+        ) -> Result<Vec<NodeDeployResult>, FleetError> {
+            Err(FleetError::CanaryFailed)
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_with_custom_executor_error_bubbles_up() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy_with_executor("@prod", &AlwaysRejectExecutor, None)
+            .await;
+        match result {
+            Err(FleetError::CanaryFailed) => {}
+            other => panic!("expected CanaryFailed, got {other:?}"),
+        }
+    }
+
+    // ── last_deployed must not be set on failure ──────────────
+
+    #[tokio::test]
+    async fn deploy_failure_does_not_set_last_deployed() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        let alpha = orch.registry().get("alpha").unwrap();
+        assert_eq!(alpha.status, NodeStatus::Failed);
+        assert!(alpha.last_deployed.is_none());
+    }
+
+    // ── last_deployed is set on success ───────────────────────
+
+    #[tokio::test]
+    async fn deploy_success_sets_last_deployed_timestamp() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let before = chrono::Utc::now().timestamp();
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        let after = chrono::Utc::now().timestamp();
+        let alpha = orch.registry().get("alpha").unwrap();
+        let ts = alpha.last_deployed.expect("timestamp set on success");
+        assert!(ts >= before);
+        assert!(ts <= after);
+    }
+
+    // ── Node::deploy_target falls back to hostname when ssh unset ─
+
+    #[test]
+    fn deploy_target_falls_back_to_hostname() {
+        let node = Node::new("solo", ".#solo");
+        assert_eq!(node.deploy_target(), "solo");
+    }
+
+    #[test]
+    fn deploy_target_uses_ssh_when_set() {
+        let node = Node::new("solo", ".#solo").with_ssh("user@host.example.com");
+        assert_eq!(node.deploy_target(), "user@host.example.com");
+    }
 }
