@@ -179,10 +179,11 @@ impl BinaryCacheStore {
 impl Store for BinaryCacheStore {
     async fn query_path_info(&self, path: &StorePath) -> StoreResult<Option<PathInfo>> {
         let hash = Self::store_path_hash(path);
-        match self.fetch_narinfo(&hash).await? {
-            Some(info) => Ok(Some(Self::narinfo_to_path_info(&info))),
-            None => Ok(None),
-        }
+        Ok(self
+            .fetch_narinfo(&hash)
+            .await?
+            .as_ref()
+            .map(PathInfo::from))
     }
 
     async fn is_valid_path(&self, path: &StorePath) -> StoreResult<bool> {
