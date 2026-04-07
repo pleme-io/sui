@@ -704,4 +704,154 @@ mod tests {
         };
         assert!(sandbox.cleanup(&config).is_ok());
     }
+
+    // ── MockSandbox ──────────────────────────────────────────
+
+    struct MockSandbox {
+        exit_code: i32,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    }
+
+    impl MockSandbox {
+        fn success() -> Self {
+            Self {
+                exit_code: 0,
+                stdout: b"mock success".to_vec(),
+                stderr: Vec::new(),
+            }
+        }
+
+        fn failure(exit_code: i32, stderr: &str) -> Self {
+            Self {
+                exit_code,
+                stdout: Vec::new(),
+                stderr: stderr.as_bytes().to_vec(),
+            }
+        }
+    }
+
+    impl Sandbox for MockSandbox {
+        fn prepare(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
+            Ok(())
+        }
+
+        fn execute(&self, _config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+            Ok(SandboxResult {
+                exit_code: self.exit_code,
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+            })
+        }
+
+        fn cleanup(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn mock_sandbox_success() {
+        let sandbox = MockSandbox::success();
+        let config = SandboxConfig::default().with_builder("/bin/true");
+        let result = sandbox.execute(&config).unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.stdout_lossy(), "mock success");
+    }
+
+    #[test]
+    fn mock_sandbox_failure() {
+        let sandbox = MockSandbox::failure(1, "build failed");
+        let config = SandboxConfig::default().with_builder("/bin/false");
+        let result = sandbox.execute(&config).unwrap();
+        assert!(!result.is_success());
+        assert_eq!(result.stderr_lossy(), "build failed");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn mock_sandbox_is_object_safe() {
+        fn assert_obj(_: &dyn Sandbox) {}
+        assert_obj(&MockSandbox::success());
+    }
+
+    // ── SandboxConfig builder pattern tests ─────────────────
+
+    #[test]
+    fn sandbox_config_builder_pattern() {
+        let config = SandboxConfig::default()
+            .with_builder("/bin/sh")
+            .with_build_dir("/tmp/build")
+            .with_args(vec!["-c".to_string(), "echo hi".to_string()])
+            .with_network(true)
+            .with_env("HOME", "/homeless-shelter");
+
+        assert_eq!(config.builder, "/bin/sh");
+        assert_eq!(config.build_dir, "/tmp/build");
+        assert_eq!(config.args, vec!["-c", "echo hi"]);
+        assert!(config.allow_network);
+        assert_eq!(config.env, vec![("HOME".to_string(), "/homeless-shelter".to_string())]);
+    }
+
+    #[test]
+    fn sandbox_config_default_values() {
+        let config = SandboxConfig::default();
+        assert!(config.input_paths.is_empty());
+        assert!(config.build_dir.is_empty());
+        assert!(config.output_paths.is_empty());
+        assert!(!config.allow_network);
+        assert!(config.builder.is_empty());
+        assert!(config.args.is_empty());
+        assert!(config.env.is_empty());
+    }
+
+    #[test]
+    fn sandbox_config_eq() {
+        let a = SandboxConfig::default().with_builder("/bin/sh");
+        let b = SandboxConfig::default().with_builder("/bin/sh");
+        assert_eq!(a, b);
+    }
+
+    // ── SandboxResult convenience methods ───────────────────
+
+    #[test]
+    fn sandbox_result_is_success() {
+        let result = SandboxResult {
+            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(result.is_success());
+    }
+
+    #[test]
+    fn sandbox_result_is_not_success() {
+        let result = SandboxResult {
+            exit_code: 1,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(!result.is_success());
+    }
+
+    #[test]
+    fn sandbox_result_lossy_decoders() {
+        let result = SandboxResult {
+            exit_code: 0,
+            stdout: b"hello stdout".to_vec(),
+            stderr: b"hello stderr".to_vec(),
+        };
+        assert_eq!(result.stdout_lossy(), "hello stdout");
+        assert_eq!(result.stderr_lossy(), "hello stderr");
+    }
+
+    #[test]
+    fn sandbox_result_clone_eq() {
+        let a = SandboxResult {
+            exit_code: 0,
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
 }
