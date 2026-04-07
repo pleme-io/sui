@@ -673,5 +673,113 @@ mod tests {
         let builder = MockBuilder;
         let result = builder.build(&drv).await.unwrap();
         assert!(!result.success);
+        assert!(result.outcome.is_failure());
+    }
+
+    // ── BuildOutcome tests ──────────────────────────────────
+
+    #[test]
+    fn build_outcome_success_display() {
+        assert_eq!(BuildOutcome::Success.to_string(), "success");
+    }
+
+    #[test]
+    fn build_outcome_failure_display() {
+        let outcome = BuildOutcome::Failure {
+            stderr: "err".to_string(),
+            exit_code: 42,
+        };
+        assert_eq!(outcome.to_string(), "failure (exit code 42)");
+    }
+
+    #[test]
+    fn build_outcome_cancelled_display() {
+        assert_eq!(BuildOutcome::Cancelled.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn build_outcome_is_success() {
+        assert!(BuildOutcome::Success.is_success());
+        assert!(!BuildOutcome::Cancelled.is_success());
+        assert!(!BuildOutcome::Failure {
+            stderr: String::new(),
+            exit_code: 1
+        }
+        .is_success());
+    }
+
+    #[test]
+    fn build_outcome_is_failure() {
+        assert!(!BuildOutcome::Success.is_failure());
+        assert!(!BuildOutcome::Cancelled.is_failure());
+        assert!(BuildOutcome::Failure {
+            stderr: String::new(),
+            exit_code: 1
+        }
+        .is_failure());
+    }
+
+    #[test]
+    fn build_outcome_clone_eq() {
+        let a = BuildOutcome::Failure {
+            stderr: "err".to_string(),
+            exit_code: 2,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    // ── BuildState FromStr round-trip tests ─────────────────
+
+    #[test]
+    fn build_state_fromstr_pending() {
+        let state: BuildState = "pending".parse().unwrap();
+        assert_eq!(state, BuildState::Pending);
+        assert_eq!(state.to_string(), "pending");
+    }
+
+    #[test]
+    fn build_state_fromstr_building() {
+        let state: BuildState = "building".parse().unwrap();
+        assert_eq!(state, BuildState::Building);
+    }
+
+    #[test]
+    fn build_state_fromstr_succeeded() {
+        let state: BuildState = "succeeded".parse().unwrap();
+        assert_eq!(state, BuildState::Succeeded);
+    }
+
+    #[test]
+    fn build_state_fromstr_failed_with_reason() {
+        let state: BuildState = "failed: out of memory".parse().unwrap();
+        assert_eq!(state, BuildState::Failed("out of memory".to_string()));
+        assert_eq!(state.to_string(), "failed: out of memory");
+    }
+
+    #[test]
+    fn build_state_fromstr_failed_bare() {
+        let state: BuildState = "failed".parse().unwrap();
+        assert_eq!(state, BuildState::Failed(String::new()));
+    }
+
+    #[test]
+    fn build_state_fromstr_invalid() {
+        let result: Result<BuildState, _> = "unknown".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_state_display_fromstr_roundtrip() {
+        for state in [
+            BuildState::Pending,
+            BuildState::Building,
+            BuildState::Succeeded,
+            BuildState::Failed("oom".to_string()),
+        ] {
+            let s = state.to_string();
+            let parsed: BuildState = s.parse().unwrap();
+            assert_eq!(parsed, state);
+        }
     }
 }
