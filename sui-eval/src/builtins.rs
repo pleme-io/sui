@@ -703,6 +703,48 @@ pub fn register(env: &mut Env) {
             func: Arc::new(|args2| Ok(args2[0].clone())),
         }))
     });
+    // ── warn ──────────────────────────────────────────────
+    //
+    // `builtins.warn msg value` — like `trace`, but prints to stderr
+    // with an "evaluation warning:" prefix matching CppNix. Returns
+    // the second argument unchanged. The message must be a string;
+    // CppNix coerces with `toString` but throws on bool/null, so we
+    // accept any value `args[0].as_string()` accepts.
+    register_builtin(&mut builtins_set, "warn", |args| {
+        let msg = args[0].as_string()?.to_string();
+        eprintln!("evaluation warning: {msg}");
+        Ok(Value::Builtin(BuiltinFn {
+            name: "warn<partial>",
+            func: Arc::new(|args2| Ok(args2[0].clone())),
+        }))
+    });
+    // ── traceVerbose ──────────────────────────────────────
+    //
+    // `builtins.traceVerbose msg value` — like `trace`, but only
+    // emits when `--trace-verbose` is set in CppNix. We honour the
+    // `SUI_TRACE_VERBOSE=1` env var as the equivalent toggle so the
+    // builtin is observable from tests without changing CLI flags.
+    register_builtin(&mut builtins_set, "traceVerbose", |args| {
+        let msg = args[0].clone();
+        if std::env::var("SUI_TRACE_VERBOSE").ok().as_deref() == Some("1") {
+            eprintln!("trace: {msg}");
+        }
+        tracing::trace!("traceVerbose: {msg}");
+        Ok(Value::Builtin(BuiltinFn {
+            name: "traceVerbose<partial>",
+            func: Arc::new(|args2| Ok(args2[0].clone())),
+        }))
+    });
+    // ── break ─────────────────────────────────────────────
+    //
+    // `builtins.break value` — debugger breakpoint hook. CppNix
+    // drops into a REPL when run interactively and otherwise just
+    // returns the value. sui has no debugger yet, so we always
+    // return the value unchanged after logging it.
+    register_builtin(&mut builtins_set, "break", |args| {
+        tracing::debug!("break: {}", args[0]);
+        Ok(args[0].clone())
+    });
     register_builtin(&mut builtins_set, "functionArgs", |args| {
         match &args[0] {
             Value::Lambda(closure) => {
@@ -1608,6 +1650,17 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("nixVersion".to_string(), Value::string("sui-0.1.0"));
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
+
+    // ── builtins.builtins (self-reference) ───────────────
+    //
+    // CppNix exposes `builtins.builtins` so callers can introspect
+    // the full set with `builtins ? foo` style guards. We snapshot
+    // the current set (without the self-reference) so the embedded
+    // copy is finite and serialisable to JSON without infinite
+    // recursion. `builtins == builtins.builtins` is intentionally
+    // `false`, but `builtins.builtins ? foo == builtins ? foo`.
+    let builtins_snapshot = Value::Attrs(builtins_set.clone());
+    builtins_set.insert("builtins".to_string(), builtins_snapshot);
 
     env.bind("builtins".to_string(), Value::Attrs(builtins_set.clone()));
 
@@ -4272,5 +4325,98 @@ mod tests {
             ev(r#"builtins.replaceStrings ["x"] ["y"] "hello""#),
             Value::string("hello"),
         );
+    }
+
+    // ── warn ──────────────────────────────────────────────
+
+    #[test]
+    fn builtins_warn_returns_value() {
+        assert_eq!(ev(r#"builtins.warn "msg" 42"#), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_warn_passes_through_attrs() {
+        let v = ev(r#"builtins.warn "be careful" { a = 1; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_warn_non_string_message_errors() {
+        // CppNix accepts only strings as the message; sui mirrors via
+        // as_string() so passing a number is a type error.
+        let result = eval("builtins.warn 1 2");
+        assert!(result.is_err());
+    }
+
+    // ── traceVerbose ──────────────────────────────────────
+
+    #[test]
+    fn builtins_trace_verbose_returns_value() {
+        assert_eq!(ev(r#"builtins.traceVerbose "msg" 42"#), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_trace_verbose_with_attrs() {
+        let v = ev(r#"builtins.traceVerbose "x" { y = 7; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("y"), Some(&Value::Int(7)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_trace_verbose_with_list() {
+        assert_eq!(
+            ev(r#"builtins.traceVerbose "x" [1 2]"#),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+    }
+
+    // ── break ─────────────────────────────────────────────
+
+    #[test]
+    fn builtins_break_returns_int() {
+        assert_eq!(ev("builtins.break 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_break_returns_string() {
+        assert_eq!(ev(r#"builtins.break "x""#), Value::string("x"));
+    }
+
+    #[test]
+    fn builtins_break_returns_attrs() {
+        let v = ev(r#"builtins.break { a = 1; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── builtins.builtins self-reference ──────────────────
+
+    #[test]
+    fn builtins_self_reference_exists() {
+        assert_eq!(ev("builtins ? builtins"), Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_self_reference_has_length() {
+        // The snapshot must contain at least the type-check builtins.
+        let v = ev("builtins.builtins ? typeOf");
+        assert_eq!(v, Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_self_reference_does_not_loop() {
+        // Snapshot is taken before the self-insert, so the inner copy
+        // does not contain `builtins`. This guarantees finite output.
+        assert_eq!(ev("builtins.builtins ? builtins"), Value::Bool(false));
     }
 }

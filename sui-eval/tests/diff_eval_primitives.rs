@@ -403,3 +403,46 @@ fn diff_generic_closure() {
         ],
     );
 }
+
+// ── debugging / introspection builtins ──────────────────────────────
+
+#[test]
+fn diff_warn_passthrough() {
+    run_cases(
+        "warn_passthrough",
+        &[
+            r#"builtins.warn "msg" 42"#,
+            r#"builtins.warn "msg" "value""#,
+            r#"builtins.warn "msg" [1 2 3]"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_trace_verbose_passthrough() {
+    run_cases(
+        "trace_verbose_passthrough",
+        &[
+            r#"builtins.traceVerbose "msg" 42"#,
+            r#"builtins.traceVerbose "msg" { a = 1; }"#,
+        ],
+    );
+}
+
+// builtins.break is interactive-only in CppNix and crashes the
+// `nix-instantiate` process under Determinate Nix 3.17 even when the
+// argument is a finite literal, so it cannot be diff'd against the
+// oracle. The unit tests in builtins.rs cover the sui semantics
+// (passthrough) directly.
+
+#[test]
+fn diff_builtins_self_reference() {
+    run_cases(
+        "builtins_self_reference",
+        &[
+            "builtins ? builtins",
+            "builtins.builtins ? typeOf",
+            "builtins.builtins ? attrNames",
+        ],
+    );
+}
