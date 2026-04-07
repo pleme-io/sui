@@ -82,15 +82,22 @@ impl NixHash {
     }
 
     /// Encode as `<algo>:<base16>` (Nix's default display format).
+    #[must_use]
     pub fn to_nix_string(&self) -> String {
-        format!("{}:{}", self.algorithm.as_nix_str(), hex::encode(&self.digest))
+        format!("{}:{}", self.algorithm, hex::encode(&self.digest))
     }
 
     /// Encode as SRI format: `<algo>-<base64>`.
+    #[must_use]
     pub fn to_sri(&self) -> String {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&self.digest);
-        format!("{}-{}", self.algorithm.as_nix_str(), b64)
+        format!("{}-{}", self.algorithm, base64_encode(&self.digest))
+    }
+}
+
+impl std::fmt::Display for NixHash {
+    /// Formats as the Nix string representation (`algo:hex`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.algorithm, hex::encode(&self.digest))
     }
 }
 
