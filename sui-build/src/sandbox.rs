@@ -29,6 +29,7 @@ impl SandboxConfig {
     /// - `output_paths` ← values of `drv.outputs`
     /// - `allow_network` ← true when `__noChroot=1` in env
     /// - `builder`, `args`, `env` ← derivation fields
+    #[must_use]
     pub fn from_derivation(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Self {
         Self {
             input_paths: drv.input_sources.clone(),
@@ -74,6 +75,7 @@ pub struct SandboxResult {
 
 /// Sandbox errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SandboxError {
     /// The sandbox environment could not be prepared (e.g. namespace/mount failure).
     #[error("sandbox setup failed: {0}")]

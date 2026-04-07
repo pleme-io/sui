@@ -17,6 +17,7 @@ use crate::sandbox::SandboxError;
 /// Invalid transitions (e.g. `Succeeded → Building`) are prevented by
 /// returning an error from [`BuildState::transition`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuildState {
     /// Build is queued but has not started.
     Pending,
@@ -48,6 +49,7 @@ impl BuildState {
     }
 
     /// Returns `true` if the build has finished (succeeded or failed).
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed(_))
     }
@@ -77,6 +79,7 @@ pub struct BuildLog {
 
 impl BuildLog {
     /// Create an empty build log.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -94,16 +97,19 @@ impl BuildLog {
     }
 
     /// Return the number of lines logged.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.lines.len()
     }
 
     /// Return `true` if no lines have been logged.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
 
     /// Consume the log and return the joined text.
+    #[must_use]
     pub fn finish(self) -> String {
         self.lines.join("\n")
     }
@@ -128,6 +134,7 @@ pub struct BuildResult {
 
 /// Build errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BuildError {
     /// The build command itself returned a failure.
     #[error("build failed: {0}")]

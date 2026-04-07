@@ -54,6 +54,7 @@ impl FileSystem for RealFileSystem {
 ///
 /// Uses Aho-Corasick automaton for O(n + m) multi-pattern matching —
 /// scans the input once for all patterns simultaneously.
+#[must_use]
 pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
     let valid: Vec<&str> = known_hashes
         .iter()
