@@ -91,6 +91,12 @@ pub struct NodeRegistry {
     nodes: BTreeMap<String, Node>,
 }
 
+impl Default for NodeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NodeRegistry {
     /// Create an empty node registry.
     pub fn new() -> Self {
