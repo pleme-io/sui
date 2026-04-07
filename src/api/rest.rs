@@ -276,12 +276,7 @@ async fn list_profiles() -> Json<Vec<Profile>> {
 }
 
 async fn install_profile(Json(req): Json<ProfileInstallRequest>) -> Json<Profile> {
-    Json(Profile {
-        name: req.profile.unwrap_or_else(|| "default".to_string()),
-        generation: 1,
-        packages: req.packages,
-        created_at: None,
-    })
+    Json(Profile::from(req))
 }
 
 async fn rollback_profile() -> StatusCode {

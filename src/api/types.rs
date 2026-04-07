@@ -422,6 +422,17 @@ pub struct ProfileInstallRequest {
     pub profile: Option<String>,
 }
 
+impl From<ProfileInstallRequest> for Profile {
+    fn from(req: ProfileInstallRequest) -> Self {
+        Self {
+            name: req.profile.unwrap_or_else(|| "default".to_string()),
+            generation: 1,
+            packages: req.packages,
+            created_at: None,
+        }
+    }
+}
+
 // ── Cache ───────────────────────────────────────────────────
 
 /// Binary cache info.

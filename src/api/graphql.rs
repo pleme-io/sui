@@ -274,12 +274,7 @@ impl MutationRoot {
         _ctx: &Context<'_>,
         request: ProfileInstallRequest,
     ) -> Profile {
-        Profile {
-            name: request.profile.unwrap_or_else(|| "default".to_string()),
-            generation: 1,
-            packages: request.packages,
-            created_at: None,
-        }
+        Profile::from(request)
     }
 
     /// Rollback profile to previous generation.
