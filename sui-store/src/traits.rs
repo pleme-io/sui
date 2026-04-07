@@ -134,18 +134,16 @@ pub trait Store: Send + Sync {
         &self,
         path: &StorePath,
     ) -> StoreResult<Vec<StorePath>> {
-        let info = self.query_path_info(path).await?;
-        match info {
-            Some(info) => {
-                let refs: Vec<StorePath> = info
-                    .references
-                    .iter()
-                    .filter_map(|r| StorePath::from_absolute_path(r).ok())
-                    .collect();
-                Ok(refs)
-            }
-            None => Err(StoreError::PathNotFound(path.to_absolute_path())),
-        }
+        let info = self
+            .query_path_info(path)
+            .await?
+            .ok_or_else(|| StoreError::PathNotFound(path.to_absolute_path()))?;
+
+        Ok(info
+            .references
+            .iter()
+            .filter_map(|r| StorePath::from_absolute_path(r).ok())
+            .collect())
     }
 
     /// Compute the transitive closure of a set of store paths.
@@ -161,15 +159,12 @@ pub trait Store: Send + Sync {
 
         while let Some(path) = stack.pop() {
             let key = path.to_absolute_path();
-            if seen.contains(&key) {
+            if !seen.insert(key) {
                 continue;
             }
-            seen.insert(key);
 
             let refs = self.query_references(&path).await?;
-            for r in &refs {
-                stack.push(r.clone());
-            }
+            stack.extend(refs);
             closure.push(path);
         }
         Ok(closure)
