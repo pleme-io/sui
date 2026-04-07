@@ -22,16 +22,11 @@ pub enum HashAlgorithm {
 impl HashAlgorithm {
     /// Parse from the string representation used in Nix.
     pub fn from_nix_str(s: &str) -> Result<Self, HashError> {
-        match s {
-            "sha256" => Ok(Self::Sha256),
-            "sha512" => Ok(Self::Sha512),
-            "sha1" => Ok(Self::Sha1),
-            "md5" => Ok(Self::Md5),
-            _ => Err(HashError::UnsupportedAlgorithm(s.to_string())),
-        }
+        s.parse()
     }
 
     /// The Nix string representation.
+    #[must_use]
     pub fn as_nix_str(&self) -> &'static str {
         match self {
             Self::Sha256 => "sha256",
@@ -42,12 +37,33 @@ impl HashAlgorithm {
     }
 
     /// Digest length in bytes.
+    #[must_use]
     pub fn digest_len(&self) -> usize {
         match self {
             Self::Sha256 => 32,
             Self::Sha512 => 64,
             Self::Sha1 => 20,
             Self::Md5 => 16,
+        }
+    }
+}
+
+impl std::fmt::Display for HashAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_nix_str())
+    }
+}
+
+impl std::str::FromStr for HashAlgorithm {
+    type Err = HashError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "sha256" => Ok(Self::Sha256),
+            "sha512" => Ok(Self::Sha512),
+            "sha1" => Ok(Self::Sha1),
+            "md5" => Ok(Self::Md5),
+            _ => Err(HashError::UnsupportedAlgorithm(s.to_string())),
         }
     }
 }
