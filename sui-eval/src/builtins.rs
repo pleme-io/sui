@@ -232,6 +232,22 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // Case conversion (context-preserving)
+    register_builtin(&mut builtins_set, "toLower", |args| {
+        let ns = args[0].as_nix_string()?;
+        Ok(Value::String(NixString::with_context(
+            ns.chars.to_lowercase(),
+            ns.context.clone(),
+        )))
+    });
+    register_builtin(&mut builtins_set, "toUpper", |args| {
+        let ns = args[0].as_nix_string()?;
+        Ok(Value::String(NixString::with_context(
+            ns.chars.to_uppercase(),
+            ns.context.clone(),
+        )))
+    });
+
     // Conversion
     register_builtin(&mut builtins_set, "toJSON", |args| {
         Ok(Value::string(serde_json::to_string(&args[0].to_json())
@@ -5970,5 +5986,32 @@ mod tests {
         // Snapshot is taken before the self-insert, so the inner copy
         // does not contain `builtins`. This guarantees finite output.
         assert_eq!(ev("builtins.builtins ? builtins"), Value::Bool(false));
+    }
+
+    // ── toLower / toUpper ────────────────────────────────
+
+    #[test]
+    fn to_lower_basic() {
+        assert_eq!(ev(r#"builtins.toLower "HELLO""#), Value::string("hello"));
+    }
+
+    #[test]
+    fn to_upper_basic() {
+        assert_eq!(ev(r#"builtins.toUpper "hello""#), Value::string("HELLO"));
+    }
+
+    #[test]
+    fn to_lower_empty() {
+        assert_eq!(ev(r#"builtins.toLower """#), Value::string(""));
+    }
+
+    #[test]
+    fn to_upper_mixed() {
+        assert_eq!(ev(r#"builtins.toUpper "MiXeD""#), Value::string("MIXED"));
+    }
+
+    #[test]
+    fn to_lower_already() {
+        assert_eq!(ev(r#"builtins.toLower "already""#), Value::string("already"));
     }
 }
