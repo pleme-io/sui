@@ -603,4 +603,248 @@ mod tests {
         assert!(json.contains("\"hostname\":\"plo\""));
         assert!(json.contains("\"success\":true"));
     }
+
+    // ── Canary deploy: canary fails, aborts rest ──────────────
+
+    #[tokio::test]
+    async fn deploy_canary_first_node_fails() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Canary, None)
+            .await;
+
+        match result {
+            Err(FleetError::CanaryFailed) => {}
+            other => panic!("expected CanaryFailed, got {other:?}"),
+        }
+    }
+
+    // ── Canary deploy: canary succeeds, rest deploy ───────────
+
+    #[tokio::test]
+    async fn deploy_canary_success_deploys_rest() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Canary, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 2);
+        assert_eq!(result.succeeded, 2);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.strategy, "canary");
+    }
+
+    // ── Canary deploy: single node ────────────────────────────
+
+    #[tokio::test]
+    async fn deploy_canary_single_node() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("alpha", DeployStrategy::Canary, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 1);
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].hostname, "alpha");
+    }
+
+    // ── Deploy with flake override ────────────────────────────
+
+    #[tokio::test]
+    async fn deploy_with_flake_override() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("alpha", DeployStrategy::Rolling, Some("github:my/repo#cfg"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.succeeded, 1);
+        assert!(result.results[0].success);
+    }
+
+    // ── Deploy @all target ────────────────────────────────────
+
+    #[tokio::test]
+    async fn deploy_all_nodes() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@all", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 3);
+        assert_eq!(result.succeeded, 3);
+    }
+
+    // ── Deploy sets Deploying status during deploy ────────────
+
+    #[tokio::test]
+    async fn deploy_rolling_strategy_label() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.strategy, "rolling");
+    }
+
+    #[tokio::test]
+    async fn deploy_parallel_strategy_label() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.strategy, "parallel");
+    }
+
+    // ── DeployResult serde roundtrip ──────────────────────────
+
+    #[test]
+    fn deploy_result_serde_roundtrip() {
+        let result = DeployResult {
+            target: "@prod".to_string(),
+            strategy: "rolling".to_string(),
+            total_nodes: 2,
+            succeeded: 1,
+            failed: 1,
+            results: vec![
+                NodeDeployResult {
+                    hostname: "a".to_string(),
+                    success: true,
+                    log: "ok".to_string(),
+                    duration_secs: 1.0,
+                },
+                NodeDeployResult {
+                    hostname: "b".to_string(),
+                    success: false,
+                    log: "err".to_string(),
+                    duration_secs: 2.0,
+                },
+            ],
+            duration_secs: 3.0,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: DeployResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.target, "@prod");
+        assert_eq!(parsed.total_nodes, 2);
+        assert_eq!(parsed.results.len(), 2);
+    }
+
+    // ── NodeDeployResult serde roundtrip ──────────────────────
+
+    #[test]
+    fn node_deploy_result_serde_roundtrip() {
+        let result = NodeDeployResult {
+            hostname: "x".to_string(),
+            success: false,
+            log: "failed".to_string(),
+            duration_secs: 0.5,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: NodeDeployResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hostname, "x");
+        assert!(!parsed.success);
+    }
+
+    // ── Deploy staging group (darwin node) ─────────────────────
+
+    #[tokio::test]
+    async fn deploy_staging_group() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("@staging", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 1);
+        assert_eq!(result.results[0].hostname, "gamma");
+    }
+
+    // ── is_local_hostname ─────────────────────────────────────
+
+    #[test]
+    fn local_hostname_not_remote() {
+        assert!(!is_local_hostname("10.0.0.1"));
+        assert!(!is_local_hostname("remote.example.com"));
+    }
+
+    // ── FleetError from io::Error ─────────────────────────────
+
+    #[test]
+    fn fleet_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
+        let fleet_err: FleetError = io_err.into();
+        assert!(fleet_err.to_string().contains("nope"));
+    }
+
+    // ── Multiple deploys update state correctly ───────────────
+
+    #[tokio::test]
+    async fn successive_deploys_update_status() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            orch.registry().get("alpha").unwrap().status,
+            NodeStatus::Online
+        );
+
+        // Beta hasn't been deployed yet
+        assert_eq!(
+            orch.registry().get("beta").unwrap().status,
+            NodeStatus::Unknown
+        );
+    }
 }
