@@ -17,6 +17,7 @@ pub enum RebuildAction {
 }
 
 impl RebuildAction {
+    /// Returns the string representation used in CLI arguments.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Switch => "switch",
@@ -36,10 +37,15 @@ impl std::fmt::Display for RebuildAction {
 /// Result of a system rebuild.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RebuildResult {
+    /// Whether the rebuild completed successfully.
     pub success: bool,
+    /// The new system generation number, if detected from output.
     pub generation: Option<i64>,
+    /// The action that was performed (e.g. "switch", "boot", "rollback").
     pub action: String,
+    /// Combined stdout and stderr log from the rebuild command.
     pub log: String,
+    /// Wall-clock duration of the rebuild in seconds.
     pub duration_secs: f64,
 }
 
@@ -62,6 +68,7 @@ impl Platform {
         }
     }
 
+    /// Returns the platform-specific rebuild command name.
     pub fn rebuild_command(&self) -> &'static str {
         match self {
             Self::Darwin => "darwin-rebuild",
@@ -114,6 +121,7 @@ impl SystemOrchestrator {
         Self { platform, runner }
     }
 
+    /// Returns the detected platform.
     pub fn platform(&self) -> Platform {
         self.platform
     }
@@ -247,11 +255,14 @@ impl SystemOrchestrator {
     }
 }
 
-/// Generation info.
+/// Information about a single system generation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenerationInfo {
+    /// The generation number.
     pub number: i64,
+    /// The date string from `nix-env --list-generations` output.
     pub date: String,
+    /// Whether this is the currently active generation.
     pub current: bool,
 }
 

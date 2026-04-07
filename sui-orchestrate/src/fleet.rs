@@ -22,21 +22,32 @@ pub enum DeployStrategy {
 /// Result of a fleet deployment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeployResult {
+    /// The target expression that was resolved (e.g. `@prod`, `alpha`).
     pub target: String,
+    /// The strategy that was used (lowercase, e.g. "rolling").
     pub strategy: String,
+    /// Total number of nodes targeted.
     pub total_nodes: usize,
+    /// Number of nodes that deployed successfully.
     pub succeeded: usize,
+    /// Number of nodes that failed to deploy.
     pub failed: usize,
+    /// Per-node deployment results.
     pub results: Vec<NodeDeployResult>,
+    /// Wall-clock duration of the entire deployment in seconds.
     pub duration_secs: f64,
 }
 
 /// Per-node deploy result.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeDeployResult {
+    /// Hostname of the target node.
     pub hostname: String,
+    /// Whether the deploy succeeded.
     pub success: bool,
+    /// Combined stdout and stderr log.
     pub log: String,
+    /// Wall-clock duration of this node's deploy in seconds.
     pub duration_secs: f64,
 }
 
@@ -60,6 +71,7 @@ pub enum FleetError {
 }
 
 impl FleetOrchestrator {
+    /// Create a new fleet orchestrator with the default command runner.
     pub fn new(registry: NodeRegistry) -> Self {
         Self {
             registry,
@@ -75,10 +87,12 @@ impl FleetOrchestrator {
         }
     }
 
+    /// Returns a reference to the node registry.
     pub fn registry(&self) -> &NodeRegistry {
         &self.registry
     }
 
+    /// Returns a mutable reference to the node registry.
     pub fn registry_mut(&mut self) -> &mut NodeRegistry {
         &mut self.registry
     }

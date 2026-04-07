@@ -28,17 +28,26 @@ impl std::fmt::Display for NodeStatus {
 /// A fleet node definition.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Node {
+    /// The hostname used to identify this node.
     pub hostname: String,
+    /// Flake reference for this node's configuration (e.g. `.#alpha`).
     pub flake_ref: String,
+    /// Optional SSH target (e.g. `root@10.0.0.1`); falls back to hostname.
     pub ssh_target: Option<String>,
+    /// Optional Nix system string (e.g. `x86_64-linux`, `aarch64-darwin`).
     pub system: Option<String>,
+    /// Groups this node belongs to (used for `@group` target resolution).
     pub groups: Vec<String>,
+    /// Current status of the node.
     pub status: NodeStatus,
+    /// The current system generation number, if known.
     pub current_generation: Option<i64>,
+    /// Unix timestamp of the last successful deployment.
     pub last_deployed: Option<i64>,
 }
 
 impl Node {
+    /// Create a new node with the given hostname and flake reference.
     pub fn new(hostname: &str, flake_ref: &str) -> Self {
         Self {
             hostname: hostname.to_string(),
@@ -52,16 +61,19 @@ impl Node {
         }
     }
 
+    /// Set the SSH target for remote deployments.
     pub fn with_ssh(mut self, target: &str) -> Self {
         self.ssh_target = Some(target.to_string());
         self
     }
 
+    /// Set the groups this node belongs to.
     pub fn with_groups(mut self, groups: Vec<String>) -> Self {
         self.groups = groups;
         self
     }
 
+    /// Set the Nix system string (e.g. `x86_64-linux`).
     pub fn with_system(mut self, system: &str) -> Self {
         self.system = Some(system.to_string());
         self
@@ -80,36 +92,44 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
+    /// Create an empty node registry.
     pub fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
         }
     }
 
+    /// Add a node to the registry, keyed by its hostname.
     pub fn add(&mut self, node: Node) {
         self.nodes.insert(node.hostname.clone(), node);
     }
 
+    /// Look up a node by hostname.
     pub fn get(&self, hostname: &str) -> Option<&Node> {
         self.nodes.get(hostname)
     }
 
+    /// Look up a node mutably by hostname.
     pub fn get_mut(&mut self, hostname: &str) -> Option<&mut Node> {
         self.nodes.get_mut(hostname)
     }
 
+    /// Remove a node by hostname, returning it if found.
     pub fn remove(&mut self, hostname: &str) -> Option<Node> {
         self.nodes.remove(hostname)
     }
 
+    /// Iterate over all nodes in sorted (hostname) order.
     pub fn all(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }
 
+    /// Returns the number of nodes in the registry.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Returns `true` if the registry contains no nodes.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -150,14 +170,20 @@ impl NodeRegistry {
     }
 }
 
-/// Fleet status counts.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// Aggregate counts of node statuses across a fleet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StatusCounts {
+    /// Total number of nodes.
     pub total: usize,
+    /// Nodes in [`NodeStatus::Online`] state.
     pub online: usize,
+    /// Nodes in [`NodeStatus::Offline`] state.
     pub offline: usize,
+    /// Nodes in [`NodeStatus::Deploying`] state.
     pub deploying: usize,
+    /// Nodes in [`NodeStatus::Failed`] state.
     pub failed: usize,
+    /// Nodes in [`NodeStatus::Unknown`] state.
     pub unknown: usize,
 }
 
