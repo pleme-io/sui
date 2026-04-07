@@ -453,4 +453,162 @@ mod tests {
         let ca_reparsed = ContentAddress::parse(reparsed.ca.as_ref().unwrap()).unwrap();
         assert_eq!(ca_reparsed, ca);
     }
+
+    // ── ContentAddressMethod Display + FromStr ───────────
+
+    #[test]
+    fn ca_method_display_strings() {
+        assert_eq!(format!("{}", ContentAddressMethod::Text), "text");
+        assert_eq!(format!("{}", ContentAddressMethod::Flat), "flat");
+        assert_eq!(format!("{}", ContentAddressMethod::Recursive), "recursive");
+    }
+
+    #[test]
+    fn ca_method_from_str_known_values() {
+        use std::str::FromStr;
+        assert_eq!(
+            ContentAddressMethod::from_str("text").unwrap(),
+            ContentAddressMethod::Text,
+        );
+        assert_eq!(
+            ContentAddressMethod::from_str("flat").unwrap(),
+            ContentAddressMethod::Flat,
+        );
+        assert_eq!(
+            ContentAddressMethod::from_str("recursive").unwrap(),
+            ContentAddressMethod::Recursive,
+        );
+    }
+
+    #[test]
+    fn ca_method_from_str_unknown_returns_error() {
+        use std::str::FromStr;
+        match ContentAddressMethod::from_str("nope") {
+            Err(ContentAddressError::InvalidFormat(s)) => assert_eq!(s, "nope"),
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+        assert!(ContentAddressMethod::from_str("").is_err());
+        assert!(ContentAddressMethod::from_str("Text").is_err()); // case-sensitive
+    }
+
+    // ── ContentAddress Display + FromStr ─────────────────
+
+    #[test]
+    fn ca_display_matches_to_nix_string() {
+        let ca = ContentAddress {
+            method: ContentAddressMethod::Flat,
+            hash: NixHash::new(HashAlgorithm::Sha256, vec![0xab; 32]),
+        };
+        let displayed = format!("{ca}");
+        assert_eq!(displayed, ca.to_nix_string());
+    }
+
+    #[test]
+    fn ca_from_str_matches_parse() {
+        use std::str::FromStr;
+        let s = "fixed:out:r:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let ca = ContentAddress::from_str(s).unwrap();
+        assert_eq!(ca.method, ContentAddressMethod::Recursive);
+    }
+
+    // ── parse_hash_with_algo error paths ─────────────────
+
+    #[test]
+    fn parse_text_unknown_algorithm() {
+        let result = ContentAddress::parse("text:blake3:abc");
+        assert!(matches!(result, Err(ContentAddressError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn parse_flat_invalid_hex() {
+        let result = ContentAddress::parse("fixed:out:sha256:zzzz");
+        assert!(matches!(result, Err(ContentAddressError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn parse_recursive_invalid_hex() {
+        let result = ContentAddress::parse("fixed:out:r:sha256:zzzz");
+        assert!(matches!(result, Err(ContentAddressError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn parse_text_no_colon_in_hash_payload() {
+        // After "text:", the rest must contain a colon for "<algo>:<hex>"
+        let result = ContentAddress::parse("text:noColon");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_with_uppercase_hex_decodes() {
+        // The hex decoder accepts uppercase
+        let s = "fixed:out:sha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        let ca = ContentAddress::parse(s).unwrap();
+        assert_eq!(ca.hash.digest.len(), 32);
+    }
+
+    // ── compute_text_store_path with all hash algos ─────
+
+    #[test]
+    fn compute_text_store_path_with_long_content() {
+        let content: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let path = compute_text_store_path("big.bin", &content, &[]).unwrap();
+        let abs = path.to_absolute_path();
+        assert!(abs.starts_with("/nix/store/"));
+        assert!(abs.ends_with("-big.bin"));
+    }
+
+    #[test]
+    fn compute_text_store_path_many_references() {
+        let refs: Vec<String> = (0..20)
+            .map(|i| format!("/nix/store/dep-{i:02}"))
+            .collect();
+        let path = compute_text_store_path("test", b"hello", &refs).unwrap();
+        assert!(!path.digest.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn compute_text_store_path_reference_order_matters() {
+        let r1 = vec!["/nix/store/aaa".to_string(), "/nix/store/bbb".to_string()];
+        let r2 = vec!["/nix/store/bbb".to_string(), "/nix/store/aaa".to_string()];
+        let p1 = compute_text_store_path("x", b"data", &r1).unwrap();
+        let p2 = compute_text_store_path("x", b"data", &r2).unwrap();
+        // The current implementation does not sort references, so order matters.
+        // Document the current behavior so any future change is intentional.
+        assert_ne!(p1.digest, p2.digest);
+    }
+
+    // ── ContentAddressMethod equality + clone ────────────
+
+    #[test]
+    fn ca_method_equality_and_clone() {
+        let m1 = ContentAddressMethod::Text;
+        let m2 = m1.clone();
+        assert_eq!(m1, m2);
+        assert_ne!(m1, ContentAddressMethod::Flat);
+        assert_ne!(m1, ContentAddressMethod::Recursive);
+    }
+
+    // ── Empty payload edge cases ─────────────────────────
+
+    #[test]
+    fn parse_empty_input_returns_error() {
+        assert!(ContentAddress::parse("").is_err());
+    }
+
+    #[test]
+    fn parse_only_prefix_returns_error() {
+        assert!(ContentAddress::parse("text").is_err());
+        assert!(ContentAddress::parse("fixed").is_err());
+        assert!(ContentAddress::parse("fixed:out").is_err());
+    }
+
+    // ── ContentAddressError From StorePathError ──────────
+
+    #[test]
+    fn ca_error_from_store_path_error() {
+        let spe = StorePathError::EmptyName;
+        let cae: ContentAddressError = spe.into();
+        // Just check it's the right variant (StorePath wraps it)
+        assert!(matches!(cae, ContentAddressError::StorePath(_)));
+    }
 }
