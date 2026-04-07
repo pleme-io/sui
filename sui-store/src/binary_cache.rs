@@ -67,6 +67,11 @@ impl BinaryCacheStore {
         Ok(Some(info))
     }
 
+    /// Return the trusted public keys used for signature verification.
+    pub fn trusted_keys(&self) -> &[String] {
+        &self.trusted_keys
+    }
+
     /// Download a NAR file from the cache.
     pub async fn fetch_nar(&self, url_path: &str) -> StoreResult<Vec<u8>> {
         let url = format!("{}/{url_path}", self.base_url);

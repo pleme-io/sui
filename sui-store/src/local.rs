@@ -3,7 +3,7 @@
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Database};
 use sui_compat::store_path::StorePath;
 
-use crate::entity::{derivation_output, reference, valid_path};
+use crate::entity::{reference, valid_path};
 use crate::traits::{PathInfo, Store, StoreError, StoreResult};
 
 /// Local Nix store backed by the filesystem and SQLite database.
@@ -98,7 +98,8 @@ impl LocalStore {
             references,
             deriver: model.deriver.clone(),
             signatures,
-            registration_time: model.registration_time, content_address: model.ca.clone(),
+            registration_time: model.registration_time,
+            content_address: model.ca.clone(),
         })
     }
 }
