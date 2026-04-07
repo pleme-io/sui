@@ -9,6 +9,7 @@
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use crate::wire;
 use thiserror::Error;
 
 /// NAR magic header.
@@ -35,29 +36,17 @@ pub enum NarError {
 }
 
 // ── Wire primitives ──────────────────────────────────────────
-
-fn write_u64(w: &mut impl Write, v: u64) -> io::Result<()> {
-    w.write_all(&v.to_le_bytes())
-}
-
-fn read_u64(r: &mut impl Read) -> io::Result<u64> {
-    let mut buf = [0u8; 8];
-    r.read_exact(&mut buf)?;
-    Ok(u64::from_le_bytes(buf))
-}
+//
+// u64 and length-prefixed byte framing is shared with the worker
+// protocol in `crate::wire`. NAR adds a max-string-length cap
+// to defend against allocation bombs.
 
 fn write_str(w: &mut impl Write, s: &[u8]) -> io::Result<()> {
-    write_u64(w, s.len() as u64)?;
-    w.write_all(s)?;
-    let pad = (8 - (s.len() % 8)) % 8;
-    if pad > 0 {
-        w.write_all(&vec![0u8; pad])?;
-    }
-    Ok(())
+    wire::write_bytes(w, s)
 }
 
 fn read_str(r: &mut impl Read) -> Result<Vec<u8>, NarError> {
-    let len_u64 = read_u64(r)?;
+    let len_u64 = wire::read_u64(r)?;
     if len_u64 > MAX_NAR_STRING {
         return Err(NarError::Invalid(format!(
             "nar string too long: {len_u64} bytes exceeds {MAX_NAR_STRING} cap"
