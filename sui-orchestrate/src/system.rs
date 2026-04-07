@@ -1208,4 +1208,147 @@ mod tests {
         };
         assert_ne!(a, c);
     }
+
+    // ── current_generation invokes the right argv ─────────────
+
+    #[tokio::test]
+    async fn current_generation_invokes_nix_env_with_profile_arg() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "  1   2024-01-01 (current)\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        let n = sys.current_generation().await.unwrap();
+        assert_eq!(n, 1);
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nix-env");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "--list-generations",
+                "--profile",
+                "/nix/var/nix/profiles/system",
+            ]
+        );
+    }
+
+    // ── list_generations invokes the right argv ───────────────
+
+    #[tokio::test]
+    async fn list_generations_invokes_nix_env_with_profile_arg() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "  1   2024-01-01\n  2   2024-01-15 (current)\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        let gens = sys.list_generations().await.unwrap();
+        assert_eq!(gens.len(), 2);
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nix-env");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "--list-generations",
+                "--profile",
+                "/nix/var/nix/profiles/system",
+            ]
+        );
+    }
+
+    // ── rollback invokes correct argv ─────────────────────────
+
+    #[tokio::test]
+    async fn rollback_invokes_switch_rollback() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "rolled back\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        sys.rollback().await.unwrap();
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nixos-rebuild");
+        assert_eq!(calls[0].1, vec!["switch", "--rollback"]);
+    }
+
+    // ── current_generation: numerically sorted lines, latest current
+    //    line wins for the rev() scan ────────────────────────────
+
+    #[tokio::test]
+    async fn current_generation_picks_last_current_line() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  41  2024-01-01 (current)\n  42  2024-01-02 (current)\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let n = sys.current_generation().await.unwrap();
+        // Function scans in rev() order so the bottom (current) wins
+        assert_eq!(n, 42);
+    }
+
+    // ── rebuild_action serde lowercase ────────────────────────
+
+    #[test]
+    fn rebuild_action_serde_lowercase_strings() {
+        for (action, expected) in [
+            (RebuildAction::Switch, "\"switch\""),
+            (RebuildAction::Boot, "\"boot\""),
+            (RebuildAction::Test, "\"test\""),
+            (RebuildAction::Build, "\"build\""),
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, expected);
+        }
+    }
+
+    // ── Platform detection: macOS host invariant ──────────────
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn platform_detect_returns_darwin_on_macos() {
+        assert_eq!(Platform::detect(), Some(Platform::Darwin));
+    }
 }
