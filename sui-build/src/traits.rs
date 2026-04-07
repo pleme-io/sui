@@ -178,6 +178,19 @@ impl std::fmt::Display for BuildOutcome {
     }
 }
 
+impl From<&crate::sandbox::SandboxResult> for BuildOutcome {
+    fn from(result: &crate::sandbox::SandboxResult) -> Self {
+        if result.exit_code == 0 {
+            Self::Success
+        } else {
+            Self::Failure {
+                stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+                exit_code: result.exit_code,
+            }
+        }
+    }
+}
+
 // ── Build result ─────────────────────────────────────────────────
 
 /// Build execution result.
@@ -518,20 +531,12 @@ mod tests {
                 .filter_map(|o| StorePath::from_absolute_path(&o.path).ok())
                 .collect();
 
-            let success = result.exit_code == 0;
-            let outcome = if success {
-                BuildOutcome::Success
-            } else {
-                BuildOutcome::Failure {
-                    stderr: String::from_utf8_lossy(&result.stderr).to_string(),
-                    exit_code: result.exit_code,
-                }
-            };
+            let outcome = BuildOutcome::from(&result);
 
             Ok(BuildResult {
                 outputs,
                 log: String::from_utf8_lossy(&result.stdout).to_string(),
-                success,
+                success: outcome.is_success(),
                 outcome,
                 duration_secs: 0.1,
             })
