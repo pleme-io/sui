@@ -104,6 +104,14 @@ impl std::fmt::Display for ContentAddress {
     }
 }
 
+impl std::str::FromStr for ContentAddress {
+    type Err = ContentAddressError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 /// Compute a store path for text content (like `builtins.toFile`).
 ///
 /// The fingerprint is: `text:<sha256hash>:<references...>:/nix/store:<name>`
