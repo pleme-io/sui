@@ -28,6 +28,7 @@ thread_local! {
 
 /// Return the directory of the file currently being evaluated, if any.
 /// Used by the `PathRel` AST handler to resolve relative path literals.
+#[must_use]
 pub fn current_eval_dir() -> Option<PathBuf> {
     EVAL_FILE_STACK.with(|s| s.borrow().last().and_then(|p| p.parent().map(PathBuf::from)))
 }
@@ -68,6 +69,7 @@ pub fn set_pure_mode(pure: bool) {
 }
 
 /// Whether the current thread is in hermetic (pure) evaluation mode.
+#[must_use]
 pub fn is_pure_mode() -> bool {
     PURE_MODE.with(Cell::get)
 }

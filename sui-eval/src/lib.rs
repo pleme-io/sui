@@ -44,7 +44,10 @@ impl Evaluator for TreeWalkEvaluator {
 
     fn eval_file(&self, path: &std::path::Path) -> Result<Value, EvalError> {
         let source = std::fs::read_to_string(path)
-            .map_err(|e| EvalError::ParseError(format!("cannot read file: {e}")))?;
+            .map_err(|e| EvalError::IoError {
+                context: format!("eval_file: {}", path.display()),
+                message: e.to_string(),
+            })?;
         eval(&source)
     }
 }
