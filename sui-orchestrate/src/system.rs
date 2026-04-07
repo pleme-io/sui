@@ -66,7 +66,9 @@ pub struct RebuildResult {
 }
 
 /// Detected platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Platform {
     Darwin,
     NixOS,
