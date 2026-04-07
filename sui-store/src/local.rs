@@ -3,10 +3,21 @@
 use std::path::Path;
 
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Database};
+use sea_orm::ActiveModelTrait;
+use sea_orm::ActiveValue::Set;
 use sui_compat::store_path::StorePath;
 
-use crate::entity::{reference, valid_path};
+use crate::entity::{derivation_output, reference, valid_path};
 use crate::traits::{PathInfo, Store, StoreError, StoreResult};
+
+/// Controls whether the local store database is opened read-only or read-write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalStoreMode {
+    /// Open the database in read-only mode (default for `open()`).
+    ReadOnly,
+    /// Open the database in read-write mode (for `open_rw()`).
+    ReadWrite,
+}
 
 /// Local Nix store backed by the filesystem and SQLite database.
 pub struct LocalStore {
@@ -15,12 +26,20 @@ pub struct LocalStore {
 }
 
 impl LocalStore {
-    /// Open the local store using the existing Nix database.
+    /// Open the local store in read-only mode using the existing Nix database.
     ///
     /// Default path: `/nix/var/nix/db/db.sqlite`.
     /// Accepts any type convertible to a path (`&str`, `&Path`, `PathBuf`, etc.).
     pub async fn open(db_path: impl AsRef<Path>) -> StoreResult<Self> {
-        Self::open_inner(db_path.as_ref(), "/nix/store").await
+        Self::open_inner(db_path.as_ref(), "/nix/store", LocalStoreMode::ReadOnly).await
+    }
+
+    /// Open the local store in read-write mode.
+    ///
+    /// The database file must already exist. Use this when you need to
+    /// register paths, add signatures, or perform garbage collection.
+    pub async fn open_rw(db_path: impl AsRef<Path>) -> StoreResult<Self> {
+        Self::open_inner(db_path.as_ref(), "/nix/store", LocalStoreMode::ReadWrite).await
     }
 
     /// Open with a custom store directory (for testing).
@@ -28,15 +47,35 @@ impl LocalStore {
         db_path: impl AsRef<Path>,
         store_dir: impl AsRef<Path>,
     ) -> StoreResult<Self> {
-        Self::open_inner(db_path.as_ref(), store_dir.as_ref().to_str().unwrap_or("/nix/store"))
-            .await
+        Self::open_inner(
+            db_path.as_ref(),
+            store_dir.as_ref().to_str().unwrap_or("/nix/store"),
+            LocalStoreMode::ReadOnly,
+        )
+        .await
     }
 
-    async fn open_inner(db_path: &Path, store_dir: &str) -> StoreResult<Self> {
+    /// Open with a custom store directory in read-write mode (for testing).
+    pub async fn open_rw_with_dir(
+        db_path: impl AsRef<Path>,
+        store_dir: impl AsRef<Path>,
+    ) -> StoreResult<Self> {
+        Self::open_inner(
+            db_path.as_ref(),
+            store_dir.as_ref().to_str().unwrap_or("/nix/store"),
+            LocalStoreMode::ReadWrite,
+        )
+        .await
+    }
+
+    async fn open_inner(db_path: &Path, store_dir: &str, mode: LocalStoreMode) -> StoreResult<Self> {
         let db_path_str = db_path.to_str().ok_or_else(|| {
             StoreError::Database("database path is not valid UTF-8".to_string())
         })?;
-        let url = format!("sqlite://{db_path_str}?mode=ro");
+        let url = match mode {
+            LocalStoreMode::ReadOnly => format!("sqlite://{db_path_str}?mode=ro"),
+            LocalStoreMode::ReadWrite => format!("sqlite://{db_path_str}"),
+        };
         let db = Database::connect(&url).await.map_err(db_err)?;
 
         Ok(Self {
@@ -108,6 +147,47 @@ impl LocalStore {
             content_address: model.ca.clone(),
         })
     }
+
+    /// Create the Nix store schema tables in the database.
+    ///
+    /// This is used for testing and for initializing a new store database.
+    /// Creates `ValidPaths`, `Refs`, and `DerivationOutputs` tables.
+    pub async fn create_tables(&self) -> StoreResult<()> {
+        use sea_orm::ConnectionTrait;
+        let backend = self.db.get_database_backend();
+
+        let valid_paths_sql = sea_orm::Schema::new(backend)
+            .create_table_from_entity(valid_path::Entity);
+        self.db.execute(backend.build(&valid_paths_sql)).await.map_err(db_err)?;
+
+        let refs_sql = sea_orm::Schema::new(backend)
+            .create_table_from_entity(reference::Entity);
+        self.db.execute(backend.build(&refs_sql)).await.map_err(db_err)?;
+
+        let drv_outputs_sql = sea_orm::Schema::new(backend)
+            .create_table_from_entity(derivation_output::Entity);
+        self.db.execute(backend.build(&drv_outputs_sql)).await.map_err(db_err)?;
+
+        Ok(())
+    }
+
+    /// Open an in-memory SQLite database with schema created.
+    ///
+    /// Useful for testing. Creates all tables and returns a read-write store.
+    pub async fn open_in_memory() -> StoreResult<Self> {
+        Self::open_in_memory_with_dir("/nix/store").await
+    }
+
+    /// Open an in-memory SQLite database with schema and a custom store dir.
+    pub async fn open_in_memory_with_dir(store_dir: &str) -> StoreResult<Self> {
+        let db = Database::connect("sqlite::memory:").await.map_err(db_err)?;
+        let store = Self {
+            db,
+            store_dir: store_dir.to_string(),
+        };
+        store.create_tables().await?;
+        Ok(store)
+    }
 }
 
 #[async_trait::async_trait]
@@ -137,11 +217,132 @@ impl Store for LocalStore {
             .filter_map(|p| StorePath::from_absolute_path(&p.path).ok())
             .collect())
     }
+
+    async fn register_path(&self, info: &PathInfo) -> StoreResult<()> {
+        // Build the sigs string (space-separated signatures).
+        let sigs = if info.signatures.is_empty() {
+            None
+        } else {
+            Some(info.signatures.join(" "))
+        };
+
+        // Insert into ValidPaths.
+        let new_path = valid_path::ActiveModel {
+            id: sea_orm::ActiveValue::NotSet,
+            path: Set(info.path.clone()),
+            hash: Set(info.nar_hash.clone()),
+            registration_time: Set(info.registration_time),
+            deriver: Set(info.deriver.clone()),
+            nar_size: Set(Some(info.nar_size)),
+            ultimate: Set(Some(0)),
+            sigs: Set(sigs),
+            ca: Set(info.content_address.clone()),
+        };
+
+        let inserted = new_path.insert(&self.db).await.map_err(db_err)?;
+        let path_id = inserted.id;
+
+        // Insert reference edges into Refs.
+        for ref_path_str in &info.references {
+            let ref_model = self.find_by_path(ref_path_str).await?;
+            if let Some(ref_row) = ref_model {
+                let new_ref = reference::ActiveModel {
+                    referrer: Set(path_id),
+                    reference: Set(ref_row.id),
+                };
+                new_ref.insert(&self.db).await.map_err(db_err)?;
+            }
+        }
+
+        // If the path has a deriver ending in .drv, insert into DerivationOutputs.
+        if let Some(ref deriver) = info.deriver {
+            if deriver.ends_with(".drv") {
+                // Look up the deriver's ValidPaths.id.
+                if let Some(drv_row) = self.find_by_path(deriver).await? {
+                    let drv_output = derivation_output::ActiveModel {
+                        drv: Set(drv_row.id),
+                        id: Set("out".to_string()),
+                        path: Set(info.path.clone()),
+                    };
+                    drv_output.insert(&self.db).await.map_err(db_err)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn add_to_store(
+        &self,
+        name: &str,
+        nar_data: &[u8],
+        references: &[String],
+    ) -> StoreResult<PathInfo> {
+        use sha2::{Sha256, Digest};
+        use sui_compat::store_path::{compress_hash, nix_base32_encode};
+        use sui_compat::nar::unpack_nar;
+
+        // Compute the SHA-256 hash of the NAR data.
+        let nar_hash_raw = Sha256::digest(nar_data);
+        let nar_hash_hex = hex_encode(&nar_hash_raw);
+        let nar_hash = format!("sha256:{nar_hash_hex}");
+        let nar_size = nar_data.len() as i64;
+
+        // Compute the store path.
+        // The fingerprint uses the actual store_dir for correct hashing.
+        let fingerprint = format!(
+            "source:sha256:{nar_hash_hex}:{}:{name}",
+            self.store_dir
+        );
+        let fp_hash = Sha256::digest(fingerprint.as_bytes());
+        let compressed = compress_hash(&fp_hash, 20);
+        let b32 = nix_base32_encode(&compressed);
+        let basename = format!("{b32}-{name}");
+        let store_path = format!("{}/{basename}", self.store_dir);
+
+        // Write the NAR data to the store directory by unpacking.
+        let dest = Path::new(&self.store_dir).join(&basename);
+        unpack_nar(nar_data, &dest).map_err(|e| StoreError::Io(
+            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+        ))?;
+
+        // Build PathInfo.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let info = PathInfo {
+            path: store_path,
+            nar_hash,
+            nar_size,
+            references: references.to_vec(),
+            deriver: None,
+            signatures: vec![],
+            registration_time: now,
+            content_address: None,
+        };
+
+        // Register in the database.
+        self.register_path(&info).await?;
+
+        Ok(info)
+    }
 }
 
 /// Convert a SeaORM `DbErr` into a `StoreError::Database`.
 fn db_err(e: sea_orm::DbErr) -> StoreError {
     StoreError::Database(e.to_string())
+}
+
+/// Encode bytes as lowercase hexadecimal.
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 #[cfg(test)]
@@ -425,5 +626,330 @@ mod tests {
         assert_eq!(nar_size.unwrap_or(0), 0);
         let nar_size: Option<i64> = Some(5000);
         assert_eq!(nar_size.unwrap_or(0), 5000);
+    }
+
+    // ── LocalStoreMode enum ────────────────────────────────────
+
+    #[test]
+    fn local_store_mode_enum_variants() {
+        let ro = LocalStoreMode::ReadOnly;
+        let rw = LocalStoreMode::ReadWrite;
+        assert_ne!(ro, rw);
+        assert_eq!(ro, LocalStoreMode::ReadOnly);
+        assert_eq!(rw, LocalStoreMode::ReadWrite);
+    }
+
+    #[test]
+    fn local_store_mode_debug_format() {
+        let ro = LocalStoreMode::ReadOnly;
+        let rw = LocalStoreMode::ReadWrite;
+        assert!(format!("{ro:?}").contains("ReadOnly"));
+        assert!(format!("{rw:?}").contains("ReadWrite"));
+    }
+
+    #[test]
+    fn local_store_mode_clone_copy() {
+        let mode = LocalStoreMode::ReadWrite;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+    }
+
+    // ── open_rw() ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn open_rw_with_nonexistent_path_errors() {
+        let result = LocalStore::open_rw("/this/path/does/not/exist/sui-rw.sqlite").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn open_rw_with_temp_db_succeeds() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        // Create a valid SQLite DB by opening in rw mode first (SeaORM creates the file).
+        let store = LocalStore::open_rw(tmp.path()).await;
+        // The file exists but has no schema — this should still connect.
+        assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn open_readonly_still_works() {
+        // open() should still use read-only mode.
+        let result = LocalStore::open("/nonexistent/sui-test.sqlite").await;
+        assert!(result.is_err()); // read-only on nonexistent file errors
+    }
+
+    // ── open_in_memory ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn open_in_memory_succeeds() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        assert_eq!(store.store_dir(), "/nix/store");
+    }
+
+    #[tokio::test]
+    async fn open_in_memory_with_custom_dir() {
+        let store = LocalStore::open_in_memory_with_dir("/test/store").await.unwrap();
+        assert_eq!(store.store_dir(), "/test/store");
+    }
+
+    #[tokio::test]
+    async fn in_memory_query_all_valid_paths_empty() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        let paths = store.query_all_valid_paths().await.unwrap();
+        assert!(paths.is_empty());
+    }
+
+    // ── register_path ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn register_path_simple_no_references() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        let info = PathInfo {
+            path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello".to_string(),
+            nar_hash: "sha256:deadbeef".to_string(),
+            nar_size: 1024,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 1700000000,
+            content_address: None,
+        };
+
+        store.register_path(&info).await.unwrap();
+
+        // Verify via query_path_info.
+        let sp = StorePath::from_absolute_path(&info.path).unwrap();
+        let queried = store.query_path_info(&sp).await.unwrap().unwrap();
+        assert_eq!(queried.path, info.path);
+        assert_eq!(queried.nar_hash, info.nar_hash);
+        assert_eq!(queried.nar_size, 1024);
+        assert!(queried.references.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_path_with_two_references() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Register the referenced paths first.
+        let ref1 = PathInfo {
+            path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dep1".to_string(),
+            nar_hash: "sha256:aaa".to_string(),
+            nar_size: 100,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 100,
+            content_address: None,
+        };
+        let ref2 = PathInfo {
+            path: "/nix/store/cccccccccccccccccccccccccccccccc-dep2".to_string(),
+            nar_hash: "sha256:bbb".to_string(),
+            nar_size: 200,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 100,
+            content_address: None,
+        };
+        store.register_path(&ref1).await.unwrap();
+        store.register_path(&ref2).await.unwrap();
+
+        // Register the main path with references.
+        let main_info = PathInfo {
+            path: "/nix/store/dddddddddddddddddddddddddddddddd-main".to_string(),
+            nar_hash: "sha256:ccc".to_string(),
+            nar_size: 500,
+            references: vec![ref1.path.clone(), ref2.path.clone()],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 200,
+            content_address: None,
+        };
+        store.register_path(&main_info).await.unwrap();
+
+        // Verify references are stored.
+        let sp = StorePath::from_absolute_path(&main_info.path).unwrap();
+        let queried = store.query_path_info(&sp).await.unwrap().unwrap();
+        assert_eq!(queried.references.len(), 2);
+        assert!(queried.references.contains(&ref1.path));
+        assert!(queried.references.contains(&ref2.path));
+    }
+
+    #[tokio::test]
+    async fn register_path_and_verify_via_query() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Use valid Nix base32 chars (no 'e', 'o', 't', 'u').
+        let info = PathInfo {
+            path: "/nix/store/11111111111111111111111111111111-pkg".to_string(),
+            nar_hash: "sha256:123456".to_string(),
+            nar_size: 2048,
+            references: vec![],
+            deriver: None,
+            signatures: vec!["key1:sig1".to_string(), "key2:sig2".to_string()],
+            registration_time: 1700000000,
+            content_address: Some("fixed:out:r:sha256:abc".to_string()),
+        };
+        store.register_path(&info).await.unwrap();
+
+        // Verify is_valid_path.
+        let sp = StorePath::from_absolute_path(&info.path).unwrap();
+        assert!(store.is_valid_path(&sp).await.unwrap());
+
+        // Verify query_path_info returns the full info.
+        let queried = store.query_path_info(&sp).await.unwrap().unwrap();
+        assert_eq!(queried.nar_size, 2048);
+        assert_eq!(queried.signatures.len(), 2);
+        assert_eq!(queried.content_address, Some("fixed:out:r:sha256:abc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn register_path_duplicate_returns_error() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        let info = PathInfo {
+            path: "/nix/store/ffffffffffffffffffffffffffffffff-duplicate".to_string(),
+            nar_hash: "sha256:dup".to_string(),
+            nar_size: 100,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 100,
+            content_address: None,
+        };
+
+        // First registration should succeed.
+        store.register_path(&info).await.unwrap();
+
+        // Second registration should error (unique constraint on path).
+        let result = store.register_path(&info).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_path_with_deriver_drv() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Register the .drv first.
+        let drv_info = PathInfo {
+            path: "/nix/store/gggggggggggggggggggggggggggggggg-hello.drv".to_string(),
+            nar_hash: "sha256:drv".to_string(),
+            nar_size: 500,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 100,
+            content_address: None,
+        };
+        store.register_path(&drv_info).await.unwrap();
+
+        // Register an output that references the drv.
+        let out_info = PathInfo {
+            path: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-hello".to_string(),
+            nar_hash: "sha256:out".to_string(),
+            nar_size: 1000,
+            references: vec![],
+            deriver: Some(drv_info.path.clone()),
+            signatures: vec![],
+            registration_time: 200,
+            content_address: None,
+        };
+        store.register_path(&out_info).await.unwrap();
+
+        // Verify the output was registered.
+        let sp = StorePath::from_absolute_path(&out_info.path).unwrap();
+        let queried = store.query_path_info(&sp).await.unwrap().unwrap();
+        assert_eq!(queried.deriver, Some(drv_info.path));
+    }
+
+    #[tokio::test]
+    async fn register_path_query_all_returns_registered() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        let info1 = PathInfo {
+            path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-alpha".to_string(),
+            nar_hash: "sha256:a".to_string(),
+            nar_size: 10,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 1,
+            content_address: None,
+        };
+        let info2 = PathInfo {
+            path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-beta".to_string(),
+            nar_hash: "sha256:b".to_string(),
+            nar_size: 20,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 2,
+            content_address: None,
+        };
+
+        store.register_path(&info1).await.unwrap();
+        store.register_path(&info2).await.unwrap();
+
+        let all = store.query_all_valid_paths().await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    // ── add_to_store ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn add_to_store_registers_and_unpacks() {
+        use std::os::unix::fs::PermissionsExt;
+        use sui_compat::nar::{NarNode, NarWriter};
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        // Ensure the store directory is writable.
+        std::fs::set_permissions(
+            tmp_dir.path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let store_dir = tmp_dir.path().to_str().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(store_dir).await.unwrap();
+
+        // Create a NAR archive for a simple file.
+        let node = NarNode::Regular {
+            executable: false,
+            contents: b"hello store".to_vec(),
+        };
+        let mut nar_data = Vec::new();
+        NarWriter::write(&mut nar_data, &node).unwrap();
+
+        let info = store.add_to_store("test-pkg", &nar_data, &[]).await.unwrap();
+
+        // Verify the path was registered.
+        assert!(info.path.contains("test-pkg"));
+        assert!(info.nar_hash.starts_with("sha256:"));
+        assert_eq!(info.nar_size, nar_data.len() as i64);
+
+        // Verify the file was unpacked to the store directory.
+        let basename = info.path.strip_prefix(&format!("{store_dir}/")).unwrap();
+        let unpacked_path = tmp_dir.path().join(basename);
+        assert!(unpacked_path.exists());
+    }
+
+    // ── hex_encode helper ──────────────────────────────────────
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn hex_encode_single_byte() {
+        assert_eq!(hex_encode(&[0xff]), "ff");
+        assert_eq!(hex_encode(&[0x00]), "00");
+        assert_eq!(hex_encode(&[0x0a]), "0a");
+    }
+
+    #[test]
+    fn hex_encode_multiple_bytes() {
+        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
 }
