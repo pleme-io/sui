@@ -59,3 +59,56 @@ pub enum CliError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_error_missing_argument_display() {
+        let err = CliError::MissingArgument("no expression provided".into());
+        assert_eq!(err.to_string(), "no expression provided");
+    }
+
+    #[test]
+    fn cli_error_path_not_valid_display() {
+        let err = CliError::PathNotValid("/nix/store/abc-hello".into());
+        assert_eq!(err.to_string(), "path '/nix/store/abc-hello' is not valid");
+    }
+
+    #[test]
+    fn cli_error_orchestrate_display() {
+        let err = CliError::Orchestrate {
+            operation: "rebuild",
+            message: "something went wrong".into(),
+        };
+        assert_eq!(err.to_string(), "rebuild failed: something went wrong");
+    }
+
+    #[test]
+    fn cli_error_deploy_display() {
+        let err = CliError::Deploy("connection refused".into());
+        assert_eq!(err.to_string(), "deploy failed: connection refused");
+    }
+
+    #[test]
+    fn cli_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: CliError = io_err.into();
+        assert!(matches!(err, CliError::Io(_)));
+    }
+
+    #[test]
+    fn cli_error_from_json() {
+        let json_err = serde_json::from_str::<String>("not json").unwrap_err();
+        let err: CliError = json_err.into();
+        assert!(matches!(err, CliError::Json(_)));
+    }
+
+    #[test]
+    fn cli_error_is_debug() {
+        let err = CliError::MissingArgument("test".into());
+        let debug = format!("{err:?}");
+        assert!(debug.contains("MissingArgument"));
+    }
+}
