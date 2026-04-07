@@ -30,6 +30,29 @@ pub enum ContentAddressMethod {
     Recursive,
 }
 
+impl std::fmt::Display for ContentAddressMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => f.write_str("text"),
+            Self::Flat => f.write_str("flat"),
+            Self::Recursive => f.write_str("recursive"),
+        }
+    }
+}
+
+impl std::str::FromStr for ContentAddressMethod {
+    type Err = ContentAddressError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(Self::Text),
+            "flat" => Ok(Self::Flat),
+            "recursive" => Ok(Self::Recursive),
+            _ => Err(ContentAddressError::InvalidFormat(s.to_string())),
+        }
+    }
+}
+
 /// A content address assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentAddress {
