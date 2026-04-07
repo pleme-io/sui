@@ -620,4 +620,234 @@ mod tests {
     fn platform_rebuild_command_nixos() {
         assert_eq!(Platform::NixOS.rebuild_command(), "nixos-rebuild");
     }
+
+    // ── extract_generation edge cases ─────────────────────────
+
+    #[test]
+    fn extract_generation_multiple_lines() {
+        let log = "building system\nactivating generation 10\nswitched to generation 42\n";
+        assert_eq!(extract_generation(log), Some(42));
+    }
+
+    #[test]
+    fn extract_generation_trailing_period() {
+        assert_eq!(extract_generation("generation 7."), Some(7));
+    }
+
+    #[test]
+    fn extract_generation_empty_string() {
+        assert_eq!(extract_generation(""), None);
+    }
+
+    #[test]
+    fn extract_generation_number_only_no_keyword() {
+        assert_eq!(extract_generation("42"), None);
+    }
+
+    #[test]
+    fn extract_generation_large_number() {
+        assert_eq!(
+            extract_generation("switched to generation 999999"),
+            Some(999999)
+        );
+    }
+
+    #[test]
+    fn extract_generation_negative_parsed() {
+        // Negative numbers are technically parseable by i64; the function
+        // doesn't filter them — callers should validate if needed.
+        assert_eq!(extract_generation("generation -1"), Some(-1));
+    }
+
+    #[test]
+    fn extract_generation_zero() {
+        assert_eq!(extract_generation("generation 0"), Some(0));
+    }
+
+    // ── RebuildAction serde roundtrip ─────────────────────────
+
+    #[test]
+    fn rebuild_action_serde_roundtrip() {
+        for action in [
+            RebuildAction::Switch,
+            RebuildAction::Boot,
+            RebuildAction::Test,
+            RebuildAction::Build,
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            let parsed: RebuildAction = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, action);
+        }
+    }
+
+    #[test]
+    fn rebuild_action_display_matches_as_str() {
+        for action in [
+            RebuildAction::Switch,
+            RebuildAction::Boot,
+            RebuildAction::Test,
+            RebuildAction::Build,
+        ] {
+            assert_eq!(action.to_string(), action.as_str());
+        }
+    }
+
+    // ── SystemError display ───────────────────────────────────
+
+    #[test]
+    fn system_error_unsupported_platform_display() {
+        let e = SystemError::UnsupportedPlatform;
+        assert_eq!(e.to_string(), "unsupported platform");
+    }
+
+    #[test]
+    fn system_error_rebuild_failed_display() {
+        let e = SystemError::RebuildFailed("build error".to_string());
+        assert!(e.to_string().contains("build error"));
+    }
+
+    #[test]
+    fn system_error_command_not_found_display() {
+        let e = SystemError::CommandNotFound("nix".to_string());
+        assert!(e.to_string().contains("nix"));
+    }
+
+    // ── GenerationInfo serde roundtrip ────────────────────────
+
+    #[test]
+    fn generation_info_serde_roundtrip() {
+        let info = GenerationInfo {
+            number: 42,
+            date: "2024-06-01".to_string(),
+            current: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: GenerationInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.number, 42);
+        assert_eq!(parsed.date, "2024-06-01");
+        assert!(parsed.current);
+    }
+
+    // ── RebuildResult deserialization ──────────────────────────
+
+    #[test]
+    fn rebuild_result_deserialization() {
+        let json = r#"{"success":true,"generation":10,"action":"switch","log":"ok","duration_secs":2.0}"#;
+        let result: RebuildResult = serde_json::from_str(json).unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(10));
+        assert_eq!(result.action, "switch");
+    }
+
+    #[test]
+    fn rebuild_result_null_generation() {
+        let json = r#"{"success":false,"generation":null,"action":"build","log":"err","duration_secs":0.5}"#;
+        let result: RebuildResult = serde_json::from_str(json).unwrap();
+        assert!(!result.success);
+        assert_eq!(result.generation, None);
+    }
+
+    // ── rebuild() Test and Build actions ──────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_test_action() {
+        let runner = MockCommandRunner::new().with_response(
+            "nixos-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "generation 5\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Test, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "test");
+        assert_eq!(result.generation, Some(5));
+    }
+
+    #[tokio::test]
+    async fn mock_rebuild_build_action() {
+        let runner = MockCommandRunner::new().with_response(
+            "nixos-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "built successfully\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Build, None).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.action, "build");
+        assert_eq!(result.generation, None);
+    }
+
+    // ── rebuild() stderr captured in log ──────────────────────
+
+    #[tokio::test]
+    async fn mock_rebuild_captures_stderr_in_log() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "generation 1\n".to_string(),
+                stderr: "warning: something\n".to_string(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rebuild(RebuildAction::Switch, None).await.unwrap();
+        assert!(result.log.contains("warning: something"));
+        assert!(result.log.contains("generation 1"));
+    }
+
+    // ── current_generation() command not found ────────────────
+
+    #[tokio::test]
+    async fn mock_current_generation_command_not_found() {
+        let runner = MockCommandRunner::new();
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.current_generation().await;
+        assert!(result.is_err());
+    }
+
+    // ── list_generations() with unparseable lines ─────────────
+
+    #[tokio::test]
+    async fn mock_list_generations_skips_unparseable_lines() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  garbage line\n  5 2024-03-01\n  not-a-number date\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let gens = sys.list_generations().await.unwrap();
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0].number, 5);
+    }
+
+    // ── with_platform constructor ─────────────────────────────
+
+    #[test]
+    fn with_platform_constructor() {
+        let sys = SystemOrchestrator::with_platform(Platform::NixOS);
+        assert_eq!(sys.platform(), Platform::NixOS);
+    }
+
+    #[test]
+    fn with_platform_darwin_constructor() {
+        let sys = SystemOrchestrator::with_platform(Platform::Darwin);
+        assert_eq!(sys.platform(), Platform::Darwin);
+    }
 }
