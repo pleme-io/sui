@@ -38,6 +38,16 @@ impl TrustLevel {
     }
 }
 
+/// Wire encoding: `Trusted = 1`, `NotTrusted = 2` (matches Nix daemon protocol).
+impl From<TrustLevel> for u64 {
+    fn from(level: TrustLevel) -> Self {
+        match level {
+            TrustLevel::Trusted => 1,
+            TrustLevel::NotTrusted => 2,
+        }
+    }
+}
+
 impl std::fmt::Display for TrustLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

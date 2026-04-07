@@ -16,6 +16,24 @@ use sui_store::traits::Store;
 
 use crate::trust::TrustLevel;
 
+// ── Protocol version thresholds ─────────────────────────────────
+//
+// Nix encodes protocol versions as `(major << 8) | minor`.
+// These constants document the minor-version thresholds at which
+// optional handshake / option fields were added or removed.
+//
+// TODO(scope): these belong in `sui_compat::wire` alongside `PROTOCOL_VERSION`.
+
+/// Minimum client version that sends the (obsolete) CPU-affinity field.
+const PROTOCOL_MINOR_CPU_AFFINITY: u64 = (1 << 8) | 14;
+/// Minimum client version that sends the (obsolete) reserve-space field.
+const PROTOCOL_MINOR_RESERVE_SPACE: u64 = (1 << 8) | 11;
+/// Minimum client version that exchanges the trust-level field.
+const PROTOCOL_MINOR_TRUST_EXCHANGE: u64 = (1 << 8) | 35;
+/// Protocol version below which the (obsolete) `useBuildHook` field is sent
+/// in `SetOptions`, and above/equal to which string-pair overrides are sent.
+const PROTOCOL_MINOR_OVERRIDES: u64 = (1 << 8) | 12;
+
 /// Errors specific to connection handling.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -182,12 +200,12 @@ where
         self.client_version = read_u64(&mut self.reader).await?;
 
         // 5. Obsolete CPU affinity (must still send zero)
-        if self.client_version >= (1 << 8 | 14) {
+        if self.client_version >= PROTOCOL_MINOR_CPU_AFFINITY {
             let _cpu_affinity = read_u64(&mut self.reader).await?;
         }
 
         // 6. Obsolete reserve space (must still send zero)
-        if self.client_version >= (1 << 8 | 11) {
+        if self.client_version >= PROTOCOL_MINOR_RESERVE_SPACE {
             let _reserve = read_u64(&mut self.reader).await?;
         }
 
@@ -195,12 +213,8 @@ where
         write_string(&mut self.writer, "sui-daemon 0.1.0").await?;
 
         // 8. Write trust level
-        if self.client_version >= (1 << 8 | 35) {
-            let trust_val: u64 = match self.trust {
-                TrustLevel::Trusted => 1,
-                TrustLevel::NotTrusted => 2,
-            };
-            write_u64(&mut self.writer, trust_val).await?;
+        if self.client_version >= PROTOCOL_MINOR_TRUST_EXCHANGE {
+            write_u64(&mut self.writer, u64::from(self.trust)).await?;
         }
 
         self.writer.flush().await?;
@@ -374,7 +388,7 @@ where
 
         // Obsolete useBuildHook field (removed in protocol >= 1.12 but
         // older clients still send it).
-        if self.client_version < (1 << 8 | 12) {
+        if self.client_version < PROTOCOL_MINOR_OVERRIDES {
             let _use_build_hook = read_u64(&mut self.reader).await?;
         }
 
@@ -390,7 +404,7 @@ where
         let _use_substitutes = read_u64(&mut self.reader).await?;
 
         // overrides (map of string->string sent as flat list)
-        if self.client_version >= (1 << 8 | 12) {
+        if self.client_version >= PROTOCOL_MINOR_OVERRIDES {
             let count = read_u64(&mut self.reader).await?;
             for _ in 0..count {
                 let _name = read_string(&mut self.reader).await?;
