@@ -1109,6 +1109,117 @@ pub fn register(env: &mut Env) {
 
     // ── import ─────────────────────────────────────────────
 
+    // ── filterSource ──────────────────────────────────────
+    //
+    // `builtins.filterSource (path: type: bool) src` — copy `src`
+    // into the store, omitting any directory entry where the
+    // filter returns false. CppNix walks the source recursively,
+    // calls the predicate for every entry, and computes a content
+    // hash; sui materialises a copy in a sui-owned temp dir and
+    // returns the path. Hashes will differ from real nix, so this
+    // is unit-tested rather than diff-tested.
+    register_curried(&mut builtins_set, "filterSource", |pred, src| {
+        let src_path = src.coerce_to_path("filterSource")?;
+        let src_path_buf = std::path::PathBuf::from(&src_path);
+        if !src_path_buf.exists() {
+            return Err(EvalError::IoError {
+                context: format!("filterSource: {src_path}"),
+                message: "no such file or directory".into(),
+            });
+        }
+        let name = src_path_buf
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "source".into());
+        // Compute a content hash so repeated calls with the same
+        // source/predicate return the same path.
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        let pred_clone = pred.clone();
+        fn walk_filter(
+            base: &std::path::Path,
+            current: &std::path::Path,
+            pred: &Value,
+            hasher: &mut sha2::Sha256,
+            kept: &mut Vec<std::path::PathBuf>,
+        ) -> Result<(), EvalError> {
+            let metadata = std::fs::symlink_metadata(current).map_err(|e| EvalError::IoError {
+                context: format!("filterSource: {}", current.display()),
+                message: e.to_string(),
+            })?;
+            let kind = if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else {
+                "regular"
+            };
+            let path_arg = Value::string(current.to_string_lossy().to_string());
+            let kind_arg = Value::string(kind);
+            let partial = crate::eval::apply(pred.clone(), path_arg)?;
+            let keep = crate::eval::apply(partial, kind_arg)?.as_bool()?;
+            if !keep {
+                return Ok(());
+            }
+            let rel = current.strip_prefix(base).unwrap_or(current);
+            hasher.update(rel.to_string_lossy().as_bytes());
+            hasher.update([0u8]);
+            kept.push(current.to_path_buf());
+            if metadata.is_dir() {
+                let entries =
+                    std::fs::read_dir(current).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", current.display()),
+                        message: e.to_string(),
+                    })?;
+                let mut sorted: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                sorted.sort();
+                for child in sorted {
+                    walk_filter(base, &child, pred, hasher, kept)?;
+                }
+            }
+            Ok(())
+        }
+        let mut kept_paths: Vec<std::path::PathBuf> = Vec::new();
+        walk_filter(&src_path_buf, &src_path_buf, &pred_clone, &mut hasher, &mut kept_paths)?;
+        let hash = format!("{:x}", hasher.finalize());
+        let target = std::env::temp_dir()
+            .join("sui-filterSource")
+            .join(format!("{hash}-{name}"));
+        if !target.exists() {
+            std::fs::create_dir_all(&target).map_err(|e| EvalError::IoError {
+                context: format!("filterSource: {}", target.display()),
+                message: e.to_string(),
+            })?;
+            for kept in &kept_paths {
+                let rel = kept.strip_prefix(&src_path_buf).unwrap_or(kept);
+                if rel.as_os_str().is_empty() {
+                    continue;
+                }
+                let dst = target.join(rel);
+                let metadata =
+                    std::fs::symlink_metadata(kept).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", kept.display()),
+                        message: e.to_string(),
+                    })?;
+                if metadata.is_dir() {
+                    std::fs::create_dir_all(&dst).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", dst.display()),
+                        message: e.to_string(),
+                    })?;
+                } else {
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    std::fs::copy(kept, &dst).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", dst.display()),
+                        message: e.to_string(),
+                    })?;
+                }
+            }
+        }
+        Ok(Value::Path(target.to_string_lossy().into_owned()))
+    });
+
     // ── scopedImport ──────────────────────────────────────
     //
     // `builtins.scopedImport scope path` — like `import path` but the
@@ -4728,6 +4839,60 @@ mod tests {
         } else {
             panic!("expected attrs");
         }
+    }
+
+    // ── filterSource ──────────────────────────────────────
+
+    #[test]
+    fn builtins_filter_source_keeps_all_returns_path() {
+        let dir = std::env::temp_dir().join("sui_eval_filter_src_keep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "alpha").unwrap();
+        std::fs::write(dir.join("b.txt"), "beta").unwrap();
+        let expr = format!(
+            r#"builtins.filterSource (path: type: true) "{}""#,
+            dir.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(std::path::Path::new(&p).exists(), "target {p} should exist");
+            // Both kept files should be present.
+            assert!(std::path::Path::new(&p).join("a.txt").exists());
+            assert!(std::path::Path::new(&p).join("b.txt").exists());
+        } else {
+            panic!("expected path");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_filter_source_filters_by_predicate() {
+        let dir = std::env::temp_dir().join("sui_eval_filter_src_pred");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keep.txt"), "k").unwrap();
+        std::fs::write(dir.join("drop.txt"), "d").unwrap();
+        let expr = format!(
+            r#"builtins.filterSource (path: type: type == "directory" || (builtins.match ".*keep.*" path != null)) "{}""#,
+            dir.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(std::path::Path::new(&p).join("keep.txt").exists());
+            assert!(!std::path::Path::new(&p).join("drop.txt").exists());
+        } else {
+            panic!("expected path");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_filter_source_missing_path_errors() {
+        let result = eval(
+            r#"builtins.filterSource (path: type: true) "/nonexistent/sui_filter_src_xyz""#,
+        );
+        assert!(result.is_err());
     }
 
     // ── scopedImport ──────────────────────────────────────
