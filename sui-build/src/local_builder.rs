@@ -13,10 +13,12 @@ use sui_compat::derivation::{Derivation, DerivationOutput};
 use sui_compat::nar::{NarWriter, NarNode, NarEntry};
 use sui_compat::store_path::{StorePath, STORE_PATH_HASH_LEN};
 
+use crate::closure::BuildClosure;
 use crate::reference_scan;
 use crate::sandbox::{Sandbox, SandboxConfig};
-use crate::traits::{BuildError, BuildLog, BuildResult, Builder};
+use crate::traits::{BuildError, BuildLog, BuildOutcome, BuildResult, Builder};
 
+use sui_store::substitute::{SubstituteResult, Substitutor};
 use sui_store::traits::{PathInfo, Store};
 
 /// A builder that executes derivations locally with sandbox isolation.
@@ -270,6 +272,105 @@ impl LocalBuilder {
             .collect();
 
         Ok(found_paths)
+    }
+}
+
+impl LocalBuilder {
+    /// Build an entire derivation closure in topological order.
+    ///
+    /// For each derivation in the closure (leaves first, target last):
+    /// 1. Check if all outputs already exist in the store (skip)
+    /// 2. Try to substitute each output from binary caches
+    /// 3. Fall back to local build if substitution is not available
+    ///
+    /// Stops on the first build failure.
+    pub async fn build_closure(
+        &self,
+        closure: &BuildClosure,
+        substitutor: Option<&Substitutor>,
+    ) -> Result<BuildResult, BuildError> {
+        let start = std::time::Instant::now();
+        let mut log = BuildLog::new();
+        let mut substituted: u32 = 0;
+        let mut built: u32 = 0;
+        let mut skipped: u32 = 0;
+
+        for (drv_path, drv) in &closure.derivations {
+            // 1. Check if all outputs already exist
+            if self.all_outputs_exist(drv).await? {
+                skipped += 1;
+                tracing::debug!(drv_path, "all outputs present, skipping");
+                continue;
+            }
+
+            // 2. Try substitution for each output
+            if let Some(sub) = substitutor {
+                let sub_result = self.try_substitute_outputs(sub, drv).await;
+                if sub_result {
+                    substituted += 1;
+                    tracing::debug!(drv_path, "all outputs substituted");
+                    continue;
+                }
+            }
+
+            // 3. Build locally
+            log.push(&format!("building {drv_path}"));
+            tracing::info!(drv_path, "building locally");
+            let result = self.build_single(drv).await?;
+
+            if !result.success {
+                log.push(&format!("FAILED: {drv_path}"));
+                // Merge closure log into the build result log
+                let merged_log = format!("{}\n{}", log.finish(), result.log);
+                return Ok(BuildResult {
+                    log: merged_log,
+                    ..result
+                });
+            }
+            built += 1;
+        }
+
+        log.push(&format!(
+            "closure complete: {skipped} skipped, {substituted} substituted, {built} built"
+        ));
+
+        // Return result for the target (last) derivation
+        let (_target_path, target_drv) = closure.target();
+        let output_paths: Vec<StorePath> = target_drv
+            .outputs
+            .values()
+            .filter_map(|o| StorePath::from_absolute_path(&o.path).ok())
+            .collect();
+
+        Ok(BuildResult {
+            outputs: output_paths,
+            log: log.finish(),
+            success: true,
+            outcome: BuildOutcome::Success,
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Try to substitute all outputs of a derivation. Returns `true` if
+    /// every output was either already present or successfully substituted.
+    async fn try_substitute_outputs(
+        &self,
+        substitutor: &Substitutor,
+        drv: &sui_compat::derivation::Derivation,
+    ) -> bool {
+        for output in drv.outputs.values() {
+            let sp = match StorePath::from_absolute_path(&output.path) {
+                Ok(sp) => sp,
+                Err(_) => return false,
+            };
+            match substitutor.substitute(&sp).await {
+                Ok(SubstituteResult::Substituted { .. } | SubstituteResult::AlreadyPresent) => {
+                    // This output is covered
+                }
+                _ => return false,
+            }
+        }
+        true
     }
 }
 
@@ -1039,5 +1140,359 @@ mod tests {
         assert!(paths.contains_key(&output_str));
         let info = &paths[&output_str];
         assert!(info.references.contains(&input_path));
+    }
+
+    // ── build_closure tests ──────────────────────────────────────
+
+    /// Make a BuildClosure from a list of (drv_path, derivation) pairs.
+    fn make_closure(drvs: Vec<(&str, Derivation)>) -> BuildClosure {
+        BuildClosure {
+            derivations: drvs
+                .into_iter()
+                .map(|(p, d)| (p.to_string(), d))
+                .collect(),
+        }
+    }
+
+    /// MockStore that also implements add_to_store for substitution tests.
+    struct SubMockStore {
+        paths: Mutex<BTreeMap<String, PathInfo>>,
+    }
+
+    impl SubMockStore {
+        fn new() -> Self {
+            Self {
+                paths: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Store for SubMockStore {
+        async fn query_path_info(
+            &self,
+            path: &StorePath,
+        ) -> sui_store::traits::StoreResult<Option<PathInfo>> {
+            let abs = path.to_absolute_path();
+            Ok(self.paths.lock().unwrap().get(&abs).cloned())
+        }
+
+        async fn is_valid_path(
+            &self,
+            path: &StorePath,
+        ) -> sui_store::traits::StoreResult<bool> {
+            let abs = path.to_absolute_path();
+            Ok(self.paths.lock().unwrap().contains_key(&abs))
+        }
+
+        async fn query_all_valid_paths(
+            &self,
+        ) -> sui_store::traits::StoreResult<Vec<StorePath>> {
+            Ok(Vec::new())
+        }
+
+        async fn register_path(
+            &self,
+            info: &PathInfo,
+        ) -> sui_store::traits::StoreResult<()> {
+            self.paths
+                .lock()
+                .unwrap()
+                .insert(info.path.clone(), info.clone());
+            Ok(())
+        }
+
+        async fn add_to_store(
+            &self,
+            name: &str,
+            _nar_data: &[u8],
+            references: &[String],
+        ) -> sui_store::traits::StoreResult<PathInfo> {
+            let path = format!("/nix/store/mock-{name}");
+            let info = PathInfo {
+                path: path.clone(),
+                nar_hash: "sha256:mock".to_string(),
+                nar_size: 100,
+                references: references.to_vec(),
+                ..PathInfo::default()
+            };
+            self.paths.lock().unwrap().insert(path, info.clone());
+            Ok(info)
+        }
+    }
+
+    #[tokio::test]
+    async fn build_closure_all_outputs_exist_skips_all() {
+        let out1 = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0";
+        let out2 = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-target-1.0";
+
+        let store = Arc::new(MockStore::new()
+            .with_path(PathInfo::new(out1, "sha256:a"))
+            .with_path(PathInfo::new(out2, "sha256:b")));
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
+
+        let closure = make_closure(vec![
+            ("dep.drv", make_drv("/bin/sh", &["-c", "true"], out1)),
+            ("target.drv", make_drv("/bin/sh", &["-c", "true"], out2)),
+        ]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("2 skipped"));
+        assert!(result.log.contains("0 substituted"));
+        assert!(result.log.contains("0 built"));
+    }
+
+    #[tokio::test]
+    async fn build_closure_no_substitutor_builds_locally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out1 = tmp.path().join("out1");
+        let out2 = tmp.path().join("out2");
+        let out1_str = out1.to_str().unwrap().to_string();
+        let out2_str = out2.to_str().unwrap().to_string();
+
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+
+        let closure = make_closure(vec![
+            (
+                "dep.drv",
+                make_drv(
+                    "/bin/sh",
+                    &["-c", &format!("echo dep > {}", out1.display())],
+                    &out1_str,
+                ),
+            ),
+            (
+                "target.drv",
+                make_drv(
+                    "/bin/sh",
+                    &["-c", &format!("echo target > {}", out2.display())],
+                    &out2_str,
+                ),
+            ),
+        ]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("0 skipped"));
+        assert!(result.log.contains("0 substituted"));
+        assert!(result.log.contains("2 built"));
+    }
+
+    #[tokio::test]
+    async fn build_closure_failure_stops_processing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out1 = tmp.path().join("fail-out");
+        let out2 = tmp.path().join("never-reached");
+
+        let store = Arc::new(MockStore::new());
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+
+        let closure = make_closure(vec![
+            (
+                "fail.drv",
+                make_drv("/bin/sh", &["-c", "exit 1"], out1.to_str().unwrap()),
+            ),
+            (
+                "target.drv",
+                make_drv(
+                    "/bin/sh",
+                    &["-c", &format!("echo ok > {}", out2.display())],
+                    out2.to_str().unwrap(),
+                ),
+            ),
+        ]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(!result.is_success());
+        assert!(result.log.contains("FAILED: fail.drv"));
+        // The second derivation should not have been attempted
+        assert!(!out2.exists());
+    }
+
+    #[tokio::test]
+    async fn build_closure_mixed_skip_and_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out1 = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-existing";
+        let out2 = tmp.path().join("new-out");
+        let out2_str = out2.to_str().unwrap().to_string();
+
+        let store = Arc::new(MockStore::new()
+            .with_path(PathInfo::new(out1, "sha256:a")));
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+
+        let closure = make_closure(vec![
+            ("existing.drv", make_drv("/bin/sh", &["-c", "true"], out1)),
+            (
+                "new.drv",
+                make_drv(
+                    "/bin/sh",
+                    &["-c", &format!("echo new > {}", out2.display())],
+                    &out2_str,
+                ),
+            ),
+        ]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("1 skipped"));
+        assert!(result.log.contains("1 built"));
+    }
+
+    #[tokio::test]
+    async fn build_closure_with_substitutor_substitutes() {
+        // Set up a mock HTTP client + binary cache + substitutor
+        use sui_store::http::{HttpClient as HttpClientTrait, HttpError as HErr, HttpResponse as HResp};
+
+        let out_path = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1";
+        let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+
+        // Create NAR bytes and narinfo
+        let nar_bytes = {
+            use sui_compat::nar::{NarNode, NarWriter};
+            let node = NarNode::Regular {
+                executable: false,
+                contents: b"hello".to_vec(),
+            };
+            let mut buf = Vec::new();
+            NarWriter::write(&mut buf, &node).unwrap();
+            buf
+        };
+
+        let narinfo_text = format!(
+            "StorePath: {out_path}\n\
+             URL: nar/{hash}.nar.none\n\
+             Compression: none\n\
+             FileHash: sha256:aaaa\n\
+             FileSize: 100\n\
+             NarHash: sha256:bbbb\n\
+             NarSize: 200\n\
+             References: \n\
+             Sig: key:sig\n"
+        );
+
+        // Build a mock HTTP client
+        struct ClosureTestHttpClient {
+            narinfo_url: String,
+            narinfo_body: String,
+            nar_url: String,
+            nar_data: Vec<u8>,
+        }
+
+        #[async_trait::async_trait]
+        impl HttpClientTrait for ClosureTestHttpClient {
+            async fn get(&self, url: &str, _h: &[(&str, &str)]) -> Result<HResp, HErr> {
+                if url == self.narinfo_url {
+                    Ok(HResp { status: 200, body: self.narinfo_body.clone() })
+                } else {
+                    Ok(HResp { status: 404, body: "not found".to_string() })
+                }
+            }
+            async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HErr> {
+                if url == self.nar_url {
+                    Ok(self.nar_data.clone())
+                } else {
+                    Err(HErr::Request(format!("not found: {url}")))
+                }
+            }
+        }
+
+        let http_client = ClosureTestHttpClient {
+            narinfo_url: format!("https://test.cache/{hash}.narinfo"),
+            narinfo_body: narinfo_text,
+            nar_url: format!("https://test.cache/nar/{hash}.nar.none"),
+            nar_data: nar_bytes,
+        };
+
+        let cache = Arc::new(
+            sui_store::BinaryCacheStore::builder("https://test.cache")
+                .http_client(Box::new(http_client))
+                .build(),
+        );
+
+        // Use SubMockStore for the substitutor's local store (supports add_to_store)
+        let sub_store: Arc<dyn Store> = Arc::new(SubMockStore::new());
+        let substitutor = Substitutor::new(sub_store.clone(), vec![cache]);
+
+        // Use the same store for the builder
+        let builder = LocalBuilder::new(sub_store, Box::new(NoSandbox));
+
+        let closure = make_closure(vec![
+            ("hello.drv", make_drv("/bin/sh", &["-c", "true"], out_path)),
+        ]);
+
+        let result = builder.build_closure(&closure, Some(&substitutor)).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("1 substituted"));
+        assert!(result.log.contains("0 built"));
+    }
+
+    #[tokio::test]
+    async fn build_closure_substitutor_not_found_falls_back_to_build() {
+        use sui_store::http::{HttpClient as HttpClientTrait, HttpError as HErr, HttpResponse as HResp};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let out_path = tmp.path().join("built-out");
+        let out_str = out_path.to_str().unwrap().to_string();
+
+        // Empty cache — nothing in it
+        struct EmptyHttpClient;
+
+        #[async_trait::async_trait]
+        impl HttpClientTrait for EmptyHttpClient {
+            async fn get(&self, _url: &str, _h: &[(&str, &str)]) -> Result<HResp, HErr> {
+                Ok(HResp { status: 404, body: "not found".to_string() })
+            }
+            async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HErr> {
+                Err(HErr::Request(format!("not found: {url}")))
+            }
+        }
+
+        let cache = Arc::new(
+            sui_store::BinaryCacheStore::builder("https://empty.cache")
+                .http_client(Box::new(EmptyHttpClient))
+                .build(),
+        );
+
+        let store: Arc<dyn Store> = Arc::new(MockStore::new());
+        let substitutor = Substitutor::new(store.clone(), vec![cache]);
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox))
+            .with_build_dir(tmp.path().join("build").to_str().unwrap().to_string());
+
+        let closure = make_closure(vec![
+            (
+                "build-me.drv",
+                make_drv(
+                    "/bin/sh",
+                    &["-c", &format!("echo built > {}", out_path.display())],
+                    &out_str,
+                ),
+            ),
+        ]);
+
+        let result = builder.build_closure(&closure, Some(&substitutor)).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("0 substituted"));
+        assert!(result.log.contains("1 built"));
+    }
+
+    #[tokio::test]
+    async fn build_closure_single_element() {
+        // BuildClosure::compute never returns empty, so target() is safe.
+        // Verify that a single-element closure works correctly.
+        let out = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-single";
+        let store = Arc::new(MockStore::new().with_path(PathInfo::new(out, "sha256:a")));
+        let builder = LocalBuilder::new(store, Box::new(NoSandbox));
+        let closure = make_closure(vec![
+            ("single.drv", make_drv("/bin/sh", &["-c", "true"], out)),
+        ]);
+
+        let result = builder.build_closure(&closure, None).await.unwrap();
+        assert!(result.is_success());
+        assert!(result.log.contains("1 skipped"));
     }
 }
