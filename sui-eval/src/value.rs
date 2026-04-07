@@ -479,7 +479,7 @@ impl Env {
 }
 
 /// Evaluation errors produced by the Nix evaluator.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EvalError {
     /// A variable was referenced but not bound in scope.
