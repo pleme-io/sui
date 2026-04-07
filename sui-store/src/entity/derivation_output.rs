@@ -2,6 +2,7 @@
 
 use sea_orm::entity::prelude::*;
 
+/// A mapping from derivation output to its store path.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "DerivationOutputs")]
 pub struct Model {

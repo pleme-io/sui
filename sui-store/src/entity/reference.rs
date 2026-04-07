@@ -2,6 +2,7 @@
 
 use sea_orm::entity::prelude::*;
 
+/// A dependency edge between two store paths.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "Refs")]
 pub struct Model {

@@ -2,11 +2,14 @@
 
 use sea_orm::entity::prelude::*;
 
+/// A registered store path row in the Nix SQLite database.
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "ValidPaths")]
 pub struct Model {
+    /// Auto-incrementing primary key.
     #[sea_orm(primary_key, auto_increment = true)]
     pub id: i64,
+    /// Full absolute store path (unique).
     #[sea_orm(unique)]
     pub path: String,
     /// SHA-256 hash of the NAR, in Nix's `sha256:<base16>` format.

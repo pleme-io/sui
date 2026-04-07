@@ -6,15 +6,19 @@
 /// HTTP response returned by [`HttpClient`] methods.
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
+    /// HTTP status code (e.g., 200, 404, 500).
     pub status: u16,
+    /// Response body decoded as UTF-8 text.
     pub body: String,
 }
 
 /// HTTP client errors.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
+    /// The HTTP request could not be sent (network error, DNS failure, etc.).
     #[error("request failed: {0}")]
     Request(String),
+    /// The response body could not be decoded.
     #[error("decode error: {0}")]
     Decode(String),
 }
@@ -22,7 +26,9 @@ pub enum HttpError {
 /// Async HTTP client trait — abstracts over reqwest for testability.
 #[async_trait::async_trait]
 pub trait HttpClient: Send + Sync {
+    /// Send a GET request with custom headers and return the text response.
     async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, HttpError>;
+    /// Send a GET request and return the raw response bytes.
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError>;
 }
 
@@ -32,6 +38,7 @@ pub struct ReqwestHttpClient {
 }
 
 impl ReqwestHttpClient {
+    /// Create a new HTTP client with default settings.
     pub fn new() -> Self {
         Self { inner: reqwest::Client::new() }
     }
