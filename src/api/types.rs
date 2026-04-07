@@ -129,6 +129,7 @@ pub struct SearchQuery {
     pub flake_ref: String,
 }
 
+/// Returns `"nixpkgs"` as the default flake reference for search queries.
 fn default_flake_ref() -> String {
     "nixpkgs".to_string()
 }
@@ -315,6 +316,7 @@ pub struct PaginationQuery {
     pub offset: i64,
 }
 
+/// Returns `100` as the default pagination limit.
 fn default_limit() -> i64 {
     100
 }

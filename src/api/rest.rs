@@ -13,6 +13,10 @@ use sui_compat::store_path::StorePath;
 use super::state::AppState;
 use super::types::*;
 
+/// Build the REST API router with all endpoint routes.
+///
+/// All handlers are mounted under `/api/v1/` with an additional `/health` at the root.
+/// The returned router requires [`AppState`] to be provided via `.with_state()`.
 pub fn router() -> Router<AppState> {
     Router::new()
         // Health

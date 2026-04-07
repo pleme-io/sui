@@ -9,10 +9,12 @@ use tokio_stream::Stream;
 
 use super::types::*;
 
+/// The full GraphQL schema type combining queries, mutations, and subscriptions.
 pub type SuiSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 
 // ── Queries ─────────────────────────────────────────────────
 
+/// Root query type exposing all read operations.
 pub struct QueryRoot;
 
 #[Object]
@@ -204,6 +206,7 @@ impl QueryRoot {
 
 // ── Mutations ───────────────────────────────────────────────
 
+/// Root mutation type exposing all write operations.
 pub struct MutationRoot;
 
 #[Object]
@@ -395,6 +398,7 @@ impl MutationRoot {
 
 // ── Subscriptions ───────────────────────────────────────────
 
+/// Root subscription type for real-time event streams.
 pub struct SubscriptionRoot;
 
 #[Subscription]
@@ -429,12 +433,14 @@ impl SubscriptionRoot {
 
 // ── Schema + Router ─────────────────────────────────────────
 
+/// Construct the GraphQL schema with the given application state injected as context data.
 pub fn build_schema(state: super::state::AppState) -> SuiSchema {
     Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
         .data(state)
         .finish()
 }
 
+/// Build the GraphQL axum router with POST and WebSocket subscription endpoints.
 pub fn router<S>(schema: SuiSchema) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
