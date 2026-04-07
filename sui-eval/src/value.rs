@@ -1046,4 +1046,471 @@ mod tests {
         env.bind("x".to_string(), Value::Int(99));
         assert_eq!(env.lookup("x"), Some(Value::Int(99)));
     }
+
+    // ── NixString context propagation ─────────────────────
+
+    #[test]
+    fn string_context_merge_combines_elements() {
+        let mut ctx_a = StringContext::new();
+        ctx_a.add_plain("/nix/store/aaa".to_string());
+        let mut ctx_b = StringContext::new();
+        ctx_b.add_plain("/nix/store/bbb".to_string());
+        ctx_a.merge(&ctx_b);
+        assert_eq!(ctx_a.0.len(), 2);
+        assert!(ctx_a.0.contains(&ContextElement::Plain("/nix/store/aaa".to_string())));
+        assert!(ctx_a.0.contains(&ContextElement::Plain("/nix/store/bbb".to_string())));
+    }
+
+    #[test]
+    fn string_context_merge_deduplicates() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/same".to_string());
+        ctx.add_plain("/nix/store/same".to_string());
+        assert_eq!(ctx.0.len(), 1);
+    }
+
+    #[test]
+    fn string_context_mixed_element_types() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/foo".to_string());
+        ctx.add_output("/nix/store/bar.drv".to_string(), "out".to_string());
+        ctx.add_drv_deep("/nix/store/baz.drv".to_string());
+        assert_eq!(ctx.0.len(), 3);
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn string_context_new_is_empty() {
+        let ctx = StringContext::new();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.0.len(), 0);
+    }
+
+    #[test]
+    fn nix_string_plain_has_no_context() {
+        let s = NixString::plain("hello");
+        assert!(!s.has_context());
+        assert_eq!(s.as_str(), "hello");
+    }
+
+    #[test]
+    fn nix_string_with_context_reports_context() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/xyz".to_string());
+        let s = NixString::with_context("hello", ctx);
+        assert!(s.has_context());
+        assert_eq!(s.as_str(), "hello");
+    }
+
+    #[test]
+    fn nix_string_display_shows_chars_only() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/abc".to_string());
+        let s = NixString::with_context("visible", ctx);
+        assert_eq!(format!("{s}"), "visible");
+    }
+
+    #[test]
+    fn nix_string_struct_eq_includes_context() {
+        let plain = NixString::plain("hello");
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/xxx".to_string());
+        let with_ctx = NixString::with_context("hello", ctx);
+        // NixString's derived PartialEq compares context too
+        assert_ne!(plain, with_ctx);
+    }
+
+    #[test]
+    fn value_string_eq_ignores_context() {
+        let plain = Value::String(NixString::plain("hello"));
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/xxx".to_string());
+        let with_ctx = Value::String(NixString::with_context("hello", ctx));
+        // Value::PartialEq only compares .chars, ignoring context
+        assert_eq!(plain, with_ctx);
+    }
+
+    // ── Env deeply nested with-scopes ─────────────────────
+
+    #[test]
+    fn env_nested_with_inner_wins() {
+        let mut outer_attrs = NixAttrs::new();
+        outer_attrs.insert("x".to_string(), Value::Int(1));
+        let outer = Env::new().with_scope(outer_attrs);
+        let mut inner_attrs = NixAttrs::new();
+        inner_attrs.insert("x".to_string(), Value::Int(2));
+        let inner = outer.child().with_scope(inner_attrs);
+        assert_eq!(inner.lookup("x"), Some(Value::Int(2)));
+    }
+
+    #[test]
+    fn env_nested_with_fallback_to_outer() {
+        let mut outer_attrs = NixAttrs::new();
+        outer_attrs.insert("x".to_string(), Value::Int(1));
+        let outer = Env::new().with_scope(outer_attrs);
+        let mut inner_attrs = NixAttrs::new();
+        inner_attrs.insert("y".to_string(), Value::Int(2));
+        let inner = outer.child().with_scope(inner_attrs);
+        assert_eq!(inner.lookup("x"), Some(Value::Int(1)));
+        assert_eq!(inner.lookup("y"), Some(Value::Int(2)));
+    }
+
+    #[test]
+    fn env_lexical_binding_wins_over_all_with_scopes() {
+        let mut outer_attrs = NixAttrs::new();
+        outer_attrs.insert("x".to_string(), Value::Int(1));
+        let outer = Env::new().with_scope(outer_attrs);
+        let mut inner_attrs = NixAttrs::new();
+        inner_attrs.insert("x".to_string(), Value::Int(2));
+        let mut inner = outer.child().with_scope(inner_attrs);
+        inner.bind("x".to_string(), Value::Int(99));
+        assert_eq!(inner.lookup("x"), Some(Value::Int(99)));
+    }
+
+    #[test]
+    fn env_parent_lexical_wins_over_child_with_scope() {
+        let mut root = Env::new();
+        root.bind("x".to_string(), Value::Int(10));
+        let mut child_attrs = NixAttrs::new();
+        child_attrs.insert("x".to_string(), Value::Int(20));
+        let child = root.child().with_scope(child_attrs);
+        assert_eq!(child.lookup("x"), Some(Value::Int(10)));
+    }
+
+    #[test]
+    fn env_deeply_nested_with_scopes_three_levels() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let env1 = Env::new().with_scope(a);
+
+        let mut b = NixAttrs::new();
+        b.insert("y".to_string(), Value::Int(2));
+        let env2 = env1.child().with_scope(b);
+
+        let mut c = NixAttrs::new();
+        c.insert("z".to_string(), Value::Int(3));
+        let env3 = env2.child().with_scope(c);
+
+        assert_eq!(env3.lookup("x"), Some(Value::Int(1)));
+        assert_eq!(env3.lookup("y"), Some(Value::Int(2)));
+        assert_eq!(env3.lookup("z"), Some(Value::Int(3)));
+        assert_eq!(env3.lookup("w"), None);
+    }
+
+    #[test]
+    fn env_lookup_lexical_only_skips_with_scope() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("x".to_string(), Value::Int(42));
+        let env = Env::new().with_scope(attrs);
+        assert_eq!(env.lookup_lexical("x"), None);
+    }
+
+    #[test]
+    fn env_lookup_with_only_skips_bindings() {
+        let mut env = Env::new();
+        env.bind("x".to_string(), Value::Int(42));
+        assert_eq!(env.lookup_with("x"), None);
+    }
+
+    #[test]
+    fn env_child_inherits_eval_file() {
+        let mut env = Env::new();
+        env.eval_file = Some(std::path::PathBuf::from("/foo/bar.nix"));
+        let child = env.child();
+        assert_eq!(child.eval_file, Some(std::path::PathBuf::from("/foo/bar.nix")));
+    }
+
+    #[test]
+    fn env_new_has_no_parent_no_with() {
+        let env = Env::new();
+        assert_eq!(env.lookup("anything"), None);
+        assert!(env.eval_file.is_none());
+    }
+
+    // ── Thunk state machine ───────────────────────────────
+
+    #[test]
+    fn thunk_new_suspended_is_not_evaluated() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        assert!(!thunk.is_evaluated());
+    }
+
+    #[test]
+    fn thunk_new_evaluated_is_evaluated() {
+        let thunk = Thunk::new_evaluated(Value::Int(42));
+        assert!(thunk.is_evaluated());
+    }
+
+    #[test]
+    fn thunk_force_evaluates_suspended() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Value::Int(42));
+        assert!(thunk.is_evaluated());
+    }
+
+    #[test]
+    fn thunk_force_memoizes_result() {
+        let root = rnix::Root::parse("1 + 2");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let r1 = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        let r2 = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        assert_eq!(r1, Value::Int(3));
+        assert_eq!(r2, Value::Int(3));
+    }
+
+    #[test]
+    fn thunk_force_already_evaluated_returns_value() {
+        let thunk = Thunk::new_evaluated(Value::Bool(true));
+        let result = thunk.force(&|_, _| panic!("should not be called"));
+        assert_eq!(result.unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn thunk_blackhole_detects_infinite_recursion() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+
+        // Manually set to blackhole to simulate re-entrance
+        *thunk.0.borrow_mut() = ThunkRepr::Blackhole;
+
+        let result = thunk.force(&|_, _| Ok(Value::Null));
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("infinite recursion"));
+    }
+
+    #[test]
+    fn thunk_update_env_replaces_suspended_env() {
+        let root = rnix::Root::parse("x");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+
+        let mut new_env = Env::new();
+        new_env.bind("x".to_string(), Value::Int(99));
+        thunk.update_env(new_env);
+
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert_eq!(result.unwrap(), Value::Int(99));
+    }
+
+    #[test]
+    fn thunk_update_env_noop_when_evaluated() {
+        let thunk = Thunk::new_evaluated(Value::Int(1));
+        let mut new_env = Env::new();
+        new_env.bind("x".to_string(), Value::Int(99));
+        thunk.update_env(new_env);
+        assert_eq!(
+            thunk.force(&|_, _| panic!("should not be called")).unwrap(),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn thunk_debug_suspended() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        assert_eq!(format!("{thunk:?}"), "<thunk>");
+    }
+
+    #[test]
+    fn thunk_debug_evaluated() {
+        let thunk = Thunk::new_evaluated(Value::Int(42));
+        let dbg = format!("{thunk:?}");
+        assert!(dbg.contains("42"));
+    }
+
+    #[test]
+    fn thunk_error_restores_suspended_state() {
+        let root = rnix::Root::parse("nonexistent_var");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert!(result.is_err());
+        // After error, thunk should be restored to Suspended, not stuck as Blackhole
+        assert!(!thunk.is_evaluated());
+        let dbg = format!("{thunk:?}");
+        assert_eq!(dbg, "<thunk>");
+    }
+
+    #[test]
+    fn thunk_inherit_select_forces_and_selects() {
+        let root = rnix::Root::parse(r#"{ x = 42; }"#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_inherit_select(expr, "x".to_string(), Env::new());
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert_eq!(result.unwrap(), Value::Int(42));
+        assert!(thunk.is_evaluated());
+    }
+
+    #[test]
+    fn thunk_inherit_select_missing_attr_errors() {
+        let root = rnix::Root::parse(r#"{ x = 42; }"#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_inherit_select(expr, "y".to_string(), Env::new());
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert!(result.is_err());
+        // Thunk should restore to InheritSelect, not be stuck as Blackhole
+        assert!(!thunk.is_evaluated());
+    }
+
+    #[test]
+    fn thunk_inherit_select_non_attrs_source_errors() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_inherit_select(expr, "x".to_string(), Env::new());
+        let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("not a set"));
+    }
+
+    // ── NixAttrs additional tests ─────────────────────────
+
+    #[test]
+    fn nixattrs_empty_operations() {
+        let a = NixAttrs::new();
+        assert!(a.is_empty());
+        assert_eq!(a.len(), 0);
+        assert_eq!(a.get("x"), None);
+        assert!(!a.contains_key("x"));
+        assert_eq!(a.keys().count(), 0);
+        assert_eq!(a.iter().count(), 0);
+    }
+
+    #[test]
+    fn nixattrs_update_with_empty() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let b = NixAttrs::new();
+        let merged = a.update(&b);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.get("x"), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn nixattrs_update_empty_with_nonempty() {
+        let a = NixAttrs::new();
+        let mut b = NixAttrs::new();
+        b.insert("x".to_string(), Value::Int(1));
+        let merged = a.update(&b);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.get("x"), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn nixattrs_keys_sorted_order() {
+        let mut a = NixAttrs::new();
+        a.insert("c".to_string(), Value::Int(3));
+        a.insert("a".to_string(), Value::Int(1));
+        a.insert("b".to_string(), Value::Int(2));
+        let keys: Vec<&String> = a.keys().collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    // ── Value convenience methods ─────────────────────────
+
+    #[test]
+    fn value_to_str_forces_thunks() {
+        let root = rnix::Root::parse(r#""hello""#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(val.to_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn value_to_nix_string_forces_thunks() {
+        let root = rnix::Root::parse(r#""world""#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        let ns = val.to_nix_string().unwrap();
+        assert_eq!(ns.as_str(), "world");
+        assert!(!ns.has_context());
+    }
+
+    #[test]
+    fn value_to_attrs_forces_thunks() {
+        let root = rnix::Root::parse("{ x = 1; }");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        let attrs = val.to_attrs().unwrap();
+        assert_eq!(attrs.len(), 1);
+    }
+
+    #[test]
+    fn value_to_list_forces_thunks() {
+        let root = rnix::Root::parse("[1 2 3]");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        let list = val.to_list().unwrap();
+        assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn value_as_float_on_thunk() {
+        let root = rnix::Root::parse("3.14");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        let f = val.as_float().unwrap();
+        assert!((f - 3.14).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn value_as_bool_on_thunk() {
+        let root = rnix::Root::parse("true");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert!(val.as_bool().unwrap());
+    }
+
+    #[test]
+    fn value_as_int_on_thunk() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(val.as_int().unwrap(), 42);
+    }
+
+    #[test]
+    fn value_string_constructor() {
+        let v = Value::string("test");
+        assert_eq!(v, Value::String(NixString::plain("test")));
+    }
+
+    #[test]
+    fn value_partial_eq_null_null() {
+        assert_eq!(Value::Null, Value::Null);
+    }
+
+    #[test]
+    fn value_partial_eq_lists_deep() {
+        let a = Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        let b = Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn value_partial_eq_attrs_deep() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let mut b = NixAttrs::new();
+        b.insert("x".to_string(), Value::Int(1));
+        assert_eq!(Value::Attrs(a), Value::Attrs(b));
+    }
 }
