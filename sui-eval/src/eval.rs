@@ -415,10 +415,8 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             .attrs()
                             .map(|a| eval_attr(&a, env))
                             .collect::<Result<_, _>>()?;
-                        if path_keys.len() == 1 {
-                            let key = path_keys.into_iter().next().unwrap();
-                            // Create thunk with a placeholder env (will be
-                            // updated to the final env in phase 2).
+                        if let [ref key] = path_keys[..] {
+                            let key = key.clone();
                             let thunk = Thunk::new_suspended(value_expr, env.clone());
                             new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
                             thunks.push((key, thunk));
@@ -646,8 +644,8 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         .attrs()
                         .map(|a| eval_attr(&a, env))
                         .collect::<Result<_, _>>()?;
-                    if path_keys.len() == 1 {
-                        let key = path_keys.into_iter().next().unwrap();
+                    if let [ref key] = path_keys[..] {
+                        let key = key.clone();
                         let thunk = Thunk::new_suspended(value_expr, env.clone());
                         let thunk_val = Value::Thunk(thunk.clone());
                         rec_env.bind(key.clone(), thunk_val.clone());
@@ -660,9 +658,6 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
-                    // Pass the REAL rec_env (not a clone) so inherit
-                    // names bind into the rec scope and sibling
-                    // attrs that reference them resolve correctly.
                     eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env))?;
                 }
             }
@@ -687,14 +682,9 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         .attrs()
                         .map(|a| eval_attr(&a, env))
                         .collect::<Result<_, _>>()?;
-                    if path_keys.len() == 1 {
-                        let key = path_keys.into_iter().next().unwrap();
-                        // Wrap in thunk for lazy evaluation. This is critical
-                        // for fixpoint combinators where attrset values may
-                        // reference a self-referential thunk (e.g., `self.a`
-                        // where `self` is still being evaluated).
+                    if let [ref key] = path_keys[..] {
                         let thunk = Thunk::new_suspended(value_expr, env.clone());
-                        attrs.insert(key, Value::Thunk(thunk));
+                        attrs.insert(key.clone(), Value::Thunk(thunk));
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
@@ -822,10 +812,9 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                     .attrs()
                     .map(|a| eval_attr(&a, env))
                     .collect::<Result<_, _>>()?;
-                if path_keys.len() == 1 {
-                    let key = path_keys.into_iter().next().unwrap();
+                if let [ref key] = path_keys[..] {
                     let value = eval_expr(&value_expr, env)?;
-                    env.bind(key, value);
+                    env.bind(key.clone(), value);
                 }
                 // Multi-key paths in let are not standard; skip for now.
             }
