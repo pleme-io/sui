@@ -50,6 +50,20 @@ impl std::fmt::Display for NodeStatus {
     }
 }
 
+impl NodeStatus {
+    /// Returns `true` if the node is reachable and not in a failure state.
+    #[must_use]
+    pub const fn is_healthy(self) -> bool {
+        matches!(self, Self::Online)
+    }
+
+    /// Returns `true` if the node is in a transitional state (deploying).
+    #[must_use]
+    pub const fn is_transitional(self) -> bool {
+        matches!(self, Self::Deploying)
+    }
+}
+
 impl std::str::FromStr for NodeStatus {
     type Err = String;
 
