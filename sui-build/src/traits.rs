@@ -32,12 +32,12 @@ pub enum BuildState {
 impl BuildState {
     /// Attempt a state transition, returning an error on invalid moves.
     pub fn transition(&mut self, next: BuildState) -> Result<(), BuildError> {
-        let valid = match (&*self, &next) {
-            (Self::Pending, Self::Building) => true,
-            (Self::Building, Self::Succeeded) => true,
-            (Self::Building, Self::Failed(_)) => true,
-            _ => false,
-        };
+        let valid = matches!(
+            (&*self, &next),
+            (Self::Pending, Self::Building)
+                | (Self::Building, Self::Succeeded)
+                | (Self::Building, Self::Failed(_))
+        );
         if valid {
             *self = next;
             Ok(())
@@ -62,6 +62,23 @@ impl std::fmt::Display for BuildState {
             Self::Building => write!(f, "building"),
             Self::Succeeded => write!(f, "succeeded"),
             Self::Failed(reason) => write!(f, "failed: {reason}"),
+        }
+    }
+}
+
+impl std::str::FromStr for BuildState {
+    type Err = BuildError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(reason) = s.strip_prefix("failed: ") {
+            return Ok(Self::Failed(reason.to_owned()));
+        }
+        match s {
+            "pending" => Ok(Self::Pending),
+            "building" => Ok(Self::Building),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed(String::new())),
+            _ => Err(BuildError::Failed(format!("unknown build state: {s}"))),
         }
     }
 }

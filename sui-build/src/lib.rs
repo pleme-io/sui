@@ -4,6 +4,7 @@
 //!
 //! - [`Builder`] — async trait for running derivation builds
 //! - [`BuildState`] — state machine tracking build lifecycle
+//! - [`BuildOutcome`] — typed build result (Success / Failure / Cancelled)
 //! - [`BuildLog`] — structured log accumulator
 //! - [`sandbox`] — platform-specific sandbox abstractions
 //! - [`reference_scan`] — Aho-Corasick based store path reference detection
