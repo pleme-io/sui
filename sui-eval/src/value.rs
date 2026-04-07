@@ -345,6 +345,21 @@ impl NixAttrs {
     }
 }
 
+impl FromIterator<(String, Value)> for NixAttrs {
+    fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
+        NixAttrs(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for NixAttrs {
+    type Item = (String, Value);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 /// A closure — lambda + captured environment.
 ///
 /// Stores rnix AST nodes so we can re-evaluate the body in the captured env.
