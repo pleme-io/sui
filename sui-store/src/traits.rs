@@ -51,6 +51,20 @@ pub struct PathInfo {
     pub content_address: Option<String>,
 }
 
+impl StoreError {
+    /// Returns `true` if this is a `PathNotFound` error.
+    #[must_use]
+    pub fn is_path_not_found(&self) -> bool {
+        matches!(self, Self::PathNotFound(_))
+    }
+
+    /// Returns `true` if this is a `NotSupported` error.
+    #[must_use]
+    pub fn is_not_supported(&self) -> bool {
+        matches!(self, Self::NotSupported(_))
+    }
+}
+
 impl From<crate::http::HttpError> for StoreError {
     fn from(e: crate::http::HttpError) -> Self {
         Self::Http(e.to_string())
