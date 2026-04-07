@@ -857,4 +857,257 @@ mod tests {
         let b = a.clone();
         assert_eq!(a, b);
     }
+
+    // ── SandboxError remaining variants ─────────────────────
+
+    #[test]
+    fn sandbox_error_timeout_display() {
+        let e = SandboxError::Timeout(60);
+        let msg = e.to_string();
+        assert!(msg.contains("60"));
+        assert!(msg.contains("timed out"));
+    }
+
+    #[test]
+    fn sandbox_error_io_display_format() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe gone");
+        let e: SandboxError = io_err.into();
+        assert!(e.to_string().contains("io error"));
+        assert!(e.to_string().contains("pipe gone"));
+    }
+
+    // ── SandboxResult: invalid UTF-8 handled lossily ────────
+
+    #[test]
+    fn sandbox_result_lossy_invalid_utf8_stdout() {
+        let result = SandboxResult {
+            exit_code: 0,
+            stdout: vec![0xFF, 0xFE, 0xFD],
+            stderr: Vec::new(),
+        };
+        // Should not panic; lossy decoding produces replacement characters.
+        let s = result.stdout_lossy();
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn sandbox_result_lossy_invalid_utf8_stderr() {
+        let result = SandboxResult {
+            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: vec![0x80, 0x81],
+        };
+        let s = result.stderr_lossy();
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn sandbox_result_empty_streams() {
+        let result = SandboxResult {
+            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(result.stdout_lossy(), "");
+        assert_eq!(result.stderr_lossy(), "");
+    }
+
+    // ── SandboxConfig::from_derivation: more edge cases ─────
+
+    #[test]
+    fn from_derivation_no_chroot_other_value_disables_network() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        // Only "1" enables network — anything else (incl. "true") must NOT.
+        env.insert("__noChroot".to_string(), "true".to_string());
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: "/nix/store/x".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env,
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert!(!config.allow_network);
+    }
+
+    #[test]
+    fn from_derivation_no_no_chroot_key_disables_network() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert!(!config.allow_network);
+    }
+
+    #[test]
+    fn from_derivation_many_input_sources_preserved() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let inputs: Vec<String> = (0..50)
+            .map(|i| format!("/nix/store/src-{i}"))
+            .collect();
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: inputs.clone(),
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert_eq!(config.input_paths.len(), 50);
+        assert_eq!(config.input_paths, inputs);
+    }
+
+    #[test]
+    fn from_derivation_env_round_trip_preserves_all_keys() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        env.insert("HOME".into(), "/homeless-shelter".into());
+        env.insert("PATH".into(), "/usr/bin".into());
+        env.insert("CC".into(), "gcc".into());
+
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env,
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert_eq!(config.env.len(), 3);
+        // BTreeMap iteration is sorted: CC, HOME, PATH
+        let keys: Vec<&str> = config.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["CC", "HOME", "PATH"]);
+    }
+
+    #[test]
+    fn from_derivation_builder_with_long_args() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/nix/store/bash/bin/bash".to_string(),
+            args: (0..100).map(|i| format!("arg{i}")).collect(),
+            env: BTreeMap::new(),
+        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert_eq!(config.args.len(), 100);
+        assert_eq!(config.args[0], "arg0");
+        assert_eq!(config.args[99], "arg99");
+    }
+
+    // ── SandboxConfig builder methods individually ──────────
+
+    #[test]
+    fn sandbox_config_with_builder_replaces_value() {
+        let config = SandboxConfig::default()
+            .with_builder("/bin/sh")
+            .with_builder("/bin/bash");
+        assert_eq!(config.builder, "/bin/bash");
+    }
+
+    #[test]
+    fn sandbox_config_with_args_replaces_value() {
+        let config = SandboxConfig::default()
+            .with_args(vec!["a".into()])
+            .with_args(vec!["b".into(), "c".into()]);
+        assert_eq!(config.args, vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn sandbox_config_with_env_appends() {
+        let config = SandboxConfig::default()
+            .with_env("A", "1")
+            .with_env("B", "2");
+        assert_eq!(config.env.len(), 2);
+        assert_eq!(config.env[0], ("A".to_string(), "1".to_string()));
+        assert_eq!(config.env[1], ("B".to_string(), "2".to_string()));
+    }
+
+    #[test]
+    fn sandbox_config_with_build_dir_replaces_value() {
+        let config = SandboxConfig::default()
+            .with_build_dir("/tmp/a")
+            .with_build_dir("/tmp/b");
+        assert_eq!(config.build_dir, "/tmp/b");
+    }
+
+    #[test]
+    fn sandbox_config_with_network_toggles() {
+        let on = SandboxConfig::default().with_network(true);
+        let off = SandboxConfig::default().with_network(false);
+        assert!(on.allow_network);
+        assert!(!off.allow_network);
+    }
+
+    // ── NoSandbox: passing empty args ───────────────────────
+
+    #[test]
+    fn no_sandbox_execute_no_args() {
+        let sandbox = NoSandbox;
+        // Use /bin/echo which exists on macOS and Linux; with no args
+        // it prints just a newline. We assert exit success and that
+        // stdout is at most a single trailing newline.
+        let config = SandboxConfig::default().with_builder("/bin/echo");
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.len() <= 1);
+    }
+
+    // ── NoSandbox: env doesn't leak between executions ──────
+
+    #[test]
+    fn no_sandbox_env_isolated_per_call() {
+        let sandbox = NoSandbox;
+        let with_env = SandboxConfig::default()
+            .with_builder("/bin/sh")
+            .with_args(vec!["-c".into(), "echo $LEAK_TEST".into()])
+            .with_env("LEAK_TEST", "found");
+        let without_env = SandboxConfig::default()
+            .with_builder("/bin/sh")
+            .with_args(vec!["-c".into(), "echo $LEAK_TEST".into()]);
+
+        let r1 = sandbox.execute(&with_env).unwrap();
+        let r2 = sandbox.execute(&without_env).unwrap();
+
+        assert!(String::from_utf8_lossy(&r1.stdout).contains("found"));
+        // r2 inherits parent env but the key is not set in our config nor parent.
+        assert!(!String::from_utf8_lossy(&r2.stdout).contains("found"));
+    }
 }
