@@ -22,6 +22,12 @@ impl AppState {
     pub fn stub() -> Self {
         Self { store: None }
     }
+
+    /// Returns `true` if a real store backend is available.
+    #[must_use]
+    pub fn has_store(&self) -> bool {
+        self.store.is_some()
+    }
 }
 
 #[cfg(test)]
