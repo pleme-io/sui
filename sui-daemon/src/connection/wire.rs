@@ -12,6 +12,9 @@ const fn padding(len: usize) -> usize {
     (8 - (len % 8)) % 8
 }
 
+/// Pre-allocated zero buffer for padding writes (max 7 bytes needed).
+const ZERO_PAD: [u8; 7] = [0; 7];
+
 pub(crate) async fn write_u64(w: &mut (impl AsyncWrite + Unpin), v: u64) -> std::io::Result<()> {
     w.write_all(&v.to_le_bytes()).await
 }
@@ -30,7 +33,7 @@ pub(crate) async fn write_bytes(
     w.write_all(data).await?;
     let pad = padding(data.len());
     if pad > 0 {
-        w.write_all(&vec![0u8; pad]).await?;
+        w.write_all(&ZERO_PAD[..pad]).await?;
     }
     Ok(())
 }
@@ -41,8 +44,8 @@ pub(crate) async fn read_bytes(r: &mut (impl AsyncRead + Unpin)) -> std::io::Res
     r.read_exact(&mut buf).await?;
     let pad = padding(len);
     if pad > 0 {
-        let mut pad_buf = vec![0u8; pad];
-        r.read_exact(&mut pad_buf).await?;
+        let mut pad_buf = [0u8; 7];
+        r.read_exact(&mut pad_buf[..pad]).await?;
     }
     Ok(buf)
 }
