@@ -13,6 +13,8 @@ pub mod delegate;
 pub mod eval;
 /// Content-addressed input fetcher for flake.lock resolved inputs.
 pub mod fetcher;
+/// Native flake lock management — update, check, write.
+pub mod flake_lock;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 
