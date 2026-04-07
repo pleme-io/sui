@@ -15,6 +15,21 @@ use sui_store::LocalStore;
 
 use crate::NIX_DB_PATH;
 
+/// Build the combined axum [`Router`] with REST and GraphQL endpoints.
+///
+/// The returned router is ready to be served via [`axum::serve`]. Useful
+/// in tests that want the full router without binding to a TCP socket.
+#[must_use]
+pub fn build_router(app_state: AppState) -> Router {
+    let schema = graphql::build_schema(app_state.clone());
+
+    Router::new()
+        .merge(rest::router())
+        .merge(graphql::router(schema))
+        .layer(TraceLayer::new_for_http())
+        .with_state(app_state)
+}
+
 /// Start the API server on the given addresses.
 ///
 /// `rest_addr` is the bind address for REST + GraphQL (e.g. `"0.0.0.0:8080"`).
@@ -36,13 +51,7 @@ pub async fn serve(
         }
     };
 
-    let schema = graphql::build_schema(app_state.clone());
-
-    let app = Router::new()
-        .merge(rest::router())
-        .merge(graphql::router(schema))
-        .layer(TraceLayer::new_for_http())
-        .with_state(app_state);
+    let app = build_router(app_state);
 
     let listener = tokio::net::TcpListener::bind(rest_addr).await?;
     tracing::info!("sui API server listening on {rest_addr}");
