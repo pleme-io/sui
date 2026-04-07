@@ -240,4 +240,93 @@ mod tests {
             assert_eq!(hex_part.len(), algo.digest_len() * 2);
         }
     }
+
+    // ── base64_decode ────────────────────────────────────
+
+    #[test]
+    fn base64_decode_known_vectors() {
+        assert_eq!(base64_decode("").unwrap(), b"");
+        assert_eq!(base64_decode("Zg==").unwrap(), b"f");
+        assert_eq!(base64_decode("Zm8=").unwrap(), b"fo");
+        assert_eq!(base64_decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+    }
+
+    #[test]
+    fn base64_decode_invalid_input() {
+        assert!(base64_decode("!!!invalid!!!").is_err());
+    }
+
+    #[test]
+    fn base64_roundtrip_binary() {
+        let data: Vec<u8> = (0..=255).collect();
+        let encoded = base64_encode(&data);
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    // ── SRI format ───────────────────────────────────────
+
+    #[test]
+    fn sri_format_all_algorithms() {
+        for algo in [HashAlgorithm::Sha256, HashAlgorithm::Sha512, HashAlgorithm::Sha1, HashAlgorithm::Md5] {
+            let digest = vec![0x42; algo.digest_len()];
+            let hash = NixHash::new(algo, digest);
+            let sri = hash.to_sri();
+            let prefix = format!("{}-", algo.as_nix_str());
+            assert!(sri.starts_with(&prefix), "SRI for {algo:?} should start with {prefix}");
+        }
+    }
+
+    #[test]
+    fn sri_base64_decode_matches_digest() {
+        let digest = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
+                          0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                          0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+                          0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C];
+        let hash = NixHash::new(HashAlgorithm::Sha256, digest.clone());
+        let sri = hash.to_sri();
+        let b64_part = sri.strip_prefix("sha256-").unwrap();
+        let decoded = base64_decode(b64_part).unwrap();
+        assert_eq!(decoded, digest);
+    }
+
+    // ── hex edge cases ───────────────────────────────────
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex::encode(&[]), "");
+    }
+
+    #[test]
+    fn hex_decode_empty() {
+        assert_eq!(hex::decode("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn hex_decode_accepts_uppercase() {
+        assert_eq!(hex::decode("AABB").unwrap(), vec![0xAA, 0xBB]);
+    }
+
+    // ── NixHash equality ─────────────────────────────────
+
+    #[test]
+    fn nix_hash_equality() {
+        let h1 = NixHash::new(HashAlgorithm::Sha256, vec![1; 32]);
+        let h2 = NixHash::new(HashAlgorithm::Sha256, vec![1; 32]);
+        let h3 = NixHash::new(HashAlgorithm::Sha256, vec![2; 32]);
+        let h4 = NixHash::new(HashAlgorithm::Sha1, vec![1; 20]);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h1, h4);
+    }
+
+    // ── HashAlgorithm Copy + Clone ───────────────────────
+
+    #[test]
+    fn hash_algorithm_is_copy() {
+        let a = HashAlgorithm::Sha256;
+        let b = a;
+        assert_eq!(a, b);
+    }
 }
