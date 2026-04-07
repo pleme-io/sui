@@ -210,6 +210,103 @@ mod tests {
     }
 
     #[test]
+    fn path_info_serialization_all_fields_present() {
+        let info = PathInfo {
+            path: "/nix/store/abc-hello".to_string(),
+            nar_hash: "sha256:deadbeef".to_string(),
+            nar_size: 1024,
+            references: vec!["/nix/store/dep1".to_string(), "/nix/store/dep2".to_string()],
+            deriver: Some("/nix/store/abc.drv".to_string()),
+            signatures: vec!["key1:sig1".to_string(), "key2:sig2".to_string()],
+            registration_time: 1234567890,
+            content_address: Some("fixed:out:r:sha256:cafe".to_string()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"content_address\""));
+        assert!(json.contains("fixed:out:r:sha256:cafe"));
+        let parsed: PathInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.content_address, info.content_address);
+        assert_eq!(parsed.references.len(), 2);
+        assert_eq!(parsed.signatures.len(), 2);
+    }
+
+    #[test]
+    fn path_info_serialization_none_fields() {
+        let info = PathInfo {
+            path: "/nix/store/abc-minimal".to_string(),
+            nar_hash: "sha256:000".to_string(),
+            nar_size: 0,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: PathInfo = serde_json::from_str(&json).unwrap();
+        assert!(parsed.deriver.is_none());
+        assert!(parsed.content_address.is_none());
+        assert!(parsed.references.is_empty());
+        assert!(parsed.signatures.is_empty());
+        assert_eq!(parsed.nar_size, 0);
+    }
+
+    #[test]
+    fn path_info_json_pretty_roundtrip() {
+        let info = PathInfo {
+            path: "/nix/store/abc-hello".to_string(),
+            nar_hash: "sha256:deadbeef".to_string(),
+            nar_size: 42,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 999,
+            content_address: None,
+        };
+        let pretty = serde_json::to_string_pretty(&info).unwrap();
+        let parsed: PathInfo = serde_json::from_str(&pretty).unwrap();
+        assert_eq!(parsed.path, info.path);
+        assert_eq!(parsed.nar_size, 42);
+    }
+
+    #[test]
+    fn path_info_deserialization_from_json_object() {
+        let json = r#"{
+            "path": "/nix/store/xyz-test",
+            "nar_hash": "sha256:abc123",
+            "nar_size": 9999,
+            "references": ["/nix/store/dep-a"],
+            "deriver": null,
+            "signatures": [],
+            "registration_time": 0,
+            "content_address": null
+        }"#;
+        let info: PathInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.path, "/nix/store/xyz-test");
+        assert_eq!(info.nar_size, 9999);
+        assert_eq!(info.references, vec!["/nix/store/dep-a"]);
+    }
+
+    #[test]
+    fn path_info_clone_independence() {
+        let info = PathInfo {
+            path: "/nix/store/abc-hello".to_string(),
+            nar_hash: "sha256:deadbeef".to_string(),
+            nar_size: 1024,
+            references: vec!["/nix/store/dep1".to_string()],
+            deriver: Some("/nix/store/abc.drv".to_string()),
+            signatures: vec!["key:sig".to_string()],
+            registration_time: 1234567890,
+            content_address: None,
+        };
+        let mut cloned = info.clone();
+        cloned.nar_size = 9999;
+        cloned.path = "/nix/store/other".to_string();
+        assert_eq!(info.nar_size, 1024);
+        assert_eq!(info.path, "/nix/store/abc-hello");
+    }
+
+    #[test]
     fn gc_options_default() {
         let opts = GcOptions::default();
         assert_eq!(opts.max_freed, 0);
