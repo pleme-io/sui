@@ -164,7 +164,6 @@ mod tests {
 
     #[test]
     fn with_http_client_constructor() {
-        // Verify the custom client constructor works
         let client = Box::new(ReqwestHttpClient::new());
         let store = BinaryCacheStore::with_http_client(
             "https://cache.nixos.org/",
@@ -172,6 +171,21 @@ mod tests {
             client,
         );
         assert_eq!(store.base_url, "https://cache.nixos.org");
+    }
+
+    #[test]
+    fn trusted_keys_accessor_returns_keys() {
+        let keys = vec![
+            "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=".to_string(),
+        ];
+        let store = BinaryCacheStore::new("https://cache.nixos.org", keys.clone());
+        assert_eq!(store.trusted_keys(), &keys[..]);
+    }
+
+    #[test]
+    fn trusted_keys_accessor_empty() {
+        let store = BinaryCacheStore::new("https://cache.nixos.org", vec![]);
+        assert!(store.trusted_keys().is_empty());
     }
 
     // ── MockHttpClient (local to binary_cache tests) ─────────
