@@ -660,7 +660,10 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
-                    eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env.clone()))?;
+                    // Pass the REAL rec_env (not a clone) so inherit
+                    // names bind into the rec scope and sibling
+                    // attrs that reference them resolve correctly.
+                    eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env))?;
                 }
             }
         }
@@ -724,27 +727,36 @@ fn eval_inherit(
         // thunk blackhole. Instead: build a thunk per inherited
         // name that, when forced, evaluates the source and pulls
         // out that one attribute. This is what real Nix does.
+        //
+        // For `rec { inherit (X) name; ...; foo = name; }` we ALSO
+        // need to bind the name in the enclosing rec env so the
+        // sibling `foo = name` can reference it. The caller passes
+        // its rec env in `bind_env`.
         let source_expr = from
             .expr()
             .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
+        let mut be = bind_env;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
-            // Build the per-name thunk by parsing `(<source_expr>).<name>`
-            // as a fresh select expression. The cleanest way is to
-            // construct a Thunk whose suspended state evaluates the
-            // source and then selects the name at force time.
             let thunk = Thunk::new_inherit_select(source_expr.clone(), name.clone(), env.clone());
-            let _ = bind_env; // bind_env is only used by the rec case below
-            attrs.insert(name, Value::Thunk(thunk));
+            let value = Value::Thunk(thunk);
+            attrs.insert(name.clone(), value.clone());
+            if let Some(ref mut e) = be {
+                e.bind(name, value);
+            }
         }
     } else {
         // inherit a b c;
+        let mut be = bind_env;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
             let value = env
                 .lookup(&name)
                 .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?;
-            attrs.insert(name, value);
+            attrs.insert(name.clone(), value.clone());
+            if let Some(ref mut e) = be {
+                e.bind(name, value);
+            }
         }
     }
     Ok(())
@@ -917,9 +929,12 @@ fn eval_binop(
         ast::BinOpKind::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
         ast::BinOpKind::MoreOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
         ast::BinOpKind::Update => {
-            let la = l.as_attrs()?;
-            let ra = r.as_attrs()?;
-            Ok(Value::Attrs(la.update(ra)))
+            // // operator: force both sides to concrete attrs.
+            // Lazy lambda args mean either operand may still be a
+            // thunk wrapping the attrs.
+            let la = l.to_attrs()?;
+            let ra = r.to_attrs()?;
+            Ok(Value::Attrs(la.update(&ra)))
         }
         ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();

@@ -49,13 +49,14 @@ fn resolve_nixpkgs_path() -> Option<PathBuf> {
     Some(PathBuf::from(raw))
 }
 
-/// Build a `let lib = (import <nixpkgs> {}).lib; in <body>` expression
+/// Build a `let lib = import <nixpkgs>/lib; in <body>` expression
 /// pinned to the machine's nixpkgs path so real nix and sui see the
-/// same source tree.
+/// same source tree. We import `<nixpkgs/lib>` directly rather than
+/// `(import <nixpkgs> {}).lib` to avoid the heavyweight pkgs eval.
 fn lib_expr(body: &str) -> Option<String> {
     let p = resolve_nixpkgs_path()?;
     Some(format!(
-        "let lib = (import {} {{}}).lib; in {body}",
+        "let lib = import {}/lib; in {body}",
         p.display()
     ))
 }
@@ -73,31 +74,26 @@ fn diff(body: &str) {
 
 // ── lib.lists ────────────────────────────────────────────────────────
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_lists_length() {
     diff("lib.lists.length [ 1 2 3 ]");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_lists_fold() {
     diff("lib.lists.fold (a: b: a + b) 0 [ 1 2 3 4 ]");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_lists_foldl_prime() {
     diff("lib.lists.foldl' (acc: x: acc + x) 0 [ 1 2 3 4 ]");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_lists_unique() {
     diff("lib.lists.unique [ 1 2 3 2 1 ]");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_lists_flatten() {
     diff("lib.lists.flatten [ 1 [ 2 [ 3 4 ] ] 5 ]");
@@ -105,25 +101,21 @@ fn lib_lists_flatten() {
 
 // ── lib.strings ──────────────────────────────────────────────────────
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_strings_concat_strings() {
     diff(r#"lib.strings.concatStrings [ "a" "b" "c" ]"#);
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_strings_split_string() {
     diff(r#"lib.strings.splitString "," "a,b,c,d""#);
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_strings_has_prefix() {
     diff(r#"lib.strings.hasPrefix "abc" "abcdef""#);
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_strings_has_suffix() {
     diff(r#"lib.strings.hasSuffix "def" "abcdef""#);
@@ -131,19 +123,16 @@ fn lib_strings_has_suffix() {
 
 // ── lib.attrsets ─────────────────────────────────────────────────────
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_attrsets_filter_attrs() {
     diff("lib.attrsets.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_attrsets_map_attrs_prime() {
     diff(r#"lib.attrsets.mapAttrs' (n: v: { name = n + "!"; value = v + 1; }) { a = 1; b = 2; }"#);
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_attrsets_recursive_update() {
     diff(
@@ -155,19 +144,16 @@ fn lib_attrsets_recursive_update() {
 
 // ── lib.trivial ──────────────────────────────────────────────────────
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_trivial_pipe() {
     diff("lib.trivial.pipe 3 [ (x: x + 1) (x: x * 2) (x: x - 5) ]");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_trivial_id() {
     diff("lib.trivial.id 42");
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_trivial_flip() {
     diff("(lib.trivial.flip (a: b: [ a b ])) 1 2");
@@ -175,13 +161,11 @@ fn lib_trivial_flip() {
 
 // ── lib.versions ─────────────────────────────────────────────────────
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_versions_major() {
     diff(r#"lib.versions.major "1.2.3""#);
 }
 
-#[ignore = "blocked on sui import <dir> / bare-builtin resolution — see header"]
 #[test]
 fn lib_versions_split_version() {
     diff(r#"lib.versions.splitVersion "1.2.3""#);

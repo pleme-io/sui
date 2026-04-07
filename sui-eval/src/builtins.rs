@@ -130,11 +130,11 @@ pub fn register(env: &mut Env) {
 
     // Attrset operations
     register_builtin(&mut builtins_set, "attrNames", |args| {
-        let attrs = args[0].as_attrs()?;
+        let attrs = args[0].to_attrs()?;
         Ok(Value::List(attrs.keys().map(|k| Value::string(k.clone())).collect()))
     });
     register_builtin(&mut builtins_set, "attrValues", |args| {
-        let attrs = args[0].as_attrs()?;
+        let attrs = args[0].to_attrs()?;
         Ok(Value::List(attrs.iter().map(|(_, v)| v.clone()).collect()))
     });
     register_builtin(&mut builtins_set, "hasAttr", |args| {
@@ -142,7 +142,7 @@ pub fn register(env: &mut Env) {
         Ok(Value::Builtin(BuiltinFn {
             name: "hasAttr<partial>",
             func: Arc::new(move |args2| {
-                let attrs = args2[0].as_attrs()?;
+                let attrs = args2[0].to_attrs()?;
                 Ok(Value::Bool(attrs.contains_key(&name)))
             }),
         }))
@@ -152,17 +152,17 @@ pub fn register(env: &mut Env) {
         Ok(Value::Builtin(BuiltinFn {
             name: "getAttr<partial>",
             func: Arc::new(move |args2| {
-                let attrs = args2[0].as_attrs()?;
+                let attrs = args2[0].to_attrs()?;
                 attrs.get(&name).cloned().ok_or_else(|| EvalError::AttrNotFound(name.clone()))
             }),
         }))
     });
     register_builtin(&mut builtins_set, "intersectAttrs", |args| {
-        let a = args[0].as_attrs()?.clone();
+        let a = args[0].to_attrs()?.clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "intersectAttrs<partial>",
             func: Arc::new(move |args2| {
-                let b = args2[0].as_attrs()?;
+                let b = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in b.iter() {
                     if a.contains_key(k) {
@@ -377,7 +377,7 @@ pub fn register(env: &mut Env) {
         Ok(Value::Builtin(BuiltinFn {
             name: "mapAttrs<partial>",
             func: Arc::new(move |args2| {
-                let attrs = args2[0].as_attrs()?;
+                let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
                     let partial = crate::eval::apply(func.clone(), Value::string(k.clone()))?;
@@ -411,7 +411,7 @@ pub fn register(env: &mut Env) {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for item in list {
-                    if let Ok(attrs) = item.as_attrs() {
+                    if let Ok(attrs) = item.to_attrs() {
                         if let Some(v) = attrs.get(&name) {
                             result.push(v.clone());
                         }
@@ -422,7 +422,7 @@ pub fn register(env: &mut Env) {
         }))
     });
     register_builtin(&mut builtins_set, "removeAttrs", |args| {
-        let set = args[0].as_attrs()?.clone();
+        let set = args[0].to_attrs()?.clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "removeAttrs<partial>",
             func: Arc::new(move |args2| {
@@ -568,7 +568,7 @@ pub fn register(env: &mut Env) {
                 let mut collected: std::collections::BTreeMap<String, Vec<Value>> =
                     std::collections::BTreeMap::new();
                 for item in list {
-                    let attrs = item.as_attrs()?;
+                    let attrs = item.to_attrs()?;
                     for (k, v) in attrs.iter() {
                         collected.entry(k.clone()).or_default().push(v.clone());
                     }
@@ -781,7 +781,7 @@ pub fn register(env: &mut Env) {
 
     register_builtin(&mut builtins_set, "convertHash", |args| {
         use base64::Engine;
-        let attrs = args[0].as_attrs()?;
+        let attrs = args[0].to_attrs()?;
         let hash_str = attrs
             .get("hash")
             .ok_or_else(|| EvalError::AttrNotFound("hash".into()))?
@@ -1203,7 +1203,7 @@ pub fn register(env: &mut Env) {
     // Hashes the path contents and returns a synthetic store path.
 
     register_builtin(&mut builtins_set, "path", |args| {
-        let attrs = args[0].as_attrs()?;
+        let attrs = args[0].to_attrs()?;
         let path_val = attrs
             .get("path")
             .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
@@ -1270,7 +1270,7 @@ pub fn register(env: &mut Env) {
         // order — a FIFO worklist (BFS-ish), not LIFO. Using
         // `Vec::pop` here gave the *reverse* order.
         use std::collections::VecDeque;
-        let input = args[0].as_attrs()?;
+        let input = args[0].to_attrs()?;
         let start_set = input
             .get("startSet")
             .ok_or_else(|| EvalError::AttrNotFound("startSet".into()))?
@@ -1685,7 +1685,7 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
         ))
     })?;
     let flake_value = crate::eval::eval(&source)?;
-    let flake_attrs = flake_value.as_attrs()?.clone();
+    let flake_attrs = flake_value.to_attrs()?.clone();
 
     // 2. Pull out the outputs function (required by every flake).
     let outputs_value = flake_attrs
@@ -1823,7 +1823,8 @@ fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
     use sui_compat::derivation::{Derivation, DerivationOutput};
 
     let forced = crate::eval::force_value(arg)?;
-    let input = forced.as_attrs()?;
+    let input_owned = forced.to_attrs()?;
+    let input = &input_owned;
 
     // Required attributes — present and must be coercible to string.
     let name = force_attr_string(input, "name")?;

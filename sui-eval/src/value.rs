@@ -584,11 +584,19 @@ impl Value {
         }
     }
 
+    /// Borrow the inner attrs without forcing. If the value is a
+    /// thunk, the caller should have force_value'd it first; we
+    /// return an error rather than silently mutating the thunk
+    /// (which would require &mut self).
+    ///
+    /// Most call sites should use `to_attrs()` (which forces and
+    /// clones) unless they're certain the value is already
+    /// concrete and want to avoid the clone.
     pub fn as_attrs(&self) -> Result<&NixAttrs, EvalError> {
         match self {
             Value::Attrs(a) => Ok(a),
             Value::Thunk(_) => Err(EvalError::TypeError(
-                "thunk in as_attrs: force first via force_value()".into(),
+                "thunk in as_attrs: force first via force_value() or use to_attrs()".into(),
             )),
             _ => Err(EvalError::TypeError(format!("expected set, got {}", self.type_name()))),
         }
