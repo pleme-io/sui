@@ -43,6 +43,28 @@ impl SandboxConfig {
     /// - `output_paths` ← values of `drv.outputs`
     /// - `allow_network` ← true when `__noChroot=1` in env
     /// - `builder`, `args`, `env` ← derivation fields
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::sandbox::SandboxConfig;
+    /// use sui_compat::derivation::Derivation;
+    /// use std::collections::BTreeMap;
+    ///
+    /// let drv = Derivation {
+    ///     outputs: BTreeMap::new(),
+    ///     input_derivations: BTreeMap::new(),
+    ///     input_sources: vec!["/nix/store/source".to_string()],
+    ///     system: "x86_64-linux".to_string(),
+    ///     builder: "/bin/sh".to_string(),
+    ///     args: vec!["-c".to_string(), "true".to_string()],
+    ///     env: BTreeMap::new(),
+    /// };
+    /// let config = SandboxConfig::from_derivation(&drv, "/tmp/build");
+    /// assert_eq!(config.builder, "/bin/sh");
+    /// assert_eq!(config.input_paths.len(), 1);
+    /// assert!(!config.allow_network);
+    /// ```
     #[must_use]
     pub fn from_derivation(drv: &sui_compat::derivation::Derivation, build_dir: impl AsRef<str>) -> Self {
         Self {

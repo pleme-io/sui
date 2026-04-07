@@ -33,6 +33,27 @@ pub enum BuildState {
 
 impl BuildState {
     /// Attempt a state transition, returning an error on invalid moves.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::BuildState;
+    ///
+    /// let mut state = BuildState::Pending;
+    /// state.transition(BuildState::Building).unwrap();
+    /// state.transition(BuildState::Succeeded).unwrap();
+    /// assert!(state.is_terminal());
+    /// ```
+    ///
+    /// Invalid transitions return an error and leave the state unchanged:
+    ///
+    /// ```
+    /// use sui_build::BuildState;
+    ///
+    /// let mut state = BuildState::Pending;
+    /// assert!(state.transition(BuildState::Succeeded).is_err());
+    /// assert_eq!(state, BuildState::Pending);
+    /// ```
     pub fn transition(&mut self, next: BuildState) -> Result<(), BuildError> {
         let valid = matches!(
             (&*self, &next),
@@ -195,12 +216,32 @@ pub enum BuildOutcome {
 
 impl BuildOutcome {
     /// Returns `true` if the build succeeded.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::BuildOutcome;
+    ///
+    /// assert!(BuildOutcome::Success.is_success());
+    /// assert!(!BuildOutcome::Cancelled.is_success());
+    /// ```
     #[must_use]
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Success)
     }
 
     /// Returns `true` if the build failed (not cancelled).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::BuildOutcome;
+    ///
+    /// let outcome = BuildOutcome::Failure { stderr: String::new(), exit_code: 1 };
+    /// assert!(outcome.is_failure());
+    /// assert!(!BuildOutcome::Success.is_failure());
+    /// assert!(!BuildOutcome::Cancelled.is_failure());
+    /// ```
     #[must_use]
     pub fn is_failure(&self) -> bool {
         matches!(self, Self::Failure { .. })
@@ -249,6 +290,16 @@ pub struct BuildResult {
 
 impl BuildResult {
     /// Construct a successful `BuildResult`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::BuildResult;
+    ///
+    /// let result = BuildResult::success(vec![], "ok\n".to_string(), 1.5);
+    /// assert!(result.is_success());
+    /// assert_eq!(result.log, "ok\n");
+    /// ```
     #[must_use]
     pub fn success(outputs: Vec<StorePath>, log: String, duration_secs: f64) -> Self {
         Self {
@@ -261,6 +312,21 @@ impl BuildResult {
     }
 
     /// Construct a failed `BuildResult`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sui_build::BuildResult;
+    ///
+    /// let result = BuildResult::failure(
+    ///     "log".to_string(),
+    ///     "stderr".to_string(),
+    ///     1,
+    ///     0.5,
+    /// );
+    /// assert!(!result.is_success());
+    /// assert!(result.outputs.is_empty());
+    /// ```
     #[must_use]
     pub fn failure(
         log: String,

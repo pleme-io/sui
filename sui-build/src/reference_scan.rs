@@ -54,6 +54,29 @@ impl FileSystem for RealFileSystem {
 ///
 /// Uses Aho-Corasick automaton for O(n + m) multi-pattern matching —
 /// scans the input once for all patterns simultaneously.
+///
+/// Hashes whose length is not exactly [`STORE_PATH_HASH_LEN`] (32) are
+/// silently filtered out before scanning.
+///
+/// # Examples
+///
+/// ```
+/// use sui_build::reference_scan::scan_references;
+///
+/// let hash = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
+/// let data = format!("/nix/store/{hash}-hello/bin/hello");
+/// let found = scan_references(data.as_bytes(), &[hash]);
+/// assert_eq!(found, vec![hash.to_string()]);
+/// ```
+///
+/// Empty inputs return an empty vector:
+///
+/// ```
+/// use sui_build::reference_scan::scan_references;
+///
+/// assert!(scan_references(b"", &["hash"]).is_empty());
+/// assert!(scan_references(b"some data", &[]).is_empty());
+/// ```
 #[must_use]
 pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
     let valid: Vec<&str> = known_hashes
