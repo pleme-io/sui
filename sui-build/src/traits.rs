@@ -233,7 +233,7 @@ impl From<&crate::sandbox::SandboxResult> for BuildOutcome {
 // ── Build result ─────────────────────────────────────────────────
 
 /// Build execution result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BuildResult {
     /// Output store paths produced by the build.
     pub outputs: Vec<StorePath>,
