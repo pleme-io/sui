@@ -218,6 +218,8 @@ mod tests {
 
     #[test]
     fn narinfo_to_path_info_conversion() {
+        // NarInfo references are bare basenames; the PathInfo conversion
+        // must prefix them with the store directory.
         let narinfo = sui_compat::narinfo::NarInfo {
             store_path: "/nix/store/abc-hello".to_string(),
             url: "nar/abc.nar.xz".to_string(),
@@ -226,7 +228,9 @@ mod tests {
             file_size: 1000,
             nar_hash: "sha256:bbb".to_string(),
             nar_size: 5000,
-            references: vec!["dep1".to_string()],
+            references: vec![
+                "3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8".to_string(),
+            ],
             deriver: Some("abc.drv".to_string()),
             signatures: vec!["key:sig".to_string()],
             ca: None,
@@ -235,6 +239,10 @@ mod tests {
         assert_eq!(info.path, "/nix/store/abc-hello");
         assert_eq!(info.nar_size, 5000);
         assert_eq!(info.references.len(), 1);
+        assert_eq!(
+            info.references[0],
+            "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8"
+        );
     }
 
     #[test]
@@ -877,6 +885,7 @@ Sig: key3:ccc==
         assert!(result.is_err());
     }
 
+
     // ── BinaryCacheError → StoreError conversion ─────────────
 
     #[test]
@@ -1419,16 +1428,14 @@ References:
 
     // ── query_references via BinaryCacheStore ────────────────
     //
-    // BinaryCacheStore.query_path_info populates PathInfo.references with the
-    // *basenames* from the NarInfo (no /nix/store/ prefix). The default
-    // query_references in the Store trait then filters via
-    // StorePath::from_absolute_path which rejects bare basenames — so
-    // BinaryCacheStore's references list comes back empty even when narinfo
-    // has refs. This is a known limitation; the test below pins that behavior
-    // so a future fix to either the parser or the trait is detected.
+    // BinaryCacheStore.query_path_info populates PathInfo.references with
+    // absolute store paths (bare NarInfo basenames are prefixed with
+    // /nix/store/ at conversion time). The default query_references in the
+    // Store trait then parses each entry via StorePath::from_absolute_path,
+    // so the full reference list flows through end to end.
 
     #[tokio::test]
-    async fn binary_cache_query_references_basenames_filtered_out() {
+    async fn binary_cache_query_references_round_trip() {
         let body = "\
 StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
 URL: nar/abc.nar.xz
@@ -1451,17 +1458,18 @@ References: 3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37 00bgd045z0d4icpbc2yyz4gx
             vec![],
             Box::new(client),
         );
-        // The PathInfo.references contains the raw basenames from the narinfo
+        // PathInfo.references are absolute store paths after the conversion.
         let info = store.query_path_info(&hello_store_path()).await.unwrap().unwrap();
         assert_eq!(info.references.len(), 2);
-        assert_eq!(info.references[0], "3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37");
+        assert_eq!(
+            info.references[0],
+            "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37"
+        );
 
-        // But query_references parses references as absolute paths, which
-        // skips basenames silently — so the returned StorePath list is empty.
-        // TODO(scope): make BinaryCacheStore::query_path_info prepend
-        // /nix/store/ to references so query_references works as expected.
+        // query_references parses those absolute paths back into StorePaths,
+        // yielding the full reference list.
         let refs = store.query_references(&hello_store_path()).await.unwrap();
-        assert_eq!(refs.len(), 0);
+        assert_eq!(refs.len(), 2);
     }
 
     // ── Box<dyn Store> dispatch ──────────────────────────────
@@ -1482,5 +1490,161 @@ References: 3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37 00bgd045z0d4icpbc2yyz4gx
         ));
         let info = store.query_path_info(&hello_store_path()).await.unwrap();
         assert!(info.is_some());
+    }
+
+    // ── Reference-prefix gap fix regression tests ────────────
+
+    /// Round-trip a NarInfo with multiple bare-basename references through
+    /// `BinaryCacheStore::query_path_info` and verify every reference comes
+    /// out as a `/nix/store/`-prefixed absolute store path.
+    #[tokio::test]
+    async fn query_path_info_references_are_absolute_store_paths() {
+        let narinfo_multi_refs = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References: 3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8 00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2 sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+Deriver: abc.drv
+Sig: cache.nixos.org-1:sig==
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_multi_refs.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let info = store
+            .query_path_info(&hello_store_path())
+            .await
+            .unwrap()
+            .expect("path info should be present");
+
+        assert_eq!(info.references.len(), 3);
+        for r in &info.references {
+            assert!(
+                r.starts_with("/nix/store/"),
+                "reference should be absolute store path, got {r:?}"
+            );
+        }
+        assert_eq!(
+            info.references[0],
+            "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8"
+        );
+        assert_eq!(
+            info.references[1],
+            "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2"
+        );
+        assert_eq!(
+            info.references[2],
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1"
+        );
+    }
+
+    /// `Store::query_references` (the default trait method) must return a
+    /// non-empty Vec when the underlying NarInfo had references — proving
+    /// the silent-drop bug is fixed end to end.
+    #[tokio::test]
+    async fn query_references_via_store_returns_full_prefixed_paths() {
+        // Tiny in-memory mock store that returns a fixed PathInfo whose
+        // references already came from a NarInfo round-trip.
+        struct MockStore {
+            info: PathInfo,
+        }
+
+        #[async_trait::async_trait]
+        impl Store for MockStore {
+            async fn query_path_info(
+                &self,
+                _path: &StorePath,
+            ) -> StoreResult<Option<PathInfo>> {
+                Ok(Some(self.info.clone()))
+            }
+            async fn is_valid_path(&self, _path: &StorePath) -> StoreResult<bool> {
+                Ok(true)
+            }
+            async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
+                Ok(vec![])
+            }
+        }
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1".to_string(),
+            url: "nar/abc.nar.xz".to_string(),
+            compression: "xz".to_string(),
+            file_hash: "sha256:aaa".to_string(),
+            file_size: 1000,
+            nar_hash: "sha256:bbb".to_string(),
+            nar_size: 5000,
+            references: vec![
+                "3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8".to_string(),
+                "00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2".to_string(),
+            ],
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+        let mock = MockStore {
+            info: PathInfo::from(&narinfo),
+        };
+
+        let refs = mock.query_references(&hello_store_path()).await.unwrap();
+        assert_eq!(
+            refs.len(),
+            2,
+            "default query_references must yield both NarInfo references"
+        );
+        let absolute: Vec<String> = refs.iter().map(StorePath::to_absolute_path).collect();
+        assert!(absolute.contains(
+            &"/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8".to_string()
+        ));
+        assert!(absolute.contains(
+            &"/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2".to_string()
+        ));
+    }
+
+    /// A NarInfo whose `References:` line is empty must produce an empty
+    /// `PathInfo.references` vec (no spurious entries from prefixing logic).
+    #[tokio::test]
+    async fn query_path_info_empty_references_yields_empty_vec() {
+        let narinfo_no_refs = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: narinfo_no_refs.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+
+        let info = store
+            .query_path_info(&hello_store_path())
+            .await
+            .unwrap()
+            .expect("path info should be present");
+        assert!(info.references.is_empty());
     }
 }
