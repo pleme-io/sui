@@ -869,4 +869,204 @@ mod tests {
             assert_eq!(parsed, state);
         }
     }
+
+    // ── BuildResult constructor tests ───────────────────────
+
+    #[test]
+    fn build_result_success_constructor() {
+        let output = StorePath::from_absolute_path(
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+        let result = BuildResult::success(vec![output.clone()], "log\n".to_string(), 1.5);
+        assert!(result.success);
+        assert!(result.is_success());
+        assert!(result.outcome.is_success());
+        assert_eq!(result.outputs.len(), 1);
+        assert_eq!(result.log, "log\n");
+        assert!((result.duration_secs - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_result_failure_constructor() {
+        let result = BuildResult::failure(
+            "stdout log".to_string(),
+            "stderr message".to_string(),
+            127,
+            2.0,
+        );
+        assert!(!result.success);
+        assert!(!result.is_success());
+        assert!(result.outcome.is_failure());
+        assert!(result.outputs.is_empty());
+        assert_eq!(result.log, "stdout log");
+        assert!((result.duration_secs - 2.0).abs() < f64::EPSILON);
+        match result.outcome {
+            BuildOutcome::Failure { stderr, exit_code } => {
+                assert_eq!(stderr, "stderr message");
+                assert_eq!(exit_code, 127);
+            }
+            other => panic!("expected Failure outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_result_failure_constructor_zero_duration() {
+        let result = BuildResult::failure(String::new(), String::new(), 1, 0.0);
+        assert!(!result.is_success());
+        assert!(result.outputs.is_empty());
+    }
+
+    #[test]
+    fn build_result_partial_eq() {
+        let a = BuildResult::success(vec![], "ok".into(), 0.0);
+        let b = BuildResult::success(vec![], "ok".into(), 0.0);
+        assert_eq!(a, b);
+    }
+
+    // ── BuildError remaining-variant tests ──────────────────
+
+    #[test]
+    fn build_error_cancelled_display() {
+        let e = BuildError::Cancelled;
+        assert!(e.to_string().contains("cancelled"));
+    }
+
+    // ── BuildOutcome::from(&SandboxResult) ──────────────────
+
+    #[test]
+    fn build_outcome_from_sandbox_success() {
+        let result = crate::sandbox::SandboxResult {
+            exit_code: 0,
+            stdout: b"out".to_vec(),
+            stderr: Vec::new(),
+        };
+        let outcome = BuildOutcome::from(&result);
+        assert_eq!(outcome, BuildOutcome::Success);
+    }
+
+    #[test]
+    fn build_outcome_from_sandbox_failure() {
+        let result = crate::sandbox::SandboxResult {
+            exit_code: 9,
+            stdout: Vec::new(),
+            stderr: b"killed".to_vec(),
+        };
+        let outcome = BuildOutcome::from(&result);
+        match outcome {
+            BuildOutcome::Failure { stderr, exit_code } => {
+                assert_eq!(stderr, "killed");
+                assert_eq!(exit_code, 9);
+            }
+            other => panic!("expected Failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_outcome_from_sandbox_failure_negative_exit() {
+        let result = crate::sandbox::SandboxResult {
+            exit_code: -1,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let outcome = BuildOutcome::from(&result);
+        assert!(outcome.is_failure());
+    }
+
+    // ── BuildLog: From, IntoIterator, lines() ───────────────
+
+    #[test]
+    fn build_log_from_vec() {
+        let lines = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let log = BuildLog::from(lines);
+        assert_eq!(log.len(), 3);
+        assert_eq!(log.finish(), "a\nb\nc");
+    }
+
+    #[test]
+    fn build_log_from_empty_vec() {
+        let log = BuildLog::from(Vec::<String>::new());
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn build_log_into_iterator() {
+        let mut log = BuildLog::new();
+        log.push("first");
+        log.push("second");
+        let collected: Vec<String> = log.into_iter().collect();
+        assert_eq!(collected, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn build_log_lines_iterator() {
+        let mut log = BuildLog::new();
+        log.push("alpha");
+        log.push("beta");
+        let collected: Vec<&str> = log.lines().collect();
+        assert_eq!(collected, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn build_log_extend_empty_slice() {
+        let mut log = BuildLog::new();
+        log.extend(&[]);
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn build_log_push_then_extend() {
+        let mut log = BuildLog::new();
+        log.push("zero");
+        log.extend(&["one", "two"]);
+        assert_eq!(log.len(), 3);
+        assert_eq!(log.finish(), "zero\none\ntwo");
+    }
+
+    // ── BuildState additional invalid transitions ───────────
+
+    #[test]
+    fn build_state_pending_to_pending_is_invalid() {
+        let mut state = BuildState::Pending;
+        assert!(state.transition(BuildState::Pending).is_err());
+        assert_eq!(state, BuildState::Pending);
+    }
+
+    #[test]
+    fn build_state_building_to_building_is_invalid() {
+        let mut state = BuildState::Building;
+        assert!(state.transition(BuildState::Building).is_err());
+    }
+
+    #[test]
+    fn build_state_succeeded_to_succeeded_is_invalid() {
+        let mut state = BuildState::Succeeded;
+        assert!(state.transition(BuildState::Succeeded).is_err());
+    }
+
+    #[test]
+    fn build_state_failed_to_succeeded_is_invalid() {
+        let mut state = BuildState::Failed("err".into());
+        assert!(state.transition(BuildState::Succeeded).is_err());
+    }
+
+    #[test]
+    fn build_state_failed_to_failed_is_invalid() {
+        let mut state = BuildState::Failed("a".into());
+        assert!(state.transition(BuildState::Failed("b".into())).is_err());
+    }
+
+    #[test]
+    fn build_state_succeeded_to_pending_is_invalid() {
+        let mut state = BuildState::Succeeded;
+        assert!(state.transition(BuildState::Pending).is_err());
+    }
+
+    #[test]
+    fn build_state_invalid_transition_error_mentions_states() {
+        let mut state = BuildState::Pending;
+        let err = state.transition(BuildState::Succeeded).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid state transition"));
+    }
 }
