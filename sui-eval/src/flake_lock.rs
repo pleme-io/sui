@@ -302,25 +302,8 @@ fn resolve_git(
         .ok_or(FlakeLockUpdateError::InvalidFormat)?;
     let ref_name = original.git_ref.as_deref().unwrap_or("main");
 
-    let output = std::process::Command::new("git")
-        .args(["ls-remote", url, ref_name])
-        .output()
+    let sha = crate::git::ls_remote(url, ref_name)
         .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("git ls-remote: {e}")))?;
-
-    if !output.status.success() {
-        return Err(FlakeLockUpdateError::FetchFailed(format!(
-            "git ls-remote failed (exit code: {})",
-            output.status.code().unwrap_or(-1)
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let sha = stdout
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| {
-            FlakeLockUpdateError::FetchFailed("empty git ls-remote output".into())
-        })?;
 
     Ok(sui_compat::flake::LockedInput {
         source_type: "git".to_string(),

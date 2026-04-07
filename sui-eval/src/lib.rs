@@ -13,6 +13,8 @@ pub mod eval;
 pub mod fetcher;
 /// Native flake lock management — update, check, write.
 pub mod flake_lock;
+/// Pure-Rust git operations via libgit2 (no CLI spawning).
+pub mod git;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 

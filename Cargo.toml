@@ -66,6 +66,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # HTTP client (for binary cache, fetchers)
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "blocking"] }
 
+# Git operations (pure library, no CLI spawning)
+git2 = { version = "0.20", default-features = false }
+
 # Archive extraction (for fetchTarball)
 flate2 = "1"
 tar = "0.4"

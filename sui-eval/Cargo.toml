@@ -26,6 +26,7 @@ data-encoding.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
+git2.workspace = true
 flate2.workspace = true
 tar.workspace = true
 

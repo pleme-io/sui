@@ -128,36 +128,13 @@ impl InputFetcher {
             return Ok(dest);
         }
 
-        let status = std::process::Command::new("git")
-            .args(["clone", "--depth", "1", url])
-            .arg(dest.as_os_str())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+        // Clone using git2 (no CLI spawning).
+        crate::git::clone(url, &dest, None, true, false)
             .map_err(|e| FetchError::Download(format!("git clone: {e}")))?;
 
-        if !status.success() {
-            return Err(FetchError::Download(format!(
-                "git clone failed for {url} (exit code: {})",
-                status.code().unwrap_or(-1)
-            )));
-        }
-
         // Checkout the exact revision.
-        let checkout_status = std::process::Command::new("git")
-            .args(["-C"])
-            .arg(dest.as_os_str())
-            .args(["checkout", rev])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| FetchError::Download(format!("git checkout: {e}")))?;
-
-        if !checkout_status.success() {
-            return Err(FetchError::Download(format!(
-                "git checkout {rev} failed for {url}"
-            )));
-        }
+        crate::git::checkout_rev(&dest, rev)
+            .map_err(|e| FetchError::Download(format!("git checkout {rev}: {e}")))?;
 
         Ok(dest)
     }

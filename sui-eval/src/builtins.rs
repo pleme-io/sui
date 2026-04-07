@@ -2433,53 +2433,25 @@ fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
             context: format!("fetchGit: {}", target.display()),
             message: e.to_string(),
         })?;
-        // Clone (depth 1 unless a specific rev is requested).
-        let mut clone_args: Vec<String> = vec!["clone".into()];
-        if rev_opt.is_none() {
-            clone_args.push("--depth".into());
-            clone_args.push("1".into());
-            if ref_opt.is_some() {
-                clone_args.push("--branch".into());
-                clone_args.push(head_ref.into());
-            }
-        }
-        if submodules {
-            clone_args.push("--recurse-submodules".into());
-        }
-        clone_args.push(url.clone());
-        clone_args.push(target.to_string_lossy().into_owned());
-        let status = std::process::Command::new("git")
-            .args(&clone_args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| EvalError::IoError {
-                context: format!("fetchGit: spawn git for {url}"),
-                message: e.to_string(),
-            })?;
-        if !status.success() {
+        // Clone using git2 (no CLI spawning).
+        let shallow = rev_opt.is_none();
+        let branch = if ref_opt.is_some() && rev_opt.is_none() {
+            Some(head_ref)
+        } else {
+            None
+        };
+        if let Err(e) = crate::git::clone(&url, &target, branch, shallow, submodules) {
             let _ = std::fs::remove_dir_all(&target);
             return Err(EvalError::IoError {
                 context: format!("fetchGit: git clone {url}"),
-                message: format!("git clone exited with {status}"),
+                message: e,
             });
         }
         if let Some(rev) = &rev_opt {
-            let status = std::process::Command::new("git")
-                .args(["-C", &target.to_string_lossy(), "checkout", rev])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map_err(|e| EvalError::IoError {
-                    context: format!("fetchGit: checkout {rev}"),
-                    message: e.to_string(),
-                })?;
-            if !status.success() {
-                return Err(EvalError::IoError {
-                    context: format!("fetchGit: git checkout {rev}"),
-                    message: format!("exited with {status}"),
-                });
-            }
+            crate::git::checkout_rev(&target, rev).map_err(|e| EvalError::IoError {
+                context: format!("fetchGit: git checkout {rev}"),
+                message: e,
+            })?;
         }
     }
     git_result_attrs(&target, submodules)
@@ -2489,33 +2461,10 @@ fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
 /// already-cloned target directory and assemble the result attrset.
 fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Result<Value, EvalError> {
     let target_str = target.to_string_lossy().into_owned();
-    fn git(target: &std::path::Path, args: &[&str]) -> Result<String, EvalError> {
-        let out = std::process::Command::new("git")
-            .args(["-C", &target.to_string_lossy()])
-            .args(args)
-            .output()
-            .map_err(|e| EvalError::IoError {
-                context: format!("git {args:?}"),
-                message: e.to_string(),
-            })?;
-        if !out.status.success() {
-            return Err(EvalError::IoError {
-                context: format!("git {args:?}"),
-                message: String::from_utf8_lossy(&out.stderr).into_owned(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-    let rev = git(target, &["rev-parse", "HEAD"]).unwrap_or_default();
+    let rev = crate::git::head_rev(target).unwrap_or_default();
     let short_rev = if rev.len() >= 7 { rev[..7].to_string() } else { rev.clone() };
-    let last_modified: i64 = git(target, &["log", "-1", "--format=%ct"])
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let rev_count: i64 = git(target, &["rev-list", "--count", "HEAD"])
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let last_modified: i64 = crate::git::head_timestamp(target).unwrap_or(0);
+    let rev_count: i64 = crate::git::rev_count(target).unwrap_or(0);
     // Format lastModifiedDate as YYYYMMDDhhmmss in UTC, like CppNix.
     let last_modified_date = format_unix_yyyymmddhhmmss(last_modified);
     // narHash: hash the rev — not the actual NAR — for stability.
@@ -6179,9 +6128,6 @@ mod tests {
     // ── fetchGit / fetchTree / fetchMercurial ─────────────
 
     fn make_local_git_repo() -> Option<std::path::PathBuf> {
-        if std::process::Command::new("git").arg("--version").output().is_err() {
-            return None;
-        }
         let dir = std::env::temp_dir().join(format!(
             "sui_eval_local_git_{}",
             std::time::SystemTime::now()
@@ -6190,24 +6136,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).ok()?;
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(["-C", &dir.to_string_lossy()])
-                .args(args)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .ok()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        };
-        if !run(&["init", "-b", "main"]) { return None; }
-        // Configure a local identity so commit succeeds in CI.
-        let _ = run(&["config", "user.email", "test@sui.local"]);
-        let _ = run(&["config", "user.name", "sui-test"]);
+        let repo = crate::git::init_repo(&dir, "main").ok()?;
+        crate::git::set_config(&repo, "user.email", "test@sui.local").ok()?;
+        crate::git::set_config(&repo, "user.name", "sui-test").ok()?;
         std::fs::write(dir.join("README"), "hello").ok()?;
-        if !run(&["add", "README"]) { return None; }
-        if !run(&["commit", "-m", "initial"]) { return None; }
+        crate::git::commit_all(&repo, "initial", "sui-test", "test@sui.local").ok()?;
         Some(dir)
     }
 
