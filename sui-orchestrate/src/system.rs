@@ -34,6 +34,20 @@ impl std::fmt::Display for RebuildAction {
     }
 }
 
+impl std::str::FromStr for RebuildAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "switch" => Ok(Self::Switch),
+            "boot" => Ok(Self::Boot),
+            "test" => Ok(Self::Test),
+            "build" => Ok(Self::Build),
+            other => Err(format!("invalid rebuild action: {other}")),
+        }
+    }
+}
+
 /// Result of a system rebuild.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RebuildResult {
@@ -73,6 +87,27 @@ impl Platform {
         match self {
             Self::Darwin => "darwin-rebuild",
             Self::NixOS => "nixos-rebuild",
+        }
+    }
+}
+
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Darwin => f.write_str("darwin"),
+            Self::NixOS => f.write_str("nixos"),
+        }
+    }
+}
+
+impl std::str::FromStr for Platform {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "darwin" => Ok(Self::Darwin),
+            "nixos" => Ok(Self::NixOS),
+            other => Err(format!("invalid platform: {other}")),
         }
     }
 }

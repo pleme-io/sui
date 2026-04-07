@@ -19,6 +19,29 @@ pub enum DeployStrategy {
     Canary,
 }
 
+impl std::fmt::Display for DeployStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parallel => f.write_str("parallel"),
+            Self::Rolling => f.write_str("rolling"),
+            Self::Canary => f.write_str("canary"),
+        }
+    }
+}
+
+impl std::str::FromStr for DeployStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "parallel" => Ok(Self::Parallel),
+            "rolling" => Ok(Self::Rolling),
+            "canary" => Ok(Self::Canary),
+            other => Err(format!("invalid deploy strategy: {other}")),
+        }
+    }
+}
+
 /// Result of a fleet deployment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeployResult {
@@ -149,7 +172,7 @@ impl FleetOrchestrator {
 
         Ok(DeployResult {
             target: target.to_string(),
-            strategy: format!("{strategy:?}").to_lowercase(),
+            strategy: strategy.to_string(),
             total_nodes: nodes.len(),
             succeeded,
             failed,

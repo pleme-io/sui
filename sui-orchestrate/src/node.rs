@@ -43,6 +43,21 @@ impl std::fmt::Display for NodeStatus {
     }
 }
 
+impl std::str::FromStr for NodeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "online" => Ok(Self::Online),
+            "offline" => Ok(Self::Offline),
+            "deploying" => Ok(Self::Deploying),
+            "failed" => Ok(Self::Failed),
+            "unknown" => Ok(Self::Unknown),
+            other => Err(format!("invalid node status: {other}")),
+        }
+    }
+}
+
 /// A fleet node definition.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Node {
