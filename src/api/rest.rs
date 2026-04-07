@@ -78,24 +78,21 @@ async fn list_paths(
     State(state): State<AppState>,
     Query(pagination): Query<PaginationQuery>,
 ) -> Json<Vec<String>> {
-    if let Some(ref store) = state.store {
-        match store.query_all_valid_paths().await {
-            Ok(paths) => {
-                let offset = pagination.offset as usize;
-                let limit = pagination.limit as usize;
-                let strs: Vec<String> = paths
-                    .into_iter()
-                    .skip(offset)
-                    .take(limit)
-                    .map(|p| p.to_absolute_path())
-                    .collect();
-                Json(strs)
-            }
-            Err(_) => Json(vec![]),
-        }
-    } else {
-        Json(vec![])
-    }
+    let Some(ref store) = state.store else {
+        return Json(vec![]);
+    };
+    let paths = store
+        .query_all_valid_paths()
+        .await
+        .unwrap_or_default();
+
+    let result = paths
+        .into_iter()
+        .skip(pagination.offset as usize)
+        .take(pagination.limit as usize)
+        .map(|p| p.to_absolute_path())
+        .collect();
+    Json(result)
 }
 
 async fn get_path_info(
