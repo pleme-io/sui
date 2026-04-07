@@ -461,6 +461,7 @@ pub struct Env {
 
 impl Env {
     /// Create a root environment with no bindings.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             bindings: BTreeMap::new(),
@@ -471,6 +472,7 @@ impl Env {
     }
 
     /// Create a child environment that inherits from this one.
+    #[must_use]
     pub fn child(&self) -> Self {
         Self {
             bindings: BTreeMap::new(),
@@ -484,6 +486,7 @@ impl Env {
     }
 
     /// Attach a `with` scope to this environment.
+    #[must_use]
     pub fn with_scope(mut self, attrs: NixAttrs) -> Self {
         self.with_scope = Some(Arc::new(attrs));
         self
@@ -507,6 +510,7 @@ impl Env {
     /// `with_scope` before the inner one (because the parent recursion
     /// returned the parent's full lookup result, including its `with_scope`,
     /// before the child's own `with_scope` got checked).
+    #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
         if let Some(v) = self.lookup_lexical(name) {
             return Some(v);
