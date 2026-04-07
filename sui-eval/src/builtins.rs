@@ -140,7 +140,7 @@ pub fn register(env: &mut Env) {
     });
     register_builtin(&mut builtins_set, "attrValues", |args| {
         let attrs = args[0].to_attrs()?;
-        Ok(Value::List(attrs.iter().map(|(_, v)| v.clone()).collect()))
+        Ok(Value::List(attrs.values().cloned().collect()))
     });
     register_builtin(&mut builtins_set, "hasAttr", |args| {
         let name = args[0].as_string()?.to_string();
@@ -437,7 +437,7 @@ pub fn register(env: &mut Env) {
                     .collect();
                 let mut result = set.clone();
                 for name in &remove {
-                    result.0.remove(name);
+                    result.remove(name);
                 }
                 Ok(Value::Attrs(result))
             }),

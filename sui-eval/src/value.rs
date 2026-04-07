@@ -331,6 +331,16 @@ impl NixAttrs {
         self.0.iter()
     }
 
+    /// Iterate over values in sorted key order.
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.0.values()
+    }
+
+    /// Remove an attribute, returning its value if present.
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.0.remove(key)
+    }
+
     /// Return the number of attributes.
     #[must_use]
     pub fn len(&self) -> usize {
