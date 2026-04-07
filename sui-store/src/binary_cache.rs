@@ -2,6 +2,8 @@
 //!
 //! Implements the NarInfo + NAR download protocol for substitution.
 
+// TODO(scope): NarInfo lives in sui-compat — add `impl FromStr for NarInfo`
+// there so callers can use `"...".parse::<NarInfo>()` instead of `NarInfo::parse()`.
 use sui_compat::narinfo::{NarInfo, NarInfoError};
 use sui_compat::store_path::StorePath;
 
