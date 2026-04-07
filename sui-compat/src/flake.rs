@@ -892,7 +892,218 @@ mod tests {
 
     #[test]
     fn empty_object_returns_error() {
-        // Missing required fields.
         assert!(FlakeLock::parse("{}").is_err());
+    }
+
+    // ── flake = false nodes ─────────────────────────────
+
+    #[test]
+    fn flake_false_node_default_is_none() {
+        let lock = FlakeLock::parse(minimal_lock_json()).unwrap();
+        let nixpkgs = lock.get_node("nixpkgs").unwrap();
+        assert_eq!(nixpkgs.flake, None);
+    }
+
+    #[test]
+    fn flake_false_roundtrips_through_json() {
+        let json = r#"{
+  "nodes": {
+    "data-files": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-DATA",
+        "owner": "example",
+        "repo": "data",
+        "rev": "abc123",
+        "type": "github"
+      },
+      "original": {
+        "owner": "example",
+        "repo": "data",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "data-files": "data-files"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let data = lock.get_node("data-files").unwrap();
+        assert_eq!(data.flake, Some(false));
+
+        let reserialized = lock.to_json().unwrap();
+        let reparsed = FlakeLock::parse(&reserialized).unwrap();
+        let data2 = reparsed.get_node("data-files").unwrap();
+        assert_eq!(data2.flake, Some(false));
+    }
+
+    // ── Follows-of-follows chains ───────────────────────
+
+    #[test]
+    fn follows_of_follows_three_levels() {
+        let json = r#"{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-NP",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "final",
+        "type": "github"
+      },
+      "original": { "owner": "nixos", "repo": "nixpkgs", "type": "github" }
+    },
+    "root": {
+      "inputs": {
+        "a": "a",
+        "b": "b",
+        "c": "c",
+        "nixpkgs": "nixpkgs"
+      }
+    },
+    "a": {
+      "inputs": { "nixpkgs": ["nixpkgs"] },
+      "locked": { "lastModified": 1, "narHash": "sha256-A", "owner": "x", "repo": "a", "rev": "a1", "type": "github" },
+      "original": { "owner": "x", "repo": "a", "type": "github" }
+    },
+    "b": {
+      "inputs": { "nixpkgs": ["a", "nixpkgs"] },
+      "locked": { "lastModified": 2, "narHash": "sha256-B", "owner": "x", "repo": "b", "rev": "b1", "type": "github" },
+      "original": { "owner": "x", "repo": "b", "type": "github" }
+    },
+    "c": {
+      "inputs": { "nixpkgs": ["b", "nixpkgs"] },
+      "locked": { "lastModified": 3, "narHash": "sha256-C", "owner": "x", "repo": "c", "rev": "c1", "type": "github" },
+      "original": { "owner": "x", "repo": "c", "type": "github" }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+
+        // c.nixpkgs follows ["b", "nixpkgs"]
+        //   → root -> b -> nixpkgs
+        // b.nixpkgs follows ["a", "nixpkgs"]
+        //   → root -> a -> nixpkgs
+        // a.nixpkgs follows ["nixpkgs"]
+        //   → root -> nixpkgs
+        let node = lock.resolve_input(&["c", "nixpkgs"]).unwrap();
+        assert_eq!(
+            node.locked.as_ref().unwrap().rev.as_deref(),
+            Some("final"),
+        );
+    }
+
+    // ── Malformed inputs ────────────────────────────────
+
+    #[test]
+    fn malformed_version_string() {
+        let json = r#"{ "nodes": { "root": {} }, "root": "root", "version": "seven" }"#;
+        assert!(FlakeLock::parse(json).is_err());
+    }
+
+    #[test]
+    fn malformed_input_ref_integer() {
+        let json = r#"{
+  "nodes": {
+    "root": {
+      "inputs": { "x": 42 }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        assert!(FlakeLock::parse(json).is_err());
+    }
+
+    #[test]
+    fn missing_version_field() {
+        let json = r#"{ "nodes": { "root": {} }, "root": "root" }"#;
+        assert!(FlakeLock::parse(json).is_err());
+    }
+
+    #[test]
+    fn null_root_field() {
+        let json = r#"{ "nodes": { "root": {} }, "root": null, "version": 7 }"#;
+        assert!(FlakeLock::parse(json).is_err());
+    }
+
+    // ── to_json roundtrip deep follows ──────────────────
+
+    #[test]
+    fn roundtrip_deep_follows() {
+        let original = FlakeLock::parse(deep_follows_json()).unwrap();
+        let json = original.to_json().unwrap();
+        let reparsed = FlakeLock::parse(&json).unwrap();
+
+        assert_eq!(reparsed.nodes.len(), original.nodes.len());
+        let bar = reparsed.get_node("bar").unwrap();
+        assert_eq!(
+            bar.inputs["nixpkgs"],
+            InputRef::Follows(vec!["foo".to_string(), "nixpkgs".to_string()]),
+        );
+    }
+
+    // ── Adjacency map with deep follows ─────────────────
+
+    #[test]
+    fn adjacency_map_deep_follows() {
+        let lock = FlakeLock::parse(deep_follows_json()).unwrap();
+        let adj = lock.adjacency_map();
+
+        let root_edges = &adj["root"];
+        assert_eq!(root_edges.len(), 3);
+
+        let bar_edges = &adj["bar"];
+        assert_eq!(bar_edges.len(), 1);
+        assert!(bar_edges.contains(&("nixpkgs".to_string(), "nixpkgs".to_string())));
+    }
+
+    // ── Extra fields preserved ──────────────────────────
+
+    #[test]
+    fn extra_fields_roundtrip() {
+        let json = r#"{
+  "nodes": {
+    "local": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "path": "/home/user/proj",
+        "type": "path",
+        "revCount": 42,
+        "submodules": true
+      },
+      "original": {
+        "type": "path",
+        "url": "/home/user/proj"
+      }
+    },
+    "root": {
+      "inputs": { "local": "local" }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let local = lock.get_node("local").unwrap();
+        let locked = local.locked.as_ref().unwrap();
+        assert_eq!(locked.extra.get("revCount"), Some(&serde_json::json!(42)));
+        assert_eq!(locked.extra.get("submodules"), Some(&serde_json::json!(true)));
+
+        let reserialized = lock.to_json().unwrap();
+        let reparsed = FlakeLock::parse(&reserialized).unwrap();
+        let local2 = reparsed.get_node("local").unwrap();
+        let locked2 = local2.locked.as_ref().unwrap();
+        assert_eq!(locked2.extra.get("revCount"), Some(&serde_json::json!(42)));
     }
 }
