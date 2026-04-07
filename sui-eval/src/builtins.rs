@@ -1,45 +1,50 @@
 //! Core Nix builtins.
+//!
+//! Builtins are registered in [`register`] which populates the global
+//! `builtins` attribute set and the top-level default scope. Simple
+//! single-argument builtins (type-checking predicates, `ceil`, `floor`,
+//! etc.) are described declaratively via [`BuiltinSpec`] and a static
+//! slice, keeping registration compact and self-documenting. More
+//! complex builtins (curried, multi-stage, I/O) are still registered
+//! with the imperative [`register_builtin`] / [`register_curried`]
+//! helpers.
 
 use std::sync::Arc;
 
 use crate::value::*;
 
+/// Descriptor for a simple single-argument builtin function.
+///
+/// The implementation closure receives the full `&[Value]` argument
+/// slice (always length 1 after apply) and returns a `Result<Value>`.
+/// Using a struct makes the builtin table scannable and self-documenting
+/// without repeating the `register_builtin(…, |args| { … })` boilerplate.
+pub(crate) struct BuiltinSpec {
+    pub name: &'static str,
+    pub func: fn(&[Value]) -> Result<Value, EvalError>,
+}
+
+/// Type-checking builtins, registered from a declarative table.
+const TYPE_CHECK_BUILTINS: &[BuiltinSpec] = &[
+    BuiltinSpec { name: "typeOf", func: |args| Ok(Value::string(args[0].type_name())) },
+    BuiltinSpec { name: "isNull", func: |args| Ok(Value::Bool(matches!(args[0], Value::Null))) },
+    BuiltinSpec { name: "isInt",  func: |args| Ok(Value::Bool(matches!(args[0], Value::Int(_)))) },
+    BuiltinSpec { name: "isFloat", func: |args| Ok(Value::Bool(matches!(args[0], Value::Float(_)))) },
+    BuiltinSpec { name: "isBool", func: |args| Ok(Value::Bool(matches!(args[0], Value::Bool(_)))) },
+    BuiltinSpec { name: "isString", func: |args| Ok(Value::Bool(matches!(args[0], Value::String(_)))) },
+    BuiltinSpec { name: "isList", func: |args| Ok(Value::Bool(matches!(args[0], Value::List(_)))) },
+    BuiltinSpec { name: "isAttrs", func: |args| Ok(Value::Bool(matches!(args[0], Value::Attrs(_)))) },
+    BuiltinSpec { name: "isFunction", func: |args| Ok(Value::Bool(matches!(args[0], Value::Lambda(_) | Value::Builtin(_)))) },
+    BuiltinSpec { name: "isPath", func: |args| Ok(Value::Bool(matches!(args[0], Value::Path(_)))) },
+];
+
 /// Register all builtins into the environment.
 pub fn register(env: &mut Env) {
     let mut builtins_set = NixAttrs::new();
 
-    // Type checking -- args are already forced by apply() but type_name()
-    // also handles thunks transparently.
-    register_builtin(&mut builtins_set, "typeOf", |args| {
-        Ok(Value::string(args[0].type_name()))
-    });
-    register_builtin(&mut builtins_set, "isNull", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Null)))
-    });
-    register_builtin(&mut builtins_set, "isInt", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Int(_))))
-    });
-    register_builtin(&mut builtins_set, "isFloat", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Float(_))))
-    });
-    register_builtin(&mut builtins_set, "isBool", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Bool(_))))
-    });
-    register_builtin(&mut builtins_set, "isString", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::String(_))))
-    });
-    register_builtin(&mut builtins_set, "isList", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::List(_))))
-    });
-    register_builtin(&mut builtins_set, "isAttrs", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Attrs(_))))
-    });
-    register_builtin(&mut builtins_set, "isFunction", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Lambda(_) | Value::Builtin(_))))
-    });
-    register_builtin(&mut builtins_set, "isPath", |args| {
-        Ok(Value::Bool(matches!(args[0], Value::Path(_))))
-    });
+    for spec in TYPE_CHECK_BUILTINS {
+        register_builtin(&mut builtins_set, spec.name, spec.func);
+    }
 
     // Arithmetic
     register_curried(&mut builtins_set, "add", |a, b| {
@@ -657,13 +662,14 @@ pub fn register(env: &mut Env) {
         }))
     });
 
-    // Numeric
-    register_builtin(&mut builtins_set, "ceil", |args| {
-        Ok(Value::Int(args[0].as_float()?.ceil() as i64))
-    });
-    register_builtin(&mut builtins_set, "floor", |args| {
-        Ok(Value::Int(args[0].as_float()?.floor() as i64))
-    });
+    // Numeric — simple single-arg builtins
+    const NUMERIC_BUILTINS: &[BuiltinSpec] = &[
+        BuiltinSpec { name: "ceil",  func: |args| Ok(Value::Int(args[0].as_float()?.ceil() as i64)) },
+        BuiltinSpec { name: "floor", func: |args| Ok(Value::Int(args[0].as_float()?.floor() as i64)) },
+    ];
+    for spec in NUMERIC_BUILTINS {
+        register_builtin(&mut builtins_set, spec.name, spec.func);
+    }
 
     // Misc
     register_builtin(&mut builtins_set, "tryEval", |args| {
