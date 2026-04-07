@@ -133,7 +133,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 figment.workspace = true
 thiserror.workspace = true
-anyhow.workspace = true
 tokio-stream.workspace = true
 futures-core.workspace = true
 
