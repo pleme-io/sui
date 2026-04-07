@@ -17,6 +17,7 @@ use super::types::*;
 ///
 /// All handlers are mounted under `/api/v1/` with an additional `/health` at the root.
 /// The returned router requires [`AppState`] to be provided via `.with_state()`.
+#[must_use]
 pub fn router() -> Router<AppState> {
     Router::new()
         // Health

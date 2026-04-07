@@ -10,6 +10,7 @@ pub struct AppState {
 
 impl AppState {
     /// Create state with a connected store (any backend).
+    #[must_use]
     pub fn with_store(store: impl sui_store::Store + 'static) -> Self {
         Self {
             store: Some(Arc::new(store)),
@@ -17,6 +18,7 @@ impl AppState {
     }
 
     /// Create state without a store (stub mode).
+    #[must_use]
     pub fn stub() -> Self {
         Self { store: None }
     }

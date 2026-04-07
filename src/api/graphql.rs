@@ -364,6 +364,7 @@ impl SubscriptionRoot {
 // ── Schema + Router ─────────────────────────────────────────
 
 /// Construct the GraphQL schema with the given application state injected as context data.
+#[must_use]
 pub fn build_schema(state: super::state::AppState) -> SuiSchema {
     Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
         .data(state)
@@ -371,6 +372,7 @@ pub fn build_schema(state: super::state::AppState) -> SuiSchema {
 }
 
 /// Build the GraphQL axum router with POST and WebSocket subscription endpoints.
+#[must_use]
 pub fn router<S>(schema: SuiSchema) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
