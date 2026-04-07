@@ -8,7 +8,7 @@ use crate::command::{CommandRunner, TokioCommandRunner};
 use crate::node::{Node, NodeRegistry, NodeStatus};
 
 /// Deploy strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum DeployStrategy {
