@@ -158,4 +158,112 @@ mod tests {
         assert_eq!(cloned.status, 200);
         assert_eq!(cloned.body, "ok");
     }
+
+    #[test]
+    fn http_response_debug() {
+        let resp = HttpResponse {
+            status: 404,
+            body: "not found".to_string(),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("404"));
+        assert!(debug.contains("not found"));
+    }
+
+    #[test]
+    fn http_error_request_debug() {
+        let e = HttpError::Request("timeout".to_string());
+        let debug = format!("{e:?}");
+        assert!(debug.contains("Request"));
+        assert!(debug.contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn mock_client_multiple_urls() {
+        let client = MockHttpClient::new()
+            .with_response(
+                "http://test/a",
+                HttpResponse { status: 200, body: "alpha".to_string() },
+            )
+            .with_response(
+                "http://test/b",
+                HttpResponse { status: 201, body: "beta".to_string() },
+            );
+        let a = client.get("http://test/a", &[]).await.unwrap();
+        let b = client.get("http://test/b", &[]).await.unwrap();
+        assert_eq!(a.body, "alpha");
+        assert_eq!(b.status, 201);
+        assert_eq!(b.body, "beta");
+    }
+
+    #[tokio::test]
+    async fn mock_client_status_codes() {
+        for status in [200, 301, 404, 500, 503] {
+            let client = MockHttpClient::new().with_response(
+                "http://test/status",
+                HttpResponse {
+                    status,
+                    body: String::new(),
+                },
+            );
+            let resp = client.get("http://test/status", &[]).await.unwrap();
+            assert_eq!(resp.status, status);
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_client_empty_body() {
+        let client = MockHttpClient::new().with_response(
+            "http://test/empty",
+            HttpResponse {
+                status: 200,
+                body: String::new(),
+            },
+        );
+        let resp = client.get("http://test/empty", &[]).await.unwrap();
+        assert!(resp.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mock_client_large_body() {
+        let large_body = "x".repeat(1_000_000);
+        let client = MockHttpClient::new().with_response(
+            "http://test/large",
+            HttpResponse {
+                status: 200,
+                body: large_body.clone(),
+            },
+        );
+        let resp = client.get("http://test/large", &[]).await.unwrap();
+        assert_eq!(resp.body.len(), 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn mock_client_get_bytes_returns_utf8_bytes() {
+        let client = MockHttpClient::new().with_response(
+            "http://test/utf8",
+            HttpResponse {
+                status: 200,
+                body: "héllo wörld".to_string(),
+            },
+        );
+        let bytes = client.get_bytes("http://test/utf8").await.unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), "héllo wörld");
+    }
+
+    #[tokio::test]
+    async fn mock_client_overwrite_response() {
+        let client = MockHttpClient::new()
+            .with_response(
+                "http://test/x",
+                HttpResponse { status: 200, body: "first".to_string() },
+            )
+            .with_response(
+                "http://test/x",
+                HttpResponse { status: 201, body: "second".to_string() },
+            );
+        let resp = client.get("http://test/x", &[]).await.unwrap();
+        assert_eq!(resp.status, 201);
+        assert_eq!(resp.body, "second");
+    }
 }
