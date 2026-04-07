@@ -30,7 +30,7 @@ pub enum StoreError {
 }
 
 /// Information about a store path.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct PathInfo {
     /// Full absolute store path (e.g., `/nix/store/abc...-hello-2.12.1`).
@@ -88,7 +88,7 @@ impl From<&sui_compat::narinfo::NarInfo> for PathInfo {
 }
 
 /// Garbage collection options.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcOptions {
     /// Maximum bytes to free (0 = unlimited).
     pub max_freed: u64,
@@ -97,7 +97,7 @@ pub struct GcOptions {
 }
 
 /// Garbage collection result.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
 pub struct GcResult {
     /// Number of store paths deleted.
