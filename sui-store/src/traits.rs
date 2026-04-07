@@ -51,6 +51,12 @@ pub struct PathInfo {
     pub content_address: Option<String>,
 }
 
+impl From<crate::http::HttpError> for StoreError {
+    fn from(e: crate::http::HttpError) -> Self {
+        Self::Http(e.to_string())
+    }
+}
+
 impl Default for PathInfo {
     fn default() -> Self {
         Self {
