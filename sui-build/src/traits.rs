@@ -135,6 +135,21 @@ impl BuildLog {
     }
 }
 
+impl From<Vec<String>> for BuildLog {
+    fn from(lines: Vec<String>) -> Self {
+        Self { lines }
+    }
+}
+
+impl IntoIterator for BuildLog {
+    type Item = String;
+    type IntoIter = std::vec::IntoIter<String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.lines.into_iter()
+    }
+}
+
 // ── Build outcome ───────────────────────────────────────────────
 
 /// Typed outcome of a build execution, replacing the boolean `success` field.
