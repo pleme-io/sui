@@ -16,6 +16,8 @@ use crate::sandbox::SandboxError;
 /// State transitions: `Pending → Building → Succeeded | Failed`.
 /// Invalid transitions (e.g. `Succeeded → Building`) are prevented by
 /// returning an error from [`BuildState::transition`].
+///
+/// Implements `Display` and `FromStr` for serialization round-trips.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BuildState {
@@ -87,8 +89,20 @@ impl std::str::FromStr for BuildState {
 
 /// Structured build log accumulator.
 ///
-/// Collects timestamped log lines during a build. The final log text
+/// Collects log lines during a build. The final log text
 /// is retrievable via [`BuildLog::finish`].
+///
+/// # Examples
+///
+/// ```
+/// use sui_build::BuildLog;
+///
+/// let mut log = BuildLog::new();
+/// log.push("configuring...");
+/// log.push("building...");
+/// assert_eq!(log.len(), 2);
+/// assert_eq!(log.finish(), "configuring...\nbuilding...");
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct BuildLog {
     lines: Vec<String>,
@@ -152,7 +166,17 @@ impl IntoIterator for BuildLog {
 
 // ── Build outcome ───────────────────────────────────────────────
 
-/// Typed outcome of a build execution, replacing the boolean `success` field.
+/// Typed outcome of a build execution.
+///
+/// # Examples
+///
+/// ```
+/// use sui_build::BuildOutcome;
+///
+/// let outcome = BuildOutcome::Success;
+/// assert!(outcome.is_success());
+/// assert_eq!(outcome.to_string(), "success");
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum BuildOutcome {
