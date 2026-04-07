@@ -275,6 +275,7 @@ pub fn unpack_nar(nar_data: &[u8], dest: &Path) -> Result<(), NarError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::io::Cursor;
 
     #[test]
@@ -549,5 +550,29 @@ mod tests {
     fn reader_rejects_empty_input() {
         let result = NarReader::read_complete(&mut Cursor::new(&[]));
         assert!(result.is_err());
+    }
+
+    // ── Property tests ──────────────────────────────────
+
+    proptest! {
+        #[test]
+        fn prop_regular_file_roundtrip(contents in proptest::collection::vec(any::<u8>(), 0..1000), executable in any::<bool>()) {
+            let node = NarNode::Regular { executable, contents };
+            let mut buf = Vec::new();
+            NarWriter::write(&mut buf, &node).unwrap();
+            prop_assert_eq!(buf.len() % 8, 0);
+            let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+            prop_assert_eq!(parsed, node);
+        }
+
+        #[test]
+        fn prop_symlink_roundtrip(target in "[a-zA-Z0-9/_.-]{1,200}") {
+            let node = NarNode::Symlink { target };
+            let mut buf = Vec::new();
+            NarWriter::write(&mut buf, &node).unwrap();
+            prop_assert_eq!(buf.len() % 8, 0);
+            let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+            prop_assert_eq!(parsed, node);
+        }
     }
 }
