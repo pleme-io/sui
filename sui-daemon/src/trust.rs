@@ -93,4 +93,46 @@ mod tests {
         assert_eq!(TrustLevel::Trusted.to_string(), "trusted");
         assert_eq!(TrustLevel::NotTrusted.to_string(), "not-trusted");
     }
+
+    #[test]
+    fn trust_level_clone_and_copy() {
+        let t = TrustLevel::Trusted;
+        let t2 = t;
+        assert_eq!(t, t2);
+    }
+
+    #[test]
+    fn trust_level_debug_format() {
+        assert_eq!(format!("{:?}", TrustLevel::Trusted), "Trusted");
+        assert_eq!(format!("{:?}", TrustLevel::NotTrusted), "NotTrusted");
+    }
+
+    #[test]
+    fn root_uid_always_trusted_regardless_of_daemon_uid() {
+        for daemon_uid in [0, 500, 1000, 65534] {
+            let creds = MockCredentials { uid: daemon_uid };
+            assert_eq!(
+                TrustLevel::from_uid(0, &creds),
+                TrustLevel::Trusted,
+                "root should be trusted when daemon runs as UID {daemon_uid}"
+            );
+        }
+    }
+
+    #[test]
+    fn different_non_root_uid_is_not_trusted() {
+        for (peer, daemon) in [(1000, 501), (502, 501), (65534, 0)] {
+            if peer == 0 {
+                continue;
+            }
+            let creds = MockCredentials { uid: daemon };
+            if peer != daemon {
+                assert_eq!(
+                    TrustLevel::from_uid(peer, &creds),
+                    TrustLevel::NotTrusted,
+                    "peer {peer} should not be trusted when daemon is {daemon}"
+                );
+            }
+        }
+    }
 }
