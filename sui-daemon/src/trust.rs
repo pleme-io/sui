@@ -2,6 +2,7 @@
 
 /// Trust level for a connected client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TrustLevel {
     /// Client runs as root or the daemon user — allowed to perform all operations.
     Trusted,
@@ -28,6 +29,7 @@ impl TrustLevel {
     /// Determine trust level from the peer's effective UID.
     ///
     /// UID 0 (root) or the daemon's own UID are considered trusted.
+    #[must_use]
     pub fn from_uid(peer_uid: u32, creds: &dyn PeerCredentials) -> Self {
         let my_uid = creds.current_uid();
         if peer_uid == 0 || peer_uid == my_uid {

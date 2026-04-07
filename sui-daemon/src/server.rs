@@ -55,7 +55,7 @@ impl DaemonConfig {
         }
     }
 
-    /// Create a config using the Nix-compatible legacy socket path.
+    /// Create a configuration using the Nix-compatible legacy socket path.
     #[must_use]
     pub fn nix_compat() -> Self {
         Self {
@@ -76,6 +76,7 @@ where
     S: Store + 'static,
 {
     /// Create a new daemon server.
+    #[must_use]
     pub fn new(config: DaemonConfig, store: S) -> Self {
         Self {
             config,
@@ -193,6 +194,7 @@ fn resolve_trust(stream: &tokio::net::UnixStream) -> TrustLevel {
 
 /// Errors from the daemon server lifecycle (binding, accepting, or store setup).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DaemonError {
     /// Failed to bind to the Unix socket (includes PID lock failures).
     #[error("bind error: {0}")]

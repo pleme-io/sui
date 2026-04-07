@@ -36,6 +36,7 @@ const PROTOCOL_MINOR_OVERRIDES: u64 = (1 << 8) | 12;
 
 /// Errors specific to connection handling.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConnectionError {
     /// An I/O error occurred on the underlying transport.
     #[error("io error: {0}")]
@@ -158,6 +159,7 @@ where
     W: AsyncWrite + Unpin,
 {
     /// Create a new connection (pre-handshake).
+    #[must_use]
     pub fn new(store: Arc<S>, reader: R, writer: W, trust: TrustLevel) -> Self {
         Self {
             store,
