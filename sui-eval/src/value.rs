@@ -529,6 +529,32 @@ pub enum EvalError {
     ParseError(String),
 }
 
+impl EvalError {
+    /// Convenience constructor for a `TypeError` variant.
+    #[must_use]
+    pub fn type_error(msg: impl Into<String>) -> Self {
+        EvalError::TypeError(msg.into())
+    }
+
+    /// Convenience constructor for a `TypeMismatch` variant.
+    #[must_use]
+    pub fn type_mismatch(expected: &'static str, got: &'static str) -> Self {
+        EvalError::TypeMismatch { expected, got }
+    }
+
+    /// Whether this error was caused by `throw` or `abort`.
+    #[must_use]
+    pub fn is_throw(&self) -> bool {
+        matches!(self, EvalError::Throw(_))
+    }
+
+    /// Whether this error is an infinite recursion.
+    #[must_use]
+    pub fn is_infinite_recursion(&self) -> bool {
+        matches!(self, EvalError::InfiniteRecursion(_))
+    }
+}
+
 impl Value {
     /// Convenience constructor for a context-free string.
     #[must_use]
