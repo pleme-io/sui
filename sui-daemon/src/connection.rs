@@ -1019,6 +1019,155 @@ mod tests {
         assert_eq!(sigs[1], "my-key:sig456==");
     }
 
+    // ── SetOptions handler tests ──────────────────────────────
+
+    /// Build a SetOptions payload for a given client version.
+    fn build_set_options_payload(client_version: u64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        wire::write_u64(&mut buf, WorkerOp::SetOptions as u64).unwrap();
+        // keepFailed, keepGoing, tryFallback, verbosity, maxBuildJobs, maxSilentTime
+        for _ in 0..6 {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // useBuildHook (only sent for client < 1.12)
+        if client_version < (1 << 8 | 12) {
+            wire::write_u64(&mut buf, 1).unwrap();
+        }
+        // verboseBuild, logType, printBuildTrace, buildCores, useSubstitutes
+        for _ in 0..5 {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // overrides (for client >= 1.12)
+        if client_version >= (1 << 8 | 12) {
+            wire::write_u64(&mut buf, 0).unwrap(); // count=0
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn set_options_modern_client() {
+        let store = Arc::new(MockStore::new());
+        let client_version = PROTOCOL_VERSION; // 1.37
+
+        let input = build_set_options_payload(client_version);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = client_version;
+
+        conn.run().await.expect("SetOptions should succeed");
+
+        // Response should be just STDERR_LAST
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_old_client_with_build_hook() {
+        let store = Arc::new(MockStore::new());
+        let client_version: u64 = 1 << 8 | 11; // pre-1.12: sends useBuildHook
+
+        let input = build_set_options_payload(client_version);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = client_version;
+
+        conn.run().await.expect("SetOptions with old client should succeed");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_with_overrides() {
+        let store = Arc::new(MockStore::new());
+        let client_version = PROTOCOL_VERSION;
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::SetOptions as u64).unwrap();
+        // 6 fixed fields
+        for _ in 0..6 {
+            wire::write_u64(&mut input, 0).unwrap();
+        }
+        // 5 more fields
+        for _ in 0..5 {
+            wire::write_u64(&mut input, 0).unwrap();
+        }
+        // overrides: 2 key-value pairs
+        wire::write_u64(&mut input, 2).unwrap();
+        wire::write_string(&mut input, "cores").unwrap();
+        wire::write_string(&mut input, "4").unwrap();
+        wire::write_string(&mut input, "max-jobs").unwrap();
+        wire::write_string(&mut input, "8").unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = client_version;
+
+        conn.run().await.expect("SetOptions with overrides should succeed");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr_last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr_last, StderrMsg::Last as u64);
+    }
+
+    // ── Unimplemented opcode tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn unimplemented_opcode_returns_stderr_error_then_last() {
+        let store = Arc::new(MockStore::new());
+
+        // Send a known but unimplemented opcode (AddToStore = 7)
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.expect("should handle gracefully");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        // STDERR_ERROR
+        let msg_type = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(msg_type, StderrMsg::Error as u64);
+        let error_type = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(error_type, "Error");
+        let error_msg = wire::read_string(&mut cursor).unwrap();
+        assert!(error_msg.contains("not yet implemented"));
+        let _error_num = wire::read_u64(&mut cursor).unwrap();
+        // STDERR_LAST
+        let last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn unknown_opcode_error_message_contains_opcode() {
+        let store = Arc::new(MockStore::new());
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, 12345).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.expect("should handle gracefully");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let msg_type = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(msg_type, StderrMsg::Error as u64);
+        let _error_type = wire::read_string(&mut cursor).unwrap();
+        let error_msg = wire::read_string(&mut cursor).unwrap();
+        assert!(error_msg.contains("12345"), "error should include the opcode number");
+    }
+
     #[tokio::test]
     async fn query_path_info_full_flow_missing_returns_false() {
         let store = Arc::new(MockStore::new()); // empty
