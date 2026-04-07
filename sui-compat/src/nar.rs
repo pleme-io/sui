@@ -564,4 +564,292 @@ mod tests {
             prop_assert_eq!(parsed, node);
         }
     }
+
+    // ── MAX_NAR_STRING enforcement ───────────────────────
+
+    #[test]
+    fn read_str_rejects_oversized_length_prefix() {
+        // Hand-craft a NAR magic + a length prefix that exceeds MAX_NAR_STRING.
+        // We can't easily reach this through write_path (gigabytes of data),
+        // so build the bytes by hand.
+        let mut buf = Vec::new();
+        // First the magic
+        write_str(&mut buf, NAR_MAGIC.as_bytes()).unwrap();
+        // Open paren
+        write_str(&mut buf, b"(").unwrap();
+        // type token
+        write_str(&mut buf, b"type").unwrap();
+        // Now write a u64 length prefix that exceeds MAX_NAR_STRING for the
+        // node type string
+        wire::write_u64(&mut buf, MAX_NAR_STRING + 1).unwrap();
+        let result = NarReader::read_complete(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+        match result {
+            Err(NarError::Invalid(s)) => assert!(s.contains("too long")),
+            other => panic!("expected Invalid error about size, got {other:?}"),
+        }
+    }
+
+    // ── Unknown node type ────────────────────────────────
+
+    #[test]
+    fn reader_rejects_unknown_node_type() {
+        let mut buf = Vec::new();
+        write_str(&mut buf, NAR_MAGIC.as_bytes()).unwrap();
+        write_str(&mut buf, b"(").unwrap();
+        write_str(&mut buf, b"type").unwrap();
+        write_str(&mut buf, b"socket").unwrap(); // not regular/symlink/directory
+        let result = NarReader::read_complete(&mut Cursor::new(&buf));
+        match result {
+            Err(NarError::Invalid(s)) => assert!(s.contains("unknown node type")),
+            other => panic!("expected Invalid for unknown type, got {other:?}"),
+        }
+    }
+
+    // ── Regular file with unexpected token after type ────
+
+    #[test]
+    fn reader_rejects_regular_with_wrong_token() {
+        let mut buf = Vec::new();
+        write_str(&mut buf, NAR_MAGIC.as_bytes()).unwrap();
+        write_str(&mut buf, b"(").unwrap();
+        write_str(&mut buf, b"type").unwrap();
+        write_str(&mut buf, b"regular").unwrap();
+        write_str(&mut buf, b"garbage").unwrap(); // expected executable or contents
+        let result = NarReader::read_complete(&mut Cursor::new(&buf));
+        match result {
+            Err(NarError::UnexpectedToken { expected, .. }) => {
+                assert!(expected.contains("executable") || expected.contains("contents"));
+            }
+            other => panic!("expected UnexpectedToken, got {other:?}"),
+        }
+    }
+
+    // ── Directory with token that's not entry or close ──
+
+    #[test]
+    fn reader_rejects_directory_with_wrong_token() {
+        let mut buf = Vec::new();
+        write_str(&mut buf, NAR_MAGIC.as_bytes()).unwrap();
+        write_str(&mut buf, b"(").unwrap();
+        write_str(&mut buf, b"type").unwrap();
+        write_str(&mut buf, b"directory").unwrap();
+        write_str(&mut buf, b"garbage").unwrap(); // expected entry or )
+        let result = NarReader::read_complete(&mut Cursor::new(&buf));
+        match result {
+            Err(NarError::UnexpectedToken { expected, .. }) => {
+                assert!(expected.contains("entry") || expected.contains(")"));
+            }
+            other => panic!("expected UnexpectedToken, got {other:?}"),
+        }
+    }
+
+    // ── 1 KB+ symlink target ─────────────────────────────
+
+    #[test]
+    fn roundtrip_kilobyte_symlink_target() {
+        let target: String = "abcdefgh".repeat(150); // 1200 bytes
+        assert!(target.len() >= 1024);
+        let node = NarNode::Symlink { target };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Directory with 100+ entries ──────────────────────
+
+    #[test]
+    fn directory_with_100_entries_roundtrip() {
+        let entries: Vec<NarEntry> = (0..120)
+            .map(|i| NarEntry {
+                name: format!("file-{i:04}"),
+                node: NarNode::Regular {
+                    executable: false,
+                    contents: format!("body-{i}").into_bytes(),
+                },
+            })
+            .collect();
+        let node = NarNode::Directory { entries };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── File with all 256 byte values ────────────────────
+
+    #[test]
+    fn roundtrip_file_with_all_256_byte_values() {
+        let contents: Vec<u8> = (0..=255).collect();
+        assert_eq!(contents.len(), 256);
+        let node = NarNode::Regular { executable: false, contents };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── NarError Display ─────────────────────────────────
+
+    #[test]
+    fn nar_error_invalid_display() {
+        let err = NarError::Invalid("custom".to_string());
+        let s = format!("{err}");
+        assert!(s.contains("custom"));
+    }
+
+    #[test]
+    fn nar_error_unexpected_token_display() {
+        let err = NarError::UnexpectedToken {
+            expected: "foo".to_string(),
+            got: "bar".to_string(),
+        };
+        let s = format!("{err}");
+        assert!(s.contains("foo"));
+        assert!(s.contains("bar"));
+    }
+
+    // ── NAR_MAGIC constant value ─────────────────────────
+
+    #[test]
+    fn nar_magic_is_nix_archive_1() {
+        assert_eq!(NAR_MAGIC, "nix-archive-1");
+        assert_eq!(NAR_MAGIC.len(), 13);
+    }
+
+    #[test]
+    fn max_nar_string_is_4gib() {
+        assert_eq!(MAX_NAR_STRING, 4 * 1024 * 1024 * 1024);
+    }
+
+    // ── unpack_nar to filesystem ─────────────────────────
+
+    #[test]
+    fn unpack_nar_roundtrip_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("hello.txt"), b"hello world").unwrap();
+
+        let mut nar_data = Vec::new();
+        NarWriter::write_path(&mut nar_data, &src).unwrap();
+
+        let dest = dir.path().join("dest");
+        unpack_nar(&nar_data, &dest).unwrap();
+
+        let restored = std::fs::read(dest.join("hello.txt")).unwrap();
+        assert_eq!(restored, b"hello world");
+    }
+
+    // ── write_path on a single file (not directory) ─────
+
+    #[test]
+    fn write_path_on_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.txt");
+        std::fs::write(&path, b"plain content").unwrap();
+
+        let mut buf = Vec::new();
+        NarWriter::write_path(&mut buf, &path).unwrap();
+        assert!(buf.len() >= 8);
+        assert_eq!(buf.len() % 8, 0);
+    }
+
+    // ── Magic header byte-level layout ───────────────────
+
+    #[test]
+    fn magic_header_layout() {
+        let node = NarNode::Regular { executable: false, contents: vec![] };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        // First 8 bytes: u64 length-prefix = 13
+        let len = u64::from_le_bytes(buf[..8].try_into().unwrap());
+        assert_eq!(len, NAR_MAGIC.len() as u64);
+        // Next 13 bytes: magic
+        assert_eq!(&buf[8..21], NAR_MAGIC.as_bytes());
+        // Next 3 bytes: zero padding
+        assert_eq!(&buf[21..24], &[0u8, 0u8, 0u8]);
+    }
+
+    // ── NarNode equality ─────────────────────────────────
+
+    #[test]
+    fn nar_node_equality_and_clone() {
+        let n1 = NarNode::Regular { executable: false, contents: vec![1, 2, 3] };
+        let n2 = n1.clone();
+        assert_eq!(n1, n2);
+        let n3 = NarNode::Regular { executable: true, contents: vec![1, 2, 3] };
+        assert_ne!(n1, n3);
+    }
+
+    #[test]
+    fn nar_entry_equality_and_clone() {
+        let e1 = NarEntry {
+            name: "x".to_string(),
+            node: NarNode::Symlink { target: "y".to_string() },
+        };
+        let e2 = e1.clone();
+        assert_eq!(e1, e2);
+    }
+
+    // ── Empty symlink target ─────────────────────────────
+
+    #[test]
+    fn roundtrip_empty_symlink_target() {
+        let node = NarNode::Symlink { target: String::new() };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Nested directory with executable inside ─────────
+
+    #[test]
+    fn nested_directory_with_executable_inside() {
+        let node = NarNode::Directory {
+            entries: vec![
+                NarEntry {
+                    name: "bin".to_string(),
+                    node: NarNode::Directory {
+                        entries: vec![NarEntry {
+                            name: "tool".to_string(),
+                            node: NarNode::Regular {
+                                executable: true,
+                                contents: b"binary content".to_vec(),
+                            },
+                        }],
+                    },
+                },
+            ],
+        };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Property test for directory entries ─────────────
+
+    proptest! {
+        #[test]
+        fn prop_directory_entries_roundtrip(
+            count in 0_usize..=20,
+        ) {
+            let entries: Vec<NarEntry> = (0..count).map(|i| NarEntry {
+                name: format!("e{i:03}"),
+                node: NarNode::Regular {
+                    executable: i % 2 == 0,
+                    contents: vec![i as u8; i],
+                },
+            }).collect();
+            let node = NarNode::Directory { entries };
+            let mut buf = Vec::new();
+            NarWriter::write(&mut buf, &node).unwrap();
+            prop_assert_eq!(buf.len() % 8, 0);
+            let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+            prop_assert_eq!(parsed, node);
+        }
+    }
 }

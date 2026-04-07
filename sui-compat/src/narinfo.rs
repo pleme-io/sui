@@ -385,4 +385,291 @@ References: \n";
         let info = NarInfo::parse(input).unwrap();
         assert_eq!(info.compression, "none");
     }
+
+    // ── Construct a fully-populated NarInfo for additional tests ──
+
+    fn make_full_narinfo() -> NarInfo {
+        NarInfo {
+            store_path: "/nix/store/abc-pkg".to_string(),
+            url: "nar/abc.nar.xz".to_string(),
+            compression: "xz".to_string(),
+            file_hash: "sha256:1111".to_string(),
+            file_size: 1234,
+            nar_hash: "sha256:2222".to_string(),
+            nar_size: 5678,
+            references: vec!["dep1".to_string(), "dep2".to_string()],
+            deriver: Some("def-pkg.drv".to_string()),
+            signatures: vec!["k1:s1".to_string(), "k2:s2".to_string()],
+            ca: Some("fixed:out:r:sha256:cafe".to_string()),
+        }
+    }
+
+    // ── Display + FromStr ────────────────────────────────
+
+    #[test]
+    fn display_trait_matches_serialize() {
+        let info = make_full_narinfo();
+        let s = format!("{info}");
+        assert_eq!(s, info.serialize());
+    }
+
+    #[test]
+    fn from_str_trait_matches_parse() {
+        use std::str::FromStr;
+        let info = make_full_narinfo();
+        let s = info.serialize();
+        let parsed = NarInfo::from_str(&s).unwrap();
+        assert_eq!(parsed, info);
+    }
+
+    // ── Roundtrip preserves every field ──────────────────
+
+    #[test]
+    fn full_roundtrip_preserves_every_field() {
+        let info = make_full_narinfo();
+        let s = info.serialize();
+        let parsed = NarInfo::parse(&s).unwrap();
+        assert_eq!(parsed.store_path, info.store_path);
+        assert_eq!(parsed.url, info.url);
+        assert_eq!(parsed.compression, info.compression);
+        assert_eq!(parsed.file_hash, info.file_hash);
+        assert_eq!(parsed.file_size, info.file_size);
+        assert_eq!(parsed.nar_hash, info.nar_hash);
+        assert_eq!(parsed.nar_size, info.nar_size);
+        assert_eq!(parsed.references, info.references);
+        assert_eq!(parsed.deriver, info.deriver);
+        assert_eq!(parsed.signatures, info.signatures);
+        assert_eq!(parsed.ca, info.ca);
+    }
+
+    // ── Missing required field variants ──────────────────
+
+    #[test]
+    fn missing_file_size_field() {
+        let input = "\
+StorePath: /nix/store/abc-foo
+URL: nar/foo.nar
+FileHash: sha256:abc
+NarHash: sha256:def
+NarSize: 200
+References: \n";
+        match NarInfo::parse(input) {
+            Err(NarInfoError::MissingField(f)) => assert_eq!(f, "FileSize"),
+            other => panic!("expected MissingField(FileSize), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_nar_size_field() {
+        let input = "\
+StorePath: /nix/store/abc-foo
+URL: nar/foo.nar
+FileHash: sha256:abc
+FileSize: 100
+NarHash: sha256:def
+References: \n";
+        match NarInfo::parse(input) {
+            Err(NarInfoError::MissingField(f)) => assert_eq!(f, "NarSize"),
+            other => panic!("expected MissingField(NarSize), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_nar_size_value() {
+        let input = "\
+StorePath: /nix/store/abc-foo
+URL: nar/foo.nar
+FileHash: sha256:abc
+FileSize: 100
+NarHash: sha256:def
+NarSize: not-numeric
+References: \n";
+        match NarInfo::parse(input) {
+            Err(NarInfoError::InvalidValue { field, value }) => {
+                assert_eq!(field, "NarSize");
+                assert_eq!(value, "not-numeric");
+            }
+            other => panic!("expected InvalidValue for NarSize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_error_no_colon_in_line() {
+        let input = "this-is-not-a-key-value-line\n";
+        match NarInfo::parse(input) {
+            Err(NarInfoError::Parse(_)) => {}
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_input_returns_missing_field() {
+        // Empty input → first missing required field is StorePath
+        match NarInfo::parse("") {
+            Err(NarInfoError::MissingField(f)) => assert_eq!(f, "StorePath"),
+            other => panic!("expected MissingField, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blank_lines_ignored() {
+        let input = "\
+\n\
+\n\
+StorePath: /nix/store/abc-foo\n\
+\n\
+URL: nar/foo.nar\n\
+\n\
+Compression: none\n\
+FileHash: sha256:abc\n\
+FileSize: 100\n\
+NarHash: sha256:def\n\
+NarSize: 200\n\
+References: \n";
+        let info = NarInfo::parse(input).unwrap();
+        assert_eq!(info.store_path, "/nix/store/abc-foo");
+    }
+
+    #[test]
+    fn references_split_on_whitespace() {
+        let input = "\
+StorePath: /nix/store/abc-foo
+URL: nar/foo.nar
+Compression: none
+FileHash: sha256:abc
+FileSize: 100
+NarHash: sha256:def
+NarSize: 200
+References: a-1 b-2 c-3 d-4 e-5\n";
+        let info = NarInfo::parse(input).unwrap();
+        assert_eq!(info.references.len(), 5);
+        assert_eq!(info.references[0], "a-1");
+        assert_eq!(info.references[4], "e-5");
+    }
+
+    #[test]
+    fn three_signatures_preserved_in_order() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.signatures = vec![
+            "k1:s1".to_string(),
+            "k2:s2".to_string(),
+            "k3:s3".to_string(),
+        ];
+        let s = info.serialize();
+        let parsed = NarInfo::parse(&s).unwrap();
+        assert_eq!(parsed.signatures, info.signatures);
+    }
+
+    #[test]
+    fn deriver_field_serializes_when_some() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.deriver = Some("xyz.drv".to_string());
+        let s = info.serialize();
+        assert!(s.contains("Deriver: xyz.drv"));
+    }
+
+    #[test]
+    fn ca_field_serializes_when_some() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.ca = Some("text:sha256:1234".to_string());
+        let s = info.serialize();
+        assert!(s.contains("CA: text:sha256:1234"));
+    }
+
+    #[test]
+    fn ca_field_omitted_when_none() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.ca = None;
+        let s = info.serialize();
+        assert!(!s.contains("CA:"));
+    }
+
+    #[test]
+    fn deriver_field_omitted_when_none() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.deriver = None;
+        let s = info.serialize();
+        assert!(!s.contains("Deriver:"));
+    }
+
+    #[test]
+    fn maximum_file_size_value() {
+        let input = format!(
+            "StorePath: /nix/store/abc-foo\n\
+URL: nar/foo.nar\n\
+Compression: none\n\
+FileHash: sha256:abc\n\
+FileSize: {}\n\
+NarHash: sha256:def\n\
+NarSize: {}\n\
+References: \n",
+            u64::MAX,
+            u64::MAX,
+        );
+        let info = NarInfo::parse(&input).unwrap();
+        assert_eq!(info.file_size, u64::MAX);
+        assert_eq!(info.nar_size, u64::MAX);
+    }
+
+    #[test]
+    fn references_dedup_preserved_order() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.references = vec!["a".to_string(), "b".to_string(), "a".to_string()];
+        // serialize doesn't dedup; round-trip preserves duplicates
+        let s = info.serialize();
+        let parsed = NarInfo::parse(&s).unwrap();
+        assert_eq!(parsed.references, vec!["a".to_string(), "b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn whitespace_in_field_values_trimmed() {
+        let input = "\
+StorePath:    /nix/store/abc-foo
+URL:    nar/foo.nar
+Compression:    none
+FileHash:    sha256:abc
+FileSize:    100
+NarHash:    sha256:def
+NarSize:    200
+References:    \n";
+        let info = NarInfo::parse(input).unwrap();
+        assert_eq!(info.store_path, "/nix/store/abc-foo");
+        assert_eq!(info.url, "nar/foo.nar");
+    }
+
+    #[test]
+    fn signature_with_complex_base64_preserved() {
+        let sig = "cache.example.org-1:ABCDEFG+/=Hijklmn==";
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.signatures = vec![sig.to_string()];
+        let parsed = NarInfo::parse(&info.serialize()).unwrap();
+        assert_eq!(parsed.signatures, vec![sig.to_string()]);
+    }
+
+    #[test]
+    fn url_with_query_string_preserved() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.url = "nar/abc.nar.xz?token=xyz".to_string();
+        let parsed = NarInfo::parse(&info.serialize()).unwrap();
+        assert_eq!(parsed.url, "nar/abc.nar.xz?token=xyz");
+    }
+
+    #[test]
+    fn store_path_with_long_name_preserved() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        let long = format!("/nix/store/{}-{}", "a".repeat(32), "x".repeat(200));
+        info.store_path = long.clone();
+        let parsed = NarInfo::parse(&info.serialize()).unwrap();
+        assert_eq!(parsed.store_path, long);
+    }
+
+    #[test]
+    fn many_references_preserved() {
+        let mut info = NarInfo::parse(SAMPLE_NARINFO).unwrap();
+        info.references = (0..50).map(|i| format!("ref-{i:03}-name")).collect();
+        let parsed = NarInfo::parse(&info.serialize()).unwrap();
+        assert_eq!(parsed.references.len(), 50);
+        assert_eq!(parsed.references[0], "ref-000-name");
+        assert_eq!(parsed.references[49], "ref-049-name");
+    }
 }

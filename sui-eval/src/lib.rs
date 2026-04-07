@@ -209,4 +209,151 @@ mod tests {
             Value::Int(2),
         );
     }
+
+    // ── Re-exports & convenience eval shim ─────────────────
+
+    #[test]
+    fn re_export_eval_function_works() {
+        // The top-level `eval` re-export from `eval::eval` should be
+        // identical to the inner function.
+        assert_eq!(eval("1 + 1").unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn re_export_value_and_error_types_constructible() {
+        let v: Value = Value::Int(7);
+        let e: EvalError = EvalError::UndefinedVar("x".into());
+        assert_eq!(v.type_name(), "int");
+        assert!(e.to_string().contains("undefined"));
+    }
+
+    // ── flake re-export from sui-compat ────────────────────
+
+    #[test]
+    fn flake_module_re_exports_compat_types() {
+        // Smoke test that the flake submodule re-export compiles. We
+        // reference a known type from the sui_compat::flake module via
+        // our own re-export. Whatever types live there must be reachable.
+        // We use the path explicitly to force compilation of the import.
+        #[allow(unused_imports)]
+        use crate::flake::*;
+        // The block is intentionally empty: success is "this compiled".
+    }
+
+    // ── TreeWalkEvaluator passes path through ──────────────
+
+    #[test]
+    fn tree_walk_eval_file_with_real_temp_file() {
+        let dir = std::env::temp_dir().join("sui-eval-test-tree-walk");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("simple.nix");
+        std::fs::write(&path, "1 + 2").unwrap();
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_file(&path).unwrap();
+        assert_eq!(result, Value::Int(3));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn tree_walk_eval_file_propagates_io_error_kind() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_file(std::path::Path::new("/nonexistent/never/exists.nix"));
+        match result {
+            Err(EvalError::IoError { context, .. }) => {
+                assert!(context.contains("eval_file"));
+            }
+            other => panic!("expected IoError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tree_walk_eval_file_parse_error_propagates() {
+        let dir = std::env::temp_dir().join("sui-eval-test-tw-parse");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bad.nix");
+        std::fs::write(&path, "let in").unwrap();
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_file(&path);
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── Mock evaluator additional ──────────────────────────
+
+    #[test]
+    fn mock_evaluator_dispatched_via_trait_object() {
+        let m: Box<dyn Evaluator> = Box::new(MockEvaluator(Ok(Value::Bool(true))));
+        let r = m.eval_expr("anything").unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
+
+    #[test]
+    fn mock_evaluator_eval_file_routes_through_eval_expr() {
+        let m = MockEvaluator(Ok(Value::Int(1)));
+        let r = m.eval_file(std::path::Path::new("/dev/null"));
+        assert_eq!(r.unwrap(), Value::Int(1));
+    }
+
+    // ── Through-trait coverage of more constructs ──────────
+
+    #[test]
+    fn tree_walk_eval_function_with_default_args() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(
+            e.eval_expr("({a, b ? 10}: a + b) {a = 5;}").unwrap(),
+            Value::Int(15),
+        );
+    }
+
+    #[test]
+    fn tree_walk_eval_with_throws_propagated() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_expr(r#"builtins.throw "boom""#);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.is_throw());
+    }
+
+    #[test]
+    fn tree_walk_eval_assert_failure() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_expr("assert false; 42");
+        assert!(matches!(result, Err(EvalError::AssertionFailed)));
+    }
+
+    #[test]
+    fn tree_walk_eval_division_by_zero() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_expr("1 / 0");
+        assert!(matches!(result, Err(EvalError::DivisionByZero)));
+    }
+
+    #[test]
+    fn tree_walk_eval_undefined_variable() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let result = e.eval_expr("nonexistent_xyz");
+        assert!(matches!(result, Err(EvalError::UndefinedVar(_))));
+    }
+
+    #[test]
+    fn tree_walk_eval_path_literal() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let v = e.eval_expr("/tmp/x").unwrap();
+        assert!(matches!(v, Value::Path(_)));
+    }
+
+    #[test]
+    fn tree_walk_eval_float_literal() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        assert_eq!(e.eval_expr("3.14").unwrap(), Value::Float(3.14));
+    }
+
+    #[test]
+    fn tree_walk_eval_lambda_returns_lambda() {
+        let e: &dyn Evaluator = &TreeWalkEvaluator;
+        let v = e.eval_expr("x: x").unwrap();
+        assert!(matches!(v, Value::Lambda(_)));
+    }
 }

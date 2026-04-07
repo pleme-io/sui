@@ -548,6 +548,328 @@ mod tests {
         }
     }
 
+    // ── escape() unit tests ──────────────────────────────
+
+    #[test]
+    fn escape_empty_string() {
+        assert_eq!(escape(""), "\"\"");
+    }
+
+    #[test]
+    fn escape_no_special_chars() {
+        assert_eq!(escape("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn escape_double_quote() {
+        assert_eq!(escape("a\"b"), "\"a\\\"b\"");
+    }
+
+    #[test]
+    fn escape_backslash() {
+        assert_eq!(escape("a\\b"), "\"a\\\\b\"");
+    }
+
+    #[test]
+    fn escape_newline() {
+        assert_eq!(escape("a\nb"), "\"a\\nb\"");
+    }
+
+    #[test]
+    fn escape_carriage_return() {
+        assert_eq!(escape("a\rb"), "\"a\\rb\"");
+    }
+
+    #[test]
+    fn escape_tab() {
+        assert_eq!(escape("a\tb"), "\"a\\tb\"");
+    }
+
+    #[test]
+    fn escape_all_specials_combined() {
+        let s = "a\"b\\c\nd\re\tf";
+        let escaped = escape(s);
+        assert_eq!(escaped, "\"a\\\"b\\\\c\\nd\\re\\tf\"");
+    }
+
+    // ── Empty inputs everywhere ──────────────────────────
+
+    #[test]
+    fn empty_outputs_btreemap_serializes_brackets() {
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: String::new(),
+            builder: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let s = drv.serialize();
+        // outputs is the very first list — must be empty `[]`
+        assert!(s.starts_with("Derive([],"));
+        let parsed = Derivation::parse(s.as_bytes()).unwrap();
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn unicode_env_values_roundtrip() {
+        let mut env = BTreeMap::new();
+        env.insert("greeting".to_string(), "こんにちは世界".to_string());
+        env.insert("emoji".to_string(), "🎉🚀".to_string());
+        env.insert("mixed".to_string(), "test 日本語 café".to_string());
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn unknown_escape_sequences_preserved_literally() {
+        // The parser preserves unknown \X as \X (literal backslash + char)
+        let input = b"Derive([(\"out\",\"/out\",\"\",\"\")],[],[],\"x86_64-linux\",\"/bin/sh\",[],[(\"v\",\"a\\xb\")])";
+        let drv = Derivation::parse(input).unwrap();
+        // \x is not a recognized escape, so it's preserved as-is
+        assert_eq!(drv.env["v"], "a\\xb");
+    }
+
+    #[test]
+    fn parse_error_includes_position() {
+        // Truncated input — parsing fails somewhere
+        let result = Derivation::parse(b"Derive([(\"out\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_invalid_outputs_format() {
+        // Outputs missing the closing tuple paren
+        let result = Derivation::parse(b"Derive([(\"out\",\"/out\",\"\",\"\"],[],[],\"\",\"\",[],[])");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_missing_comma_separator() {
+        // Missing comma between fields
+        let result = Derivation::parse(b"Derive([],[][],\"\",\"\",[],[])");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn args_with_many_entries() {
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: (0..50).map(|i| format!("arg-{i}")).collect(),
+            env: BTreeMap::new(),
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed.args.len(), 50);
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn input_derivations_with_many_outputs_each() {
+        let mut input_drvs = BTreeMap::new();
+        let outputs: Vec<String> =
+            ["out", "dev", "lib", "bin", "doc", "man", "info", "static", "debug"]
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+        for i in 0..5 {
+            input_drvs.insert(format!("/nix/store/dep{i}.drv"), outputs.clone());
+        }
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: input_drvs,
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed.input_derivations.len(), 5);
+        for outs in parsed.input_derivations.values() {
+            assert_eq!(outs.len(), 9);
+        }
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn fixed_output_md5_algorithm() {
+        let mut outputs = BTreeMap::new();
+        outputs.insert("out".to_string(), DerivationOutput {
+            path: "/nix/store/abc-x".to_string(),
+            hash_algo: "md5".to_string(),
+            hash: "0123456789abcdef0123456789abcdef".to_string(),
+        });
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed.outputs["out"].hash_algo, "md5");
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn empty_string_in_env_key() {
+        let mut env = BTreeMap::new();
+        env.insert(String::new(), "value-with-empty-key".to_string());
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed.env[""], "value-with-empty-key");
+    }
+
+    #[test]
+    fn parser_handles_zero_outputs_zero_inputs() {
+        let input = b"Derive([],[],[],\"sys\",\"build\",[],[])";
+        let drv = Derivation::parse(input).unwrap();
+        assert!(drv.outputs.is_empty());
+        assert!(drv.input_derivations.is_empty());
+        assert!(drv.input_sources.is_empty());
+        assert!(drv.args.is_empty());
+        assert!(drv.env.is_empty());
+        assert_eq!(drv.system, "sys");
+        assert_eq!(drv.builder, "build");
+    }
+
+    #[test]
+    fn default_derivation_is_empty() {
+        let drv = Derivation::default();
+        assert!(drv.outputs.is_empty());
+        assert!(drv.input_derivations.is_empty());
+        assert!(drv.input_sources.is_empty());
+        assert!(drv.system.is_empty());
+        assert!(drv.builder.is_empty());
+        assert!(drv.args.is_empty());
+        assert!(drv.env.is_empty());
+    }
+
+    #[test]
+    fn default_derivation_output_is_empty() {
+        let out = DerivationOutput::default();
+        assert!(out.path.is_empty());
+        assert!(out.hash_algo.is_empty());
+        assert!(out.hash.is_empty());
+    }
+
+    #[test]
+    fn outputs_serialized_in_btreemap_order() {
+        // BTreeMap iterates keys in sorted order — confirm serialization
+        // emits outputs alphabetically.
+        let mut outputs = BTreeMap::new();
+        for name in ["zzz", "aaa", "mmm"] {
+            outputs.insert(name.to_string(), DerivationOutput {
+                path: format!("/out-{name}"),
+                hash_algo: String::new(),
+                hash: String::new(),
+            });
+        }
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "sys".to_string(),
+            builder: "build".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let s = drv.serialize();
+        // "aaa" should come before "mmm" before "zzz"
+        let aaa = s.find("\"aaa\"").unwrap();
+        let mmm = s.find("\"mmm\"").unwrap();
+        let zzz = s.find("\"zzz\"").unwrap();
+        assert!(aaa < mmm);
+        assert!(mmm < zzz);
+    }
+
+    #[test]
+    fn env_serialized_in_btreemap_order() {
+        let mut env = BTreeMap::new();
+        for k in ["zoo", "alpha", "middle"] {
+            env.insert(k.to_string(), format!("v-{k}"));
+        }
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "sys".to_string(),
+            builder: "build".to_string(),
+            args: vec![],
+            env,
+        };
+        let s = drv.serialize();
+        let alpha = s.find("\"alpha\"").unwrap();
+        let middle = s.find("\"middle\"").unwrap();
+        let zoo = s.find("\"zoo\"").unwrap();
+        assert!(alpha < middle);
+        assert!(middle < zoo);
+    }
+
     #[test]
     fn complex_input_derivations() {
         let mut input_drvs = BTreeMap::new();

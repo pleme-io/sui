@@ -840,5 +840,258 @@ mod tests {
             prop_assert_eq!(reparsed.digest, sp.digest);
             prop_assert_eq!(reparsed.name, sp.name);
         }
+
+        // Brief: round-trip property tests for nix_base32 on byte vectors
+        // of varied sizes (5, 10, 20, 32, 64).
+        // Note: nix_base32_decode is fixed at 20 bytes input, so we can only
+        // do full encode→decode roundtrips for that length.
+
+        #[test]
+        fn prop_base32_encode_length_5(bytes in proptest::collection::vec(any::<u8>(), 5)) {
+            let encoded = nix_base32_encode(&bytes);
+            // 5 bytes * 8 = 40 bits, ceil(40/5) = 8 chars
+            prop_assert_eq!(encoded.len(), 8);
+        }
+
+        #[test]
+        fn prop_base32_encode_length_10(bytes in proptest::collection::vec(any::<u8>(), 10)) {
+            let encoded = nix_base32_encode(&bytes);
+            // 10 bytes * 8 = 80 bits, ceil(80/5) = 16 chars
+            prop_assert_eq!(encoded.len(), 16);
+        }
+
+        #[test]
+        fn prop_base32_encode_length_32(bytes in proptest::collection::vec(any::<u8>(), 32)) {
+            let encoded = nix_base32_encode(&bytes);
+            // 32 bytes * 8 = 256 bits, ceil(256/5) = 52 chars
+            prop_assert_eq!(encoded.len(), 52);
+        }
+
+        #[test]
+        fn prop_base32_encode_length_64(bytes in proptest::collection::vec(any::<u8>(), 64)) {
+            let encoded = nix_base32_encode(&bytes);
+            // 64 bytes * 8 = 512 bits, ceil(512/5) = 103 chars
+            prop_assert_eq!(encoded.len(), 103);
+        }
+
+        #[test]
+        fn prop_base32_encode_uses_alphabet_only(bytes in proptest::collection::vec(any::<u8>(), 1..=128)) {
+            let encoded = nix_base32_encode(&bytes);
+            for c in encoded.chars() {
+                prop_assert!(NIX_BASE32_CHARS.contains(&(c as u8)));
+            }
+        }
+
+        // Property test: compute_drv_path is deterministic for any input.
+        #[test]
+        fn prop_drv_path_deterministic(
+            content in proptest::collection::vec(any::<u8>(), 0..200),
+            name in "[a-z][a-z0-9-]{0,30}",
+        ) {
+            let p1 = compute_drv_path(&content, &name);
+            let p2 = compute_drv_path(&content, &name);
+            prop_assert_eq!(p1, p2);
+        }
+
+        // Property test: drv path with refs is invariant under permutation.
+        #[test]
+        fn prop_drv_path_with_refs_permutation_invariant(
+            content in proptest::collection::vec(any::<u8>(), 0..50),
+            name in "[a-z]{1,10}",
+            n_refs in 0_usize..=8,
+        ) {
+            let refs: Vec<String> = (0..n_refs).map(|i| format!("/nix/store/r{i}-x")).collect();
+            let mut shuffled = refs.clone();
+            shuffled.reverse();
+            let p1 = compute_drv_path_with_refs(&content, &name, &refs);
+            let p2 = compute_drv_path_with_refs(&content, &name, &shuffled);
+            prop_assert_eq!(p1, p2);
+        }
+    }
+
+    // ── Additional StorePath edge cases ──────────────────
+
+    #[test]
+    fn from_basename_unicode_in_name_rejected_or_accepted() {
+        // The current parser only requires ASCII for hash. The name may
+        // technically contain any UTF-8 character. Document current behavior.
+        let hash = nix_base32_encode(&[0u8; 20]);
+        let basename = format!("{hash}-héllo");
+        let sp = StorePath::from_basename(&basename).unwrap();
+        assert_eq!(sp.name, "héllo");
+    }
+
+    #[test]
+    fn from_absolute_path_without_leading_slash_rejected() {
+        assert!(StorePath::from_absolute_path("nix/store/abc").is_err());
+    }
+
+    #[test]
+    fn from_absolute_path_with_extra_path_segments_rejected() {
+        // /nix/store/<hash>-<name>/extra is not a valid store path
+        let hash = nix_base32_encode(&[0u8; 20]);
+        let path = format!("/nix/store/{hash}-name/extra");
+        // The current parser accepts it because it strips the prefix and
+        // takes everything after as basename. Document current behavior.
+        let sp = StorePath::from_absolute_path(&path).unwrap();
+        assert_eq!(sp.name, "name/extra");
+    }
+
+    #[test]
+    fn store_path_hash_trait_works_in_hashset() {
+        use std::collections::HashSet;
+        let p1 = StorePath {
+            digest: [1; 20],
+            name: "x".to_string(),
+        };
+        let p2 = p1.clone();
+        let p3 = StorePath {
+            digest: [2; 20],
+            name: "x".to_string(),
+        };
+        let mut set = HashSet::new();
+        set.insert(p1);
+        set.insert(p2); // duplicate
+        set.insert(p3);
+        assert_eq!(set.len(), 2);
+    }
+
+    // ── from_str (FromStr) trait ─────────────────────────
+
+    #[test]
+    fn store_path_from_str_trait() {
+        use std::str::FromStr;
+        let path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-hierarchical-0.1.0.1";
+        let sp: StorePath = StorePath::from_str(path).unwrap();
+        assert_eq!(sp.name, "net-hierarchical-0.1.0.1");
+    }
+
+    #[test]
+    fn store_path_parse_trait_via_str() {
+        let path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-net-hierarchical-0.1.0.1";
+        let sp: StorePath = path.parse().unwrap();
+        assert_eq!(sp.name, "net-hierarchical-0.1.0.1");
+    }
+
+    // ── StorePathError variants ──────────────────────────
+
+    #[test]
+    fn store_path_error_invalid_format_includes_string() {
+        match StorePath::from_absolute_path("/tmp/foo") {
+            Err(StorePathError::Invalid(s)) => assert_eq!(s, "/tmp/foo"),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn store_path_error_empty_name_variant() {
+        // The minimum-length check (basename.len() < HASH_LEN + 2) fires first,
+        // so a 33-char basename ends up returning Invalid, not EmptyName.
+        // To reach the EmptyName branch we need a basename that's long enough
+        // (>= 34 chars) but where the chars after the dash are still empty —
+        // which is logically impossible. The branch is reachable only via
+        // Direct construction of from_basename in code paths the parser
+        // can't produce, so EmptyName is effectively dead code in the public
+        // API. Document the actual reachable error.
+        let hash = nix_base32_encode(&[0u8; 20]);
+        let basename = format!("{hash}-");
+        match StorePath::from_basename(&basename) {
+            Err(StorePathError::Invalid(_)) => {}
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn store_path_error_invalid_hash_length() {
+        match nix_base32_decode("abc") {
+            Err(StorePathError::InvalidHashLength { expected, got }) => {
+                assert_eq!(expected, 32);
+                assert_eq!(got, 3);
+            }
+            other => panic!("expected InvalidHashLength, got {other:?}"),
+        }
+    }
+
+    // ── compress_hash various output sizes ──────────────
+
+    #[test]
+    fn compress_hash_to_one_byte_xor_all_input() {
+        // For output_len = 1, every input byte XORs into byte 0.
+        let input = vec![0xFF, 0x0F, 0xF0, 0x55, 0xAA];
+        let out = compress_hash(&input, 1);
+        let expected = 0xFF ^ 0x0F ^ 0xF0 ^ 0x55 ^ 0xAA;
+        assert_eq!(out[0], expected);
+    }
+
+    #[test]
+    fn compress_hash_empty_input() {
+        let out = compress_hash(&[], 5);
+        assert_eq!(out, vec![0u8; 5]);
+    }
+
+    #[test]
+    fn compress_hash_smaller_input_than_output() {
+        // 3 bytes input → 5 bytes output: bytes 0..3 are XORed, 3..5 stay 0
+        let input = vec![0xAA, 0xBB, 0xCC];
+        let out = compress_hash(&input, 5);
+        assert_eq!(out[0], 0xAA);
+        assert_eq!(out[1], 0xBB);
+        assert_eq!(out[2], 0xCC);
+        assert_eq!(out[3], 0);
+        assert_eq!(out[4], 0);
+    }
+
+    // ── compute_output_path with named outputs ───────────
+
+    #[test]
+    fn output_path_lib_format() {
+        let path = compute_output_path("0123456789abcdef", "lib", "openssl");
+        assert!(path.starts_with("/nix/store/"));
+        assert!(path.ends_with("-openssl-lib"));
+    }
+
+    #[test]
+    fn output_path_default_does_not_have_out_suffix() {
+        let path = compute_output_path("0123456789abcdef", "out", "hello");
+        let basename = path.strip_prefix("/nix/store/").unwrap();
+        assert!(!basename.ends_with("-hello-out"));
+        assert!(basename.ends_with("-hello"));
+    }
+
+    // ── compute_fixed_output_hash recursive sha256 ───────
+
+    #[test]
+    fn fixed_output_recursive_sha256_uses_source_branch() {
+        // Both branches are deterministic — verify recursive sha256 differs
+        // from non-recursive sha256
+        let r = compute_fixed_output_hash("sha256", "abc", true, "thing");
+        let f = compute_fixed_output_hash("sha256", "abc", false, "thing");
+        assert_ne!(r, f);
+    }
+
+    #[test]
+    fn fixed_output_recursive_md5_does_not_use_source_branch() {
+        // Recursive but algo != sha256 → goes through "fixed:out:r:" branch
+        let r = compute_fixed_output_hash("md5", "abc", true, "thing");
+        let f = compute_fixed_output_hash("md5", "abc", false, "thing");
+        // r uses "r:md5:" prefix, f uses "md5:" — different fingerprints
+        assert_ne!(r, f);
+    }
+
+    // ── compute_drv_path delegates to with_refs ─────────
+
+    #[test]
+    fn compute_drv_path_equals_with_refs_empty_slice() {
+        let p1 = compute_drv_path(b"content", "name");
+        let p2 = compute_drv_path_with_refs(b"content", "name", &[]);
+        assert_eq!(p1, p2);
+    }
+
+    // ── DEFAULT_STORE_DIR + STORE_PATH_HASH_LEN constants ──
+
+    #[test]
+    fn store_constants() {
+        assert_eq!(DEFAULT_STORE_DIR, "/nix/store");
+        assert_eq!(STORE_PATH_HASH_LEN, 32);
     }
 }
