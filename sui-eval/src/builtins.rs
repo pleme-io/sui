@@ -3377,14 +3377,15 @@ fn coerce_drv_value_to_string_opt(v: &Value) -> Option<String> {
 }
 
 /// Fetch bytes from a URL. Supports `file://` scheme for local files and
-/// delegates to `reqwest::blocking` for HTTP(S).
+/// delegates to `ureq` (synchronous, no tokio runtime) for HTTP(S).
 fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     if let Some(path) = url.strip_prefix("file://") {
         std::fs::read(path).map_err(|e| format!("{e}"))
     } else {
-        let resp = reqwest::blocking::get(url).map_err(|e| format!("{e}"))?;
-        let bytes = resp.bytes().map_err(|e| format!("{e}"))?;
-        Ok(bytes.to_vec())
+        let resp = ureq::get(url).call().map_err(|e| format!("{e}"))?;
+        resp.into_body()
+            .read_to_vec()
+            .map_err(|e| format!("{e}"))
     }
 }
 

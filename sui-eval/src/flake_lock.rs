@@ -246,30 +246,32 @@ fn resolve_github(
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{ref_name}");
 
-    let client = reqwest::blocking::Client::new();
-    let mut request = client
-        .get(&url)
+    let mut request = ureq::get(&url)
         .header("User-Agent", "sui/0.1")
         .header("Accept", "application/vnd.github.v3+json");
 
     // Use GITHUB_TOKEN if available for rate limiting.
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        request = request.header("Authorization", format!("token {token}"));
+        request = request.header("Authorization", &format!("token {token}"));
     }
 
     let resp = request
-        .send()
+        .call()
         .map_err(|e| FlakeLockUpdateError::FetchFailed(e.to_string()))?;
 
     if !resp.status().is_success() {
         return Err(FlakeLockUpdateError::FetchFailed(format!(
             "GitHub API returned {}",
-            resp.status()
+            resp.status().as_u16()
         )));
     }
 
-    let commit: serde_json::Value = resp
-        .json()
+    let body = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| FlakeLockUpdateError::FetchFailed(e.to_string()))?;
+
+    let commit: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| FlakeLockUpdateError::FetchFailed(e.to_string()))?;
 
     let sha = commit

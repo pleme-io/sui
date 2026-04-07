@@ -237,20 +237,24 @@ fn find_single_subdir_or_self(dir: &Path) -> PathBuf {
 }
 
 /// Download a URL and return the raw bytes.
+///
+/// Uses `ureq` (synchronous, no tokio runtime) so this function is safe to
+/// call from inside a running tokio context — no nested-runtime panic.
 fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
-    let response = reqwest::blocking::get(url)
+    let response = ureq::get(url)
+        .call()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))?;
 
     if !response.status().is_success() {
         return Err(FetchError::Download(format!(
             "{url}: HTTP {}",
-            response.status()
+            response.status().as_u16()
         )));
     }
 
     response
-        .bytes()
-        .map(|b| b.to_vec())
+        .into_body()
+        .read_to_vec()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))
 }
 
