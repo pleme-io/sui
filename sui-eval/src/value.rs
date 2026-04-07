@@ -297,6 +297,7 @@ impl NixAttrs {
     }
 
     /// Look up an attribute by name.
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
     }
@@ -307,6 +308,7 @@ impl NixAttrs {
     }
 
     /// Check whether an attribute exists.
+    #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.0.contains_key(key)
     }
@@ -322,16 +324,19 @@ impl NixAttrs {
     }
 
     /// Return the number of attributes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Whether this attribute set is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Merge two attrsets (right overrides left, like `//`).
+    #[must_use]
     pub fn update(&self, other: &NixAttrs) -> NixAttrs {
         let mut result = self.0.clone();
         for (k, v) in &other.0 {
@@ -461,6 +466,7 @@ impl Env {
 
 /// Evaluation errors produced by the Nix evaluator.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EvalError {
     /// A variable was referenced but not bound in scope.
     #[error("undefined variable: {0}")]
@@ -487,11 +493,13 @@ pub enum EvalError {
 
 impl Value {
     /// Convenience constructor for a context-free string.
+    #[must_use]
     pub fn string(s: impl Into<String>) -> Self {
         Value::String(NixString::plain(s))
     }
 
     /// Convert a value to JSON for API output.
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Value::Null => serde_json::Value::Null,
@@ -523,6 +531,7 @@ impl Value {
     }
 
     /// Return the Nix type name for this value (e.g. `"int"`, `"set"`).
+    #[must_use]
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Null => "null",
@@ -682,6 +691,50 @@ impl Value {
             }
             _ => Err(EvalError::TypeError(format!("expected number, got {}", self.type_name()))),
         }
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Value::Null
+    }
+}
+
+// ── From impls for ergonomic Value construction ─────────────
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        Value::Bool(b)
+    }
+}
+
+impl From<i64> for Value {
+    fn from(n: i64) -> Self {
+        Value::Int(n)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(f: f64) -> Self {
+        Value::Float(f)
+    }
+}
+
+impl From<NixString> for Value {
+    fn from(s: NixString) -> Self {
+        Value::String(s)
+    }
+}
+
+impl From<NixAttrs> for Value {
+    fn from(attrs: NixAttrs) -> Self {
+        Value::Attrs(attrs)
+    }
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(list: Vec<Value>) -> Self {
+        Value::List(list)
     }
 }
 
