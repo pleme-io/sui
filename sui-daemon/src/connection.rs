@@ -259,7 +259,7 @@ where
         tracing::debug!(path = %path_str, "IsValidPath");
 
         let valid = match StorePath::from_absolute_path(&path_str) {
-            Ok(sp) => self.store.is_valid_path(&sp).await.unwrap_or(false),
+            Ok(sp) => self.store.is_valid_path(&sp).await?,
             Err(_) => false,
         };
 
@@ -288,7 +288,7 @@ where
         tracing::debug!(path = %path_str, "QueryPathInfo");
 
         let info = match StorePath::from_absolute_path(&path_str) {
-            Ok(sp) => self.store.query_path_info(&sp).await.unwrap_or(None),
+            Ok(sp) => self.store.query_path_info(&sp).await?,
             Err(_) => None,
         };
 
@@ -332,8 +332,7 @@ where
         let paths = self
             .store
             .query_all_valid_paths()
-            .await
-            .unwrap_or_default();
+            .await?;
 
         let path_strings: Vec<String> = paths.iter().map(|p| p.to_absolute_path()).collect();
 
