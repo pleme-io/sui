@@ -158,4 +158,16 @@ mod tests {
         let cloned = state.clone();
         assert!(cloned.store.is_some());
     }
+
+    #[test]
+    fn app_state_has_store_true_with_store() {
+        let state = AppState::with_store(TestStore::new());
+        assert!(state.has_store());
+    }
+
+    #[test]
+    fn app_state_has_store_false_in_stub() {
+        let state = AppState::stub();
+        assert!(!state.has_store());
+    }
 }
