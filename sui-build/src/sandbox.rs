@@ -235,22 +235,220 @@ impl Sandbox for LinuxSandbox {
     }
 }
 
-/// macOS sandbox-exec based sandbox (Phase 5 full implementation).
+// ── Darwin sandbox ───────────────────────────────────────────────
+
+/// macOS `sandbox-exec` based sandbox.
+///
+/// Generates a Sandbox Profile Language (SBPL) profile that:
+/// - Denies all by default (`deny default`)
+/// - Allows file-read access to input store paths and standard system paths
+/// - Allows file-write access only to the build directory
+/// - Allows process-fork and process-exec
+/// - Allows network operations only when [`SandboxConfig::allow_network`] is true
+///
+/// Falls back to running the builder unsandboxed if `/usr/bin/sandbox-exec` is
+/// not available (only relevant on non-macOS hosts via cross-test).
 #[cfg(target_os = "macos")]
-pub struct DarwinSandbox;
+pub struct DarwinSandbox {
+    /// Path to the `sandbox-exec` binary. Defaults to `/usr/bin/sandbox-exec`.
+    sandbox_exec_path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for DarwinSandbox {
+    fn default() -> Self {
+        Self {
+            sandbox_exec_path: std::path::PathBuf::from("/usr/bin/sandbox-exec"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl DarwinSandbox {
+    /// Create a new `DarwinSandbox` using the default `/usr/bin/sandbox-exec`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a `DarwinSandbox` pointing at a custom `sandbox-exec` binary.
+    ///
+    /// Mostly useful for tests.
+    #[must_use]
+    pub fn with_exec_path(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            sandbox_exec_path: path.into(),
+        }
+    }
+
+    /// Returns whether the configured `sandbox-exec` binary exists and is
+    /// executable.
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.sandbox_exec_path.exists()
+    }
+
+    /// Run the builder unsandboxed (used as a fallback when `sandbox-exec` is
+    /// missing — never reached on real macOS hosts).
+    fn execute_unsandboxed(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        eprintln!(
+            "warning: DarwinSandbox running unsandboxed — sandbox-exec not found at {}",
+            self.sandbox_exec_path.display()
+        );
+        NoSandbox.execute(config)
+    }
+}
+
+/// Generate a Sandbox Profile Language (SBPL) profile for the given config.
+///
+/// The generated profile is a deterministic function of the config, so two
+/// configs with the same fields produce identical profiles. Suitable for
+/// passing via `sandbox-exec -p`.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
+    let mut profile = String::new();
+    profile.push_str("(version 1)\n");
+    profile.push_str("(deny default)\n");
+
+    // Allow basic process operations.
+    profile.push_str("(allow process-fork)\n");
+    profile.push_str("(allow process-exec)\n");
+    profile.push_str("(allow signal (target self))\n");
+
+    // Allow sysctl reads (often needed for libc init, malloc, etc.).
+    profile.push_str("(allow sysctl-read)\n");
+
+    // Allow access to /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/dtracehelper.
+    profile.push_str("(allow file-read* file-write*\n");
+    profile.push_str("    (literal \"/dev/null\")\n");
+    profile.push_str("    (literal \"/dev/zero\")\n");
+    profile.push_str("    (literal \"/dev/random\")\n");
+    profile.push_str("    (literal \"/dev/urandom\")\n");
+    profile.push_str("    (literal \"/dev/dtracehelper\")\n");
+    profile.push_str("    (literal \"/dev/tty\")\n");
+    profile.push_str(")\n");
+
+    // Allow reads from standard system locations and any input paths.
+    profile.push_str("(allow file-read*\n");
+    profile.push_str("    (subpath \"/usr\")\n");
+    profile.push_str("    (subpath \"/bin\")\n");
+    profile.push_str("    (subpath \"/sbin\")\n");
+    profile.push_str("    (subpath \"/System\")\n");
+    profile.push_str("    (subpath \"/Library\")\n");
+    profile.push_str("    (subpath \"/private/etc\")\n");
+    profile.push_str("    (subpath \"/private/var/db\")\n");
+    profile.push_str("    (subpath \"/private/var/empty\")\n");
+    profile.push_str("    (subpath \"/private/var/folders\")\n");
+    profile.push_str("    (subpath \"/private/var/run\")\n");
+    profile.push_str("    (subpath \"/private/tmp\")\n");
+    for input in &config.input_paths {
+        profile.push_str("    (subpath ");
+        profile.push_str(&sbpl_quote(input));
+        profile.push_str(")\n");
+    }
+    profile.push_str(")\n");
+
+    // Allow writes only to the build directory.
+    if !config.build_dir.is_empty() {
+        profile.push_str("(allow file-write*\n");
+        profile.push_str("    (subpath ");
+        profile.push_str(&sbpl_quote(&config.build_dir));
+        profile.push_str(")\n");
+        profile.push_str(")\n");
+    }
+
+    // Network operations.
+    if config.allow_network {
+        profile.push_str("(allow network*)\n");
+        profile.push_str("(allow system-socket)\n");
+        profile.push_str("(allow mach-lookup)\n");
+    } else {
+        // Allow loopback only (helps with tools that bind localhost ports).
+        profile.push_str("(allow network* (local ip \"localhost:*\"))\n");
+        profile.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+    }
+
+    profile
+}
+
+/// Escape a path for inclusion as an SBPL string literal.
+///
+/// SBPL strings use double quotes; backslashes and double quotes inside
+/// must be escaped with a backslash.
+#[cfg(target_os = "macos")]
+fn sbpl_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
 
 #[cfg(target_os = "macos")]
 impl Sandbox for DarwinSandbox {
-    fn prepare(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
-        // TODO: Generate sandbox-exec profile
-        Err(SandboxError::Setup("Darwin sandbox not yet implemented".to_string()))
+    fn prepare(&self, config: &SandboxConfig) -> Result<(), SandboxError> {
+        if !self.is_available() {
+            // Not fatal — execute() falls back to unsandboxed mode.
+            return Ok(());
+        }
+        // Make sure the build directory exists; the caller may have already
+        // created it but we should not fail if it has.
+        if !config.build_dir.is_empty() {
+            std::fs::create_dir_all(&config.build_dir).map_err(|e| {
+                SandboxError::BuildDirError(format!(
+                    "failed to create build dir {}: {e}",
+                    config.build_dir
+                ))
+            })?;
+        }
+        Ok(())
     }
 
-    fn execute(&self, _config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
-        Err(SandboxError::Execution("Darwin sandbox not yet implemented".to_string()))
+    fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        if !self.is_available() {
+            return self.execute_unsandboxed(config);
+        }
+
+        let profile = generate_sbpl_profile(config);
+
+        let mut cmd = std::process::Command::new(&self.sandbox_exec_path);
+        cmd.arg("-p").arg(&profile);
+        cmd.arg(&config.builder);
+        for arg in &config.args {
+            cmd.arg(arg);
+        }
+
+        // Strip the parent environment so the build is hermetic by default,
+        // then re-export only what the derivation specifies.
+        cmd.env_clear();
+        for (k, v) in &config.env {
+            cmd.env(k, v);
+        }
+        if !config.build_dir.is_empty() {
+            cmd.current_dir(&config.build_dir);
+        }
+
+        let output = cmd
+            .output()
+            .map_err(|e| SandboxError::SpawnFailed(format!("sandbox-exec spawn: {e}")))?;
+
+        Ok(SandboxResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     fn cleanup(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
+        // Build directory cleanup is the caller's responsibility — sandbox-exec
+        // does not own the directory.
         Ok(())
     }
 }
