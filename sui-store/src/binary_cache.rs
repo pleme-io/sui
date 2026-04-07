@@ -48,23 +48,28 @@ impl BinaryCacheStore {
             .client
             .get(&url, &[("Accept", "text/x-nix-narinfo")])
             .await
-            .map_err(|e| StoreError::Database(format!("HTTP error: {e}")))?;
+            .map_err(|e| StoreError::Http(e.to_string()))?;
 
         if response.status == 404 {
             return Ok(None);
         }
 
         if response.status < 200 || response.status >= 300 {
-            return Err(StoreError::Database(format!(
+            return Err(StoreError::Http(format!(
                 "HTTP {}: {}",
                 response.status, url
             )));
         }
 
         let info = NarInfo::parse(&response.body)
-            .map_err(|e| StoreError::Database(format!("NarInfo parse error: {e}")))?;
+            .map_err(|e| StoreError::NarInfo(e.to_string()))?;
 
         Ok(Some(info))
+    }
+
+    /// Return the base URL of this binary cache (without trailing slash).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Return the trusted public keys used for signature verification.
@@ -79,7 +84,7 @@ impl BinaryCacheStore {
         self.client
             .get_bytes(&url)
             .await
-            .map_err(|e| StoreError::Database(format!("HTTP error: {e}")))
+            .map_err(|e| StoreError::Http(e.to_string()))
     }
 
     /// Convert a NarInfo to our PathInfo type.
@@ -119,8 +124,7 @@ impl Store for BinaryCacheStore {
     }
 
     async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
-        // Binary caches don't support listing all paths.
-        Err(StoreError::Database(
+        Err(StoreError::NotSupported(
             "binary cache does not support listing all paths".to_string(),
         ))
     }
@@ -171,6 +175,12 @@ mod tests {
             client,
         );
         assert_eq!(store.base_url, "https://cache.nixos.org");
+    }
+
+    #[test]
+    fn base_url_accessor() {
+        let store = BinaryCacheStore::new("https://cache.nixos.org/", vec![]);
+        assert_eq!(store.base_url(), "https://cache.nixos.org");
     }
 
     #[test]

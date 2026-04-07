@@ -14,6 +14,12 @@ pub enum StoreError {
     /// A database or backend operation failed.
     #[error("database error: {0}")]
     Database(String),
+    /// An HTTP request to a binary cache failed.
+    #[error("http error: {0}")]
+    Http(String),
+    /// A NarInfo response could not be parsed.
+    #[error("narinfo parse error: {0}")]
+    NarInfo(String),
     /// An I/O operation failed.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -104,13 +110,15 @@ pub trait Store: Send + Sync {
     }
 
     /// Compute the transitive closure of a set of store paths.
+    ///
+    /// Uses `BTreeSet` for deterministic traversal order.
     async fn compute_closure(
         &self,
         roots: &[StorePath],
     ) -> StoreResult<Vec<StorePath>> {
         let mut closure = Vec::new();
         let mut stack: Vec<StorePath> = roots.to_vec();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::BTreeSet::new();
 
         while let Some(path) = stack.pop() {
             let key = path.to_absolute_path();
@@ -618,6 +626,20 @@ mod tests {
     fn store_error_database_display() {
         let e = StoreError::Database("connection lost".to_string());
         assert!(e.to_string().contains("connection lost"));
+    }
+
+    #[test]
+    fn store_error_http_display() {
+        let e = StoreError::Http("timeout".to_string());
+        assert!(e.to_string().contains("timeout"));
+        assert!(e.to_string().contains("http"));
+    }
+
+    #[test]
+    fn store_error_narinfo_display() {
+        let e = StoreError::NarInfo("missing field: StorePath".to_string());
+        assert!(e.to_string().contains("missing field"));
+        assert!(e.to_string().contains("narinfo"));
     }
 
     // ── Arc<dyn Store> dispatch (the AppState pattern) ──────
