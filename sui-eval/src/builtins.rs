@@ -2124,34 +2124,8 @@ fn current_system() -> &'static str {
 /// Compares components numerically where possible, lexicographically otherwise.
 /// The special component `"pre"` is less than everything except itself and empty.
 fn compare_versions(a: &str, b: &str) -> i64 {
-    let split = |s: &str| -> Vec<String> {
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut prev_digit: Option<bool> = None;
-        for ch in s.chars() {
-            if ch == '.' || ch == '-' {
-                if !current.is_empty() {
-                    parts.push(std::mem::take(&mut current));
-                    prev_digit = None;
-                }
-            } else {
-                let is_digit = ch.is_ascii_digit();
-                if let Some(was_digit) = prev_digit {
-                    if is_digit != was_digit && !current.is_empty() {
-                        parts.push(std::mem::take(&mut current));
-                    }
-                }
-                current.push(ch);
-                prev_digit = Some(is_digit);
-            }
-        }
-        if !current.is_empty() {
-            parts.push(current);
-        }
-        parts
-    };
-    let pa = split(a);
-    let pb = split(b);
+    let pa = split_version(a);
+    let pb = split_version(b);
     let max_len = pa.len().max(pb.len());
     for i in 0..max_len {
         let ca = pa.get(i).map(|s| s.as_str()).unwrap_or("");
