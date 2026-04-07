@@ -37,9 +37,7 @@ impl LocalStore {
             StoreError::Database("database path is not valid UTF-8".to_string())
         })?;
         let url = format!("sqlite://{db_path_str}?mode=ro");
-        let db = Database::connect(&url)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+        let db = Database::connect(&url).await.map_err(db_err)?;
 
         Ok(Self {
             db,
@@ -65,7 +63,7 @@ impl LocalStore {
             .filter(valid_path::Column::Path.eq(path))
             .one(&self.db)
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))
+            .map_err(db_err)
     }
 
     /// Get the references (runtime dependencies) for a given ValidPath id.
@@ -74,7 +72,7 @@ impl LocalStore {
             .filter(reference::Column::Referrer.eq(path_id))
             .all(&self.db)
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let ref_ids: Vec<i64> = refs.iter().map(|r| r.reference).collect();
         if ref_ids.is_empty() {
@@ -85,7 +83,7 @@ impl LocalStore {
             .filter(valid_path::Column::Id.is_in(ref_ids))
             .all(&self.db)
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(ref_paths.into_iter().map(|p| p.path).collect())
     }
@@ -132,13 +130,18 @@ impl Store for LocalStore {
             .order_by_asc(valid_path::Column::Path)
             .all(&self.db)
             .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(paths
             .into_iter()
             .filter_map(|p| StorePath::from_absolute_path(&p.path).ok())
             .collect())
     }
+}
+
+/// Convert a SeaORM `DbErr` into a `StoreError::Database`.
+fn db_err(e: sea_orm::DbErr) -> StoreError {
+    StoreError::Database(e.to_string())
 }
 
 #[cfg(test)]
