@@ -1488,17 +1488,56 @@ pub fn register(env: &mut Env) {
         let flake_ref = crate::eval::force_value(&args[0])?;
         let flake_ref_str = flake_ref.as_string()?.to_string();
 
-        let flake_dir = if flake_ref_str.starts_with('/') || flake_ref_str.starts_with('.') {
-            std::path::PathBuf::from(&flake_ref_str)
-        } else if let Some(path) = flake_ref_str.strip_prefix("path:") {
-            std::path::PathBuf::from(path)
-        } else {
-            return Err(EvalError::NotImplemented(format!(
-                "getFlake: only path-based flakes supported, got: {flake_ref_str}"
-            )));
-        };
+        // Path-based references: evaluate directly.
+        if flake_ref_str.starts_with('/') || flake_ref_str.starts_with('.') {
+            return evaluate_flake(&std::path::PathBuf::from(&flake_ref_str));
+        }
+        if let Some(path) = flake_ref_str.strip_prefix("path:") {
+            return evaluate_flake(&std::path::PathBuf::from(path));
+        }
 
-        evaluate_flake(&flake_dir)
+        // GitHub shorthand: "github:owner/repo" or "github:owner/repo/rev".
+        if let Some(gh_ref) = flake_ref_str.strip_prefix("github:") {
+            let parts: Vec<&str> = gh_ref.splitn(3, '/').collect();
+            if parts.len() < 2 {
+                return Err(EvalError::TypeError(format!(
+                    "getFlake: invalid github ref: {flake_ref_str}"
+                )));
+            }
+            let owner = parts[0];
+            let repo = parts[1];
+            // If a rev/ref is specified, use it; otherwise use "HEAD".
+            let rev = if parts.len() >= 3 { parts[2] } else { "HEAD" };
+
+            let locked = sui_compat::flake::LockedInput {
+                source_type: "github".to_string(),
+                owner: Some(owner.to_string()),
+                repo: Some(repo.to_string()),
+                rev: Some(rev.to_string()),
+                nar_hash: None,
+                last_modified: None,
+                path: None,
+                url: None,
+                git_ref: None,
+                dir: None,
+                extra: std::collections::BTreeMap::new(),
+            };
+
+            let fetcher = crate::fetcher::InputFetcher::new();
+            let fetched_dir = fetcher.fetch(&locked).map_err(|e| {
+                EvalError::IoError {
+                    context: format!("getFlake: fetch {flake_ref_str}"),
+                    message: e.to_string(),
+                }
+            })?;
+
+            return evaluate_flake(&fetched_dir);
+        }
+
+        // For any other reference style, try delegating to the real nix binary.
+        crate::delegate::eval_expr_with_nix(&format!(
+            "builtins.getFlake \"{flake_ref_str}\""
+        ))
     });
 
     // ── path ──────────────────────────────────────────────
@@ -2863,6 +2902,9 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
         None
     };
 
+    // 3b. Create the content-addressed input fetcher for resolving remote inputs.
+    let fetcher = crate::fetcher::InputFetcher::new();
+
     // 4. Build the inputs attrset that will be passed to `outputs`.
     let mut inputs_attrs = NixAttrs::new();
 
@@ -2894,19 +2936,26 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
 
                 let mut input_val = NixAttrs::new();
 
-                // For path-type inputs, surface the real filesystem path. For
-                // remote sources (github, git, tarball, ...) we synthesize a
-                // placeholder path; the in-process evaluator never fetches.
+                // Resolve the outPath — fetch remote inputs or use local paths.
                 let out_path = if let Some(ref locked) = node.locked {
                     if locked.source_type == "path" {
                         locked.path.clone().unwrap_or_default()
                     } else {
-                        format!("/nix/store/flake-input-{input_name}")
+                        // Attempt to fetch the input via the content-addressed fetcher.
+                        match fetcher.fetch(locked) {
+                            Ok(fetched_path) => fetched_path.to_string_lossy().to_string(),
+                            Err(_) => {
+                                // Fetching failed (offline, missing tool, etc.) —
+                                // fall back to a synthetic placeholder so evaluation
+                                // can still proceed for inputs that are not accessed.
+                                format!("/nix/store/flake-input-{input_name}")
+                            }
+                        }
                     }
                 } else {
                     format!("/nix/store/flake-input-{input_name}")
                 };
-                input_val.insert("outPath".to_string(), Value::string(out_path));
+                input_val.insert("outPath".to_string(), Value::string(out_path.clone()));
 
                 if let Some(ref locked) = node.locked {
                     if let Some(ref rev) = locked.rev {
@@ -2925,6 +2974,46 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
                             "lastModified".to_string(),
                             Value::Int(last_modified as i64),
                         );
+                    }
+
+                    // Expose sourceInfo with the same fields for compatibility.
+                    let mut source_info = NixAttrs::new();
+                    source_info.insert("outPath".to_string(), Value::string(out_path.clone()));
+                    if let Some(ref rev) = locked.rev {
+                        source_info.insert("rev".to_string(), Value::string(rev.clone()));
+                    }
+                    if let Some(ref nar_hash) = locked.nar_hash {
+                        source_info.insert(
+                            "narHash".to_string(),
+                            Value::string(nar_hash.clone()),
+                        );
+                    }
+                    if let Some(last_modified) = locked.last_modified {
+                        source_info.insert(
+                            "lastModified".to_string(),
+                            Value::Int(last_modified as i64),
+                        );
+                    }
+                    input_val.insert("sourceInfo".to_string(), Value::Attrs(source_info));
+                }
+
+                // If this input is itself a flake (default true), try to
+                // recursively evaluate its outputs and merge them in.
+                let is_flake = node.flake.unwrap_or(true);
+                if is_flake {
+                    let input_dir = std::path::Path::new(&out_path);
+                    if input_dir.join("flake.nix").exists() {
+                        if let Ok(flake_result) = evaluate_flake(input_dir) {
+                            // Merge the outputs into the input attrset so
+                            // consumers can access e.g. `inputs.nixpkgs.lib`.
+                            if let Value::Attrs(flake_attrs) = flake_result {
+                                for (k, v) in flake_attrs.iter() {
+                                    if !input_val.contains_key(k) {
+                                        input_val.insert(k.clone(), v.clone());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -3377,7 +3466,7 @@ fn split_version(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use crate::eval::eval;
-    use crate::value::{NixAttrs, NixString, StringContext, Value};
+    use crate::value::{NixString, StringContext, Value};
 
     fn ev(input: &str) -> Value {
         eval(input).unwrap()
@@ -4478,6 +4567,348 @@ mod tests {
         let flake_path = dir.path().to_string_lossy().to_string();
         let expr = format!(r#"builtins.getFlake "{flake_path}""#);
         assert!(eval(&expr).is_err());
+    }
+
+    // ── Phase 4: flake fetcher + recursive input tests ──────
+
+    #[test]
+    fn flake_input_source_info_populated() {
+        // Verify that locked inputs get a sourceInfo attrset.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { result = dep.sourceInfo.narHash; };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-XYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZ=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(
+            result.as_string().unwrap(),
+            "sha256-XYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZXYZ="
+        );
+    }
+
+    #[test]
+    fn flake_input_last_modified_accessible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { result = dep.lastModified; };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000042,
+                    "narHash": "sha256-AAAA=",
+                    "path": "/tmp",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/tmp" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Int(1_700_000_042));
+    }
+
+    #[test]
+    fn flake_input_rev_and_short_rev() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { r = dep.rev; s = dep.shortRev; };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-BBB=",
+                    "rev": "abc123def456abc123def456abc123def456abc1",
+                    "path": "/tmp",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/tmp" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let rev_expr = format!(r#"(builtins.getFlake "{flake_path}").r"#);
+        let short_expr = format!(r#"(builtins.getFlake "{flake_path}").s"#);
+        let rev = eval(&rev_expr).unwrap();
+        let short = eval(&short_expr).unwrap();
+        assert_eq!(
+            rev.as_string().unwrap(),
+            "abc123def456abc123def456abc123def456abc1"
+        );
+        assert_eq!(short.as_string().unwrap(), "abc123d");
+    }
+
+    #[test]
+    fn flake_non_flake_input_skips_recursive_eval() {
+        // An input with `flake = false` should NOT have its flake.nix evaluated
+        // even if one exists in the path.
+        let dep_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dep_dir.path().join("flake.nix"),
+            r#"{ outputs = { self }: { should_not_exist = true; }; }"#,
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: {
+                has_attr = builtins.hasAttr "should_not_exist" dep;
+              };
+            }"#,
+        )
+        .unwrap();
+        let dep_path = dep_dir.path().to_string_lossy().to_string();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            format!(
+                r#"{{
+              "nodes": {{
+                "dep": {{
+                  "flake": false,
+                  "locked": {{
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-NOFLAKEDEP=",
+                    "path": "{dep_path}",
+                    "type": "path"
+                  }},
+                  "original": {{ "type": "path", "url": "{dep_path}" }}
+                }},
+                "root": {{ "inputs": {{ "dep": "dep" }} }}
+              }},
+              "root": "root",
+              "version": 7
+            }}"#
+            ),
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").has_attr"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn flake_recursive_flake_input_merges_outputs() {
+        // An input that IS a flake should have its outputs merged into
+        // the input attrset.
+        let dep_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dep_dir.path().join("flake.nix"),
+            r#"{
+              description = "dependency flake";
+              outputs = { self }: { lib.greet = "hello from dep"; };
+            }"#,
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { result = dep.lib.greet; };
+            }"#,
+        )
+        .unwrap();
+        let dep_path = dep_dir.path().to_string_lossy().to_string();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            format!(
+                r#"{{
+              "nodes": {{
+                "dep": {{
+                  "locked": {{
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-FLAKEDEP=",
+                    "path": "{dep_path}",
+                    "type": "path"
+                  }},
+                  "original": {{ "type": "path", "url": "{dep_path}" }}
+                }},
+                "root": {{ "inputs": {{ "dep": "dep" }} }}
+              }},
+              "root": "root",
+              "version": 7
+            }}"#
+            ),
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "hello from dep");
+    }
+
+    #[test]
+    fn flake_getflake_github_prefix_invalid_ref_errors() {
+        // github: ref without a slash should produce a clear error.
+        let result = eval(r#"builtins.getFlake "github:justowner""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn flake_input_source_info_outpath_matches() {
+        // sourceInfo.outPath should match the top-level outPath.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: {
+                result = dep.outPath == dep.sourceInfo.outPath;
+              };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-MATCH=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_self_description_accessible_in_outputs() {
+        // self.description should be readable from inside outputs.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "my awesome flake";
+              outputs = { self }: { desc = self.description; };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").desc"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "my awesome flake");
+    }
+
+    #[test]
+    fn flake_multiple_inputs_all_accessible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.a = { };
+              inputs.b = { };
+              outputs = { self, a, b }: {
+                result = "${a.narHash}:${b.narHash}";
+              };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "a": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-AAAA=",
+                    "path": "/tmp/a",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/tmp/a" }
+                },
+                "b": {
+                  "locked": {
+                    "lastModified": 1700000001,
+                    "narHash": "sha256-BBBB=",
+                    "path": "/tmp/b",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/tmp/b" }
+                },
+                "root": { "inputs": { "a": "a", "b": "b" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "sha256-AAAA=:sha256-BBBB=");
     }
 
     #[test]
