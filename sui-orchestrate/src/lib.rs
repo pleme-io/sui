@@ -9,8 +9,10 @@ pub mod system;
 
 pub use command::{CommandError, CommandOutput, CommandRunner, TokioCommandRunner};
 pub use fleet::{
-    CanaryExecutor, DeployExecutor, DeployStrategy, FleetOrchestrator, ParallelExecutor,
-    RollingExecutor,
+    CanaryExecutor, DeployExecutor, DeployResult, DeployStrategy, FleetError, FleetOrchestrator,
+    NodeDeployResult, ParallelExecutor, RollingExecutor,
 };
-pub use node::{Node, NodeError, NodeStatus};
-pub use system::{RebuildAction, RebuildResult, SystemOrchestrator};
+pub use node::{Node, NodeError, NodeRegistry, NodeStatus, StatusCounts};
+pub use system::{
+    GenerationInfo, Platform, RebuildAction, RebuildResult, SystemError, SystemOrchestrator,
+};

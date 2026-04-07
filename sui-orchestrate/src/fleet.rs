@@ -201,6 +201,8 @@ pub enum FleetError {
     NoNodes(String),
     #[error("deploy failed on {hostname}: {message}")]
     DeployFailed { hostname: String, message: String },
+    #[error("command error: {0}")]
+    Command(#[from] crate::command::CommandError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("canary failed — aborting remaining deploys")]
