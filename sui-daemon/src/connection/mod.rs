@@ -1174,4 +1174,638 @@ mod tests {
         let paths = wire::read_string_list(&mut cursor).unwrap();
         assert!(paths.is_empty());
     }
+
+    // ── Unimplemented WorkerOp coverage ─────────────────────────
+    //
+    // The daemon currently implements only a subset of opcodes; every other
+    // known opcode falls into the catch-all "not yet implemented" arm in
+    // dispatch.rs. These tests pin that behaviour for *every* unimplemented
+    // variant so that adding a real handler is an explicit, observable
+    // change (the test for that opcode will need updating).
+
+    /// Drive `Connection::run` with a single u64 opcode and verify that the
+    /// reply is the standard "not yet implemented" stderr-error frame
+    /// followed by `STDERR_LAST`.
+    async fn assert_op_unimplemented(op: WorkerOp) {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, op as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.expect("dispatch should not fail");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let msg_type = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(
+            msg_type,
+            StderrMsg::Error as u64,
+            "op {op:?} should produce STDERR_ERROR"
+        );
+        let error_type = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(error_type, "Error");
+        let msg = wire::read_string(&mut cursor).unwrap();
+        assert!(
+            msg.contains("not yet implemented"),
+            "op {op:?} message should mention not implemented, got {msg:?}"
+        );
+        let err_num = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(err_num, 0);
+        let last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn unimpl_has_substitutes() {
+        assert_op_unimplemented(WorkerOp::HasSubstitutes).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_path_hash() {
+        assert_op_unimplemented(WorkerOp::QueryPathHash).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_references() {
+        assert_op_unimplemented(WorkerOp::QueryReferences).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_referrers() {
+        assert_op_unimplemented(WorkerOp::QueryReferrers).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_to_store() {
+        assert_op_unimplemented(WorkerOp::AddToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_text_to_store() {
+        assert_op_unimplemented(WorkerOp::AddTextToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_build_paths() {
+        assert_op_unimplemented(WorkerOp::BuildPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_ensure_path() {
+        assert_op_unimplemented(WorkerOp::EnsurePath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_temp_root() {
+        assert_op_unimplemented(WorkerOp::AddTempRoot).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_indirect_root() {
+        assert_op_unimplemented(WorkerOp::AddIndirectRoot).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_sync_with_gc() {
+        assert_op_unimplemented(WorkerOp::SyncWithGC).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_find_roots() {
+        assert_op_unimplemented(WorkerOp::FindRoots).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_export_path() {
+        assert_op_unimplemented(WorkerOp::ExportPath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_deriver() {
+        assert_op_unimplemented(WorkerOp::QueryDeriver).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_collect_garbage() {
+        assert_op_unimplemented(WorkerOp::CollectGarbage).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_path_info() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfo).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_outputs() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputs).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_failed_paths() {
+        assert_op_unimplemented(WorkerOp::QueryFailedPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_clear_failed_paths() {
+        assert_op_unimplemented(WorkerOp::ClearFailedPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_import_paths() {
+        assert_op_unimplemented(WorkerOp::ImportPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_output_names() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputNames).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_path_from_hash_part() {
+        assert_op_unimplemented(WorkerOp::QueryPathFromHashPart).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_path_infos() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfos).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_valid_paths() {
+        assert_op_unimplemented(WorkerOp::QueryValidPaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_substitutable_paths() {
+        assert_op_unimplemented(WorkerOp::QuerySubstitutablePaths).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_valid_derivers() {
+        assert_op_unimplemented(WorkerOp::QueryValidDerivers).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_optimise_store() {
+        assert_op_unimplemented(WorkerOp::OptimiseStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_verify_store() {
+        assert_op_unimplemented(WorkerOp::VerifyStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_build_derivation() {
+        assert_op_unimplemented(WorkerOp::BuildDerivation).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_signatures() {
+        assert_op_unimplemented(WorkerOp::AddSignatures).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_nar_from_path() {
+        assert_op_unimplemented(WorkerOp::NarFromPath).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_to_store_nar() {
+        assert_op_unimplemented(WorkerOp::AddToStoreNar).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_missing() {
+        assert_op_unimplemented(WorkerOp::QueryMissing).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_derivation_output_map() {
+        assert_op_unimplemented(WorkerOp::QueryDerivationOutputMap).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_register_drv_output() {
+        assert_op_unimplemented(WorkerOp::RegisterDrvOutput).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_query_realisation() {
+        assert_op_unimplemented(WorkerOp::QueryRealisation).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_multiple_to_store() {
+        assert_op_unimplemented(WorkerOp::AddMultipleToStore).await;
+    }
+
+    #[tokio::test]
+    async fn unimpl_add_build_log() {
+        assert_op_unimplemented(WorkerOp::AddBuildLog).await;
+    }
+
+    // ── SetOptions edge cases ──────────────────────────────────
+
+    /// Build a `SetOptions` payload with a custom override count and entries.
+    /// Always uses a modern client_version (>= 1.12) so the override block
+    /// is included.
+    fn build_set_options_with_overrides(client_version: u64, overrides: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        wire::write_u64(&mut buf, WorkerOp::SetOptions as u64).unwrap();
+        // 6 fixed fields
+        for _ in 0..6 {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // useBuildHook (only for old clients)
+        if client_version < (1 << 8 | 12) {
+            wire::write_u64(&mut buf, 1).unwrap();
+        }
+        // 5 more fields
+        for _ in 0..5 {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        if client_version >= (1 << 8 | 12) {
+            wire::write_u64(&mut buf, overrides.len() as u64).unwrap();
+            for (k, v) in overrides {
+                wire::write_string(&mut buf, k).unwrap();
+                wire::write_string(&mut buf, v).unwrap();
+            }
+        }
+        buf
+    }
+
+    async fn run_set_options(payload: Vec<u8>, client_version: u64) -> Vec<u8> {
+        let store = Arc::new(MockStore::new());
+        let reader = Cursor::new(payload);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = client_version;
+        conn.run().await.expect("SetOptions should succeed");
+        conn.writer
+    }
+
+    #[tokio::test]
+    async fn set_options_zero_overrides_explicit() {
+        // Modern client, override count = 0.
+        let payload = build_set_options_with_overrides(PROTOCOL_VERSION, &[]);
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        let last = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(last, StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_many_overrides() {
+        // 16 overrides exercises the loop bound and stays well below
+        // any reasonable client-side cap.
+        let owned: Vec<(String, String)> = (0..16)
+            .map(|i| (format!("opt-{i}"), format!("value-{i}")))
+            .collect();
+        let pairs: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let payload = build_set_options_with_overrides(PROTOCOL_VERSION, &pairs);
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_unknown_keys_accepted() {
+        // The daemon currently ignores override keys, so unknown options
+        // should be silently accepted.
+        let payload = build_set_options_with_overrides(
+            PROTOCOL_VERSION,
+            &[
+                ("totally-made-up-key", "yes"),
+                ("another-fake-option", "1234"),
+            ],
+        );
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_long_value_accepted() {
+        // Stress padding logic with a long override value.
+        let long_value = "v".repeat(257);
+        let payload = build_set_options_with_overrides(
+            PROTOCOL_VERSION,
+            &[("max-jobs", long_value.as_str())],
+        );
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_empty_key_and_value() {
+        let payload = build_set_options_with_overrides(PROTOCOL_VERSION, &[("", "")]);
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_at_overrides_boundary_1_12() {
+        // Exactly 1.12 is the first version that sends overrides and
+        // skips useBuildHook. Verify both that the daemon parses it
+        // correctly and that the response is the standard STDERR_LAST.
+        let v: u64 = (1 << 8) | 12;
+        let payload = build_set_options_with_overrides(v, &[("cores", "4")]);
+        let out = run_set_options(payload, v).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    #[tokio::test]
+    async fn set_options_just_below_overrides_boundary_1_11() {
+        // 1.11: still sends useBuildHook, no overrides.
+        let v: u64 = (1 << 8) | 11;
+        let payload = build_set_options_with_overrides(v, &[]);
+        let out = run_set_options(payload, v).await;
+        let mut cursor = Cursor::new(out.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    // ── Handshake state machine ────────────────────────────────
+
+    #[tokio::test]
+    async fn handshake_then_immediate_disconnect_is_clean() {
+        // After a successful handshake the client closes its side without
+        // sending any opcodes. The dispatch loop should treat
+        // UnexpectedEof as a clean disconnect and return Ok(()).
+        let store = Arc::new(MockStore::new());
+        let input = build_full_client_handshake(PROTOCOL_VERSION);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("handshake");
+        // No opcode bytes left to read.
+        conn.run()
+            .await
+            .expect("clean EOF after handshake should not be an error");
+    }
+
+    #[tokio::test]
+    async fn handshake_then_one_op_then_disconnect() {
+        // Full lifecycle: handshake -> 1 op -> EOF.
+        let test_path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-hello-2.12";
+        let store = Arc::new(MockStore::new().with_path(test_path, "sha256:abc"));
+
+        let mut input = build_full_client_handshake(PROTOCOL_VERSION);
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("handshake");
+        conn.run().await.expect("dispatch");
+
+        // The writer should contain handshake response + op response.
+        // We don't decode the handshake here (other tests do that)
+        // — only verify there is more output than the handshake alone.
+        assert!(conn.writer.len() > 16, "expected more than just magic+version");
+    }
+
+    #[tokio::test]
+    async fn handshake_truncated_client_magic() {
+        // Client connects but sends nothing -> read_u64 EOF -> Io error.
+        let store = Arc::new(MockStore::new());
+        let reader = Cursor::new(Vec::<u8>::new());
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        let err = conn.handshake().await.unwrap_err();
+        assert!(matches!(err, ConnectionError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn handshake_truncated_client_version() {
+        // Client sends magic but never its version.
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WORKER_MAGIC_1).unwrap();
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        let err = conn.handshake().await.unwrap_err();
+        assert!(matches!(err, ConnectionError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn handshake_zero_magic_is_bad_magic() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, 0).unwrap();
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        let err = conn.handshake().await.unwrap_err();
+        match err {
+            ConnectionError::BadMagic { expected, got } => {
+                assert_eq!(expected, WORKER_MAGIC_1);
+                assert_eq!(got, 0);
+            }
+            other => panic!("expected BadMagic, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_max_magic_is_bad_magic() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, u64::MAX).unwrap();
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        let err = conn.handshake().await.unwrap_err();
+        match err {
+            ConnectionError::BadMagic { got, .. } => assert_eq!(got, u64::MAX),
+            other => panic!("expected BadMagic, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_writes_magic2_then_version_in_order() {
+        // Specifically pin the byte order of the server response for
+        // version >= 1.35 (magic2, version, daemon string, trust).
+        let store = Arc::new(MockStore::new());
+        let input = build_full_client_handshake(PROTOCOL_VERSION);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::NotTrusted);
+        conn.handshake().await.expect("handshake");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), WORKER_MAGIC_2);
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), PROTOCOL_VERSION);
+        let daemon_str = wire::read_string(&mut cursor).unwrap();
+        assert!(daemon_str.starts_with("sui-daemon"));
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 2); // NotTrusted
+    }
+
+    #[tokio::test]
+    async fn handshake_min_supported_protocol_version_1_10() {
+        // 1.10 has neither CPU affinity nor reserve space. Should still
+        // negotiate cleanly.
+        let store = Arc::new(MockStore::new());
+        let v: u64 = (1 << 8) | 10;
+        let input = build_full_client_handshake(v);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("1.10 handshake");
+        assert_eq!(conn.client_version, v);
+        // Trust field should NOT be sent for < 1.35.
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let _magic2 = wire::read_u64(&mut cursor).unwrap();
+        let _ver = wire::read_u64(&mut cursor).unwrap();
+        let _daemon = wire::read_string(&mut cursor).unwrap();
+        // No trailing bytes.
+        assert_eq!(cursor.position() as usize, conn.writer.len());
+    }
+
+    #[tokio::test]
+    async fn handshake_at_trust_exchange_boundary_1_35() {
+        // First version that exchanges trust.
+        let store = Arc::new(MockStore::new());
+        let v: u64 = (1 << 8) | 35;
+        let input = build_full_client_handshake(v);
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("1.35 handshake");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let _magic2 = wire::read_u64(&mut cursor).unwrap();
+        let _ver = wire::read_u64(&mut cursor).unwrap();
+        let _daemon = wire::read_string(&mut cursor).unwrap();
+        let trust = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(trust, 1);
+    }
+
+    // ── Connection lifecycle on cold reader ────────────────────
+
+    #[tokio::test]
+    async fn run_on_empty_input_is_clean_disconnect() {
+        // run() before any input bytes (skipping handshake) should still
+        // treat EOF on the first read_u64 as a clean disconnect, since
+        // the dispatch loop is what does that translation.
+        let store = Arc::new(MockStore::new());
+        let reader = Cursor::new(Vec::<u8>::new());
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.expect("EOF -> clean exit");
+        assert!(conn.writer.is_empty(), "no bytes should have been written");
+    }
+
+    // ── ConnectionError remaining variants ─────────────────────
+
+    #[test]
+    fn connection_error_display_store_error() {
+        let store_err = sui_store::traits::StoreError::Database("disk full".to_string());
+        let err: ConnectionError = store_err.into();
+        let s = err.to_string();
+        assert!(s.contains("store error"), "{s}");
+        assert!(s.contains("disk full"), "{s}");
+    }
+
+    #[test]
+    fn connection_error_from_store_error_variant() {
+        let store_err = sui_store::traits::StoreError::Database("dbfail".to_string());
+        let err: ConnectionError = store_err.into();
+        assert!(matches!(err, ConnectionError::Store(_)));
+    }
+
+    #[test]
+    fn connection_error_protocol_constructible() {
+        // Make sure the Protocol variant accepts arbitrary owned strings.
+        let err = ConnectionError::Protocol(String::from("frame too short"));
+        let s = err.to_string();
+        assert!(s.contains("protocol error"));
+        assert!(s.contains("frame too short"));
+    }
+
+    #[test]
+    fn connection_error_unknown_op_zero() {
+        let err = ConnectionError::UnknownOp(0);
+        assert_eq!(err.to_string(), "unknown opcode: 0");
+    }
+
+    #[test]
+    fn connection_error_unknown_op_max() {
+        let err = ConnectionError::UnknownOp(u64::MAX);
+        assert!(err.to_string().contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
+    fn connection_error_bad_magic_zero_inputs() {
+        let err = ConnectionError::BadMagic { expected: 0, got: 0 };
+        let s = err.to_string();
+        assert!(s.contains("expected"));
+        assert!(s.contains("got"));
+    }
+
+    // ── Multiple unknown opcodes in a row keep the loop alive ──
+
+    #[tokio::test]
+    async fn multiple_unknown_opcodes_in_sequence() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        for op in [9999u64, 8888, 7777] {
+            wire::write_u64(&mut input, op).unwrap();
+        }
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.expect("loop should not bail");
+
+        // Each unknown op writes STDERR_ERROR + 3 string/u64 fields + STDERR_LAST.
+        // We just count the number of STDERR_ERROR markers seen.
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let mut error_count = 0u32;
+        while let Ok(v) = wire::read_u64(&mut cursor) {
+            if v == StderrMsg::Error as u64 {
+                error_count += 1;
+                // skip type, message, error_num
+                let _ = wire::read_string(&mut cursor).unwrap();
+                let _ = wire::read_string(&mut cursor).unwrap();
+                let _ = wire::read_u64(&mut cursor).unwrap();
+            }
+        }
+        assert_eq!(error_count, 3, "should have produced 3 STDERR_ERROR frames");
+    }
+
+    // ── Handshake -> dispatch ordering: opcode bytes that look like
+    //    a magic still get treated as opcode after handshake completed.
+
+    #[tokio::test]
+    async fn opcode_with_magic_value_is_unknown_after_handshake() {
+        let store = Arc::new(MockStore::new());
+        let mut input = build_full_client_handshake(PROTOCOL_VERSION);
+        wire::write_u64(&mut input, WORKER_MAGIC_1).unwrap();
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.handshake().await.expect("handshake");
+        conn.run().await.expect("loop should not bail");
+
+        // The dispatch response should contain a STDERR_ERROR mentioning
+        // WORKER_MAGIC_1 as an unknown opcode.
+        // We can't easily seek past the handshake bytes here, so just
+        // check that the writer contains the magic-as-decimal somewhere
+        // after the handshake header.
+        let s = format!("{}", WORKER_MAGIC_1);
+        let body = String::from_utf8_lossy(&conn.writer);
+        assert!(body.contains(&s), "expected unknown-op message containing {s}");
+    }
 }

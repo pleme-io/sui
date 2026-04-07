@@ -159,4 +159,101 @@ mod tests {
             }
         }
     }
+
+    // ── Wire-encoding round-trip ──────────────────────────────
+
+    #[test]
+    fn trust_level_into_u64_trusted() {
+        let v: u64 = TrustLevel::Trusted.into();
+        assert_eq!(v, 1, "Trusted must wire-encode as 1");
+    }
+
+    #[test]
+    fn trust_level_into_u64_not_trusted() {
+        let v: u64 = TrustLevel::NotTrusted.into();
+        assert_eq!(v, 2, "NotTrusted must wire-encode as 2");
+    }
+
+    #[test]
+    fn trust_level_wire_encoding_unique() {
+        // Ensure no collision between variants on the wire.
+        let trusted: u64 = TrustLevel::Trusted.into();
+        let not_trusted: u64 = TrustLevel::NotTrusted.into();
+        assert_ne!(trusted, not_trusted);
+        // And neither is zero (zero is not a valid encoded variant).
+        assert_ne!(trusted, 0);
+        assert_ne!(not_trusted, 0);
+    }
+
+    // ── FromStr ────────────────────────────────────────────────
+
+    #[test]
+    fn from_str_trusted() {
+        let parsed: TrustLevel = "trusted".parse().unwrap();
+        assert_eq!(parsed, TrustLevel::Trusted);
+    }
+
+    #[test]
+    fn from_str_not_trusted() {
+        let parsed: TrustLevel = "not-trusted".parse().unwrap();
+        assert_eq!(parsed, TrustLevel::NotTrusted);
+    }
+
+    #[test]
+    fn from_str_unknown_returns_err() {
+        let parsed: Result<TrustLevel, _> = "bogus".parse();
+        let err = parsed.unwrap_err();
+        assert!(err.contains("bogus"), "error should mention the bad value");
+    }
+
+    #[test]
+    fn from_str_empty_returns_err() {
+        let parsed: Result<TrustLevel, _> = "".parse();
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn from_str_case_sensitive() {
+        // The FromStr impl is case-sensitive — uppercase should not match.
+        let upper: Result<TrustLevel, _> = "TRUSTED".parse();
+        assert!(upper.is_err(), "FromStr should be case sensitive");
+        let mixed: Result<TrustLevel, _> = "Trusted".parse();
+        assert!(mixed.is_err());
+    }
+
+    #[test]
+    fn display_from_str_round_trip() {
+        for level in [TrustLevel::Trusted, TrustLevel::NotTrusted] {
+            let s = level.to_string();
+            let parsed: TrustLevel = s.parse().unwrap();
+            assert_eq!(parsed, level, "round-trip via Display/FromStr");
+        }
+    }
+
+    // ── Saturation tests for unusual UIDs ──────────────────────
+
+    #[test]
+    fn max_uid_not_trusted_unless_matches() {
+        let creds = MockCredentials { uid: 1000 };
+        // u32::MAX is not root and not the daemon UID -> not trusted.
+        assert_eq!(
+            TrustLevel::from_uid(u32::MAX, &creds),
+            TrustLevel::NotTrusted
+        );
+    }
+
+    #[test]
+    fn max_uid_matching_daemon_is_trusted() {
+        let creds = MockCredentials { uid: u32::MAX };
+        assert_eq!(
+            TrustLevel::from_uid(u32::MAX, &creds),
+            TrustLevel::Trusted
+        );
+    }
+
+    #[test]
+    fn root_trusted_when_daemon_is_root() {
+        let creds = MockCredentials { uid: 0 };
+        assert_eq!(TrustLevel::from_uid(0, &creds), TrustLevel::Trusted);
+    }
 }

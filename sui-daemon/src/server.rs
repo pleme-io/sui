@@ -412,4 +412,176 @@ mod tests {
         let path = xdg_socket_path();
         assert!(path.to_string_lossy().ends_with("sui.sock"));
     }
+
+    // ── Additional DaemonConfig coverage ───────────────────────
+
+    #[test]
+    fn daemon_config_clone_eq() {
+        let a = DaemonConfig::with_socket_path("/tmp/a.sock");
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn daemon_config_distinct_paths_not_eq() {
+        let a = DaemonConfig::with_socket_path("/tmp/a.sock");
+        let b = DaemonConfig::with_socket_path("/tmp/b.sock");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn daemon_config_with_path_buf_into() {
+        // Take a PathBuf via Into<PathBuf>.
+        let pb: std::path::PathBuf = "/tmp/from-pathbuf.sock".into();
+        let cfg = DaemonConfig::with_socket_path(pb.clone());
+        assert_eq!(cfg.socket_path, pb);
+    }
+
+    #[test]
+    fn daemon_config_default_debug_format() {
+        let cfg = DaemonConfig::default();
+        let s = format!("{cfg:?}");
+        // Should not panic and should include the field name.
+        assert!(s.contains("socket_path"));
+    }
+
+    #[test]
+    fn nix_compat_path_is_absolute() {
+        let cfg = DaemonConfig::nix_compat();
+        assert!(cfg.socket_path.is_absolute());
+        assert!(cfg.socket_path.starts_with("/nix"));
+    }
+
+    #[test]
+    fn xdg_socket_path_is_absolute() {
+        let path = xdg_socket_path();
+        assert!(path.is_absolute(), "tsunagu should return absolute path");
+    }
+
+    #[test]
+    fn xdg_socket_path_contains_app_segment() {
+        let path = xdg_socket_path();
+        let s = path.to_string_lossy();
+        assert!(s.contains("sui"), "expected 'sui' in {s}");
+    }
+
+    // ── DaemonError variants ───────────────────────────────────
+
+    #[test]
+    fn daemon_error_bind_message_format() {
+        let err = DaemonError::Bind("eaddrinuse".to_string());
+        assert_eq!(err.to_string(), "bind error: eaddrinuse");
+    }
+
+    #[test]
+    fn daemon_error_accept_wraps_io_kind() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = DaemonError::Accept(io_err);
+        match &err {
+            DaemonError::Accept(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+            other => panic!("expected Accept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn daemon_error_store_preserves_inner_message() {
+        let store_err = sui_store::traits::StoreError::Database("io fail".to_string());
+        let err: DaemonError = store_err.into();
+        assert!(err.to_string().contains("io fail"));
+    }
+
+    // ── Health check ──────────────────────────────────────────
+
+    #[test]
+    fn health_check_service_name_is_sui_daemon() {
+        let cfg = DaemonConfig::with_socket_path("/tmp/health-name.sock");
+        let server = DaemonServer::new(cfg, MockStore);
+        let health = server.health();
+        assert_eq!(health.service, "sui-daemon");
+    }
+
+    #[test]
+    fn health_check_includes_uptime() {
+        let cfg = DaemonConfig::with_socket_path("/tmp/health-uptime.sock");
+        let server = DaemonServer::new(cfg, MockStore);
+        let health = server.health();
+        assert!(health.uptime_secs.is_some());
+    }
+
+    #[test]
+    fn server_with_store_arc_constructor() {
+        let cfg = DaemonConfig::with_socket_path("/tmp/arc.sock");
+        let store = Arc::new(MockStore);
+        let server = DaemonServer::with_store_arc(cfg, store);
+        // Health surface still works.
+        assert_eq!(server.health().service, "sui-daemon");
+    }
+
+    // ── PID lifecycle smoke test ────────────────────────────────
+    //
+    // The full PID lock contention story is owned and unit-tested by
+    // tsunagu's `DaemonProcess`. Here we only verify the server-side
+    // observable behaviour: after a successful start the PID file
+    // appears next to the socket. This test always cleans up its
+    // spawned task to avoid bleed-over into other tests.
+
+    #[tokio::test]
+    async fn server_pid_file_is_created_alongside_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("withpid.sock");
+        let pid_path = socket_path.with_extension("pid");
+
+        let cfg = DaemonConfig::with_socket_path(&socket_path);
+        let server = DaemonServer::new(cfg, MockStore);
+        let handle = tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        // Wait for the bind / pid write to settle.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let pid_present = pid_path.exists();
+
+        // Always abort + wait so this test does not leak the listener.
+        handle.abort();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            handle,
+        )
+        .await;
+
+        // Best-effort cleanup so a leaked PID file doesn't poison reruns.
+        let _ = std::fs::remove_file(&pid_path);
+        let _ = std::fs::remove_file(&socket_path);
+
+        assert!(pid_present, "PID file should be created at {pid_path:?}");
+    }
+
+    #[tokio::test]
+    async fn server_creates_socket_parent_directory() {
+        // The server should create missing parent directories for the
+        // socket path automatically.
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nested/dirs/here").join("test.sock");
+        assert!(!socket_path.parent().unwrap().exists());
+
+        let cfg = DaemonConfig::with_socket_path(&socket_path);
+        let server = DaemonServer::new(cfg, MockStore);
+        let handle = tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let parent_exists = socket_path.parent().unwrap().exists();
+        let socket_exists = socket_path.exists();
+
+        handle.abort();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            handle,
+        )
+        .await;
+
+        assert!(parent_exists, "parent dirs must be created");
+        assert!(socket_exists, "socket file must exist after bind");
+    }
 }

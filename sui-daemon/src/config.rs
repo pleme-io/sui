@@ -172,4 +172,134 @@ mod tests {
         store.reload().unwrap();
         assert_eq!(store.get().log_level, "trace");
     }
+
+    // ── Default field invariants ───────────────────────────────
+
+    #[test]
+    fn default_listen_address_is_ipv4_localhost_8080() {
+        let cfg = SuiDaemonConfig::default();
+        assert_eq!(cfg.listen_address, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn default_grpc_address_is_50051() {
+        let cfg = SuiDaemonConfig::default();
+        assert!(cfg.grpc_listen_address.ends_with(":50051"));
+    }
+
+    #[test]
+    fn default_listen_and_grpc_differ() {
+        let cfg = SuiDaemonConfig::default();
+        assert_ne!(cfg.listen_address, cfg.grpc_listen_address);
+    }
+
+    #[test]
+    fn default_store_dir_is_nix_store() {
+        let cfg = SuiDaemonConfig::default();
+        assert_eq!(cfg.store_dir, PathBuf::from("/nix/store"));
+        assert!(cfg.store_dir.is_absolute());
+    }
+
+    #[test]
+    fn default_log_level_is_info() {
+        assert_eq!(SuiDaemonConfig::default().log_level, "info");
+    }
+
+    #[test]
+    fn default_round_trip_via_clone() {
+        let a = SuiDaemonConfig::default();
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn default_debug_format_is_non_empty() {
+        let s = format!("{:?}", SuiDaemonConfig::default());
+        assert!(s.contains("listen_address"));
+        assert!(s.contains("log_level"));
+    }
+
+    // ── load_from edge cases ───────────────────────────────────
+
+    #[test]
+    fn load_from_yaml_with_all_fields() {
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("sui.yaml");
+        fs::write(
+            &config_file,
+            "listen_address: \"0.0.0.0:1\"\n\
+             grpc_listen_address: \"0.0.0.0:2\"\n\
+             store_dir: /tmp/store\n\
+             socket_path: /tmp/sock\n\
+             log_level: trace\n",
+        )
+        .unwrap();
+
+        let store = SuiDaemonConfig::load_from(&config_file).unwrap();
+        let cfg = store.get();
+        assert_eq!(cfg.listen_address, "0.0.0.0:1");
+        assert_eq!(cfg.grpc_listen_address, "0.0.0.0:2");
+        assert_eq!(cfg.store_dir, PathBuf::from("/tmp/store"));
+        assert_eq!(cfg.socket_path, PathBuf::from("/tmp/sock"));
+        assert_eq!(cfg.log_level, "trace");
+    }
+
+    #[test]
+    fn load_from_invalid_yaml_returns_err() {
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("bad.yaml");
+        fs::write(&config_file, "listen_address: [\nnot a string\n").unwrap();
+
+        let result = SuiDaemonConfig::load_from(&config_file);
+        assert!(result.is_err(), "malformed yaml must error");
+    }
+
+    #[test]
+    fn load_from_missing_file_falls_back_or_errors_consistently() {
+        // Shikumi's `ConfigStore::load` may either return Err for a
+        // missing file or Ok with serde defaults — both are valid
+        // backend choices. The contract we care about is that *our*
+        // wrapper is consistent: if it returns Ok, the loaded config
+        // matches Default. We pin that here so a backend swap is
+        // an explicit, observable change.
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("does-not-exist.yaml");
+        match SuiDaemonConfig::load_from(&config_file) {
+            Err(_) => { /* fine */ }
+            Ok(store) => {
+                // If shikumi falls back to defaults, those defaults
+                // must be exactly the type's `Default::default()`.
+                let cfg: &SuiDaemonConfig = &store.get();
+                assert_eq!(*cfg, SuiDaemonConfig::default());
+            }
+        }
+    }
+
+    #[test]
+    fn load_from_yaml_only_log_level_other_defaults_remain() {
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("only.yaml");
+        fs::write(&config_file, "log_level: warn\n").unwrap();
+
+        let store = SuiDaemonConfig::load_from(&config_file).unwrap();
+        let cfg = store.get();
+        assert_eq!(cfg.log_level, "warn");
+        // Other fields take their serde defaults from Default impl.
+        assert_eq!(cfg.listen_address, "127.0.0.1:8080");
+        assert_eq!(cfg.store_dir, PathBuf::from("/nix/store"));
+    }
+
+    #[test]
+    fn config_store_reload_picks_up_changed_listen_address() {
+        let dir = TempDir::new().unwrap();
+        let config_file = dir.path().join("sui.yaml");
+        fs::write(&config_file, "listen_address: \"127.0.0.1:9001\"\n").unwrap();
+
+        let store = SuiDaemonConfig::load_from(&config_file).unwrap();
+        assert_eq!(store.get().listen_address, "127.0.0.1:9001");
+
+        fs::write(&config_file, "listen_address: \"0.0.0.0:9002\"\n").unwrap();
+        store.reload().unwrap();
+        assert_eq!(store.get().listen_address, "0.0.0.0:9002");
+    }
 }
