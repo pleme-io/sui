@@ -1534,10 +1534,10 @@ pub fn register(env: &mut Env) {
             return evaluate_flake(&fetched_dir);
         }
 
-        // For any other reference style, try delegating to the real nix binary.
-        crate::delegate::eval_expr_with_nix(&format!(
-            "builtins.getFlake \"{flake_ref_str}\""
-        ))
+        // For any other reference style, return a proper error — no more delegation.
+        Err(EvalError::NotImplemented(format!(
+            "getFlake: unsupported flake reference scheme: {flake_ref_str}"
+        )))
     });
 
     // ── path ──────────────────────────────────────────────
@@ -2864,7 +2864,13 @@ fn register_curried(
 // Non-path flake references (`github:`, `git+`, registry refs, etc.) require
 // fetching and store-path materialization, which is out of scope here.
 
-fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
+/// Evaluate a flake directory — reads flake.nix, parses flake.lock, resolves
+/// inputs, calls `outputs(inputs)`, and returns the merged result attrset.
+///
+/// This is the native implementation of `builtins.getFlake` for path-based
+/// references.  External callers (orchestrate, CLI) can use this to evaluate
+/// a local flake without shelling out to `nix eval`.
+pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     let flake_nix = flake_dir.join("flake.nix");
     let flake_lock_path = flake_dir.join("flake.lock");
 
@@ -3042,6 +3048,39 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     } else {
         Ok(result)
     }
+}
+
+// ── Attrset navigation ───────────────────────────────────────
+
+/// Navigate a nested attrset by a dot-separated attribute path.
+///
+/// Each path segment is looked up via `Value::Attrs`, and thunks are
+/// forced along the way.  Returns the leaf value (forced).
+///
+/// # Errors
+///
+/// Returns `EvalError::AttrNotFound` if any segment is missing, and
+/// `EvalError::TypeError` if a non-attrset is encountered mid-path.
+pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> {
+    let mut current = crate::eval::force_value(value)?;
+    for key in path {
+        match current {
+            Value::Attrs(ref attrs) => {
+                let next = attrs
+                    .get(*key)
+                    .ok_or_else(|| EvalError::AttrNotFound((*key).to_string()))?
+                    .clone();
+                current = crate::eval::force_value(&next)?;
+            }
+            _ => {
+                return Err(EvalError::TypeError(format!(
+                    "navigate_attrs: expected attrset at '{key}', got {}",
+                    current.type_name()
+                )));
+            }
+        }
+    }
+    Ok(current)
 }
 
 // ── Derivation construction ────────────────────────────────────
@@ -3231,6 +3270,60 @@ fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
         }
         (drv_path, out_paths)
     };
+
+    // ── Write the .drv file to the store ──────────────────────
+    //
+    // Update the derivation struct with final output paths (for input-addressed
+    // derivations the paths were empty during hashing to break the circular
+    // dependency). Then re-serialize and write the final ATerm content to disk.
+    // CppNix also puts output paths into the env map.
+    for (output_name, output_path) in &out_paths {
+        if let Some(output) = drv.outputs.get_mut(output_name) {
+            if output.path.is_empty() {
+                output.path.clone_from(output_path);
+            }
+        }
+        // CppNix sets an env var for each output (e.g. `out=/nix/store/...`).
+        drv.env.insert(output_name.clone(), output_path.clone());
+    }
+
+    // Serialize the final derivation with populated output paths.
+    let drv_content_final = drv.serialize();
+
+    // Determine the store directory — honour SUI_STORE_DIR for testing and
+    // non-standard store locations.  Default to /nix/store.
+    let store_dir = std::env::var("SUI_STORE_DIR")
+        .unwrap_or_else(|_| "/nix/store".to_string());
+
+    // The canonical drv_path uses /nix/store.  When a custom store dir is
+    // set, rewrite the on-disk path accordingly.
+    let disk_path = if store_dir != "/nix/store" {
+        drv_path.replacen("/nix/store", &store_dir, 1)
+    } else {
+        drv_path.clone()
+    };
+
+    let drv_file = std::path::Path::new(&disk_path);
+    if !drv_file.exists() {
+        if let Some(parent) = drv_file.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        match std::fs::write(drv_file, drv_content_final.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Best-effort: when writing to /nix/store without root
+                // privileges, silently skip.  The drv_path in the returned
+                // attrset is still correct — the file just doesn't exist
+                // on disk yet.
+            }
+            Err(e) => {
+                return Err(EvalError::IoError {
+                    context: format!("writing derivation {drv_path}"),
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
 
     // Assemble the result attrset (input + derivation metadata).
     let mut result = input.clone();
@@ -4278,6 +4371,222 @@ mod tests {
         let a = v.as_attrs().unwrap();
         assert!(a.contains_key("drvPath"));
         assert!(a.contains_key("outPath"));
+    }
+
+    // ── .drv file writing tests ────────────────────────────
+    //
+    // These tests use a per-test temp directory via SUI_STORE_DIR so we
+    // don't need root access to /nix/store.
+    //
+    // Because SUI_STORE_DIR is a process-global env var and tests run in
+    // parallel, we serialize all drv-write tests behind a single mutex.
+
+    static DRV_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Helper: run a derivation expression with SUI_STORE_DIR pointed at
+    /// a fresh temp directory.  Returns (Value, temp_dir_path).
+    ///
+    /// Caller must hold `DRV_WRITE_LOCK`.
+    fn eval_drv_in_temp_store_inner(expr: &str, dir: &std::path::Path) -> Value {
+        // SAFETY: set_var is unsafe in edition 2024 because env is
+        // process-global.  All callers hold DRV_WRITE_LOCK so there is
+        // no concurrent mutation.
+        unsafe { std::env::set_var("SUI_STORE_DIR", dir) };
+        let result = eval(expr).unwrap();
+        unsafe { std::env::remove_var("SUI_STORE_DIR") };
+        result
+    }
+
+    fn make_drv_temp_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "sui-drv-{label}-{}-{n}",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn drv_write_creates_file_on_disk() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("create");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation { name = "hello"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        let p = std::path::Path::new(&disk_path);
+        assert!(p.exists(), "expected .drv file at {disk_path}");
+        let content = std::fs::read_to_string(p).unwrap();
+        assert!(content.starts_with("Derive("), "expected ATerm, got: {}", &content[..40.min(content.len())]);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_roundtrips_through_parse() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("roundtrip");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation { name = "roundtrip"; system = "x86_64-linux"; builder = "/bin/sh"; args = ["-c" "echo hi"]; }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        let content = std::fs::read(&disk_path).unwrap();
+        let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
+        assert_eq!(parsed.system, "x86_64-linux");
+        assert_eq!(parsed.builder, "/bin/sh");
+        assert_eq!(parsed.args, vec!["-c", "echo hi"]);
+        // The parsed drv should have a non-empty output path for "out".
+        let out = parsed.outputs.get("out").unwrap();
+        assert!(!out.path.is_empty(), "output path should be populated");
+        assert!(out.path.starts_with("/nix/store/"));
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_is_idempotent() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("idem");
+
+        unsafe { std::env::set_var("SUI_STORE_DIR", &store_dir) };
+        let expr = r#"builtins.derivation { name = "idem"; system = "x86_64-linux"; builder = "/bin/sh"; }"#;
+        let v1 = eval(expr).unwrap();
+        let v2 = eval(expr).unwrap();
+        unsafe { std::env::remove_var("SUI_STORE_DIR") };
+
+        let a1 = v1.as_attrs().unwrap();
+        let a2 = v2.as_attrs().unwrap();
+        let p1 = a1.get("drvPath").unwrap().as_string().unwrap();
+        let p2 = a2.get("drvPath").unwrap().as_string().unwrap();
+        assert_eq!(p1, p2, "same derivation must produce same drvPath");
+
+        // The file on disk should exist exactly once (not overwritten).
+        let disk_path = p1.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        assert!(std::path::Path::new(&disk_path).exists());
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_path_matches_filename() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("pathcheck");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation { name = "pathcheck"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+
+        // The filename component of the on-disk path should equal the
+        // basename of the returned drvPath.
+        let returned_basename = std::path::Path::new(&*drv_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        let disk_basename = std::path::Path::new(&disk_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        assert_eq!(returned_basename, disk_basename);
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_fixed_output_creates_file() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("fod");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation {
+                name = "fod";
+                system = "x86_64-linux";
+                builder = "/bin/curl";
+                outputHash = "abc123";
+                outputHashAlgo = "sha256";
+                outputHashMode = "flat";
+            }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        let p = std::path::Path::new(&disk_path);
+        assert!(p.exists(), "expected FOD .drv at {disk_path}");
+
+        // Verify the parsed drv has the hash metadata
+        let content = std::fs::read(p).unwrap();
+        let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
+        let out = parsed.outputs.get("out").unwrap();
+        assert_eq!(out.hash, "abc123");
+        assert_eq!(out.hash_algo, "sha256");
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_env_contains_output_paths() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("envtest");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation { name = "envtest"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        let content = std::fs::read(&disk_path).unwrap();
+        let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
+
+        // CppNix convention: env map has an entry for each output name.
+        let out_env = parsed.env.get("out").expect("env should contain 'out'");
+        assert!(out_env.starts_with("/nix/store/"), "out env: {out_env}");
+        assert!(out_env.ends_with("-envtest"), "out env: {out_env}");
+
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn drv_write_multiple_outputs_all_in_env() {
+        let _g = DRV_WRITE_LOCK.lock().unwrap();
+        let store_dir = make_drv_temp_dir("multi-env");
+        let v = eval_drv_in_temp_store_inner(
+            r#"builtins.derivation {
+                name = "multi-env";
+                system = "x86_64-linux";
+                builder = "/bin/sh";
+                outputs = ["out" "dev" "lib"];
+            }"#,
+            &store_dir,
+        );
+        let a = v.as_attrs().unwrap();
+        let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+        let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
+        let content = std::fs::read(&disk_path).unwrap();
+        let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
+
+        for output_name in ["out", "dev", "lib"] {
+            let env_val = parsed.env.get(output_name)
+                .unwrap_or_else(|| panic!("env missing '{output_name}'"));
+            assert!(env_val.starts_with("/nix/store/"), "{output_name} env: {env_val}");
+        }
+
+        // Output paths in the ATerm outputs section should also be populated.
+        for output_name in ["out", "dev", "lib"] {
+            let out = parsed.outputs.get(output_name)
+                .unwrap_or_else(|| panic!("outputs missing '{output_name}'"));
+            assert!(!out.path.is_empty(), "output path for '{output_name}' is empty");
+        }
+
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     #[test]
