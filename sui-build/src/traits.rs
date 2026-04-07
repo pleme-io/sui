@@ -208,6 +208,43 @@ pub struct BuildResult {
     pub duration_secs: f64,
 }
 
+impl BuildResult {
+    /// Construct a successful `BuildResult`.
+    #[must_use]
+    pub fn success(outputs: Vec<StorePath>, log: String, duration_secs: f64) -> Self {
+        Self {
+            outputs,
+            log,
+            success: true,
+            outcome: BuildOutcome::Success,
+            duration_secs,
+        }
+    }
+
+    /// Construct a failed `BuildResult`.
+    #[must_use]
+    pub fn failure(
+        log: String,
+        stderr: String,
+        exit_code: i32,
+        duration_secs: f64,
+    ) -> Self {
+        Self {
+            outputs: Vec::new(),
+            log,
+            success: false,
+            outcome: BuildOutcome::Failure { stderr, exit_code },
+            duration_secs,
+        }
+    }
+
+    /// Returns `true` if the build succeeded.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.outcome.is_success()
+    }
+}
+
 // ── Errors ───────────────────────────────────────────────────────
 
 /// Build errors.
