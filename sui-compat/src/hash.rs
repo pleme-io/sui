@@ -98,11 +98,13 @@ pub fn minimal_base64_encode(input: &[u8]) -> String {
 }
 
 /// Minimal hex encoding (avoids external dep for now).
-mod hex {
+pub(crate) mod hex {
+    /// Encode bytes as lowercase hexadecimal.
     pub fn encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Decode a lowercase hexadecimal string to bytes.
     pub fn decode(s: &str) -> Result<Vec<u8>, super::HashError> {
         if s.len() % 2 != 0 {
             return Err(super::HashError::InvalidEncoding);

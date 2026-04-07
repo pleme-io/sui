@@ -2,8 +2,8 @@
 //!
 //! Nix supports several content-addressing methods for store paths.
 
-use crate::hash::{HashAlgorithm, NixHash};
-use crate::store_path::{nix_base32_encode, StorePath, StorePathError};
+use crate::hash::{hex, HashAlgorithm, NixHash};
+use crate::store_path::{compress_hash, StorePath, StorePathError};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -84,7 +84,7 @@ pub fn compute_text_store_path(
     let content_hash = Sha256::digest(contents);
 
     let mut fingerprint = String::from("text:sha256:");
-    fingerprint.push_str(&hex_encode(&content_hash));
+    fingerprint.push_str(&hex::encode(&content_hash));
     for r in references {
         fingerprint.push(':');
         fingerprint.push_str(r);
@@ -104,20 +104,6 @@ pub fn compute_text_store_path(
     })
 }
 
-/// Compress a hash to the specified number of bytes by XOR-folding.
-fn compress_hash(hash: &[u8], target_len: usize) -> Vec<u8> {
-    let mut result = vec![0u8; target_len];
-    for (i, &byte) in hash.iter().enumerate() {
-        result[i % target_len] ^= byte;
-    }
-    result
-}
-
-/// Hex-encode bytes.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Parse `<algo>:<hex-hash>` format.
 fn parse_hash_with_algo(s: &str) -> Result<NixHash, ContentAddressError> {
     let (algo_str, hash_hex) = s
@@ -127,21 +113,10 @@ fn parse_hash_with_algo(s: &str) -> Result<NixHash, ContentAddressError> {
     let algorithm = HashAlgorithm::from_nix_str(algo_str)
         .map_err(|e| ContentAddressError::InvalidFormat(e.to_string()))?;
 
-    let digest = hex_decode(hash_hex)
+    let digest = hex::decode(hash_hex)
         .map_err(|_| ContentAddressError::InvalidFormat(format!("invalid hex: {hash_hex}")))?;
 
     Ok(NixHash::new(algorithm, digest))
-}
-
-/// Hex-decode a string.
-fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if s.len() % 2 != 0 {
-        return Err(());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
-        .collect()
 }
 
 #[cfg(test)]
