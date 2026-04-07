@@ -1511,4 +1511,174 @@ mod tests {
         let node = Node::new("solo", ".#solo").with_ssh("user@host.example.com");
         assert_eq!(node.deploy_target(), "user@host.example.com");
     }
+
+    // ── Argv-capturing runner verifies SSH invocation shape ───
+
+    use std::sync::Mutex as StdMutex;
+
+    struct ArgvCapturingRunner {
+        captured: StdMutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl ArgvCapturingRunner {
+        fn new() -> Self {
+            Self {
+                captured: StdMutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for ArgvCapturingRunner {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            self.captured.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| (*s).to_string()).collect(),
+            ));
+            Ok(CommandOutput {
+                success: true,
+                stdout: "switched to generation 1\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_deploy_uses_ssh_with_strict_host_checking_accept_new() {
+        let runner = ArgvCapturingRunner::new();
+        let captor = Arc::new(runner);
+
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("alpha", ".#alpha")
+                .with_ssh("root@10.0.0.1")
+                .with_system("x86_64-linux"),
+        );
+
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "ssh");
+        assert_eq!(calls[0].1[0], "-o");
+        assert_eq!(calls[0].1[1], "StrictHostKeyChecking=accept-new");
+        assert_eq!(calls[0].1[2], "root@10.0.0.1");
+        // Last arg is the rebuild command string
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("nixos-rebuild"));
+        assert!(cmd.contains("switch"));
+        assert!(cmd.contains("--flake .#alpha"));
+    }
+
+    #[tokio::test]
+    async fn remote_deploy_uses_darwin_rebuild_for_aarch64_darwin_node() {
+        let captor = Arc::new(ArgvCapturingRunner::new());
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("mac", ".#mac")
+                .with_ssh("admin@mac.local")
+                .with_system("aarch64-darwin"),
+        );
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy("mac", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("darwin-rebuild"));
+        assert!(cmd.contains(".#mac"));
+    }
+
+    #[tokio::test]
+    async fn deploy_with_flake_override_uses_overridden_ref_in_argv() {
+        let captor = Arc::new(ArgvCapturingRunner::new());
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("alpha", ".#alpha")
+                .with_ssh("root@10.0.0.1")
+                .with_system("x86_64-linux"),
+        );
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy(
+            "alpha",
+            DeployStrategy::Rolling,
+            Some("github:pleme-io/nix#alpha-override"),
+        )
+        .await
+        .unwrap();
+
+        let calls = captor.calls();
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("github:pleme-io/nix#alpha-override"));
+        // The default flake_ref must NOT appear when overridden
+        assert!(!cmd.contains(".#alpha "));
+    }
+
+    // ── Parallel deploy: many nodes do not deadlock ───────────
+
+    #[tokio::test]
+    async fn parallel_deploy_handles_many_nodes() {
+        let mut reg = NodeRegistry::new();
+        for i in 0..16 {
+            reg.add(
+                Node::new(&format!("node-{i}"), &format!(".#node-{i}"))
+                    .with_ssh(&format!("root@10.0.0.{i}"))
+                    .with_groups(vec!["fleet".to_string()])
+                    .with_system("x86_64-linux"),
+            );
+        }
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy("@fleet", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+        assert_eq!(result.total_nodes, 16);
+        assert_eq!(result.succeeded, 16);
+        assert_eq!(result.failed, 0);
+    }
 }
