@@ -4173,6 +4173,7 @@ dependencies = [
  "clap",
  "figment",
  "futures-core",
+ "http-body-util",
  "predicates",
  "prost",
  "serde",
