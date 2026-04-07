@@ -142,6 +142,9 @@ async-trait.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
+http-body-util = "0.1"
+tower.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [profile.release]
 codegen-units = 1
