@@ -93,7 +93,10 @@ pub fn compute_text_store_path(
     fingerprint.push_str(name);
 
     let path_hash = compress_hash(&Sha256::digest(fingerprint.as_bytes()), 20);
-    let digest: [u8; 20] = path_hash.try_into().unwrap();
+    let digest: [u8; 20] = path_hash.try_into().map_err(|_| StorePathError::InvalidHashLength {
+        expected: 20,
+        got: 0, // compress_hash guarantees length, so this branch is unreachable
+    })?;
 
     Ok(StorePath {
         digest,
