@@ -2,11 +2,42 @@
 //!
 //! Implements the NarInfo + NAR download protocol for substitution.
 
-use sui_compat::narinfo::NarInfo;
+use sui_compat::narinfo::{NarInfo, NarInfoError};
 use sui_compat::store_path::StorePath;
 
-use crate::http::{HttpClient, ReqwestHttpClient};
+use crate::http::{HttpClient, HttpError, ReqwestHttpClient};
 use crate::traits::{PathInfo, Store, StoreError, StoreResult};
+
+/// Typed errors for binary cache operations.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum BinaryCacheError {
+    /// HTTP client returned an error (network, DNS, TLS, etc.).
+    #[error("http client error: {0}")]
+    HttpClient(#[from] HttpError),
+    /// Server returned an unexpected (non-2xx, non-404) HTTP status.
+    #[error("unexpected HTTP status {status} for {url}")]
+    UnexpectedStatus {
+        /// The HTTP status code received.
+        status: u16,
+        /// The URL that was requested.
+        url: String,
+    },
+    /// The NarInfo response body could not be parsed.
+    #[error("narinfo parse error: {0}")]
+    NarInfoParse(#[from] NarInfoError),
+}
+
+impl From<BinaryCacheError> for StoreError {
+    fn from(e: BinaryCacheError) -> Self {
+        match &e {
+            BinaryCacheError::HttpClient(_) | BinaryCacheError::UnexpectedStatus { .. } => {
+                StoreError::Http(e.to_string())
+            }
+            BinaryCacheError::NarInfoParse(_) => StoreError::NarInfo(e.to_string()),
+        }
+    }
+}
 
 /// A read-only binary cache store accessed over HTTP.
 pub struct BinaryCacheStore {
@@ -48,21 +79,21 @@ impl BinaryCacheStore {
             .client
             .get(&url, &[("Accept", "text/x-nix-narinfo")])
             .await
-            .map_err(|e| StoreError::Http(e.to_string()))?;
+            .map_err(BinaryCacheError::from)?;
 
         if response.status == 404 {
             return Ok(None);
         }
 
-        if response.status < 200 || response.status >= 300 {
-            return Err(StoreError::Http(format!(
-                "HTTP {}: {}",
-                response.status, url
-            )));
+        if !(200..300).contains(&response.status) {
+            return Err(BinaryCacheError::UnexpectedStatus {
+                status: response.status,
+                url,
+            }
+            .into());
         }
 
-        let info = NarInfo::parse(&response.body)
-            .map_err(|e| StoreError::NarInfo(e.to_string()))?;
+        let info = NarInfo::parse(&response.body).map_err(BinaryCacheError::from)?;
 
         Ok(Some(info))
     }
@@ -84,7 +115,7 @@ impl BinaryCacheStore {
         self.client
             .get_bytes(&url)
             .await
-            .map_err(|e| StoreError::Http(e.to_string()))
+            .map_err(|e| StoreError::Http(BinaryCacheError::from(e).to_string()))
     }
 
     /// Convert a NarInfo to our PathInfo type.
