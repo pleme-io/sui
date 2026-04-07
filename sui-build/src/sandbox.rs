@@ -21,6 +21,20 @@ pub struct SandboxConfig {
     pub env: Vec<(String, String)>,
 }
 
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            input_paths: Vec::new(),
+            build_dir: String::new(),
+            output_paths: Vec::new(),
+            allow_network: false,
+            builder: String::new(),
+            args: Vec::new(),
+            env: Vec::new(),
+        }
+    }
+}
+
 impl SandboxConfig {
     /// Construct a `SandboxConfig` from a derivation and a build directory.
     ///
@@ -30,10 +44,10 @@ impl SandboxConfig {
     /// - `allow_network` ← true when `__noChroot=1` in env
     /// - `builder`, `args`, `env` ← derivation fields
     #[must_use]
-    pub fn from_derivation(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Self {
+    pub fn from_derivation(drv: &sui_compat::derivation::Derivation, build_dir: impl AsRef<str>) -> Self {
         Self {
             input_paths: drv.input_sources.clone(),
-            build_dir: build_dir.to_owned(),
+            build_dir: build_dir.as_ref().to_owned(),
             output_paths: drv.outputs.values().map(|o| o.path.clone()).collect(),
             allow_network: drv
                 .env

@@ -83,8 +83,8 @@ pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
 }
 
 /// Scan a file for store path references (uses real filesystem).
-pub fn scan_file(path: &Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
-    scan_file_with(&RealFileSystem, path, known_hashes)
+pub fn scan_file(path: impl AsRef<Path>, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
+    scan_file_with(&RealFileSystem, path.as_ref(), known_hashes)
 }
 
 /// Scan a file using a custom filesystem implementation.
@@ -94,8 +94,8 @@ pub fn scan_file_with(fs: &dyn FileSystem, path: &Path, known_hashes: &[&str]) -
 }
 
 /// Scan a directory tree for store path references (uses real filesystem).
-pub fn scan_directory(dir: &Path, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
-    scan_directory_with(&RealFileSystem, dir, known_hashes)
+pub fn scan_directory(dir: impl AsRef<Path>, known_hashes: &[&str]) -> std::io::Result<Vec<String>> {
+    scan_directory_with(&RealFileSystem, dir.as_ref(), known_hashes)
 }
 
 /// Scan a directory tree using a custom filesystem implementation.
