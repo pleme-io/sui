@@ -213,27 +213,85 @@ async fn main() -> Result<(), CliError> {
         }
 
         Commands::Build { installable } => {
-            // Delegate to `nix build` for now — native build pipeline will
-            // be wired once the substitution layer is production-ready.
-            let output = tokio::process::Command::new("nix")
-                .args(["build", "--print-out-paths", &installable])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .await?;
+            // Native evaluation: parse the installable, evaluate the flake,
+            // navigate to the derivation, then build using nix build with
+            // the resolved .drv path.
+            match sui_compat::flake_ref::FlakeRef::parse(&installable) {
+                Ok(flake_ref) => {
+                    // Evaluate the flake natively.
+                    let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)?;
 
-            if output.status.success() {
-                let paths = String::from_utf8_lossy(&output.stdout);
-                for path in paths.lines() {
-                    println!("{path}");
+                    // Navigate to the requested attribute.
+                    let attr_segments: Vec<&str> = flake_ref.attribute.split('.').collect();
+                    let target = sui_eval::builtins::navigate_attrs(
+                        &flake_result,
+                        &attr_segments,
+                    )?;
+
+                    // Extract drvPath if it's a derivation.
+                    let drv_path = match &target {
+                        sui_eval::Value::Attrs(attrs) => {
+                            attrs.get("drvPath")
+                                .and_then(|v| v.as_string().ok())
+                                .map(|s| s.to_string())
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(drv_path) = drv_path {
+                        // Build using the resolved drv path.  The native
+                        // single-derivation builder doesn't handle recursive
+                        // closure builds yet, so we delegate the actual build
+                        // to nix build with the concrete .drv path.
+                        let output = tokio::process::Command::new("nix")
+                            .args(["build", "--print-out-paths", &drv_path])
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .output()
+                            .await?;
+
+                        if output.status.success() {
+                            let paths = String::from_utf8_lossy(&output.stdout);
+                            for path in paths.lines() {
+                                println!("{path}");
+                            }
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            eprintln!("{stderr}");
+                            return Err(CliError::Orchestrate {
+                                operation: "build",
+                                message: "nix build failed".into(),
+                            });
+                        }
+                    } else {
+                        // Not a derivation — just display the value.
+                        println!("{target}");
+                    }
                 }
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                eprintln!("{stderr}");
-                return Err(CliError::Orchestrate {
-                    operation: "build",
-                    message: "nix build failed".into(),
-                });
+                Err(_) => {
+                    // Not a parseable flake ref — pass through to nix build
+                    // as a raw installable (e.g., nixpkgs#hello).
+                    let output = tokio::process::Command::new("nix")
+                        .args(["build", "--print-out-paths", &installable])
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .output()
+                        .await?;
+
+                    if output.status.success() {
+                        let paths = String::from_utf8_lossy(&output.stdout);
+                        for path in paths.lines() {
+                            println!("{path}");
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        eprintln!("{stderr}");
+                        return Err(CliError::Orchestrate {
+                            operation: "build",
+                            message: "nix build failed".into(),
+                        });
+                    }
+                }
             }
         }
 

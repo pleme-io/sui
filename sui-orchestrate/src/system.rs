@@ -196,28 +196,39 @@ impl SystemOrchestrator {
             flake_ref.attribute
         );
 
-        // 2. Evaluate the flake to get the derivation path (via nix delegation)
-        let eval_ref = format!(
-            "{}#{attr_path}.drvPath",
-            flake_ref.flake_dir.display()
-        );
-        let eval_output = self
-            .runner
-            .run("nix", &["eval", "--json", &eval_ref])
-            .await
-            .map_err(|e| SystemError::CommandNotFound(format!("nix: {e}")))?;
+        // 2. Evaluate the flake natively to get the derivation path.
+        let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)
+            .map_err(|e| SystemError::RebuildFailed(format!("eval: {e}")))?;
 
-        if !eval_output.success {
-            return Ok(RebuildResult {
-                success: false,
-                generation: None,
-                action: action.to_string(),
-                log: format!("eval failed: {}", eval_output.stderr),
-                duration_secs: start.elapsed().as_secs_f64(),
-            });
-        }
+        // Navigate the outputs attrset to the system derivation.
+        let attr_segments: Vec<&str> = attr_path.split('.').collect();
+        let drv_value = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
+            .map_err(|e| SystemError::RebuildFailed(format!("navigate attrs: {e}")))?;
 
-        // 3. Build the system derivation (delegate to nix build for MVP)
+        // Extract drvPath from the derivation attrset.
+        let _drv_path = match drv_value {
+            sui_eval::Value::Attrs(ref attrs) => {
+                attrs.get("drvPath")
+                    .and_then(|v| v.as_string().ok())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| SystemError::RebuildFailed(
+                        "derivation attrset missing drvPath".into(),
+                    ))?
+            }
+            _ => {
+                return Ok(RebuildResult {
+                    success: false,
+                    generation: None,
+                    action: action.to_string(),
+                    log: format!("eval failed: expected derivation attrset, got {}", drv_value.type_name()),
+                    duration_secs: start.elapsed().as_secs_f64(),
+                });
+            }
+        };
+
+        // 3. Build the system derivation (still delegates to nix build for the
+        //    full closure — the native single-derivation builder doesn't handle
+        //    recursive dependency resolution yet).
         let build_ref = format!(
             "{}#{attr_path}",
             flake_ref.flake_dir.display()
@@ -1694,33 +1705,57 @@ mod tests {
         }
     }
 
+    // ── Helper: create a minimal temp flake for testing rebuild_native ──
+
+    /// Create a temp flake directory with a derivation nested at the
+    /// expected system attribute path.  Returns (flake_dir, attr_name).
+    fn make_test_flake(platform: Platform, attr: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+
+        let platform_key = match platform {
+            Platform::Darwin => "darwinConfigurations",
+            Platform::NixOS  => "nixosConfigurations",
+        };
+
+        // A minimal flake.nix whose outputs contain a derivation at
+        // <platformKey>.<attr>.config.system.build.toplevel.
+        let flake_nix = format!(
+            r#"{{
+  outputs = {{ self }}:
+    let
+      drv = builtins.derivation {{
+        name = "test-system";
+        system = "x86_64-linux";
+        builder = "/bin/sh";
+      }};
+    in {{
+      {platform_key}.{attr}.config.system.build.toplevel = drv;
+    }};
+}}"#,
+        );
+
+        std::fs::write(dir.path().join("flake.nix"), flake_nix).unwrap();
+        dir
+    }
+
     #[tokio::test]
     async fn rebuild_native_success_build_only() {
-        let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:eval",
-                CommandOutput {
-                    success: true,
-                    stdout: r#""/nix/store/abc-system.drv"
-"#
-                    .to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
-            .with_response(
-                "nix:build",
-                CommandOutput {
-                    success: true,
-                    stdout: "/nix/store/xyz-system\n".to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            );
+        let flake_dir = make_test_flake(Platform::Darwin, "cid");
+        let flake_ref = format!("{}#cid", flake_dir.path().display());
+
+        let runner = MultiMockRunner::new().with_response(
+            "nix:build",
+            CommandOutput {
+                success: true,
+                stdout: "/nix/store/xyz-system\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
 
         let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/my-flake#cid", RebuildAction::Build)
+            .rebuild_native(&flake_ref, RebuildAction::Build)
             .await
             .unwrap();
         assert!(result.success);
@@ -1730,50 +1765,46 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_native_eval_failure() {
-        let runner = MultiMockRunner::new().with_response(
-            "nix:eval",
-            CommandOutput {
-                success: false,
-                stdout: String::new(),
-                stderr: "error: attribute not found\n".to_string(),
-                exit_code: Some(1),
-            },
-        );
+        // Create a flake that evaluates but has no matching attribute.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{ outputs = { self }: { }; }"#,
+        ).unwrap();
+        let flake_ref = format!("{}#cid", dir.path().display());
 
+        let runner = MultiMockRunner::new();
         let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/flake#cid", RebuildAction::Switch)
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.log.contains("eval failed"));
+            .rebuild_native(&flake_ref, RebuildAction::Switch)
+            .await;
+        // Native eval fails because the attribute path doesn't exist.
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("navigate attrs") || err_msg.contains("not found"),
+            "unexpected error: {err_msg}"
+        );
     }
 
     #[tokio::test]
     async fn rebuild_native_build_failure() {
-        let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:eval",
-                CommandOutput {
-                    success: true,
-                    stdout: r#""/nix/store/abc.drv""#.to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
-            .with_response(
-                "nix:build",
-                CommandOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: "builder for /nix/store/abc.drv failed\n".to_string(),
-                    exit_code: Some(1),
-                },
-            );
+        let flake_dir = make_test_flake(Platform::NixOS, "node");
+        let flake_ref = format!("{}#node", flake_dir.path().display());
+
+        let runner = MultiMockRunner::new().with_response(
+            "nix:build",
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "builder for /nix/store/abc.drv failed\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
 
         let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/flake#node", RebuildAction::Switch)
+            .rebuild_native(&flake_ref, RebuildAction::Switch)
             .await
             .unwrap();
         assert!(!result.success);
@@ -1798,16 +1829,10 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_native_switch_activates_system() {
+        let flake_dir = make_test_flake(Platform::NixOS, "node");
+        let flake_ref = format!("{}#node", flake_dir.path().display());
+
         let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:eval",
-                CommandOutput {
-                    success: true,
-                    stdout: r#""/nix/store/abc.drv""#.to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
             .with_response(
                 "nix:build",
                 CommandOutput {
@@ -1838,7 +1863,7 @@ mod tests {
 
         let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/flake#node", RebuildAction::Switch)
+            .rebuild_native(&flake_ref, RebuildAction::Switch)
             .await
             .unwrap();
         assert!(result.success);
@@ -1848,16 +1873,10 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_native_boot_sets_profile_without_activate() {
+        let flake_dir = make_test_flake(Platform::NixOS, "node");
+        let flake_ref = format!("{}#node", flake_dir.path().display());
+
         let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:eval",
-                CommandOutput {
-                    success: true,
-                    stdout: r#""/nix/store/abc.drv""#.to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
             .with_response(
                 "nix:build",
                 CommandOutput {
@@ -1879,7 +1898,7 @@ mod tests {
 
         let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/flake#node", RebuildAction::Boot)
+            .rebuild_native(&flake_ref, RebuildAction::Boot)
             .await
             .unwrap();
         assert!(result.success);
@@ -1889,10 +1908,15 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_native_nix_command_not_found() {
-        let runner = MultiMockRunner::new(); // no responses at all
+        // With native eval, the eval step succeeds but the build step
+        // fails because the runner has no responses.
+        let flake_dir = make_test_flake(Platform::Darwin, "cid");
+        let flake_ref = format!("{}#cid", flake_dir.path().display());
+
+        let runner = MultiMockRunner::new(); // no responses → nix build not found
         let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
         let result = sys
-            .rebuild_native("/tmp/flake#cid", RebuildAction::Build)
+            .rebuild_native(&flake_ref, RebuildAction::Build)
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1904,9 +1928,12 @@ mod tests {
     #[tokio::test]
     async fn rebuild_native_darwin_attr_prefix() {
         // Verify Darwin uses darwinConfigurations prefix
+        let flake_dir = make_test_flake(Platform::Darwin, "cid");
+        let flake_ref = format!("{}#cid", flake_dir.path().display());
+
         let captor = Arc::new(CapturingRunner::new(CommandOutput {
             success: true,
-            stdout: r#""/nix/store/abc.drv""#.to_string(),
+            stdout: "/nix/store/xyz-system\n".to_string(),
             stderr: String::new(),
             exit_code: Some(0),
         }));
@@ -1925,27 +1952,30 @@ mod tests {
             Platform::Darwin,
             Box::new(Forwarder2(Arc::clone(&captor))),
         );
-        // This will fail at the build step (CapturingRunner only has one
-        // response), but we can still verify the eval args.
+        // The eval step is native now — the build step uses the runner.
         let _ = sys
-            .rebuild_native("/tmp/flake#cid", RebuildAction::Build)
+            .rebuild_native(&flake_ref, RebuildAction::Build)
             .await;
         let calls = captor.calls();
-        assert!(!calls.is_empty());
-        let eval_args = &calls[0].1;
-        // The eval call should reference darwinConfigurations
-        let eval_ref = eval_args.iter().find(|a| a.contains("darwinConfigurations"));
+        // The build step should reference darwinConfigurations in the
+        // installable passed to `nix build`.
+        assert!(!calls.is_empty(), "expected at least one nix build call");
+        let build_args = &calls[0].1;
+        let build_ref = build_args.iter().find(|a| a.contains("darwinConfigurations"));
         assert!(
-            eval_ref.is_some(),
-            "expected darwinConfigurations in eval args: {eval_args:?}"
+            build_ref.is_some(),
+            "expected darwinConfigurations in build args: {build_args:?}"
         );
     }
 
     #[tokio::test]
     async fn rebuild_native_nixos_attr_prefix() {
+        let flake_dir = make_test_flake(Platform::NixOS, "node");
+        let flake_ref = format!("{}#node", flake_dir.path().display());
+
         let captor = Arc::new(CapturingRunner::new(CommandOutput {
             success: true,
-            stdout: r#""/nix/store/abc.drv""#.to_string(),
+            stdout: "/nix/store/xyz-system\n".to_string(),
             stderr: String::new(),
             exit_code: Some(0),
         }));
@@ -1965,15 +1995,15 @@ mod tests {
             Box::new(Forwarder3(Arc::clone(&captor))),
         );
         let _ = sys
-            .rebuild_native("/tmp/flake#node", RebuildAction::Build)
+            .rebuild_native(&flake_ref, RebuildAction::Build)
             .await;
         let calls = captor.calls();
-        assert!(!calls.is_empty());
-        let eval_args = &calls[0].1;
-        let eval_ref = eval_args.iter().find(|a| a.contains("nixosConfigurations"));
+        assert!(!calls.is_empty(), "expected at least one nix build call");
+        let build_args = &calls[0].1;
+        let build_ref = build_args.iter().find(|a| a.contains("nixosConfigurations"));
         assert!(
-            eval_ref.is_some(),
-            "expected nixosConfigurations in eval args: {eval_args:?}"
+            build_ref.is_some(),
+            "expected nixosConfigurations in build args: {build_args:?}"
         );
     }
 }
