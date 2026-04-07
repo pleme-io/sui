@@ -653,7 +653,7 @@ impl Value {
             Value::Thunk(thunk) => {
                 thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_bool()
             }
-            _ => Err(EvalError::TypeError(format!("expected bool, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "bool", got: self.type_name() }),
         }
     }
 
@@ -664,7 +664,7 @@ impl Value {
             Value::Thunk(thunk) => {
                 thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_int()
             }
-            _ => Err(EvalError::TypeError(format!("expected int, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "int", got: self.type_name() }),
         }
     }
 
@@ -678,7 +678,7 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_string: force first via force_value()".into(),
             )),
-            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
 
@@ -689,7 +689,7 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_nix_string: force first via force_value()".into(),
             )),
-            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
 
@@ -703,7 +703,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_str()
             }
-            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
 
@@ -716,7 +716,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_nix_string()
             }
-            _ => Err(EvalError::TypeError(format!("expected string, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
 
@@ -734,7 +734,7 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_attrs: force first via force_value() or use to_attrs()".into(),
             )),
-            _ => Err(EvalError::TypeError(format!("expected set, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "set", got: self.type_name() }),
         }
     }
 
@@ -745,7 +745,7 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_list: force first via force_value()".into(),
             )),
-            _ => Err(EvalError::TypeError(format!("expected list, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "list", got: self.type_name() }),
         }
     }
 
@@ -757,7 +757,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_attrs()
             }
-            _ => Err(EvalError::TypeError(format!("expected set, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "set", got: self.type_name() }),
         }
     }
 
@@ -769,7 +769,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_list()
             }
-            _ => Err(EvalError::TypeError(format!("expected list, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "list", got: self.type_name() }),
         }
     }
 
@@ -797,7 +797,7 @@ impl Value {
             Value::Thunk(thunk) => {
                 thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_float()
             }
-            _ => Err(EvalError::TypeError(format!("expected number, got {}", self.type_name()))),
+            _ => Err(EvalError::TypeMismatch { expected: "number", got: self.type_name() }),
         }
     }
 }
