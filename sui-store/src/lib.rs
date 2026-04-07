@@ -22,10 +22,12 @@ pub mod entity;
 pub mod http;
 pub mod local;
 pub mod nar;
+pub mod profile;
 pub mod traits;
 
 pub use binary_cache::{BinaryCacheError, BinaryCacheStore, BinaryCacheStoreBuilder};
 pub use http::{HttpClient, HttpError, HttpResponse, ReqwestHttpClient};
 pub use local::{LocalStore, LocalStoreMode};
 pub use nar::decompress_nar;
+pub use profile::{Generation, ProfileError, ProfileManager};
 pub use traits::{PathInfo, Store, StoreError, StoreResult};
