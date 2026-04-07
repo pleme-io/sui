@@ -59,6 +59,18 @@ impl std::fmt::Display for TrustLevel {
     }
 }
 
+impl std::str::FromStr for TrustLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trusted" => Ok(Self::Trusted),
+            "not-trusted" => Ok(Self::NotTrusted),
+            other => Err(format!("unknown trust level: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

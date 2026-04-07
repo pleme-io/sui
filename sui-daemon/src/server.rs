@@ -49,6 +49,7 @@ impl Default for DaemonConfig {
 
 impl DaemonConfig {
     /// Create a config with a custom socket path.
+    #[must_use]
     pub fn with_socket_path(path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: path.into(),
