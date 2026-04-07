@@ -98,6 +98,12 @@ impl ContentAddress {
     }
 }
 
+impl std::fmt::Display for ContentAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_nix_string())
+    }
+}
+
 /// Compute a store path for text content (like `builtins.toFile`).
 ///
 /// The fingerprint is: `text:<sha256hash>:<references...>:/nix/store:<name>`
