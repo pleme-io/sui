@@ -166,13 +166,16 @@ pub fn read_u64(r: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(buf))
 }
 
+/// Zero buffer for 8-byte alignment padding (max 7 bytes needed).
+const PADDING: [u8; 8] = [0u8; 8];
+
 /// Write a length-prefixed, 8-byte-aligned byte buffer.
 pub fn write_bytes(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
     write_u64(w, data.len() as u64)?;
     w.write_all(data)?;
     let pad = (8 - (data.len() % 8)) % 8;
     if pad > 0 {
-        w.write_all(&vec![0u8; pad])?;
+        w.write_all(&PADDING[..pad])?;
     }
     Ok(())
 }
@@ -184,8 +187,8 @@ pub fn read_bytes(r: &mut impl Read) -> io::Result<Vec<u8>> {
     r.read_exact(&mut buf)?;
     let pad = (8 - (len % 8)) % 8;
     if pad > 0 {
-        let mut pad_buf = vec![0u8; pad];
-        r.read_exact(&mut pad_buf)?;
+        let mut pad_buf = [0u8; 8];
+        r.read_exact(&mut pad_buf[..pad])?;
     }
     Ok(buf)
 }
@@ -223,11 +226,7 @@ pub fn write_string_list(w: &mut impl Write, list: &[String]) -> io::Result<()> 
 /// Read a list of strings.
 pub fn read_string_list(r: &mut impl Read) -> Result<Vec<String>, WireError> {
     let count = read_u64(r)? as usize;
-    let mut list = Vec::with_capacity(count);
-    for _ in 0..count {
-        list.push(read_string(r)?);
-    }
-    Ok(list)
+    (0..count).map(|_| read_string(r)).collect()
 }
 
 #[cfg(test)]
