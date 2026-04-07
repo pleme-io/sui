@@ -99,18 +99,17 @@ async fn get_path_info(
     State(state): State<AppState>,
     Path(store_path): Path<String>,
 ) -> Result<Json<PathInfoResponse>, StatusCode> {
-    if let Some(ref store) = state.store {
-        if let Ok(sp) = crate::parse_store_path(&store_path) {
-            match store.query_path_info(&sp).await {
-                Ok(Some(info)) => {
-                    return Ok(Json(PathInfoResponse::from(info)));
-                }
-                Ok(None) => return Err(StatusCode::NOT_FOUND),
-                Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-            }
-        }
+    let Some(ref store) = state.store else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let Ok(sp) = crate::parse_store_path(&store_path) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    match store.query_path_info(&sp).await {
+        Ok(Some(info)) => Ok(Json(PathInfoResponse::from(info))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
-    Err(StatusCode::NOT_FOUND)
 }
 
 async fn compute_closure(Json(req): Json<ClosureRequest>) -> Json<Vec<String>> {
