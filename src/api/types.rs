@@ -61,13 +61,6 @@ pub struct ClosureRequest {
     pub paths: Vec<String>,
 }
 
-/// Add-to-store request (metadata — binary payload comes separately).
-#[derive(Debug, Clone, Serialize, Deserialize, InputObject)]
-pub struct AddToStoreRequest {
-    /// Desired store path name.
-    pub name: Option<String>,
-}
-
 // ── Eval ────────────────────────────────────────────────────
 
 /// Eval request.
