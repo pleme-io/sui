@@ -5,8 +5,11 @@
 //!
 //! Parsing is delegated to the `rnix` crate (MIT).
 
+/// Core Nix builtins (90+ functions).
 pub mod builtins;
+/// Tree-walking evaluator using rnix's typed AST.
 pub mod eval;
+/// Nix value types, environments, thunks, and error types.
 pub mod value;
 
 /// Re-export flake lock types from sui-compat where they canonically live.
@@ -14,7 +17,9 @@ pub mod flake {
     pub use sui_compat::flake::*;
 }
 
+/// Evaluate a Nix expression string (convenience re-export).
 pub use eval::eval;
+/// Re-exported for ergonomic access from dependent crates.
 pub use value::{EvalError, Value};
 
 /// The evaluator trait — enables swapping evaluation strategies.

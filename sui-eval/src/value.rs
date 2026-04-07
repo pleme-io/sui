@@ -25,6 +25,7 @@ pub enum ContextElement {
 pub struct StringContext(pub BTreeSet<ContextElement>);
 
 impl StringContext {
+    /// Create an empty context.
     pub fn new() -> Self {
         Self(BTreeSet::new())
     }
@@ -49,6 +50,7 @@ impl StringContext {
         self.0.insert(ContextElement::DrvDeep(drv));
     }
 
+    /// Whether this context set is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -80,10 +82,12 @@ impl NixString {
         }
     }
 
+    /// Borrow the string content.
     pub fn as_str(&self) -> &str {
         &self.chars
     }
 
+    /// Whether this string carries any context (store path references).
     pub fn has_context(&self) -> bool {
         !self.context.0.is_empty()
     }
@@ -114,7 +118,10 @@ pub enum Value {
     Thunk(Thunk),
 }
 
-/// Internal representation of a thunk's state.
+/// Internal representation of a thunk's state machine.
+///
+/// Transitions: `Suspended` → `Blackhole` → `Evaluated` (on success),
+/// or `Suspended` → `Blackhole` → `Suspended` (on failure, to allow retry).
 pub enum ThunkRepr {
     /// Not yet evaluated. Holds the AST expression and captured environment.
     Suspended {
@@ -284,34 +291,42 @@ impl fmt::Debug for Thunk {
 pub struct NixAttrs(pub BTreeMap<String, Value>);
 
 impl NixAttrs {
+    /// Create an empty attribute set.
     pub fn new() -> Self {
         Self(BTreeMap::new())
     }
 
+    /// Look up an attribute by name.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
     }
 
+    /// Insert or overwrite an attribute.
     pub fn insert(&mut self, key: String, value: Value) {
         self.0.insert(key, value);
     }
 
+    /// Check whether an attribute exists.
     pub fn contains_key(&self, key: &str) -> bool {
         self.0.contains_key(key)
     }
 
+    /// Iterate over attribute names in sorted order.
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.0.keys()
     }
 
+    /// Iterate over (name, value) pairs in sorted key order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.0.iter()
     }
 
+    /// Return the number of attributes.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Whether this attribute set is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -368,6 +383,7 @@ pub struct Env {
 }
 
 impl Env {
+    /// Create a root environment with no bindings.
     pub fn new() -> Self {
         Self {
             bindings: BTreeMap::new(),
@@ -377,6 +393,7 @@ impl Env {
         }
     }
 
+    /// Create a child environment that inherits from this one.
     pub fn child(&self) -> Self {
         Self {
             bindings: BTreeMap::new(),
@@ -389,11 +406,13 @@ impl Env {
         }
     }
 
+    /// Attach a `with` scope to this environment.
     pub fn with_scope(mut self, attrs: NixAttrs) -> Self {
         self.with_scope = Some(Arc::new(attrs));
         self
     }
 
+    /// Bind a name to a value in this environment's own scope.
     pub fn bind(&mut self, name: String, value: Value) {
         self.bindings.insert(name, value);
     }
@@ -435,21 +454,28 @@ impl Env {
     }
 }
 
-/// Evaluation errors.
+/// Evaluation errors produced by the Nix evaluator.
 #[derive(Debug, thiserror::Error)]
 pub enum EvalError {
+    /// A variable was referenced but not bound in scope.
     #[error("undefined variable: {0}")]
     UndefinedVar(String),
+    /// A type mismatch or coercion failure.
     #[error("type error: {0}")]
     TypeError(String),
+    /// An attribute was selected from a set that does not contain it.
     #[error("attribute not found: {0}")]
     AttrNotFound(String),
+    /// An `assert` expression's condition evaluated to false.
     #[error("assertion failed")]
     AssertionFailed,
+    /// Integer division by zero.
     #[error("division by zero")]
     DivisionByZero,
+    /// A language feature that is not yet implemented.
     #[error("not yet implemented: {0}")]
     NotImplemented(String),
+    /// A syntax error in the input expression.
     #[error("parse error: {0}")]
     ParseError(String),
 }
@@ -491,6 +517,7 @@ impl Value {
         }
     }
 
+    /// Return the Nix type name for this value (e.g. `"int"`, `"set"`).
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Null => "null",
@@ -513,6 +540,7 @@ impl Value {
         }
     }
 
+    /// Extract a bool, forcing thunks if needed.
     pub fn as_bool(&self) -> Result<bool, EvalError> {
         match self {
             Value::Bool(b) => Ok(*b),
@@ -523,6 +551,7 @@ impl Value {
         }
     }
 
+    /// Extract an integer, forcing thunks if needed.
     pub fn as_int(&self) -> Result<i64, EvalError> {
         match self {
             Value::Int(n) => Ok(*n),
@@ -533,6 +562,7 @@ impl Value {
         }
     }
 
+    /// Borrow the string content without forcing thunks.
     pub fn as_string(&self) -> Result<&str, EvalError> {
         match self {
             Value::String(s) => Ok(&s.chars),
@@ -602,6 +632,7 @@ impl Value {
         }
     }
 
+    /// Borrow the list content without forcing thunks.
     pub fn as_list(&self) -> Result<&[Value], EvalError> {
         match self {
             Value::List(l) => Ok(l),
