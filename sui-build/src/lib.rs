@@ -12,4 +12,4 @@ pub mod reference_scan;
 pub mod sandbox;
 pub mod traits;
 
-pub use traits::{BuildError, BuildLog, BuildResult, BuildState, Builder};
+pub use traits::{BuildError, BuildLog, BuildOutcome, BuildResult, BuildState, Builder};

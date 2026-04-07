@@ -115,6 +115,49 @@ impl BuildLog {
     }
 }
 
+// ── Build outcome ───────────────────────────────────────────────
+
+/// Typed outcome of a build execution, replacing the boolean `success` field.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum BuildOutcome {
+    /// The build finished successfully.
+    Success,
+    /// The build process exited with a non-zero code.
+    Failure {
+        /// Captured stderr from the build process.
+        stderr: String,
+        /// Process exit code (non-zero).
+        exit_code: i32,
+    },
+    /// The build was cancelled before completion.
+    Cancelled,
+}
+
+impl BuildOutcome {
+    /// Returns `true` if the build succeeded.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success)
+    }
+
+    /// Returns `true` if the build failed (not cancelled).
+    #[must_use]
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Self::Failure { .. })
+    }
+}
+
+impl std::fmt::Display for BuildOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success => write!(f, "success"),
+            Self::Failure { exit_code, .. } => write!(f, "failure (exit code {exit_code})"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
 // ── Build result ─────────────────────────────────────────────────
 
 /// Build execution result.
@@ -126,6 +169,8 @@ pub struct BuildResult {
     pub log: String,
     /// Whether the build succeeded.
     pub success: bool,
+    /// Typed build outcome with richer failure information.
+    pub outcome: BuildOutcome,
     /// Wall-clock time in seconds.
     pub duration_secs: f64,
 }
@@ -217,10 +262,12 @@ mod tests {
             outputs: vec![output.clone()],
             log: "build succeeded\n".to_string(),
             success: true,
+            outcome: BuildOutcome::Success,
             duration_secs: 42.5,
         };
 
         assert!(result.success);
+        assert!(result.outcome.is_success());
         assert_eq!(result.outputs.len(), 1);
         assert_eq!(
             result.outputs[0].to_absolute_path(),
@@ -236,10 +283,15 @@ mod tests {
             outputs: vec![],
             log: "error: builder for '/nix/store/abc.drv' failed\n".to_string(),
             success: false,
+            outcome: BuildOutcome::Failure {
+                stderr: "builder failed".to_string(),
+                exit_code: 1,
+            },
             duration_secs: 1.2,
         };
 
         assert!(!result.success);
+        assert!(result.outcome.is_failure());
         assert!(result.outputs.is_empty());
         assert!(result.log.contains("failed"));
     }
@@ -250,6 +302,7 @@ mod tests {
             outputs: vec![],
             log: "ok".to_string(),
             success: true,
+            outcome: BuildOutcome::Success,
             duration_secs: 0.0,
         };
         let cloned = result.clone();
@@ -445,10 +498,21 @@ mod tests {
                 .filter_map(|o| StorePath::from_absolute_path(&o.path).ok())
                 .collect();
 
+            let success = result.exit_code == 0;
+            let outcome = if success {
+                BuildOutcome::Success
+            } else {
+                BuildOutcome::Failure {
+                    stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+                    exit_code: result.exit_code,
+                }
+            };
+
             Ok(BuildResult {
                 outputs,
                 log: String::from_utf8_lossy(&result.stdout).to_string(),
-                success: result.exit_code == 0,
+                success,
+                outcome,
                 duration_secs: 0.1,
             })
         }
@@ -507,10 +571,10 @@ mod tests {
             outputs: vec![output],
             log: "building...\nfinished\n".to_string(),
             success: true,
+            outcome: BuildOutcome::Success,
             duration_secs: 30.0,
         };
 
-        // Verify the data survives the BuildResult construction
         assert!(result.success);
         assert_eq!(result.outputs.len(), 1);
         assert_eq!(

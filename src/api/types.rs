@@ -599,6 +599,7 @@ mod tests {
             outputs: vec![output],
             log: "building...\nfinished\n".to_string(),
             success: true,
+            outcome: sui_build::BuildOutcome::Success,
             duration_secs: 30.0,
         };
 
@@ -621,6 +622,10 @@ mod tests {
             outputs: vec![],
             log: "error: build failed\n".to_string(),
             success: false,
+            outcome: sui_build::BuildOutcome::Failure {
+                stderr: "build failed".to_string(),
+                exit_code: 1,
+            },
             duration_secs: 1.0,
         };
 
