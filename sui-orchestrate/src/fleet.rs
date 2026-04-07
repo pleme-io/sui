@@ -939,4 +939,746 @@ mod tests {
             NodeStatus::Unknown
         );
     }
+
+    // ── DeployStrategy: Default + Display + FromStr ───────────
+
+    #[test]
+    fn deploy_strategy_default_is_rolling() {
+        assert_eq!(DeployStrategy::default(), DeployStrategy::Rolling);
+    }
+
+    #[test]
+    fn deploy_strategy_display_strings() {
+        assert_eq!(DeployStrategy::Parallel.to_string(), "parallel");
+        assert_eq!(DeployStrategy::Rolling.to_string(), "rolling");
+        assert_eq!(DeployStrategy::Canary.to_string(), "canary");
+    }
+
+    #[test]
+    fn deploy_strategy_from_str_valid() {
+        use std::str::FromStr;
+        assert_eq!(
+            DeployStrategy::from_str("parallel").unwrap(),
+            DeployStrategy::Parallel
+        );
+        assert_eq!(
+            DeployStrategy::from_str("rolling").unwrap(),
+            DeployStrategy::Rolling
+        );
+        assert_eq!(
+            DeployStrategy::from_str("canary").unwrap(),
+            DeployStrategy::Canary
+        );
+    }
+
+    #[test]
+    fn deploy_strategy_from_str_rejects_garbage() {
+        use std::str::FromStr;
+        let err = DeployStrategy::from_str("yolo").unwrap_err();
+        assert!(err.contains("invalid deploy strategy"));
+        assert!(err.contains("yolo"));
+    }
+
+    #[test]
+    fn deploy_strategy_from_str_case_sensitive() {
+        use std::str::FromStr;
+        assert!(DeployStrategy::from_str("Rolling").is_err());
+        assert!(DeployStrategy::from_str("CANARY").is_err());
+        assert!(DeployStrategy::from_str("").is_err());
+    }
+
+    // ── DeployStrategy::executor returns the right kind ───────
+
+    #[tokio::test]
+    async fn deploy_strategy_executor_rolling_runs_serially() {
+        let exec = DeployStrategy::Rolling.executor();
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let nodes = vec![
+            Node::new("a", ".#a")
+                .with_ssh("root@a")
+                .with_system("x86_64-linux"),
+            Node::new("b", ".#b")
+                .with_ssh("root@b")
+                .with_system("x86_64-linux"),
+        ];
+        let results = exec.execute(&nodes, None, &runner).await.unwrap();
+        assert_eq!(results.len(), 2);
+        // Rolling preserves input order
+        assert_eq!(results[0].hostname, "a");
+        assert_eq!(results[1].hostname, "b");
+        assert!(results.iter().all(|r| r.success));
+    }
+
+    #[tokio::test]
+    async fn deploy_strategy_executor_parallel_returns_all_results() {
+        let exec = DeployStrategy::Parallel.executor();
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let nodes = vec![
+            Node::new("a", ".#a")
+                .with_ssh("root@a")
+                .with_system("x86_64-linux"),
+            Node::new("b", ".#b")
+                .with_ssh("root@b")
+                .with_system("x86_64-linux"),
+            Node::new("c", ".#c")
+                .with_ssh("root@c")
+                .with_system("x86_64-linux"),
+        ];
+        let results = exec.execute(&nodes, None, &runner).await.unwrap();
+        assert_eq!(results.len(), 3);
+        let mut hostnames: Vec<&str> = results.iter().map(|r| r.hostname.as_str()).collect();
+        hostnames.sort_unstable();
+        assert_eq!(hostnames, vec!["a", "b", "c"]);
+        assert!(results.iter().all(|r| r.success));
+    }
+
+    #[tokio::test]
+    async fn deploy_strategy_executor_canary_empty_node_list() {
+        let exec = DeployStrategy::Canary.executor();
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let results = exec.execute(&[], None, &runner).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ── ParallelExecutor / RollingExecutor / CanaryExecutor: direct usage ─
+
+    #[tokio::test]
+    async fn parallel_executor_direct_call() {
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let nodes = vec![Node::new("only", ".#only")
+            .with_ssh("root@only")
+            .with_system("x86_64-linux")];
+        let results = ParallelExecutor.execute(&nodes, None, &runner).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
+
+    #[tokio::test]
+    async fn rolling_executor_direct_call() {
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let nodes = vec![Node::new("only", ".#only")
+            .with_ssh("root@only")
+            .with_system("x86_64-linux")];
+        let results = RollingExecutor.execute(&nodes, None, &runner).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hostname, "only");
+    }
+
+    #[tokio::test]
+    async fn canary_executor_direct_call_succeeds_on_single_node() {
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::succeeding());
+        let nodes = vec![Node::new("only", ".#only")
+            .with_ssh("root@only")
+            .with_system("x86_64-linux")];
+        let results = CanaryExecutor.execute(&nodes, None, &runner).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
+
+    #[tokio::test]
+    async fn canary_executor_aborts_when_first_node_fails() {
+        let runner: Arc<dyn CommandRunner> = Arc::new(MockCommandRunner::failing());
+        let nodes = vec![
+            Node::new("a", ".#a").with_ssh("root@a").with_system("x86_64-linux"),
+            Node::new("b", ".#b").with_ssh("root@b").with_system("x86_64-linux"),
+        ];
+        let result = CanaryExecutor.execute(&nodes, None, &runner).await;
+        match result {
+            Err(FleetError::CanaryFailed) => {}
+            other => panic!("expected CanaryFailed, got {other:?}"),
+        }
+    }
+
+    // ── Mixed/partial failure with a per-node mock ────────────
+
+    /// Fails for any host listed in `failing_hosts`, succeeds otherwise.
+    /// Recognises hosts via the SSH target embedded in the rebuild args.
+    struct PartialFailureRunner {
+        failing_hosts: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for PartialFailureRunner {
+        async fn run(&self, _program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            // The deploy_single_node call uses ssh args "ssh -o ... <target> <cmd>"
+            // for remote nodes, so the SSH target sits at index 2.
+            let target = args.get(2).copied().unwrap_or("");
+            let fail = self.failing_hosts.iter().any(|h| target.contains(h));
+            if fail {
+                Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: format!("forced failure for {target}\n"),
+                    exit_code: Some(1),
+                })
+            } else {
+                Ok(CommandOutput {
+                    success: true,
+                    stdout: format!("ok for {target}\n"),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_rolling_partial_failure_aggregates_results() {
+        let reg = test_registry();
+        let runner = PartialFailureRunner {
+            failing_hosts: vec!["10.0.0.2".to_string()], // beta fails
+        };
+        let mut orch = FleetOrchestrator::with_runner(reg, Box::new(runner));
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 2);
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 1);
+
+        // Find each result
+        let alpha = result.results.iter().find(|r| r.hostname == "alpha").unwrap();
+        let beta = result.results.iter().find(|r| r.hostname == "beta").unwrap();
+        assert!(alpha.success);
+        assert!(!beta.success);
+        assert!(beta.log.contains("forced failure"));
+
+        // Registry status reflects per-node outcome
+        assert_eq!(
+            orch.registry().get("alpha").unwrap().status,
+            NodeStatus::Online
+        );
+        assert_eq!(
+            orch.registry().get("beta").unwrap().status,
+            NodeStatus::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_parallel_partial_failure_aggregates_results() {
+        let reg = test_registry();
+        let runner = PartialFailureRunner {
+            failing_hosts: vec!["10.0.0.1".to_string()], // alpha fails
+        };
+        let mut orch = FleetOrchestrator::with_runner(reg, Box::new(runner));
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 2);
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 1);
+    }
+
+    // ── Rolling deploy preserves order ───────────────────────
+
+    #[tokio::test]
+    async fn deploy_rolling_results_in_target_order() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        // resolve_target on @all returns BTreeMap order, which is alphabetical
+        let result = orch
+            .deploy("@all", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        let hostnames: Vec<&str> = result
+            .results
+            .iter()
+            .map(|r| r.hostname.as_str())
+            .collect();
+        assert_eq!(hostnames, vec!["alpha", "beta", "gamma"]);
+    }
+
+    // ── Successful canary records canary first ────────────────
+
+    #[tokio::test]
+    async fn canary_succeeds_canary_node_recorded_first() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy("@prod", DeployStrategy::Canary, None)
+            .await
+            .unwrap();
+        assert_eq!(result.results.len(), 2);
+        // Canary is the first node (alphabetical) — alpha
+        assert_eq!(result.results[0].hostname, "alpha");
+    }
+
+    // ── Canary deploy then rollback path: failing canary leaves state ─
+
+    #[tokio::test]
+    async fn deploy_canary_failed_marks_canary_node_failed() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+        let _ = orch.deploy("@prod", DeployStrategy::Canary, None).await;
+        // Both prod nodes were marked Deploying before execution; canary
+        // fails before per-node status updates run, so they remain
+        // in the transitional Deploying state.
+        let alpha = orch.registry().get("alpha").unwrap();
+        let beta = orch.registry().get("beta").unwrap();
+        assert!(matches!(
+            alpha.status,
+            NodeStatus::Deploying | NodeStatus::Failed
+        ));
+        assert!(matches!(
+            beta.status,
+            NodeStatus::Deploying | NodeStatus::Failed
+        ));
+    }
+
+    // ── deploy_with_executor: direct trait usage labels strategy "custom" ─
+
+    #[tokio::test]
+    async fn deploy_with_executor_uses_custom_label() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let executor = ParallelExecutor;
+        let result = orch
+            .deploy_with_executor("@prod", &executor, None)
+            .await
+            .unwrap();
+        // The high-level deploy() overrides this label, but the lower-level
+        // entry point keeps the default "custom" tag.
+        assert_eq!(result.strategy, "custom");
+        assert_eq!(result.succeeded, 2);
+    }
+
+    // ── deploy_with_executor: empty target errors ─────────────
+
+    #[tokio::test]
+    async fn deploy_with_executor_no_nodes_errors() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let executor = RollingExecutor;
+        let result = orch
+            .deploy_with_executor("@nonexistent-group", &executor, None)
+            .await;
+        match result {
+            Err(FleetError::NoNodes(target)) => assert_eq!(target, "@nonexistent-group"),
+            other => panic!("expected NoNodes, got {other:?}"),
+        }
+    }
+
+    // ── FleetError From CommandError conversion ───────────────
+
+    #[test]
+    fn fleet_error_from_command_error() {
+        let cmd_err = crate::command::CommandError::NotFound("ssh".to_string());
+        let fleet_err: FleetError = cmd_err.into();
+        let s = fleet_err.to_string();
+        assert!(s.contains("command error"));
+        assert!(s.contains("ssh"));
+    }
+
+    // ── DeployStrategy serde: every variant string ────────────
+
+    #[test]
+    fn deploy_strategy_serde_all_variants() {
+        for (strat, expected) in [
+            (DeployStrategy::Parallel, "\"parallel\""),
+            (DeployStrategy::Rolling, "\"rolling\""),
+            (DeployStrategy::Canary, "\"canary\""),
+        ] {
+            let json = serde_json::to_string(&strat).unwrap();
+            assert_eq!(json, expected);
+            let parsed: DeployStrategy = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, strat);
+        }
+    }
+
+    // ── DeployResult totals match per-node sum ────────────────
+
+    #[tokio::test]
+    async fn deploy_result_totals_consistent_with_node_results() {
+        let reg = test_registry();
+        let runner = PartialFailureRunner {
+            failing_hosts: vec!["10.0.0.2".to_string()],
+        };
+        let mut orch = FleetOrchestrator::with_runner(reg, Box::new(runner));
+        let result = orch
+            .deploy("@prod", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+
+        let succeeded = result.results.iter().filter(|r| r.success).count();
+        let failed = result.results.iter().filter(|r| !r.success).count();
+        assert_eq!(result.succeeded, succeeded);
+        assert_eq!(result.failed, failed);
+        assert_eq!(result.succeeded + result.failed, result.total_nodes);
+    }
+
+    // ── deploy() unknown target errors ────────────────────────
+
+    #[tokio::test]
+    async fn deploy_unknown_hostname_errors_no_nodes() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy("nonexistent-host", DeployStrategy::Rolling, None)
+            .await;
+        match result {
+            Err(FleetError::NoNodes(target)) => assert_eq!(target, "nonexistent-host"),
+            other => panic!("expected NoNodes, got {other:?}"),
+        }
+    }
+
+    // ── deploy_strategy hash + equality ───────────────────────
+
+    #[test]
+    fn deploy_strategy_equality_and_copy() {
+        let a = DeployStrategy::Parallel;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(a, DeployStrategy::Rolling);
+    }
+
+    // ── gethostname returns Some on unix ──────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn gethostname_returns_some_on_unix() {
+        let h = gethostname();
+        assert!(h.is_some());
+        assert!(!h.unwrap().is_empty());
+    }
+
+    // ── is_local_hostname matches host's own name ─────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn is_local_hostname_matches_local_machine() {
+        let host = gethostname().unwrap();
+        assert!(is_local_hostname(&host));
+    }
+
+    // ── is_local_hostname empty string is not local ───────────
+
+    #[test]
+    fn is_local_hostname_empty_string() {
+        assert!(!is_local_hostname(""));
+    }
+
+    // ── Custom DeployExecutor proves the trait extensibility ──
+
+    /// Always returns a synthetic "skipped" record for every node,
+    /// without invoking the runner. Demonstrates that callers can
+    /// supply arbitrary deployment patterns by implementing
+    /// [`DeployExecutor`].
+    struct SkipExecutor;
+
+    #[async_trait::async_trait]
+    impl DeployExecutor for SkipExecutor {
+        async fn execute(
+            &self,
+            nodes: &[Node],
+            _flake_override: Option<&str>,
+            _runner: &Arc<dyn CommandRunner>,
+        ) -> Result<Vec<NodeDeployResult>, FleetError> {
+            Ok(nodes
+                .iter()
+                .map(|n| NodeDeployResult {
+                    hostname: n.hostname.clone(),
+                    success: true,
+                    log: format!("skipped {}", n.hostname),
+                    duration_secs: 0.0,
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_with_custom_executor_via_trait() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let executor = SkipExecutor;
+        let result = orch
+            .deploy_with_executor("@all", &executor, None)
+            .await
+            .unwrap();
+        assert_eq!(result.total_nodes, 3);
+        assert_eq!(result.succeeded, 3);
+        assert_eq!(result.strategy, "custom");
+        for r in &result.results {
+            assert!(r.log.contains("skipped"));
+        }
+    }
+
+    /// Always rejects with a typed error. Used to test error propagation
+    /// from a custom executor through deploy_with_executor.
+    struct AlwaysRejectExecutor;
+
+    #[async_trait::async_trait]
+    impl DeployExecutor for AlwaysRejectExecutor {
+        async fn execute(
+            &self,
+            _nodes: &[Node],
+            _flake_override: Option<&str>,
+            _runner: &Arc<dyn CommandRunner>,
+        ) -> Result<Vec<NodeDeployResult>, FleetError> {
+            Err(FleetError::CanaryFailed)
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_with_custom_executor_error_bubbles_up() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy_with_executor("@prod", &AlwaysRejectExecutor, None)
+            .await;
+        match result {
+            Err(FleetError::CanaryFailed) => {}
+            other => panic!("expected CanaryFailed, got {other:?}"),
+        }
+    }
+
+    // ── last_deployed must not be set on failure ──────────────
+
+    #[tokio::test]
+    async fn deploy_failure_does_not_set_last_deployed() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        let alpha = orch.registry().get("alpha").unwrap();
+        assert_eq!(alpha.status, NodeStatus::Failed);
+        assert!(alpha.last_deployed.is_none());
+    }
+
+    // ── last_deployed is set on success ───────────────────────
+
+    #[tokio::test]
+    async fn deploy_success_sets_last_deployed_timestamp() {
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let before = chrono::Utc::now().timestamp();
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+        let after = chrono::Utc::now().timestamp();
+        let alpha = orch.registry().get("alpha").unwrap();
+        let ts = alpha.last_deployed.expect("timestamp set on success");
+        assert!(ts >= before);
+        assert!(ts <= after);
+    }
+
+    // ── Node::deploy_target falls back to hostname when ssh unset ─
+
+    #[test]
+    fn deploy_target_falls_back_to_hostname() {
+        let node = Node::new("solo", ".#solo");
+        assert_eq!(node.deploy_target(), "solo");
+    }
+
+    #[test]
+    fn deploy_target_uses_ssh_when_set() {
+        let node = Node::new("solo", ".#solo").with_ssh("user@host.example.com");
+        assert_eq!(node.deploy_target(), "user@host.example.com");
+    }
+
+    // ── Argv-capturing runner verifies SSH invocation shape ───
+
+    use std::sync::Mutex as StdMutex;
+
+    struct ArgvCapturingRunner {
+        captured: StdMutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl ArgvCapturingRunner {
+        fn new() -> Self {
+            Self {
+                captured: StdMutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for ArgvCapturingRunner {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            self.captured.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| (*s).to_string()).collect(),
+            ));
+            Ok(CommandOutput {
+                success: true,
+                stdout: "switched to generation 1\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_deploy_uses_ssh_with_strict_host_checking_accept_new() {
+        let runner = ArgvCapturingRunner::new();
+        let captor = Arc::new(runner);
+
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("alpha", ".#alpha")
+                .with_ssh("root@10.0.0.1")
+                .with_system("x86_64-linux"),
+        );
+
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "ssh");
+        assert_eq!(calls[0].1[0], "-o");
+        assert_eq!(calls[0].1[1], "StrictHostKeyChecking=accept-new");
+        assert_eq!(calls[0].1[2], "root@10.0.0.1");
+        // Last arg is the rebuild command string
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("nixos-rebuild"));
+        assert!(cmd.contains("switch"));
+        assert!(cmd.contains("--flake .#alpha"));
+    }
+
+    #[tokio::test]
+    async fn remote_deploy_uses_darwin_rebuild_for_aarch64_darwin_node() {
+        let captor = Arc::new(ArgvCapturingRunner::new());
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("mac", ".#mac")
+                .with_ssh("admin@mac.local")
+                .with_system("aarch64-darwin"),
+        );
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy("mac", DeployStrategy::Rolling, None)
+            .await
+            .unwrap();
+
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("darwin-rebuild"));
+        assert!(cmd.contains(".#mac"));
+    }
+
+    #[tokio::test]
+    async fn deploy_with_flake_override_uses_overridden_ref_in_argv() {
+        let captor = Arc::new(ArgvCapturingRunner::new());
+        struct Forwarder(Arc<ArgvCapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("alpha", ".#alpha")
+                .with_ssh("root@10.0.0.1")
+                .with_system("x86_64-linux"),
+        );
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        orch.deploy(
+            "alpha",
+            DeployStrategy::Rolling,
+            Some("github:pleme-io/nix#alpha-override"),
+        )
+        .await
+        .unwrap();
+
+        let calls = captor.calls();
+        let cmd = &calls[0].1[3];
+        assert!(cmd.contains("github:pleme-io/nix#alpha-override"));
+        // The default flake_ref must NOT appear when overridden
+        assert!(!cmd.contains(".#alpha "));
+    }
+
+    // ── Parallel deploy: many nodes do not deadlock ───────────
+
+    #[tokio::test]
+    async fn parallel_deploy_handles_many_nodes() {
+        let mut reg = NodeRegistry::new();
+        for i in 0..16 {
+            reg.add(
+                Node::new(&format!("node-{i}"), &format!(".#node-{i}"))
+                    .with_ssh(&format!("root@10.0.0.{i}"))
+                    .with_groups(vec!["fleet".to_string()])
+                    .with_system("x86_64-linux"),
+            );
+        }
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+        let result = orch
+            .deploy("@fleet", DeployStrategy::Parallel, None)
+            .await
+            .unwrap();
+        assert_eq!(result.total_nodes, 16);
+        assert_eq!(result.succeeded, 16);
+        assert_eq!(result.failed, 0);
+    }
 }

@@ -904,4 +904,451 @@ mod tests {
             assert_eq!(extract_generation(&log), Some(n));
         }
     }
+
+    // ── Platform FromStr ──────────────────────────────────────
+
+    #[test]
+    fn platform_from_str_valid() {
+        use std::str::FromStr;
+        assert_eq!(Platform::from_str("darwin").unwrap(), Platform::Darwin);
+        assert_eq!(Platform::from_str("nixos").unwrap(), Platform::NixOS);
+    }
+
+    #[test]
+    fn platform_from_str_rejects_garbage() {
+        use std::str::FromStr;
+        let err = Platform::from_str("windows").unwrap_err();
+        assert!(err.contains("invalid platform"));
+        assert!(err.contains("windows"));
+    }
+
+    #[test]
+    fn platform_from_str_case_sensitive() {
+        use std::str::FromStr;
+        assert!(Platform::from_str("Darwin").is_err());
+        assert!(Platform::from_str("NIXOS").is_err());
+        assert!(Platform::from_str("").is_err());
+    }
+
+    #[test]
+    fn platform_display_strings() {
+        assert_eq!(Platform::Darwin.to_string(), "darwin");
+        assert_eq!(Platform::NixOS.to_string(), "nixos");
+    }
+
+    #[test]
+    fn platform_serde_roundtrip() {
+        for p in [Platform::Darwin, Platform::NixOS] {
+            let json = serde_json::to_string(&p).unwrap();
+            let parsed: Platform = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, p);
+        }
+    }
+
+    // ── RebuildAction FromStr ─────────────────────────────────
+
+    #[test]
+    fn rebuild_action_from_str_all_valid() {
+        use std::str::FromStr;
+        assert_eq!(RebuildAction::from_str("switch").unwrap(), RebuildAction::Switch);
+        assert_eq!(RebuildAction::from_str("boot").unwrap(), RebuildAction::Boot);
+        assert_eq!(RebuildAction::from_str("test").unwrap(), RebuildAction::Test);
+        assert_eq!(RebuildAction::from_str("build").unwrap(), RebuildAction::Build);
+    }
+
+    #[test]
+    fn rebuild_action_from_str_rejects_garbage() {
+        use std::str::FromStr;
+        let err = RebuildAction::from_str("rollback").unwrap_err();
+        assert!(err.contains("invalid rebuild action"));
+        assert!(err.contains("rollback"));
+    }
+
+    #[test]
+    fn rebuild_action_from_str_case_sensitive() {
+        use std::str::FromStr;
+        assert!(RebuildAction::from_str("Switch").is_err());
+        assert!(RebuildAction::from_str("BOOT").is_err());
+        assert!(RebuildAction::from_str("").is_err());
+    }
+
+    // ── Arg-capturing mock runner: verify rebuild builds the right CLI ─
+
+    use std::sync::Mutex;
+
+    struct CapturingRunner {
+        captured: Mutex<Vec<(String, Vec<String>)>>,
+        response: CommandOutput,
+    }
+
+    impl CapturingRunner {
+        fn new(response: CommandOutput) -> Self {
+            Self {
+                captured: Mutex::new(Vec::new()),
+                response,
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for CapturingRunner {
+        async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            self.captured.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| (*s).to_string()).collect(),
+            ));
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuild_invokes_correct_program_and_args_no_flake() {
+        let runner = CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "generation 1\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        });
+
+        // We need a Box<dyn CommandRunner> but we also need to inspect the mock
+        // afterward. Wrap in Arc and clone for the inspection.
+        let captor = Arc::new(runner);
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        sys.rebuild(RebuildAction::Switch, None).await.unwrap();
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "darwin-rebuild");
+        assert_eq!(calls[0].1, vec!["switch"]);
+    }
+
+    #[tokio::test]
+    async fn rebuild_invokes_correct_program_and_args_with_flake() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "generation 1\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        sys.rebuild(RebuildAction::Boot, Some(".#node"))
+            .await
+            .unwrap();
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nixos-rebuild");
+        assert_eq!(calls[0].1, vec!["boot", "--flake", ".#node"]);
+    }
+
+    use std::sync::Arc;
+
+    // ── rebuild_failed includes log ───────────────────────────
+
+    #[tokio::test]
+    async fn rebuild_failure_log_propagated_in_error() {
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: false,
+                stdout: "starting build\n".to_string(),
+                stderr: "ERROR: dirty git tree\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let err = sys.rebuild(RebuildAction::Switch, None).await.unwrap_err();
+        match err {
+            SystemError::RebuildFailed(log) => {
+                assert!(log.contains("starting build"));
+                assert!(log.contains("ERROR: dirty git tree"));
+            }
+            other => panic!("expected RebuildFailed, got {other:?}"),
+        }
+    }
+
+    // ── SystemError::Io display ───────────────────────────────
+
+    #[test]
+    fn system_error_io_display() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no");
+        let e: SystemError = inner.into();
+        let s = e.to_string();
+        assert!(s.contains("io error"));
+    }
+
+    // ── SystemError::Command display from CommandError ────────
+
+    #[test]
+    fn system_error_from_command_error() {
+        let cmd_err = crate::command::CommandError::Failed("oops".to_string());
+        let e: SystemError = cmd_err.into();
+        let s = e.to_string();
+        assert!(s.contains("command error"));
+        assert!(s.contains("oops"));
+    }
+
+    // ── current_generation: empty stdout ──────────────────────
+
+    #[tokio::test]
+    async fn mock_current_generation_empty_stdout() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let current = sys.current_generation().await.unwrap();
+        assert_eq!(current, 0);
+    }
+
+    // ── list_generations: lines with no date ──────────────────
+
+    #[tokio::test]
+    async fn mock_list_generations_line_with_only_number() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  9\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let gens = sys.list_generations().await.unwrap();
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0].number, 9);
+        assert_eq!(gens[0].date, "");
+        assert!(!gens[0].current);
+    }
+
+    // ── new() unsupported platform error message ──────────────
+
+    #[test]
+    fn system_error_unsupported_platform_message() {
+        let e = SystemError::UnsupportedPlatform;
+        let s = e.to_string();
+        assert_eq!(s, "unsupported platform");
+        let dbg = format!("{e:?}");
+        assert!(dbg.contains("UnsupportedPlatform"));
+    }
+
+    // ── platform() accessor for orchestrator ──────────────────
+
+    #[test]
+    fn orchestrator_platform_accessor_returns_set_value() {
+        let s1 = SystemOrchestrator::with_platform(Platform::Darwin);
+        assert_eq!(s1.platform(), Platform::Darwin);
+        let s2 = SystemOrchestrator::with_platform(Platform::NixOS);
+        assert_eq!(s2.platform(), Platform::NixOS);
+    }
+
+    // ── extract_generation: only "generation" word, no number ─
+
+    #[test]
+    fn extract_generation_keyword_no_number() {
+        assert_eq!(extract_generation("generation"), None);
+        assert_eq!(extract_generation("the generation system"), None);
+    }
+
+    // ── extract_generation: number before generation keyword ──
+
+    #[test]
+    fn extract_generation_number_before_keyword_ignored() {
+        // The function only looks at words after "generation"
+        assert_eq!(extract_generation("42 generation"), None);
+    }
+
+    // ── GenerationInfo equality ───────────────────────────────
+
+    #[test]
+    fn generation_info_equality() {
+        let a = GenerationInfo {
+            number: 1,
+            date: "2024-01-01".to_string(),
+            current: true,
+        };
+        let b = GenerationInfo {
+            number: 1,
+            date: "2024-01-01".to_string(),
+            current: true,
+        };
+        assert_eq!(a, b);
+        let c = GenerationInfo {
+            number: 2,
+            date: "2024-01-01".to_string(),
+            current: true,
+        };
+        assert_ne!(a, c);
+    }
+
+    // ── current_generation invokes the right argv ─────────────
+
+    #[tokio::test]
+    async fn current_generation_invokes_nix_env_with_profile_arg() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "  1   2024-01-01 (current)\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        let n = sys.current_generation().await.unwrap();
+        assert_eq!(n, 1);
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nix-env");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "--list-generations",
+                "--profile",
+                "/nix/var/nix/profiles/system",
+            ]
+        );
+    }
+
+    // ── list_generations invokes the right argv ───────────────
+
+    #[tokio::test]
+    async fn list_generations_invokes_nix_env_with_profile_arg() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "  1   2024-01-01\n  2   2024-01-15 (current)\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        let gens = sys.list_generations().await.unwrap();
+        assert_eq!(gens.len(), 2);
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nix-env");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "--list-generations",
+                "--profile",
+                "/nix/var/nix/profiles/system",
+            ]
+        );
+    }
+
+    // ── rollback invokes correct argv ─────────────────────────
+
+    #[tokio::test]
+    async fn rollback_invokes_switch_rollback() {
+        let captor = Arc::new(CapturingRunner::new(CommandOutput {
+            success: true,
+            stdout: "rolled back\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        }));
+        struct Forwarder(Arc<CapturingRunner>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Forwarder {
+            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.run(program, args).await
+            }
+        }
+        let sys = SystemOrchestrator::with_runner(
+            Platform::NixOS,
+            Box::new(Forwarder(Arc::clone(&captor))),
+        );
+        sys.rollback().await.unwrap();
+        let calls = captor.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "nixos-rebuild");
+        assert_eq!(calls[0].1, vec!["switch", "--rollback"]);
+    }
+
+    // ── current_generation: numerically sorted lines, latest current
+    //    line wins for the rev() scan ────────────────────────────
+
+    #[tokio::test]
+    async fn current_generation_picks_last_current_line() {
+        let runner = MockCommandRunner::new().with_response(
+            "nix-env",
+            CommandOutput {
+                success: true,
+                stdout: "  41  2024-01-01 (current)\n  42  2024-01-02 (current)\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let n = sys.current_generation().await.unwrap();
+        // Function scans in rev() order so the bottom (current) wins
+        assert_eq!(n, 42);
+    }
+
+    // ── rebuild_action serde lowercase ────────────────────────
+
+    #[test]
+    fn rebuild_action_serde_lowercase_strings() {
+        for (action, expected) in [
+            (RebuildAction::Switch, "\"switch\""),
+            (RebuildAction::Boot, "\"boot\""),
+            (RebuildAction::Test, "\"test\""),
+            (RebuildAction::Build, "\"build\""),
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, expected);
+        }
+    }
+
+    // ── Platform detection: macOS host invariant ──────────────
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn platform_detect_returns_darwin_on_macos() {
+        assert_eq!(Platform::detect(), Some(Platform::Darwin));
+    }
 }
