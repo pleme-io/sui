@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use sui::{CliError, NIX_DB_PATH};
-use sui_compat::store_path::StorePath;
 use sui_store::{LocalStore, Store};
 
 #[derive(Parser)]
@@ -144,8 +143,7 @@ async fn main() -> Result<(), CliError> {
             let store = open_store().await?;
             match command {
                 StoreCommands::PathInfo { path, json } => {
-                    let sp = StorePath::from_absolute_path(&path)
-                        .or_else(|_| StorePath::from_absolute_path(&format!("/nix/store/{path}")))?;
+                    let sp = sui::parse_store_path(&path)?;
                     match store.query_path_info(&sp).await? {
                         Some(info) => {
                             if json {

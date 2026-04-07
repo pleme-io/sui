@@ -8,8 +8,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use sui_compat::store_path::StorePath;
-
 use super::state::AppState;
 use super::types::*;
 
@@ -105,11 +103,7 @@ async fn get_path_info(
     Path(store_path): Path<String>,
 ) -> Result<Json<PathInfoResponse>, StatusCode> {
     if let Some(ref store) = state.store {
-        // Try parsing as full path or as basename
-        let parsed = StorePath::from_absolute_path(&format!("/nix/store/{store_path}"))
-            .or_else(|_| StorePath::from_absolute_path(&store_path));
-
-        if let Ok(sp) = parsed {
+        if let Ok(sp) = crate::parse_store_path(&store_path) {
             match store.query_path_info(&sp).await {
                 Ok(Some(info)) => {
                     return Ok(Json(PathInfoResponse::from(info)));

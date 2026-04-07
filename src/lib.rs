@@ -10,6 +10,16 @@ pub mod api;
 /// Default path to the Nix SQLite database.
 pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 
+/// Parse a store path string, trying it as-is first, then with `/nix/store/` prefix.
+///
+/// This is the shared logic for both CLI `store path-info` and REST `get_path_info`,
+/// which accept either a basename like `abc123-hello` or a full path like
+/// `/nix/store/abc123-hello`.
+pub fn parse_store_path(input: &str) -> Result<sui_compat::store_path::StorePath, sui_compat::store_path::StorePathError> {
+    sui_compat::store_path::StorePath::from_absolute_path(input)
+        .or_else(|_| sui_compat::store_path::StorePath::from_absolute_path(&format!("/nix/store/{input}")))
+}
+
 /// Unified error type for CLI operations.
 ///
 /// Replaces ad-hoc `anyhow::anyhow!("…")` / `anyhow::bail!("…")` calls with
