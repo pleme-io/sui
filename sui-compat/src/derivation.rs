@@ -357,4 +357,199 @@ mod tests {
         assert_eq!(parsed, drv);
         assert_eq!(parsed.outputs["out"].hash_algo, "sha256");
     }
+
+    // ── Many outputs ─────────────────────────────────────
+
+    #[test]
+    fn many_outputs_roundtrip() {
+        let mut outputs = BTreeMap::new();
+        for name in ["bin", "data", "debug", "dev", "doc", "info", "lib", "man", "out", "static"] {
+            outputs.insert(name.to_string(), DerivationOutput {
+                path: format!("/nix/store/hash-pkg-{name}"),
+                hash_algo: String::new(),
+                hash: String::new(),
+            });
+        }
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed.outputs.len(), 10);
+        assert_eq!(parsed, drv);
+    }
+
+    // ── Unusual env vars ─────────────────────────────────
+
+    #[test]
+    fn env_with_special_characters() {
+        let mut env = BTreeMap::new();
+        env.insert("multiline".to_string(), "line1\nline2\nline3".to_string());
+        env.insert("tabs_and_cr".to_string(), "col1\tcol2\r\n".to_string());
+        env.insert("backslash".to_string(), "C:\\Users\\nix".to_string());
+        env.insert("quotes".to_string(), r#"say "hello""#.to_string());
+        env.insert("empty".to_string(), String::new());
+
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(), hash_algo: String::new(), hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        let serialized = drv.serialize();
+        let parsed = Derivation::parse(serialized.as_bytes()).unwrap();
+        assert_eq!(parsed, drv);
+    }
+
+    #[test]
+    fn env_with_long_value() {
+        let mut env = BTreeMap::new();
+        env.insert("NIX_CFLAGS_COMPILE".to_string(), "-I/nix/store/abc ".repeat(100));
+
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(), hash_algo: String::new(), hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env,
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed, drv);
+    }
+
+    // ── Multiple input sources (sorted output) ──────────
+
+    #[test]
+    fn input_sources_sorted_in_serialization() {
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(), hash_algo: String::new(), hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![
+                "/nix/store/zzz-last".to_string(),
+                "/nix/store/aaa-first".to_string(),
+                "/nix/store/mmm-middle".to_string(),
+            ],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let serialized = drv.serialize();
+        let parsed = Derivation::parse(serialized.as_bytes()).unwrap();
+        assert_eq!(parsed.input_sources, vec![
+            "/nix/store/aaa-first".to_string(),
+            "/nix/store/mmm-middle".to_string(),
+            "/nix/store/zzz-last".to_string(),
+        ]);
+    }
+
+    // ── Error cases ──────────────────────────────────────
+
+    #[test]
+    fn parse_truncated_input() {
+        assert!(Derivation::parse(b"Derive(").is_err());
+        assert!(Derivation::parse(b"").is_err());
+        assert!(Derivation::parse(b"Derive").is_err());
+    }
+
+    #[test]
+    fn parse_invalid_prefix() {
+        assert!(Derivation::parse(b"NotDerive([])").is_err());
+    }
+
+    #[test]
+    fn parse_missing_closing_paren() {
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/out".to_string(), hash_algo: String::new(), hash: String::new(),
+                });
+                m
+            },
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/sh".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let mut serialized = drv.serialize();
+        serialized.pop(); // Remove the closing ')'
+        assert!(Derivation::parse(serialized.as_bytes()).is_err());
+    }
+
+    // ── Multiple input derivations with multiple outputs ──
+
+    #[test]
+    fn complex_input_derivations() {
+        let mut input_drvs = BTreeMap::new();
+        input_drvs.insert(
+            "/nix/store/abc-gcc.drv".to_string(),
+            vec!["out".to_string(), "lib".to_string(), "info".to_string()],
+        );
+        input_drvs.insert(
+            "/nix/store/def-glibc.drv".to_string(),
+            vec!["out".to_string(), "dev".to_string(), "static".to_string()],
+        );
+        input_drvs.insert(
+            "/nix/store/ghi-bash.drv".to_string(),
+            vec!["out".to_string()],
+        );
+
+        let drv = Derivation {
+            outputs: {
+                let mut m = BTreeMap::new();
+                m.insert("out".to_string(), DerivationOutput {
+                    path: "/nix/store/result".to_string(),
+                    hash_algo: String::new(),
+                    hash: String::new(),
+                });
+                m
+            },
+            input_derivations: input_drvs,
+            input_sources: vec!["/nix/store/src".to_string()],
+            system: "x86_64-linux".to_string(),
+            builder: "/nix/store/bash/bin/bash".to_string(),
+            args: vec!["-e".to_string(), "/nix/store/builder.sh".to_string()],
+            env: {
+                let mut e = BTreeMap::new();
+                e.insert("name".to_string(), "test-pkg".to_string());
+                e.insert("version".to_string(), "1.0.0".to_string());
+                e
+            },
+        };
+        let parsed = Derivation::parse(drv.serialize().as_bytes()).unwrap();
+        assert_eq!(parsed, drv);
+        assert_eq!(parsed.input_derivations.len(), 3);
+        assert_eq!(parsed.input_derivations["/nix/store/abc-gcc.drv"].len(), 3);
+    }
 }
