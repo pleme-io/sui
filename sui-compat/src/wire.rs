@@ -516,4 +516,298 @@ mod tests {
         let result = read_bytes(&mut Cursor::new(&buf));
         assert!(result.is_err());
     }
+
+    // ── Alignment edge cases for write_bytes ─────────────
+
+    #[test]
+    fn write_bytes_alignment_for_each_residue() {
+        // Lengths 0..16 — verify the output is always aligned to 8 bytes
+        for len in 0..16 {
+            let data = vec![0xAA_u8; len];
+            let mut buf = Vec::new();
+            write_bytes(&mut buf, &data).unwrap();
+            assert_eq!(buf.len() % 8, 0, "len={len} not 8-byte aligned");
+            // Total size = 8 (length prefix) + ceil(len/8)*8 (data + padding)
+            let aligned_data_size = ((len + 7) / 8) * 8;
+            assert_eq!(buf.len(), 8 + aligned_data_size);
+        }
+    }
+
+    #[test]
+    fn write_bytes_padding_is_zeros() {
+        // 5 bytes → 3 padding bytes which must be zero
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, b"hello").unwrap();
+        // Layout: [u64 len = 5][5 data bytes][3 zero pad]
+        assert_eq!(&buf[8..13], b"hello");
+        assert_eq!(&buf[13..16], &[0u8, 0u8, 0u8]);
+    }
+
+    #[test]
+    fn read_bytes_alignment_for_each_residue() {
+        for len in 0_usize..16 {
+            let data = vec![0xCC_u8; len];
+            let mut buf = Vec::new();
+            write_bytes(&mut buf, &data).unwrap();
+            let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+            assert_eq!(read, data, "roundtrip failed for len={len}");
+        }
+    }
+
+    // ── read_string error path ───────────────────────────
+
+    #[test]
+    fn read_string_invalid_utf8_returns_protocol_error() {
+        let mut buf = Vec::new();
+        // Invalid UTF-8 sequence: 0xff is never a valid UTF-8 start byte
+        write_bytes(&mut buf, &[0xFF, 0xFE, 0xFD]).unwrap();
+        let result = read_string(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+        match result {
+            Err(WireError::Protocol(_)) => {}
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    // ── TryFrom<u64> for WorkerOp ────────────────────────
+
+    #[test]
+    fn worker_op_try_from_known() {
+        let op: WorkerOp = WorkerOp::try_from(26).unwrap();
+        assert_eq!(op, WorkerOp::QueryPathInfo);
+    }
+
+    #[test]
+    fn worker_op_try_from_unknown_returns_protocol_error() {
+        let result = WorkerOp::try_from(999u64);
+        assert!(result.is_err());
+        match result {
+            Err(WireError::Protocol(s)) => assert!(s.contains("999")),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    // ── StderrMsg constants ──────────────────────────────
+
+    #[test]
+    fn stderr_msg_constants_distinct() {
+        let codes = [
+            StderrMsg::Write as u64,
+            StderrMsg::Last as u64,
+            StderrMsg::Error as u64,
+            StderrMsg::StartActivity as u64,
+            StderrMsg::StopActivity as u64,
+            StderrMsg::Result as u64,
+        ];
+        // All codes must be distinct
+        for i in 0..codes.len() {
+            for j in (i + 1)..codes.len() {
+                assert_ne!(codes[i], codes[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn stderr_msg_eq_clone_copy() {
+        let a = StderrMsg::Write;
+        let b = a;
+        let c = a;
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    // ── WORKER_MAGIC + PROTOCOL_VERSION constants ───────
+
+    #[test]
+    fn worker_magic_constants_distinct() {
+        assert_ne!(WORKER_MAGIC_1, WORKER_MAGIC_2);
+    }
+
+    // ── read_bool truthiness ─────────────────────────────
+
+    #[test]
+    fn read_bool_nonzero_is_true() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 42).unwrap();
+        let v = read_bool(&mut Cursor::new(&buf)).unwrap();
+        assert!(v);
+    }
+
+    #[test]
+    fn read_bool_zero_is_false() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 0).unwrap();
+        let v = read_bool(&mut Cursor::new(&buf)).unwrap();
+        assert!(!v);
+    }
+
+    // ── read_string_list truncation ──────────────────────
+
+    #[test]
+    fn read_string_list_truncated_count_returns_error() {
+        let buf = [0u8; 4];
+        let result = read_string_list(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_string_list_count_exceeds_data_returns_error() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 100).unwrap(); // claim 100 strings
+        let result = read_string_list(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+    }
+
+    // ── write_string_list with mixed-length entries ─────
+
+    #[test]
+    fn write_string_list_mixed_lengths() {
+        let list = vec![
+            String::new(),
+            "a".to_string(),
+            "ab".to_string(),
+            "abcdefgh".to_string(),
+            "abcdefghi".to_string(), // crosses 8-byte boundary
+        ];
+        let mut buf = Vec::new();
+        write_string_list(&mut buf, &list).unwrap();
+        let read = read_string_list(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, list);
+    }
+
+    // ── write_string accepts &str + String + &String ────
+
+    #[test]
+    fn write_string_accepts_str_types() {
+        let mut buf1 = Vec::new();
+        write_string(&mut buf1, "hello").unwrap();
+
+        let mut buf2 = Vec::new();
+        write_string(&mut buf2, String::from("hello")).unwrap();
+
+        let mut buf3 = Vec::new();
+        let s = String::from("hello");
+        write_string(&mut buf3, &s).unwrap();
+
+        assert_eq!(buf1, buf2);
+        assert_eq!(buf2, buf3);
+    }
+
+    // ── Length-prefix at exact byte boundaries ──────────
+
+    #[test]
+    fn bytes_length_seven_padding() {
+        // 7 bytes → needs 1 byte padding
+        let data = b"1234567";
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, data).unwrap();
+        // 8 (len) + 7 (data) + 1 (pad) = 16
+        assert_eq!(buf.len(), 16);
+        let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, data);
+    }
+
+    #[test]
+    fn bytes_length_one_padding() {
+        // 1 byte → needs 7 bytes padding
+        let data = b"x";
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, data).unwrap();
+        // 8 + 1 + 7 = 16
+        assert_eq!(buf.len(), 16);
+        let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, data);
+    }
+
+    #[test]
+    fn bytes_length_nine_padding() {
+        // 9 bytes → 7 bytes padding (mod 8 = 1)
+        let data = b"123456789";
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, data).unwrap();
+        // 8 + 9 + 7 = 24
+        assert_eq!(buf.len(), 24);
+        let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, data);
+    }
+
+    // ── u64 endianness ───────────────────────────────────
+
+    #[test]
+    fn u64_written_in_little_endian() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 0x0102_0304_0506_0708).unwrap();
+        // LE: low byte first
+        assert_eq!(buf, vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+    }
+
+    // ── PROTOCOL_VERSION extraction ─────────────────────
+
+    #[test]
+    fn protocol_version_major_minor_extraction() {
+        let major = PROTOCOL_VERSION >> 8;
+        let minor = PROTOCOL_VERSION & 0xFF;
+        assert_eq!(major, 1);
+        assert_eq!(minor, 37);
+    }
+
+    // ── WorkerOp from_u64 vs try_from agreement ─────────
+
+    #[test]
+    fn worker_op_from_u64_matches_try_from() {
+        for code in [1, 3, 7, 26, 38, 45] {
+            let from_u64 = WorkerOp::from_u64(code);
+            let try_from = WorkerOp::try_from(code).ok();
+            assert_eq!(from_u64, try_from);
+        }
+        // Both reject unknown codes
+        assert_eq!(WorkerOp::from_u64(0), None);
+        assert!(WorkerOp::try_from(0u64).is_err());
+    }
+
+    // ── Error display ────────────────────────────────────
+
+    #[test]
+    fn wire_error_protocol_display() {
+        let err = WireError::Protocol("custom message".to_string());
+        let s = format!("{err}");
+        assert!(s.contains("custom message"));
+    }
+
+    #[test]
+    fn wire_error_bad_magic_display() {
+        let err = WireError::BadMagic { expected: 0x1234, got: 0x5678 };
+        let s = format!("{err}");
+        assert!(s.contains("0x1234"));
+        assert!(s.contains("0x5678"));
+    }
+
+    // ── Empty bytes via wire ─────────────────────────────
+
+    #[test]
+    fn read_bytes_empty_via_zero_length() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 0).unwrap();
+        let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+        assert!(read.is_empty());
+    }
+
+    // ── Multiple sequential reads on one cursor ─────────
+
+    #[test]
+    fn multiple_writes_then_reads_in_order() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 11).unwrap();
+        write_string(&mut buf, "first").unwrap();
+        write_u64(&mut buf, 22).unwrap();
+        write_string(&mut buf, "second").unwrap();
+        write_bool(&mut buf, true).unwrap();
+
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(read_u64(&mut cur).unwrap(), 11);
+        assert_eq!(read_string(&mut cur).unwrap(), "first");
+        assert_eq!(read_u64(&mut cur).unwrap(), 22);
+        assert_eq!(read_string(&mut cur).unwrap(), "second");
+        assert!(read_bool(&mut cur).unwrap());
+    }
 }
