@@ -6,6 +6,9 @@
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use sui_compat::store_path::StorePath;
+// TODO(scope): WorkerOp should gain Display + FromStr round-trip and
+// #[non_exhaustive] in sui-compat so we can format it in user-facing
+// messages without Debug.
 use sui_compat::wire::WorkerOp;
 use sui_store::traits::Store;
 
