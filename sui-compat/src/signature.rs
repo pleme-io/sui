@@ -73,8 +73,9 @@ impl StorePathSignature {
     }
 
     /// Serialize to the `keyname:base64sig` format.
+    #[must_use]
     pub fn to_string_repr(&self) -> String {
-        format!("{}:{}", self.key_name, base64_encode(&self.signature))
+        self.to_string()
     }
 
     /// Verify this signature against a fingerprint and public key.
@@ -93,6 +94,12 @@ impl StorePathSignature {
         verifier: &dyn SignatureVerifier,
     ) -> Result<(), SignatureError> {
         verifier.verify(fingerprint.as_bytes(), &self.signature, public_key)
+    }
+}
+
+impl std::fmt::Display for StorePathSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.key_name, base64_encode(&self.signature))
     }
 }
 
