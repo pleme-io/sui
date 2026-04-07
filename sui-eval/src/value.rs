@@ -9,7 +9,7 @@ use std::sync::Arc;
 // ── Nix string context ─────────────────────────────────────────
 
 /// An element of a Nix string's context set.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContextElement {
     /// Store path reference (e.g., "/nix/store/abc-hello").
     Plain(String),
@@ -51,8 +51,15 @@ impl StringContext {
     }
 
     /// Whether this context set is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Return the number of context elements.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -83,11 +90,13 @@ impl NixString {
     }
 
     /// Borrow the string content.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.chars
     }
 
     /// Whether this string carries any context (store path references).
+    #[must_use]
     pub fn has_context(&self) -> bool {
         !self.context.0.is_empty()
     }
