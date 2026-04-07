@@ -91,13 +91,7 @@ impl QueryRoot {
         flake_ref: String,
     ) -> FlakeMetadata {
         let _ = flake_ref;
-        FlakeMetadata {
-            description: String::new(),
-            last_modified: 0,
-            locked: serde_json::json!({}),
-            resolved_url: None,
-            url: None,
-        }
+        FlakeMetadata::empty()
     }
 
     /// Search flake packages.

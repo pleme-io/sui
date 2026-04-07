@@ -175,13 +175,7 @@ async fn flake_show(Path(flake_ref): Path<String>) -> Json<serde_json::Value> {
 
 async fn flake_metadata(Path(flake_ref): Path<String>) -> Json<FlakeMetadata> {
     let _ = flake_ref;
-    Json(FlakeMetadata {
-        description: String::new(),
-        last_modified: 0,
-        locked: serde_json::json!({}),
-        resolved_url: None,
-        url: None,
-    })
+    Json(FlakeMetadata::empty())
 }
 
 async fn flake_lock(Json(req): Json<FlakeLockRequest>) -> Json<serde_json::Value> {

@@ -155,6 +155,20 @@ pub struct FlakeMetadata {
     pub url: Option<String>,
 }
 
+impl FlakeMetadata {
+    /// Empty stub metadata (used before real flake integration).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            description: String::new(),
+            last_modified: 0,
+            locked: serde_json::json!({}),
+            resolved_url: None,
+            url: None,
+        }
+    }
+}
+
 /// Flake lock request.
 #[derive(Debug, Clone, Serialize, Deserialize, InputObject)]
 pub struct FlakeLockRequest {
