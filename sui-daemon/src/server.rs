@@ -368,4 +368,32 @@ mod tests {
         assert_eq!(health.service, "sui-daemon");
         assert!(health.uptime_secs.is_some());
     }
+
+    #[test]
+    fn daemon_error_display_bind() {
+        let err = DaemonError::Bind("address in use".to_string());
+        assert_eq!(err.to_string(), "bind error: address in use");
+    }
+
+    #[test]
+    fn daemon_error_display_accept() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        let err = DaemonError::Accept(io_err);
+        assert!(err.to_string().contains("accept error"));
+    }
+
+    #[test]
+    fn daemon_error_from_store_error() {
+        let store_err =
+            sui_store::traits::StoreError::Database("db down".to_string());
+        let err: DaemonError = store_err.into();
+        assert!(matches!(err, DaemonError::Store(_)));
+        assert!(err.to_string().contains("db down"));
+    }
+
+    #[test]
+    fn xdg_socket_path_ends_with_sock() {
+        let path = xdg_socket_path();
+        assert!(path.to_string_lossy().ends_with("sui.sock"));
+    }
 }
