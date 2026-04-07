@@ -401,4 +401,295 @@ mod tests {
         assert!(s.starts_with("cache.nixos.org-1:"));
         assert!(s.len() > "cache.nixos.org-1:".len());
     }
+
+    // ── Display trait ────────────────────────────────────
+
+    #[test]
+    fn display_trait_matches_to_string_repr() {
+        let sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: vec![0xab; 64],
+        };
+        let displayed = format!("{sig}");
+        let manual = sig.to_string_repr();
+        assert_eq!(displayed, manual);
+    }
+
+    // ── Tampered signatures ──────────────────────────────
+
+    #[test]
+    fn verify_with_tampered_signature() {
+        use ed25519_dalek::Signer;
+        let signing_key = SigningKey::from_bytes(&[3u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let fingerprint = "1;/nix/store/abc;sha256:def;100;";
+        let mut sig_bytes = signing_key.sign(fingerprint.as_bytes()).to_bytes().to_vec();
+
+        // Flip a bit in the signature
+        sig_bytes[0] ^= 0x01;
+
+        let store_sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: sig_bytes,
+        };
+
+        let result = store_sig.verify(fingerprint, verifying_key.as_bytes());
+        assert!(result.is_err());
+        match result {
+            Err(SignatureError::VerificationFailed) => {}
+            other => panic!("expected VerificationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_with_truncated_signature_fails() {
+        let store_sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: vec![0u8; 32], // half size
+        };
+        let result = store_sig.verify("fp", &[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_with_oversized_signature_fails() {
+        let store_sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: vec![0u8; 128], // too big
+        };
+        let result = store_sig.verify("fp", &[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    // ── Tampered public keys ─────────────────────────────
+
+    #[test]
+    fn verify_with_zero_public_key_fails() {
+        use ed25519_dalek::Signer;
+        let signing_key = SigningKey::from_bytes(&[5u8; 32]);
+        let fingerprint = "fingerprint";
+        let sig = signing_key.sign(fingerprint.as_bytes());
+
+        let store_sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: sig.to_bytes().to_vec(),
+        };
+
+        // All-zero key — even if technically a valid Ed25519 point form,
+        // the signature should not verify against it.
+        let result = store_sig.verify(fingerprint, &[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_with_random_public_key_fails() {
+        use ed25519_dalek::Signer;
+        let signing_key = SigningKey::from_bytes(&[6u8; 32]);
+        let other_key = SigningKey::from_bytes(&[7u8; 32]);
+
+        let fingerprint = "fp";
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        let store_sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: sig.to_bytes().to_vec(),
+        };
+
+        let result = store_sig.verify(fingerprint, other_key.verifying_key().as_bytes());
+        assert!(result.is_err());
+    }
+
+    // ── parse() error variants ───────────────────────────
+
+    #[test]
+    fn parse_signature_no_colon_error_variant() {
+        match StorePathSignature::parse("just-a-key-name") {
+            Err(SignatureError::InvalidFormat(s)) => assert!(s.contains("colon")),
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_signature_invalid_base64_error_variant() {
+        match StorePathSignature::parse("k:!!!not-base64!!!") {
+            Err(SignatureError::Base64Decode) => {}
+            other => panic!("expected Base64Decode, got {other:?}"),
+        }
+    }
+
+    // ── compute_fingerprint various inputs ───────────────
+
+    #[test]
+    fn fingerprint_format_with_spaces_in_path() {
+        let fp = compute_fingerprint("/nix/store/abc with spaces", "sha256:abc", 1, &[]);
+        assert_eq!(fp, "1;/nix/store/abc with spaces;sha256:abc;1;");
+    }
+
+    #[test]
+    fn fingerprint_with_three_references_comma_separated() {
+        let refs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let fp = compute_fingerprint("/p", "h", 1, &refs);
+        assert!(fp.ends_with(";a,b,c"));
+    }
+
+    // ── Ed25519Verifier trait method tests ───────────────
+
+    #[test]
+    fn ed25519_verifier_correct_size_inputs_with_invalid_data() {
+        let verifier = Ed25519Verifier;
+        // Correct sizes (64-byte sig, 32-byte key) but garbage data
+        let result = verifier.verify(b"data", &[0u8; 64], &[0u8; 32]);
+        // Should fail at verification step since data doesn't match
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ed25519_verifier_short_key_returns_invalid_public_key() {
+        let verifier = Ed25519Verifier;
+        let result = verifier.verify(b"data", &[0u8; 64], &[0u8; 16]);
+        match result {
+            Err(SignatureError::InvalidPublicKey) => {}
+            other => panic!("expected InvalidPublicKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ed25519_verifier_short_signature_returns_invalid_format() {
+        let verifier = Ed25519Verifier;
+        let result = verifier.verify(b"data", &[0u8; 32], &[0u8; 32]);
+        match result {
+            Err(SignatureError::InvalidFormat(s)) => assert!(s.contains("64 bytes")),
+            other => panic!("expected InvalidFormat, got {other:?}"),
+        }
+    }
+
+    // ── verify_with custom verifier ──────────────────────
+
+    struct CountingVerifier {
+        count: std::cell::Cell<usize>,
+    }
+
+    impl CountingVerifier {
+        fn new() -> Self {
+            Self { count: std::cell::Cell::new(0) }
+        }
+    }
+
+    // SAFETY: Cell is not Sync, so we can't use it through Send + Sync.
+    // For the test we use atomics instead.
+    struct AtomicCountingVerifier {
+        count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl AtomicCountingVerifier {
+        fn new() -> Self {
+            Self { count: std::sync::atomic::AtomicUsize::new(0) }
+        }
+        fn count(&self) -> usize {
+            self.count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl SignatureVerifier for AtomicCountingVerifier {
+        fn verify(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), SignatureError> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn verify_with_custom_verifier_invokes_verify_method() {
+        let counter = AtomicCountingVerifier::new();
+        let sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: vec![0u8; 64],
+        };
+        sig.verify_with("fp", &[0u8; 32], &counter).unwrap();
+        sig.verify_with("fp", &[0u8; 32], &counter).unwrap();
+        assert_eq!(counter.count(), 2);
+    }
+
+    // Counts unused but non-blocking — silence dead-code warning.
+    #[test]
+    fn _counting_verifier_unused_field_workaround() {
+        let v = CountingVerifier::new();
+        v.count.set(1);
+        assert_eq!(v.count.get(), 1);
+    }
+
+    // ── Roundtrip via Display ────────────────────────────
+
+    #[test]
+    fn signature_clone_eq() {
+        let sig = StorePathSignature {
+            key_name: "k".to_string(),
+            signature: vec![1, 2, 3, 4, 5],
+        };
+        let cloned = sig.clone();
+        assert_eq!(sig, cloned);
+    }
+
+    // ── compute_fingerprint with very long inputs ────────
+
+    #[test]
+    fn fingerprint_with_long_store_path_and_hash() {
+        let path = format!("/nix/store/{}", "a".repeat(200));
+        let hash = format!("sha256:{}", "0".repeat(64));
+        let fp = compute_fingerprint(&path, &hash, 999_999_999, &[]);
+        assert!(fp.contains(&path));
+        assert!(fp.contains(&hash));
+    }
+
+    // ── Real signing-then-verify with multiple key bytes ──
+
+    #[test]
+    fn sign_verify_multiple_distinct_keys() {
+        use ed25519_dalek::Signer;
+        for seed_byte in [10u8, 20, 30, 40, 50] {
+            let signing_key = SigningKey::from_bytes(&[seed_byte; 32]);
+            let verifying_key = signing_key.verifying_key();
+            let fingerprint = format!("1;/nix/store/p-{seed_byte};sha256:h;100;");
+            let sig = signing_key.sign(fingerprint.as_bytes());
+            let store_sig = StorePathSignature {
+                key_name: format!("k{seed_byte}"),
+                signature: sig.to_bytes().to_vec(),
+            };
+            assert!(
+                store_sig.verify(&fingerprint, verifying_key.as_bytes()).is_ok(),
+                "key seed {seed_byte} should verify",
+            );
+        }
+    }
+
+    // ── parse + verify integration ───────────────────────
+
+    #[test]
+    fn parse_then_verify_roundtrip() {
+        use ed25519_dalek::Signer;
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let fingerprint = "1;/nix/store/abc;sha256:def;1024;";
+        let raw_sig = signing_key.sign(fingerprint.as_bytes());
+        let original = StorePathSignature {
+            key_name: "test-k".to_string(),
+            signature: raw_sig.to_bytes().to_vec(),
+        };
+
+        // Serialize, then parse, then verify
+        let s = original.to_string_repr();
+        let parsed = StorePathSignature::parse(&s).unwrap();
+        assert_eq!(parsed, original);
+
+        assert!(parsed.verify(fingerprint, verifying_key.as_bytes()).is_ok());
+    }
+
+    // ── b64_decode wrapper test ──────────────────────────
+
+    #[test]
+    fn b64_decode_helper_returns_error_on_garbage() {
+        // Test the b64_decode helper indirectly via parse()
+        let result = StorePathSignature::parse("k:zzz!!!");
+        assert!(result.is_err());
+    }
 }
