@@ -554,6 +554,24 @@ impl Value {
         }
     }
 
+    // ── Value coercion methods ──────────────────────────────────
+    //
+    // Naming conventions:
+    //
+    // • `as_*(&self)` — borrow. Returns a reference or Copy type.
+    //   Primitives (`as_bool`, `as_int`, `as_float`) force thunks
+    //   transparently because they return owned Copy values. Reference
+    //   accessors (`as_string`, `as_nix_string`, `as_attrs`, `as_list`)
+    //   CANNOT force thunks (the forced value is transient and we can't
+    //   return a borrow into it), so they error on Thunk inputs.
+    //
+    // • `to_*(&self)` — clone. Returns an owned value by cloning, and
+    //   DOES force thunks. Use when the value may be a thunk and you
+    //   need an owned result.
+    //
+    // • `coerce_to_path` — a Nix-specific coercion that accepts both
+    //   Path and String values (many builtins accept either).
+
     /// Extract a bool, forcing thunks if needed.
     pub fn as_bool(&self) -> Result<bool, EvalError> {
         match self {
