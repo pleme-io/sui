@@ -20,6 +20,48 @@ pub enum DeployStrategy {
     Canary,
 }
 
+/// Order in which nodes are deployed.
+///
+/// Strategies (parallel/rolling/canary) decide *how* to execute each node;
+/// `DeployOrder` decides *in what sequence* nodes are presented to the executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DeployOrder {
+    /// Order by hostname (the historical default — `BTreeMap` iteration order).
+    Alphabetical,
+    /// Topological order using `Node::depends_on` — leaves (no deps) first,
+    /// roots (most depended-on) last. Cycles return [`FleetError::Cycle`].
+    Dependency,
+}
+
+impl Default for DeployOrder {
+    fn default() -> Self {
+        Self::Alphabetical
+    }
+}
+
+impl std::fmt::Display for DeployOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alphabetical => f.write_str("alphabetical"),
+            Self::Dependency => f.write_str("dependency"),
+        }
+    }
+}
+
+impl std::str::FromStr for DeployOrder {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "alphabetical" => Ok(Self::Alphabetical),
+            "dependency" => Ok(Self::Dependency),
+            other => Err(format!("invalid deploy order: {other}")),
+        }
+    }
+}
+
 impl Default for DeployStrategy {
     fn default() -> Self {
         Self::Rolling
@@ -207,6 +249,12 @@ pub enum FleetError {
     Io(#[from] std::io::Error),
     #[error("canary failed — aborting remaining deploys")]
     CanaryFailed,
+    /// Dependency-order resolution detected a cycle.
+    #[error("dependency cycle detected among nodes: {nodes:?}")]
+    Cycle {
+        /// Hostnames participating in the cycle (the unresolved set).
+        nodes: Vec<String>,
+    },
 }
 
 impl FleetOrchestrator {
@@ -247,24 +295,72 @@ impl FleetOrchestrator {
         strategy: DeployStrategy,
         flake_override: Option<&str>,
     ) -> Result<DeployResult, FleetError> {
+        self.deploy_with_order(target, strategy, DeployOrder::Alphabetical, flake_override)
+            .await
+    }
+
+    /// Deploy to a target with an explicit [`DeployOrder`].
+    ///
+    /// `DeployOrder::Alphabetical` matches the historical default; the
+    /// `Dependency` variant performs a topological sort over `Node::depends_on`
+    /// before handing nodes to the executor — leaves first, roots last.
+    pub async fn deploy_with_order(
+        &mut self,
+        target: &str,
+        strategy: DeployStrategy,
+        order: DeployOrder,
+        flake_override: Option<&str>,
+    ) -> Result<DeployResult, FleetError> {
         let executor = strategy.executor();
         let mut result = self
-            .deploy_with_executor(target, &*executor, flake_override)
+            .deploy_with_executor_ordered(target, &*executor, order, flake_override)
             .await?;
         result.strategy = strategy.to_string();
         Ok(result)
     }
 
     /// Deploy to a target using a custom [`DeployExecutor`].
+    ///
+    /// Equivalent to [`deploy_with_executor_ordered`](Self::deploy_with_executor_ordered)
+    /// with [`DeployOrder::Alphabetical`].
     pub async fn deploy_with_executor(
         &mut self,
         target: &str,
         executor: &dyn DeployExecutor,
         flake_override: Option<&str>,
     ) -> Result<DeployResult, FleetError> {
+        self.deploy_with_executor_ordered(
+            target,
+            executor,
+            DeployOrder::Alphabetical,
+            flake_override,
+        )
+        .await
+    }
+
+    /// Deploy to a target using a custom [`DeployExecutor`] and an explicit
+    /// [`DeployOrder`].
+    ///
+    /// # Errors
+    ///
+    /// - [`FleetError::NoNodes`] if `target` resolves to zero nodes.
+    /// - [`FleetError::Cycle`] if `order` is [`DeployOrder::Dependency`] and
+    ///   the resolved nodes form a dependency cycle.
+    /// - [`FleetError::DeployFailed`] if a *single-node* deploy fails — i.e.
+    ///   `target` resolved to exactly one node and that deploy did not
+    ///   succeed. Multi-node deploys always return `Ok(DeployResult)`; the
+    ///   per-node failures are visible via `succeeded` / `failed` / `results`.
+    /// - Errors propagated from the underlying [`DeployExecutor::execute`].
+    pub async fn deploy_with_executor_ordered(
+        &mut self,
+        target: &str,
+        executor: &dyn DeployExecutor,
+        order: DeployOrder,
+        flake_override: Option<&str>,
+    ) -> Result<DeployResult, FleetError> {
         let start = std::time::Instant::now();
 
-        let nodes: Vec<Node> = self
+        let mut nodes: Vec<Node> = self
             .registry
             .resolve_target(target)
             .into_iter()
@@ -273,6 +369,11 @@ impl FleetOrchestrator {
 
         if nodes.is_empty() {
             return Err(FleetError::NoNodes(target.to_string()));
+        }
+
+        // Apply deploy order before handing nodes to the executor.
+        if order == DeployOrder::Dependency {
+            nodes = topo_sort(nodes)?;
         }
 
         for node in &nodes {
@@ -299,6 +400,22 @@ impl FleetOrchestrator {
             }
         }
 
+        // Single-node deploys surface a typed `DeployFailed` error rather than
+        // hiding the failure inside an `Ok(DeployResult { failed: 1 })`. This
+        // matches caller expectations for one-shot deploys (e.g. `sui deploy plo`).
+        // Multi-node deploys keep returning `Ok` so callers can inspect partial
+        // success and decide how to proceed.
+        if nodes.len() == 1 && failed == 1 {
+            let failed_result = results
+                .into_iter()
+                .next()
+                .expect("single-node deploy must have one result");
+            return Err(FleetError::DeployFailed {
+                hostname: failed_result.hostname,
+                message: failed_result.log,
+            });
+        }
+
         Ok(DeployResult {
             target: target.to_string(),
             strategy: "custom".to_string(),
@@ -309,6 +426,88 @@ impl FleetOrchestrator {
             duration_secs: start.elapsed().as_secs_f64(),
         })
     }
+}
+
+/// Topologically sort `nodes` so that each node appears after every node it
+/// depends on (via `Node::depends_on`). Leaves (nodes with no dependencies in
+/// the input set) come first; roots (most depended-on) come last.
+///
+/// Dependencies on hostnames *not present* in the input set are ignored — this
+/// keeps `@group` deploys working when only a subset of the fleet is targeted.
+/// Within each "rank" (nodes whose dependencies are already satisfied), output
+/// is alphabetical for determinism.
+///
+/// Returns [`FleetError::Cycle`] if the dependency graph contains a cycle. The
+/// `nodes` field of the error contains the unresolved hostnames.
+pub fn topo_sort(nodes: Vec<Node>) -> Result<Vec<Node>, FleetError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Build a hostname → Node lookup. Using BTreeMap gives us deterministic
+    // alphabetical iteration when picking the next leaf to emit.
+    let mut by_name: BTreeMap<String, Node> = BTreeMap::new();
+    for node in nodes {
+        by_name.insert(node.hostname.clone(), node);
+    }
+    let present: BTreeSet<String> = by_name.keys().cloned().collect();
+
+    // in_degree[N] = number of N's dependencies that are still in the set.
+    let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
+    // dependents[N] = nodes that list N in their depends_on (edges N → M).
+    let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for (name, node) in &by_name {
+        let deps_in_set: Vec<&String> = node
+            .depends_on
+            .iter()
+            .filter(|d| present.contains(*d))
+            .collect();
+        in_degree.insert(name.clone(), deps_in_set.len());
+        for dep in deps_in_set {
+            dependents
+                .entry(dep.clone())
+                .or_default()
+                .push(name.clone());
+        }
+    }
+
+    // Seed the queue with all leaves (in-degree 0) in *descending* order so
+    // that `pop()` (LIFO) yields the alphabetically smallest leaf first.
+    let mut queue: Vec<String> = in_degree
+        .iter()
+        .filter_map(|(name, deg)| if *deg == 0 { Some(name.clone()) } else { None })
+        .collect();
+    queue.sort_by(|a, b| b.cmp(a));
+
+    let mut sorted: Vec<Node> = Vec::with_capacity(by_name.len());
+    while let Some(name) = queue.pop() {
+        let node = by_name
+            .remove(&name)
+            .expect("queued name must still be in the map");
+        sorted.push(node);
+
+        if let Some(children) = dependents.get(&name) {
+            for child in children {
+                if let Some(deg) = in_degree.get_mut(child) {
+                    *deg = deg.saturating_sub(1);
+                    if *deg == 0 {
+                        queue.push(child.clone());
+                    }
+                }
+            }
+        }
+        // Re-sort descending so pop() continues to yield smallest-first.
+        // For typical fleet sizes (< 100 nodes) this overhead is negligible.
+        queue.sort_by(|a, b| b.cmp(a));
+    }
+
+    if !by_name.is_empty() {
+        // Whatever remains is unreachable from any leaf — cycle.
+        let mut unresolved: Vec<String> = by_name.into_keys().collect();
+        unresolved.sort();
+        return Err(FleetError::Cycle { nodes: unresolved });
+    }
+
+    Ok(sorted)
 }
 
 /// Deploy to all nodes in parallel via `tokio::spawn`.
@@ -657,9 +856,16 @@ mod tests {
             Box::new(MockCommandRunner::failing()),
         );
 
-        orch.deploy("alpha", DeployStrategy::Rolling, None)
+        // Single-node deploy failure is now surfaced as DeployFailed; the
+        // registry still gets updated to Failed before the error is returned.
+        let err = orch
+            .deploy("alpha", DeployStrategy::Rolling, None)
             .await
-            .unwrap();
+            .expect_err("single-node deploy should surface DeployFailed");
+        match err {
+            FleetError::DeployFailed { hostname, .. } => assert_eq!(hostname, "alpha"),
+            other => panic!("expected DeployFailed, got {other:?}"),
+        }
 
         assert_eq!(
             orch.registry().get("alpha").unwrap().status,
@@ -906,6 +1112,344 @@ mod tests {
         assert!(!is_local_hostname("remote.example.com"));
     }
 
+    // ── DeployOrder enum basics ───────────────────────────────
+
+    #[test]
+    fn deploy_order_default_is_alphabetical() {
+        assert_eq!(DeployOrder::default(), DeployOrder::Alphabetical);
+    }
+
+    #[test]
+    fn deploy_order_display() {
+        assert_eq!(DeployOrder::Alphabetical.to_string(), "alphabetical");
+        assert_eq!(DeployOrder::Dependency.to_string(), "dependency");
+    }
+
+    #[test]
+    fn deploy_order_parse() {
+        assert_eq!(
+            "alphabetical".parse::<DeployOrder>().unwrap(),
+            DeployOrder::Alphabetical
+        );
+        assert_eq!(
+            "dependency".parse::<DeployOrder>().unwrap(),
+            DeployOrder::Dependency
+        );
+        assert!("nonsense".parse::<DeployOrder>().is_err());
+    }
+
+    #[test]
+    fn deploy_order_serde_roundtrip() {
+        for order in [DeployOrder::Alphabetical, DeployOrder::Dependency] {
+            let json = serde_json::to_string(&order).unwrap();
+            let parsed: DeployOrder = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, order);
+        }
+    }
+
+    // ── topo_sort: happy path ─────────────────────────────────
+
+    #[test]
+    fn topo_sort_linear_chain() {
+        // c depends on b, b depends on a → expect [a, b, c].
+        let nodes = vec![
+            Node::new("c", ".#c").with_depends_on(vec!["b".to_string()]),
+            Node::new("a", ".#a"),
+            Node::new("b", ".#b").with_depends_on(vec!["a".to_string()]),
+        ];
+        let sorted = topo_sort(nodes).unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.hostname.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn topo_sort_diamond() {
+        // a → {b, c} → d. b and c are independent, so they sort alphabetically.
+        let nodes = vec![
+            Node::new("d", ".#d")
+                .with_depends_on(vec!["b".to_string(), "c".to_string()]),
+            Node::new("a", ".#a"),
+            Node::new("b", ".#b").with_depends_on(vec!["a".to_string()]),
+            Node::new("c", ".#c").with_depends_on(vec!["a".to_string()]),
+        ];
+        let sorted = topo_sort(nodes).unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.hostname.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn topo_sort_independent_nodes_alphabetical() {
+        // No edges → pure alphabetical order.
+        let nodes = vec![
+            Node::new("zeta", ".#zeta"),
+            Node::new("alpha", ".#alpha"),
+            Node::new("mu", ".#mu"),
+        ];
+        let sorted = topo_sort(nodes).unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.hostname.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "mu", "zeta"]);
+    }
+
+    // ── topo_sort: error paths ────────────────────────────────
+
+    #[test]
+    fn topo_sort_simple_cycle() {
+        // a depends on b, b depends on a → cycle.
+        let nodes = vec![
+            Node::new("a", ".#a").with_depends_on(vec!["b".to_string()]),
+            Node::new("b", ".#b").with_depends_on(vec!["a".to_string()]),
+        ];
+        match topo_sort(nodes) {
+            Err(FleetError::Cycle { nodes }) => {
+                assert_eq!(nodes, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected Cycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topo_sort_self_cycle() {
+        // a depends on itself → cycle.
+        let nodes = vec![Node::new("a", ".#a").with_depends_on(vec!["a".to_string()])];
+        match topo_sort(nodes) {
+            Err(FleetError::Cycle { nodes }) => {
+                assert_eq!(nodes, vec!["a".to_string()]);
+            }
+            other => panic!("expected Cycle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topo_sort_three_node_cycle_with_leaf() {
+        // a → b → c → a (cycle), plus d (leaf). d emits, a/b/c remain.
+        let nodes = vec![
+            Node::new("a", ".#a").with_depends_on(vec!["c".to_string()]),
+            Node::new("b", ".#b").with_depends_on(vec!["a".to_string()]),
+            Node::new("c", ".#c").with_depends_on(vec!["b".to_string()]),
+            Node::new("d", ".#d"),
+        ];
+        match topo_sort(nodes) {
+            Err(FleetError::Cycle { nodes }) => {
+                assert_eq!(
+                    nodes,
+                    vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                );
+            }
+            other => panic!("expected Cycle, got {other:?}"),
+        }
+    }
+
+    // ── topo_sort: edge cases ─────────────────────────────────
+
+    #[test]
+    fn topo_sort_empty_input() {
+        let sorted = topo_sort(vec![]).unwrap();
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn topo_sort_single_node() {
+        let sorted = topo_sort(vec![Node::new("only", ".#only")]).unwrap();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].hostname, "only");
+    }
+
+    #[test]
+    fn topo_sort_single_node_with_depends_on_outside_set() {
+        // Dependency on a hostname not present in the input is silently ignored.
+        let sorted = topo_sort(vec![
+            Node::new("only", ".#only").with_depends_on(vec!["nonexistent".to_string()]),
+        ])
+        .unwrap();
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].hostname, "only");
+    }
+
+    #[test]
+    fn topo_sort_ignores_deps_outside_input_set() {
+        // Useful for @group deploys: when only a subset of the fleet is
+        // targeted, deps on out-of-set nodes do not block sorting.
+        let nodes = vec![
+            Node::new("a", ".#a").with_depends_on(vec!["external".to_string()]),
+            Node::new("b", ".#b").with_depends_on(vec!["a".to_string()]),
+        ];
+        let sorted = topo_sort(nodes).unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.hostname.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    // ── deploy_with_order integration ─────────────────────────
+
+    fn dependency_test_registry() -> NodeRegistry {
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("db", ".#db")
+                .with_groups(vec!["infra".to_string()])
+                .with_system("x86_64-linux"),
+        );
+        reg.add(
+            Node::new("api", ".#api")
+                .with_groups(vec!["infra".to_string()])
+                .with_system("x86_64-linux")
+                .with_depends_on(vec!["db".to_string()]),
+        );
+        reg.add(
+            Node::new("web", ".#web")
+                .with_groups(vec!["infra".to_string()])
+                .with_system("x86_64-linux")
+                .with_depends_on(vec!["api".to_string()]),
+        );
+        reg
+    }
+
+    #[tokio::test]
+    async fn deploy_with_order_dependency_orders_nodes() {
+        // Use a recording runner to verify the deploy sequence.
+        struct OrderRecordingRunner {
+            sequence: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl CommandRunner for OrderRecordingRunner {
+            async fn run(
+                &self,
+                _program: &str,
+                args: &[&str],
+            ) -> Result<CommandOutput, CommandError> {
+                // The remote rebuild command embeds `.#<hostname>` via the
+                // flake_ref; the SSH target hostname appears as one of the args.
+                // Record the first arg that looks like a known node.
+                for arg in args {
+                    if matches!(*arg, "db" | "api" | "web") {
+                        self.sequence.lock().unwrap().push((*arg).to_string());
+                        break;
+                    }
+                    if arg.contains(".#db") {
+                        self.sequence.lock().unwrap().push("db".to_string());
+                        break;
+                    }
+                    if arg.contains(".#api") {
+                        self.sequence.lock().unwrap().push("api".to_string());
+                        break;
+                    }
+                    if arg.contains(".#web") {
+                        self.sequence.lock().unwrap().push("web".to_string());
+                        break;
+                    }
+                }
+                Ok(CommandOutput {
+                    success: true,
+                    stdout: "ok\n".to_string(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                })
+            }
+        }
+
+        let sequence = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner = OrderRecordingRunner {
+            sequence: std::sync::Arc::clone(&sequence),
+        };
+
+        let reg = dependency_test_registry();
+        let mut orch = FleetOrchestrator::with_runner(reg, Box::new(runner));
+
+        let result = orch
+            .deploy_with_order(
+                "@infra",
+                DeployStrategy::Rolling,
+                DeployOrder::Dependency,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.total_nodes, 3);
+        assert_eq!(result.succeeded, 3);
+
+        // The recorded result-order in DeployResult.results matches deploy order
+        // for the rolling executor. Check that, too.
+        let result_order: Vec<&str> =
+            result.results.iter().map(|r| r.hostname.as_str()).collect();
+        assert_eq!(result_order, vec!["db", "api", "web"]);
+
+        let recorded = sequence.lock().unwrap().clone();
+        assert_eq!(recorded, vec!["db", "api", "web"]);
+    }
+
+    #[tokio::test]
+    async fn deploy_with_order_alphabetical_matches_default() {
+        // The Alphabetical order should match the historical default behavior.
+        let reg = dependency_test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy_with_order(
+                "@infra",
+                DeployStrategy::Rolling,
+                DeployOrder::Alphabetical,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let names: Vec<&str> = result.results.iter().map(|r| r.hostname.as_str()).collect();
+        // BTreeMap iteration order: api, db, web
+        assert_eq!(names, vec!["api", "db", "web"]);
+    }
+
+    #[tokio::test]
+    async fn deploy_with_order_dependency_cycle_returns_error() {
+        let mut reg = NodeRegistry::new();
+        reg.add(
+            Node::new("a", ".#a")
+                .with_groups(vec!["loop".to_string()])
+                .with_depends_on(vec!["b".to_string()]),
+        );
+        reg.add(
+            Node::new("b", ".#b")
+                .with_groups(vec!["loop".to_string()])
+                .with_depends_on(vec!["a".to_string()]),
+        );
+
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let err = orch
+            .deploy_with_order(
+                "@loop",
+                DeployStrategy::Rolling,
+                DeployOrder::Dependency,
+                None,
+            )
+            .await
+            .expect_err("dependency cycle should surface FleetError::Cycle");
+        match err {
+            FleetError::Cycle { nodes } => {
+                assert_eq!(nodes, vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected Cycle, got {other:?}"),
+        }
+    }
+
+    // ── FleetError::Cycle Display ─────────────────────────────
+
+    #[test]
+    fn fleet_error_cycle_display() {
+        let e = FleetError::Cycle {
+            nodes: vec!["a".to_string(), "b".to_string()],
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("cycle"));
+        assert!(msg.contains("a"));
+        assert!(msg.contains("b"));
+    }
+
     // ── FleetError from io::Error ─────────────────────────────
 
     #[test]
@@ -913,6 +1457,75 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let fleet_err: FleetError = io_err.into();
         assert!(fleet_err.to_string().contains("nope"));
+    }
+
+    // ── Single-node deploy DeployFailed wiring ────────────────
+
+    #[tokio::test]
+    async fn single_node_deploy_success_returns_ok() {
+        // Happy path: single-node deploy that succeeds still returns Ok.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .expect("successful single-node deploy should be Ok");
+        assert_eq!(result.total_nodes, 1);
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn single_node_deploy_failure_returns_deploy_failed() {
+        // Error path: single-node deploy failure surfaces DeployFailed with
+        // the failing hostname and the captured log message.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let err = orch
+            .deploy("beta", DeployStrategy::Parallel, None)
+            .await
+            .expect_err("single-node failure should be DeployFailed");
+
+        match err {
+            FleetError::DeployFailed { hostname, message } => {
+                assert_eq!(hostname, "beta");
+                assert!(message.contains("build failed"));
+            }
+            other => panic!("expected DeployFailed, got {other:?}"),
+        }
+
+        // Status was still flipped before the error returned.
+        assert_eq!(
+            orch.registry().get("beta").unwrap().status,
+            NodeStatus::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_node_all_fail_still_returns_ok() {
+        // Edge case: multi-node deploys never surface DeployFailed even when
+        // every node fails — callers inspect succeeded/failed in the result.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .expect("multi-node deploy should always return Ok");
+        assert_eq!(result.total_nodes, 2);
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 2);
     }
 
     // ── Multiple deploys update state correctly ───────────────
@@ -1470,9 +2083,15 @@ mod tests {
             reg,
             Box::new(MockCommandRunner::failing()),
         );
-        orch.deploy("alpha", DeployStrategy::Rolling, None)
+        // Single-node deploy failure now surfaces as DeployFailed error.
+        let err = orch
+            .deploy("alpha", DeployStrategy::Rolling, None)
             .await
-            .unwrap();
+            .expect_err("single-node failure should return DeployFailed");
+        match err {
+            FleetError::DeployFailed { hostname, .. } => assert_eq!(hostname, "alpha"),
+            other => panic!("expected DeployFailed, got {other:?}"),
+        }
         let alpha = orch.registry().get("alpha").unwrap();
         assert_eq!(alpha.status, NodeStatus::Failed);
         assert!(alpha.last_deployed.is_none());
