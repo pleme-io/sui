@@ -2433,7 +2433,7 @@ fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
             context: format!("fetchGit: {}", target.display()),
             message: e.to_string(),
         })?;
-        // Clone using git2 (no CLI spawning).
+        // Clone using gix (no CLI spawning).
         let shallow = rev_opt.is_none();
         let branch = if ref_opt.is_some() && rev_opt.is_none() {
             Some(head_ref)

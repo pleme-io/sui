@@ -128,7 +128,7 @@ impl InputFetcher {
             return Ok(dest);
         }
 
-        // Clone using git2 (no CLI spawning).
+        // Clone using gix (no CLI spawning).
         crate::git::clone(url, &dest, None, true, false)
             .map_err(|e| FetchError::Download(format!("git clone: {e}")))?;
 

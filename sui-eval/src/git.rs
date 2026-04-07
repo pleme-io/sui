@@ -1,4 +1,4 @@
-//! Pure-Rust git helpers using `git2` (libgit2 bindings).
+//! Pure-Rust git helpers using `gix` (gitoxide).
 //!
 //! Replaces all `Command::new("git")` process spawning with in-process
 //! library calls. Every public function in this module corresponds to a
@@ -20,21 +20,32 @@ pub fn clone(
     branch: Option<&str>,
     shallow: bool,
     submodules: bool,
-) -> Result<git2::Repository, String> {
-    let do_clone = |use_shallow: bool| -> Result<git2::Repository, git2::Error> {
-        let mut builder = git2::build::RepoBuilder::new();
+) -> Result<gix::Repository, String> {
+    let do_clone = |use_shallow: bool| -> Result<gix::Repository, String> {
+        let mut prepare = gix::prepare_clone(url, dest)
+            .map_err(|e| format!("prepare clone {url} -> {}: {e}", dest.display()))?;
+
+        if use_shallow {
+            prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
+                1.try_into().expect("1 is non-zero"),
+            ));
+        }
 
         if let Some(br) = branch {
-            builder.branch(br);
+            prepare = prepare
+                .with_ref_name(Some(br))
+                .map_err(|e| format!("set branch {br}: {e}"))?;
         }
 
-        let mut fetch_opts = git2::FetchOptions::new();
-        if use_shallow {
-            fetch_opts.depth(1);
-        }
-        builder.fetch_options(fetch_opts);
+        let (mut checkout, _outcome) = prepare
+            .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+            .map_err(|e| format!("fetch {url}: {e}"))?;
 
-        builder.clone(url, dest)
+        let (repo, _outcome) = checkout
+            .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+            .map_err(|e| format!("checkout worktree {url}: {e}"))?;
+
+        Ok(repo)
     };
 
     // Try shallow first if requested; fall back to full clone if the
@@ -45,13 +56,11 @@ pub fn clone(
             Err(_) => {
                 // Clean up partial clone before retrying.
                 let _ = std::fs::remove_dir_all(dest);
-                do_clone(false)
-                    .map_err(|e| format!("git clone {url} -> {}: {e}", dest.display()))?
+                do_clone(false)?
             }
         }
     } else {
-        do_clone(false)
-            .map_err(|e| format!("git clone {url} -> {}: {e}", dest.display()))?
+        do_clone(false)?
     };
 
     if submodules {
@@ -62,15 +71,30 @@ pub fn clone(
 }
 
 /// Recursively initialize and update all submodules.
-fn init_submodules_recursive(repo: &git2::Repository) -> Result<(), String> {
-    for mut sub in repo
-        .submodules()
-        .map_err(|e| format!("list submodules: {e}"))?
-    {
-        sub.init(false)
-            .map_err(|e| format!("init submodule {}: {e}", sub.name().unwrap_or("?")))?;
-        sub.update(true, None)
-            .map_err(|e| format!("update submodule {}: {e}", sub.name().unwrap_or("?")))?;
+fn init_submodules_recursive(repo: &gix::Repository) -> Result<(), String> {
+    let modules = match repo.submodules() {
+        Ok(Some(mods)) => mods,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(format!("list submodules: {e}")),
+    };
+
+    let workdir = repo
+        .workdir()
+        .ok_or("repo has no worktree")?;
+
+    for sub in modules {
+        let name = sub.name().to_string();
+        let sub_url = match sub.url() {
+            Ok(url) => url.to_bstring().to_string(),
+            Err(e) => return Err(format!("submodule {name} url: {e}")),
+        };
+        let sub_path = sub.path().map_err(|e| format!("submodule {name} path: {e}"))?;
+        let dest = workdir.join(sub_path.to_string());
+
+        if !dest.exists() {
+            clone(&sub_url, &dest, None, false, true)
+                .map_err(|e| format!("clone submodule {name}: {e}"))?;
+        }
     }
     Ok(())
 }
@@ -79,80 +103,140 @@ fn init_submodules_recursive(repo: &git2::Repository) -> Result<(), String> {
 ///
 /// This detaches HEAD at the given commit and resets the working tree.
 pub fn checkout_rev(repo_path: &Path, rev: &str) -> Result<(), String> {
-    let repo = git2::Repository::open(repo_path)
+    let repo = gix::open(repo_path)
         .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
 
-    let oid = git2::Oid::from_str(rev)
+    let oid = gix::ObjectId::from_hex(rev.as_bytes())
         .map_err(|e| format!("invalid rev {rev}: {e}"))?;
 
     let commit = repo
-        .find_commit(oid)
-        .map_err(|e| format!("rev {rev} not found: {e}"))?;
+        .find_object(oid)
+        .map_err(|e| format!("rev {rev} not found: {e}"))?
+        .into_commit();
 
-    // Detach HEAD at the commit
-    repo.set_head_detached(oid)
-        .map_err(|e| format!("detach HEAD at {rev}: {e}"))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| format!("tree for {rev}: {e}"))?;
 
-    // Reset working directory to match the commit tree
-    repo.checkout_tree(
-        commit.as_object(),
-        Some(git2::build::CheckoutBuilder::new().force()),
-    )
-    .map_err(|e| format!("checkout tree at {rev}: {e}"))?;
+    // Detach HEAD at the commit by writing HEAD directly
+    let head_path = repo.git_dir().join("HEAD");
+    std::fs::write(&head_path, format!("{oid}\n"))
+        .map_err(|e| format!("write HEAD: {e}"))?;
 
+    let workdir = repo
+        .workdir()
+        .ok_or("repo has no worktree")?;
+
+    // Remove existing working tree files (except .git)
+    for entry in std::fs::read_dir(workdir).map_err(|e| format!("read workdir: {e}"))? {
+        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    // Write tree contents to the working directory
+    write_tree_to_workdir(&repo, &tree, workdir)?;
+
+    Ok(())
+}
+
+/// Recursively write a tree's contents to a directory.
+fn write_tree_to_workdir(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    dest: &Path,
+) -> Result<(), String> {
+    for entry in tree.iter() {
+        let entry = entry.map_err(|e| format!("tree entry: {e}"))?;
+        let name = entry.filename().to_string();
+        let path = dest.join(&name);
+
+        match entry.mode().kind() {
+            gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
+                let obj = repo
+                    .find_object(entry.oid())
+                    .map_err(|e| format!("find blob {}: {e}", entry.oid()))?;
+                std::fs::write(&path, &obj.data)
+                    .map_err(|e| format!("write {}: {e}", path.display()))?;
+
+                #[cfg(unix)]
+                if entry.mode().kind() == gix::objs::tree::EntryKind::BlobExecutable {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+            gix::objs::tree::EntryKind::Tree => {
+                std::fs::create_dir_all(&path)
+                    .map_err(|e| format!("mkdir {}: {e}", path.display()))?;
+                let subtree = repo
+                    .find_object(entry.oid())
+                    .map_err(|e| format!("find tree {}: {e}", entry.oid()))?
+                    .into_tree();
+                write_tree_to_workdir(repo, &subtree, &path)?;
+            }
+            _ => {
+                // Skip symlinks, submodules, etc.
+            }
+        }
+    }
     Ok(())
 }
 
 /// Get the full commit hash of HEAD (equivalent to `git rev-parse HEAD`).
 pub fn head_rev(repo_path: &Path) -> Result<String, String> {
-    let repo = git2::Repository::open(repo_path)
+    let repo = gix::open(repo_path)
         .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
     let head = repo
-        .head()
-        .map_err(|e| format!("head: {e}"))?;
-    let oid = head
-        .peel_to_commit()
-        .map_err(|e| format!("peel to commit: {e}"))?
-        .id();
-    Ok(oid.to_string())
+        .head_commit()
+        .map_err(|e| format!("head commit: {e}"))?;
+    Ok(head.id.to_string())
 }
 
 /// Count the number of commits reachable from HEAD
 /// (equivalent to `git rev-list --count HEAD`).
 pub fn rev_count(repo_path: &Path) -> Result<i64, String> {
-    let repo = git2::Repository::open(repo_path)
+    let repo = gix::open(repo_path)
         .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
     let head = repo
-        .head()
-        .map_err(|e| format!("head: {e}"))?;
-    let oid = head
-        .peel_to_commit()
-        .map_err(|e| format!("peel to commit: {e}"))?
-        .id();
+        .head_commit()
+        .map_err(|e| format!("head commit: {e}"))?;
 
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| format!("revwalk: {e}"))?;
-    revwalk
-        .push(oid)
-        .map_err(|e| format!("revwalk push: {e}"))?;
+    let mut count: i64 = 0;
+    let walk = repo
+        .rev_walk([head.id])
+        .all()
+        .map_err(|e| format!("rev walk: {e}"))?;
 
-    let count = revwalk.count();
-    Ok(count as i64)
+    for info in walk {
+        let _info = info.map_err(|e| format!("rev walk step: {e}"))?;
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 /// Get the committer timestamp of HEAD in seconds since epoch
 /// (equivalent to `git log -1 --format=%ct`).
 pub fn head_timestamp(repo_path: &Path) -> Result<i64, String> {
-    let repo = git2::Repository::open(repo_path)
+    let repo = gix::open(repo_path)
         .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
     let head = repo
-        .head()
-        .map_err(|e| format!("head: {e}"))?;
+        .head_commit()
+        .map_err(|e| format!("head commit: {e}"))?;
     let commit = head
-        .peel_to_commit()
-        .map_err(|e| format!("peel to commit: {e}"))?;
-    Ok(commit.time().seconds())
+        .decode()
+        .map_err(|e| format!("decode commit: {e}"))?;
+    let committer = commit
+        .committer()
+        .map_err(|e| format!("parse committer: {e}"))?;
+    Ok(committer.seconds())
 }
 
 /// List remote refs and find the commit SHA for a given ref name
@@ -161,17 +245,104 @@ pub fn head_timestamp(repo_path: &Path) -> Result<i64, String> {
 /// Searches for the ref in `refs/heads/<ref_name>`, `refs/tags/<ref_name>`,
 /// and as a direct match.
 pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
-    let mut remote = git2::Remote::create_detached(url)
+    // For file:// URLs, open the repo directly and read refs.
+    // This avoids the transport layer complexity.
+    if let Some(path) = url.strip_prefix("file://") {
+        return ls_remote_local(Path::new(path), ref_name);
+    }
+
+    // For network URLs, use the remote API
+    let tmp = std::env::temp_dir().join(format!(
+        "sui_ls_remote_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&tmp)
+        .map_err(|e| format!("create temp dir: {e}"))?;
+
+    let repo = gix::init(&tmp)
+        .map_err(|e| format!("init temp repo: {e}"))?;
+
+    let remote = repo
+        .remote_at(url)
         .map_err(|e| format!("create remote for {url}: {e}"))?;
 
-    // Connect to the remote (read-only)
-    let conn = remote
-        .connect_auth(git2::Direction::Fetch, None, None)
+    let connection = remote
+        .connect(gix::remote::Direction::Fetch)
         .map_err(|e| format!("connect to {url}: {e}"))?;
 
-    let refs = conn
-        .list()
+    // Use a wildcard refspec so ref_map returns all remote refs
+    let refspec = gix::refspec::parse("refs/*:refs/*".into(), gix::refspec::parse::Operation::Fetch)
+        .expect("valid refspec")
+        .to_owned();
+    let options = gix::remote::ref_map::Options {
+        extra_refspecs: vec![refspec],
+        ..Default::default()
+    };
+    let (ref_map, _handshake) = connection
+        .ref_map(gix::progress::Discard, options)
         .map_err(|e| format!("list refs from {url}: {e}"))?;
+
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    // Search patterns in priority order
+    let candidates = [
+        format!("refs/heads/{ref_name}"),
+        format!("refs/tags/{ref_name}"),
+        ref_name.to_string(),
+    ];
+
+    // Check mappings (the resolved mapping of remote refs to refspecs)
+    for mapping in &ref_map.mappings {
+        if let gix::remote::fetch::refmap::Source::Ref(r) = &mapping.remote {
+            let (name, oid) = ref_to_name_oid(r);
+            if let Some(oid) = oid {
+                for pattern in &candidates {
+                    if name == *pattern {
+                        return Ok(oid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also search remote_refs directly
+    for pattern in &candidates {
+        for r in &ref_map.remote_refs {
+            let (name, oid) = ref_to_name_oid(r);
+            if let Some(oid) = oid {
+                if name == *pattern {
+                    return Ok(oid);
+                }
+            }
+        }
+    }
+
+    Err(format!("ref {ref_name} not found in remote {url}"))
+}
+
+/// Extract name and oid from a handshake Ref.
+fn ref_to_name_oid(r: &gix::protocol::handshake::Ref) -> (String, Option<String>) {
+    match r {
+        gix::protocol::handshake::Ref::Direct { full_ref_name, object } => {
+            (full_ref_name.to_string(), Some(object.to_string()))
+        }
+        gix::protocol::handshake::Ref::Symbolic { full_ref_name, object, .. } => {
+            (full_ref_name.to_string(), Some(object.to_string()))
+        }
+        gix::protocol::handshake::Ref::Peeled { full_ref_name, object, .. } => {
+            (full_ref_name.to_string(), Some(object.to_string()))
+        }
+        gix::protocol::handshake::Ref::Unborn { .. } => (String::new(), None),
+    }
+}
+
+/// List refs from a local repository by opening it directly.
+fn ls_remote_local(repo_path: &Path, ref_name: &str) -> Result<String, String> {
+    let repo = gix::open(repo_path)
+        .map_err(|e| format!("open {}: {e}", repo_path.display()))?;
 
     // Search patterns in priority order
     let candidates = [
@@ -181,28 +352,40 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
     ];
 
     for pattern in &candidates {
-        for head in refs {
-            if head.name() == pattern {
-                return Ok(head.oid().to_string());
-            }
+        if let Ok(reference) = repo.find_reference(pattern.as_str()) {
+            let id = reference
+                .into_fully_peeled_id()
+                .map_err(|e| format!("peel ref {pattern}: {e}"))?;
+            return Ok(id.to_string());
         }
     }
 
-    Err(format!("ref {ref_name} not found in remote {url}"))
+    // Also check HEAD
+    if ref_name == "HEAD" {
+        let head = repo
+            .head_id()
+            .map_err(|e| format!("head id: {e}"))?;
+        return Ok(head.to_string());
+    }
+
+    Err(format!("ref {ref_name} not found in remote file://{}", repo_path.display()))
 }
 
 /// Initialize a new bare/non-bare git repository (for test helpers).
 /// Equivalent to `git init -b <branch>`.
-pub fn init_repo(path: &Path, initial_branch: &str) -> Result<git2::Repository, String> {
-    let repo = git2::Repository::init(path)
+pub fn init_repo(path: &Path, initial_branch: &str) -> Result<gix::Repository, String> {
+    let repo = gix::init(path)
         .map_err(|e| format!("init {}: {e}", path.display()))?;
 
-    // Create the initial branch by setting HEAD
-    // (git2::Repository::init creates HEAD -> refs/heads/master by default,
-    //  so we rename it)
-    if initial_branch != "master" {
-        repo.set_head(&format!("refs/heads/{initial_branch}"))
-            .map_err(|e| format!("set HEAD to {initial_branch}: {e}"))?;
+    // gix::init creates HEAD -> refs/heads/main by default.
+    // If a different branch is requested, update HEAD.
+    if initial_branch != "main" {
+        let head_path = repo.git_dir().join("HEAD");
+        std::fs::write(
+            &head_path,
+            format!("ref: refs/heads/{initial_branch}\n"),
+        )
+        .map_err(|e| format!("set HEAD to {initial_branch}: {e}"))?;
     }
 
     Ok(repo)
@@ -211,54 +394,165 @@ pub fn init_repo(path: &Path, initial_branch: &str) -> Result<git2::Repository, 
 /// Create an initial commit in the given repo.
 /// Adds all files in the working directory and commits them.
 pub fn commit_all(
-    repo: &git2::Repository,
+    repo: &gix::Repository,
     message: &str,
     name: &str,
     email: &str,
-) -> Result<git2::Oid, String> {
-    let sig = git2::Signature::now(name, email)
-        .map_err(|e| format!("create signature: {e}"))?;
+) -> Result<gix::ObjectId, String> {
+    let workdir = repo
+        .workdir()
+        .ok_or("repo has no worktree")?;
 
-    let mut index = repo
-        .index()
-        .map_err(|e| format!("get index: {e}"))?;
+    // Build a tree from the working directory files
+    let tree_id = build_tree_from_workdir(repo, workdir)?;
 
-    index
-        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .map_err(|e| format!("add all: {e}"))?;
-
-    index
-        .write()
-        .map_err(|e| format!("write index: {e}"))?;
-
-    let tree_oid = index
-        .write_tree()
-        .map_err(|e| format!("write tree: {e}"))?;
-
-    let tree = repo
-        .find_tree(tree_oid)
-        .map_err(|e| format!("find tree: {e}"))?;
+    let time = gix::date::Time::now_local_or_utc();
+    let mut time_buf = gix::date::parse::TimeBuf::default();
+    let sig = gix::actor::Signature {
+        name: name.into(),
+        email: email.into(),
+        time,
+    };
+    let sig_ref = sig.to_ref(&mut time_buf);
 
     // Check if there is a parent commit
-    let parent_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    let parent_ids: Vec<gix::ObjectId> = match repo.head_commit() {
+        Ok(c) => vec![c.id],
+        Err(_) => vec![],
+    };
 
-    let parents: Vec<&git2::Commit<'_>> = parent_commit.iter().collect();
-
-    let oid = repo
-        .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+    let commit_id = repo
+        .commit_as(
+            sig_ref,
+            sig_ref,
+            "HEAD",
+            message,
+            tree_id,
+            parent_ids.iter().copied(),
+        )
         .map_err(|e| format!("commit: {e}"))?;
 
-    Ok(oid)
+    Ok(commit_id.detach())
+}
+
+/// Build a tree object from all files in the working directory.
+fn build_tree_from_workdir(
+    repo: &gix::Repository,
+    workdir: &Path,
+) -> Result<gix::ObjectId, String> {
+    let empty_tree = repo.empty_tree();
+    let mut editor = repo
+        .edit_tree(empty_tree.id)
+        .map_err(|e| format!("create tree editor: {e}"))?;
+
+    add_files_to_tree(&mut editor, repo, workdir, workdir)?;
+
+    let tree_id = editor
+        .write()
+        .map_err(|e| format!("write tree: {e}"))?;
+
+    Ok(tree_id.detach())
+}
+
+/// Recursively add files from a directory to a tree editor.
+fn add_files_to_tree(
+    editor: &mut gix::object::tree::Editor<'_>,
+    repo: &gix::Repository,
+    base: &Path,
+    dir: &Path,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("read dir {}: {e}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let relative = path
+            .strip_prefix(base)
+            .map_err(|e| format!("strip prefix: {e}"))?;
+
+        // Skip .git directory
+        if file_name == ".git" {
+            continue;
+        }
+
+        let metadata = entry
+            .metadata()
+            .map_err(|e| format!("metadata {}: {e}", path.display()))?;
+
+        if metadata.is_file() {
+            let data = std::fs::read(&path)
+                .map_err(|e| format!("read {}: {e}", path.display()))?;
+            let blob_id = repo
+                .write_blob(&data)
+                .map_err(|e| format!("write blob {}: {e}", path.display()))?;
+
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    gix::objs::tree::EntryKind::BlobExecutable
+                } else {
+                    gix::objs::tree::EntryKind::Blob
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = gix::objs::tree::EntryKind::Blob;
+
+            // Convert path to forward-slash string for gix's ToComponents
+            let relative_str = relative.to_string_lossy().replace('\\', "/");
+            editor
+                .upsert(relative_str.as_str(), mode, blob_id.detach())
+                .map_err(|e| format!("upsert {}: {e}", relative.display()))?;
+        } else if metadata.is_dir() {
+            add_files_to_tree(editor, repo, base, &path)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Set a config key in the repo's local config.
-pub fn set_config(repo: &git2::Repository, key: &str, value: &str) -> Result<(), String> {
-    let mut config = repo
-        .config()
-        .map_err(|e| format!("get config: {e}"))?;
-    config
-        .set_str(key, value)
-        .map_err(|e| format!("set {key}={value}: {e}"))?;
+///
+/// Appends to the git config file directly. This is a simple append-based
+/// writer that works correctly because git reads the last value for duplicate keys.
+pub fn set_config(repo: &gix::Repository, key: &str, value: &str) -> Result<(), String> {
+    let config_path = repo.git_dir().join("config");
+
+    // Parse key as section.name or section.subsection.name
+    let parts: Vec<&str> = key.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return Err(format!("invalid config key: {key}"));
+    }
+
+    let section_name = parts[0];
+    let remaining = parts[1];
+    let (subsection, key_name) = if let Some(dot_pos) = remaining.rfind('.') {
+        (Some(&remaining[..dot_pos]), &remaining[dot_pos + 1..])
+    } else {
+        (None, remaining)
+    };
+
+    // Build the INI section header
+    let header = if let Some(sub) = subsection {
+        format!("[{section_name} \"{sub}\"]")
+    } else {
+        format!("[{section_name}]")
+    };
+
+    // Read existing config or start fresh
+    let mut content = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    // Append section and key
+    if !content.ends_with('\n') && !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(&format!("{header}\n\t{key_name} = {value}\n"));
+
+    std::fs::write(&config_path, content)
+        .map_err(|e| format!("write config: {e}"))?;
+
     Ok(())
 }
 
@@ -289,7 +583,7 @@ mod tests {
         fs::write(dir.join("README"), "hello").unwrap();
         let oid = commit_all(&repo, "initial", "sui-test", "test@sui.local").unwrap();
 
-        assert!(!oid.is_zero());
+        assert!(!oid.is_null());
         assert_eq!(head_rev(&dir).unwrap().len(), 40);
         assert_eq!(rev_count(&dir).unwrap(), 1);
         assert!(head_timestamp(&dir).unwrap() > 0);

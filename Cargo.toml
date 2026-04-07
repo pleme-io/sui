@@ -66,8 +66,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # HTTP client (for binary cache, fetchers)
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream", "blocking"] }
 
-# Git operations (pure library, no CLI spawning)
-git2 = { version = "0.20", default-features = false }
+# Git operations (pure Rust, no C dependencies)
+gix = { git = "https://github.com/pleme-io/gitoxide", branch = "edition-2024-compat", default-features = false, features = [
+    "sha1",
+    "blocking-network-client",
+    "blocking-http-transport-reqwest-rust-tls",
+    "worktree-mutation",
+    "revision",
+    "tree-editor",
+] }
 
 # Archive extraction (for fetchTarball)
 flate2 = "1"
