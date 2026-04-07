@@ -359,4 +359,272 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert!(String::from_utf8_lossy(&result.stderr).contains("err"));
     }
+
+    // ── SandboxConfig::from_derivation edge cases ───────────
+
+    #[test]
+    fn from_derivation_with_no_chroot_enables_network() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        env.insert("__noChroot".to_string(), "1".to_string());
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: "/nix/store/out".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env,
+        };
+
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert!(config.allow_network);
+    }
+
+    #[test]
+    fn from_derivation_no_chroot_zero_disables_network() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let mut env = BTreeMap::new();
+        env.insert("__noChroot".to_string(), "0".to_string());
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: "/nix/store/out".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env,
+        };
+
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert!(!config.allow_network);
+    }
+
+    #[test]
+    fn from_derivation_multiple_outputs() {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+        use std::collections::BTreeMap;
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "out".to_string(),
+            DerivationOutput {
+                path: "/nix/store/out-pkg".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+        outputs.insert(
+            "dev".to_string(),
+            DerivationOutput {
+                path: "/nix/store/dev-pkg".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+        outputs.insert(
+            "lib".to_string(),
+            DerivationOutput {
+                path: "/nix/store/lib-pkg".to_string(),
+                hash_algo: String::new(),
+                hash: String::new(),
+            },
+        );
+
+        let drv = Derivation {
+            outputs,
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+
+        let config = SandboxConfig::from_derivation(&drv, "/build");
+        assert_eq!(config.output_paths.len(), 3);
+        assert_eq!(config.build_dir, "/build");
+    }
+
+    #[test]
+    fn from_derivation_empty_outputs() {
+        use sui_compat::derivation::Derivation;
+        use std::collections::BTreeMap;
+
+        let drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: vec![],
+            system: "x86_64-linux".to_string(),
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+
+        let config = SandboxConfig::from_derivation(&drv, "/tmp");
+        assert!(config.output_paths.is_empty());
+    }
+
+    #[test]
+    fn sandbox_config_clone() {
+        let config = SandboxConfig {
+            input_paths: vec!["/a".into(), "/b".into()],
+            build_dir: "/tmp".into(),
+            output_paths: vec!["/out".into()],
+            allow_network: true,
+            builder: "/bin/sh".into(),
+            args: vec!["-c".into(), "true".into()],
+            env: vec![("K".into(), "V".into())],
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.builder, config.builder);
+        assert_eq!(cloned.env, config.env);
+        assert_eq!(cloned.allow_network, config.allow_network);
+    }
+
+    // ── NoSandbox: multiple env vars ────────────────────────
+
+    #[test]
+    fn no_sandbox_execute_multiple_env_vars() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "echo $A $B".to_string()],
+            env: vec![
+                ("A".to_string(), "hello".to_string()),
+                ("B".to_string(), "world".to_string()),
+            ],
+        };
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        let out = String::from_utf8_lossy(&result.stdout);
+        assert!(out.contains("hello"));
+        assert!(out.contains("world"));
+    }
+
+    // ── NoSandbox: stdout + stderr combined ─────────────────
+
+    #[test]
+    fn no_sandbox_captures_both_streams() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo stdout-line && echo stderr-line >&2".to_string(),
+            ],
+            env: vec![],
+        };
+        let result = sandbox.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("stdout-line"));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("stderr-line"));
+    }
+
+    // ── NoSandbox: prepare→execute→cleanup lifecycle ────────
+
+    #[test]
+    fn no_sandbox_full_lifecycle() {
+        let sandbox = NoSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/echo".to_string(),
+            args: vec!["lifecycle-test".to_string()],
+            env: vec![],
+        };
+        sandbox.prepare(&config).unwrap();
+        let result = sandbox.execute(&config).unwrap();
+        sandbox.cleanup(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("lifecycle-test"));
+    }
+
+    // ── LinuxSandbox stub tests ─────────────────────────────
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_prepare_returns_not_implemented() {
+        let sandbox = LinuxSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        let err = sandbox.prepare(&config).unwrap_err();
+        assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_execute_returns_not_implemented() {
+        let sandbox = LinuxSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        let err = sandbox.execute(&config).unwrap_err();
+        assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_cleanup_succeeds() {
+        let sandbox = LinuxSandbox;
+        let config = SandboxConfig {
+            input_paths: vec![],
+            build_dir: "/tmp".to_string(),
+            output_paths: vec![],
+            allow_network: false,
+            builder: "/bin/true".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        assert!(sandbox.cleanup(&config).is_ok());
+    }
 }
