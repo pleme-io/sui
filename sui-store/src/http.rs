@@ -14,7 +14,7 @@ pub struct HttpResponse {
 }
 
 /// HTTP client errors.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HttpError {
     /// The HTTP request could not be sent (network error, DNS failure, etc.).
