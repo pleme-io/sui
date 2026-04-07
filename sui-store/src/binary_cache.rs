@@ -50,27 +50,67 @@ pub struct BinaryCacheStore {
     trusted_keys: Vec<String>,
 }
 
+/// Builder for [`BinaryCacheStore`].
+pub struct BinaryCacheStoreBuilder {
+    base_url: String,
+    trusted_keys: Vec<String>,
+    client: Option<Box<dyn HttpClient>>,
+}
+
+impl BinaryCacheStoreBuilder {
+    /// Set the trusted public keys for signature verification.
+    #[must_use]
+    pub fn trusted_keys(mut self, keys: Vec<String>) -> Self {
+        self.trusted_keys = keys;
+        self
+    }
+
+    /// Use a custom HTTP client implementation (e.g., for testing).
+    #[must_use]
+    pub fn http_client(mut self, client: Box<dyn HttpClient>) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    /// Build the [`BinaryCacheStore`].
+    #[must_use]
+    pub fn build(self) -> BinaryCacheStore {
+        BinaryCacheStore {
+            client: self.client.unwrap_or_else(|| Box::new(ReqwestHttpClient::new())),
+            base_url: self.base_url,
+            trusted_keys: self.trusted_keys,
+        }
+    }
+}
+
 impl BinaryCacheStore {
-    /// Create a new binary cache client with default HTTP backend.
-    pub fn new(base_url: &str, trusted_keys: Vec<String>) -> Self {
-        Self {
-            client: Box::new(ReqwestHttpClient::new()),
+    /// Create a builder for a binary cache store with the given base URL.
+    #[must_use]
+    pub fn builder(base_url: &str) -> BinaryCacheStoreBuilder {
+        BinaryCacheStoreBuilder {
             base_url: base_url.trim_end_matches('/').to_string(),
-            trusted_keys,
+            trusted_keys: Vec::new(),
+            client: None,
         }
     }
 
+    /// Create a new binary cache client with default HTTP backend.
+    #[must_use]
+    pub fn new(base_url: &str, trusted_keys: Vec<String>) -> Self {
+        Self::builder(base_url).trusted_keys(trusted_keys).build()
+    }
+
     /// Create a new binary cache client with a custom HTTP backend.
+    #[must_use]
     pub fn with_http_client(
         base_url: &str,
         trusted_keys: Vec<String>,
         client: Box<dyn HttpClient>,
     ) -> Self {
-        Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
-            trusted_keys,
-        }
+        Self::builder(base_url)
+            .trusted_keys(trusted_keys)
+            .http_client(client)
+            .build()
     }
 
     /// Fetch NarInfo for a store path hash.
