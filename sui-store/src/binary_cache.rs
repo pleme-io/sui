@@ -176,6 +176,70 @@ impl BinaryCacheStore {
         let basename = path.to_basename();
         basename[..32.min(basename.len())].to_string()
     }
+
+    /// Verify that a NarInfo has at least one valid signature from the trusted keys.
+    ///
+    /// The NarInfo fingerprint is: `1;{storePath};{narHash};{narSize};{sortedReferences}`.
+    /// Each signature in the NarInfo is in `keyname:base64sig` format. Each trusted key
+    /// is in `keyname:base64pubkey` format.
+    ///
+    /// Returns `Ok(true)` if at least one signature matches a trusted key,
+    /// `Ok(false)` if no trusted keys are provided or no signatures match.
+    pub fn verify_narinfo_signatures(
+        narinfo: &NarInfo,
+        trusted_keys: &[String],
+    ) -> StoreResult<bool> {
+        use sui_compat::signature::{StorePathSignature, compute_fingerprint};
+        use sui_compat::hash::base64_decode;
+
+        if trusted_keys.is_empty() {
+            return Ok(false);
+        }
+
+        // Build the sorted references for the fingerprint.
+        let mut sorted_refs: Vec<String> = narinfo.references.clone();
+        sorted_refs.sort();
+
+        let fingerprint = compute_fingerprint(
+            &narinfo.store_path,
+            &narinfo.nar_hash,
+            narinfo.nar_size,
+            &sorted_refs,
+        );
+
+        // Build a map of key_name -> public_key_bytes from trusted keys.
+        let mut key_map: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        for key_str in trusted_keys {
+            if let Some((name, b64_pubkey)) = key_str.split_once(':') {
+                if let Ok(pubkey_bytes) = base64_decode(b64_pubkey) {
+                    key_map.insert(name.to_string(), pubkey_bytes);
+                }
+            }
+        }
+
+        // Check each signature against the matching trusted key.
+        for sig_str in &narinfo.signatures {
+            let parsed = match StorePathSignature::parse(sig_str) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            if let Some(pubkey_bytes) = key_map.get(&parsed.key_name) {
+                if pubkey_bytes.len() == 32 {
+                    let pubkey: [u8; 32] = pubkey_bytes
+                        .as_slice()
+                        .try_into()
+                        .expect("length checked");
+                    if parsed.verify(&fingerprint, &pubkey).is_ok() {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1646,5 +1710,184 @@ References:
             .unwrap()
             .expect("path info should be present");
         assert!(info.references.is_empty());
+    }
+
+    // ── verify_narinfo_signatures ──────────────────────────────
+
+    fn make_signed_narinfo() -> (NarInfo, String) {
+        use ed25519_dalek::{Signer, SigningKey};
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/abc-hello".to_string(),
+            url: "nar/abc.nar.xz".to_string(),
+            compression: "xz".to_string(),
+            file_hash: "sha256:aaa".to_string(),
+            file_size: 1000,
+            nar_hash: "sha256:bbb".to_string(),
+            nar_size: 5000,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+
+        let fingerprint = compute_fingerprint(
+            &narinfo.store_path,
+            &narinfo.nar_hash,
+            narinfo.nar_size,
+            &narinfo.references,
+        );
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        let sig_str = format!(
+            "test-key:{}",
+            base64_encode(&sig.to_bytes())
+        );
+        let trusted_key = format!(
+            "test-key:{}",
+            base64_encode(verifying_key.as_bytes())
+        );
+
+        let mut signed = narinfo;
+        signed.signatures = vec![sig_str];
+
+        (signed, trusted_key)
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_valid() {
+        let (narinfo, trusted_key) = make_signed_narinfo();
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &narinfo,
+            &[trusted_key],
+        )
+        .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_invalid_key() {
+        use sui_compat::hash::base64_encode;
+
+        let (narinfo, _) = make_signed_narinfo();
+        // Use a different key — should fail.
+        let wrong_key = format!(
+            "test-key:{}",
+            base64_encode(&[99u8; 32])
+        );
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &narinfo,
+            &[wrong_key],
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_empty_trusted_keys_returns_false() {
+        let (narinfo, _) = make_signed_narinfo();
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &narinfo,
+            &[],
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_no_matching_key_name() {
+        use sui_compat::hash::base64_encode;
+
+        let (narinfo, _) = make_signed_narinfo();
+        // Trusted key has a different name.
+        let wrong_name_key = format!(
+            "other-key:{}",
+            base64_encode(&[42u8; 32])
+        );
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &narinfo,
+            &[wrong_name_key],
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_unsigned_narinfo() {
+        let narinfo = NarInfo {
+            store_path: "/nix/store/abc-hello".to_string(),
+            url: "nar/abc.nar.xz".to_string(),
+            compression: "xz".to_string(),
+            file_hash: "sha256:aaa".to_string(),
+            file_size: 1000,
+            nar_hash: "sha256:bbb".to_string(),
+            nar_size: 5000,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &narinfo,
+            &["key:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string()],
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn verify_narinfo_signatures_with_references() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        let signing_key = SigningKey::from_bytes(&[10u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let refs = vec![
+            "dep-b".to_string(),
+            "dep-a".to_string(),
+        ];
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/xyz-pkg".to_string(),
+            url: "nar/xyz.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:fff".to_string(),
+            file_size: 2000,
+            nar_hash: "sha256:eee".to_string(),
+            nar_size: 3000,
+            references: refs.clone(),
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+
+        // The verify method sorts references, so we must sign with sorted refs.
+        let mut sorted_refs = refs;
+        sorted_refs.sort();
+        let fingerprint = compute_fingerprint(
+            &narinfo.store_path,
+            &narinfo.nar_hash,
+            narinfo.nar_size,
+            &sorted_refs,
+        );
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        let sig_str = format!("k:{}", base64_encode(&sig.to_bytes()));
+        let trusted_key = format!("k:{}", base64_encode(verifying_key.as_bytes()));
+
+        let mut signed = narinfo;
+        signed.signatures = vec![sig_str];
+
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &signed,
+            &[trusted_key],
+        )
+        .unwrap();
+        assert!(result);
     }
 }
