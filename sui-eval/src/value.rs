@@ -102,6 +102,20 @@ impl NixString {
     }
 }
 
+impl AsRef<str> for NixString {
+    fn as_ref(&self) -> &str {
+        &self.chars
+    }
+}
+
+impl std::ops::Deref for NixString {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.chars
+    }
+}
+
 impl fmt::Display for NixString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.chars)
