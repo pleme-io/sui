@@ -99,9 +99,12 @@ where
     /// cleaned up on drop.
     pub async fn run(&self) -> Result<(), DaemonError> {
         // Acquire PID lock via tsunagu.
+        // Derive the PID file path from the socket path so that each
+        // socket gets its own lock (avoids contention during testing).
+        let pid_path = self.config.socket_path.with_extension("pid");
         let daemon_process = DaemonProcess::with_paths(
             "sui",
-            SocketPath::pid_file("sui"),
+            pid_path,
             self.config.socket_path.clone(),
         );
         daemon_process.acquire().map_err(|e| {
