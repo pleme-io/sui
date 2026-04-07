@@ -398,3 +398,104 @@ async fn cache_sign(Json(req): Json<CacheSignRequest>) -> StatusCode {
     let _ = req;
     StatusCode::OK
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn test_router() -> Router {
+        router().with_state(AppState::stub())
+    }
+
+    #[tokio::test]
+    async fn health_returns_ok_status() {
+        let resp = test_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let health: HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.status, "ok");
+    }
+
+    #[tokio::test]
+    async fn eval_endpoint_evaluates_expression() {
+        let req_body = serde_json::json!({ "expression": "2 + 3" });
+        let resp = test_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let result: EvalResult = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result.value, serde_json::json!(5));
+        assert!(result.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_paths_stub_returns_empty_list() {
+        let resp = test_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/store/paths")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let paths: Vec<String> = serde_json::from_slice(&body).unwrap();
+        assert!(paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn path_info_not_found_in_stub() {
+        let resp = test_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/store/path-info/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn router_has_all_store_routes() {
+        for route in ["/api/v1/store/paths", "/api/v1/daemon/status"] {
+            let resp = test_router()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(route)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "expected 200 for {route}"
+            );
+        }
+    }
+}
