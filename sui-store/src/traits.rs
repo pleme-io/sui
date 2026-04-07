@@ -7,6 +7,7 @@ pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Store operation errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StoreError {
     /// The requested store path does not exist.
     #[error("path not found: {0}")]
@@ -30,6 +31,7 @@ pub enum StoreError {
 
 /// Information about a store path.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub struct PathInfo {
     /// Full absolute store path (e.g., `/nix/store/abc...-hello-2.12.1`).
     pub path: String,
@@ -60,6 +62,7 @@ pub struct GcOptions {
 
 /// Garbage collection result.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct GcResult {
     /// Number of store paths deleted.
     pub paths_deleted: usize,

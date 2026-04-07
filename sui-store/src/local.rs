@@ -48,11 +48,13 @@ impl LocalStore {
     }
 
     /// Get the database connection for direct queries.
+    #[must_use]
     pub fn db(&self) -> &DatabaseConnection {
         &self.db
     }
 
     /// Get the store directory path.
+    #[must_use]
     pub fn store_dir(&self) -> &str {
         &self.store_dir
     }

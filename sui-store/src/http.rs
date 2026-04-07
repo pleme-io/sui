@@ -5,6 +5,7 @@
 
 /// HTTP response returned by [`HttpClient`] methods.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct HttpResponse {
     /// HTTP status code (e.g., 200, 404, 500).
     pub status: u16,
@@ -14,6 +15,7 @@ pub struct HttpResponse {
 
 /// HTTP client errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HttpError {
     /// The HTTP request could not be sent (network error, DNS failure, etc.).
     #[error("request failed: {0}")]

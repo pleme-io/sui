@@ -101,11 +101,13 @@ impl BinaryCacheStore {
     }
 
     /// Return the base URL of this binary cache (without trailing slash).
+    #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
     /// Return the trusted public keys used for signature verification.
+    #[must_use]
     pub fn trusted_keys(&self) -> &[String] {
         &self.trusted_keys
     }
