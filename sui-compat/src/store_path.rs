@@ -1,5 +1,6 @@
 //! Nix store path parsing and computation.
 
+use crate::hash;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -225,7 +226,7 @@ pub fn compute_drv_path(drv_content: &[u8], name: &str) -> String {
 #[must_use]
 pub fn compute_drv_path_with_refs(drv_content: &[u8], name: &str, refs: &[String]) -> String {
     let inner = Sha256::digest(drv_content);
-    let inner_hex = hex_lower(&inner);
+    let inner_hex = hash::hex::encode(&inner);
     let drv_name = format!("{name}.drv");
 
     // Sort + dedup refs so two callers with the same set produce
@@ -300,17 +301,8 @@ pub fn compute_fixed_output_hash(
     let mode = if is_recursive { "r:" } else { "" };
     let inner = format!("fixed:out:{mode}{algo}:{hash}:");
     let inner_hash = Sha256::digest(inner.as_bytes());
-    let inner_hex = hex_lower(&inner_hash);
+    let inner_hex = hash::hex::encode(&inner_hash);
     compute_output_path(&inner_hex, "out", name)
-}
-
-/// Lowercase hex encoding helper (avoids pulling in hex crate).
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 #[cfg(test)]
@@ -630,13 +622,13 @@ mod tests {
         assert_ne!(p1, p2);
     }
 
-    // ── hex_lower ────────────────────────────────────────────
+    // ── hash::hex::encode ─────────────────────────────────────
 
     #[test]
-    fn hex_lower_basic() {
-        assert_eq!(hex_lower(&[0x00, 0xff, 0xab]), "00ffab");
-        assert_eq!(hex_lower(&[]), "");
-        assert_eq!(hex_lower(&[0x12, 0x34, 0x56, 0x78]), "12345678");
+    fn hex_encode_basic() {
+        assert_eq!(crate::hash::hex::encode(&[0x00, 0xff, 0xab]), "00ffab");
+        assert_eq!(crate::hash::hex::encode(&[]), "");
+        assert_eq!(crate::hash::hex::encode(&[0x12, 0x34, 0x56, 0x78]), "12345678");
     }
 
     // ── nix_base32_encode: varied byte lengths ──────────────
