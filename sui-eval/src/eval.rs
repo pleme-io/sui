@@ -405,6 +405,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // Collect (key, thunk) pairs so we can update envs later.
             let mut thunks: Vec<(String, Thunk)> = Vec::new();
 
+            // Accumulator for dotted-path bindings (`let a.b = 1; a.c = 2; ...`).
+            // These are eagerly evaluated, same as CppNix — they do NOT
+            // participate in the rec-env thunk fixpoint.
+            let mut dotted_attrs: NixAttrs = NixAttrs::new();
+
             for entry in letin.entries() {
                 match entry {
                     ast::Entry::AttrpathValue(ref apv) => {
@@ -423,6 +428,12 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             let thunk = Thunk::new_suspended(value_expr, env.clone());
                             new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
                             thunks.push((key, thunk));
+                        } else if path_keys.len() > 1 {
+                            // Multi-segment dotted path: eagerly build
+                            // a nested attrset and merge into the accumulator.
+                            let key = path_keys[0].clone();
+                            let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
+                            merge_nested_insert(&mut dotted_attrs, key, value);
                         }
                     }
                     ast::Entry::Inherit(ref inherit) => {
@@ -462,6 +473,26 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             }
                         }
                     }
+                }
+            }
+
+            // Phase 1b: Bind accumulated dotted-path attrs into new_env.
+            // If a top-level key already exists (e.g. from a simple binding),
+            // the dotted attrset is merged into the existing value.
+            for (key, value) in dotted_attrs.iter() {
+                if let Some(existing) = new_env.lookup(key) {
+                    // Merge dotted attrs into existing binding (if both are attrs).
+                    let forced = force_value(&existing)?;
+                    if let (Value::Attrs(mut ea), Value::Attrs(na)) = (forced, value.clone()) {
+                        for (k, v) in na.iter() {
+                            merge_nested_insert(&mut ea, k.clone(), v.clone());
+                        }
+                        new_env.bind(key.clone(), Value::Attrs(ea));
+                    } else {
+                        new_env.bind(key.clone(), value.clone());
+                    }
+                } else {
+                    new_env.bind(key.clone(), value.clone());
                 }
             }
 
@@ -1186,6 +1217,39 @@ mod tests {
     fn eval_let() {
         assert_eq!(ev("let x = 1; in x"), Value::Int(1));
         assert_eq!(ev("let x = 1; y = 2; in x + y"), Value::Int(3));
+    }
+
+    #[test]
+    fn eval_let_dotted_simple() {
+        // Two dotted bindings sharing the top-level key `a`.
+        assert_eq!(ev("let a.b = 1; a.c = 2; in a.b + a.c"), Value::Int(3));
+    }
+
+    #[test]
+    fn eval_let_dotted_deep() {
+        // Deeply nested dotted path.
+        assert_eq!(ev("let a.b.c = 1; in a.b.c"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_let_dotted_mixed() {
+        // Mix of simple and dotted bindings.
+        assert_eq!(
+            ev("let a.x = 1; b = 2; a.y = 3; in a.x + a.y + b"),
+            Value::Int(6),
+        );
+    }
+
+    #[test]
+    fn eval_let_dotted_produces_attrset() {
+        // Dotted let bindings produce a real attrset.
+        let v = ev("let a.b = 1; a.c = 2; in a");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("b"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("c"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected Attrs, got {v:?}");
+        }
     }
 
     #[test]

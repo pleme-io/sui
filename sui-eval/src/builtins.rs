@@ -232,6 +232,22 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // Case conversion (context-preserving)
+    register_builtin(&mut builtins_set, "toLower", |args| {
+        let ns = args[0].as_nix_string()?;
+        Ok(Value::String(NixString::with_context(
+            ns.chars.to_lowercase(),
+            ns.context.clone(),
+        )))
+    });
+    register_builtin(&mut builtins_set, "toUpper", |args| {
+        let ns = args[0].as_nix_string()?;
+        Ok(Value::String(NixString::with_context(
+            ns.chars.to_uppercase(),
+            ns.context.clone(),
+        )))
+    });
+
     // Conversion
     register_builtin(&mut builtins_set, "toJSON", |args| {
         Ok(Value::string(serde_json::to_string(&args[0].to_json())
@@ -4553,9 +4569,31 @@ mod tests {
     #[test] fn append_ctx_rt() { let v = ev(r#"builtins.getContext (builtins.appendContext "hello" { "/nix/store/abc" = { path = true; }; })"#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/abc")); } else { panic!(); } }
     #[test] fn discard_ctx_all() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/abc" = { path = true; }; }; clean = builtins.unsafeDiscardStringContext s; in builtins.getContext clean"#); if let Value::Attrs(a) = v { assert!(a.is_empty()); } else { panic!(); } }
     #[test] fn concat_merges_ctx() { let v = ev(r#"let a = builtins.appendContext "foo" { "/nix/store/a" = { path = true; }; }; b = builtins.appendContext "bar" { "/nix/store/b" = { path = true; }; }; in builtins.getContext (a + b)"#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/a")); assert!(a.contains_key("/nix/store/b")); } else { panic!(); } }
-    #[test] #[ignore = "context propagation through interpolation not yet wired in eval_str"] fn interp_merges_ctx() { assert_eq!(ev(r#"let s = builtins.appendContext "world" { "/nix/store/x" = { path = true; }; }; in builtins.hasContext "hello ""#), Value::Bool(true)); }
-    #[test] #[ignore = "path context propagation requires store integration"] fn path_interp_ctx() { assert_eq!(ev(r#"builtins.hasContext """#), Value::Bool(true)); }
-    #[test] #[ignore = "path context propagation requires store integration"] fn path_interp_ctx_content() { let v = ev(r#"builtins.getContext """#); if let Value::Attrs(a) = v { assert!(a.contains_key("/nix/store/test")); } else { panic!(); } }
+    #[test]
+    fn interp_merges_ctx() {
+        // String interpolation must propagate context from interpolated values.
+        assert_eq!(
+            ev(r##"let s = builtins.appendContext "world" { "/nix/store/x" = { path = true; }; }; in builtins.hasContext "hello ${s}""##),
+            Value::Bool(true),
+        );
+    }
+    #[test]
+    fn path_interp_ctx() {
+        // Path interpolated into string adds a Plain context element.
+        // Use let binding to avoid raw string quoting issues with "${...}".
+        let v = ev(r#"let p = /tmp; in builtins.hasContext "${p}""#);
+        assert_eq!(v, Value::Bool(true));
+    }
+    #[test]
+    fn path_interp_ctx_content() {
+        // Verify the context entry produced by path interpolation.
+        let v = ev(r#"let p = /tmp; in builtins.getContext "${p}""#);
+        if let Value::Attrs(a) = v {
+            assert!(!a.is_empty(), "context should contain at least one entry");
+        } else {
+            panic!("expected Attrs, got {v:?}");
+        }
+    }
     #[test] fn add_drv_out_deps() { let v = ev(r#"let s = builtins.appendContext "/nix/store/abc.drv" { "/nix/store/abc.drv" = { path = true; }; }; p = builtins.addDrvOutputDependencies s; in builtins.getContext p"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/abc.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("allOutputs"), Some(&Value::Bool(true))); } else { panic!(); } }
     #[test] fn discard_out_dep() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/x.drv" = { allOutputs = true; }; }; d = builtins.unsafeDiscardOutputDependency s; in builtins.getContext d"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/x.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("path"), Some(&Value::Bool(true))); } else { panic!(); } }
 
@@ -5970,5 +6008,32 @@ mod tests {
         // Snapshot is taken before the self-insert, so the inner copy
         // does not contain `builtins`. This guarantees finite output.
         assert_eq!(ev("builtins.builtins ? builtins"), Value::Bool(false));
+    }
+
+    // ── toLower / toUpper ────────────────────────────────
+
+    #[test]
+    fn to_lower_basic() {
+        assert_eq!(ev(r#"builtins.toLower "HELLO""#), Value::string("hello"));
+    }
+
+    #[test]
+    fn to_upper_basic() {
+        assert_eq!(ev(r#"builtins.toUpper "hello""#), Value::string("HELLO"));
+    }
+
+    #[test]
+    fn to_lower_empty() {
+        assert_eq!(ev(r#"builtins.toLower """#), Value::string(""));
+    }
+
+    #[test]
+    fn to_upper_mixed() {
+        assert_eq!(ev(r#"builtins.toUpper "MiXeD""#), Value::string("MIXED"));
+    }
+
+    #[test]
+    fn to_lower_already() {
+        assert_eq!(ev(r#"builtins.toLower "already""#), Value::string("already"));
     }
 }
