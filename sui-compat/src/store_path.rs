@@ -637,4 +637,164 @@ mod tests {
         assert_eq!(hex_lower(&[]), "");
         assert_eq!(hex_lower(&[0x12, 0x34, 0x56, 0x78]), "12345678");
     }
+
+    // ── nix_base32_encode: varied byte lengths ──────────────
+
+    #[test]
+    fn base32_encode_output_length_formula() {
+        for input_len in [0, 1, 5, 10, 16, 20, 32, 64] {
+            let input = vec![0xAB_u8; input_len];
+            let encoded = nix_base32_encode(&input);
+            let expected_len = (input_len * 8 + 4) / 5;
+            assert_eq!(
+                encoded.len(),
+                expected_len,
+                "wrong encode length for {input_len}-byte input"
+            );
+        }
+    }
+
+    #[test]
+    fn base32_encode_alphabet_only() {
+        for input_len in [5, 10, 20, 32, 64] {
+            let input = vec![0xFF_u8; input_len];
+            let encoded = nix_base32_encode(&input);
+            for c in encoded.chars() {
+                assert!(
+                    NIX_BASE32_CHARS.contains(&(c as u8)),
+                    "char '{c}' not in nix base32 alphabet (input_len={input_len})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn base32_encode_all_zero_bytes() {
+        for input_len in [5, 10, 20, 32, 64] {
+            let input = vec![0x00_u8; input_len];
+            let encoded = nix_base32_encode(&input);
+            assert!(
+                encoded.chars().all(|c| c == '0'),
+                "all-zero {input_len}-byte input should encode to all '0's, got: {encoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn base32_encode_all_ff_bytes() {
+        for input_len in [5, 10, 20, 32, 64] {
+            let input = vec![0xFF_u8; input_len];
+            let encoded = nix_base32_encode(&input);
+            assert!(
+                !encoded.is_empty(),
+                "encoding of all-0xFF input should be non-empty"
+            );
+            assert!(
+                encoded.chars().all(|c| NIX_BASE32_CHARS.contains(&(c as u8))),
+                "all chars must be in alphabet"
+            );
+        }
+    }
+
+    #[test]
+    fn base32_encode_alternating_bytes() {
+        let input: Vec<u8> = (0..32).map(|i| if i % 2 == 0 { 0xAA } else { 0x55 }).collect();
+        let encoded = nix_base32_encode(&input);
+        let expected_len = (32 * 8 + 4) / 5;
+        assert_eq!(encoded.len(), expected_len);
+        for c in encoded.chars() {
+            assert!(NIX_BASE32_CHARS.contains(&(c as u8)));
+        }
+    }
+
+    #[test]
+    fn base32_encode_empty_input() {
+        let encoded = nix_base32_encode(&[]);
+        assert_eq!(encoded, "");
+    }
+
+    #[test]
+    fn base32_encode_single_byte() {
+        let encoded = nix_base32_encode(&[0x42]);
+        assert_eq!(encoded.len(), 2);
+        let decoded_manual = nix_base32_encode(&[0x42]);
+        assert_eq!(encoded, decoded_manual);
+    }
+
+    #[test]
+    fn base32_roundtrip_20_byte_boundary_cases() {
+        let cases: Vec<[u8; 20]> = vec![
+            [0x00; 20],
+            [0xFF; 20],
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55,
+             0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            {
+                let mut a = [0u8; 20];
+                a[0] = 0x01;
+                a
+            },
+            {
+                let mut a = [0u8; 20];
+                a[19] = 0x01;
+                a
+            },
+            {
+                let mut a = [0u8; 20];
+                for (i, v) in a.iter_mut().enumerate() {
+                    *v = i as u8;
+                }
+                a
+            },
+        ];
+
+        for input in &cases {
+            let encoded = nix_base32_encode(input);
+            assert_eq!(encoded.len(), 32);
+            let decoded = nix_base32_decode(&encoded).unwrap();
+            assert_eq!(&decoded, input, "roundtrip failed for {input:?}");
+        }
+    }
+
+    // ── drv path with refs ──────────────────────────────────
+
+    #[test]
+    fn drv_path_with_refs_includes_refs_in_fingerprint() {
+        let content = b"Derive(...)";
+        let no_refs = compute_drv_path_with_refs(content, "hello", &[]);
+        let with_refs = compute_drv_path_with_refs(
+            content,
+            "hello",
+            &["/nix/store/abc-dep".to_string()],
+        );
+        assert_ne!(no_refs, with_refs);
+    }
+
+    #[test]
+    fn drv_path_with_refs_order_independent() {
+        let content = b"Derive(...)";
+        let refs_a = vec![
+            "/nix/store/bbb-b".to_string(),
+            "/nix/store/aaa-a".to_string(),
+        ];
+        let refs_b = vec![
+            "/nix/store/aaa-a".to_string(),
+            "/nix/store/bbb-b".to_string(),
+        ];
+        let p1 = compute_drv_path_with_refs(content, "test", &refs_a);
+        let p2 = compute_drv_path_with_refs(content, "test", &refs_b);
+        assert_eq!(p1, p2, "ref order should not affect output");
+    }
+
+    #[test]
+    fn drv_path_with_refs_deduplicates() {
+        let content = b"Derive(...)";
+        let with_dups = vec![
+            "/nix/store/aaa-a".to_string(),
+            "/nix/store/aaa-a".to_string(),
+        ];
+        let without_dups = vec!["/nix/store/aaa-a".to_string()];
+        let p1 = compute_drv_path_with_refs(content, "test", &with_dups);
+        let p2 = compute_drv_path_with_refs(content, "test", &without_dups);
+        assert_eq!(p1, p2, "duplicate refs should be deduplicated");
+    }
 }
