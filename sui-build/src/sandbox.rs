@@ -155,6 +155,9 @@ pub enum SandboxError {
     /// An underlying I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// The sandbox process exceeded its time limit.
+    #[error("sandbox timed out after {0} seconds")]
+    Timeout(u64),
 }
 
 /// No-op sandbox for unsandboxed builds (development/testing).
