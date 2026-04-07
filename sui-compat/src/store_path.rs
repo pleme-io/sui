@@ -89,6 +89,14 @@ impl std::fmt::Display for StorePath {
     }
 }
 
+impl std::str::FromStr for StorePath {
+    type Err = StorePathError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_absolute_path(s)
+    }
+}
+
 /// Encode bytes to Nix's custom base-32 encoding.
 ///
 /// Matches CppNix `printHash32`: characters are emitted in
