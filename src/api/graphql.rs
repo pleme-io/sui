@@ -363,9 +363,8 @@ where
     Router::new()
         .route(
             "/graphql",
-            post(|schema: Extension<SuiSchema>, req: GraphQLRequest| async move {
-                let resp: GraphQLResponse = schema.execute(req.into_inner()).await.into();
-                resp
+            post(|Extension(schema): Extension<SuiSchema>, req: GraphQLRequest| async move {
+                GraphQLResponse::from(schema.execute(req.into_inner()).await)
             }),
         )
         .route_service("/graphql/ws", GraphQLSubscription::new(schema.clone()))
