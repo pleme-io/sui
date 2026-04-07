@@ -62,6 +62,41 @@ impl SandboxConfig {
                 .collect(),
         }
     }
+
+    /// Set the builder executable path.
+    #[must_use]
+    pub fn with_builder(mut self, builder: impl Into<String>) -> Self {
+        self.builder = builder.into();
+        self
+    }
+
+    /// Set the build directory.
+    #[must_use]
+    pub fn with_build_dir(mut self, dir: impl Into<String>) -> Self {
+        self.build_dir = dir.into();
+        self
+    }
+
+    /// Set the builder arguments.
+    #[must_use]
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Set whether network access is allowed.
+    #[must_use]
+    pub fn with_network(mut self, allow: bool) -> Self {
+        self.allow_network = allow;
+        self
+    }
+
+    /// Add an environment variable.
+    #[must_use]
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
 }
 
 /// Sandbox implementation trait.
