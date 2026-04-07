@@ -51,6 +51,21 @@ pub struct PathInfo {
     pub content_address: Option<String>,
 }
 
+impl Default for PathInfo {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references: Vec::new(),
+            deriver: None,
+            signatures: Vec::new(),
+            registration_time: 0,
+            content_address: None,
+        }
+    }
+}
+
 impl std::fmt::Display for PathInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} (nar_size={})", self.path, self.nar_size)
@@ -82,7 +97,7 @@ pub struct GcOptions {
 }
 
 /// Garbage collection result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[must_use]
 pub struct GcResult {
     /// Number of store paths deleted.
