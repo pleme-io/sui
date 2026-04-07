@@ -81,6 +81,22 @@ impl StorePath {
     pub fn to_basename(&self) -> String {
         format!("{}-{}", nix_base32_encode(&self.digest), self.name)
     }
+
+    /// Return the Nix base-32 hash portion of this store path.
+    ///
+    /// This is the 32-character string used to look up `.narinfo` files in
+    /// binary caches (e.g., `sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6`).
+    #[must_use]
+    pub fn hash(&self) -> String {
+        nix_base32_encode(&self.digest)
+    }
+
+    /// Return the human-readable name portion of this store path
+    /// (e.g., `hello-2.12.1`).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl std::fmt::Display for StorePath {
