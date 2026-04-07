@@ -158,6 +158,30 @@ pub enum SandboxError {
     /// The sandbox process exceeded its time limit.
     #[error("sandbox timed out after {0} seconds")]
     Timeout(u64),
+    /// The platform sandbox executable (`sandbox-exec`, `unshare`, etc.) was not found.
+    #[error("sandbox executable not found: {0}")]
+    NoSandboxExec(String),
+    /// Failed to create or set up the build directory.
+    #[error("build directory error: {0}")]
+    BuildDirError(String),
+    /// Failed to write the sandbox profile to a temporary file.
+    #[error("sandbox profile write failed: {0}")]
+    ProfileWriteFailed(String),
+    /// The builder process exited with a non-zero status.
+    #[error("builder exited with status {exit_code}")]
+    BuilderExitNonZero {
+        /// Exit code reported by the OS (or `-1` if killed by signal).
+        exit_code: i32,
+    },
+    /// Failed to spawn the sandboxed process.
+    #[error("failed to spawn sandboxed process: {0}")]
+    SpawnFailed(String),
+    /// A bind mount or chroot operation failed.
+    #[error("bind mount failed: {0}")]
+    BindMountFailed(String),
+    /// A chroot operation failed.
+    #[error("chroot failed: {0}")]
+    ChrootFailed(String),
 }
 
 /// No-op sandbox for unsandboxed builds (development/testing).
