@@ -250,6 +250,174 @@ mod tests {
         assert_eq!(cloned.log, result.log);
     }
 
+    // ── BuildState tests ──────────────────────────────────────────
+
+    #[test]
+    fn build_state_pending_to_building() {
+        let mut state = BuildState::Pending;
+        assert!(state.transition(BuildState::Building).is_ok());
+        assert_eq!(state, BuildState::Building);
+    }
+
+    #[test]
+    fn build_state_building_to_succeeded() {
+        let mut state = BuildState::Building;
+        assert!(state.transition(BuildState::Succeeded).is_ok());
+        assert_eq!(state, BuildState::Succeeded);
+    }
+
+    #[test]
+    fn build_state_building_to_failed() {
+        let mut state = BuildState::Building;
+        assert!(state.transition(BuildState::Failed("oops".into())).is_ok());
+        assert_eq!(state, BuildState::Failed("oops".into()));
+    }
+
+    #[test]
+    fn build_state_pending_to_succeeded_is_invalid() {
+        let mut state = BuildState::Pending;
+        assert!(state.transition(BuildState::Succeeded).is_err());
+        assert_eq!(state, BuildState::Pending);
+    }
+
+    #[test]
+    fn build_state_succeeded_to_building_is_invalid() {
+        let mut state = BuildState::Succeeded;
+        assert!(state.transition(BuildState::Building).is_err());
+        assert_eq!(state, BuildState::Succeeded);
+    }
+
+    #[test]
+    fn build_state_failed_to_building_is_invalid() {
+        let mut state = BuildState::Failed("x".into());
+        assert!(state.transition(BuildState::Building).is_err());
+    }
+
+    #[test]
+    fn build_state_pending_to_failed_is_invalid() {
+        let mut state = BuildState::Pending;
+        assert!(state.transition(BuildState::Failed("e".into())).is_err());
+    }
+
+    #[test]
+    fn build_state_building_to_pending_is_invalid() {
+        let mut state = BuildState::Building;
+        assert!(state.transition(BuildState::Pending).is_err());
+    }
+
+    #[test]
+    fn build_state_is_terminal() {
+        assert!(!BuildState::Pending.is_terminal());
+        assert!(!BuildState::Building.is_terminal());
+        assert!(BuildState::Succeeded.is_terminal());
+        assert!(BuildState::Failed("x".into()).is_terminal());
+    }
+
+    #[test]
+    fn build_state_display() {
+        assert_eq!(BuildState::Pending.to_string(), "pending");
+        assert_eq!(BuildState::Building.to_string(), "building");
+        assert_eq!(BuildState::Succeeded.to_string(), "succeeded");
+        assert_eq!(BuildState::Failed("oom".into()).to_string(), "failed: oom");
+    }
+
+    #[test]
+    fn build_state_clone_eq() {
+        let a = BuildState::Failed("reason".into());
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn build_state_full_lifecycle() {
+        let mut state = BuildState::Pending;
+        assert!(!state.is_terminal());
+        state.transition(BuildState::Building).unwrap();
+        assert!(!state.is_terminal());
+        state.transition(BuildState::Succeeded).unwrap();
+        assert!(state.is_terminal());
+    }
+
+    #[test]
+    fn build_state_full_lifecycle_failure() {
+        let mut state = BuildState::Pending;
+        state.transition(BuildState::Building).unwrap();
+        state.transition(BuildState::Failed("segfault".into())).unwrap();
+        assert!(state.is_terminal());
+        assert_eq!(state.to_string(), "failed: segfault");
+    }
+
+    // ── BuildLog tests ──────────────────────────────────────────
+
+    #[test]
+    fn build_log_new_is_empty() {
+        let log = BuildLog::new();
+        assert!(log.is_empty());
+        assert_eq!(log.len(), 0);
+    }
+
+    #[test]
+    fn build_log_push_single_line() {
+        let mut log = BuildLog::new();
+        log.push("building hello-2.12.1");
+        assert_eq!(log.len(), 1);
+        assert!(!log.is_empty());
+    }
+
+    #[test]
+    fn build_log_push_multiple_lines() {
+        let mut log = BuildLog::new();
+        log.push("configuring...");
+        log.push("building...");
+        log.push("installing...");
+        assert_eq!(log.len(), 3);
+    }
+
+    #[test]
+    fn build_log_extend() {
+        let mut log = BuildLog::new();
+        log.extend(&["line1", "line2", "line3"]);
+        assert_eq!(log.len(), 3);
+    }
+
+    #[test]
+    fn build_log_finish_joins_with_newline() {
+        let mut log = BuildLog::new();
+        log.push("hello");
+        log.push("world");
+        assert_eq!(log.finish(), "hello\nworld");
+    }
+
+    #[test]
+    fn build_log_finish_empty() {
+        let log = BuildLog::new();
+        assert_eq!(log.finish(), "");
+    }
+
+    #[test]
+    fn build_log_clone() {
+        let mut log = BuildLog::new();
+        log.push("test line");
+        let cloned = log.clone();
+        assert_eq!(cloned.len(), 1);
+        assert_eq!(cloned.finish(), "test line");
+    }
+
+    #[test]
+    fn build_log_default() {
+        let log: BuildLog = Default::default();
+        assert!(log.is_empty());
+    }
+
+    // ── BuildError conversion tests ─────────────────────────────
+
+    #[test]
+    fn build_error_from_sandbox_error() {
+        let sandbox_err = crate::sandbox::SandboxError::Execution("timeout".into());
+        let build_err: BuildError = sandbox_err.into();
+        assert!(build_err.to_string().contains("timeout"));
+    }
+
     // ── MockBuilder through Builder trait → BuildResult → API BuildStatus ──
 
     use crate::sandbox::{NoSandbox, Sandbox, SandboxConfig};
