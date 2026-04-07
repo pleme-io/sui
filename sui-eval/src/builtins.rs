@@ -747,6 +747,46 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // ── Impure builtins ────────────────────────────────────
+    //
+    // These read from the process environment / clock and so cannot
+    // be deterministic. nixpkgs uses them in `getEnv "NIXPKGS_CONFIG"`,
+    // `currentTime` for build-time stamps, `pathExists ./<path>` etc.
+    // In hermetic (pure) mode they would normally error; sui doesn't
+    // enforce that yet, so we just delegate to the OS.
+
+    register_builtin(&mut builtins_set, "getEnv", |args| {
+        let name = args[0].as_string()?;
+        Ok(Value::string(std::env::var(name).unwrap_or_default()))
+    });
+
+    register_builtin(&mut builtins_set, "currentTime", |_args| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Ok(Value::Int(now))
+    });
+
+    register_builtin(&mut builtins_set, "readFileType", |args| {
+        let path = args[0].as_string()?;
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) => {
+                let kind = if meta.is_symlink() {
+                    "symlink"
+                } else if meta.is_dir() {
+                    "directory"
+                } else if meta.is_file() {
+                    "regular"
+                } else {
+                    "unknown"
+                };
+                Ok(Value::string(kind))
+            }
+            Err(e) => Err(EvalError::TypeError(format!("readFileType: {e}"))),
+        }
+    });
+
     // ── Tier 1: hashString, match, split (regex-based) ────
 
     register_curried(&mut builtins_set, "hashString", |algo, s| {
@@ -877,18 +917,37 @@ pub fn register(env: &mut Env) {
             Value::String(ns) => ns.chars.clone(),
             _ => return Err(EvalError::TypeError("import: expected path".into())),
         };
+        // Resolve relative paths against the *currently evaluating
+        // file's directory*, not the process cwd. This is what
+        // makes `import ./foo.nix` work correctly inside nested
+        // imports.
+        let resolved_raw = if std::path::Path::new(&raw_path).is_absolute() {
+            raw_path
+        } else if let Some(dir) = crate::eval::current_eval_dir() {
+            dir.join(&raw_path).to_string_lossy().into_owned()
+        } else {
+            raw_path
+        };
         // Real Nix: importing a directory is equivalent to importing
         // `<dir>/default.nix`. nixpkgs and every flake-style consumer
         // relies on this, so without it `import <nixpkgs>` errors
         // immediately.
-        let path = if std::path::Path::new(&raw_path).is_dir() {
-            format!("{raw_path}/default.nix")
+        let path = if std::path::Path::new(&resolved_raw).is_dir() {
+            format!("{resolved_raw}/default.nix")
         } else {
-            raw_path
+            resolved_raw
         };
         let source = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::TypeError(format!("import {path}: {e}")))?;
-        crate::eval::eval(&source)
+        // Push this file onto the eval stack so further relative
+        // path literals inside it resolve against its directory,
+        // AND tag the root Env so any closure created during
+        // evaluation captures the file (for late-evaluated
+        // function defaults that fire after we've left this
+        // import scope).
+        let path_buf = std::path::PathBuf::from(&path);
+        let _guard = crate::eval::push_eval_file(path_buf.clone());
+        crate::eval::eval_with_file(&source, Some(path_buf))
     });
 
     // ── derivation ─────────────────────────────────────────

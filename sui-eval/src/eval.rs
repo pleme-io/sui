@@ -4,7 +4,8 @@
 //! rec-attrset values are wrapped in `Value::Thunk` and only evaluated
 //! when their value is actually needed (call-by-need with memoization).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 
 use rnix::ast::{self, AstToken, HasEntry, InterpolPart};
 use rowan::ast::AstNode;
@@ -13,6 +14,42 @@ use crate::builtins;
 use crate::value::*;
 
 thread_local! { static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) }; }
+
+// ── Currently-evaluating-file stack ────────────────────────────
+//
+// Real Nix resolves relative path literals (`./foo.nix`) against the
+// directory of the file that *contains* the literal, not against the
+// process cwd. Track the stack of files we're currently evaluating
+// so the `PathRel` handler and `import` builtin can resolve correctly.
+
+thread_local! {
+    static EVAL_FILE_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Return the directory of the file currently being evaluated, if any.
+/// Used by the `PathRel` AST handler to resolve relative path literals.
+pub fn current_eval_dir() -> Option<PathBuf> {
+    EVAL_FILE_STACK.with(|s| s.borrow().last().and_then(|p| p.parent().map(PathBuf::from)))
+}
+
+/// Push a file onto the eval stack. Returns an RAII guard that pops
+/// it on drop. Use when entering an `import <file>` so subsequent
+/// relative path literals resolve against the right directory.
+pub fn push_eval_file(file: PathBuf) -> EvalFileGuard {
+    EVAL_FILE_STACK.with(|s| s.borrow_mut().push(file));
+    EvalFileGuard
+}
+
+/// RAII guard that pops the top of the eval-file stack on drop.
+pub struct EvalFileGuard;
+
+impl Drop for EvalFileGuard {
+    fn drop(&mut self) {
+        EVAL_FILE_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
 
 // ── Pure (hermetic) evaluation mode ────────────────────────────
 //
@@ -72,6 +109,15 @@ impl Drop for DepthGuard {
 
 /// Evaluate a Nix expression string.
 pub fn eval(input: &str) -> Result<Value, EvalError> {
+    eval_with_file(input, None)
+}
+
+/// Evaluate a Nix expression string, optionally tagged with the
+/// path of the source file. The file is stored on the root `Env`
+/// so that any closure created during evaluation captures it and
+/// can resolve relative path literals (`./foo.nix`) in function
+/// defaults that fire after control has left the file's scope.
+pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<Value, EvalError> {
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {
         let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
@@ -80,6 +126,7 @@ pub fn eval(input: &str) -> Result<Value, EvalError> {
     let root = parse.tree();
     let expr = root.expr().ok_or_else(|| EvalError::ParseError("empty expression".to_string()))?;
     let mut env = Env::new();
+    env.eval_file = file;
     builtins::register(&mut env);
     let result = eval_expr(&expr, &env)?;
     // Force the top-level result so callers always see a concrete value.
@@ -112,8 +159,23 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             Ok(Value::Path(text))
         }
         ast::Expr::PathRel(p) => {
+            // Real Nix resolves `./foo.nix` against the directory
+            // of the file that *contains* the literal, not the
+            // process cwd. Use the current eval-file stack; fall
+            // back to cwd when no file is being evaluated (e.g.,
+            // top-level `sui eval`).
             let text = p.syntax().text().to_string();
-            Ok(Value::Path(text))
+            let resolved = if let Some(dir) = current_eval_dir() {
+                let joined = dir.join(&text);
+                joined
+                    .canonicalize()
+                    .unwrap_or(joined)
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                text
+            };
+            Ok(Value::Path(resolved))
         }
         ast::Expr::PathHome(p) => {
             let text = p.syntax().text().to_string();
@@ -255,19 +317,25 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .argument()
                 .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
             let func = force_value(&eval_expr(&func_expr, env)?)?;
-            // For most callees the argument is evaluated eagerly to
-            // keep backwards compat with builtins that don't yet
-            // force their arguments themselves.
-            //
-            // `tryEval` is the exception: it must catch any
-            // `throw` / `abort` from *evaluating* its argument, so
-            // we wrap the unevaluated expression in a fresh thunk
-            // and let `tryEval` drive the force itself (see the
-            // matching special-case in `apply`).
-            let arg = if matches!(&func, Value::Builtin(b) if b.name == "tryEval") {
-                Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
-            } else {
-                eval_expr(&arg_expr, env)?
+            // Lambda arguments are wrapped in a thunk for call-by-
+            // need semantics. This is REQUIRED for two reasons:
+            //   1. User-defined wrappers around `tryEval` (like
+            //      nixpkgs' `try = x: def: ...`) need lazy args so
+            //      the error fires *inside* the wrapper's body
+            //      where tryEval can catch it.
+            //   2. Fixpoint patterns like `fix = f: let x = f x; in x`
+            //      need their argument to remain unforced.
+            // Builtins still get a forced argument (apply() handles
+            // the difference), with `tryEval` itself opting back
+            // out via the special-case in apply().
+            let arg = match &func {
+                Value::Lambda(_) => {
+                    Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+                }
+                Value::Builtin(b) if b.name == "tryEval" => {
+                    Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+                }
+                _ => eval_expr(&arg_expr, env)?,
             };
             apply(func, arg)
         }
@@ -904,6 +972,17 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     match func {
         Value::Lambda(closure) => {
             let mut call_env = closure.env.child();
+            // Push the closure's captured eval file onto the
+            // file stack so any relative path literals inside
+            // the body (including in default parameter values)
+            // resolve against the file where the closure was
+            // *defined*, not where it's called from. The guard
+            // pops on drop.
+            let _file_guard = closure
+                .env
+                .eval_file
+                .clone()
+                .map(push_eval_file);
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {
                     // Simple ident param: bind argument WITHOUT forcing.

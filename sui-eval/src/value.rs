@@ -294,6 +294,12 @@ pub struct Env {
     parent: Option<Arc<Env>>,
     /// Dynamic scope from `with` expressions.
     with_scope: Option<Arc<NixAttrs>>,
+    /// Source file currently being evaluated, for relative path
+    /// literals (`./foo.nix`) inside function defaults that get
+    /// evaluated *after* control has left the file scope. The
+    /// closure captures this when it is created and `apply`
+    /// pushes it onto the eval-file stack before running the body.
+    pub eval_file: Option<std::path::PathBuf>,
 }
 
 impl Env {
@@ -302,6 +308,7 @@ impl Env {
             bindings: BTreeMap::new(),
             parent: None,
             with_scope: None,
+            eval_file: None,
         }
     }
 
@@ -310,6 +317,10 @@ impl Env {
             bindings: BTreeMap::new(),
             parent: Some(Arc::new(self.clone())),
             with_scope: None,
+            // Children inherit the parent's eval file so that
+            // path literals nested deep in let-chains still
+            // resolve against the right directory.
+            eval_file: self.eval_file.clone(),
         }
     }
 
