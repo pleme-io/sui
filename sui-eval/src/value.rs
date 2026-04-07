@@ -260,9 +260,8 @@ impl Thunk {
                 }
             }
             ThunkRepr::Blackhole => {
-                // Already being evaluated -- infinite recursion.
-                Err(EvalError::TypeError(
-                    "infinite recursion (thunk blackhole)".into(),
+                Err(EvalError::InfiniteRecursion(
+                    "thunk blackhole".into(),
                 ))
             }
             ThunkRepr::Evaluated(v) => {
@@ -477,12 +476,27 @@ pub enum EvalError {
     /// An attribute was selected from a set that does not contain it.
     #[error("attribute not found: {0}")]
     AttrNotFound(String),
+    /// A type mismatch with structured expected/got information.
+    #[error("type error: expected {expected}, got {got}")]
+    TypeMismatch {
+        expected: &'static str,
+        got: &'static str,
+    },
     /// An `assert` expression's condition evaluated to false.
     #[error("assertion failed")]
     AssertionFailed,
     /// Integer division by zero.
     #[error("division by zero")]
     DivisionByZero,
+    /// Infinite recursion detected (thunk blackhole or eval depth).
+    #[error("infinite recursion ({0})")]
+    InfiniteRecursion(String),
+    /// An I/O error from the host filesystem.
+    #[error("I/O error: {context}: {message}")]
+    IoError { context: String, message: String },
+    /// Explicit `throw` or `abort` from Nix code.
+    #[error("{0}")]
+    Throw(String),
     /// A language feature that is not yet implemented.
     #[error("not yet implemented: {0}")]
     NotImplemented(String),

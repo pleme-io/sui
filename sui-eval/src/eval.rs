@@ -91,8 +91,8 @@ impl DepthGuard {
         EVAL_DEPTH.with(|d| {
             let depth = d.get();
             if depth > MAX_EVAL_DEPTH {
-                return Err(EvalError::TypeError(
-                    "infinite recursion (eval depth exceeded)".into(),
+                return Err(EvalError::InfiniteRecursion(
+                    "eval depth exceeded".into(),
                 ));
             }
             d.set(depth + 1);

@@ -644,7 +644,7 @@ pub fn register(env: &mut Env) {
     register_builtin(&mut builtins_set, "readFile", |args| {
         let path = args[0].coerce_to_path("readFile")?;
         let contents = std::fs::read_to_string(&path)
-            .map_err(|e| EvalError::TypeError(format!("readFile: {e}")))?;
+            .map_err(|e| EvalError::IoError { context: "readFile".into(), message: e.to_string() })?;
         Ok(Value::string(contents))
     });
 
@@ -723,11 +723,11 @@ pub fn register(env: &mut Env) {
     // Misc
     register_builtin(&mut builtins_set, "throw", |args| {
         let msg = args[0].as_string()?;
-        Err(EvalError::TypeError(format!("throw: {msg}")))
+        Err(EvalError::Throw(format!("throw: {msg}")))
     });
     register_builtin(&mut builtins_set, "abort", |args| {
         let msg = args[0].as_string()?;
-        Err(EvalError::TypeError(format!("abort: {msg}")))
+        Err(EvalError::Throw(format!("abort: {msg}")))
     });
     register_builtin(&mut builtins_set, "seq", |args| {
         let _forced = args[0].clone(); // force first arg
@@ -890,7 +890,7 @@ pub fn register(env: &mut Env) {
                 };
                 Ok(Value::string(kind))
             }
-            Err(e) => Err(EvalError::TypeError(format!("readFileType: {e}"))),
+            Err(e) => Err(EvalError::IoError { context: "readFileType".into(), message: e.to_string() }),
         }
     });
 
@@ -971,11 +971,11 @@ pub fn register(env: &mut Env) {
         let path_str = args[0].coerce_to_path("readDir")?;
         let mut attrs = NixAttrs::new();
         for entry in std::fs::read_dir(&path_str)
-            .map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?
+            .map_err(|e| EvalError::IoError { context: "readDir".into(), message: e.to_string() })?
         {
-            let entry = entry.map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?;
+            let entry = entry.map_err(|e| EvalError::IoError { context: "readDir".into(), message: e.to_string() })?;
             let name = entry.file_name().to_string_lossy().to_string();
-            let ft = entry.file_type().map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?;
+            let ft = entry.file_type().map_err(|e| EvalError::IoError { context: "readDir".into(), message: e.to_string() })?;
             let type_str = if ft.is_dir() {
                 "directory"
             } else if ft.is_symlink() {
@@ -1037,7 +1037,7 @@ pub fn register(env: &mut Env) {
             resolved_raw
         };
         let source = std::fs::read_to_string(&path)
-            .map_err(|e| EvalError::TypeError(format!("import {path}: {e}")))?;
+            .map_err(|e| EvalError::IoError { context: format!("import {path}"), message: e.to_string() })?;
         // Push this file onto the eval stack so further relative
         // path literals inside it resolve against its directory,
         // AND tag the root Env so any closure created during
@@ -1214,7 +1214,7 @@ pub fn register(env: &mut Env) {
         let p = std::path::Path::new(&path_str);
         if p.is_file() {
             let content = std::fs::read(p)
-                .map_err(|e| EvalError::TypeError(format!("path: {e}")))?;
+                .map_err(|e| EvalError::IoError { context: "path".into(), message: e.to_string() })?;
             hasher.update(&content);
         } else if p.is_dir() {
             // Hash the directory name for deterministic output
@@ -1369,7 +1369,7 @@ pub fn register(env: &mut Env) {
         let algo_str = algo.as_string()?;
         let path_str = path_val.coerce_to_path("hashFile")?;
         let contents = std::fs::read(&path_str)
-            .map_err(|e| EvalError::TypeError(format!("hashFile: {e}")))?;
+            .map_err(|e| EvalError::IoError { context: "hashFile".into(), message: e.to_string() })?;
         let hex = match algo_str {
             "sha256" => {
                 use sha2::{Sha256, Digest};
@@ -1656,10 +1656,10 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
 
     // 1. Read and evaluate flake.nix.
     let source = std::fs::read_to_string(&flake_nix).map_err(|e| {
-        EvalError::TypeError(format!(
-            "getFlake: cannot read {}: {e}",
-            flake_nix.display()
-        ))
+        EvalError::IoError {
+            context: format!("getFlake: {}", flake_nix.display()),
+            message: e.to_string(),
+        }
     })?;
     let flake_value = crate::eval::eval(&source)?;
     let flake_attrs = flake_value.to_attrs()?.clone();
@@ -1675,10 +1675,10 @@ fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     //    no inputs (only `self`) does not require a lock file.
     let lock = if flake_lock_path.exists() {
         let lock_content = std::fs::read_to_string(&flake_lock_path).map_err(|e| {
-            EvalError::TypeError(format!(
-                "getFlake: cannot read {}: {e}",
-                flake_lock_path.display()
-            ))
+            EvalError::IoError {
+                context: format!("getFlake: {}", flake_lock_path.display()),
+                message: e.to_string(),
+            }
         })?;
         Some(
             sui_compat::flake::FlakeLock::parse(&lock_content)
