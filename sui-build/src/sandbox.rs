@@ -64,18 +64,24 @@ pub trait Sandbox: Send + Sync {
 /// Sandbox execution result.
 #[derive(Debug)]
 pub struct SandboxResult {
+    /// Process exit code (0 = success).
     pub exit_code: i32,
+    /// Captured standard output.
     pub stdout: Vec<u8>,
+    /// Captured standard error.
     pub stderr: Vec<u8>,
 }
 
 /// Sandbox errors.
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
+    /// The sandbox environment could not be prepared (e.g. namespace/mount failure).
     #[error("sandbox setup failed: {0}")]
     Setup(String),
+    /// The sandboxed process failed to execute.
     #[error("sandbox execution failed: {0}")]
     Execution(String),
+    /// An underlying I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

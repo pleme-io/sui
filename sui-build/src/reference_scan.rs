@@ -209,11 +209,15 @@ mod tests {
     // ── MockFs ────────────────────────────────────────────
 
     struct MockFs {
-        files: std::collections::HashMap<PathBuf, Vec<u8>>,
+        files: std::collections::BTreeMap<PathBuf, Vec<u8>>,
     }
 
     impl MockFs {
-        fn new() -> Self { Self { files: std::collections::HashMap::new() } }
+        fn new() -> Self {
+            Self {
+                files: std::collections::BTreeMap::new(),
+            }
+        }
         fn with_file(mut self, path: &str, data: &[u8]) -> Self {
             self.files.insert(PathBuf::from(path), data.to_vec());
             self
@@ -222,17 +226,32 @@ mod tests {
 
     impl FileSystem for MockFs {
         fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-            self.files.get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "mock"))
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "mock"))
         }
         fn walk_dir(&self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
             let prefix = dir.to_string_lossy();
-            Ok(self.files.keys().filter(|p| p.to_string_lossy().starts_with(prefix.as_ref())).cloned().collect())
+            Ok(self
+                .files
+                .keys()
+                .filter(|p| p.to_string_lossy().starts_with(prefix.as_ref()))
+                .cloned()
+                .collect())
         }
         fn read_link(&self, _: &Path) -> std::io::Result<PathBuf> {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "mock: not a symlink"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "mock: not a symlink",
+            ))
         }
-        fn is_file(&self, path: &Path) -> bool { self.files.contains_key(path) }
-        fn is_symlink(&self, _: &Path) -> bool { false }
+        fn is_file(&self, path: &Path) -> bool {
+            self.files.contains_key(path)
+        }
+        fn is_symlink(&self, _: &Path) -> bool {
+            false
+        }
     }
 
     #[test]
