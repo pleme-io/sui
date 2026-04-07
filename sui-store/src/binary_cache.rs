@@ -159,7 +159,8 @@ impl BinaryCacheStore {
         self.client
             .get_bytes(&url)
             .await
-            .map_err(|e| StoreError::Http(BinaryCacheError::from(e).to_string()))
+            .map_err(BinaryCacheError::from)
+            .map_err(StoreError::from)
     }
 
     /// Convert a NarInfo to our PathInfo type.
