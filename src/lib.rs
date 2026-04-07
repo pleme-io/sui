@@ -121,4 +121,30 @@ mod tests {
         let debug = format!("{err:?}");
         assert!(debug.contains("MissingArgument"));
     }
+
+    #[test]
+    fn parse_store_path_absolute() {
+        let sp = parse_store_path(
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1",
+        )
+        .unwrap();
+        assert_eq!(
+            sp.to_absolute_path(),
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1"
+        );
+    }
+
+    #[test]
+    fn parse_store_path_basename() {
+        let sp = parse_store_path("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1").unwrap();
+        assert_eq!(
+            sp.to_absolute_path(),
+            "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1"
+        );
+    }
+
+    #[test]
+    fn parse_store_path_invalid() {
+        assert!(parse_store_path("not-a-valid-store-path").is_err());
+    }
 }
