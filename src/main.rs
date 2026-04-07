@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use sui::NIX_DB_PATH;
+use sui::{CliError, NIX_DB_PATH};
 use sui_compat::store_path::StorePath;
 use sui_store::{LocalStore, Store};
 
@@ -124,7 +124,7 @@ enum FleetCommands {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), CliError> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -164,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         None => {
-                            anyhow::bail!("path '{}' is not valid", sp.to_absolute_path());
+                            return Err(CliError::PathNotValid(sp.to_absolute_path()));
                         }
                     }
                 }
@@ -193,9 +193,9 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Eval { expression, json } => {
-            let expr = expression.ok_or_else(|| anyhow::anyhow!("no expression provided"))?;
-            let value = sui_eval::eval(&expr)
-                .map_err(|e| anyhow::anyhow!("evaluation error: {e}"))?;
+            let expr = expression
+                .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
+            let value = sui_eval::eval(&expr)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&value.to_json())?);
             } else {
@@ -230,26 +230,31 @@ async fn main() -> anyhow::Result<()> {
             let store = open_store().await?;
             let config = sui_daemon::DaemonConfig::with_socket_path(&socket);
             let server = sui_daemon::DaemonServer::new(config, store);
-            server.run().await?;
+            server.run().await.map_err(|e| CliError::Orchestrate {
+                operation: "daemon",
+                message: e.to_string(),
+            })?;
         }
 
         Commands::System { command } => {
             let sys = sui_orchestrate::SystemOrchestrator::new().map_err(|e| {
-                anyhow::anyhow!("platform detection failed: {e}")
+                CliError::Orchestrate {
+                    operation: "platform detection",
+                    message: e.to_string(),
+                }
             })?;
             match command {
                 SystemCommands::Rebuild { flake } => {
                     let action = sui_orchestrate::RebuildAction::Switch;
-                    match sys.rebuild(action, flake.as_deref()).await {
-                        Ok(result) => {
-                            println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
-                            if let Some(generation) = result.generation {
-                                println!("generation: {generation}");
-                            }
+                    let result = sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "rebuild",
+                            message: e.to_string(),
                         }
-                        Err(e) => {
-                            anyhow::bail!("rebuild failed: {e}");
-                        }
+                    })?;
+                    println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
+                    if let Some(generation) = result.generation {
+                        println!("generation: {generation}");
                     }
                 }
                 SystemCommands::Status => {
@@ -258,8 +263,10 @@ async fn main() -> anyhow::Result<()> {
                     println!("generation: {current}");
                 }
                 SystemCommands::Rollback => {
-                    let result = sys.rollback().await
-                        .map_err(|e| anyhow::anyhow!("rollback failed: {e}"))?;
+                    let result = sys.rollback().await.map_err(|e| CliError::Orchestrate {
+                        operation: "rollback",
+                        message: e.to_string(),
+                    })?;
                     println!("rollback {} in {:.1}s",
                         if result.success { "succeeded" } else { "failed" },
                         result.duration_secs);
@@ -268,8 +275,6 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Fleet { command } => {
-            // Load fleet config — in production this comes from a config file.
-            // For now, demonstrate with an empty registry.
             let registry = sui_orchestrate::node::NodeRegistry::new();
             let orch = sui_orchestrate::FleetOrchestrator::new(registry);
             match command {
@@ -285,8 +290,10 @@ async fn main() -> anyhow::Result<()> {
                 }
                 FleetCommands::Deploy { target } => {
                     let mut orch = orch;
-                    let result = orch.deploy(&target, sui_orchestrate::DeployStrategy::Rolling, None).await
-                        .map_err(|e| anyhow::anyhow!("deploy failed: {e}"))?;
+                    let result = orch
+                        .deploy(&target, sui_orchestrate::DeployStrategy::Rolling, None)
+                        .await
+                        .map_err(|e| CliError::Deploy(e.to_string()))?;
                     println!("deployed to {} — {}/{} succeeded in {:.1}s",
                         result.target, result.succeeded, result.total_nodes, result.duration_secs);
                 }
@@ -305,8 +312,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn open_store() -> anyhow::Result<LocalStore> {
+async fn open_store() -> Result<LocalStore, CliError> {
     LocalStore::open(NIX_DB_PATH)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to open Nix store at {NIX_DB_PATH}: {e}"))
+        .map_err(|e| CliError::StoreOpen {
+            path: NIX_DB_PATH,
+            source: e,
+        })
 }

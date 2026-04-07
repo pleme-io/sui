@@ -16,7 +16,7 @@ use sui_store::LocalStore;
 use crate::NIX_DB_PATH;
 
 /// Start the API server on the given addresses.
-pub async fn serve(rest_addr: &str, _grpc_addr: &str) -> anyhow::Result<()> {
+pub async fn serve(rest_addr: &str, _grpc_addr: &str) -> std::io::Result<()> {
     // Try to open the local Nix store; fall back to stub mode if unavailable.
     let app_state = match LocalStore::open(NIX_DB_PATH).await {
         Ok(store) => {
