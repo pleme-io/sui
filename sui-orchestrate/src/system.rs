@@ -278,13 +278,13 @@ mod tests {
 
     /// A mock command runner for testing.
     struct MockCommandRunner {
-        responses: std::collections::HashMap<String, CommandOutput>,
+        responses: std::collections::BTreeMap<String, CommandOutput>,
     }
 
     impl MockCommandRunner {
         fn new() -> Self {
             Self {
-                responses: std::collections::HashMap::new(),
+                responses: std::collections::BTreeMap::new(),
             }
         }
 
