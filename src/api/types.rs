@@ -15,6 +15,17 @@ pub struct HealthResponse {
     pub version: String,
 }
 
+impl HealthResponse {
+    /// Build a healthy response with the current crate version.
+    #[must_use]
+    pub fn ok() -> Self {
+        Self {
+            status: "ok".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+}
+
 // ── Store ───────────────────────────────────────────────────
 
 /// Store path information.
@@ -201,6 +212,20 @@ pub struct DaemonStatus {
     pub protocol_version: Option<String>,
 }
 
+impl DaemonStatus {
+    /// Build the current daemon status (stub — no real connections yet).
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            store_dir: "/nix/store".to_string(),
+            active_connections: 0,
+            trusted_users: vec![],
+            protocol_version: Some("1.0".to_string()),
+        }
+    }
+}
+
 /// Active daemon connection.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
 pub struct DaemonConnection {
@@ -230,6 +255,20 @@ pub struct SystemStatus {
     pub boot_time: Option<i64>,
     pub nix_version: Option<String>,
     pub system: Option<String>,
+}
+
+impl SystemStatus {
+    /// Build a stub system status (used before real system integration).
+    #[must_use]
+    pub fn stub() -> Self {
+        Self {
+            generation: 0,
+            config_path: String::new(),
+            boot_time: None,
+            nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            system: None,
+        }
+    }
 }
 
 /// A system generation.
@@ -283,6 +322,20 @@ pub struct FleetStatus {
     pub nodes: Vec<FleetNode>,
 }
 
+impl FleetStatus {
+    /// Build an empty fleet status (stub).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            total_nodes: 0,
+            online_nodes: 0,
+            deploying_nodes: Some(0),
+            failed_nodes: Some(0),
+            nodes: vec![],
+        }
+    }
+}
+
 /// Fleet rollback request.
 #[derive(Debug, Clone, Serialize, Deserialize, InputObject)]
 pub struct FleetRollbackRequest {
@@ -315,6 +368,16 @@ pub struct CacheInfo {
     pub store_dir: String,
     pub want_mass_query: bool,
     pub priority: i32,
+}
+
+impl Default for CacheInfo {
+    fn default() -> Self {
+        Self {
+            store_dir: "/nix/store".to_string(),
+            want_mass_query: true,
+            priority: 40,
+        }
+    }
 }
 
 /// Push-to-cache request.

@@ -23,10 +23,7 @@ impl QueryRoot {
 
     /// Health check.
     async fn health(&self, _ctx: &Context<'_>) -> HealthResponse {
-        HealthResponse {
-            status: "ok".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }
+        HealthResponse::ok()
     }
 
     // ── Store ───────────────────────────────────────────
@@ -56,13 +53,7 @@ impl QueryRoot {
 
     /// Daemon status.
     async fn daemon_status(&self, _ctx: &Context<'_>) -> DaemonStatus {
-        DaemonStatus {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            store_dir: "/nix/store".to_string(),
-            active_connections: 0,
-            trusted_users: vec![],
-            protocol_version: Some("1.0".to_string()),
-        }
+        DaemonStatus::current()
     }
 
     /// List active daemon connections.
@@ -148,13 +139,7 @@ impl QueryRoot {
 
     /// Get current system status.
     async fn system_status(&self, _ctx: &Context<'_>) -> SystemStatus {
-        SystemStatus {
-            generation: 0,
-            config_path: String::new(),
-            boot_time: None,
-            nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            system: None,
-        }
+        SystemStatus::stub()
     }
 
     /// List system generations.
@@ -171,13 +156,7 @@ impl QueryRoot {
 
     /// Get fleet-wide status.
     async fn fleet_status(&self, _ctx: &Context<'_>) -> FleetStatus {
-        FleetStatus {
-            total_nodes: 0,
-            online_nodes: 0,
-            deploying_nodes: Some(0),
-            failed_nodes: Some(0),
-            nodes: vec![],
-        }
+        FleetStatus::empty()
     }
 
     // ── Profile ─────────────────────────────────────────
@@ -191,11 +170,7 @@ impl QueryRoot {
 
     /// Get binary cache info.
     async fn cache_info(&self, _ctx: &Context<'_>) -> CacheInfo {
-        CacheInfo {
-            store_dir: "/nix/store".to_string(),
-            want_mass_query: true,
-            priority: 40,
-        }
+        CacheInfo::default()
     }
 }
 
@@ -288,24 +263,12 @@ impl MutationRoot {
         request: SystemRebuildRequest,
     ) -> SystemStatus {
         let _ = request;
-        SystemStatus {
-            generation: 0,
-            config_path: String::new(),
-            boot_time: None,
-            nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            system: None,
-        }
+        SystemStatus::stub()
     }
 
     /// Rollback to previous system generation.
     async fn system_rollback(&self, _ctx: &Context<'_>) -> SystemStatus {
-        SystemStatus {
-            generation: 0,
-            config_path: String::new(),
-            boot_time: None,
-            nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            system: None,
-        }
+        SystemStatus::stub()
     }
 
     // ── Fleet ───────────────────────────────────────────

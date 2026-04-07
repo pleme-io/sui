@@ -70,10 +70,7 @@ pub fn router() -> Router<AppState> {
 // ── Health ──────────────────────────────────────────────────
 
 async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    })
+    Json(HealthResponse::ok())
 }
 
 // ── Store ───────────────────────────────────────────────────
@@ -253,13 +250,7 @@ async fn cancel_build(Path(build_id): Path<String>) -> StatusCode {
 // ── Daemon ──────────────────────────────────────────────────
 
 async fn daemon_status() -> Json<DaemonStatus> {
-    Json(DaemonStatus {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        store_dir: "/nix/store".to_string(),
-        active_connections: 0,
-        trusted_users: vec![],
-        protocol_version: Some("1.0".to_string()),
-    })
+    Json(DaemonStatus::current())
 }
 
 async fn list_connections() -> Json<Vec<DaemonConnection>> {
@@ -272,26 +263,11 @@ async fn system_rebuild(
     Json(req): Json<SystemRebuildRequest>,
 ) -> (StatusCode, Json<SystemStatus>) {
     let _ = req;
-    (
-        StatusCode::ACCEPTED,
-        Json(SystemStatus {
-            generation: 0,
-            config_path: String::new(),
-            boot_time: None,
-            nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            system: None,
-        }),
-    )
+    (StatusCode::ACCEPTED, Json(SystemStatus::stub()))
 }
 
 async fn system_status() -> Json<SystemStatus> {
-    Json(SystemStatus {
-        generation: 0,
-        config_path: String::new(),
-        boot_time: None,
-        nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        system: None,
-    })
+    Json(SystemStatus::stub())
 }
 
 async fn list_generations() -> Json<Vec<Generation>> {
@@ -299,13 +275,7 @@ async fn list_generations() -> Json<Vec<Generation>> {
 }
 
 async fn system_rollback() -> Json<SystemStatus> {
-    Json(SystemStatus {
-        generation: 0,
-        config_path: String::new(),
-        boot_time: None,
-        nix_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        system: None,
-    })
+    Json(SystemStatus::stub())
 }
 
 // ── Fleet ───────────────────────────────────────────────────
@@ -328,13 +298,7 @@ async fn fleet_deploy(Json(req): Json<FleetDeployRequest>) -> (StatusCode, Json<
 }
 
 async fn fleet_status() -> Json<FleetStatus> {
-    Json(FleetStatus {
-        total_nodes: 0,
-        online_nodes: 0,
-        deploying_nodes: Some(0),
-        failed_nodes: Some(0),
-        nodes: vec![],
-    })
+    Json(FleetStatus::empty())
 }
 
 async fn fleet_rollback(Json(req): Json<FleetRollbackRequest>) -> StatusCode {
@@ -364,11 +328,7 @@ async fn rollback_profile() -> StatusCode {
 // ── Cache ───────────────────────────────────────────────────
 
 async fn cache_info() -> Json<CacheInfo> {
-    Json(CacheInfo {
-        store_dir: "/nix/store".to_string(),
-        want_mass_query: true,
-        priority: 40,
-    })
+    Json(CacheInfo::default())
 }
 
 async fn cache_push(Json(req): Json<CachePushRequest>) -> StatusCode {
