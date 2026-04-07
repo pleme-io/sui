@@ -1,7 +1,115 @@
 //! Core builder trait and types.
+//!
+//! Defines the [`Builder`] trait, build lifecycle types ([`BuildState`],
+//! [`BuildResult`]), the [`BuildLog`] accumulator, and the [`BuildError`]
+//! error enum used throughout the crate.
 
 use sui_compat::derivation::Derivation;
 use sui_compat::store_path::StorePath;
+
+use crate::sandbox::SandboxError;
+
+// ── Build state machine ──────────────────────────────────────────
+
+/// Tracks the lifecycle of a single build.
+///
+/// State transitions: `Pending → Building → Succeeded | Failed`.
+/// Invalid transitions (e.g. `Succeeded → Building`) are prevented by
+/// returning an error from [`BuildState::transition`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildState {
+    /// Build is queued but has not started.
+    Pending,
+    /// Build is currently executing.
+    Building,
+    /// Build completed successfully.
+    Succeeded,
+    /// Build finished with an error.
+    Failed(String),
+}
+
+impl BuildState {
+    /// Attempt a state transition, returning an error on invalid moves.
+    pub fn transition(&mut self, next: BuildState) -> Result<(), BuildError> {
+        let valid = match (&*self, &next) {
+            (Self::Pending, Self::Building) => true,
+            (Self::Building, Self::Succeeded) => true,
+            (Self::Building, Self::Failed(_)) => true,
+            _ => false,
+        };
+        if valid {
+            *self = next;
+            Ok(())
+        } else {
+            Err(BuildError::Failed(format!(
+                "invalid state transition: {self:?} → {next:?}",
+            )))
+        }
+    }
+
+    /// Returns `true` if the build has finished (succeeded or failed).
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed(_))
+    }
+}
+
+impl std::fmt::Display for BuildState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Building => write!(f, "building"),
+            Self::Succeeded => write!(f, "succeeded"),
+            Self::Failed(reason) => write!(f, "failed: {reason}"),
+        }
+    }
+}
+
+// ── Build log ────────────────────────────────────────────────────
+
+/// Structured build log accumulator.
+///
+/// Collects timestamped log lines during a build. The final log text
+/// is retrievable via [`BuildLog::finish`].
+#[derive(Debug, Clone, Default)]
+pub struct BuildLog {
+    lines: Vec<String>,
+}
+
+impl BuildLog {
+    /// Create an empty build log.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a line to the log.
+    pub fn push(&mut self, line: &str) {
+        self.lines.push(line.to_owned());
+    }
+
+    /// Append multiple lines at once.
+    pub fn extend(&mut self, lines: &[&str]) {
+        for line in lines {
+            self.lines.push((*line).to_owned());
+        }
+    }
+
+    /// Return the number of lines logged.
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Return `true` if no lines have been logged.
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Consume the log and return the joined text.
+    pub fn finish(self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+// ── Build result ─────────────────────────────────────────────────
 
 /// Build execution result.
 #[derive(Debug, Clone)]
@@ -16,22 +124,34 @@ pub struct BuildResult {
     pub duration_secs: f64,
 }
 
+// ── Errors ───────────────────────────────────────────────────────
+
 /// Build errors.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
+    /// The build command itself returned a failure.
     #[error("build failed: {0}")]
     Failed(String),
+    /// The sandbox could not be configured or the sandboxed process failed.
     #[error("sandbox error: {0}")]
-    Sandbox(String),
+    Sandbox(#[from] SandboxError),
+    /// The derivation is invalid or cannot be processed.
     #[error("derivation error: {0}")]
     Derivation(String),
+    /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// Requested functionality is not yet available.
     #[error("not implemented: {0}")]
     NotImplemented(String),
 }
 
+// ── Builder trait ────────────────────────────────────────────────
+
 /// The core builder interface.
+///
+/// Implementations run a derivation's builder command (optionally inside
+/// a sandbox) and return a [`BuildResult`] on success.
 #[allow(async_fn_in_trait)]
 pub trait Builder: Send + Sync {
     /// Build a derivation and return the result.
@@ -54,9 +174,10 @@ mod tests {
 
     #[test]
     fn build_error_sandbox_display() {
-        let e = BuildError::Sandbox("mount failed".to_string());
+        let inner = crate::sandbox::SandboxError::Setup("mount failed".to_string());
+        let e = BuildError::Sandbox(inner);
         assert!(e.to_string().contains("mount failed"));
-        assert!(e.to_string().contains("sandbox error"));
+        assert!(e.to_string().contains("sandbox"));
     }
 
     #[test]
@@ -141,8 +262,7 @@ mod tests {
             let sandbox = NoSandbox;
             let config = SandboxConfig::from_derivation(drv, "/tmp");
 
-            let result = sandbox.execute(&config)
-                .map_err(|e| BuildError::Sandbox(e.to_string()))?;
+            let result = sandbox.execute(&config)?;
 
             let outputs: Vec<StorePath> = drv
                 .outputs
@@ -264,7 +384,7 @@ mod tests {
         let result = builder.build(&drv).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            BuildError::Sandbox(msg) => assert!(!msg.is_empty()),
+            BuildError::Sandbox(inner) => assert!(!inner.to_string().is_empty()),
             other => panic!("expected Sandbox error, got {other:?}"),
         }
     }
