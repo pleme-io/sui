@@ -436,6 +436,40 @@ fn diff_trace_verbose_passthrough() {
 // (passthrough) directly.
 
 #[test]
+fn diff_scoped_import() {
+    if common::skip_if_offline("scoped_import") {
+        return;
+    }
+    // scopedImport needs a real on-disk file. Stage one in tmp and
+    // diff inline expressions that import it under different scopes.
+    let dir = std::env::temp_dir().join("sui_diff_scoped_import");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("scope_target.nix");
+    std::fs::write(&p, "foo + 1").unwrap();
+    let path_str = p.display().to_string();
+    let cases: Vec<String> = vec![
+        format!(r#"(builtins.scopedImport {{ foo = 41; }} "{path_str}")"#),
+        format!(r#"(builtins.scopedImport {{ foo = 0; }} "{path_str}")"#),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (i, expr) in cases.iter().enumerate() {
+        let oracle = common::nix_eval_json(expr);
+        let ours = common::sui_eval_json(expr);
+        if oracle != ours {
+            failures.push(format!(
+                "  [{i}] {expr}\n       nix: {}\n       sui: {}",
+                serde_json::to_string(&oracle).unwrap_or_default(),
+                serde_json::to_string(&ours).unwrap_or_default(),
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    if !failures.is_empty() {
+        panic!("scoped_import: {} failed:\n{}", failures.len(), failures.join("\n"));
+    }
+}
+
+#[test]
 fn diff_parse_flake_ref() {
     run_cases(
         "parse_flake_ref",

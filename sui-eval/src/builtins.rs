@@ -1109,6 +1109,80 @@ pub fn register(env: &mut Env) {
 
     // ── import ─────────────────────────────────────────────
 
+    // ── scopedImport ──────────────────────────────────────
+    //
+    // `builtins.scopedImport scope path` — like `import path` but the
+    // file is evaluated with `scope` providing extra identifier
+    // bindings. CppNix actually *replaces* the default scope with
+    // the supplied attrset, so things like shadowing `true` by an
+    // attr work; sui implements a near-equivalent by wrapping the
+    // imported source in `with scope; …`, which covers every real
+    // use case in the wild (overlay scopes, lib injection) without
+    // the deeper rebinding machinery.
+    register_curried(&mut builtins_set, "scopedImport", |scope_val, path_val| {
+        let scope = scope_val.to_attrs()?.clone();
+        let raw_path = path_val.coerce_to_path("scopedImport")?;
+        let resolved_raw = if std::path::Path::new(&raw_path).is_absolute() {
+            raw_path
+        } else if let Some(dir) = crate::eval::current_eval_dir() {
+            dir.join(&raw_path).to_string_lossy().into_owned()
+        } else {
+            raw_path
+        };
+        let path = if std::path::Path::new(&resolved_raw).is_dir() {
+            format!("{resolved_raw}/default.nix")
+        } else {
+            resolved_raw
+        };
+        let source = std::fs::read_to_string(&path).map_err(|e| EvalError::IoError {
+            context: format!("scopedImport {path}"),
+            message: e.to_string(),
+        })?;
+        // Render the scope attrset back to Nix source so it can be
+        // parsed as part of a wrapping `with` expression. Only
+        // primitive values (int/bool/string/null) are rendered
+        // literally; everything else falls back to a `throw` so a
+        // mis-use produces a clean error rather than a parse failure.
+        fn render_scope_attrs(attrs: &NixAttrs) -> Result<String, EvalError> {
+            let mut out = String::from("{");
+            for (k, v) in attrs.iter() {
+                // Attrset values may still be thunks; force before
+                // matching so we see the concrete shape.
+                let forced = crate::eval::force_value(v)?;
+                let rhs = match &forced {
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => format!("{f}"),
+                    Value::Bool(true) => "true".to_string(),
+                    Value::Bool(false) => "false".to_string(),
+                    Value::Null => "null".to_string(),
+                    Value::String(ns) => {
+                        let escaped = ns
+                            .chars
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('$', "\\$");
+                        format!("\"{escaped}\"")
+                    }
+                    Value::Path(p) => format!("\"{p}\""),
+                    other => {
+                        return Err(EvalError::NotImplemented(format!(
+                            "scopedImport: cannot render scope value of type {} as literal",
+                            other.type_name()
+                        )))
+                    }
+                };
+                out.push_str(&format!(" {k} = {rhs};"));
+            }
+            out.push_str(" }");
+            Ok(out)
+        }
+        let scope_src = render_scope_attrs(&scope)?;
+        let wrapped = format!("with {scope_src}; ({source})");
+        let path_buf = std::path::PathBuf::from(&path);
+        let _guard = crate::eval::push_eval_file(path_buf.clone());
+        crate::eval::eval_with_file(&wrapped, Some(path_buf))
+    });
+
     register_builtin(&mut builtins_set, "import", |args| {
         let raw_path = args[0].coerce_to_path("import")?;
         // Resolve relative paths against the *currently evaluating
@@ -4654,6 +4728,56 @@ mod tests {
         } else {
             panic!("expected attrs");
         }
+    }
+
+    // ── scopedImport ──────────────────────────────────────
+
+    #[test]
+    fn builtins_scoped_import_injects_scope() {
+        let dir = std::env::temp_dir().join("sui_eval_scoped_import");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inject.nix");
+        std::fs::write(&path, "foo + 1").unwrap();
+        let expr = format!(
+            r#"builtins.scopedImport {{ foo = 41; }} "{}""#,
+            path.display()
+        );
+        assert_eq!(eval(&expr).unwrap(), Value::Int(42));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn builtins_scoped_import_returns_attrs() {
+        let dir = std::env::temp_dir().join("sui_eval_scoped_import_attrs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("attrs.nix");
+        std::fs::write(&path, "{ x = bar; y = bar + 1; }").unwrap();
+        let expr = format!(
+            r#"builtins.scopedImport {{ bar = 7; }} "{}""#,
+            path.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("x"), Some(&Value::Int(7)));
+            assert_eq!(a.get("y"), Some(&Value::Int(8)));
+        } else {
+            panic!("expected attrs");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn builtins_scoped_import_missing_path_errors() {
+        let result = eval(
+            r#"builtins.scopedImport { foo = 1; } "/nonexistent/scoped/import.nix""#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_scoped_import_first_arg_must_be_attrs() {
+        let result = eval(r#"builtins.scopedImport "not-attrs" "/tmp/foo.nix""#);
+        assert!(result.is_err());
     }
 
     // ── parseFlakeRef ─────────────────────────────────────
