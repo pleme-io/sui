@@ -850,4 +850,19 @@ mod tests {
         let sys = SystemOrchestrator::with_platform(Platform::Darwin);
         assert_eq!(sys.platform(), Platform::Darwin);
     }
+
+    // ── proptest: extract_generation never panics ─────────────
+
+    proptest::proptest! {
+        #[test]
+        fn extract_generation_never_panics(s in ".*") {
+            let _ = extract_generation(&s);
+        }
+
+        #[test]
+        fn extract_generation_finds_injected_number(n in 0i64..100_000) {
+            let log = format!("switched to generation {n}");
+            assert_eq!(extract_generation(&log), Some(n));
+        }
+    }
 }

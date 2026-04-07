@@ -188,4 +188,55 @@ mod tests {
         assert_eq!(cloned.stderr, output.stderr);
         assert_eq!(cloned.exit_code, output.exit_code);
     }
+
+    // ── TokioCommandRunner: exit code ─────────────────────────
+
+    #[tokio::test]
+    async fn run_false_returns_failure() {
+        let runner = TokioCommandRunner::new();
+        let output = runner.run("false", &[]).await.unwrap();
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn run_true_returns_success() {
+        let runner = TokioCommandRunner::new();
+        let output = runner.run("true", &[]).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.exit_code, Some(0));
+    }
+
+    // ── TokioCommandRunner: captures stderr ───────────────────
+
+    #[tokio::test]
+    async fn run_captures_stderr() {
+        let runner = TokioCommandRunner::new();
+        let output = runner.run("sh", &["-c", "echo err >&2"]).await.unwrap();
+        assert!(output.stderr.contains("err"));
+    }
+
+    // ── CommandError Debug ────────────────────────────────────
+
+    #[test]
+    fn command_error_debug() {
+        let e = CommandError::NotFound("foo".to_string());
+        let dbg = format!("{e:?}");
+        assert!(dbg.contains("NotFound"));
+        assert!(dbg.contains("foo"));
+    }
+
+    // ── CommandOutput Debug ───────────────────────────────────
+
+    #[test]
+    fn command_output_debug() {
+        let output = CommandOutput {
+            success: true,
+            stdout: "hi".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        };
+        let dbg = format!("{output:?}");
+        assert!(dbg.contains("success: true"));
+    }
 }
