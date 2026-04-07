@@ -10,7 +10,6 @@ description = "Clean-room Nix format and protocol compatibility layer"
 [dependencies]
 ed25519-dalek.workspace = true
 sha2.workspace = true
-blake3.workspace = true
 nix-nar.workspace = true
 base64.workspace = true
 serde.workspace = true
