@@ -3438,4 +3438,404 @@ mod tests {
             panic!("expected attrs");
         }
     }
+
+    // ── let-rec self-reference corner cases ───────────────
+
+    #[test]
+    fn let_rec_self_reference_simple() {
+        assert_eq!(
+            ev("let x = 1; y = x + 1; in y"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn let_rec_self_reference_chain() {
+        assert_eq!(
+            ev("let a = 1; b = a + 1; c = b + 1; in c"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn let_rec_self_reference_with_function() {
+        assert_eq!(
+            ev("let f = x: x + 1; y = f 10; in y"),
+            Value::Int(11),
+        );
+    }
+
+    #[test]
+    fn let_rec_mutual_recursion_via_if() {
+        assert_eq!(
+            ev("let isEven = n: if n == 0 then true else isOdd (n - 1); isOdd = n: if n == 0 then false else isEven (n - 1); in isEven 4"),
+            Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn let_rec_forward_ref_in_list() {
+        assert_eq!(
+            ev("let xs = [a b]; a = 1; b = 2; in builtins.length xs"),
+            Value::Int(2),
+        );
+    }
+
+    // ── with-shadowing corner cases ───────────────────────
+
+    #[test]
+    fn with_shadowing_let_wins_over_with() {
+        assert_eq!(
+            ev("let x = 1; in with { x = 2; }; x"),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn with_shadowing_inner_with_wins() {
+        assert_eq!(
+            ev("with { x = 1; }; with { x = 2; }; x"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn with_shadowing_outer_provides_missing() {
+        assert_eq!(
+            ev("with { x = 1; y = 10; }; with { x = 2; }; x + y"),
+            Value::Int(12),
+        );
+    }
+
+    #[test]
+    fn with_shadowing_lambda_arg_wins() {
+        assert_eq!(
+            ev("(x: with { x = 99; }; x) 42"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn with_shadowing_nested_let_wins_over_with() {
+        assert_eq!(
+            ev("with { x = 1; }; let x = 2; in x"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn with_scope_dynamic_attrs() {
+        assert_eq!(
+            ev(r#"with { x = 1; y = 2; z = 3; }; x + y + z"#),
+            Value::Int(6),
+        );
+    }
+
+    // ── attrset deep merge ────────────────────────────────
+
+    #[test]
+    fn attrset_deep_merge_simple() {
+        let v = ev("{ a.b = 1; a.c = 2; }");
+        if let Value::Attrs(attrs) = v {
+            let a = force_value(attrs.get("a").unwrap()).unwrap();
+            if let Value::Attrs(inner) = a {
+                assert_eq!(force_value(inner.get("b").unwrap()).unwrap(), Value::Int(1));
+                assert_eq!(force_value(inner.get("c").unwrap()).unwrap(), Value::Int(2));
+            } else {
+                panic!("expected nested attrs");
+            }
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn attrset_deep_merge_three_levels() {
+        let v = ev("{ a.b.c = 1; a.b.d = 2; a.e = 3; }");
+        if let Value::Attrs(attrs) = v {
+            let a = force_value(attrs.get("a").unwrap()).unwrap();
+            if let Value::Attrs(a_inner) = a {
+                let e = force_value(a_inner.get("e").unwrap()).unwrap();
+                assert_eq!(e, Value::Int(3));
+                let b = force_value(a_inner.get("b").unwrap()).unwrap();
+                if let Value::Attrs(b_inner) = b {
+                    assert_eq!(force_value(b_inner.get("c").unwrap()).unwrap(), Value::Int(1));
+                    assert_eq!(force_value(b_inner.get("d").unwrap()).unwrap(), Value::Int(2));
+                } else {
+                    panic!("expected nested attrs for b");
+                }
+            } else {
+                panic!("expected nested attrs for a");
+            }
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn attrset_deep_merge_preserves_siblings() {
+        assert_eq!(
+            ev("{ a.x = 1; b = 2; a.y = 3; }.b"),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn attrset_deep_merge_in_let() {
+        let v = ev("let s = { a.b = 1; a.c = 2; }; in s.a.b + s.a.c");
+        assert_eq!(v, Value::Int(3));
+    }
+
+    // ── inherit-from patterns ─────────────────────────────
+
+    #[test]
+    fn inherit_from_basic() {
+        assert_eq!(
+            ev("let s = { x = 1; y = 2; }; in let inherit (s) x y; in x + y"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn inherit_from_with_shadowing() {
+        assert_eq!(
+            ev("let x = 10; in let inherit ({ x = 20; }) x; in x"),
+            Value::Int(20),
+        );
+    }
+
+    #[test]
+    fn inherit_from_in_attrset() {
+        let v = ev(r#"let s = { a = 1; b = 2; }; in { inherit (s) a b; c = 3; }"#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(force_value(attrs.get("a").unwrap()).unwrap(), Value::Int(1));
+            assert_eq!(force_value(attrs.get("b").unwrap()).unwrap(), Value::Int(2));
+            assert_eq!(force_value(attrs.get("c").unwrap()).unwrap(), Value::Int(3));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn inherit_from_rec_set() {
+        assert_eq!(
+            ev("rec { inherit ({ x = 42; }) x; y = x; }.y"),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn inherit_plain_from_scope() {
+        assert_eq!(
+            ev("let x = 1; in { inherit x; }.x"),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
+    fn inherit_multiple_from_expr() {
+        assert_eq!(
+            ev("let s = { a = 10; b = 20; c = 30; }; in let inherit (s) a b c; in a + b + c"),
+            Value::Int(60),
+        );
+    }
+
+    // ── string interpolation edge cases ───────────────────
+
+    #[test]
+    fn interp_nested_attrset_access() {
+        assert_eq!(
+            ev(r#"let x = { a = "hello"; }; in "${x.a} world""#),
+            Value::string("hello world"),
+        );
+    }
+
+    #[test]
+    fn interp_with_let_expression() {
+        assert_eq!(
+            ev(r#""${let x = "inner"; in x}""#),
+            Value::string("inner"),
+        );
+    }
+
+    #[test]
+    fn interp_float_coercion() {
+        assert_eq!(
+            ev(r#""${toString 3.14}""#),
+            Value::string("3.14"),
+        );
+    }
+
+    // ── comparison edge cases ─────────────────────────────
+
+    #[test]
+    fn compare_mixed_int_float() {
+        assert_eq!(ev("1 < 1.5"), Value::Bool(true));
+        assert_eq!(ev("1.5 > 1"), Value::Bool(true));
+        assert_eq!(ev("2.0 == 2"), Value::Bool(true));
+    }
+
+    #[test]
+    fn compare_string_lexicographic() {
+        assert_eq!(ev(r#""abc" < "abd""#), Value::Bool(true));
+        assert_eq!(ev(r#""abc" < "abc""#), Value::Bool(false));
+        assert_eq!(ev(r#""abc" <= "abc""#), Value::Bool(true));
+    }
+
+    // ── update operator edge cases ────────────────────────
+
+    #[test]
+    fn update_empty_sets() {
+        let v = ev("{} // {}");
+        if let Value::Attrs(a) = v { assert!(a.is_empty()); } else { panic!(); }
+    }
+
+    #[test]
+    fn update_right_overrides_completely() {
+        assert_eq!(
+            ev("{ a = 1; b = 2; } // { a = 10; c = 30; }"),
+            ev("{ a = 10; b = 2; c = 30; }"),
+        );
+    }
+
+    #[test]
+    fn update_chained() {
+        assert_eq!(
+            ev("{ a = 1; } // { b = 2; } // { c = 3; }"),
+            ev("{ a = 1; b = 2; c = 3; }"),
+        );
+    }
+
+    // ── force_value edge cases ────────────────────────────
+
+    #[test]
+    fn force_value_concrete_unchanged() {
+        let v = Value::Int(42);
+        assert_eq!(force_value(&v).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn force_value_null() {
+        assert_eq!(force_value(&Value::Null).unwrap(), Value::Null);
+    }
+
+    // ── eval_with_file ────────────────────────────────────
+
+    #[test]
+    fn eval_with_file_none() {
+        let result = eval_with_file("1 + 2", None).unwrap();
+        assert_eq!(result, Value::Int(3));
+    }
+
+    // ── error messages ────────────────────────────────────
+
+    #[test]
+    fn error_type_mismatch_in_comparison() {
+        let result = eval(r#"1 < "a""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_select_from_non_set() {
+        let result = eval("42.x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_call_non_function() {
+        let result = eval("42 1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn error_negate_string() {
+        let result = eval(r#"-"hello""#);
+        assert!(result.is_err());
+    }
+
+    // ── multiline string edge cases ───────────────────────
+
+    #[test]
+    fn multiline_string_empty() {
+        assert_eq!(ev("''''"), Value::string(""));
+    }
+
+    #[test]
+    fn multiline_string_with_trailing_newline() {
+        let v = ev("''\n  hello\n''");
+        assert_eq!(v, Value::string("hello\n"));
+    }
+
+    // ── list operations ───────────────────────────────────
+
+    #[test]
+    fn list_concat_empty_left() {
+        assert_eq!(ev("[] ++ [1 2]"), Value::List(vec![Value::Int(1), Value::Int(2)]));
+    }
+
+    #[test]
+    fn list_concat_empty_right() {
+        assert_eq!(ev("[1 2] ++ []"), Value::List(vec![Value::Int(1), Value::Int(2)]));
+    }
+
+    #[test]
+    fn list_concat_both_empty() {
+        assert_eq!(ev("[] ++ []"), Value::List(vec![]));
+    }
+
+    // ── pattern matching / formals edge cases ─────────────
+
+    #[test]
+    fn formals_at_pattern_accessible() {
+        assert_eq!(
+            ev("({ x, ... } @ args: builtins.length (builtins.attrNames args)) { x = 1; y = 2; z = 3; }"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn formals_default_uses_other_arg() {
+        assert_eq!(
+            ev("({ x, y ? x + 1 }: y) { x = 10; }"),
+            Value::Int(11),
+        );
+    }
+
+    #[test]
+    fn formals_ellipsis_ignores_extra() {
+        assert_eq!(
+            ev("({ x, ... }: x) { x = 1; y = 2; z = 3; }"),
+            Value::Int(1),
+        );
+    }
+
+    // ── pure mode ─────────────────────────────────────────
+
+    #[test]
+    fn pure_mode_roundtrip() {
+        let was_pure = is_pure_mode();
+        set_pure_mode(true);
+        assert!(is_pure_mode());
+        set_pure_mode(false);
+        assert!(!is_pure_mode());
+        set_pure_mode(was_pure);
+    }
+
+    // ── path operations ───────────────────────────────────
+
+    #[test]
+    fn path_concat_with_string() {
+        assert_eq!(
+            ev(r#"/foo + "bar""#),
+            Value::Path("/foobar".to_string()),
+        );
+    }
+
+    #[test]
+    fn path_concat_with_path() {
+        assert_eq!(
+            ev("/foo + /bar"),
+            Value::Path("/foo//bar".to_string()),
+        );
+    }
 }
