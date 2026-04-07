@@ -9,5 +9,5 @@ pub mod system;
 
 pub use command::{CommandError, CommandOutput, CommandRunner, TokioCommandRunner};
 pub use fleet::{DeployStrategy, FleetOrchestrator};
-pub use node::{Node, NodeStatus};
+pub use node::{Node, NodeError, NodeStatus};
 pub use system::{RebuildAction, RebuildResult, SystemOrchestrator};

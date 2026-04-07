@@ -2,6 +2,24 @@
 
 use std::collections::BTreeMap;
 
+/// Errors from node lifecycle operations.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum NodeError {
+    /// The requested node was not found in the registry.
+    #[error("node not found: {hostname}")]
+    NotFound {
+        /// Hostname that was looked up.
+        hostname: String,
+    },
+    /// A node with this hostname is already registered.
+    #[error("node already registered: {hostname}")]
+    AlreadyRegistered {
+        /// Hostname of the duplicate node.
+        hostname: String,
+    },
+}
+
 /// Status of a fleet node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -105,14 +123,41 @@ impl NodeRegistry {
         }
     }
 
+    /// Returns `true` if a node with the given hostname exists.
+    #[must_use]
+    pub fn contains(&self, hostname: &str) -> bool {
+        self.nodes.contains_key(hostname)
+    }
+
     /// Add a node to the registry, keyed by its hostname.
+    ///
+    /// Overwrites any existing node with the same hostname.
     pub fn add(&mut self, node: Node) {
         self.nodes.insert(node.hostname.clone(), node);
     }
 
+    /// Add a node, returning an error if the hostname is already present.
+    pub fn try_add(&mut self, node: Node) -> Result<(), NodeError> {
+        if self.nodes.contains_key(&node.hostname) {
+            return Err(NodeError::AlreadyRegistered {
+                hostname: node.hostname,
+            });
+        }
+        self.nodes.insert(node.hostname.clone(), node);
+        Ok(())
+    }
+
     /// Look up a node by hostname.
+    #[must_use]
     pub fn get(&self, hostname: &str) -> Option<&Node> {
         self.nodes.get(hostname)
+    }
+
+    /// Look up a node by hostname, returning a typed error if absent.
+    pub fn get_or_err(&self, hostname: &str) -> Result<&Node, NodeError> {
+        self.nodes.get(hostname).ok_or_else(|| NodeError::NotFound {
+            hostname: hostname.to_owned(),
+        })
     }
 
     /// Look up a node mutably by hostname.
@@ -120,9 +165,25 @@ impl NodeRegistry {
         self.nodes.get_mut(hostname)
     }
 
+    /// Look up a node mutably, returning a typed error if absent.
+    pub fn get_mut_or_err(&mut self, hostname: &str) -> Result<&mut Node, NodeError> {
+        self.nodes
+            .get_mut(hostname)
+            .ok_or_else(|| NodeError::NotFound {
+                hostname: hostname.to_owned(),
+            })
+    }
+
     /// Remove a node by hostname, returning it if found.
     pub fn remove(&mut self, hostname: &str) -> Option<Node> {
         self.nodes.remove(hostname)
+    }
+
+    /// Remove a node by hostname, returning a typed error if absent.
+    pub fn remove_or_err(&mut self, hostname: &str) -> Result<Node, NodeError> {
+        self.nodes.remove(hostname).ok_or_else(|| NodeError::NotFound {
+            hostname: hostname.to_owned(),
+        })
     }
 
     /// Iterate over all nodes in sorted (hostname) order.
