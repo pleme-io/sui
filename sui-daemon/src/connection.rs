@@ -19,14 +19,24 @@ use crate::trust::TrustLevel;
 /// Errors specific to connection handling.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
+    /// An I/O error occurred on the underlying transport.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// The client sent an incorrect worker protocol magic value.
     #[error("bad client magic: expected {expected:#x}, got {got:#x}")]
-    BadMagic { expected: u64, got: u64 },
+    BadMagic {
+        /// The expected magic value (`WORKER_MAGIC_1`).
+        expected: u64,
+        /// The value the client actually sent.
+        got: u64,
+    },
+    /// An opcode with no known `WorkerOp` mapping was received.
     #[error("unknown opcode: {0}")]
     UnknownOp(u64),
+    /// A store operation failed.
     #[error("store error: {0}")]
     Store(#[from] sui_store::traits::StoreError),
+    /// A generic protocol-level error (e.g. invalid UTF-8 in a string frame).
     #[error("protocol error: {0}")]
     Protocol(String),
 }

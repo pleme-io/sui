@@ -191,13 +191,16 @@ fn resolve_trust(stream: &tokio::net::UnixStream) -> TrustLevel {
     }
 }
 
-/// Daemon server errors.
+/// Errors from the daemon server lifecycle (binding, accepting, or store setup).
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
+    /// Failed to bind to the Unix socket (includes PID lock failures).
     #[error("bind error: {0}")]
     Bind(String),
+    /// Failed to accept an incoming connection.
     #[error("accept error: {0}")]
     Accept(#[source] std::io::Error),
+    /// A store-level error during server setup.
     #[error("store error: {0}")]
     Store(#[from] sui_store::traits::StoreError),
 }
