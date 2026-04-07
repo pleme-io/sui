@@ -194,8 +194,8 @@ pub fn read_bytes(r: &mut impl Read) -> io::Result<Vec<u8>> {
 }
 
 /// Write a UTF-8 string (as length-prefixed bytes).
-pub fn write_string(w: &mut impl Write, s: &str) -> io::Result<()> {
-    write_bytes(w, s.as_bytes())
+pub fn write_string(w: &mut impl Write, s: impl AsRef<str>) -> io::Result<()> {
+    write_bytes(w, s.as_ref().as_bytes())
 }
 
 /// Read a UTF-8 string.
@@ -215,7 +215,7 @@ pub fn read_bool(r: &mut impl Read) -> io::Result<bool> {
 }
 
 /// Write a list of strings.
-pub fn write_string_list(w: &mut impl Write, list: &[String]) -> io::Result<()> {
+pub fn write_string_list(w: &mut impl Write, list: &[impl AsRef<str>]) -> io::Result<()> {
     write_u64(w, list.len() as u64)?;
     for s in list {
         write_string(w, s)?;
