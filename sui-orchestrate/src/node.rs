@@ -297,4 +297,192 @@ mod tests {
         assert_eq!(node.groups, vec!["prod"]);
         assert_eq!(node.system, Some("x86_64-linux".to_string()));
     }
+
+    // ── NodeStatus Display ────────────────────────────────────
+
+    #[test]
+    fn node_status_display() {
+        assert_eq!(NodeStatus::Online.to_string(), "online");
+        assert_eq!(NodeStatus::Offline.to_string(), "offline");
+        assert_eq!(NodeStatus::Deploying.to_string(), "deploying");
+        assert_eq!(NodeStatus::Failed.to_string(), "failed");
+        assert_eq!(NodeStatus::Unknown.to_string(), "unknown");
+    }
+
+    // ── NodeStatus serde roundtrip ────────────────────────────
+
+    #[test]
+    fn node_status_serde_roundtrip() {
+        for status in [
+            NodeStatus::Online,
+            NodeStatus::Offline,
+            NodeStatus::Deploying,
+            NodeStatus::Failed,
+            NodeStatus::Unknown,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let parsed: NodeStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, status);
+        }
+    }
+
+    // ── NodeRegistry Default ──────────────────────────────────
+
+    #[test]
+    fn node_registry_default() {
+        let reg = NodeRegistry::default();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+    }
+
+    // ── NodeRegistry remove ───────────────────────────────────
+
+    #[test]
+    fn registry_remove() {
+        let mut reg = sample_registry();
+        assert_eq!(reg.len(), 3);
+        let removed = reg.remove("plo");
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().hostname, "plo");
+        assert_eq!(reg.len(), 2);
+        assert!(reg.get("plo").is_none());
+    }
+
+    #[test]
+    fn registry_remove_nonexistent() {
+        let mut reg = sample_registry();
+        let removed = reg.remove("ghost");
+        assert!(removed.is_none());
+        assert_eq!(reg.len(), 3);
+    }
+
+    // ── NodeRegistry is_empty ─────────────────────────────────
+
+    #[test]
+    fn registry_is_empty() {
+        let reg = NodeRegistry::new();
+        assert!(reg.is_empty());
+
+        let mut reg = NodeRegistry::new();
+        reg.add(Node::new("a", ".#a"));
+        assert!(!reg.is_empty());
+    }
+
+    // ── NodeRegistry all() iteration order ────────────────────
+
+    #[test]
+    fn registry_all_sorted_order() {
+        let reg = sample_registry();
+        let hostnames: Vec<&str> = reg.all().map(|n| n.hostname.as_str()).collect();
+        assert_eq!(hostnames, vec!["cid", "plo", "zek"]);
+    }
+
+    // ── NodeRegistry serde roundtrip ──────────────────────────
+
+    #[test]
+    fn registry_serde_roundtrip() {
+        let reg = sample_registry();
+        let json = serde_json::to_string(&reg).unwrap();
+        let parsed: NodeRegistry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed.get("plo").is_some());
+        assert_eq!(
+            parsed.get("plo").unwrap().ssh_target,
+            Some("luis@plo.local".to_string())
+        );
+    }
+
+    // ── StatusCounts default ──────────────────────────────────
+
+    #[test]
+    fn status_counts_default() {
+        let counts = StatusCounts::default();
+        assert_eq!(counts.total, 0);
+        assert_eq!(counts.online, 0);
+        assert_eq!(counts.offline, 0);
+        assert_eq!(counts.deploying, 0);
+        assert_eq!(counts.failed, 0);
+        assert_eq!(counts.unknown, 0);
+    }
+
+    // ── StatusCounts serde roundtrip ──────────────────────────
+
+    #[test]
+    fn status_counts_serde_roundtrip() {
+        let counts = StatusCounts {
+            total: 5,
+            online: 3,
+            offline: 1,
+            deploying: 0,
+            failed: 1,
+            unknown: 0,
+        };
+        let json = serde_json::to_string(&counts).unwrap();
+        let parsed: StatusCounts = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, counts);
+    }
+
+    // ── StatusCounts all states ───────────────────────────────
+
+    #[test]
+    fn status_counts_all_states() {
+        let mut reg = NodeRegistry::new();
+        reg.add(Node::new("a", ".#a"));
+        reg.add(Node::new("b", ".#b"));
+        reg.add(Node::new("c", ".#c"));
+        reg.add(Node::new("d", ".#d"));
+        reg.add(Node::new("e", ".#e"));
+
+        reg.get_mut("a").unwrap().status = NodeStatus::Online;
+        reg.get_mut("b").unwrap().status = NodeStatus::Offline;
+        reg.get_mut("c").unwrap().status = NodeStatus::Deploying;
+        reg.get_mut("d").unwrap().status = NodeStatus::Failed;
+        // "e" stays Unknown
+
+        let counts = reg.status_counts();
+        assert_eq!(counts.total, 5);
+        assert_eq!(counts.online, 1);
+        assert_eq!(counts.offline, 1);
+        assert_eq!(counts.deploying, 1);
+        assert_eq!(counts.failed, 1);
+        assert_eq!(counts.unknown, 1);
+    }
+
+    // ── Node defaults ─────────────────────────────────────────
+
+    #[test]
+    fn node_new_defaults() {
+        let node = Node::new("host", ".#host");
+        assert_eq!(node.hostname, "host");
+        assert_eq!(node.flake_ref, ".#host");
+        assert_eq!(node.ssh_target, None);
+        assert_eq!(node.system, None);
+        assert!(node.groups.is_empty());
+        assert_eq!(node.status, NodeStatus::Unknown);
+        assert_eq!(node.current_generation, None);
+        assert_eq!(node.last_deployed, None);
+    }
+
+    // ── resolve_target with multiple groups ───────────────────
+
+    #[test]
+    fn resolve_target_group_overlap() {
+        let reg = sample_registry();
+        let k3s = reg.resolve_target("@k3s");
+        assert_eq!(k3s.len(), 2);
+        let hostnames: Vec<&str> = k3s.iter().map(|n| n.hostname.as_str()).collect();
+        assert!(hostnames.contains(&"plo"));
+        assert!(hostnames.contains(&"zek"));
+    }
+
+    // ── Node overwrite in registry ────────────────────────────
+
+    #[test]
+    fn registry_add_overwrites_existing() {
+        let mut reg = NodeRegistry::new();
+        reg.add(Node::new("host", ".#old"));
+        reg.add(Node::new("host", ".#new"));
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.get("host").unwrap().flake_ref, ".#new");
+    }
 }
