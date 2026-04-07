@@ -126,8 +126,13 @@ pub fn minimal_base64_encode(input: &[u8]) -> String {
 /// Minimal hex encoding (avoids external dep for now).
 pub(crate) mod hex {
     /// Encode bytes as lowercase hexadecimal.
+    #[must_use]
     pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
     }
 
     /// Decode a lowercase hexadecimal string to bytes.
