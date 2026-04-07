@@ -41,13 +41,18 @@ pub struct ReqwestHttpClient {
 
 impl ReqwestHttpClient {
     /// Create a new HTTP client with default settings.
+    #[must_use]
     pub fn new() -> Self {
-        Self { inner: reqwest::Client::new() }
+        Self {
+            inner: reqwest::Client::new(),
+        }
     }
 }
 
 impl Default for ReqwestHttpClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait::async_trait]
@@ -57,18 +62,41 @@ impl HttpClient for ReqwestHttpClient {
         for &(key, value) in headers {
             req = req.header(key, value);
         }
-        let response = req.send().await.map_err(|e| HttpError::Request(e.to_string()))?;
+
+        let response = req
+            .send()
+            .await
+            .map_err(|e| HttpError::Request(e.to_string()))?;
+
         let status = response.status().as_u16();
-        let body = response.text().await.map_err(|e| HttpError::Decode(e.to_string()))?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| HttpError::Decode(e.to_string()))?;
+
         Ok(HttpResponse { status, body })
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
-        let response = self.inner.get(url).send().await.map_err(|e| HttpError::Request(e.to_string()))?;
+        let response = self
+            .inner
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| HttpError::Request(e.to_string()))?;
+
         if !response.status().is_success() {
-            return Err(HttpError::Request(format!("HTTP {}: {url}", response.status())));
+            return Err(HttpError::Request(format!(
+                "HTTP {}: {url}",
+                response.status()
+            )));
         }
-        response.bytes().await.map(|b| b.to_vec()).map_err(|e| HttpError::Decode(e.to_string()))
+
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| HttpError::Decode(e.to_string()))
     }
 }
 
