@@ -121,23 +121,24 @@ impl NarInfo {
     /// Serialize to the NarInfo text format.
     #[must_use]
     pub fn serialize(&self) -> String {
+        use std::fmt::Write;
         let mut out = String::new();
-        out.push_str(&format!("StorePath: {}\n", self.store_path));
-        out.push_str(&format!("URL: {}\n", self.url));
-        out.push_str(&format!("Compression: {}\n", self.compression));
-        out.push_str(&format!("FileHash: {}\n", self.file_hash));
-        out.push_str(&format!("FileSize: {}\n", self.file_size));
-        out.push_str(&format!("NarHash: {}\n", self.nar_hash));
-        out.push_str(&format!("NarSize: {}\n", self.nar_size));
-        out.push_str(&format!("References: {}\n", self.references.join(" ")));
+        let _ = writeln!(out, "StorePath: {}", self.store_path);
+        let _ = writeln!(out, "URL: {}", self.url);
+        let _ = writeln!(out, "Compression: {}", self.compression);
+        let _ = writeln!(out, "FileHash: {}", self.file_hash);
+        let _ = writeln!(out, "FileSize: {}", self.file_size);
+        let _ = writeln!(out, "NarHash: {}", self.nar_hash);
+        let _ = writeln!(out, "NarSize: {}", self.nar_size);
+        let _ = writeln!(out, "References: {}", self.references.join(" "));
         if let Some(ref d) = self.deriver {
-            out.push_str(&format!("Deriver: {d}\n"));
+            let _ = writeln!(out, "Deriver: {d}");
         }
         for sig in &self.signatures {
-            out.push_str(&format!("Sig: {sig}\n"));
+            let _ = writeln!(out, "Sig: {sig}");
         }
         if let Some(ref ca) = self.ca {
-            out.push_str(&format!("CA: {ca}\n"));
+            let _ = writeln!(out, "CA: {ca}");
         }
         out
     }
