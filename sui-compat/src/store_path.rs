@@ -316,6 +316,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn parse_absolute_path() {
@@ -796,5 +797,45 @@ mod tests {
         let p1 = compute_drv_path_with_refs(content, "test", &with_dups);
         let p2 = compute_drv_path_with_refs(content, "test", &without_dups);
         assert_eq!(p1, p2, "duplicate refs should be deduplicated");
+    }
+
+    // ── Property tests ──────────────────────────────────
+
+    proptest! {
+        #[test]
+        fn prop_base32_roundtrip_20_bytes(bytes in proptest::collection::vec(any::<u8>(), 20)) {
+            let arr: [u8; 20] = bytes.try_into().unwrap();
+            let encoded = nix_base32_encode(&arr);
+            prop_assert_eq!(encoded.len(), 32);
+            let decoded = nix_base32_decode(&encoded).unwrap();
+            prop_assert_eq!(decoded, arr);
+        }
+
+        #[test]
+        fn prop_base32_encode_uses_only_nix_alphabet(bytes in proptest::collection::vec(any::<u8>(), 1..=64)) {
+            let encoded = nix_base32_encode(&bytes);
+            for c in encoded.chars() {
+                prop_assert!(NIX_BASE32_CHARS.contains(&(c as u8)), "invalid char: {}", c);
+            }
+        }
+
+        #[test]
+        fn prop_compress_hash_output_length(
+            bytes in proptest::collection::vec(any::<u8>(), 1..=64),
+            target_len in 1_usize..=32
+        ) {
+            let out = compress_hash(&bytes, target_len);
+            prop_assert_eq!(out.len(), target_len);
+        }
+
+        #[test]
+        fn prop_store_path_roundtrip(digest in proptest::collection::vec(any::<u8>(), 20)) {
+            let arr: [u8; 20] = digest.try_into().unwrap();
+            let sp = StorePath { digest: arr, name: "test-pkg".to_string() };
+            let abs = sp.to_absolute_path();
+            let reparsed = StorePath::from_absolute_path(&abs).unwrap();
+            prop_assert_eq!(reparsed.digest, sp.digest);
+            prop_assert_eq!(reparsed.name, sp.name);
+        }
     }
 }

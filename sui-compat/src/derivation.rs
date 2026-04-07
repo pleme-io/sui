@@ -262,6 +262,7 @@ fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn serialize_roundtrip() {
@@ -508,6 +509,45 @@ mod tests {
     }
 
     // ── Multiple input derivations with multiple outputs ──
+
+    proptest! {
+        #[test]
+        fn prop_escape_roundtrip(s in ".*") {
+            let escaped = escape(&s);
+            let input = format!(
+                "Derive([(\"out\",\"/out\",\"\",\"\")],[],[],\"x86_64-linux\",\"/bin/sh\",[],[(\"v\",{escaped})])"
+            );
+            let drv = Derivation::parse(input.as_bytes()).unwrap();
+            prop_assert_eq!(&drv.env["v"], &s);
+        }
+
+        #[test]
+        fn prop_serialize_parse_roundtrip(
+            name in "[a-z]{1,10}",
+            builder_arg in "[a-z0-9/]{1,20}",
+        ) {
+            let drv = Derivation {
+                outputs: {
+                    let mut m = BTreeMap::new();
+                    m.insert("out".to_string(), DerivationOutput {
+                        path: format!("/nix/store/hash-{name}"),
+                        hash_algo: String::new(),
+                        hash: String::new(),
+                    });
+                    m
+                },
+                input_derivations: BTreeMap::new(),
+                input_sources: vec![],
+                system: "x86_64-linux".to_string(),
+                builder: format!("/{builder_arg}"),
+                args: vec![],
+                env: BTreeMap::new(),
+            };
+            let serialized = drv.serialize();
+            let parsed = Derivation::parse(serialized.as_bytes()).unwrap();
+            prop_assert_eq!(parsed, drv);
+        }
+    }
 
     #[test]
     fn complex_input_derivations() {
