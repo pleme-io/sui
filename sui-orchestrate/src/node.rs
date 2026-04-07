@@ -122,6 +122,25 @@ impl Node {
     pub fn deploy_target(&self) -> &str {
         self.ssh_target.as_deref().unwrap_or(&self.hostname)
     }
+
+    /// Returns `true` if this node runs a Darwin (macOS) system.
+    #[must_use]
+    pub fn is_darwin(&self) -> bool {
+        matches!(
+            self.system.as_deref(),
+            Some("aarch64-darwin") | Some("x86_64-darwin")
+        )
+    }
+
+    /// Returns the appropriate rebuild command for this node's system.
+    #[must_use]
+    pub fn rebuild_command(&self) -> &'static str {
+        if self.is_darwin() {
+            "darwin-rebuild"
+        } else {
+            "nixos-rebuild"
+        }
+    }
 }
 
 /// Fleet node registry.

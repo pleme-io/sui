@@ -245,10 +245,7 @@ impl SystemOrchestrator {
 
     /// List all system generations.
     pub async fn list_generations(&self) -> Result<Vec<GenerationInfo>, SystemError> {
-        let profile = match self.platform {
-            Platform::Darwin => "/nix/var/nix/profiles/system",
-            Platform::NixOS => "/nix/var/nix/profiles/system",
-        };
+        let profile = "/nix/var/nix/profiles/system";
 
         let output = self
             .runner

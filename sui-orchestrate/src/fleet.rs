@@ -282,14 +282,7 @@ pub(crate) async fn deploy_single_node(
     let flake_ref = flake_override.unwrap_or(&node.flake_ref);
     let target = node.deploy_target();
 
-    // Build the remote rebuild command
-    let rebuild_cmd = if node.system.as_deref() == Some("aarch64-darwin")
-        || node.system.as_deref() == Some("x86_64-darwin")
-    {
-        format!("darwin-rebuild switch --flake {flake_ref}")
-    } else {
-        format!("nixos-rebuild switch --flake {flake_ref}")
-    };
+    let rebuild_cmd = format!("{} switch --flake {flake_ref}", node.rebuild_command());
 
     // For local node, run directly; for remote, use SSH
     let output = if target == node.hostname && is_local_hostname(target) {
