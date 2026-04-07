@@ -3839,4 +3839,417 @@ mod tests {
         assert!(s.contains("<attrs>"));
         assert!(s.contains("attr name=\"a\""));
     }
+
+    // ── Curried arithmetic builtins ───────────────────────
+
+    #[test]
+    fn builtins_sub_ints() {
+        assert_eq!(ev("builtins.sub 10 3"), Value::Int(7));
+    }
+
+    #[test]
+    fn builtins_mul_ints() {
+        assert_eq!(ev("builtins.mul 4 5"), Value::Int(20));
+    }
+
+    #[test]
+    fn builtins_div_ints() {
+        assert_eq!(ev("builtins.div 10 3"), Value::Int(3));
+    }
+
+    #[test]
+    fn builtins_div_by_zero() {
+        let result = eval("builtins.div 10 0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_add_ints() {
+        assert_eq!(ev("builtins.add 3 4"), Value::Int(7));
+    }
+
+    #[test]
+    fn builtins_add_floats() {
+        assert_eq!(ev("builtins.add 1.5 2.5"), Value::Float(4.0));
+    }
+
+    #[test]
+    fn builtins_add_mixed_int_float() {
+        assert_eq!(ev("builtins.add 1 2.5"), Value::Float(3.5));
+    }
+
+    // ── isFloat ───────────────────────────────────────────
+
+    #[test]
+    fn builtins_is_float_true() {
+        assert_eq!(ev("builtins.isFloat 1.0"), Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_is_float_false() {
+        assert_eq!(ev("builtins.isFloat 1"), Value::Bool(false));
+    }
+
+    // ── deepSeq ───────────────────────────────────────────
+
+    #[test]
+    fn builtins_deep_seq() {
+        assert_eq!(ev("builtins.deepSeq [1 2 3] 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_deep_seq_with_attrs() {
+        assert_eq!(ev(r#"builtins.deepSeq { a = 1; b = 2; } "ok""#), Value::string("ok"));
+    }
+
+    // ── getEnv ────────────────────────────────────────────
+
+    #[test]
+    fn builtins_get_env_missing() {
+        assert_eq!(
+            ev(r#"builtins.getEnv "DEFINITELY_NOT_SET_12345_XYZ""#),
+            Value::string(""),
+        );
+    }
+
+    // ── currentTime ───────────────────────────────────────
+
+    #[test]
+    fn builtins_current_time_is_int() {
+        let v = ev("builtins.currentTime null");
+        assert!(matches!(v, Value::Int(_)));
+        if let Value::Int(t) = v {
+            assert!(t > 0);
+        }
+    }
+
+    // ── substring ─────────────────────────────────────────
+
+    #[test]
+    fn builtins_substring_basic() {
+        assert_eq!(
+            ev(r#"builtins.substring 0 5 "hello world""#),
+            Value::string("hello"),
+        );
+    }
+
+    #[test]
+    fn builtins_substring_from_middle() {
+        assert_eq!(
+            ev(r#"builtins.substring 6 5 "hello world""#),
+            Value::string("world"),
+        );
+    }
+
+    #[test]
+    fn builtins_substring_beyond_length() {
+        assert_eq!(
+            ev(r#"builtins.substring 0 100 "hi""#),
+            Value::string("hi"),
+        );
+    }
+
+    // ── split ─────────────────────────────────────────────
+
+    #[test]
+    fn builtins_split_basic() {
+        let v = ev(r#"builtins.split "o" "foobar""#);
+        if let Value::List(parts) = v {
+            assert!(parts.len() >= 3);
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    // ── hasContext / getContext / unsafeDiscardStringContext ──
+
+    #[test]
+    fn builtins_has_context_plain_string() {
+        assert_eq!(ev(r#"builtins.hasContext "hello""#), Value::Bool(false));
+    }
+
+    #[test]
+    fn builtins_get_context_plain_string() {
+        let v = ev(r#"builtins.getContext "hello""#);
+        if let Value::Attrs(a) = v {
+            assert!(a.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_unsafe_discard_string_context() {
+        assert_eq!(
+            ev(r#"builtins.unsafeDiscardStringContext "hello""#),
+            Value::string("hello"),
+        );
+    }
+
+    // ── unsafeDiscardOutputDependency ─────────────────────
+
+    #[test]
+    fn builtins_unsafe_discard_output_dependency() {
+        assert_eq!(
+            ev(r#"builtins.unsafeDiscardOutputDependency "hello""#),
+            Value::string("hello"),
+        );
+    }
+
+    // ── appendContext ─────────────────────────────────────
+
+    #[test]
+    fn builtins_append_context_empty() {
+        assert_eq!(
+            ev(r#"builtins.appendContext "hello" {}"#),
+            Value::string("hello"),
+        );
+    }
+
+    // ── convertHash ───────────────────────────────────────
+
+    #[test]
+    fn builtins_convert_hash_sha256_hex_to_base64() {
+        let v = ev(r#"builtins.convertHash { hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; hashAlgo = "sha256"; toHashFormat = "base64"; }"#);
+        if let Value::String(s) = v {
+            assert!(!s.chars.is_empty());
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    #[test]
+    fn builtins_convert_hash_sha256_hex_to_sri() {
+        let v = ev(r#"builtins.convertHash { hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; hashAlgo = "sha256"; toHashFormat = "sri"; }"#);
+        if let Value::String(s) = v {
+            assert!(s.chars.starts_with("sha256-"));
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    // ── toXML additional ──────────────────────────────────
+
+    #[test]
+    fn builtins_to_xml_string() {
+        let v = ev(r#"builtins.toXML "hello""#);
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<string value="));
+    }
+
+    #[test]
+    fn builtins_to_xml_list() {
+        let v = ev("builtins.toXML [1 2]");
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<list>"));
+    }
+
+    #[test]
+    fn builtins_to_xml_bool() {
+        let v = ev("builtins.toXML true");
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<bool value=\"true\""));
+    }
+
+    #[test]
+    fn builtins_to_xml_null() {
+        let v = ev("builtins.toXML null");
+        let s = v.as_string().unwrap();
+        assert!(s.contains("<null"));
+    }
+
+    // ── typeOf comprehensive ──────────────────────────────
+
+    #[test]
+    fn builtins_type_of_int() {
+        assert_eq!(ev("builtins.typeOf 42"), Value::string("int"));
+    }
+
+    #[test]
+    fn builtins_type_of_float() {
+        assert_eq!(ev("builtins.typeOf 3.14"), Value::string("float"));
+    }
+
+    #[test]
+    fn builtins_type_of_string() {
+        assert_eq!(ev(r#"builtins.typeOf "hello""#), Value::string("string"));
+    }
+
+    #[test]
+    fn builtins_type_of_bool() {
+        assert_eq!(ev("builtins.typeOf true"), Value::string("bool"));
+    }
+
+    #[test]
+    fn builtins_type_of_null() {
+        assert_eq!(ev("builtins.typeOf null"), Value::string("null"));
+    }
+
+    #[test]
+    fn builtins_type_of_list() {
+        assert_eq!(ev("builtins.typeOf [1 2]"), Value::string("list"));
+    }
+
+    #[test]
+    fn builtins_type_of_set() {
+        assert_eq!(ev("builtins.typeOf { a = 1; }"), Value::string("set"));
+    }
+
+    #[test]
+    fn builtins_type_of_lambda() {
+        assert_eq!(ev("builtins.typeOf (x: x)"), Value::string("lambda"));
+    }
+
+    #[test]
+    fn builtins_type_of_path() {
+        assert_eq!(ev("builtins.typeOf /foo"), Value::string("path"));
+    }
+
+    // ── head / tail edge cases ────────────────────────────
+
+    #[test]
+    fn builtins_head_single() {
+        assert_eq!(ev("builtins.head [42]"), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_head_empty_errors() {
+        assert!(eval("builtins.head []").is_err());
+    }
+
+    #[test]
+    fn builtins_tail_single() {
+        assert_eq!(ev("builtins.tail [42]"), Value::List(vec![]));
+    }
+
+    #[test]
+    fn builtins_tail_empty_errors() {
+        assert!(eval("builtins.tail []").is_err());
+    }
+
+    // ── attrNames / attrValues determinism ────────────────
+
+    #[test]
+    fn builtins_attr_names_sorted() {
+        assert_eq!(
+            ev(r#"builtins.attrNames { z = 1; a = 2; m = 3; }"#),
+            Value::List(vec![
+                Value::string("a"),
+                Value::string("m"),
+                Value::string("z"),
+            ]),
+        );
+    }
+
+    #[test]
+    fn builtins_attr_values_follows_sorted_keys() {
+        assert_eq!(
+            ev(r#"builtins.attrValues { z = 3; a = 1; m = 2; }"#),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    // ── toString additional ───────────────────────────────
+
+    #[test]
+    fn builtins_to_string_int() {
+        assert_eq!(ev("builtins.toString 42"), Value::string("42"));
+    }
+
+    #[test]
+    fn builtins_to_string_bool() {
+        assert_eq!(ev("builtins.toString true"), Value::string("1"));
+        assert_eq!(ev("builtins.toString false"), Value::string(""));
+    }
+
+    #[test]
+    fn builtins_to_string_null() {
+        assert_eq!(ev("builtins.toString null"), Value::string(""));
+    }
+
+    #[test]
+    fn builtins_to_string_path() {
+        assert_eq!(ev("builtins.toString /foo"), Value::string("/foo"));
+    }
+
+    #[test]
+    fn builtins_to_string_list_not_supported() {
+        let result = eval("builtins.toString [1 2 3]");
+        assert!(result.is_err());
+    }
+
+    // ── abort ─────────────────────────────────────────────
+
+    #[test]
+    fn builtins_abort_produces_error() {
+        let result = eval(r#"builtins.abort "fatal""#);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("fatal"));
+    }
+
+    // ── fromJSON additional ───────────────────────────────
+
+    #[test]
+    fn builtins_from_json_null() {
+        assert_eq!(ev(r#"builtins.fromJSON "null""#), Value::Null);
+    }
+
+    #[test]
+    fn builtins_from_json_bool() {
+        assert_eq!(ev(r#"builtins.fromJSON "true""#), Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_from_json_list() {
+        assert_eq!(
+            ev(r#"builtins.fromJSON "[1,2,3]""#),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+    }
+
+    // ── toJSON additional ─────────────────────────────────
+
+    #[test]
+    fn builtins_to_json_null() {
+        assert_eq!(ev("builtins.toJSON null"), Value::string("null"));
+    }
+
+    #[test]
+    fn builtins_to_json_list() {
+        assert_eq!(
+            ev("builtins.toJSON [1 2 3]"),
+            Value::string("[1,2,3]"),
+        );
+    }
+
+    // ── string operations ─────────────────────────────────
+
+    #[test]
+    fn builtins_string_length_empty() {
+        assert_eq!(ev(r#"builtins.stringLength """#), Value::Int(0));
+    }
+
+    #[test]
+    fn builtins_string_length_unicode() {
+        assert_eq!(ev(r#"builtins.stringLength "abc""#), Value::Int(3));
+    }
+
+    // ── replaceStrings edge cases ─────────────────────────
+
+    #[test]
+    fn builtins_replace_strings_empty_from() {
+        assert_eq!(
+            ev(r#"builtins.replaceStrings [] [] "hello""#),
+            Value::string("hello"),
+        );
+    }
+
+    #[test]
+    fn builtins_replace_strings_no_match() {
+        assert_eq!(
+            ev(r#"builtins.replaceStrings ["x"] ["y"] "hello""#),
+            Value::string("hello"),
+        );
+    }
 }
