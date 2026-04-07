@@ -436,6 +436,53 @@ fn diff_trace_verbose_passthrough() {
 // (passthrough) directly.
 
 #[test]
+fn diff_parse_flake_ref() {
+    run_cases(
+        "parse_flake_ref",
+        &[
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs""#,
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/release-23.11""#,
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs?dir=lib""#,
+            r#"builtins.parseFlakeRef "git+https://example.com/foo""#,
+            r#"builtins.parseFlakeRef "git+https://example.com/foo?ref=main""#,
+            r#"builtins.parseFlakeRef "tarball+https://example.com/foo.tar.gz""#,
+            r#"builtins.parseFlakeRef "path:/tmp/foo""#,
+            r#"builtins.parseFlakeRef "/tmp/abs""#,
+            r#"builtins.parseFlakeRef "gitlab:owner/repo""#,
+            r#"builtins.parseFlakeRef "sourcehut:~user/repo""#,
+        ],
+    );
+}
+
+#[test]
+fn diff_flake_ref_to_string() {
+    run_cases(
+        "flake_ref_to_string",
+        &[
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#,
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "release-23.11"; }"#,
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; dir = "lib"; }"#,
+            r#"builtins.flakeRefToString { type = "git"; url = "https://example.com/foo"; ref = "main"; }"#,
+            r#"builtins.flakeRefToString { type = "tarball"; url = "https://example.com/foo.tar.gz"; }"#,
+            r#"builtins.flakeRefToString { type = "path"; path = "/tmp/foo"; }"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_flake_ref_round_trip() {
+    run_cases(
+        "flake_ref_round_trip",
+        &[
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "github:NixOS/nixpkgs")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "github:NixOS/nixpkgs/release-23.11")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "git+https://example.com/foo?ref=main")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "path:/tmp/foo")"#,
+        ],
+    );
+}
+
+#[test]
 fn diff_filter_attrs() {
     run_cases(
         "filter_attrs",
