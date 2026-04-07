@@ -2940,6 +2940,32 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
         }
     }
 
+    // 4b. Fill in stub entries for inputs declared in flake.nix but missing from
+    //     the resolved set.  This handles flakes that have no flake.lock at all
+    //     (e.g. freshly forked repos that haven't run `nix flake lock`).
+    //
+    //     We parse the `inputs` attribute from the evaluated flake.nix — it is an
+    //     attrset whose keys are the input names the `outputs` function expects.
+    //     For each name absent from `resolved_inputs`, we add a minimal stub
+    //     with a synthetic `outPath` so the outputs function at least receives
+    //     every expected argument (deep attribute access may still fail).
+    if let Some(inputs_value) = flake_attrs.get("inputs") {
+        if let Ok(inputs_forced) = crate::eval::force_value(inputs_value) {
+            if let Value::Attrs(declared_inputs) = inputs_forced {
+                for key in declared_inputs.keys() {
+                    if !resolved_inputs.contains_key(key) {
+                        let mut stub = NixAttrs::new();
+                        stub.insert(
+                            "outPath".to_string(),
+                            Value::string(format!("/nix/store/flake-input-{key}")),
+                        );
+                        resolved_inputs.insert(key.clone(), Value::Attrs(stub));
+                    }
+                }
+            }
+        }
+    }
+
     // 5. Build `self` with `outPath`, `sourceInfo`, `inputs`, and flake metadata.
     //    CppNix's `self` includes everything: outPath, inputs, sourceInfo, plus
     //    the flake metadata (description, nixConfig, etc. — but NOT outputs).
@@ -6936,5 +6962,114 @@ mod tests {
     #[test]
     fn to_lower_already() {
         assert_eq!(ev(r#"builtins.toLower "already""#), Value::string("already"));
+    }
+
+    // ── Bug 1: inputs from flake.nix stub resolution ─────────
+
+    #[test]
+    fn flake_no_lock_file_stubs_inputs_from_flake_nix() {
+        // A flake with `inputs` in flake.nix but NO flake.lock should still
+        // succeed: each declared input gets a synthetic stub so the outputs
+        // function receives all expected named arguments.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+              inputs.utils.url  = "github:numtide/flake-utils";
+              outputs = { self, nixpkgs, utils }: {
+                ok = true;
+              };
+            }"#,
+        )
+        .unwrap();
+        // Intentionally NO flake.lock.
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").ok"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_no_lock_file_stub_inputs_have_outpath() {
+        // Stub inputs must have `outPath` so string interpolation works.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep.url = "github:example/dep";
+              outputs = { self, dep }: {
+                has_out = dep ? outPath;
+              };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").has_out"#);
+        assert_eq!(eval(&expr).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_no_lock_file_stubs_appear_in_inputs() {
+        // The stub inputs should appear under the top-level `inputs` key.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.alpha.url = "github:example/alpha";
+              inputs.beta.url  = "github:example/beta";
+              outputs = { self, alpha, beta }: { };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let has_alpha = format!(r#"(builtins.getFlake "{flake_path}").inputs ? alpha"#);
+        let has_beta = format!(r#"(builtins.getFlake "{flake_path}").inputs ? beta"#);
+        assert_eq!(eval(&has_alpha).unwrap(), Value::Bool(true));
+        assert_eq!(eval(&has_beta).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_partial_lock_stubs_missing_inputs() {
+        // A flake.lock that resolves only *some* inputs should still get
+        // stubs for the remaining ones declared in flake.nix.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.locked-dep = { };
+              inputs.unlocked-dep.url = "github:example/unlocked";
+              outputs = { self, locked-dep, unlocked-dep }: {
+                locked = locked-dep ? narHash;
+                unlocked-has-out = unlocked-dep ? outPath;
+              };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "locked-dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-PARTIAL=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "locked-dep": "locked-dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let locked = format!(r#"(builtins.getFlake "{flake_path}").locked"#);
+        let unlocked = format!(r#"(builtins.getFlake "{flake_path}").unlocked-has-out"#);
+        assert_eq!(eval(&locked).unwrap(), Value::Bool(true));
+        assert_eq!(eval(&unlocked).unwrap(), Value::Bool(true));
     }
 }

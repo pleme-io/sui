@@ -73,7 +73,16 @@ impl InputFetcher {
             let cache_key = sanitize_hash(nar_hash);
             let cached = self.cache_dir.join(&cache_key);
             if cached.exists() {
-                return Ok(find_single_subdir_or_self(&cached));
+                let resolved = find_single_subdir_or_self(&cached);
+                // Validate the cache entry is non-empty.  A previous fetch may
+                // have created the directory but failed before extracting any
+                // content (e.g. network timeout).  Treat empty dirs as cache
+                // misses so the fetch is retried.
+                if is_non_empty_dir(&resolved) {
+                    return Ok(resolved);
+                }
+                // Cache entry is empty/invalid — remove it and re-fetch.
+                let _ = std::fs::remove_dir_all(&cached);
             }
         }
 
@@ -103,8 +112,19 @@ impl InputFetcher {
         let dest = self.dest_dir(locked, &format!("github-{owner}-{repo}-{rev}"));
         std::fs::create_dir_all(&dest)?;
 
-        let bytes = download_bytes(&url)?;
-        extract_tar_gz(&bytes, &dest)?;
+        // Download and extract; on failure remove the (potentially empty) dest
+        // directory so the next attempt doesn't see a stale cache hit.
+        let bytes = match download_bytes(&url) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dest);
+                return Err(e);
+            }
+        };
+        if let Err(e) = extract_tar_gz(&bytes, &dest) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
 
         Ok(find_single_subdir_or_self(&dest))
     }
@@ -125,7 +145,10 @@ impl InputFetcher {
         let dest = self.dest_dir(locked, &format!("git-{short_rev}"));
 
         if dest.exists() {
-            return Ok(dest);
+            if is_non_empty_dir(&dest) {
+                return Ok(dest);
+            }
+            let _ = std::fs::remove_dir_all(&dest);
         }
 
         // Clone using gix (no CLI spawning).
@@ -149,12 +172,25 @@ impl InputFetcher {
         let dest = self.dest_dir(locked, &format!("tarball-{hash_suffix}"));
 
         if dest.exists() {
-            return Ok(find_single_subdir_or_self(&dest));
+            let resolved = find_single_subdir_or_self(&dest);
+            if is_non_empty_dir(&resolved) {
+                return Ok(resolved);
+            }
+            let _ = std::fs::remove_dir_all(&dest);
         }
 
         std::fs::create_dir_all(&dest)?;
-        let bytes = download_bytes(url)?;
-        extract_tar_gz(&bytes, &dest)?;
+        let bytes = match download_bytes(url) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dest);
+                return Err(e);
+            }
+        };
+        if let Err(e) = extract_tar_gz(&bytes, &dest) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
 
         Ok(find_single_subdir_or_self(&dest))
     }
@@ -174,6 +210,13 @@ impl InputFetcher {
 /// Turn a narHash like `sha256-AAAA...=` into a filesystem-safe name.
 fn sanitize_hash(hash: &str) -> String {
     hash.replace(':', "-").replace('/', "_").replace('=', "")
+}
+
+/// Return `true` when `dir` exists and has at least one child entry.
+fn is_non_empty_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .ok()
+        .map_or(false, |mut rd| rd.next().is_some())
 }
 
 /// If the directory contains exactly one child directory (common for GitHub
@@ -531,5 +574,52 @@ mod tests {
         let locked = make_locked("github");
         let dest = fetcher.dest_dir(&locked, "fallback-name");
         assert!(dest.to_string_lossy().contains("fallback-name"));
+    }
+
+    // ── is_non_empty_dir ─────────────────────────────────
+
+    #[test]
+    fn is_non_empty_dir_returns_true_for_non_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.txt"), "data").unwrap();
+        assert!(is_non_empty_dir(tmp.path()));
+    }
+
+    #[test]
+    fn is_non_empty_dir_returns_false_for_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!is_non_empty_dir(tmp.path()));
+    }
+
+    #[test]
+    fn is_non_empty_dir_returns_false_for_missing() {
+        assert!(!is_non_empty_dir(Path::new("/nonexistent/path/12345")));
+    }
+
+    // ── empty cache invalidation ─────────────────────────
+
+    #[test]
+    fn empty_cache_dir_is_treated_as_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Pre-create an *empty* cache directory (simulates a failed fetch).
+        let hash = "sha256-EMPTYTEST";
+        let cached_dir = cache_dir.join(sanitize_hash(hash));
+        std::fs::create_dir_all(&cached_dir).unwrap();
+        // Verify the directory is empty.
+        assert!(std::fs::read_dir(&cached_dir).unwrap().next().is_none());
+
+        let fetcher = InputFetcher::with_cache_dir(cache_dir);
+        let mut locked = make_locked("github");
+        locked.nar_hash = Some(hash.to_string());
+        // owner/repo/rev are missing, so the re-fetch will fail — but
+        // the important thing is that the cache miss was detected (the
+        // stale directory was removed) and the code attempted a fresh fetch.
+        let result = fetcher.fetch(&locked);
+        assert!(result.is_err(), "should not return stale empty cache");
+        // The empty directory should have been cleaned up.
+        assert!(!cached_dir.exists(), "stale cache dir should be removed");
     }
 }
