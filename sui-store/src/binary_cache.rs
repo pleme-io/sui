@@ -876,4 +876,611 @@ Sig: key3:ccc==
         let result = store.query_all_valid_paths().await;
         assert!(result.is_err());
     }
+
+    // ── BinaryCacheError → StoreError conversion ─────────────
+
+    #[test]
+    fn binary_cache_error_http_client_converts_to_store_http() {
+        let http_err = HttpError::Request("dns failure".to_string());
+        let bc_err: BinaryCacheError = http_err.into();
+        let store_err: StoreError = bc_err.into();
+        match store_err {
+            StoreError::Http(msg) => assert!(msg.contains("dns failure")),
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binary_cache_error_unexpected_status_converts_to_store_http() {
+        let bc_err = BinaryCacheError::UnexpectedStatus {
+            status: 503,
+            url: "https://cache.test/abc.narinfo".to_string(),
+        };
+        let store_err: StoreError = bc_err.into();
+        match store_err {
+            StoreError::Http(msg) => {
+                assert!(msg.contains("503"));
+                assert!(msg.contains("cache.test"));
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binary_cache_error_narinfo_parse_converts_to_store_narinfo() {
+        let parse_err = sui_compat::narinfo::NarInfoError::MissingField("StorePath".to_string());
+        let bc_err: BinaryCacheError = parse_err.into();
+        let store_err: StoreError = bc_err.into();
+        match store_err {
+            StoreError::NarInfo(msg) => {
+                assert!(msg.contains("StorePath") || msg.contains("missing"));
+            }
+            other => panic!("expected NarInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binary_cache_error_display_unexpected_status() {
+        let err = BinaryCacheError::UnexpectedStatus {
+            status: 418,
+            url: "https://teapot.test/x.narinfo".to_string(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("418"));
+        assert!(s.contains("teapot.test"));
+    }
+
+    #[test]
+    fn binary_cache_error_debug_format() {
+        let err = BinaryCacheError::UnexpectedStatus {
+            status: 500,
+            url: "x".to_string(),
+        };
+        let debug = format!("{err:?}");
+        assert!(debug.contains("UnexpectedStatus"));
+        assert!(debug.contains("500"));
+    }
+
+    // ── Builder pattern ─────────────────────────────────────
+
+    #[test]
+    fn builder_default_is_reqwest_client() {
+        let store = BinaryCacheStore::builder("https://cache.nixos.org").build();
+        assert_eq!(store.base_url(), "https://cache.nixos.org");
+        assert!(store.trusted_keys().is_empty());
+    }
+
+    #[test]
+    fn builder_with_trusted_keys() {
+        let keys = vec!["k1:abc==".to_string(), "k2:def==".to_string()];
+        let store = BinaryCacheStore::builder("https://cache.nixos.org")
+            .trusted_keys(keys.clone())
+            .build();
+        assert_eq!(store.trusted_keys().len(), 2);
+        assert_eq!(store.trusted_keys()[0], "k1:abc==");
+    }
+
+    #[test]
+    fn builder_chaining_order_independent() {
+        let client = Box::new(MockHttpClient::new());
+        let keys = vec!["k:s".to_string()];
+        let store = BinaryCacheStore::builder("https://cache.nixos.org")
+            .http_client(client)
+            .trusted_keys(keys.clone())
+            .build();
+        assert_eq!(store.trusted_keys(), &keys[..]);
+        assert_eq!(store.base_url(), "https://cache.nixos.org");
+    }
+
+    #[test]
+    fn builder_strips_trailing_slash() {
+        let store = BinaryCacheStore::builder("https://cache.nixos.org/").build();
+        assert_eq!(store.base_url(), "https://cache.nixos.org");
+    }
+
+    #[test]
+    fn builder_strips_multiple_trailing_slashes() {
+        let store = BinaryCacheStore::builder("https://cache.nixos.org////").build();
+        assert!(!store.base_url().ends_with('/'));
+    }
+
+    // ── store_path_hash edge cases ──────────────────────────
+
+    #[test]
+    fn store_path_hash_for_drv_path() {
+        let path = StorePath::from_absolute_path(
+            "/nix/store/xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv",
+        )
+        .unwrap();
+        let hash = BinaryCacheStore::store_path_hash(&path);
+        assert_eq!(hash, "xb4y5iklhya4blk42k1cfkb8k07dpp4n");
+        assert_eq!(hash.len(), 32);
+    }
+
+    // ── narinfo with different compression algorithms ────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_zstd_compression() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.zst
+Compression: zstd
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.compression, "zstd");
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_no_compression() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar
+Compression: none
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.compression, "none");
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_bzip2_compression() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.bz2
+Compression: bzip2
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.compression, "bzip2");
+    }
+
+    // ── narinfo with content-address (CA) field ──────────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_with_ca_field() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-source.tar.gz
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+CA: fixed:out:r:sha256:cafebabedeadbeef
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            info.ca,
+            Some("fixed:out:r:sha256:cafebabedeadbeef".to_string())
+        );
+        // Ensure conversion to PathInfo carries CA
+        let path_info = PathInfo::from(&info);
+        assert_eq!(
+            path_info.content_address,
+            Some("fixed:out:r:sha256:cafebabedeadbeef".to_string())
+        );
+    }
+
+    // ── narinfo with many references on a single line ───────
+
+    #[tokio::test]
+    async fn fetch_narinfo_many_references_on_one_line() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References: dep1 dep2 dep3 dep4 dep5 dep6 dep7 dep8 dep9 dep10
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.references.len(), 10);
+        assert_eq!(info.references[0], "dep1");
+        assert_eq!(info.references[9], "dep10");
+    }
+
+    // ── narinfo without optional Deriver field ───────────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_no_deriver() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(info.deriver.is_none());
+    }
+
+    // ── narinfo with empty Deriver value ─────────────────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_empty_deriver_treated_as_none() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+Deriver:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(info.deriver.is_none());
+    }
+
+    // ── HTTP status code variations ──────────────────────────
+
+    #[tokio::test]
+    async fn fetch_narinfo_503_returns_error() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 503,
+                body: "service unavailable".to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.fetch_narinfo("abc00000000000000000000000000000").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_403_returns_error() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 403,
+                body: "forbidden".to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.fetch_narinfo("abc00000000000000000000000000000").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_301_redirect_returns_error() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/abc00000000000000000000000000000.narinfo",
+            HttpResponse {
+                status: 301,
+                body: String::new(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.fetch_narinfo("abc00000000000000000000000000000").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_narinfo_201_created_treated_as_success() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References:
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 201,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = store
+            .fetch_narinfo("sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6")
+            .await
+            .unwrap();
+        assert!(info.is_some());
+    }
+
+    // ── fetch_nar 4xx/5xx errors ─────────────────────────────
+
+    #[tokio::test]
+    async fn fetch_nar_returns_correct_url_path() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/nar/some/nested/path.nar.xz",
+            HttpResponse {
+                status: 200,
+                body: "data".to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let bytes = store.fetch_nar("nar/some/nested/path.nar.xz").await.unwrap();
+        assert_eq!(bytes, b"data");
+    }
+
+    // ── Default trait methods on BinaryCacheStore ────────────
+
+    #[tokio::test]
+    async fn binary_cache_collect_garbage_unsupported() {
+        use crate::traits::GcOptions;
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.collect_garbage(&GcOptions::default()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_add_to_store_unsupported() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.add_to_store("hello", b"data", &[]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_register_path_unsupported() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let info = PathInfo::new("/nix/store/abc-x", "sha256:aaa");
+        let result = store.register_path(&info).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_query_referrers_unsupported() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store.query_referrers(&hello_store_path()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn binary_cache_add_signatures_unsupported() {
+        let client = MockHttpClient::new();
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        let result = store
+            .add_signatures(&hello_store_path(), &["sig".to_string()])
+            .await;
+        assert!(result.is_err());
+    }
+
+    // ── query_references via BinaryCacheStore ────────────────
+    //
+    // BinaryCacheStore.query_path_info populates PathInfo.references with the
+    // *basenames* from the NarInfo (no /nix/store/ prefix). The default
+    // query_references in the Store trait then filters via
+    // StorePath::from_absolute_path which rejects bare basenames — so
+    // BinaryCacheStore's references list comes back empty even when narinfo
+    // has refs. This is a known limitation; the test below pins that behavior
+    // so a future fix to either the parser or the trait is detected.
+
+    #[tokio::test]
+    async fn binary_cache_query_references_basenames_filtered_out() {
+        let body = "\
+StorePath: /nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1
+URL: nar/abc.nar.xz
+Compression: xz
+FileHash: sha256:aaa
+FileSize: 1000
+NarHash: sha256:bbb
+NarSize: 5000
+References: 3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37 00bgd045z0d4icpbc2yyz4gx48ak44la-bash-5.2
+";
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            },
+        );
+        let store = BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        );
+        // The PathInfo.references contains the raw basenames from the narinfo
+        let info = store.query_path_info(&hello_store_path()).await.unwrap().unwrap();
+        assert_eq!(info.references.len(), 2);
+        assert_eq!(info.references[0], "3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37");
+
+        // But query_references parses references as absolute paths, which
+        // skips basenames silently — so the returned StorePath list is empty.
+        // TODO(scope): make BinaryCacheStore::query_path_info prepend
+        // /nix/store/ to references so query_references works as expected.
+        let refs = store.query_references(&hello_store_path()).await.unwrap();
+        assert_eq!(refs.len(), 0);
+    }
+
+    // ── Box<dyn Store> dispatch ──────────────────────────────
+
+    #[tokio::test]
+    async fn box_dyn_binary_cache_store_query_path_info() {
+        let client = MockHttpClient::new().with_response(
+            "https://cache.nixos.org/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6.narinfo",
+            HttpResponse {
+                status: 200,
+                body: MOCK_NARINFO.to_string(),
+            },
+        );
+        let store: Box<dyn Store> = Box::new(BinaryCacheStore::with_http_client(
+            "https://cache.nixos.org",
+            vec![],
+            Box::new(client),
+        ));
+        let info = store.query_path_info(&hello_store_path()).await.unwrap();
+        assert!(info.is_some());
+    }
 }
