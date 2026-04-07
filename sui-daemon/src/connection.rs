@@ -1368,6 +1368,87 @@ mod tests {
         assert!(!valid, "invalid store path should return not-found, not error");
     }
 
+    // ── Store error propagation tests ─────────────────────────
+
+    struct FailingStore;
+
+    #[async_trait::async_trait]
+    impl Store for FailingStore {
+        async fn query_path_info(
+            &self,
+            _path: &StorePath,
+        ) -> StoreResult<Option<PathInfo>> {
+            Err(sui_store::traits::StoreError::Database(
+                "simulated failure".to_string(),
+            ))
+        }
+
+        async fn is_valid_path(&self, _path: &StorePath) -> StoreResult<bool> {
+            Err(sui_store::traits::StoreError::Database(
+                "simulated failure".to_string(),
+            ))
+        }
+
+        async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
+            Err(sui_store::traits::StoreError::Database(
+                "simulated failure".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn is_valid_path_propagates_store_error() {
+        let store = Arc::new(FailingStore);
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test").unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        let result = conn.run().await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
+    }
+
+    #[tokio::test]
+    async fn query_path_info_propagates_store_error() {
+        let store = Arc::new(FailingStore);
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test").unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        let result = conn.run().await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
+    }
+
+    #[tokio::test]
+    async fn query_all_valid_paths_propagates_store_error() {
+        let store = Arc::new(FailingStore);
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryAllValidPaths as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        let result = conn.run().await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
+    }
+
     // ── QueryAllValidPaths with empty store ─────────────────────
 
     #[tokio::test]
