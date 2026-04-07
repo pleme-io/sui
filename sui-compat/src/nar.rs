@@ -92,18 +92,34 @@ fn expect_str(r: &mut impl Read, expected: &str) -> Result<(), NarError> {
 
 // ── In-memory NAR node types ─────────────────────────────────
 
-/// A node in a NAR archive.
+/// A node in a NAR archive tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NarNode {
-    Regular { executable: bool, contents: Vec<u8> },
-    Symlink { target: String },
-    Directory { entries: Vec<NarEntry> },
+    /// A regular file with optional executable permission.
+    Regular {
+        /// Whether the file has the executable bit set.
+        executable: bool,
+        /// Raw file contents.
+        contents: Vec<u8>,
+    },
+    /// A symbolic link.
+    Symlink {
+        /// The symlink target path.
+        target: String,
+    },
+    /// A directory containing named entries.
+    Directory {
+        /// Sorted list of directory entries.
+        entries: Vec<NarEntry>,
+    },
 }
 
-/// A directory entry.
+/// A named entry within a NAR directory node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NarEntry {
+    /// Entry filename (relative, no path separators).
     pub name: String,
+    /// The file, symlink, or subdirectory at this entry.
     pub node: NarNode,
 }
 

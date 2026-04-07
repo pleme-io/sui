@@ -92,7 +92,7 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, HashError> {
         .map_err(|_| HashError::InvalidEncoding)
 }
 
-// Keep the old name as an alias for backward compatibility
+/// Base64 encode bytes (alias for [`base64_encode`] kept for backward compatibility).
 pub fn minimal_base64_encode(input: &[u8]) -> String {
     base64_encode(input)
 }

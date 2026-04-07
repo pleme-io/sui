@@ -16,23 +16,33 @@ pub enum DerivationError {
     Io(#[from] std::io::Error),
 }
 
-/// A derivation output.
+/// A derivation output descriptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivationOutput {
+    /// Store path for this output (empty for floating content-addressed outputs).
     pub path: String,
+    /// Hash algorithm (e.g. `"sha256"`), empty for input-addressed outputs.
     pub hash_algo: String,
+    /// Expected hash value, empty for input-addressed outputs.
     pub hash: String,
 }
 
 /// A parsed Nix derivation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Derivation {
+    /// Named outputs (e.g. `"out"`, `"dev"`, `"lib"`).
     pub outputs: BTreeMap<String, DerivationOutput>,
+    /// Input derivations: maps `.drv` store path to the list of outputs used.
     pub input_derivations: BTreeMap<String, Vec<String>>,
+    /// Input source store paths (non-derivation dependencies).
     pub input_sources: Vec<String>,
+    /// Target system triple (e.g. `"x86_64-linux"`).
     pub system: String,
+    /// Path to the builder executable.
     pub builder: String,
+    /// Arguments passed to the builder.
     pub args: Vec<String>,
+    /// Environment variables set during the build.
     pub env: BTreeMap<String, String>,
 }
 
@@ -231,6 +241,7 @@ impl Derivation {
     }
 }
 
+/// Escape a string for ATerm serialization (backslash-escaping special chars).
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
