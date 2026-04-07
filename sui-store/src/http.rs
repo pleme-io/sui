@@ -311,4 +311,278 @@ mod tests {
         assert_eq!(resp.status, 201);
         assert_eq!(resp.body, "second");
     }
+
+    // ── HttpResponse::is_success boundary checks ─────────────
+
+    #[test]
+    fn is_success_200() {
+        let r = HttpResponse {
+            status: 200,
+            body: String::new(),
+        };
+        assert!(r.is_success());
+    }
+
+    #[test]
+    fn is_success_299_inclusive() {
+        let r = HttpResponse {
+            status: 299,
+            body: String::new(),
+        };
+        assert!(r.is_success());
+    }
+
+    #[test]
+    fn is_success_300_exclusive() {
+        let r = HttpResponse {
+            status: 300,
+            body: String::new(),
+        };
+        assert!(!r.is_success());
+    }
+
+    #[test]
+    fn is_success_199_below_range() {
+        let r = HttpResponse {
+            status: 199,
+            body: String::new(),
+        };
+        assert!(!r.is_success());
+    }
+
+    #[test]
+    fn is_success_404() {
+        let r = HttpResponse {
+            status: 404,
+            body: String::new(),
+        };
+        assert!(!r.is_success());
+    }
+
+    #[test]
+    fn is_success_500() {
+        let r = HttpResponse {
+            status: 500,
+            body: String::new(),
+        };
+        assert!(!r.is_success());
+    }
+
+    #[test]
+    fn is_success_201_created() {
+        let r = HttpResponse {
+            status: 201,
+            body: String::new(),
+        };
+        assert!(r.is_success());
+    }
+
+    #[test]
+    fn is_success_204_no_content() {
+        let r = HttpResponse {
+            status: 204,
+            body: String::new(),
+        };
+        assert!(r.is_success());
+    }
+
+    #[test]
+    fn is_success_zero_status() {
+        let r = HttpResponse {
+            status: 0,
+            body: String::new(),
+        };
+        assert!(!r.is_success());
+    }
+
+    // ── HttpError equality ──────────────────────────────────
+
+    #[test]
+    fn http_error_equality() {
+        let a = HttpError::Request("foo".to_string());
+        let b = HttpError::Request("foo".to_string());
+        assert_eq!(a, b);
+
+        let c = HttpError::Request("bar".to_string());
+        assert_ne!(a, c);
+
+        let d = HttpError::Decode("foo".to_string());
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn http_error_clone() {
+        let a = HttpError::Request("network down".to_string());
+        let cloned = a.clone();
+        assert_eq!(a, cloned);
+    }
+
+    // ── HttpResponse with different headers ─────────────────
+
+    #[tokio::test]
+    async fn mock_client_ignores_request_headers() {
+        // MockHttpClient doesn't differentiate by headers — verify that
+        // requests with different headers all hit the same mocked URL.
+        let client = MockHttpClient::new().with_response(
+            "http://test/x",
+            HttpResponse {
+                status: 200,
+                body: "ok".to_string(),
+            },
+        );
+        let r1 = client
+            .get("http://test/x", &[("Accept", "text/plain")])
+            .await
+            .unwrap();
+        let r2 = client
+            .get("http://test/x", &[("Accept", "application/json")])
+            .await
+            .unwrap();
+        let r3 = client.get("http://test/x", &[]).await.unwrap();
+        assert_eq!(r1.body, "ok");
+        assert_eq!(r2.body, "ok");
+        assert_eq!(r3.body, "ok");
+    }
+
+    // ── MockHttpClient: malformed JSON body ─────────────────
+
+    #[tokio::test]
+    async fn mock_client_malformed_json_body() {
+        let client = MockHttpClient::new().with_response(
+            "http://test/api",
+            HttpResponse {
+                status: 200,
+                body: "{not valid json".to_string(),
+            },
+        );
+        let resp = client.get("http://test/api", &[]).await.unwrap();
+        // The mock client doesn't validate JSON — it returns the body as-is.
+        // Consumers must validate.
+        assert_eq!(resp.body, "{not valid json");
+        assert!(serde_json::from_str::<serde_json::Value>(&resp.body).is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_client_valid_json_body() {
+        let client = MockHttpClient::new().with_response(
+            "http://test/api",
+            HttpResponse {
+                status: 200,
+                body: r#"{"key":"value","n":42}"#.to_string(),
+            },
+        );
+        let resp = client.get("http://test/api", &[]).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        assert_eq!(parsed["key"], "value");
+        assert_eq!(parsed["n"], 42);
+    }
+
+    // ── MockHttpClient: get_bytes for binary-ish content ────
+
+    #[tokio::test]
+    async fn mock_client_get_bytes_with_pseudo_binary() {
+        // MockHttpClient stores the body as String, so true binary
+        // (non-UTF8) data isn't representable. Use UTF-8 escape sequences.
+        let client = MockHttpClient::new().with_response(
+            "http://test/bin",
+            HttpResponse {
+                status: 200,
+                body: "\u{0001}\u{0002}\u{0003}".to_string(),
+            },
+        );
+        let bytes = client.get_bytes("http://test/bin").await.unwrap();
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(bytes[0], 0x01);
+        assert_eq!(bytes[1], 0x02);
+        assert_eq!(bytes[2], 0x03);
+    }
+
+    // ── HttpResponse Default-ish patterns ───────────────────
+
+    #[test]
+    fn http_response_zero_status_construction() {
+        let r = HttpResponse {
+            status: 0,
+            body: String::new(),
+        };
+        assert_eq!(r.status, 0);
+        assert!(r.body.is_empty());
+    }
+
+    // ── ReqwestHttpClient construction methods ──────────────
+
+    #[test]
+    fn reqwest_new_does_not_panic() {
+        let _client = ReqwestHttpClient::new();
+    }
+
+    #[test]
+    fn reqwest_default_equivalent_to_new() {
+        let _a = ReqwestHttpClient::new();
+        let _b = ReqwestHttpClient::default();
+    }
+
+    #[test]
+    fn reqwest_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ReqwestHttpClient>();
+    }
+
+    // ── Trait object dispatch ───────────────────────────────
+
+    #[tokio::test]
+    async fn dyn_http_client_get_via_trait_object() {
+        let client: Box<dyn HttpClient> = Box::new(MockHttpClient::new().with_response(
+            "http://test/dyn",
+            HttpResponse {
+                status: 200,
+                body: "via dyn".to_string(),
+            },
+        ));
+        let resp = client.get("http://test/dyn", &[]).await.unwrap();
+        assert_eq!(resp.body, "via dyn");
+    }
+
+    #[tokio::test]
+    async fn dyn_http_client_get_bytes_via_trait_object() {
+        let client: Box<dyn HttpClient> = Box::new(MockHttpClient::new().with_response(
+            "http://test/dyn",
+            HttpResponse {
+                status: 200,
+                body: "bytes via dyn".to_string(),
+            },
+        ));
+        let bytes = client.get_bytes("http://test/dyn").await.unwrap();
+        assert_eq!(bytes, b"bytes via dyn");
+    }
+
+    // ── HttpError variant coverage ──────────────────────────
+
+    #[test]
+    fn http_error_request_variant_message() {
+        let e = HttpError::Request("ENETUNREACH".to_string());
+        assert!(e.to_string().contains("request failed"));
+        assert!(e.to_string().contains("ENETUNREACH"));
+    }
+
+    #[test]
+    fn http_error_decode_variant_message() {
+        let e = HttpError::Decode("invalid utf-8 sequence".to_string());
+        assert!(e.to_string().contains("decode error"));
+        assert!(e.to_string().contains("invalid utf-8"));
+    }
+
+    // ── HttpResponse field mutation ─────────────────────────
+
+    #[test]
+    fn http_response_mutable_fields() {
+        let mut r = HttpResponse {
+            status: 200,
+            body: "old".to_string(),
+        };
+        r.status = 404;
+        r.body = "new".to_string();
+        assert_eq!(r.status, 404);
+        assert_eq!(r.body, "new");
+    }
 }
