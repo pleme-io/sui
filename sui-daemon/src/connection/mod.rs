@@ -3,10 +3,25 @@
 //! Each accepted Unix socket connection gets its own [`Connection`] which
 //! performs the Nix worker protocol handshake and then enters the main
 //! request/response loop.
+//!
+//! # Module layout
+//!
+//! - [`wire`] — async read/write primitives for the Nix wire format
+//! - [`handshake`] — magic / version / trust negotiation
+//! - [`dispatch`] — opcode dispatch loop and per-operation handlers
+
+mod dispatch;
+mod handshake;
+pub(crate) mod wire;
+
+// Re-export wire helpers at module scope so existing tests (which use
+// `use super::*`) continue to compile unchanged.
+use wire::{
+    read_bytes, read_string, read_u64, write_bool, write_bytes, write_stderr_error,
+    write_stderr_last, write_string, write_string_list, write_u64,
+};
 
 use std::sync::Arc;
-
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use sui_compat::store_path::StorePath;
 use sui_compat::wire::{
@@ -60,89 +75,6 @@ pub enum ConnectionError {
     Protocol(String),
 }
 
-// ── Async wire primitives ────────────────────────────────────────
-//
-// Mirrors `sui_compat::wire` but async via `tokio::io`.
-// All integers are u64 LE. Strings are length-prefixed with 8-byte padding.
-
-async fn write_u64(w: &mut (impl AsyncWrite + Unpin), v: u64) -> std::io::Result<()> {
-    w.write_all(&v.to_le_bytes()).await
-}
-
-async fn read_u64(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<u64> {
-    let mut buf = [0u8; 8];
-    r.read_exact(&mut buf).await?;
-    Ok(u64::from_le_bytes(buf))
-}
-
-async fn write_bytes(w: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> std::io::Result<()> {
-    write_u64(w, data.len() as u64).await?;
-    w.write_all(data).await?;
-    let pad = (8 - (data.len() % 8)) % 8;
-    if pad > 0 {
-        w.write_all(&vec![0u8; pad]).await?;
-    }
-    Ok(())
-}
-
-async fn read_bytes(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Vec<u8>> {
-    let len = read_u64(r).await? as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-    let pad = (8 - (len % 8)) % 8;
-    if pad > 0 {
-        let mut pad_buf = vec![0u8; pad];
-        r.read_exact(&mut pad_buf).await?;
-    }
-    Ok(buf)
-}
-
-async fn write_string(w: &mut (impl AsyncWrite + Unpin), s: &str) -> std::io::Result<()> {
-    write_bytes(w, s.as_bytes()).await
-}
-
-async fn read_string(r: &mut (impl AsyncRead + Unpin)) -> Result<String, ConnectionError> {
-    let bytes = read_bytes(r).await?;
-    String::from_utf8(bytes).map_err(|e| ConnectionError::Protocol(format!("invalid UTF-8: {e}")))
-}
-
-async fn write_bool(w: &mut (impl AsyncWrite + Unpin), v: bool) -> std::io::Result<()> {
-    write_u64(w, u64::from(v)).await
-}
-
-async fn write_string_list(
-    w: &mut (impl AsyncWrite + Unpin),
-    list: &[String],
-) -> std::io::Result<()> {
-    write_u64(w, list.len() as u64).await?;
-    for s in list {
-        write_string(w, s).await?;
-    }
-    Ok(())
-}
-
-// ── Stderr protocol helpers ──────────────────────────────────────
-
-/// Write `STDERR_LAST` to signal the end of the stderr stream.
-/// All successful responses are preceded by this marker.
-async fn write_stderr_last(w: &mut (impl AsyncWrite + Unpin)) -> std::io::Result<()> {
-    write_u64(w, StderrMsg::Last as u64).await
-}
-
-/// Write an error response via the stderr protocol.
-async fn write_stderr_error(
-    w: &mut (impl AsyncWrite + Unpin),
-    msg: &str,
-) -> std::io::Result<()> {
-    write_u64(w, StderrMsg::Error as u64).await?;
-    write_string(w, "Error").await?; // error type
-    write_string(w, msg).await?; // error message
-    write_u64(w, 0).await?; // error number / exit code
-    Ok(())
-}
-
-// ── Connection ───────────────────────────────────────────────────
-
 /// A single client connection to the daemon.
 pub struct Connection<S, R, W> {
     store: Arc<S>,
@@ -155,8 +87,8 @@ pub struct Connection<S, R, W> {
 impl<S, R, W> Connection<S, R, W>
 where
     S: Store,
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
 {
     /// Create a new connection (pre-handshake).
     #[must_use]
@@ -168,255 +100,6 @@ where
             trust,
             client_version: 0,
         }
-    }
-
-    /// Perform the Nix worker protocol handshake.
-    ///
-    /// Sequence:
-    /// 1. Read `WORKER_MAGIC_1` from client
-    /// 2. Write `WORKER_MAGIC_2` to client
-    /// 3. Write `PROTOCOL_VERSION` to client
-    /// 4. Read client protocol version
-    /// 5. Write `0_u64` for CPU affinity (obsolete)
-    /// 6. Write `0_u64` for reserve space (obsolete)
-    /// 7. Write the daemon version string
-    /// 8. Exchange trust level
-    pub async fn handshake(&mut self) -> Result<(), ConnectionError> {
-        // 1. Read client magic
-        let magic = read_u64(&mut self.reader).await?;
-        if magic != WORKER_MAGIC_1 {
-            return Err(ConnectionError::BadMagic {
-                expected: WORKER_MAGIC_1,
-                got: magic,
-            });
-        }
-
-        // 2. Write server magic
-        write_u64(&mut self.writer, WORKER_MAGIC_2).await?;
-
-        // 3. Write server protocol version
-        write_u64(&mut self.writer, PROTOCOL_VERSION).await?;
-        self.writer.flush().await?;
-
-        // 4. Read client protocol version
-        self.client_version = read_u64(&mut self.reader).await?;
-
-        // 5. Obsolete CPU affinity (must still send zero)
-        if self.client_version >= PROTOCOL_MINOR_CPU_AFFINITY {
-            let _cpu_affinity = read_u64(&mut self.reader).await?;
-        }
-
-        // 6. Obsolete reserve space (must still send zero)
-        if self.client_version >= PROTOCOL_MINOR_RESERVE_SPACE {
-            let _reserve = read_u64(&mut self.reader).await?;
-        }
-
-        // 7. Write daemon version string
-        write_string(&mut self.writer, "sui-daemon 0.1.0").await?;
-
-        // 8. Write trust level
-        if self.client_version >= PROTOCOL_MINOR_TRUST_EXCHANGE {
-            write_u64(&mut self.writer, u64::from(self.trust)).await?;
-        }
-
-        self.writer.flush().await?;
-
-        tracing::info!(
-            client_version = self.client_version,
-            trust = %self.trust,
-            "handshake complete"
-        );
-
-        Ok(())
-    }
-
-    /// Run the main opcode dispatch loop.
-    ///
-    /// Reads opcodes from the client, dispatches to the appropriate handler,
-    /// and writes responses. Returns when the connection is closed or an
-    /// unrecoverable error occurs.
-    pub async fn run(&mut self) -> Result<(), ConnectionError> {
-        loop {
-            let op_raw = match read_u64(&mut self.reader).await {
-                Ok(v) => v,
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    tracing::debug!("client disconnected");
-                    return Ok(());
-                }
-                Err(e) => return Err(e.into()),
-            };
-
-            let op = WorkerOp::from_u64(op_raw);
-
-            match op {
-                Some(WorkerOp::IsValidPath) => self.handle_is_valid_path().await?,
-                Some(WorkerOp::QueryPathInfo) => self.handle_query_path_info().await?,
-                Some(WorkerOp::QueryAllValidPaths) => self.handle_query_all_valid_paths().await?,
-                Some(WorkerOp::SetOptions) => self.handle_set_options().await?,
-                Some(other) => {
-                    tracing::warn!(?other, "unimplemented opcode");
-                    write_stderr_error(
-                        &mut self.writer,
-                        &format!("operation {other:?} is not yet implemented"),
-                    )
-                    .await?;
-                    write_stderr_last(&mut self.writer).await?;
-                    self.writer.flush().await?;
-                }
-                None => {
-                    tracing::warn!(op_raw, "unknown opcode");
-                    write_stderr_error(
-                        &mut self.writer,
-                        &format!("unknown opcode {op_raw}"),
-                    )
-                    .await?;
-                    write_stderr_last(&mut self.writer).await?;
-                    self.writer.flush().await?;
-                }
-            }
-        }
-    }
-
-    // ── Operation handlers ───────────────────────────────────────
-
-    /// `IsValidPath` (op 1): Read a store path, return whether it exists.
-    async fn handle_is_valid_path(&mut self) -> Result<(), ConnectionError> {
-        let path_str = read_string(&mut self.reader).await?;
-        tracing::debug!(path = %path_str, "IsValidPath");
-
-        let valid = match StorePath::from_absolute_path(&path_str) {
-            Ok(sp) => self.store.is_valid_path(&sp).await?,
-            Err(_) => false,
-        };
-
-        write_stderr_last(&mut self.writer).await?;
-        write_bool(&mut self.writer, valid).await?;
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    /// `QueryPathInfo` (op 26): Read a store path, return its `PathInfo`.
-    ///
-    /// Response format:
-    /// - `STDERR_LAST`
-    /// - valid (bool: 1 if found, 0 if not)
-    /// If found:
-    /// - deriver (string, empty if none)
-    /// - nar_hash (string)
-    /// - references (string list)
-    /// - registration_time (u64)
-    /// - nar_size (u64)
-    /// - ultimate (bool, always false for now)
-    /// - signatures (string list)
-    /// - content_address (string, empty for now)
-    async fn handle_query_path_info(&mut self) -> Result<(), ConnectionError> {
-        let path_str = read_string(&mut self.reader).await?;
-        tracing::debug!(path = %path_str, "QueryPathInfo");
-
-        let info = match StorePath::from_absolute_path(&path_str) {
-            Ok(sp) => self.store.query_path_info(&sp).await?,
-            Err(_) => None,
-        };
-
-        write_stderr_last(&mut self.writer).await?;
-
-        match info {
-            Some(pi) => {
-                // Path is valid
-                write_bool(&mut self.writer, true).await?;
-                // Deriver
-                write_string(&mut self.writer, pi.deriver.as_deref().unwrap_or("")).await?;
-                // NAR hash
-                write_string(&mut self.writer, &pi.nar_hash).await?;
-                // References
-                write_string_list(&mut self.writer, &pi.references).await?;
-                // Registration time
-                write_u64(&mut self.writer, pi.registration_time as u64).await?;
-                // NAR size
-                write_u64(&mut self.writer, pi.nar_size as u64).await?;
-                // Ultimate (whether this is an "ultimate" trusted path)
-                write_bool(&mut self.writer, false).await?;
-                // Signatures
-                write_string_list(&mut self.writer, &pi.signatures).await?;
-                // Content address (empty for now)
-                write_string(&mut self.writer, "").await?;
-            }
-            None => {
-                // Path not found
-                write_bool(&mut self.writer, false).await?;
-            }
-        }
-
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    /// `QueryAllValidPaths` (op 23): Return all valid store paths.
-    async fn handle_query_all_valid_paths(&mut self) -> Result<(), ConnectionError> {
-        tracing::debug!("QueryAllValidPaths");
-
-        let paths = self
-            .store
-            .query_all_valid_paths()
-            .await?;
-
-        let path_strings: Vec<String> = paths.iter().map(|p| p.to_absolute_path()).collect();
-
-        write_stderr_last(&mut self.writer).await?;
-        write_string_list(&mut self.writer, &path_strings).await?;
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    /// `SetOptions` (op 19): Read and discard client options.
-    ///
-    /// The real Nix daemon processes ~30 option fields. We read and discard
-    /// them to keep the protocol flowing, then respond with success.
-    async fn handle_set_options(&mut self) -> Result<(), ConnectionError> {
-        tracing::debug!("SetOptions (consuming and discarding)");
-
-        // keepFailed
-        let _keep_failed = read_u64(&mut self.reader).await?;
-        // keepGoing
-        let _keep_going = read_u64(&mut self.reader).await?;
-        // tryFallback
-        let _try_fallback = read_u64(&mut self.reader).await?;
-        // verbosity
-        let _verbosity = read_u64(&mut self.reader).await?;
-        // maxBuildJobs
-        let _max_build_jobs = read_u64(&mut self.reader).await?;
-        // maxSilentTime
-        let _max_silent_time = read_u64(&mut self.reader).await?;
-
-        // Obsolete useBuildHook field (removed in protocol >= 1.12 but
-        // older clients still send it).
-        if self.client_version < PROTOCOL_MINOR_OVERRIDES {
-            let _use_build_hook = read_u64(&mut self.reader).await?;
-        }
-
-        // verboseBuild
-        let _verbose_build = read_u64(&mut self.reader).await?;
-        // logType (obsolete)
-        let _log_type = read_u64(&mut self.reader).await?;
-        // printBuildTrace (obsolete)
-        let _print_build_trace = read_u64(&mut self.reader).await?;
-        // buildCores
-        let _build_cores = read_u64(&mut self.reader).await?;
-        // useSubstitutes
-        let _use_substitutes = read_u64(&mut self.reader).await?;
-
-        // overrides (map of string->string sent as flat list)
-        if self.client_version >= PROTOCOL_MINOR_OVERRIDES {
-            let count = read_u64(&mut self.reader).await?;
-            for _ in 0..count {
-                let _name = read_string(&mut self.reader).await?;
-                let _value = read_string(&mut self.reader).await?;
-            }
-        }
-
-        write_stderr_last(&mut self.writer).await?;
-        self.writer.flush().await?;
-        Ok(())
     }
 }
 
