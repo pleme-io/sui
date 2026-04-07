@@ -150,7 +150,7 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
 pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
     let _guard = DepthGuard::enter()?;
     match expr {
-        ast::Expr::Literal(lit) => eval_literal(&lit),
+        ast::Expr::Literal(lit) => eval_literal(lit),
 
         ast::Expr::Str(s) => eval_str(s, env),
 
@@ -1082,11 +1082,11 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
             let attrs = arg.as_attrs()?;
 
             // @-binding (either `args @ { ... }` or `{ ... } @ args`)
-            if let Some(pat_bind) = pat.pat_bind() {
-                if let Some(ident) = pat_bind.ident() {
-                    let name = ident_text(&ident);
-                    env.bind(name, arg.clone());
-                }
+            if let Some(pat_bind) = pat.pat_bind()
+                && let Some(ident) = pat_bind.ident()
+            {
+                let name = ident_text(&ident);
+                env.bind(name, arg.clone());
             }
 
             let has_ellipsis = pat.ellipsis_token().is_some();

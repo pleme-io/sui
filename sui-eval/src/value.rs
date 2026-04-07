@@ -287,7 +287,7 @@ impl fmt::Debug for Thunk {
 }
 
 /// A Nix attribute set.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NixAttrs(pub BTreeMap<String, Value>);
 
 impl NixAttrs {
@@ -351,14 +351,19 @@ pub struct Closure {
     pub env: Env,
 }
 
+/// The function signature stored inside a [`BuiltinFn`].
+pub type BuiltinFunc = dyn Fn(&[Value]) -> Result<Value, EvalError>;
+
 /// A builtin function.
 ///
 /// Not `Send`/`Sync` because `Value` contains rnix AST nodes (rowan `SyntaxNode`)
 /// which use `NonNull` internally. The evaluator is single-threaded.
 #[derive(Clone)]
 pub struct BuiltinFn {
+    /// Name used for display and debug printing.
     pub name: &'static str,
-    pub func: Arc<dyn Fn(&[Value]) -> Result<Value, EvalError>>,
+    /// The implementation closure.
+    pub func: Arc<BuiltinFunc>,
 }
 
 impl fmt::Debug for BuiltinFn {
@@ -368,7 +373,7 @@ impl fmt::Debug for BuiltinFn {
 }
 
 /// Evaluation environment — lexical scope chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Env {
     bindings: BTreeMap<String, Value>,
     parent: Option<Arc<Env>>,
