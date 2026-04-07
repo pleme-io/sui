@@ -1903,6 +1903,188 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
 
+    // ── builtins.sui.* — sui-specific extensions ─────────
+    //
+    // Modern hash algorithms, structured logging, better encoders,
+    // and a few file-system convenience helpers that real Nix
+    // doesn't ship. Namespaced under `builtins.sui` so they don't
+    // pollute the standard surface and consumers can opt in.
+    let mut sui_ext = NixAttrs::new();
+
+    // Hash algorithms ─ blake3, sha3-256, sha3-512.
+    register_builtin(&mut sui_ext, "blake3", |args| {
+        let s = args[0].as_string()?;
+        Ok(Value::string(blake3::hash(s.as_bytes()).to_hex().to_string()))
+    });
+    register_builtin(&mut sui_ext, "sha3_256", |args| {
+        use sha3::{Digest, Sha3_256};
+        let s = args[0].as_string()?;
+        Ok(Value::string(format!("{:x}", Sha3_256::digest(s.as_bytes()))))
+    });
+    register_builtin(&mut sui_ext, "sha3_512", |args| {
+        use sha3::{Digest, Sha3_512};
+        let s = args[0].as_string()?;
+        Ok(Value::string(format!("{:x}", Sha3_512::digest(s.as_bytes()))))
+    });
+
+    // YAML round-trip ─ uses serde_yaml_ng (already a workspace dep).
+    register_builtin(&mut sui_ext, "fromYAML", |args| {
+        let s = args[0].as_string()?;
+        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str(&s).map_err(|e| {
+            EvalError::TypeError(format!("sui.fromYAML: {e}"))
+        })?;
+        // Re-route through serde_json to reuse the existing
+        // json_to_value converter — keeps the conversion logic in
+        // one place and benefits from the same number/null handling.
+        let j = serde_json::to_value(&y).map_err(|e| {
+            EvalError::TypeError(format!("sui.fromYAML: yaml→json: {e}"))
+        })?;
+        Ok(json_to_value(&j))
+    });
+    register_builtin(&mut sui_ext, "toYAML", |args| {
+        let j = args[0].to_json();
+        let y: serde_yaml_ng::Value = serde_yaml_ng::from_value(
+            serde_yaml_ng::to_value(&j).map_err(|e| {
+                EvalError::TypeError(format!("sui.toYAML: json→yaml: {e}"))
+            })?,
+        )
+        .map_err(|e| EvalError::TypeError(format!("sui.toYAML: {e}")))?;
+        let out = serde_yaml_ng::to_string(&y).map_err(|e| {
+            EvalError::TypeError(format!("sui.toYAML: serialize: {e}"))
+        })?;
+        Ok(Value::string(out))
+    });
+
+    // CSV → list of attrs (or list of lists when no header).
+    register_curried(&mut sui_ext, "fromCSV", |csv_val, opts_val| {
+        let csv = csv_val.as_string()?;
+        let opts = opts_val.to_attrs()?;
+        let has_header = opts
+            .get("hasHeader")
+            .and_then(|v| crate::eval::force_value(v).ok())
+            .and_then(|v| match v {
+                Value::Bool(b) => Some(b),
+                _ => None,
+            })
+            .unwrap_or(true);
+        let delimiter = opts
+            .get("delimiter")
+            .and_then(|v| crate::eval::force_value(v).ok())
+            .and_then(|v| match v {
+                Value::String(ns) => Some(ns.chars),
+                _ => None,
+            })
+            .map(|s| s.chars().next().unwrap_or(','))
+            .unwrap_or(',');
+        let mut lines = csv.lines();
+        if has_header {
+            let header_line = lines
+                .next()
+                .ok_or_else(|| EvalError::TypeError("sui.fromCSV: empty input".into()))?;
+            let headers: Vec<&str> = header_line.split(delimiter).collect();
+            let mut rows: Vec<Value> = Vec::new();
+            for line in lines {
+                if line.is_empty() {
+                    continue;
+                }
+                let cells: Vec<&str> = line.split(delimiter).collect();
+                let mut a = NixAttrs::new();
+                for (i, h) in headers.iter().enumerate() {
+                    let v = cells.get(i).copied().unwrap_or("");
+                    a.insert((*h).to_string(), Value::string(v));
+                }
+                rows.push(Value::Attrs(a));
+            }
+            Ok(Value::List(rows))
+        } else {
+            let mut rows: Vec<Value> = Vec::new();
+            for line in lines {
+                if line.is_empty() {
+                    continue;
+                }
+                let cells: Vec<Value> = line
+                    .split(delimiter)
+                    .map(Value::string)
+                    .collect();
+                rows.push(Value::List(cells));
+            }
+            Ok(Value::List(rows))
+        }
+    });
+
+    // Regex named captures: returns an attrset of name → match for
+    // the *first* match in subject. Returns null on no match.
+    register_curried(&mut sui_ext, "regexNamedCaptures", |pat, subj| {
+        let p = pat.as_string()?;
+        let s = subj.as_string()?;
+        let re = regex::Regex::new(&p)
+            .map_err(|e| EvalError::TypeError(format!("sui.regexNamedCaptures: {e}")))?;
+        let Some(caps) = re.captures(&s) else {
+            return Ok(Value::Null);
+        };
+        let mut out = NixAttrs::new();
+        for name in re.capture_names().flatten() {
+            if let Some(m) = caps.name(name) {
+                out.insert(name.to_string(), Value::string(m.as_str()));
+            }
+        }
+        Ok(Value::Attrs(out))
+    });
+
+    // ISO-8601 timestamp string for currentTime — convenient for
+    // log lines and "build at" stamps without manual format math.
+    register_builtin(&mut sui_ext, "timestamp", |_args| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let date = format_unix_yyyymmddhhmmss(now);
+        // Reformat YYYYMMDDhhmmss → YYYY-MM-DDThh:mm:ssZ.
+        if date.len() == 14 {
+            Ok(Value::string(format!(
+                "{}-{}-{}T{}:{}:{}Z",
+                &date[0..4],
+                &date[4..6],
+                &date[6..8],
+                &date[8..10],
+                &date[10..12],
+                &date[12..14],
+            )))
+        } else {
+            Ok(Value::string(date))
+        }
+    });
+
+    // File metadata helpers — return integers describing the file
+    // identified by path. Errors when the file doesn't exist.
+    register_builtin(&mut sui_ext, "fileSize", |args| {
+        let path = args[0].coerce_to_path("sui.fileSize")?;
+        let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
+            context: format!("sui.fileSize: {path}"),
+            message: e.to_string(),
+        })?;
+        Ok(Value::Int(metadata.len() as i64))
+    });
+    register_builtin(&mut sui_ext, "fileMtime", |args| {
+        let path = args[0].coerce_to_path("sui.fileMtime")?;
+        let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
+            context: format!("sui.fileMtime: {path}"),
+            message: e.to_string(),
+        })?;
+        let mtime = metadata
+            .modified()
+            .map_err(|e| EvalError::IoError {
+                context: format!("sui.fileMtime: {path}"),
+                message: e.to_string(),
+            })?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Ok(Value::Int(mtime))
+    });
+
+    builtins_set.insert("sui".to_string(), Value::Attrs(sui_ext));
+
     // ── builtins.builtins (self-reference) ───────────────
     //
     // CppNix exposes `builtins.builtins` so callers can introspect
@@ -5587,6 +5769,186 @@ mod tests {
     fn builtins_filter_attrs_non_attrs_errors() {
         let result = eval(r#"builtins.filterAttrs (n: v: true) [1 2 3]"#);
         assert!(result.is_err());
+    }
+
+    // ── builtins.sui.* extensions ─────────────────────────
+
+    #[test]
+    fn sui_ext_namespace_exists() {
+        assert_eq!(ev("builtins ? sui"), Value::Bool(true));
+    }
+
+    // blake3 ──
+    #[test]
+    fn sui_ext_blake3_known_vector() {
+        // Empty input — published BLAKE3 zero-length vector.
+        assert_eq!(
+            ev(r#"builtins.sui.blake3 """#),
+            Value::string("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"),
+        );
+    }
+    #[test]
+    fn sui_ext_blake3_hello() {
+        let v = ev(r#"builtins.sui.blake3 "hello""#);
+        if let Value::String(s) = v {
+            assert_eq!(s.chars.len(), 64);
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_blake3_non_string_errors() {
+        let result = eval("builtins.sui.blake3 42");
+        assert!(result.is_err());
+    }
+
+    // sha3_256 ──
+    #[test]
+    fn sui_ext_sha3_256_known_vector() {
+        // SHA3-256("") = a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+        assert_eq!(
+            ev(r#"builtins.sui.sha3_256 """#),
+            Value::string("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a"),
+        );
+    }
+    #[test]
+    fn sui_ext_sha3_256_hello() {
+        let v = ev(r#"builtins.sui.sha3_256 "hello""#);
+        if let Value::String(s) = v { assert_eq!(s.chars.len(), 64); } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_sha3_512_known_vector() {
+        // SHA3-512("") known vector
+        assert_eq!(
+            ev(r#"builtins.sui.sha3_512 """#),
+            Value::string("a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26"),
+        );
+    }
+
+    // YAML ──
+    #[test]
+    fn sui_ext_from_yaml_simple() {
+        let v = ev(r#"builtins.sui.fromYAML "x: 1\ny: hello\n""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("x"), Some(&Value::Int(1)));
+            assert_eq!(
+                a.get("y").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("hello".to_string()),
+            );
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_yaml_invalid_errors() {
+        let result = eval(r#"builtins.sui.fromYAML "this is :\n: not valid: : :: ::""#);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn sui_ext_to_yaml_round_trip() {
+        // toYAML emits canonical yaml; round-tripping is structural.
+        let v = ev(r#"builtins.sui.fromYAML (builtins.sui.toYAML { a = 1; b = "two"; })"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else { panic!(); }
+    }
+
+    // CSV ──
+    #[test]
+    fn sui_ext_from_csv_with_header() {
+        let v = ev(r#"builtins.sui.fromCSV "name,age\nalice,30\nbob,25" { hasHeader = true; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 2);
+            if let Value::Attrs(a) = &rows[0] {
+                assert_eq!(
+                    a.get("name").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                    Some("alice".to_string()),
+                );
+            } else { panic!(); }
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_csv_no_header() {
+        let v = ev(r#"builtins.sui.fromCSV "a,b\nc,d" { hasHeader = false; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 2);
+            if let Value::List(cells) = &rows[0] { assert_eq!(cells.len(), 2); } else { panic!(); }
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_csv_custom_delimiter() {
+        let v = ev(r#"builtins.sui.fromCSV "x|y\n1|2" { hasHeader = true; delimiter = "|"; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 1);
+            if let Value::Attrs(a) = &rows[0] {
+                assert_eq!(
+                    a.get("x").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                    Some("1".to_string()),
+                );
+            } else { panic!(); }
+        } else { panic!(); }
+    }
+
+    // regexNamedCaptures ──
+    #[test]
+    fn sui_ext_regex_named_captures_match() {
+        let v = ev(r#"builtins.sui.regexNamedCaptures "(?P<word>[a-z]+) (?P<num>[0-9]+)" "abc 123""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("word").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("abc".to_string()),
+            );
+            assert_eq!(
+                a.get("num").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("123".to_string()),
+            );
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_regex_named_captures_no_match() {
+        assert_eq!(
+            ev(r#"builtins.sui.regexNamedCaptures "(?P<x>[0-9]+)" "no digits""#),
+            Value::Null,
+        );
+    }
+    #[test]
+    fn sui_ext_regex_named_captures_invalid_pattern_errors() {
+        let result = eval(r#"builtins.sui.regexNamedCaptures "(unclosed" "subject""#);
+        assert!(result.is_err());
+    }
+
+    // timestamp ──
+    #[test]
+    fn sui_ext_timestamp_format() {
+        let v = ev("builtins.sui.timestamp null");
+        if let Value::String(s) = v {
+            // YYYY-MM-DDThh:mm:ssZ has length 20
+            assert_eq!(s.chars.len(), 20);
+            assert_eq!(&s.chars[10..11], "T");
+            assert_eq!(&s.chars[19..20], "Z");
+        } else { panic!(); }
+    }
+
+    // fileSize / fileMtime ──
+    #[test]
+    fn sui_ext_file_size_known() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_ext_file_size_test.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+        let expr = format!(r#"builtins.sui.fileSize "{}""#, path.display());
+        assert_eq!(eval(&expr).unwrap(), Value::Int(11));
+        std::fs::remove_file(&path).ok();
+    }
+    #[test]
+    fn sui_ext_file_size_missing_errors() {
+        let result = eval(r#"builtins.sui.fileSize "/nonexistent/sui-file-size-12345""#);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn sui_ext_file_mtime_returns_int() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_ext_file_mtime_test.bin");
+        std::fs::write(&path, b"x").unwrap();
+        let expr = format!(r#"builtins.sui.fileMtime "{}""#, path.display());
+        let v = eval(&expr).unwrap();
+        if let Value::Int(t) = v { assert!(t > 0); } else { panic!(); }
+        std::fs::remove_file(&path).ok();
     }
 
     // ── builtins.builtins self-reference ──────────────────
