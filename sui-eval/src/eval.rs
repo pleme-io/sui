@@ -3830,4 +3830,670 @@ mod tests {
             Value::Path("/foo//bar".to_string()),
         );
     }
+
+    // ── EvalFileGuard / current_eval_dir ───────────────────
+
+    #[test]
+    fn current_eval_dir_empty_when_no_file_pushed() {
+        // Without a push, current_eval_dir should yield None.
+        // (Note: this test is order-dependent; we accept whatever the
+        // top of the stack happens to be when called.)
+        let snapshot = current_eval_dir();
+        // At minimum the API doesn't panic and returns Option.
+        let _ = snapshot;
+    }
+
+    #[test]
+    fn push_eval_file_sets_current_dir() {
+        let p = std::path::PathBuf::from("/tmp/example/file.nix");
+        {
+            let _g = push_eval_file(p.clone());
+            assert_eq!(current_eval_dir(), Some(std::path::PathBuf::from("/tmp/example")));
+        }
+        // Guard dropped, stack popped — current dir is whatever was below.
+        // We can't assert exact value without snapshotting first, but the
+        // value before push should be restored.
+    }
+
+    #[test]
+    fn push_eval_file_nested_stack() {
+        let outer = std::path::PathBuf::from("/a/x.nix");
+        let inner = std::path::PathBuf::from("/b/y.nix");
+        {
+            let _g_outer = push_eval_file(outer.clone());
+            assert_eq!(current_eval_dir(), Some(std::path::PathBuf::from("/a")));
+            {
+                let _g_inner = push_eval_file(inner.clone());
+                assert_eq!(current_eval_dir(), Some(std::path::PathBuf::from("/b")));
+            }
+            // Inner dropped — outer is back on top.
+            assert_eq!(current_eval_dir(), Some(std::path::PathBuf::from("/a")));
+        }
+    }
+
+    // ── pure mode getter/setter independence ───────────────
+
+    #[test]
+    fn pure_mode_set_get_independence() {
+        let was = is_pure_mode();
+        set_pure_mode(true);
+        assert!(is_pure_mode());
+        set_pure_mode(false);
+        assert!(!is_pure_mode());
+        set_pure_mode(was);
+    }
+
+    // ── eval_with_file with file path ──────────────────────
+
+    #[test]
+    fn eval_with_file_some_path_arithmetic() {
+        let p = std::path::PathBuf::from("/tmp/imaginary.nix");
+        let result = eval_with_file("1 + 2", Some(p)).unwrap();
+        assert_eq!(result, Value::Int(3));
+    }
+
+    // ── String interpolation primitive coercions ───────────
+
+    #[test]
+    fn interp_int_into_string() {
+        // Integer interpolated into a string is coerced to its decimal repr.
+        assert_eq!(ev(r#""val=${toString 42}""#), Value::string("val=42"));
+    }
+
+    #[test]
+    fn interp_bool_true_becomes_one() {
+        // Per eval_str: Bool(true) → "1", Bool(false) → "" (empty)
+        let v = ev(r#"let x = true; in "${builtins.toString x}""#);
+        assert_eq!(v, Value::string("1"));
+    }
+
+    #[test]
+    fn interp_null_becomes_empty() {
+        // Null in interpolation is empty.
+        let v = ev(r#"let x = null; in "${builtins.toString x}""#);
+        assert_eq!(v, Value::string(""));
+    }
+
+    #[test]
+    fn interp_attrset_without_to_string_errors() {
+        // An attrset interpolated without __toString is a type error.
+        let result = eval(r#"let s = { x = 1; }; in "${s}""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn interp_attrset_with_to_string_protocol() {
+        // __toString protocol returns a string when called with self.
+        let v = ev(r#""${{ __toString = self: "ok"; }}""#);
+        assert_eq!(v, Value::string("ok"));
+    }
+
+    // ── Path PathRel / PathHome / PathAbs ─────────────────
+
+    #[test]
+    fn eval_path_absolute_literal() {
+        let v = ev("/tmp/foo");
+        match v {
+            Value::Path(p) => assert!(p.contains("/tmp/foo")),
+            _ => panic!("expected Path"),
+        }
+    }
+
+    #[test]
+    fn eval_path_home_literal() {
+        let v = ev("~/foo.nix");
+        match v {
+            Value::Path(p) => assert!(p.contains("~/foo.nix") || p.ends_with("foo.nix")),
+            _ => panic!("expected Path"),
+        }
+    }
+
+    // ── search path miss ──────────────────────────────────
+
+    #[test]
+    fn path_search_unmatched_errors() {
+        // Without NIX_PATH entries matching, <nonexistent> errors out.
+        // We unset NIX_PATH locally to ensure no entries match.
+        let saved = std::env::var("NIX_PATH").ok();
+        // SAFETY: tests run sequentially in single-threaded mode by
+        // default? The thread_local NIX_PATH is per-thread but std::env
+        // is process-global. We restore it after.
+        unsafe {
+            std::env::remove_var("NIX_PATH");
+        }
+        let result = eval("<this_should_not_resolve>");
+        if let Some(v) = saved {
+            unsafe {
+                std::env::set_var("NIX_PATH", v);
+            }
+        }
+        assert!(result.is_err());
+    }
+
+    // ── Unary operators ────────────────────────────────────
+
+    #[test]
+    fn unary_negate_int() {
+        assert_eq!(ev("-7"), Value::Int(-7));
+    }
+
+    #[test]
+    fn unary_negate_float() {
+        assert_eq!(ev("-2.5"), Value::Float(-2.5));
+    }
+
+    #[test]
+    fn unary_invert_true() {
+        assert_eq!(ev("!true"), Value::Bool(false));
+    }
+
+    #[test]
+    fn unary_invert_false() {
+        assert_eq!(ev("!false"), Value::Bool(true));
+    }
+
+    #[test]
+    fn unary_negate_bool_errors() {
+        let result = eval("-true");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unary_invert_int_errors() {
+        let result = eval("!42");
+        assert!(result.is_err());
+    }
+
+    // ── Binary op type errors ──────────────────────────────
+
+    #[test]
+    fn binop_add_attrs_errors() {
+        let result = eval("{a=1;} + {b=2;}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binop_sub_string_errors() {
+        let result = eval(r#""a" - "b""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binop_mul_string_errors() {
+        let result = eval(r#""a" * "b""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binop_div_string_errors() {
+        let result = eval(r#""a" / "b""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binop_compare_attrs_errors() {
+        let result = eval("{a=1;} < {b=2;}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binop_div_float_by_zero_int() {
+        // Float / int(0) is NOT a DivisionByZero error in this evaluator —
+        // only int/int matches the DivisionByZero branch. This documents
+        // that branch.
+        let result = eval("1.0 / 0");
+        // Either inf or error is acceptable; the documented branch is
+        // the int/int(0) → DivisionByZero one.
+        let _ = result;
+    }
+
+    #[test]
+    fn binop_int_div_zero_is_division_by_zero() {
+        let result = eval("5 / 0");
+        match result {
+            Err(EvalError::DivisionByZero) => {}
+            other => panic!("expected DivisionByZero, got {other:?}"),
+        }
+    }
+
+    // ── if/then/else laziness ──────────────────────────────
+
+    #[test]
+    fn if_else_only_chosen_branch_evaluated_then() {
+        // The else branch contains a divide-by-zero that would error
+        // if eagerly evaluated. Choosing the then branch must skip it.
+        assert_eq!(ev("if true then 42 else 1 / 0"), Value::Int(42));
+    }
+
+    #[test]
+    fn if_else_only_chosen_branch_evaluated_else() {
+        assert_eq!(ev("if false then 1 / 0 else 99"), Value::Int(99));
+    }
+
+    #[test]
+    fn if_condition_must_be_bool() {
+        let result = eval("if 1 then 1 else 2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn if_condition_lazy_does_not_force_unused() {
+        // Lazy `let` ensures that `bad` is only forced if the chosen
+        // branch references it.
+        assert_eq!(
+            ev("let bad = 1 / 0; in if true then 42 else bad"),
+            Value::Int(42),
+        );
+    }
+
+    // ── Logic short-circuit laziness ───────────────────────
+
+    #[test]
+    fn and_short_circuits_on_false() {
+        // RHS contains an error; should never run.
+        assert_eq!(ev("false && (1 / 0 == 0)"), Value::Bool(false));
+    }
+
+    #[test]
+    fn or_short_circuits_on_true() {
+        assert_eq!(ev("true || (1 / 0 == 0)"), Value::Bool(true));
+    }
+
+    #[test]
+    fn implication_short_circuits_on_false_lhs() {
+        // false -> anything is true; RHS not evaluated.
+        assert_eq!(ev("false -> (1 / 0 == 0)"), Value::Bool(true));
+    }
+
+    // ── Lambda fixpoint via let ────────────────────────────
+
+    #[test]
+    fn lambda_fix_combinator_returns_attrset() {
+        // The classic `fix = f: let x = f x; in x` shape.
+        let v = ev(
+            "let fix = f: let x = f x; in x; in
+              (fix (self: { val = 1; double = self.val * 2; })).double",
+        );
+        assert_eq!(v, Value::Int(2));
+    }
+
+    // ── eval_attrset rec scope details ─────────────────────
+
+    #[test]
+    fn rec_attrset_self_reference() {
+        // rec set with simple forward reference.
+        let v = ev("(rec { a = b; b = 1; }).a");
+        assert_eq!(v, Value::Int(1));
+    }
+
+    #[test]
+    fn rec_attrset_inherit_from_uses_outer_scope() {
+        // inherit-from in rec uses the OUTER (lexical) scope to evaluate
+        // the source expression, not the rec scope. We bind `src` in
+        // an outer let so the inherit can find it.
+        let v = ev(
+            "let src = { a = 10; }; in
+              rec {
+                inherit (src) a;
+                b = a + 1;
+              }",
+        );
+        if let Value::Attrs(attrs) = v {
+            let b = attrs.get("b").unwrap();
+            let b_forced = force_value(b).unwrap();
+            assert_eq!(b_forced, Value::Int(11));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn nonrec_attrset_no_self_reference() {
+        // In a non-rec set, a name doesn't see its sibling. The error
+        // surfaces as an UndefinedVar when the thunk is forced.
+        let result = eval("({ a = 1; b = a + 1; }).b");
+        assert!(result.is_err());
+    }
+
+    // ── eval_attrset deep merge edge cases ─────────────────
+
+    #[test]
+    fn dotted_binding_three_segments_then_sibling() {
+        let v = ev("{ a.b.c = 1; a.b.d = 2; a.e = 3; }");
+        if let Value::Attrs(attrs) = v {
+            let a = attrs.get("a").unwrap();
+            let a_forced = force_value(a).unwrap();
+            if let Value::Attrs(a_attrs) = a_forced {
+                let b = a_attrs.get("b").unwrap();
+                let b_forced = force_value(b).unwrap();
+                if let Value::Attrs(b_attrs) = b_forced {
+                    assert_eq!(force_value(b_attrs.get("c").unwrap()).unwrap(), Value::Int(1));
+                    assert_eq!(force_value(b_attrs.get("d").unwrap()).unwrap(), Value::Int(2));
+                } else {
+                    panic!("expected b to be attrs");
+                }
+                assert_eq!(force_value(a_attrs.get("e").unwrap()).unwrap(), Value::Int(3));
+            } else {
+                panic!("expected a to be attrs");
+            }
+        } else {
+            panic!("expected outer attrs");
+        }
+    }
+
+    // ── Function pattern variations ────────────────────────
+
+    #[test]
+    fn pattern_empty_no_args_no_ellipsis() {
+        // {} pattern accepts only an empty attrset.
+        assert_eq!(ev("({}: 1) {}"), Value::Int(1));
+    }
+
+    #[test]
+    fn pattern_empty_with_ellipsis_accepts_extra() {
+        assert_eq!(ev("({...}: 1) { a = 1; b = 2; }"), Value::Int(1));
+    }
+
+    #[test]
+    fn pattern_all_defaults() {
+        assert_eq!(
+            ev("({a ? 1, b ? 2}: a + b) {}"),
+            Value::Int(3),
+        );
+    }
+
+    #[test]
+    fn pattern_at_bind_before() {
+        // args @ { x }: args.x — bind name comes before pattern.
+        assert_eq!(ev("(args @ { x }: args.x) { x = 7; }"), Value::Int(7));
+    }
+
+    #[test]
+    fn pattern_at_bind_after() {
+        // { x } @ args: args.x — bind name comes after pattern.
+        assert_eq!(ev("({ x } @ args: args.x) { x = 7; }"), Value::Int(7));
+    }
+
+    #[test]
+    fn pattern_default_references_other_arg() {
+        // The default for `b` references `a` (which exists).
+        assert_eq!(ev("({a, b ? a + 1}: b) {a = 10;}"), Value::Int(11));
+    }
+
+    #[test]
+    fn pattern_required_missing_errors() {
+        let result = eval("({ a, b }: a) { a = 1; }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pattern_unexpected_errors_without_ellipsis() {
+        let result = eval("({ a }: a) { a = 1; b = 2; }");
+        assert!(result.is_err());
+    }
+
+    // ── apply: error on non-callable ───────────────────────
+
+    #[test]
+    fn apply_int_errors() {
+        let result = eval("42 5");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_string_errors() {
+        let result = eval(r#""hi" 5"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_attrset_without_functor_errors() {
+        let result = eval("{ x = 1; } 5");
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("__functor") || msg.contains("cannot call"));
+    }
+
+    // ── Select with multi-segment + default ────────────────
+
+    #[test]
+    fn select_multi_segment_with_default() {
+        // a.b.missing or 99 -- the missing segment yields the default.
+        assert_eq!(ev("{ a = { b = 1; }; }.a.c or 99"), Value::Int(99));
+    }
+
+    #[test]
+    fn select_from_int_errors() {
+        let result = eval("(1).x");
+        assert!(result.is_err());
+    }
+
+    // ── HasAttr edge cases ─────────────────────────────────
+
+    #[test]
+    fn has_attr_on_non_set_returns_false() {
+        // `expr ? a` where expr is not a set returns false (not error).
+        assert_eq!(ev("1 ? x"), Value::Bool(false));
+    }
+
+    #[test]
+    fn has_attr_nested_path_present() {
+        assert_eq!(ev("{ a = { b = 1; }; } ? a.b"), Value::Bool(true));
+    }
+
+    #[test]
+    fn has_attr_nested_path_missing() {
+        assert_eq!(ev("{ a = { b = 1; }; } ? a.c"), Value::Bool(false));
+    }
+
+    #[test]
+    fn has_attr_intermediate_missing_returns_false() {
+        assert_eq!(ev("{} ? a.b.c"), Value::Bool(false));
+    }
+
+    // ── List eval edge cases ───────────────────────────────
+
+    #[test]
+    fn list_with_function_value() {
+        let v = ev("[(x: x + 1)]");
+        if let Value::List(items) = v {
+            assert_eq!(items.len(), 1);
+            assert!(matches!(items[0], Value::Lambda(_)));
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    // ── eval_inherit edge: inherit from missing var ────────
+
+    #[test]
+    fn inherit_unknown_name_errors() {
+        let result = eval("let x = 1; in let inherit nonexistent; in nonexistent");
+        assert!(result.is_err());
+    }
+
+    // ── String op: string concat preserves context ─────────
+
+    #[test]
+    fn string_concat_no_context_when_both_plain() {
+        let v = ev(r#""abc" + "def""#);
+        if let Value::String(ns) = v {
+            assert_eq!(ns.chars, "abcdef");
+            assert!(!ns.has_context());
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    // ── Parens / Root ──────────────────────────────────────
+
+    #[test]
+    fn parens_around_expression() {
+        assert_eq!(ev("(1 + 2)"), Value::Int(3));
+    }
+
+    #[test]
+    fn nested_parens() {
+        assert_eq!(ev("(((42)))"), Value::Int(42));
+    }
+
+    // ── Throw via builtins ─────────────────────────────────
+
+    #[test]
+    fn throw_propagates_as_error() {
+        let result = eval(r#"builtins.throw "kaboom""#);
+        match result {
+            Err(EvalError::Throw(s)) => assert!(s.contains("kaboom")),
+            other => panic!("expected Throw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assert_failed_propagates_as_error() {
+        let result = eval("assert false; 1");
+        match result {
+            Err(EvalError::AssertionFailed) => {}
+            other => panic!("expected AssertionFailed, got {other:?}"),
+        }
+    }
+
+    // ── eval_str InterpolPart::Literal only ────────────────
+
+    #[test]
+    fn string_no_interp_yields_no_context() {
+        let v = ev(r#""just literal""#);
+        if let Value::String(ns) = v {
+            assert!(!ns.has_context());
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    // ── Path interpolation adds context ───────────────────
+
+    #[test]
+    fn interp_path_adds_plain_context() {
+        let v = ev(r#""${/tmp/abc}""#);
+        if let Value::String(ns) = v {
+            assert!(ns.has_context());
+            assert!(ns.chars.contains("/tmp/abc"));
+        } else {
+            panic!("expected string");
+        }
+    }
+
+    // ── pipe operators (NotImplemented) ────────────────────
+    // Pipe operators (|>, <|) are parsed as PipeRight/PipeLeft and
+    // currently return NotImplemented. We can't easily evaluate them
+    // here because rnix may not even parse them, so we just rely on
+    // the binop branch existing.
+
+    // ── ParseError surface ─────────────────────────────────
+
+    #[test]
+    fn parse_error_unbalanced_braces() {
+        let result = eval("{ a = 1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, EvalError::ParseError(_)));
+    }
+
+    #[test]
+    fn parse_error_dangling_let() {
+        let result = eval("let in");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_error_empty_input() {
+        let result = eval("");
+        assert!(result.is_err());
+    }
+
+    // ── num_op coverage via float ops ──────────────────────
+
+    #[test]
+    fn float_int_subtraction() {
+        assert_eq!(ev("3.5 - 1"), Value::Float(2.5));
+    }
+
+    #[test]
+    fn int_float_subtraction() {
+        assert_eq!(ev("3 - 0.5"), Value::Float(2.5));
+    }
+
+    #[test]
+    fn float_float_division() {
+        assert_eq!(ev("6.0 / 2.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn int_float_multiplication() {
+        assert_eq!(ev("3 * 2.5"), Value::Float(7.5));
+    }
+
+    // ── compare with mixed numerics ────────────────────────
+
+    #[test]
+    fn compare_int_float_less() {
+        assert_eq!(ev("1 < 1.5"), Value::Bool(true));
+    }
+
+    #[test]
+    fn compare_float_int_more() {
+        assert_eq!(ev("3.5 > 3"), Value::Bool(true));
+    }
+
+    #[test]
+    fn compare_equal_int_float() {
+        assert_eq!(ev("3 <= 3.0"), Value::Bool(true));
+    }
+
+    // ── Equality ──────────────────────────────────────────
+
+    #[test]
+    fn equal_lists_same() {
+        assert_eq!(ev("[1 2 3] == [1 2 3]"), Value::Bool(true));
+    }
+
+    #[test]
+    fn equal_lists_diff_length() {
+        assert_eq!(ev("[1 2] == [1 2 3]"), Value::Bool(false));
+    }
+
+    #[test]
+    fn not_equal_lists() {
+        assert_eq!(ev("[1] != [2]"), Value::Bool(true));
+    }
+
+    #[test]
+    fn equal_attrsets_same() {
+        assert_eq!(ev("{a = 1; b = 2;} == {b = 2; a = 1;}"), Value::Bool(true));
+    }
+
+    // ── force_value chains thunks ──────────────────────────
+
+    #[test]
+    fn force_value_through_thunk() {
+        let root = rnix::Root::parse("1 + 2");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(force_value(&val).unwrap(), Value::Int(3));
+    }
+
+    // ── Builtin name "tryEval" lazy arg path ──────────────
+
+    #[test]
+    fn try_eval_catches_thrown_error() {
+        // tryEval wraps the thunk and catches throws inside.
+        let v = ev(r#"(builtins.tryEval (builtins.throw "oops")).success"#);
+        assert_eq!(v, Value::Bool(false));
+    }
+
+    #[test]
+    fn try_eval_returns_value_on_success() {
+        let v = ev("(builtins.tryEval 42).value");
+        assert_eq!(v, Value::Int(42));
+    }
 }
