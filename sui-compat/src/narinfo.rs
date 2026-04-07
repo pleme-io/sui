@@ -42,6 +42,20 @@ pub struct NarInfo {
     pub ca: Option<String>,
 }
 
+impl std::fmt::Display for NarInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.serialize())
+    }
+}
+
+impl std::str::FromStr for NarInfo {
+    type Err = NarInfoError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 impl NarInfo {
     /// Parse a NarInfo from its text representation.
     pub fn parse(input: &str) -> Result<Self, NarInfoError> {
