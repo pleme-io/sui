@@ -137,9 +137,14 @@ fn drv_path_parity_simple_tools() {
 /// Verify that sui's `derivationStrict` actually writes a `.drv` file to the
 /// store (or to `SUI_STORE_DIR` when set). Uses a minimal inline derivation
 /// expression rather than a full flake so the test is self-contained.
+///
+/// This test does NOT require a real nix installation — it only exercises
+/// sui's own derivation evaluator. It still gates on `SUI_TEST_ONLINE`
+/// for consistency with the layer-13 convention.
 #[test]
 fn drv_file_written_to_store() {
-    if common::skip_if_offline("drv_file_written") {
+    if !common::online_mode() {
+        eprintln!("skip drv_file_written: SUI_TEST_ONLINE not set");
         return;
     }
 
