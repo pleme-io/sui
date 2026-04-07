@@ -112,7 +112,7 @@ pub trait Sandbox: Send + Sync {
 }
 
 /// Sandbox execution result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SandboxResult {
     /// Process exit code (0 = success).
     pub exit_code: i32,
@@ -120,6 +120,26 @@ pub struct SandboxResult {
     pub stdout: Vec<u8>,
     /// Captured standard error.
     pub stderr: Vec<u8>,
+}
+
+impl SandboxResult {
+    /// Returns `true` if the process exited successfully (code 0).
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.exit_code == 0
+    }
+
+    /// Returns stdout decoded as lossy UTF-8.
+    #[must_use]
+    pub fn stdout_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+
+    /// Returns stderr decoded as lossy UTF-8.
+    #[must_use]
+    pub fn stderr_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).into_owned()
+    }
 }
 
 /// Sandbox errors.
