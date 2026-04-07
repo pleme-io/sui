@@ -72,6 +72,21 @@ impl Default for PathInfo {
     }
 }
 
+impl PathInfo {
+    /// Create a new `PathInfo` with the given path and NAR hash.
+    ///
+    /// All other fields default to zero/empty. Use the struct update syntax
+    /// or setter calls to fill in remaining fields.
+    #[must_use]
+    pub fn new(path: impl Into<String>, nar_hash: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            nar_hash: nar_hash.into(),
+            ..Self::default()
+        }
+    }
+}
+
 impl std::fmt::Display for PathInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} (nar_size={})", self.path, self.nar_size)
