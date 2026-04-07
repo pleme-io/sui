@@ -18,3 +18,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
+sha2.workspace = true
+xz2 = "0.1"
+zstd = "0.13"
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
