@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
+use sui::NIX_DB_PATH;
 use sui_compat::store_path::StorePath;
 use sui_store::{LocalStore, Store};
-
-const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]

@@ -13,7 +13,7 @@ use tower_http::trace::TraceLayer;
 use state::AppState;
 use sui_store::LocalStore;
 
-const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
+use crate::NIX_DB_PATH;
 
 /// Start the API server on the given addresses.
 pub async fn serve(rest_addr: &str, _grpc_addr: &str) -> anyhow::Result<()> {
