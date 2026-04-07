@@ -127,7 +127,7 @@ impl BinaryCacheStore {
             return Ok(None);
         }
 
-        if !(200..300).contains(&response.status) {
+        if !response.is_success() {
             return Err(BinaryCacheError::UnexpectedStatus {
                 status: response.status,
                 url,

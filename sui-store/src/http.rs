@@ -34,6 +34,14 @@ pub trait HttpClient: Send + Sync {
     async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError>;
 }
 
+impl HttpResponse {
+    /// Returns `true` if the status code is in the 2xx range.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
 /// Default [`HttpClient`] backed by reqwest.
 pub struct ReqwestHttpClient {
     inner: reqwest::Client,
