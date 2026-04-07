@@ -315,6 +315,14 @@ impl std::iter::FromIterator<Node> for NodeRegistry {
     }
 }
 
+impl Extend<Node> for NodeRegistry {
+    fn extend<I: IntoIterator<Item = Node>>(&mut self, iter: I) {
+        for node in iter {
+            self.add(node);
+        }
+    }
+}
+
 /// Aggregate counts of node statuses across a fleet.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StatusCounts {
