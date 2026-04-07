@@ -3310,50 +3310,11 @@ fn optional_attr_string(
 }
 
 /// Coerce an already-forced value to a string the way CppNix does for
-/// derivation env vars. Errors on types that have no string form (lambdas,
-/// builtins, attrsets without `__toString`).
+/// derivation env vars. Delegates to `Value::coerce_to_string()` which
+/// is the single source of truth for string coercion semantics.
 fn coerce_drv_value_to_string(v: &Value) -> Result<String, EvalError> {
-    match v {
-        Value::String(s) => Ok(s.chars.clone()),
-        Value::Path(p) => Ok(p.clone()),
-        Value::Int(n) => Ok(n.to_string()),
-        Value::Float(f) => Ok(format!("{f}")),
-        Value::Bool(true) => Ok("1".to_string()),
-        Value::Bool(false) => Ok(String::new()),
-        Value::Null => Ok(String::new()),
-        Value::List(items) => {
-            // Space-joined coercion (matches CppNix derivation arg list
-            // handling for env exports).
-            let mut parts: Vec<String> = Vec::with_capacity(items.len());
-            for item in items {
-                let forced = crate::eval::force_value(item)?;
-                parts.push(coerce_drv_value_to_string(&forced)?);
-            }
-            Ok(parts.join(" "))
-        }
-        Value::Attrs(attrs) => {
-            // Honor the `__toString` and `outPath` protocols, in that order.
-            if let Some(to_str) = attrs.get("__toString") {
-                let result =
-                    crate::eval::apply(to_str.clone(), Value::Attrs(attrs.clone()))?;
-                let forced = crate::eval::force_value(&result)?;
-                return coerce_drv_value_to_string(&forced);
-            }
-            if let Some(out_path) = attrs.get("outPath") {
-                let forced = crate::eval::force_value(out_path)?;
-                return coerce_drv_value_to_string(&forced);
-            }
-            Err(EvalError::TypeError(
-                "derivation: cannot coerce attrset to string (no __toString or outPath)".into(),
-            ))
-        }
-        Value::Lambda(_) | Value::Builtin(_) => Err(EvalError::TypeError(
-            "derivation: cannot coerce function to string".into(),
-        )),
-        Value::Thunk(_) => Err(EvalError::TypeError(
-            "derivation: unforced thunk after force_value".into(),
-        )),
-    }
+    let (s, _ctx) = v.coerce_to_string()?;
+    Ok(s)
 }
 
 /// Variant of `coerce_drv_value_to_string` that returns `None` for values
