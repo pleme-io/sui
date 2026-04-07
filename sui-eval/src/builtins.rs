@@ -181,34 +181,9 @@ pub fn register(env: &mut Env) {
 
     // String operations
     register_builtin(&mut builtins_set, "toString", |args| {
-        // args are already forced by apply(), but handle thunks defensively.
         let val = &args[0];
-        Ok(Value::String(match val {
-            Value::String(s) => s.clone(),
-            Value::Int(n) => NixString::plain(n.to_string()),
-            Value::Float(f) => NixString::plain(format!("{f}")),
-            Value::Bool(true) => NixString::plain("1"),
-            Value::Bool(false) => NixString::plain(""),
-            Value::Null => NixString::plain(""),
-            Value::Path(p) => NixString::plain(p),
-            Value::List(_) => return Err(EvalError::TypeError("toString: cannot convert list".to_string())),
-            Value::Attrs(attrs) => {
-                // __toString protocol: call __toString with self
-                if let Some(to_str) = attrs.get("__toString") {
-                    let result = crate::eval::apply(to_str.clone(), val.clone())?;
-                    match result {
-                        Value::String(s) => return Ok(Value::String(s)),
-                        _ => return Err(EvalError::TypeError("__toString must return a string".to_string())),
-                    }
-                }
-                return Err(EvalError::TypeError("toString: cannot convert set".to_string()));
-            }
-            Value::Lambda(_) | Value::Builtin(_) => return Err(EvalError::TypeError("toString: cannot convert function".to_string())),
-            Value::Thunk(_) => {
-                // Should not happen since apply() forces args, but handle it.
-                return Err(EvalError::TypeError("toString: unexpected thunk".to_string()));
-            }
-        }))
+        let (s, ctx) = val.coerce_to_string()?;
+        Ok(Value::String(NixString::with_context(s, ctx)))
     });
     register_builtin(&mut builtins_set, "stringLength", |args| {
         Ok(Value::Int(args[0].as_string()?.len() as i64))
@@ -5973,9 +5948,30 @@ mod tests {
     }
 
     #[test]
-    fn builtins_to_string_list_not_supported() {
-        let result = eval("builtins.toString [1 2 3]");
-        assert!(result.is_err());
+    fn builtins_to_string_list_space_joined() {
+        // CppNix's toString coerces lists by space-joining elements.
+        assert_eq!(
+            ev("builtins.toString [1 2 3]"),
+            Value::string("1 2 3"),
+        );
+    }
+
+    #[test]
+    fn builtins_to_string_outpath() {
+        // toString on an attrset with outPath coerces via outPath.
+        assert_eq!(
+            ev(r#"builtins.toString { outPath = "/nix/store/xyz"; }"#),
+            Value::string("/nix/store/xyz"),
+        );
+    }
+
+    #[test]
+    fn builtins_to_string_tostring_over_outpath() {
+        // __toString takes priority over outPath in toString.
+        assert_eq!(
+            ev(r#"builtins.toString { __toString = self: "win"; outPath = "/lose"; }"#),
+            Value::string("win"),
+        );
     }
 
     // ── abort ─────────────────────────────────────────────

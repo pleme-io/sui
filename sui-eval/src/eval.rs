@@ -580,52 +580,9 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                     EvalError::ParseError("interpolation missing expr".to_string())
                 })?;
                 let val = force_value(&eval_expr(&expr, env)?)?;
-                match &val {
-                    Value::String(ns) => {
-                        result.push_str(&ns.chars);
-                        ctx.merge(&ns.context);
-                    }
-                    Value::Int(n) => result.push_str(&n.to_string()),
-                    Value::Float(f) => result.push_str(&format!("{f}")),
-                    Value::Bool(true) => result.push('1'),
-                    Value::Bool(false) => {}
-                    Value::Null => {}
-                    Value::Path(p) => {
-                        result.push_str(p);
-                        // A path interpolated into a string adds a Plain
-                        // context element for that path.
-                        ctx.add_plain(p.clone());
-                    }
-                    Value::Attrs(attrs) => {
-                        // __toString protocol: if the attrset has __toString,
-                        // call it with `self` to produce a string.
-                        if let Some(to_str) = attrs.get("__toString") {
-                            let s = apply(to_str.clone(), val.clone())?;
-                            match s {
-                                Value::String(ref ns) => {
-                                    result.push_str(&ns.chars);
-                                    ctx.merge(&ns.context);
-                                }
-                                _ => {
-                                    return Err(EvalError::TypeError(
-                                        "__toString must return a string".to_string(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            return Err(EvalError::TypeError(format!(
-                                "cannot coerce {} to string in interpolation",
-                                val.type_name()
-                            )));
-                        }
-                    }
-                    _ => {
-                        return Err(EvalError::TypeError(format!(
-                            "cannot coerce {} to string in interpolation",
-                            val.type_name()
-                        )));
-                    }
-                }
+                let (s, c) = val.coerce_to_string()?;
+                result.push_str(&s);
+                ctx.merge(&c);
             }
         }
     }
@@ -4731,12 +4688,61 @@ mod tests {
         );
     }
 
-    // ── String interpolation: list-of-string error ─────────
+    // ── String interpolation: list coercion ─────────────────
 
     #[test]
-    fn interp_list_errors() {
-        let result = eval(r#""${[1 2]}""#);
-        assert!(result.is_err());
+    fn interp_list_coerces_with_spaces() {
+        // Lists in interpolation are now coerced via coerce_to_string
+        // (space-joined elements).
+        assert_eq!(
+            ev(r#""${toString [1 2 3]}""#),
+            Value::string("1 2 3"),
+        );
+    }
+
+    #[test]
+    fn interp_list_directly_coerces() {
+        // Direct list interpolation space-joins elements via coerce_to_string.
+        assert_eq!(
+            ev(r#""${[1 2]}""#),
+            Value::string("1 2"),
+        );
+    }
+
+    // ── String interpolation: outPath ─────────────────────
+
+    #[test]
+    fn interp_outpath_attrset() {
+        assert_eq!(
+            ev(r#"let x = { outPath = "/nix/store/abc"; }; in "${x}""#),
+            Value::string("/nix/store/abc"),
+        );
+    }
+
+    #[test]
+    fn interp_tostring_takes_priority_over_outpath() {
+        assert_eq!(
+            ev(r#"let x = { __toString = self: "custom"; outPath = "/ignored"; }; in "${x}""#),
+            Value::string("custom"),
+        );
+    }
+
+    #[test]
+    fn interp_derivation_coerces_to_outpath() {
+        // derivation produces an attrset with outPath
+        let result = eval(r#"
+            let drv = builtins.derivation {
+                name = "test";
+                system = "x86_64-linux";
+                builder = "/bin/sh";
+            };
+            in "${drv}"
+        "#).unwrap();
+        if let Value::String(s) = result {
+            assert!(s.chars.starts_with("/nix/store/"), "got: {}", s.chars);
+        } else {
+            panic!("expected string");
+        }
     }
 
     // ── String interpolation: lambda error ─────────────────
