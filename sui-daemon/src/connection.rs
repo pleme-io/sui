@@ -1193,4 +1193,202 @@ mod tests {
         let valid = wire::read_bool(&mut cursor).unwrap();
         assert!(!valid, "path not in store, should be false");
     }
+
+    // ── Multiple sequential operations in one connection ────────
+
+    #[tokio::test]
+    async fn multiple_ops_in_sequence() {
+        let test_path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-hello-2.12";
+        let store = Arc::new(MockStore::new().with_path(test_path, "sha256:abc123"));
+
+        let mut input = Vec::new();
+        // Op 1: IsValidPath (found)
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+        // Op 2: IsValidPath (not found)
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-missing").unwrap();
+        // Op 3: QueryAllValidPaths
+        wire::write_u64(&mut input, WorkerOp::QueryAllValidPaths as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+
+        // Response 1: STDERR_LAST + true
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(valid);
+
+        // Response 2: STDERR_LAST + false
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(!valid);
+
+        // Response 3: STDERR_LAST + string list with 1 entry
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let paths = wire::read_string_list(&mut cursor).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], test_path);
+    }
+
+    #[tokio::test]
+    async fn mixed_ops_valid_invalid_path_info() {
+        let test_path = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-hello-2.12";
+        let store = Arc::new(MockStore::new().with_path(test_path, "sha256:abc"));
+
+        let mut input = Vec::new();
+        // Op 1: QueryPathInfo (found)
+        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+        // Op 2: IsValidPath (found)
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, test_path).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+
+        // Response 1: QueryPathInfo
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(valid);
+        let _deriver = wire::read_string(&mut cursor).unwrap();
+        let nar_hash = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(nar_hash, "sha256:abc");
+        let _refs = wire::read_string_list(&mut cursor).unwrap();
+        let _reg_time = wire::read_u64(&mut cursor).unwrap();
+        let _nar_size = wire::read_u64(&mut cursor).unwrap();
+        let _ultimate = wire::read_bool(&mut cursor).unwrap();
+        let _sigs = wire::read_string_list(&mut cursor).unwrap();
+        let _ca = wire::read_string(&mut cursor).unwrap();
+
+        // Response 2: IsValidPath
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(valid);
+    }
+
+    // ── ConnectionError variant tests ───────────────────────────
+
+    #[test]
+    fn connection_error_display_bad_magic() {
+        let err = ConnectionError::BadMagic {
+            expected: 0x6e697863,
+            got: 0xDEADBEEF,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("0x6e697863"), "should contain expected magic");
+        assert!(msg.contains("0xdeadbeef"), "should contain actual magic");
+    }
+
+    #[test]
+    fn connection_error_display_unknown_op() {
+        let err = ConnectionError::UnknownOp(9999);
+        assert_eq!(err.to_string(), "unknown opcode: 9999");
+    }
+
+    #[test]
+    fn connection_error_display_protocol() {
+        let err = ConnectionError::Protocol("invalid frame".to_string());
+        assert_eq!(err.to_string(), "protocol error: invalid frame");
+    }
+
+    #[test]
+    fn connection_error_display_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken");
+        let err = ConnectionError::Io(io_err);
+        assert!(err.to_string().contains("broken"));
+    }
+
+    #[test]
+    fn connection_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        let err: ConnectionError = io_err.into();
+        assert!(matches!(err, ConnectionError::Io(_)));
+    }
+
+    // ── Edge case: invalid store path format ────────────────────
+
+    #[tokio::test]
+    async fn is_valid_path_invalid_store_path_format() {
+        let store = Arc::new(MockStore::new());
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
+        wire::write_string(&mut input, "not-a-valid-store-path").unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(!valid, "invalid store path format should return false, not error");
+    }
+
+    #[tokio::test]
+    async fn query_path_info_invalid_store_path_format() {
+        let store = Arc::new(MockStore::new());
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
+        wire::write_string(&mut input, "/not/nix/store/path").unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let valid = wire::read_bool(&mut cursor).unwrap();
+        assert!(!valid, "invalid store path should return not-found, not error");
+    }
+
+    // ── QueryAllValidPaths with empty store ─────────────────────
+
+    #[tokio::test]
+    async fn query_all_valid_paths_empty_store() {
+        let store = Arc::new(MockStore::new());
+
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryAllValidPaths as u64).unwrap();
+
+        let reader = Cursor::new(input);
+        let writer: Vec<u8> = Vec::new();
+        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        let stderr = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(stderr, StderrMsg::Last as u64);
+        let paths = wire::read_string_list(&mut cursor).unwrap();
+        assert!(paths.is_empty());
+    }
 }
