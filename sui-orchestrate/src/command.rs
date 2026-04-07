@@ -249,4 +249,106 @@ mod tests {
         let dbg = format!("{output:?}");
         assert!(dbg.contains("success: true"));
     }
+
+    // ── combined_log layout ───────────────────────────────────
+
+    #[test]
+    fn combined_log_concatenates_stdout_then_stderr() {
+        let output = CommandOutput {
+            success: true,
+            stdout: "out-content".to_string(),
+            stderr: "err-content".to_string(),
+            exit_code: Some(0),
+        };
+        let combined = output.combined_log();
+        assert_eq!(combined, "out-contenterr-content");
+        let out_pos = combined.find("out-content").unwrap();
+        let err_pos = combined.find("err-content").unwrap();
+        assert!(out_pos < err_pos);
+    }
+
+    #[test]
+    fn combined_log_empty_inputs() {
+        let output = CommandOutput {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        };
+        assert_eq!(output.combined_log(), "");
+    }
+
+    #[test]
+    fn combined_log_only_stderr() {
+        let output = CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "boom".to_string(),
+            exit_code: Some(2),
+        };
+        assert_eq!(output.combined_log(), "boom");
+    }
+
+    // ── CommandError negative-test coverage for every variant ──
+
+    #[test]
+    fn command_error_io_variant_message() {
+        let e = CommandError::Io("permission denied".to_string());
+        let s = e.to_string();
+        assert!(s.contains("io error"));
+        assert!(s.contains("permission denied"));
+    }
+
+    #[test]
+    fn command_error_failed_variant_message() {
+        let e = CommandError::Failed("oom kill".to_string());
+        let s = e.to_string();
+        assert!(s.contains("execution failed"));
+        assert!(s.contains("oom kill"));
+    }
+
+    #[test]
+    fn command_error_not_found_variant_message() {
+        let e = CommandError::NotFound("missing-tool".to_string());
+        let s = e.to_string();
+        assert!(s.contains("command not found"));
+        assert!(s.contains("missing-tool"));
+    }
+
+    // ── TokioCommandRunner: arg passthrough ────────────────────
+
+    #[tokio::test]
+    async fn run_passes_multiple_args() {
+        let runner = TokioCommandRunner::new();
+        let output = runner
+            .run("sh", &["-c", "echo arg-one arg-two"])
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("arg-one"));
+        assert!(output.stdout.contains("arg-two"));
+    }
+
+    #[tokio::test]
+    async fn run_propagates_nonzero_exit() {
+        let runner = TokioCommandRunner::new();
+        let output = runner
+            .run("sh", &["-c", "exit 7"])
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(7));
+    }
+
+    #[tokio::test]
+    async fn run_missing_command_yields_not_found_variant() {
+        let runner = TokioCommandRunner::new();
+        let result = runner
+            .run("__definitely_no_such_program__", &[])
+            .await;
+        match result.unwrap_err() {
+            CommandError::NotFound(name) => assert!(name.contains("__definitely_no_such_program__")),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
 }
