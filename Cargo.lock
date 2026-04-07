@@ -4275,7 +4275,10 @@ name = "sui-build"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "async-trait",
+ "sha2",
  "sui-compat",
+ "sui-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

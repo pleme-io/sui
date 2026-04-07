@@ -9,9 +9,12 @@ description = "Nix builder with sandboxed execution"
 
 [dependencies]
 sui-compat.workspace = true
+sui-store.workspace = true
 aho-corasick.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
