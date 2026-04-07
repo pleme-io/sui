@@ -75,6 +75,112 @@ pub struct NodeDeployResult {
     pub duration_secs: f64,
 }
 
+/// Trait for pluggable deploy execution strategies.
+///
+/// Implement this to define custom deployment patterns beyond the
+/// built-in [`ParallelExecutor`], [`RollingExecutor`], and [`CanaryExecutor`].
+#[async_trait::async_trait]
+pub trait DeployExecutor: Send + Sync {
+    /// Execute deployment across the given nodes.
+    async fn execute(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+        runner: &Arc<dyn CommandRunner>,
+    ) -> Result<Vec<NodeDeployResult>, FleetError>;
+}
+
+/// Deploys to all nodes simultaneously via `tokio::spawn`.
+pub struct ParallelExecutor;
+
+#[async_trait::async_trait]
+impl DeployExecutor for ParallelExecutor {
+    async fn execute(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+        runner: &Arc<dyn CommandRunner>,
+    ) -> Result<Vec<NodeDeployResult>, FleetError> {
+        Ok(deploy_parallel(nodes, flake_override, runner).await)
+    }
+}
+
+/// Deploys one node at a time, sequentially.
+pub struct RollingExecutor;
+
+#[async_trait::async_trait]
+impl DeployExecutor for RollingExecutor {
+    async fn execute(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+        runner: &Arc<dyn CommandRunner>,
+    ) -> Result<Vec<NodeDeployResult>, FleetError> {
+        let mut results = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let result = deploy_single_node(node, flake_override, &**runner).await;
+            tracing::info!(
+                "deployed {} — {}",
+                result.hostname,
+                if result.success { "ok" } else { "FAILED" }
+            );
+            results.push(result);
+        }
+        Ok(results)
+    }
+}
+
+/// Deploys to the first node as canary; aborts if it fails, then
+/// deploys the remaining nodes in parallel.
+pub struct CanaryExecutor;
+
+#[async_trait::async_trait]
+impl DeployExecutor for CanaryExecutor {
+    async fn execute(
+        &self,
+        nodes: &[Node],
+        flake_override: Option<&str>,
+        runner: &Arc<dyn CommandRunner>,
+    ) -> Result<Vec<NodeDeployResult>, FleetError> {
+        if nodes.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let canary = &nodes[0];
+        let canary_result = deploy_single_node(canary, flake_override, &**runner).await;
+        tracing::info!(
+            "canary {} — {}",
+            canary_result.hostname,
+            if canary_result.success { "ok" } else { "FAILED" }
+        );
+
+        if !canary_result.success {
+            return Err(FleetError::CanaryFailed);
+        }
+
+        let mut results = vec![canary_result];
+
+        if nodes.len() > 1 {
+            let remaining = deploy_parallel(&nodes[1..], flake_override, runner).await;
+            results.extend(remaining);
+        }
+
+        Ok(results)
+    }
+}
+
+impl DeployStrategy {
+    /// Returns the executor that implements this strategy.
+    #[must_use]
+    pub fn executor(self) -> Box<dyn DeployExecutor> {
+        match self {
+            Self::Parallel => Box::new(ParallelExecutor),
+            Self::Rolling => Box::new(RollingExecutor),
+            Self::Canary => Box::new(CanaryExecutor),
+        }
+    }
+}
+
 /// Fleet orchestrator.
 pub struct FleetOrchestrator {
     registry: NodeRegistry,
@@ -133,6 +239,21 @@ impl FleetOrchestrator {
         strategy: DeployStrategy,
         flake_override: Option<&str>,
     ) -> Result<DeployResult, FleetError> {
+        let executor = strategy.executor();
+        let mut result = self
+            .deploy_with_executor(target, &*executor, flake_override)
+            .await?;
+        result.strategy = strategy.to_string();
+        Ok(result)
+    }
+
+    /// Deploy to a target using a custom [`DeployExecutor`].
+    pub async fn deploy_with_executor(
+        &mut self,
+        target: &str,
+        executor: &dyn DeployExecutor,
+        flake_override: Option<&str>,
+    ) -> Result<DeployResult, FleetError> {
         let start = std::time::Instant::now();
 
         let nodes: Vec<Node> = self
@@ -146,23 +267,17 @@ impl FleetOrchestrator {
             return Err(FleetError::NoNodes(target.to_string()));
         }
 
-        // Mark all as deploying
         for node in &nodes {
             if let Some(n) = self.registry.get_mut(&node.hostname) {
                 n.status = NodeStatus::Deploying;
             }
         }
 
-        let results = match strategy {
-            DeployStrategy::Parallel => self.deploy_parallel(&nodes, flake_override).await,
-            DeployStrategy::Rolling => self.deploy_rolling(&nodes, flake_override).await,
-            DeployStrategy::Canary => self.deploy_canary(&nodes, flake_override).await?,
-        };
+        let results = executor.execute(&nodes, flake_override, &self.runner).await?;
 
         let succeeded = results.iter().filter(|r| r.success).count();
         let failed = results.iter().filter(|r| !r.success).count();
 
-        // Update node statuses
         for result in &results {
             if let Some(n) = self.registry.get_mut(&result.hostname) {
                 n.status = if result.success {
@@ -178,7 +293,7 @@ impl FleetOrchestrator {
 
         Ok(DeployResult {
             target: target.to_string(),
-            strategy: strategy.to_string(),
+            strategy: "custom".to_string(),
             total_nodes: nodes.len(),
             succeeded,
             failed,
@@ -186,90 +301,37 @@ impl FleetOrchestrator {
             duration_secs: start.elapsed().as_secs_f64(),
         })
     }
+}
 
-    /// Deploy to all nodes in parallel.
-    async fn deploy_parallel(
-        &self,
-        nodes: &[Node],
-        flake_override: Option<&str>,
-    ) -> Vec<NodeDeployResult> {
-        let mut handles = Vec::new();
-        for node in nodes {
-            let n = node.clone();
-            let flake = flake_override.map(String::from);
-            let runner = Arc::clone(&self.runner);
-            handles.push(tokio::spawn(async move {
-                deploy_single_node(&n, flake.as_deref(), &*runner).await
-            }));
-        }
-
-        let mut results = Vec::new();
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => results.push(NodeDeployResult {
-                    hostname: "unknown".to_string(),
-                    success: false,
-                    log: format!("task panicked: {e}"),
-                    duration_secs: 0.0,
-                }),
-            }
-        }
-        results
+/// Deploy to all nodes in parallel via `tokio::spawn`.
+async fn deploy_parallel(
+    nodes: &[Node],
+    flake_override: Option<&str>,
+    runner: &Arc<dyn CommandRunner>,
+) -> Vec<NodeDeployResult> {
+    let mut handles = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let n = node.clone();
+        let flake = flake_override.map(String::from);
+        let runner = Arc::clone(runner);
+        handles.push(tokio::spawn(async move {
+            deploy_single_node(&n, flake.as_deref(), &*runner).await
+        }));
     }
 
-    /// Deploy one node at a time.
-    async fn deploy_rolling(
-        &self,
-        nodes: &[Node],
-        flake_override: Option<&str>,
-    ) -> Vec<NodeDeployResult> {
-        let mut results = Vec::new();
-        for node in nodes {
-            let result = deploy_single_node(node, flake_override, &*self.runner).await;
-            tracing::info!(
-                "deployed {} — {}",
-                result.hostname,
-                if result.success { "ok" } else { "FAILED" }
-            );
-            results.push(result);
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match handle.await {
+            Ok(result) => results.push(result),
+            Err(e) => results.push(NodeDeployResult {
+                hostname: "unknown".to_string(),
+                success: false,
+                log: format!("task panicked: {e}"),
+                duration_secs: 0.0,
+            }),
         }
-        results
     }
-
-    /// Deploy canary first, then remaining if healthy.
-    async fn deploy_canary(
-        &self,
-        nodes: &[Node],
-        flake_override: Option<&str>,
-    ) -> Result<Vec<NodeDeployResult>, FleetError> {
-        if nodes.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // First node is canary
-        let canary = &nodes[0];
-        let canary_result = deploy_single_node(canary, flake_override, &*self.runner).await;
-        tracing::info!(
-            "canary {} — {}",
-            canary_result.hostname,
-            if canary_result.success { "ok" } else { "FAILED" }
-        );
-
-        if !canary_result.success {
-            return Err(FleetError::CanaryFailed);
-        }
-
-        let mut results = vec![canary_result];
-
-        // Deploy remaining in parallel
-        if nodes.len() > 1 {
-            let remaining = self.deploy_parallel(&nodes[1..], flake_override).await;
-            results.extend(remaining);
-        }
-
-        Ok(results)
-    }
+    results
 }
 
 /// Deploy to a single node via SSH + nixos-rebuild.
