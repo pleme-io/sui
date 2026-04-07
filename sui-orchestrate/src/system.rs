@@ -51,7 +51,7 @@ impl std::str::FromStr for RebuildAction {
 }
 
 /// Result of a system rebuild.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RebuildResult {
     /// Whether the rebuild completed successfully.
     pub success: bool,

@@ -50,7 +50,7 @@ impl std::str::FromStr for DeployStrategy {
 }
 
 /// Result of a fleet deployment.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeployResult {
     /// The target expression that was resolved (e.g. `@prod`, `alpha`).
     pub target: String,
@@ -69,7 +69,7 @@ pub struct DeployResult {
 }
 
 /// Per-node deploy result.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodeDeployResult {
     /// Hostname of the target node.
     pub hostname: String,
