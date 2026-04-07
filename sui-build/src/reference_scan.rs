@@ -104,29 +104,28 @@ pub fn scan_directory_with(
     dir: &Path,
     known_hashes: &[&str],
 ) -> std::io::Result<Vec<String>> {
-    let mut all_refs = Vec::new();
-
     if fs.is_file(dir) {
         return scan_file_with(fs, dir, known_hashes);
     }
 
+    let mut seen = std::collections::BTreeSet::new();
+    let mut all_refs = Vec::new();
+
     for path in fs.walk_dir(dir)? {
-        if fs.is_file(&path) {
-            let refs = scan_file_with(fs, &path, known_hashes)?;
-            for r in refs {
-                if !all_refs.contains(&r) {
-                    all_refs.push(r);
-                }
-            }
+        let refs = if fs.is_file(&path) {
+            scan_file_with(fs, &path, known_hashes)?
         } else if fs.is_symlink(&path) {
-            if let Ok(target) = fs.read_link(&path) {
-                let target_str = target.to_string_lossy();
-                let refs = scan_references(target_str.as_bytes(), known_hashes);
-                for r in refs {
-                    if !all_refs.contains(&r) {
-                        all_refs.push(r);
-                    }
-                }
+            let Ok(target) = fs.read_link(&path) else {
+                continue;
+            };
+            scan_references(target.to_string_lossy().as_bytes(), known_hashes)
+        } else {
+            continue;
+        };
+
+        for r in refs {
+            if seen.insert(r.clone()) {
+                all_refs.push(r);
             }
         }
     }
