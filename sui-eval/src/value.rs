@@ -820,6 +820,16 @@ impl Value {
         match self {
             Value::Path(p) => Ok(p.clone()),
             Value::String(ns) => Ok(ns.chars.clone()),
+            Value::Attrs(attrs) => {
+                if let Some(out_path) = attrs.get("outPath") {
+                    let forced = crate::eval::force_value(out_path)?;
+                    forced.coerce_to_path(context)
+                } else {
+                    Err(EvalError::TypeError(format!(
+                        "{context}: expected path or string, got set without outPath"
+                    )))
+                }
+            }
             _ => Err(EvalError::TypeError(format!(
                 "{context}: expected path or string, got {}",
                 self.type_name()
@@ -837,6 +847,78 @@ impl Value {
             }
             _ => Err(EvalError::TypeMismatch { expected: "number", got: self.type_name() }),
         }
+    }
+
+    /// Coerce this value to a string following CppNix semantics.
+    ///
+    /// This is the single source of truth for string coercion used by
+    /// string interpolation, `builtins.toString`, and derivation env
+    /// var construction.
+    ///
+    /// Rules (in order):
+    /// - String → its content (with context)
+    /// - Path → path string (adds Plain context element)
+    /// - Int → decimal representation
+    /// - Float → decimal representation
+    /// - Bool → "1" for true, "" for false
+    /// - Null → ""
+    /// - Attrs with `__toString` → call `__toString(self)` and coerce result
+    /// - Attrs with `outPath` → coerce outPath recursively
+    /// - List → space-joined coerced elements
+    /// - Lambda/Builtin/Thunk → error
+    pub fn coerce_to_string(&self) -> Result<(String, StringContext), EvalError> {
+        let mut ctx = StringContext::new();
+        let s = match self {
+            Value::String(ns) => {
+                ctx.merge(&ns.context);
+                ns.chars.clone()
+            }
+            Value::Path(p) => {
+                ctx.add_plain(p.clone());
+                p.clone()
+            }
+            Value::Int(n) => n.to_string(),
+            Value::Float(f) => format!("{f}"),
+            Value::Bool(true) => "1".to_string(),
+            Value::Bool(false) => String::new(),
+            Value::Null => String::new(),
+            Value::Attrs(attrs) => {
+                if let Some(to_str) = attrs.get("__toString") {
+                    let result =
+                        crate::eval::apply(to_str.clone(), Value::Attrs(attrs.clone()))?;
+                    let forced = crate::eval::force_value(&result)?;
+                    let (s, c) = forced.coerce_to_string()?;
+                    ctx.merge(&c);
+                    s
+                } else if let Some(out_path) = attrs.get("outPath") {
+                    let forced = crate::eval::force_value(out_path)?;
+                    let (s, c) = forced.coerce_to_string()?;
+                    ctx.merge(&c);
+                    s
+                } else {
+                    return Err(EvalError::TypeError(
+                        "cannot coerce set to string (no __toString or outPath)".into(),
+                    ));
+                }
+            }
+            Value::List(items) => {
+                let mut parts = Vec::new();
+                for item in items {
+                    let forced = crate::eval::force_value(item)?;
+                    let (s, c) = forced.coerce_to_string()?;
+                    ctx.merge(&c);
+                    parts.push(s);
+                }
+                parts.join(" ")
+            }
+            other => {
+                return Err(EvalError::TypeError(format!(
+                    "cannot coerce {} to string",
+                    other.type_name()
+                )));
+            }
+        };
+        Ok((s, ctx))
     }
 }
 
@@ -2287,6 +2369,105 @@ mod tests {
     fn coerce_to_path_errors_on_null() {
         let v = Value::Null;
         assert!(v.coerce_to_path("ctx").is_err());
+    }
+
+    #[test]
+    fn coerce_to_path_attrs_with_outpath() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("outPath".to_string(), Value::string("/nix/store/test"));
+        let val = Value::Attrs(attrs);
+        assert_eq!(val.coerce_to_path("test").unwrap(), "/nix/store/test");
+    }
+
+    #[test]
+    fn coerce_to_path_attrs_without_outpath_fails() {
+        let attrs = NixAttrs::new();
+        let val = Value::Attrs(attrs);
+        assert!(val.coerce_to_path("test").is_err());
+    }
+
+    // ── Value::coerce_to_string ─────────────────────────
+
+    #[test]
+    fn coerce_to_string_string() {
+        let v = Value::string("hello");
+        let (s, _ctx) = v.coerce_to_string().unwrap();
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn coerce_to_string_path() {
+        let v = Value::Path("/foo".into());
+        let (s, ctx) = v.coerce_to_string().unwrap();
+        assert_eq!(s, "/foo");
+        assert!(!ctx.is_empty()); // should add a Plain context element
+    }
+
+    #[test]
+    fn coerce_to_string_int() {
+        let v = Value::Int(42);
+        let (s, _ctx) = v.coerce_to_string().unwrap();
+        assert_eq!(s, "42");
+    }
+
+    #[test]
+    fn coerce_to_string_float() {
+        let v = Value::Float(3.14);
+        let (s, _ctx) = v.coerce_to_string().unwrap();
+        assert_eq!(s, "3.14");
+    }
+
+    #[test]
+    fn coerce_to_string_bool_true() {
+        let (s, _ctx) = Value::Bool(true).coerce_to_string().unwrap();
+        assert_eq!(s, "1");
+    }
+
+    #[test]
+    fn coerce_to_string_bool_false() {
+        let (s, _ctx) = Value::Bool(false).coerce_to_string().unwrap();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn coerce_to_string_null() {
+        let (s, _ctx) = Value::Null.coerce_to_string().unwrap();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn coerce_to_string_attrs_with_outpath() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("outPath".to_string(), Value::string("/nix/store/abc"));
+        let val = Value::Attrs(attrs);
+        let (s, _ctx) = val.coerce_to_string().unwrap();
+        assert_eq!(s, "/nix/store/abc");
+    }
+
+    #[test]
+    fn coerce_to_string_attrs_without_outpath_or_tostring_fails() {
+        let attrs = NixAttrs::new();
+        let val = Value::Attrs(attrs);
+        assert!(val.coerce_to_string().is_err());
+    }
+
+    #[test]
+    fn coerce_to_string_lambda_fails() {
+        let root = rnix::Root::parse("x: x");
+        let expr = root.tree().expr().unwrap();
+        let closure = Closure {
+            param: match expr {
+                rnix::ast::Expr::Lambda(ref l) => l.param().unwrap(),
+                _ => panic!("expected lambda"),
+            },
+            body: match expr {
+                rnix::ast::Expr::Lambda(ref l) => l.body().unwrap(),
+                _ => panic!("expected lambda"),
+            },
+            env: Env::new(),
+        };
+        let val = Value::Lambda(closure);
+        assert!(val.coerce_to_string().is_err());
     }
 
     // ── BuiltinFn debug ──────────────────────────────────
