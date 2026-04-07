@@ -64,6 +64,7 @@ impl ContentAddress {
     }
 
     /// Serialize to the string format.
+    #[must_use]
     pub fn to_nix_string(&self) -> String {
         let prefix = match self.method {
             ContentAddressMethod::Text => "text:",

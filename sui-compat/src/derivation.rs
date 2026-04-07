@@ -190,6 +190,7 @@ impl Derivation {
     }
 
     /// Serialize the derivation to ATerm format.
+    #[must_use]
     pub fn serialize(&self) -> String {
         let mut out = String::from("Derive(");
 

@@ -106,6 +106,7 @@ impl std::fmt::Display for StorePathSignature {
 /// Compute the fingerprint string that Nix signs.
 ///
 /// Format: `1;{storePath};{narHash};{narSize};{sortedReferences}`
+#[must_use]
 pub fn compute_fingerprint(
     store_path: &str,
     nar_hash: &str,

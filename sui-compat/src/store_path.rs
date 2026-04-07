@@ -71,11 +71,13 @@ impl StorePath {
     }
 
     /// Render the full absolute path.
+    #[must_use]
     pub fn to_absolute_path(&self) -> String {
         format!("{}/{}", DEFAULT_STORE_DIR, self.to_basename())
     }
 
     /// Render just the `<hash>-<name>` basename.
+    #[must_use]
     pub fn to_basename(&self) -> String {
         format!("{}-{}", nix_base32_encode(&self.digest), self.name)
     }
@@ -96,6 +98,7 @@ impl std::fmt::Display for StorePath {
 /// produced a (different) self-consistent encoding that did NOT
 /// match real Nix store paths — every store-path computation
 /// silently disagreed with CppNix.
+#[must_use]
 pub fn nix_base32_encode(input: &[u8]) -> String {
     let len = (input.len() * 8 + 4) / 5;
     let mut out = String::with_capacity(len);

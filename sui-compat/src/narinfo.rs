@@ -119,6 +119,7 @@ impl NarInfo {
     }
 
     /// Serialize to the NarInfo text format.
+    #[must_use]
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("StorePath: {}\n", self.store_path));

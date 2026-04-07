@@ -103,6 +103,7 @@ impl std::fmt::Display for NixHash {
 }
 
 /// Base64 encode bytes (delegates to the `base64` crate).
+#[must_use]
 pub fn base64_encode(input: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(input)
@@ -117,6 +118,7 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, HashError> {
 }
 
 /// Base64 encode bytes (alias for [`base64_encode`] kept for backward compatibility).
+#[must_use]
 pub fn minimal_base64_encode(input: &[u8]) -> String {
     base64_encode(input)
 }
