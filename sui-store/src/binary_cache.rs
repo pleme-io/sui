@@ -218,6 +218,8 @@ mod tests {
 
     #[test]
     fn narinfo_to_path_info_conversion() {
+        // NarInfo references are bare basenames; the PathInfo conversion
+        // must prefix them with the store directory.
         let narinfo = sui_compat::narinfo::NarInfo {
             store_path: "/nix/store/abc-hello".to_string(),
             url: "nar/abc.nar.xz".to_string(),
@@ -226,7 +228,9 @@ mod tests {
             file_size: 1000,
             nar_hash: "sha256:bbb".to_string(),
             nar_size: 5000,
-            references: vec!["dep1".to_string()],
+            references: vec![
+                "3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8".to_string(),
+            ],
             deriver: Some("abc.drv".to_string()),
             signatures: vec!["key:sig".to_string()],
             ca: None,
@@ -235,6 +239,10 @@ mod tests {
         assert_eq!(info.path, "/nix/store/abc-hello");
         assert_eq!(info.nar_size, 5000);
         assert_eq!(info.references.len(), 1);
+        assert_eq!(
+            info.references[0],
+            "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37-8"
+        );
     }
 
     #[test]

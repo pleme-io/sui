@@ -93,11 +93,29 @@ impl std::fmt::Display for PathInfo {
 
 impl From<&sui_compat::narinfo::NarInfo> for PathInfo {
     fn from(info: &sui_compat::narinfo::NarInfo) -> Self {
+        // NarInfo's `References` field stores bare basenames
+        // (e.g. `abc...-glibc-2.37`). PathInfo.references must contain absolute
+        // store paths (e.g. `/nix/store/abc...-glibc-2.37`) so the default
+        // `Store::query_references` impl can parse them via
+        // `StorePath::from_absolute_path`. Anything that already looks
+        // absolute is passed through unchanged for robustness.
+        let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+        let references = info
+            .references
+            .iter()
+            .map(|r| {
+                if r.starts_with('/') {
+                    r.clone()
+                } else {
+                    format!("{store_dir}/{r}")
+                }
+            })
+            .collect();
         Self {
             path: info.store_path.clone(),
             nar_hash: info.nar_hash.clone(),
             nar_size: info.nar_size as i64,
-            references: info.references.clone(),
+            references,
             deriver: info.deriver.clone(),
             signatures: info.signatures.clone(),
             registration_time: 0,
