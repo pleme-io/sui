@@ -16,8 +16,15 @@ use sui_store::LocalStore;
 use crate::NIX_DB_PATH;
 
 /// Start the API server on the given addresses.
-pub async fn serve(rest_addr: &str, _grpc_addr: &str) -> std::io::Result<()> {
-    // Try to open the local Nix store; fall back to stub mode if unavailable.
+///
+/// `rest_addr` is the bind address for REST + GraphQL (e.g. `"0.0.0.0:8080"`).
+/// `_grpc_addr` is reserved for the future gRPC listener.
+pub async fn serve(
+    rest_addr: impl AsRef<str>,
+    _grpc_addr: impl AsRef<str>,
+) -> std::io::Result<()> {
+    let rest_addr = rest_addr.as_ref();
+
     let app_state = match LocalStore::open(NIX_DB_PATH).await {
         Ok(store) => {
             tracing::info!("connected to local Nix store at {NIX_DB_PATH}");
