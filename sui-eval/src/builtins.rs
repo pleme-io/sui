@@ -2835,26 +2835,14 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     // 3b. Create the content-addressed input fetcher for resolving remote inputs.
     let fetcher = crate::fetcher::InputFetcher::new();
 
-    // 4. Build the inputs attrset that will be passed to `outputs`.
-    let mut inputs_attrs = NixAttrs::new();
-
-    // `self` always exists. The minimum surface is `outPath`; we also expose a
-    // (possibly empty) `sourceInfo` so callers that destructure it do not crash.
+    // 4. Resolve every direct input and build a map of name → attrset.
+    //    This map is used to populate both the `inputs` key on `self` and
+    //    the top-level arguments passed to the `outputs` function.
     let self_path = flake_dir.to_string_lossy().to_string();
-    let mut self_attrs = NixAttrs::new();
-    self_attrs.insert("outPath".to_string(), Value::string(self_path.clone()));
-    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
-    // Surface the original flake metadata on `self` so consumers can read e.g.
-    // `self.description` or `self.outputs` from inside their `outputs` lambda.
-    for (k, v) in flake_attrs.iter() {
-        if k != "outputs" {
-            self_attrs.insert(k.clone(), v.clone());
-        }
-    }
-    inputs_attrs.insert("self".to_string(), Value::Attrs(self_attrs));
 
-    // Each direct input of the root node becomes a top-level entry. We resolve
-    // follows so the consumer always sees a concrete locked node.
+    // Collect resolved input attrsets (excluding `self`).
+    let mut resolved_inputs = NixAttrs::new();
+
     if let Some(ref lock) = lock {
         if let Ok(root_node) = lock.root_node() {
             let input_names: Vec<String> = root_node.inputs.keys().cloned().collect();
@@ -2936,8 +2924,8 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
                         if let Ok(flake_result) = evaluate_flake(input_dir) {
                             // Merge the outputs into the input attrset so
                             // consumers can access e.g. `inputs.nixpkgs.lib`.
-                            if let Value::Attrs(flake_attrs) = flake_result {
-                                for (k, v) in flake_attrs.iter() {
+                            if let Value::Attrs(ref flake_out_attrs) = flake_result {
+                                for (k, v) in flake_out_attrs.iter() {
                                     if !input_val.contains_key(k) {
                                         input_val.insert(k.clone(), v.clone());
                                     }
@@ -2947,31 +2935,69 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
                     }
                 }
 
-                inputs_attrs.insert(input_name, Value::Attrs(input_val));
+                resolved_inputs.insert(input_name, Value::Attrs(input_val));
             }
         }
     }
 
-    // 5. Call outputs(inputs) and force the result to a concrete attrset.
-    let result = crate::eval::apply(outputs_fn, Value::Attrs(inputs_attrs))?;
+    // 5. Build `self` with `outPath`, `sourceInfo`, `inputs`, and flake metadata.
+    //    CppNix's `self` includes everything: outPath, inputs, sourceInfo, plus
+    //    the flake metadata (description, nixConfig, etc. — but NOT outputs).
+    let mut self_attrs = NixAttrs::new();
+    self_attrs.insert("outPath".to_string(), Value::string(self_path.clone()));
+    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
+    self_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs.clone()));
+    // Surface the original flake metadata on `self` so consumers can read e.g.
+    // `self.description` from inside their `outputs` lambda.
+    // Skip `outputs` (the function itself) and `inputs` (the raw declarations
+    // from flake.nix) — our resolved `inputs` attrset takes precedence.
+    for (k, v) in flake_attrs.iter() {
+        if k != "outputs" && k != "inputs" {
+            self_attrs.insert(k.clone(), v.clone());
+        }
+    }
+
+    // 6. Build the arguments for the `outputs` function call.
+    //    CppNix passes `{ self = <self_attrset>; } // <resolved_inputs>`, i.e.
+    //    each input is a top-level key alongside `self`.
+    let mut outputs_args = NixAttrs::new();
+    outputs_args.insert("self".to_string(), Value::Attrs(self_attrs));
+    for (k, v) in resolved_inputs.iter() {
+        outputs_args.insert(k.clone(), v.clone());
+    }
+
+    // 7. Call outputs(args) and force the result to a concrete attrset.
+    let result = crate::eval::apply(outputs_fn, Value::Attrs(outputs_args))?;
     let result = crate::eval::force_value(&result)?;
 
-    // 6. Merge top-level flake metadata (description, etc.) into the outputs
-    //    attrset. Cpp Nix exposes `description` on the user-facing flake value,
-    //    so callers like `(builtins.getFlake "...").description` keep working.
-    if let Value::Attrs(out_attrs) = result {
-        let mut merged = out_attrs.clone();
-        for key in ["description"] {
-            if !merged.contains_key(key) {
-                if let Some(v) = flake_attrs.get(key) {
-                    merged.insert(key.to_string(), v.clone());
-                }
-            }
+    // 8. Build the final flake value: CppNix returns a merged attrset with
+    //    `outPath`, `inputs`, `sourceInfo`, flake metadata (description, etc.),
+    //    AND all output attributes (packages, lib, etc.).
+    //
+    //    The merge order is: self_base // outputs_result, so output keys take
+    //    precedence if there is a conflict (matching CppNix behavior).
+    let mut final_attrs = NixAttrs::new();
+
+    // Start with the base attributes from `self`.
+    final_attrs.insert("outPath".to_string(), Value::string(self_path));
+    final_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
+    final_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs));
+
+    // Add flake metadata (description, nixConfig, etc.).
+    for (k, v) in flake_attrs.iter() {
+        if k != "outputs" && !final_attrs.contains_key(k) {
+            final_attrs.insert(k.clone(), v.clone());
         }
-        Ok(Value::Attrs(merged))
-    } else {
-        Ok(result)
     }
+
+    // Merge the outputs on top — outputs take precedence.
+    if let Value::Attrs(out_attrs) = result {
+        for (k, v) in out_attrs.iter() {
+            final_attrs.insert(k.clone(), v.clone());
+        }
+    }
+
+    Ok(Value::Attrs(final_attrs))
 }
 
 // ── Attrset navigation ───────────────────────────────────────
@@ -5103,6 +5129,251 @@ mod tests {
         let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
         let result = eval(&expr).unwrap();
         assert_eq!(result.as_string().unwrap(), "sha256-AAAA=:sha256-BBBB=");
+    }
+
+    // ── evaluate_flake CppNix-compatible result shape ────────
+
+    #[test]
+    fn flake_result_has_outpath() {
+        // The top-level flake result must include `outPath`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "test";
+              outputs = { self }: { value = 42; };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let has_out = format!(r#"(builtins.getFlake "{flake_path}") ? outPath"#);
+        let has_desc = format!(r#"(builtins.getFlake "{flake_path}") ? description"#);
+        let has_val = format!(r#"(builtins.getFlake "{flake_path}") ? value"#);
+        assert_eq!(eval(&has_out).unwrap(), Value::Bool(true));
+        assert_eq!(eval(&has_desc).unwrap(), Value::Bool(true));
+        assert_eq!(eval(&has_val).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_result_has_inputs() {
+        // The top-level flake result must include an `inputs` attrset.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: { ok = true; };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-INPUTSTEST=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let has_inputs = format!(r#"(builtins.getFlake "{flake_path}") ? inputs"#);
+        let has_dep = format!(
+            r#"(builtins.getFlake "{flake_path}").inputs ? dep"#
+        );
+        assert_eq!(eval(&has_inputs).unwrap(), Value::Bool(true));
+        assert_eq!(eval(&has_dep).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_inputs_have_outpath() {
+        // Each input in `inputs` must have `outPath`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: {
+                result = (builtins.getFlake self.outPath).inputs.dep ? outPath;
+              };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-DEPOP=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(
+            r#"(builtins.getFlake "{flake_path}").inputs.dep ? outPath"#
+        );
+        assert_eq!(eval(&expr).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn flake_self_has_inputs() {
+        // `self.inputs` should be accessible inside the outputs function.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              inputs.dep = { };
+              outputs = { self, dep }: {
+                result = self.inputs.dep.narHash;
+              };
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            r#"{
+              "nodes": {
+                "dep": {
+                  "locked": {
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-SELFIN=",
+                    "path": "/var/empty/dep",
+                    "type": "path"
+                  },
+                  "original": { "type": "path", "url": "/var/empty/dep" }
+                },
+                "root": { "inputs": { "dep": "dep" } }
+              },
+              "root": "root",
+              "version": 7
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "sha256-SELFIN=");
+    }
+
+    #[test]
+    fn flake_self_outpath_in_outputs() {
+        // `self.outPath` should be the flake directory.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{
+              description = "self-test";
+              outputs = { self }: { dir = self.outPath; };
+            }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").dir"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), flake_path);
+    }
+
+    #[test]
+    fn flake_string_interpolation_with_input() {
+        // `"${dep}/file.txt"` should work because dep has outPath.
+        let dep_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dep_dir.path().join("flake.nix"),
+            r#"{ description = "dep"; outputs = { self }: { }; }"#,
+        )
+        .unwrap();
+        std::fs::write(dep_dir.path().join("data.txt"), "hello").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dep_path = dep_dir.path().to_string_lossy().to_string();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            format!(
+                r#"{{
+              inputs.dep = {{ }};
+              outputs = {{ self, dep }}: {{
+                data = builtins.readFile "${{dep}}/data.txt";
+              }};
+            }}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("flake.lock"),
+            format!(
+                r#"{{
+              "nodes": {{
+                "dep": {{
+                  "locked": {{
+                    "lastModified": 1700000000,
+                    "narHash": "sha256-INTERP=",
+                    "path": "{dep_path}",
+                    "type": "path"
+                  }},
+                  "original": {{ "type": "path", "url": "{dep_path}" }}
+                }},
+                "root": {{ "inputs": {{ "dep": "dep" }} }}
+              }},
+              "root": "root",
+              "version": 7
+            }}"#
+            ),
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").data"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), "hello");
+    }
+
+    #[test]
+    fn flake_result_outpath_matches_dir() {
+        // The `outPath` on the result should be the flake directory path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{ outputs = { self }: { }; }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}").outPath"#);
+        let result = eval(&expr).unwrap();
+        assert_eq!(result.as_string().unwrap(), flake_path);
+    }
+
+    #[test]
+    fn flake_result_source_info_present() {
+        // The result must have `sourceInfo`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("flake.nix"),
+            r#"{ outputs = { self }: { }; }"#,
+        )
+        .unwrap();
+        let flake_path = dir.path().to_string_lossy().to_string();
+        let expr = format!(r#"(builtins.getFlake "{flake_path}") ? sourceInfo"#);
+        assert_eq!(eval(&expr).unwrap(), Value::Bool(true));
     }
 
     #[test]
