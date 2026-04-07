@@ -3,7 +3,7 @@
 //! Platform-specific sandbox implementations isolate build processes.
 
 /// Sandbox configuration derived from a derivation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxConfig {
     /// Paths to bind-mount read-only into the sandbox.
     pub input_paths: Vec<String>,
@@ -112,7 +112,7 @@ pub trait Sandbox: Send + Sync {
 }
 
 /// Sandbox execution result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxResult {
     /// Process exit code (0 = success).
     pub exit_code: i32,
