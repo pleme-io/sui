@@ -256,6 +256,15 @@ impl FleetOrchestrator {
     }
 
     /// Deploy to a target using a custom [`DeployExecutor`].
+    ///
+    /// # Errors
+    ///
+    /// - [`FleetError::NoNodes`] if `target` resolves to zero nodes.
+    /// - [`FleetError::DeployFailed`] if a *single-node* deploy fails — i.e.
+    ///   `target` resolved to exactly one node and that deploy did not
+    ///   succeed. Multi-node deploys always return `Ok(DeployResult)`; the
+    ///   per-node failures are visible via `succeeded` / `failed` / `results`.
+    /// - Errors propagated from the underlying [`DeployExecutor::execute`].
     pub async fn deploy_with_executor(
         &mut self,
         target: &str,
@@ -297,6 +306,22 @@ impl FleetOrchestrator {
                     n.last_deployed = Some(chrono::Utc::now().timestamp());
                 }
             }
+        }
+
+        // Single-node deploys surface a typed `DeployFailed` error rather than
+        // hiding the failure inside an `Ok(DeployResult { failed: 1 })`. This
+        // matches caller expectations for one-shot deploys (e.g. `sui deploy plo`).
+        // Multi-node deploys keep returning `Ok` so callers can inspect partial
+        // success and decide how to proceed.
+        if nodes.len() == 1 && failed == 1 {
+            let failed_result = results
+                .into_iter()
+                .next()
+                .expect("single-node deploy must have one result");
+            return Err(FleetError::DeployFailed {
+                hostname: failed_result.hostname,
+                message: failed_result.log,
+            });
         }
 
         Ok(DeployResult {
@@ -657,9 +682,16 @@ mod tests {
             Box::new(MockCommandRunner::failing()),
         );
 
-        orch.deploy("alpha", DeployStrategy::Rolling, None)
+        // Single-node deploy failure is now surfaced as DeployFailed; the
+        // registry still gets updated to Failed before the error is returned.
+        let err = orch
+            .deploy("alpha", DeployStrategy::Rolling, None)
             .await
-            .unwrap();
+            .expect_err("single-node deploy should surface DeployFailed");
+        match err {
+            FleetError::DeployFailed { hostname, .. } => assert_eq!(hostname, "alpha"),
+            other => panic!("expected DeployFailed, got {other:?}"),
+        }
 
         assert_eq!(
             orch.registry().get("alpha").unwrap().status,
@@ -913,6 +945,75 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
         let fleet_err: FleetError = io_err.into();
         assert!(fleet_err.to_string().contains("nope"));
+    }
+
+    // ── Single-node deploy DeployFailed wiring ────────────────
+
+    #[tokio::test]
+    async fn single_node_deploy_success_returns_ok() {
+        // Happy path: single-node deploy that succeeds still returns Ok.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::succeeding()),
+        );
+
+        let result = orch
+            .deploy("alpha", DeployStrategy::Rolling, None)
+            .await
+            .expect("successful single-node deploy should be Ok");
+        assert_eq!(result.total_nodes, 1);
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(result.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn single_node_deploy_failure_returns_deploy_failed() {
+        // Error path: single-node deploy failure surfaces DeployFailed with
+        // the failing hostname and the captured log message.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let err = orch
+            .deploy("beta", DeployStrategy::Parallel, None)
+            .await
+            .expect_err("single-node failure should be DeployFailed");
+
+        match err {
+            FleetError::DeployFailed { hostname, message } => {
+                assert_eq!(hostname, "beta");
+                assert!(message.contains("build failed"));
+            }
+            other => panic!("expected DeployFailed, got {other:?}"),
+        }
+
+        // Status was still flipped before the error returned.
+        assert_eq!(
+            orch.registry().get("beta").unwrap().status,
+            NodeStatus::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_node_all_fail_still_returns_ok() {
+        // Edge case: multi-node deploys never surface DeployFailed even when
+        // every node fails — callers inspect succeeded/failed in the result.
+        let reg = test_registry();
+        let mut orch = FleetOrchestrator::with_runner(
+            reg,
+            Box::new(MockCommandRunner::failing()),
+        );
+
+        let result = orch
+            .deploy("@prod", DeployStrategy::Rolling, None)
+            .await
+            .expect("multi-node deploy should always return Ok");
+        assert_eq!(result.total_nodes, 2);
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(result.failed, 2);
     }
 
     // ── Multiple deploys update state correctly ───────────────
