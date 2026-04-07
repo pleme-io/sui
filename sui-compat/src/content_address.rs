@@ -327,6 +327,38 @@ mod tests {
     }
 
     #[test]
+    fn compute_text_store_path_different_names_differ() {
+        let p1 = compute_text_store_path("a.txt", b"same", &[]).unwrap();
+        let p2 = compute_text_store_path("b.txt", b"same", &[]).unwrap();
+        assert_ne!(p1.digest, p2.digest);
+        assert_ne!(p1.name, p2.name);
+    }
+
+    #[test]
+    fn compute_text_store_path_empty_content() {
+        let sp = compute_text_store_path("empty", b"", &[]).unwrap();
+        let abs = sp.to_absolute_path();
+        assert!(abs.starts_with("/nix/store/"));
+        assert!(abs.ends_with("-empty"));
+    }
+
+    #[test]
+    fn parse_content_address_missing_hash() {
+        assert!(ContentAddress::parse("text:sha256:").is_ok());
+        assert!(ContentAddress::parse("text:sha256").is_err());
+    }
+
+    #[test]
+    fn content_address_method_display() {
+        let text_ca = ContentAddress {
+            method: ContentAddressMethod::Text,
+            hash: NixHash::new(HashAlgorithm::Sha256, vec![0; 32]),
+        };
+        let s = text_ca.to_nix_string();
+        assert!(s.starts_with("text:sha256:"));
+    }
+
+    #[test]
     fn text_content_address_roundtrip_through_narinfo() {
         use crate::narinfo::NarInfo;
 
