@@ -232,17 +232,15 @@ impl SystemOrchestrator {
             )
             .await?;
 
-        // Parse the last line to find current generation
-        for line in output.stdout.lines().rev() {
-            if line.contains("(current)") {
-                if let Some(num_str) = line.split_whitespace().next() {
-                    if let Ok(n) = num_str.parse::<i64>() {
-                        return Ok(n);
-                    }
-                }
-            }
-        }
-        Ok(0)
+        let generation = output
+            .stdout
+            .lines()
+            .rev()
+            .filter(|line| line.contains("(current)"))
+            .find_map(|line| line.split_whitespace().next()?.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        Ok(generation)
     }
 
     /// List all system generations.
@@ -254,22 +252,21 @@ impl SystemOrchestrator {
             .run("nix-env", &["--list-generations", "--profile", profile])
             .await?;
 
-        let mut generations = Vec::new();
-
-        for line in output.stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(number) = parts[0].parse::<i64>() {
-                    let current = line.contains("(current)");
-                    let date = parts.get(1).unwrap_or(&"").to_string();
-                    generations.push(GenerationInfo {
-                        number,
-                        date,
-                        current,
-                    });
-                }
-            }
-        }
+        let generations = output
+            .stdout
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                let number = parts.next()?.parse::<i64>().ok()?;
+                let date = parts.next().unwrap_or_default().to_string();
+                let current = line.contains("(current)");
+                Some(GenerationInfo {
+                    number,
+                    date,
+                    current,
+                })
+            })
+            .collect();
 
         Ok(generations)
     }
