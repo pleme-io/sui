@@ -61,6 +61,16 @@ impl StringContext {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    /// Iterate over all context elements.
+    pub fn iter(&self) -> impl Iterator<Item = &ContextElement> {
+        self.0.iter()
+    }
+
+    /// Insert a raw context element.
+    pub fn insert(&mut self, elem: ContextElement) {
+        self.0.insert(elem);
+    }
 }
 
 /// A Nix string value with associated context (store-path references).
