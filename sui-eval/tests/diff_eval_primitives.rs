@@ -403,3 +403,140 @@ fn diff_generic_closure() {
         ],
     );
 }
+
+// ── debugging / introspection builtins ──────────────────────────────
+
+#[test]
+fn diff_warn_passthrough() {
+    run_cases(
+        "warn_passthrough",
+        &[
+            r#"builtins.warn "msg" 42"#,
+            r#"builtins.warn "msg" "value""#,
+            r#"builtins.warn "msg" [1 2 3]"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_trace_verbose_passthrough() {
+    run_cases(
+        "trace_verbose_passthrough",
+        &[
+            r#"builtins.traceVerbose "msg" 42"#,
+            r#"builtins.traceVerbose "msg" { a = 1; }"#,
+        ],
+    );
+}
+
+// builtins.break is interactive-only in CppNix and crashes the
+// `nix-instantiate` process under Determinate Nix 3.17 even when the
+// argument is a finite literal, so it cannot be diff'd against the
+// oracle. The unit tests in builtins.rs cover the sui semantics
+// (passthrough) directly.
+
+#[test]
+fn diff_scoped_import() {
+    if common::skip_if_offline("scoped_import") {
+        return;
+    }
+    // scopedImport needs a real on-disk file. Stage one in tmp and
+    // diff inline expressions that import it under different scopes.
+    let dir = std::env::temp_dir().join("sui_diff_scoped_import");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("scope_target.nix");
+    std::fs::write(&p, "foo + 1").unwrap();
+    let path_str = p.display().to_string();
+    let cases: Vec<String> = vec![
+        format!(r#"(builtins.scopedImport {{ foo = 41; }} "{path_str}")"#),
+        format!(r#"(builtins.scopedImport {{ foo = 0; }} "{path_str}")"#),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (i, expr) in cases.iter().enumerate() {
+        let oracle = common::nix_eval_json(expr);
+        let ours = common::sui_eval_json(expr);
+        if oracle != ours {
+            failures.push(format!(
+                "  [{i}] {expr}\n       nix: {}\n       sui: {}",
+                serde_json::to_string(&oracle).unwrap_or_default(),
+                serde_json::to_string(&ours).unwrap_or_default(),
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    if !failures.is_empty() {
+        panic!("scoped_import: {} failed:\n{}", failures.len(), failures.join("\n"));
+    }
+}
+
+#[test]
+fn diff_parse_flake_ref() {
+    run_cases(
+        "parse_flake_ref",
+        &[
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs""#,
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/release-23.11""#,
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs?dir=lib""#,
+            r#"builtins.parseFlakeRef "git+https://example.com/foo""#,
+            r#"builtins.parseFlakeRef "git+https://example.com/foo?ref=main""#,
+            r#"builtins.parseFlakeRef "tarball+https://example.com/foo.tar.gz""#,
+            r#"builtins.parseFlakeRef "path:/tmp/foo""#,
+            r#"builtins.parseFlakeRef "/tmp/abs""#,
+            r#"builtins.parseFlakeRef "gitlab:owner/repo""#,
+            r#"builtins.parseFlakeRef "sourcehut:~user/repo""#,
+        ],
+    );
+}
+
+#[test]
+fn diff_flake_ref_to_string() {
+    run_cases(
+        "flake_ref_to_string",
+        &[
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#,
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "release-23.11"; }"#,
+            r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; dir = "lib"; }"#,
+            r#"builtins.flakeRefToString { type = "git"; url = "https://example.com/foo"; ref = "main"; }"#,
+            r#"builtins.flakeRefToString { type = "tarball"; url = "https://example.com/foo.tar.gz"; }"#,
+            r#"builtins.flakeRefToString { type = "path"; path = "/tmp/foo"; }"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_flake_ref_round_trip() {
+    run_cases(
+        "flake_ref_round_trip",
+        &[
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "github:NixOS/nixpkgs")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "github:NixOS/nixpkgs/release-23.11")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "git+https://example.com/foo?ref=main")"#,
+            r#"builtins.flakeRefToString (builtins.parseFlakeRef "path:/tmp/foo")"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_filter_attrs() {
+    run_cases(
+        "filter_attrs",
+        &[
+            r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#,
+            r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#,
+            r#"builtins.filterAttrs (n: v: true) {}"#,
+            r#"builtins.filterAttrs (n: v: false) { a = 1; b = 2; }"#,
+        ],
+    );
+}
+
+#[test]
+fn diff_builtins_self_reference() {
+    run_cases(
+        "builtins_self_reference",
+        &[
+            "builtins ? builtins",
+            "builtins.builtins ? typeOf",
+            "builtins.builtins ? attrNames",
+        ],
+    );
+}

@@ -52,6 +52,7 @@ clap = { version = "4", features = ["derive"] }
 # Crypto
 ed25519-dalek = { version = "2", features = ["std"] }
 sha2 = "0.10"
+sha3 = "0.10"
 blake3 = "1"
 
 # Error handling

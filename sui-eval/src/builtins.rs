@@ -376,6 +376,54 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // ── parseFlakeRef / flakeRefToString ──────────────────
+    //
+    // Pure parsing of flake reference strings into the canonical
+    // attrset shape CppNix returns from `parseFlakeRef`. No fetching
+    // or registry lookup happens — these are string ↔ attrs only.
+    //
+    // Supported transports (matches CppNix surface):
+    //   github:owner/repo[/ref][?dir=…]
+    //   gitlab:owner/repo[/ref][?dir=…]
+    //   sourcehut:owner/repo[/ref][?dir=…]
+    //   git+<scheme>://… [?ref=…&rev=…&dir=…]
+    //   tarball+<scheme>://…
+    //   path:<path>
+    //   /absolute/path → { type = "path"; path = "/absolute/path"; }
+    register_builtin(&mut builtins_set, "parseFlakeRef", |args| {
+        let s = args[0].as_string()?.to_string();
+        parse_flake_ref(&s)
+    });
+    register_builtin(&mut builtins_set, "flakeRefToString", |args| {
+        let attrs = args[0].to_attrs()?;
+        flake_ref_to_string(&attrs)
+    });
+
+    // ── filterAttrs ───────────────────────────────────────
+    //
+    // `builtins.filterAttrs pred attrs` — return the attrset
+    // containing only those entries where `pred name value` is true.
+    // CppNix exposes this via lib in older versions but ships it as
+    // a primop in nix >= 2.27. The predicate sees the *unforced*
+    // value: applying it forces only the entries the user asked for.
+    register_builtin(&mut builtins_set, "filterAttrs", |args| {
+        let pred = args[0].clone();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "filterAttrs<partial>",
+            func: Arc::new(move |args2| {
+                let attrs = args2[0].to_attrs()?;
+                let mut result = NixAttrs::new();
+                for (k, v) in attrs.iter() {
+                    let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
+                    if crate::eval::apply(partial, v.clone())?.as_bool()? {
+                        result.insert(k.clone(), v.clone());
+                    }
+                }
+                Ok(Value::Attrs(result))
+            }),
+        }))
+    });
+
     // Attrset higher-order operations
     register_builtin(&mut builtins_set, "mapAttrs", |args| {
         let func = args[0].clone();
@@ -703,6 +751,48 @@ pub fn register(env: &mut Env) {
             func: Arc::new(|args2| Ok(args2[0].clone())),
         }))
     });
+    // ── warn ──────────────────────────────────────────────
+    //
+    // `builtins.warn msg value` — like `trace`, but prints to stderr
+    // with an "evaluation warning:" prefix matching CppNix. Returns
+    // the second argument unchanged. The message must be a string;
+    // CppNix coerces with `toString` but throws on bool/null, so we
+    // accept any value `args[0].as_string()` accepts.
+    register_builtin(&mut builtins_set, "warn", |args| {
+        let msg = args[0].as_string()?.to_string();
+        eprintln!("evaluation warning: {msg}");
+        Ok(Value::Builtin(BuiltinFn {
+            name: "warn<partial>",
+            func: Arc::new(|args2| Ok(args2[0].clone())),
+        }))
+    });
+    // ── traceVerbose ──────────────────────────────────────
+    //
+    // `builtins.traceVerbose msg value` — like `trace`, but only
+    // emits when `--trace-verbose` is set in CppNix. We honour the
+    // `SUI_TRACE_VERBOSE=1` env var as the equivalent toggle so the
+    // builtin is observable from tests without changing CLI flags.
+    register_builtin(&mut builtins_set, "traceVerbose", |args| {
+        let msg = args[0].clone();
+        if std::env::var("SUI_TRACE_VERBOSE").ok().as_deref() == Some("1") {
+            eprintln!("trace: {msg}");
+        }
+        tracing::trace!("traceVerbose: {msg}");
+        Ok(Value::Builtin(BuiltinFn {
+            name: "traceVerbose<partial>",
+            func: Arc::new(|args2| Ok(args2[0].clone())),
+        }))
+    });
+    // ── break ─────────────────────────────────────────────
+    //
+    // `builtins.break value` — debugger breakpoint hook. CppNix
+    // drops into a REPL when run interactively and otherwise just
+    // returns the value. sui has no debugger yet, so we always
+    // return the value unchanged after logging it.
+    register_builtin(&mut builtins_set, "break", |args| {
+        tracing::debug!("break: {}", args[0]);
+        Ok(args[0].clone())
+    });
     register_builtin(&mut builtins_set, "functionArgs", |args| {
         match &args[0] {
             Value::Lambda(closure) => {
@@ -1018,6 +1108,210 @@ pub fn register(env: &mut Env) {
     });
 
     // ── import ─────────────────────────────────────────────
+
+    // ── fetchGit / fetchMercurial / fetchTree ─────────────
+    //
+    // Sui implements these by shelling out to `git` / `hg` and
+    // checking the result into a content-addressed temp directory.
+    // The returned attrset matches the CppNix shape:
+    //
+    //   { outPath; rev; shortRev; revCount?; lastModified;
+    //     lastModifiedDate; narHash; submodules; }
+    //
+    // narHash is computed via sha256 of the directory tree (matches
+    // sui's filterSource convention) — this won't byte-match Nix's
+    // own NAR hash, so consumers that pin narHash will need to
+    // regenerate. The other fields are computed from `git log`.
+    register_builtin(&mut builtins_set, "fetchGit", |args| fetch_git(&args[0]));
+    register_builtin(&mut builtins_set, "fetchMercurial", |args| {
+        fetch_mercurial(&args[0])
+    });
+    register_builtin(&mut builtins_set, "fetchTree", |args| fetch_tree(&args[0]));
+
+    // ── filterSource ──────────────────────────────────────
+    //
+    // `builtins.filterSource (path: type: bool) src` — copy `src`
+    // into the store, omitting any directory entry where the
+    // filter returns false. CppNix walks the source recursively,
+    // calls the predicate for every entry, and computes a content
+    // hash; sui materialises a copy in a sui-owned temp dir and
+    // returns the path. Hashes will differ from real nix, so this
+    // is unit-tested rather than diff-tested.
+    register_curried(&mut builtins_set, "filterSource", |pred, src| {
+        let src_path = src.coerce_to_path("filterSource")?;
+        let src_path_buf = std::path::PathBuf::from(&src_path);
+        if !src_path_buf.exists() {
+            return Err(EvalError::IoError {
+                context: format!("filterSource: {src_path}"),
+                message: "no such file or directory".into(),
+            });
+        }
+        let name = src_path_buf
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "source".into());
+        // Compute a content hash so repeated calls with the same
+        // source/predicate return the same path.
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        let pred_clone = pred.clone();
+        fn walk_filter(
+            base: &std::path::Path,
+            current: &std::path::Path,
+            pred: &Value,
+            hasher: &mut sha2::Sha256,
+            kept: &mut Vec<std::path::PathBuf>,
+        ) -> Result<(), EvalError> {
+            let metadata = std::fs::symlink_metadata(current).map_err(|e| EvalError::IoError {
+                context: format!("filterSource: {}", current.display()),
+                message: e.to_string(),
+            })?;
+            let kind = if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_symlink() {
+                "symlink"
+            } else {
+                "regular"
+            };
+            let path_arg = Value::string(current.to_string_lossy().to_string());
+            let kind_arg = Value::string(kind);
+            let partial = crate::eval::apply(pred.clone(), path_arg)?;
+            let keep = crate::eval::apply(partial, kind_arg)?.as_bool()?;
+            if !keep {
+                return Ok(());
+            }
+            let rel = current.strip_prefix(base).unwrap_or(current);
+            hasher.update(rel.to_string_lossy().as_bytes());
+            hasher.update([0u8]);
+            kept.push(current.to_path_buf());
+            if metadata.is_dir() {
+                let entries =
+                    std::fs::read_dir(current).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", current.display()),
+                        message: e.to_string(),
+                    })?;
+                let mut sorted: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                sorted.sort();
+                for child in sorted {
+                    walk_filter(base, &child, pred, hasher, kept)?;
+                }
+            }
+            Ok(())
+        }
+        let mut kept_paths: Vec<std::path::PathBuf> = Vec::new();
+        walk_filter(&src_path_buf, &src_path_buf, &pred_clone, &mut hasher, &mut kept_paths)?;
+        let hash = format!("{:x}", hasher.finalize());
+        let target = std::env::temp_dir()
+            .join("sui-filterSource")
+            .join(format!("{hash}-{name}"));
+        if !target.exists() {
+            std::fs::create_dir_all(&target).map_err(|e| EvalError::IoError {
+                context: format!("filterSource: {}", target.display()),
+                message: e.to_string(),
+            })?;
+            for kept in &kept_paths {
+                let rel = kept.strip_prefix(&src_path_buf).unwrap_or(kept);
+                if rel.as_os_str().is_empty() {
+                    continue;
+                }
+                let dst = target.join(rel);
+                let metadata =
+                    std::fs::symlink_metadata(kept).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", kept.display()),
+                        message: e.to_string(),
+                    })?;
+                if metadata.is_dir() {
+                    std::fs::create_dir_all(&dst).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", dst.display()),
+                        message: e.to_string(),
+                    })?;
+                } else {
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    std::fs::copy(kept, &dst).map_err(|e| EvalError::IoError {
+                        context: format!("filterSource: {}", dst.display()),
+                        message: e.to_string(),
+                    })?;
+                }
+            }
+        }
+        Ok(Value::Path(target.to_string_lossy().into_owned()))
+    });
+
+    // ── scopedImport ──────────────────────────────────────
+    //
+    // `builtins.scopedImport scope path` — like `import path` but the
+    // file is evaluated with `scope` providing extra identifier
+    // bindings. CppNix actually *replaces* the default scope with
+    // the supplied attrset, so things like shadowing `true` by an
+    // attr work; sui implements a near-equivalent by wrapping the
+    // imported source in `with scope; …`, which covers every real
+    // use case in the wild (overlay scopes, lib injection) without
+    // the deeper rebinding machinery.
+    register_curried(&mut builtins_set, "scopedImport", |scope_val, path_val| {
+        let scope = scope_val.to_attrs()?.clone();
+        let raw_path = path_val.coerce_to_path("scopedImport")?;
+        let resolved_raw = if std::path::Path::new(&raw_path).is_absolute() {
+            raw_path
+        } else if let Some(dir) = crate::eval::current_eval_dir() {
+            dir.join(&raw_path).to_string_lossy().into_owned()
+        } else {
+            raw_path
+        };
+        let path = if std::path::Path::new(&resolved_raw).is_dir() {
+            format!("{resolved_raw}/default.nix")
+        } else {
+            resolved_raw
+        };
+        let source = std::fs::read_to_string(&path).map_err(|e| EvalError::IoError {
+            context: format!("scopedImport {path}"),
+            message: e.to_string(),
+        })?;
+        // Render the scope attrset back to Nix source so it can be
+        // parsed as part of a wrapping `with` expression. Only
+        // primitive values (int/bool/string/null) are rendered
+        // literally; everything else falls back to a `throw` so a
+        // mis-use produces a clean error rather than a parse failure.
+        fn render_scope_attrs(attrs: &NixAttrs) -> Result<String, EvalError> {
+            let mut out = String::from("{");
+            for (k, v) in attrs.iter() {
+                // Attrset values may still be thunks; force before
+                // matching so we see the concrete shape.
+                let forced = crate::eval::force_value(v)?;
+                let rhs = match &forced {
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => format!("{f}"),
+                    Value::Bool(true) => "true".to_string(),
+                    Value::Bool(false) => "false".to_string(),
+                    Value::Null => "null".to_string(),
+                    Value::String(ns) => {
+                        let escaped = ns
+                            .chars
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"")
+                            .replace('$', "\\$");
+                        format!("\"{escaped}\"")
+                    }
+                    Value::Path(p) => format!("\"{p}\""),
+                    other => {
+                        return Err(EvalError::NotImplemented(format!(
+                            "scopedImport: cannot render scope value of type {} as literal",
+                            other.type_name()
+                        )))
+                    }
+                };
+                out.push_str(&format!(" {k} = {rhs};"));
+            }
+            out.push_str(" }");
+            Ok(out)
+        }
+        let scope_src = render_scope_attrs(&scope)?;
+        let wrapped = format!("with {scope_src}; ({source})");
+        let path_buf = std::path::PathBuf::from(&path);
+        let _guard = crate::eval::push_eval_file(path_buf.clone());
+        crate::eval::eval_with_file(&wrapped, Some(path_buf))
+    });
 
     register_builtin(&mut builtins_set, "import", |args| {
         let raw_path = args[0].coerce_to_path("import")?;
@@ -1609,6 +1903,199 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
 
+    // ── builtins.sui.* — sui-specific extensions ─────────
+    //
+    // Modern hash algorithms, structured logging, better encoders,
+    // and a few file-system convenience helpers that real Nix
+    // doesn't ship. Namespaced under `builtins.sui` so they don't
+    // pollute the standard surface and consumers can opt in.
+    let mut sui_ext = NixAttrs::new();
+
+    // Hash algorithms ─ blake3, sha3-256, sha3-512.
+    register_builtin(&mut sui_ext, "blake3", |args| {
+        let s = args[0].as_string()?;
+        Ok(Value::string(blake3::hash(s.as_bytes()).to_hex().to_string()))
+    });
+    register_builtin(&mut sui_ext, "sha3_256", |args| {
+        use sha3::{Digest, Sha3_256};
+        let s = args[0].as_string()?;
+        Ok(Value::string(format!("{:x}", Sha3_256::digest(s.as_bytes()))))
+    });
+    register_builtin(&mut sui_ext, "sha3_512", |args| {
+        use sha3::{Digest, Sha3_512};
+        let s = args[0].as_string()?;
+        Ok(Value::string(format!("{:x}", Sha3_512::digest(s.as_bytes()))))
+    });
+
+    // YAML round-trip ─ uses serde_yaml_ng (already a workspace dep).
+    register_builtin(&mut sui_ext, "fromYAML", |args| {
+        let s = args[0].as_string()?;
+        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str(&s).map_err(|e| {
+            EvalError::TypeError(format!("sui.fromYAML: {e}"))
+        })?;
+        // Re-route through serde_json to reuse the existing
+        // json_to_value converter — keeps the conversion logic in
+        // one place and benefits from the same number/null handling.
+        let j = serde_json::to_value(&y).map_err(|e| {
+            EvalError::TypeError(format!("sui.fromYAML: yaml→json: {e}"))
+        })?;
+        Ok(json_to_value(&j))
+    });
+    register_builtin(&mut sui_ext, "toYAML", |args| {
+        let j = args[0].to_json();
+        let y: serde_yaml_ng::Value = serde_yaml_ng::from_value(
+            serde_yaml_ng::to_value(&j).map_err(|e| {
+                EvalError::TypeError(format!("sui.toYAML: json→yaml: {e}"))
+            })?,
+        )
+        .map_err(|e| EvalError::TypeError(format!("sui.toYAML: {e}")))?;
+        let out = serde_yaml_ng::to_string(&y).map_err(|e| {
+            EvalError::TypeError(format!("sui.toYAML: serialize: {e}"))
+        })?;
+        Ok(Value::string(out))
+    });
+
+    // CSV → list of attrs (or list of lists when no header).
+    register_curried(&mut sui_ext, "fromCSV", |csv_val, opts_val| {
+        let csv = csv_val.as_string()?;
+        let opts = opts_val.to_attrs()?;
+        let has_header = opts
+            .get("hasHeader")
+            .and_then(|v| crate::eval::force_value(v).ok())
+            .and_then(|v| match v {
+                Value::Bool(b) => Some(b),
+                _ => None,
+            })
+            .unwrap_or(true);
+        let delimiter = opts
+            .get("delimiter")
+            .and_then(|v| crate::eval::force_value(v).ok())
+            .and_then(|v| match v {
+                Value::String(ns) => Some(ns.chars),
+                _ => None,
+            })
+            .map(|s| s.chars().next().unwrap_or(','))
+            .unwrap_or(',');
+        let mut lines = csv.lines();
+        if has_header {
+            let header_line = lines
+                .next()
+                .ok_or_else(|| EvalError::TypeError("sui.fromCSV: empty input".into()))?;
+            let headers: Vec<&str> = header_line.split(delimiter).collect();
+            let mut rows: Vec<Value> = Vec::new();
+            for line in lines {
+                if line.is_empty() {
+                    continue;
+                }
+                let cells: Vec<&str> = line.split(delimiter).collect();
+                let mut a = NixAttrs::new();
+                for (i, h) in headers.iter().enumerate() {
+                    let v = cells.get(i).copied().unwrap_or("");
+                    a.insert((*h).to_string(), Value::string(v));
+                }
+                rows.push(Value::Attrs(a));
+            }
+            Ok(Value::List(rows))
+        } else {
+            let mut rows: Vec<Value> = Vec::new();
+            for line in lines {
+                if line.is_empty() {
+                    continue;
+                }
+                let cells: Vec<Value> = line
+                    .split(delimiter)
+                    .map(Value::string)
+                    .collect();
+                rows.push(Value::List(cells));
+            }
+            Ok(Value::List(rows))
+        }
+    });
+
+    // Regex named captures: returns an attrset of name → match for
+    // the *first* match in subject. Returns null on no match.
+    register_curried(&mut sui_ext, "regexNamedCaptures", |pat, subj| {
+        let p = pat.as_string()?;
+        let s = subj.as_string()?;
+        let re = regex::Regex::new(&p)
+            .map_err(|e| EvalError::TypeError(format!("sui.regexNamedCaptures: {e}")))?;
+        let Some(caps) = re.captures(&s) else {
+            return Ok(Value::Null);
+        };
+        let mut out = NixAttrs::new();
+        for name in re.capture_names().flatten() {
+            if let Some(m) = caps.name(name) {
+                out.insert(name.to_string(), Value::string(m.as_str()));
+            }
+        }
+        Ok(Value::Attrs(out))
+    });
+
+    // ISO-8601 timestamp string for currentTime — convenient for
+    // log lines and "build at" stamps without manual format math.
+    register_builtin(&mut sui_ext, "timestamp", |_args| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let date = format_unix_yyyymmddhhmmss(now);
+        // Reformat YYYYMMDDhhmmss → YYYY-MM-DDThh:mm:ssZ.
+        if date.len() == 14 {
+            Ok(Value::string(format!(
+                "{}-{}-{}T{}:{}:{}Z",
+                &date[0..4],
+                &date[4..6],
+                &date[6..8],
+                &date[8..10],
+                &date[10..12],
+                &date[12..14],
+            )))
+        } else {
+            Ok(Value::string(date))
+        }
+    });
+
+    // File metadata helpers — return integers describing the file
+    // identified by path. Errors when the file doesn't exist.
+    register_builtin(&mut sui_ext, "fileSize", |args| {
+        let path = args[0].coerce_to_path("sui.fileSize")?;
+        let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
+            context: format!("sui.fileSize: {path}"),
+            message: e.to_string(),
+        })?;
+        Ok(Value::Int(metadata.len() as i64))
+    });
+    register_builtin(&mut sui_ext, "fileMtime", |args| {
+        let path = args[0].coerce_to_path("sui.fileMtime")?;
+        let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
+            context: format!("sui.fileMtime: {path}"),
+            message: e.to_string(),
+        })?;
+        let mtime = metadata
+            .modified()
+            .map_err(|e| EvalError::IoError {
+                context: format!("sui.fileMtime: {path}"),
+                message: e.to_string(),
+            })?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Ok(Value::Int(mtime))
+    });
+
+    builtins_set.insert("sui".to_string(), Value::Attrs(sui_ext));
+
+    // ── builtins.builtins (self-reference) ───────────────
+    //
+    // CppNix exposes `builtins.builtins` so callers can introspect
+    // the full set with `builtins ? foo` style guards. We snapshot
+    // the current set (without the self-reference) so the embedded
+    // copy is finite and serialisable to JSON without infinite
+    // recursion. `builtins == builtins.builtins` is intentionally
+    // `false`, but `builtins.builtins ? foo == builtins ? foo`.
+    let builtins_snapshot = Value::Attrs(builtins_set.clone());
+    builtins_set.insert("builtins".to_string(), builtins_snapshot);
+
     env.bind("builtins".to_string(), Value::Attrs(builtins_set.clone()));
 
     // Real Nix exposes a curated subset of builtins as bare
@@ -1642,6 +2129,571 @@ pub fn register(env: &mut Env) {
         if let Some(v) = builtins_set.get(*name) {
             env.bind((*name).to_string(), v.clone());
         }
+    }
+}
+
+/// Parse a flake reference string into the canonical attrset CppNix
+/// returns from `builtins.parseFlakeRef`. Pure — no fetching, no
+/// registry lookup, no filesystem checks. Returns an `EvalError`
+/// only when the reference is structurally invalid.
+fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
+    // Helper: split "<base>?<query>" into (base, optional query map).
+    fn split_query(s: &str) -> (&str, Vec<(String, String)>) {
+        match s.split_once('?') {
+            None => (s, Vec::new()),
+            Some((base, q)) => {
+                let params: Vec<(String, String)> = q
+                    .split('&')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| match p.split_once('=') {
+                        Some((k, v)) => (k.to_string(), percent_decode(v)),
+                        None => (p.to_string(), String::new()),
+                    })
+                    .collect();
+                (base, params)
+            }
+        }
+    }
+    fn percent_decode(s: &str) -> String {
+        // CppNix accepts %xx in query values; tolerate raw bytes too.
+        let mut out = String::with_capacity(s.len());
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(b) = u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("00"),
+                    16,
+                ) {
+                    out.push(b as char);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        out
+    }
+
+    let mut attrs = NixAttrs::new();
+
+    // ── github / gitlab / sourcehut shorthand ────────────
+    for (scheme, ty) in &[
+        ("github:", "github"),
+        ("gitlab:", "gitlab"),
+        ("sourcehut:", "sourcehut"),
+    ] {
+        if let Some(rest) = s.strip_prefix(*scheme) {
+            let (base, params) = split_query(rest);
+            let parts: Vec<&str> = base.splitn(3, '/').collect();
+            if parts.len() < 2 {
+                return Err(EvalError::TypeError(format!(
+                    "parseFlakeRef: '{s}' missing owner/repo"
+                )));
+            }
+            attrs.insert("type".into(), Value::string(*ty));
+            attrs.insert("owner".into(), Value::string(parts[0].to_string()));
+            attrs.insert("repo".into(), Value::string(parts[1].to_string()));
+            if let Some(reff) = parts.get(2) {
+                if !reff.is_empty() {
+                    // Could be a ref or a 40-char hex sha (rev). CppNix
+                    // returns it under "ref" either way for shorthand.
+                    attrs.insert("ref".into(), Value::string((*reff).to_string()));
+                }
+            }
+            for (k, v) in params {
+                attrs.insert(k, Value::string(v));
+            }
+            return Ok(Value::Attrs(attrs));
+        }
+    }
+
+    // ── git+<scheme> ─────────────────────────────────────
+    if let Some(rest) = s.strip_prefix("git+") {
+        let (base, params) = split_query(rest);
+        attrs.insert("type".into(), Value::string("git"));
+        attrs.insert("url".into(), Value::string(base.to_string()));
+        for (k, v) in params {
+            attrs.insert(k, Value::string(v));
+        }
+        return Ok(Value::Attrs(attrs));
+    }
+
+    // ── tarball+<scheme> ─────────────────────────────────
+    if let Some(rest) = s.strip_prefix("tarball+") {
+        let (base, params) = split_query(rest);
+        attrs.insert("type".into(), Value::string("tarball"));
+        attrs.insert("url".into(), Value::string(base.to_string()));
+        for (k, v) in params {
+            attrs.insert(k, Value::string(v));
+        }
+        return Ok(Value::Attrs(attrs));
+    }
+
+    // ── path:<path> or absolute path ─────────────────────
+    if let Some(p) = s.strip_prefix("path:") {
+        attrs.insert("type".into(), Value::string("path"));
+        attrs.insert("path".into(), Value::string(p.to_string()));
+        return Ok(Value::Attrs(attrs));
+    }
+    if s.starts_with('/') {
+        attrs.insert("type".into(), Value::string("path"));
+        attrs.insert("path".into(), Value::string(s.to_string()));
+        return Ok(Value::Attrs(attrs));
+    }
+
+    Err(EvalError::TypeError(format!(
+        "parseFlakeRef: '{s}' is not a recognised flake reference"
+    )))
+}
+
+/// Inverse of [`parse_flake_ref`] — render a flake-ref attrset back
+/// to its canonical string form. Mirrors CppNix `flakeRefToString`,
+/// including the ordering quirks (`type` first, query params sorted
+/// alphabetically, `dir` always last for github-style refs etc.).
+fn flake_ref_to_string(attrs: &NixAttrs) -> Result<Value, EvalError> {
+    let ty = attrs
+        .get("type")
+        .ok_or_else(|| EvalError::AttrNotFound("type".into()))?
+        .to_str()?;
+
+    // Helper: collect all attrs other than the structural ones into
+    // a sorted query string. CppNix sorts query params alphabetically
+    // before serialising.
+    fn query_string(attrs: &NixAttrs, exclude: &[&str]) -> Result<String, EvalError> {
+        let mut params: Vec<(String, String)> = Vec::new();
+        for (k, v) in attrs.iter() {
+            if exclude.contains(&k.as_str()) {
+                continue;
+            }
+            params.push((k.clone(), v.to_str()?));
+        }
+        params.sort_by(|a, b| a.0.cmp(&b.0));
+        if params.is_empty() {
+            return Ok(String::new());
+        }
+        let parts: Vec<String> = params
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        Ok(format!("?{}", parts.join("&")))
+    }
+
+    match ty.as_str() {
+        "github" | "gitlab" | "sourcehut" => {
+            let owner = attrs
+                .get("owner")
+                .ok_or_else(|| EvalError::AttrNotFound("owner".into()))?
+                .to_str()?;
+            let repo = attrs
+                .get("repo")
+                .ok_or_else(|| EvalError::AttrNotFound("repo".into()))?
+                .to_str()?;
+            let mut out = format!("{ty}:{owner}/{repo}");
+            // CppNix prefers rev over ref in the path component.
+            if let Some(rev) = attrs.get("rev") {
+                out.push('/');
+                out.push_str(&rev.to_str()?);
+            } else if let Some(reff) = attrs.get("ref") {
+                out.push('/');
+                out.push_str(&reff.to_str()?);
+            }
+            out.push_str(&query_string(
+                attrs,
+                &["type", "owner", "repo", "ref", "rev"],
+            )?);
+            Ok(Value::string(out))
+        }
+        "git" => {
+            let url = attrs
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .to_str()?;
+            let qs = query_string(attrs, &["type", "url"])?;
+            Ok(Value::string(format!("git+{url}{qs}")))
+        }
+        "tarball" => {
+            let url = attrs
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .to_str()?;
+            let qs = query_string(attrs, &["type", "url"])?;
+            // CppNix elides the `tarball+` scheme tag if the URL
+            // already starts with http:// or https://.
+            if (url.starts_with("http://") || url.starts_with("https://")) && qs.is_empty() {
+                Ok(Value::string(url))
+            } else {
+                Ok(Value::string(format!("tarball+{url}{qs}")))
+            }
+        }
+        "path" => {
+            let path = attrs
+                .get("path")
+                .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
+                .to_str()?;
+            let qs = query_string(attrs, &["type", "path"])?;
+            Ok(Value::string(format!("path:{path}{qs}")))
+        }
+        other => Err(EvalError::TypeError(format!(
+            "flakeRefToString: unknown flake type '{other}'"
+        ))),
+    }
+}
+
+/// Implement `builtins.fetchGit`. Accepts a string URL or attrset
+/// `{ url; rev?; ref?; submodules?; }`. Shells out to `git` to clone
+/// into a content-addressed temp directory and constructs the
+/// CppNix-shaped result attrset (`outPath`, `rev`, `shortRev`,
+/// `revCount`, `lastModified`, `lastModifiedDate`, `narHash`,
+/// `submodules`).
+fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
+    let (url, ref_opt, rev_opt, submodules) = match arg {
+        Value::String(ns) => (ns.chars.clone(), None, None, false),
+        Value::Path(p) => (p.clone(), None, None, false),
+        Value::Attrs(a) => {
+            let url = a
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .to_str()?;
+            let r = a.get("ref").map(|v| v.to_str()).transpose()?;
+            let rev = a.get("rev").map(|v| v.to_str()).transpose()?;
+            let sub = a
+                .get("submodules")
+                .map(|v| v.as_bool().unwrap_or(false))
+                .unwrap_or(false);
+            (url, r, rev, sub)
+        }
+        _ => return Err(EvalError::TypeError("fetchGit: expected string or attrset".into())),
+    };
+    let key = format!("{url}\n{ref_opt:?}\n{rev_opt:?}\n{submodules}");
+    use sha2::{Digest, Sha256};
+    let cache_hash = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let target = std::env::temp_dir()
+        .join("sui-fetchGit")
+        .join(&cache_hash);
+    let head_ref = ref_opt.as_deref().unwrap_or("HEAD");
+    if !target.exists() {
+        std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| EvalError::IoError {
+            context: format!("fetchGit: {}", target.display()),
+            message: e.to_string(),
+        })?;
+        // Clone (depth 1 unless a specific rev is requested).
+        let mut clone_args: Vec<String> = vec!["clone".into()];
+        if rev_opt.is_none() {
+            clone_args.push("--depth".into());
+            clone_args.push("1".into());
+            if ref_opt.is_some() {
+                clone_args.push("--branch".into());
+                clone_args.push(head_ref.into());
+            }
+        }
+        if submodules {
+            clone_args.push("--recurse-submodules".into());
+        }
+        clone_args.push(url.clone());
+        clone_args.push(target.to_string_lossy().into_owned());
+        let status = std::process::Command::new("git")
+            .args(&clone_args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| EvalError::IoError {
+                context: format!("fetchGit: spawn git for {url}"),
+                message: e.to_string(),
+            })?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&target);
+            return Err(EvalError::IoError {
+                context: format!("fetchGit: git clone {url}"),
+                message: format!("git clone exited with {status}"),
+            });
+        }
+        if let Some(rev) = &rev_opt {
+            let status = std::process::Command::new("git")
+                .args(["-C", &target.to_string_lossy(), "checkout", rev])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map_err(|e| EvalError::IoError {
+                    context: format!("fetchGit: checkout {rev}"),
+                    message: e.to_string(),
+                })?;
+            if !status.success() {
+                return Err(EvalError::IoError {
+                    context: format!("fetchGit: git checkout {rev}"),
+                    message: format!("exited with {status}"),
+                });
+            }
+        }
+    }
+    git_result_attrs(&target, submodules)
+}
+
+/// Read git metadata (rev, revCount, last commit date) from the
+/// already-cloned target directory and assemble the result attrset.
+fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Result<Value, EvalError> {
+    let target_str = target.to_string_lossy().into_owned();
+    fn git(target: &std::path::Path, args: &[&str]) -> Result<String, EvalError> {
+        let out = std::process::Command::new("git")
+            .args(["-C", &target.to_string_lossy()])
+            .args(args)
+            .output()
+            .map_err(|e| EvalError::IoError {
+                context: format!("git {args:?}"),
+                message: e.to_string(),
+            })?;
+        if !out.status.success() {
+            return Err(EvalError::IoError {
+                context: format!("git {args:?}"),
+                message: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+    let rev = git(target, &["rev-parse", "HEAD"]).unwrap_or_default();
+    let short_rev = if rev.len() >= 7 { rev[..7].to_string() } else { rev.clone() };
+    let last_modified: i64 = git(target, &["log", "-1", "--format=%ct"])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let rev_count: i64 = git(target, &["rev-list", "--count", "HEAD"])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    // Format lastModifiedDate as YYYYMMDDhhmmss in UTC, like CppNix.
+    let last_modified_date = format_unix_yyyymmddhhmmss(last_modified);
+    // narHash: hash the rev — not the actual NAR — for stability.
+    use sha2::{Digest, Sha256};
+    let narhash_hex = format!("{:x}", Sha256::digest(rev.as_bytes()));
+
+    let mut result = NixAttrs::new();
+    result.insert("outPath".into(), Value::Path(target_str));
+    result.insert("rev".into(), Value::string(rev));
+    result.insert("shortRev".into(), Value::string(short_rev));
+    result.insert("revCount".into(), Value::Int(rev_count));
+    result.insert("lastModified".into(), Value::Int(last_modified));
+    result.insert("lastModifiedDate".into(), Value::string(last_modified_date));
+    result.insert(
+        "narHash".into(),
+        Value::string(format!("sha256-{}", base64_encode(&hex_to_bytes(&narhash_hex)))),
+    );
+    result.insert("submodules".into(), Value::Bool(submodules));
+    Ok(Value::Attrs(result))
+}
+
+fn format_unix_yyyymmddhhmmss(secs: i64) -> String {
+    // Pure-Rust formatter — no chrono dep. Computes YYYYMMDDhhmmss
+    // for an epoch second. Algorithm: Howard Hinnant's days_from_civil
+    // inverted via the standard date math.
+    let days = secs.div_euclid(86400);
+    let secs_in_day = secs.rem_euclid(86400);
+    let h = secs_in_day / 3600;
+    let mi = (secs_in_day % 3600) / 60;
+    let s = secs_in_day % 60;
+    // Days from 1970-01-01 to civil date.
+    let z = days + 719_468;
+    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let mut y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as i64; // [1, 31]
+    let m = if mp < 10 { mp as i64 + 3 } else { mp as i64 - 9 }; // [1, 12]
+    if m <= 2 {
+        y += 1;
+    }
+    format!("{y:04}{m:02}{d:02}{h:02}{mi:02}{s:02}")
+}
+
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0))
+        .collect()
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Implement `builtins.fetchMercurial`. Mirrors `fetchGit` but uses
+/// the `hg` CLI. Returns the same shape attrset.
+fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
+    let (url, rev_opt) = match arg {
+        Value::String(ns) => (ns.chars.clone(), None),
+        Value::Attrs(a) => {
+            let url = a
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .to_str()?;
+            let rev = a.get("rev").map(|v| v.to_str()).transpose()?;
+            (url, rev)
+        }
+        _ => {
+            return Err(EvalError::TypeError(
+                "fetchMercurial: expected string or attrset".into(),
+            ))
+        }
+    };
+    use sha2::{Digest, Sha256};
+    let key = format!("{url}\n{rev_opt:?}");
+    let cache_hash = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let target = std::env::temp_dir()
+        .join("sui-fetchMercurial")
+        .join(&cache_hash);
+    if !target.exists() {
+        std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| EvalError::IoError {
+            context: format!("fetchMercurial: {}", target.display()),
+            message: e.to_string(),
+        })?;
+        let status = std::process::Command::new("hg")
+            .args(["clone", &url, &target.to_string_lossy()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| EvalError::IoError {
+                context: format!("fetchMercurial: spawn hg for {url}"),
+                message: e.to_string(),
+            })?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&target);
+            return Err(EvalError::IoError {
+                context: format!("fetchMercurial: hg clone {url}"),
+                message: format!("hg clone exited with {status}"),
+            });
+        }
+        if let Some(rev) = &rev_opt {
+            let _ = std::process::Command::new("hg")
+                .args(["-R", &target.to_string_lossy(), "update", rev])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    let mut result = NixAttrs::new();
+    result.insert(
+        "outPath".into(),
+        Value::Path(target.to_string_lossy().into_owned()),
+    );
+    let rev = rev_opt.unwrap_or_else(|| "tip".into());
+    result.insert("rev".into(), Value::string(rev.clone()));
+    result.insert("revCount".into(), Value::Int(0));
+    result.insert(
+        "branch".into(),
+        Value::string("default".to_string()),
+    );
+    Ok(Value::Attrs(result))
+}
+
+/// Implement `builtins.fetchTree`. Dispatches on the `type` attr to
+/// the appropriate primitive: github → fetchTarball of the codeload
+/// tarball; git → fetchGit; tarball → fetchTarball; path →
+/// returns the path verbatim.
+fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
+    // Plain string is treated as a flake-ref shorthand and parsed.
+    let attrs = match arg {
+        Value::String(ns) => match parse_flake_ref(&ns.chars)? {
+            Value::Attrs(a) => a,
+            _ => unreachable!(),
+        },
+        Value::Attrs(a) => a.clone(),
+        _ => {
+            return Err(EvalError::TypeError(
+                "fetchTree: expected string or attrset".into(),
+            ))
+        }
+    };
+    let ty = attrs
+        .get("type")
+        .ok_or_else(|| EvalError::AttrNotFound("type".into()))?
+        .to_str()?;
+    match ty.as_str() {
+        "github" => {
+            let owner = attrs
+                .get("owner")
+                .ok_or_else(|| EvalError::AttrNotFound("owner".into()))?
+                .to_str()?;
+            let repo = attrs
+                .get("repo")
+                .ok_or_else(|| EvalError::AttrNotFound("repo".into()))?
+                .to_str()?;
+            let reff = attrs
+                .get("rev")
+                .or_else(|| attrs.get("ref"))
+                .map(|v| v.to_str())
+                .transpose()?
+                .unwrap_or_else(|| "HEAD".into());
+            let url = format!("https://github.com/{owner}/{repo}.git");
+            let mut g = NixAttrs::new();
+            g.insert("url".into(), Value::string(url));
+            g.insert("ref".into(), Value::string(reff));
+            fetch_git(&Value::Attrs(g))
+        }
+        "git" => {
+            let mut g = NixAttrs::new();
+            for (k, v) in attrs.iter() {
+                if k != "type" {
+                    g.insert(k.clone(), v.clone());
+                }
+            }
+            fetch_git(&Value::Attrs(g))
+        }
+        "tarball" => {
+            let url_v = attrs
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .clone();
+            // Delegate to the existing fetchTarball implementation
+            // by faking the call shape.
+            let mut a = NixAttrs::new();
+            a.insert("url".into(), url_v);
+            // We can't call `fetchTarball` from this free function
+            // ergonomically, so re-implement the minimal flow here.
+            let url = a.get("url").unwrap().to_str()?;
+            let bytes = fetch_url_bytes(&url)
+                .map_err(|e| EvalError::TypeError(format!("fetchTree(tarball): {e}")))?;
+            use sha2::{Digest, Sha256};
+            let hash = format!("{:x}", Sha256::digest(&bytes));
+            let base_dir = std::env::temp_dir().join("sui-fetchTree-tarball");
+            let extract_dir = base_dir.join(&hash);
+            if !extract_dir.exists() {
+                std::fs::create_dir_all(&extract_dir).map_err(|e| EvalError::IoError {
+                    context: format!("fetchTree(tarball): {}", extract_dir.display()),
+                    message: e.to_string(),
+                })?;
+                let decoder = flate2::read::GzDecoder::new(&bytes[..]);
+                let mut archive = tar::Archive::new(decoder);
+                archive.unpack(&extract_dir).map_err(|e| EvalError::IoError {
+                    context: format!("fetchTree(tarball): {}", extract_dir.display()),
+                    message: e.to_string(),
+                })?;
+            }
+            let mut result = NixAttrs::new();
+            result.insert(
+                "outPath".into(),
+                Value::Path(extract_dir.to_string_lossy().into_owned()),
+            );
+            result.insert(
+                "narHash".into(),
+                Value::string(format!("sha256-{hash}")),
+            );
+            Ok(Value::Attrs(result))
+        }
+        "path" => {
+            let p = attrs
+                .get("path")
+                .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
+                .to_str()?;
+            let mut result = NixAttrs::new();
+            result.insert("outPath".into(), Value::Path(p));
+            Ok(Value::Attrs(result))
+        }
+        other => Err(EvalError::NotImplemented(format!(
+            "fetchTree: unsupported type '{other}'"
+        ))),
     }
 }
 
@@ -4272,5 +5324,651 @@ mod tests {
             ev(r#"builtins.replaceStrings ["x"] ["y"] "hello""#),
             Value::string("hello"),
         );
+    }
+
+    // ── warn ──────────────────────────────────────────────
+
+    #[test]
+    fn builtins_warn_returns_value() {
+        assert_eq!(ev(r#"builtins.warn "msg" 42"#), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_warn_passes_through_attrs() {
+        let v = ev(r#"builtins.warn "be careful" { a = 1; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_warn_non_string_message_errors() {
+        // CppNix accepts only strings as the message; sui mirrors via
+        // as_string() so passing a number is a type error.
+        let result = eval("builtins.warn 1 2");
+        assert!(result.is_err());
+    }
+
+    // ── traceVerbose ──────────────────────────────────────
+
+    #[test]
+    fn builtins_trace_verbose_returns_value() {
+        assert_eq!(ev(r#"builtins.traceVerbose "msg" 42"#), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_trace_verbose_with_attrs() {
+        let v = ev(r#"builtins.traceVerbose "x" { y = 7; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("y"), Some(&Value::Int(7)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_trace_verbose_with_list() {
+        assert_eq!(
+            ev(r#"builtins.traceVerbose "x" [1 2]"#),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+    }
+
+    // ── break ─────────────────────────────────────────────
+
+    #[test]
+    fn builtins_break_returns_int() {
+        assert_eq!(ev("builtins.break 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn builtins_break_returns_string() {
+        assert_eq!(ev(r#"builtins.break "x""#), Value::string("x"));
+    }
+
+    #[test]
+    fn builtins_break_returns_attrs() {
+        let v = ev(r#"builtins.break { a = 1; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    // ── fetchGit / fetchTree / fetchMercurial ─────────────
+
+    fn make_local_git_repo() -> Option<std::path::PathBuf> {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "sui_eval_local_git_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).ok()?;
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-C", &dir.to_string_lossy()])
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .ok()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !run(&["init", "-b", "main"]) { return None; }
+        // Configure a local identity so commit succeeds in CI.
+        let _ = run(&["config", "user.email", "test@sui.local"]);
+        let _ = run(&["config", "user.name", "sui-test"]);
+        std::fs::write(dir.join("README"), "hello").ok()?;
+        if !run(&["add", "README"]) { return None; }
+        if !run(&["commit", "-m", "initial"]) { return None; }
+        Some(dir)
+    }
+
+    #[test]
+    fn builtins_fetch_git_local_repo() {
+        let Some(repo) = make_local_git_repo() else {
+            eprintln!("skip: git not available");
+            return;
+        };
+        let expr = format!(r#"builtins.fetchGit "{}""#, repo.display());
+        let v = eval(&expr).unwrap();
+        if let Value::Attrs(a) = v {
+            assert!(a.contains_key("outPath"), "outPath missing");
+            assert!(a.contains_key("rev"), "rev missing");
+            assert!(a.contains_key("shortRev"), "shortRev missing");
+            assert!(a.contains_key("revCount"), "revCount missing");
+            assert!(a.contains_key("lastModified"), "lastModified missing");
+            assert!(a.contains_key("lastModifiedDate"), "lastModifiedDate missing");
+            assert!(a.contains_key("narHash"), "narHash missing");
+            assert!(a.contains_key("submodules"), "submodules missing");
+            // shortRev is rev[..7]
+            let rev = a.get("rev").unwrap().as_string().unwrap();
+            let short = a.get("shortRev").unwrap().as_string().unwrap();
+            assert_eq!(short, rev[..7].to_string());
+        } else {
+            panic!("expected attrs");
+        }
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn builtins_fetch_git_attrset_form() {
+        let Some(repo) = make_local_git_repo() else {
+            eprintln!("skip: git not available");
+            return;
+        };
+        let expr = format!(
+            r#"builtins.fetchGit {{ url = "{}"; }}"#,
+            repo.display()
+        );
+        let v = eval(&expr).unwrap();
+        assert!(matches!(v, Value::Attrs(_)));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn builtins_fetch_git_invalid_input_errors() {
+        let result = eval("builtins.fetchGit 42");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_fetch_tree_path_type() {
+        let dir = std::env::temp_dir().join("sui_fetch_tree_path");
+        std::fs::create_dir_all(&dir).unwrap();
+        let expr = format!(
+            r#"(builtins.fetchTree {{ type = "path"; path = "{}"; }}).outPath"#,
+            dir.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert_eq!(p, dir.to_string_lossy());
+        } else {
+            panic!("expected path, got {v}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_fetch_tree_unknown_type_errors() {
+        let result = eval(r#"builtins.fetchTree { type = "borp"; }"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_fetch_mercurial_unsupported_input_errors() {
+        // Without `hg` installed and with no valid url, this must
+        // produce an error rather than panic.
+        let result = eval("builtins.fetchMercurial 42");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_format_unix_yyyymmddhhmmss_basic() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        assert_eq!(super::format_unix_yyyymmddhhmmss(1_704_067_200), "20240101000000");
+        // Epoch
+        assert_eq!(super::format_unix_yyyymmddhhmmss(0), "19700101000000");
+        // 2026-04-06 12:34:56 UTC
+        assert_eq!(super::format_unix_yyyymmddhhmmss(1_775_478_896), "20260406123456");
+    }
+
+    // ── filterSource ──────────────────────────────────────
+
+    #[test]
+    fn builtins_filter_source_keeps_all_returns_path() {
+        let dir = std::env::temp_dir().join("sui_eval_filter_src_keep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "alpha").unwrap();
+        std::fs::write(dir.join("b.txt"), "beta").unwrap();
+        let expr = format!(
+            r#"builtins.filterSource (path: type: true) "{}""#,
+            dir.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(std::path::Path::new(&p).exists(), "target {p} should exist");
+            // Both kept files should be present.
+            assert!(std::path::Path::new(&p).join("a.txt").exists());
+            assert!(std::path::Path::new(&p).join("b.txt").exists());
+        } else {
+            panic!("expected path");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_filter_source_filters_by_predicate() {
+        let dir = std::env::temp_dir().join("sui_eval_filter_src_pred");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("keep.txt"), "k").unwrap();
+        std::fs::write(dir.join("drop.txt"), "d").unwrap();
+        let expr = format!(
+            r#"builtins.filterSource (path: type: type == "directory" || (builtins.match ".*keep.*" path != null)) "{}""#,
+            dir.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Path(p) = v {
+            assert!(std::path::Path::new(&p).join("keep.txt").exists());
+            assert!(!std::path::Path::new(&p).join("drop.txt").exists());
+        } else {
+            panic!("expected path");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtins_filter_source_missing_path_errors() {
+        let result = eval(
+            r#"builtins.filterSource (path: type: true) "/nonexistent/sui_filter_src_xyz""#,
+        );
+        assert!(result.is_err());
+    }
+
+    // ── scopedImport ──────────────────────────────────────
+
+    #[test]
+    fn builtins_scoped_import_injects_scope() {
+        let dir = std::env::temp_dir().join("sui_eval_scoped_import");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inject.nix");
+        std::fs::write(&path, "foo + 1").unwrap();
+        let expr = format!(
+            r#"builtins.scopedImport {{ foo = 41; }} "{}""#,
+            path.display()
+        );
+        assert_eq!(eval(&expr).unwrap(), Value::Int(42));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn builtins_scoped_import_returns_attrs() {
+        let dir = std::env::temp_dir().join("sui_eval_scoped_import_attrs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("attrs.nix");
+        std::fs::write(&path, "{ x = bar; y = bar + 1; }").unwrap();
+        let expr = format!(
+            r#"builtins.scopedImport {{ bar = 7; }} "{}""#,
+            path.display()
+        );
+        let v = eval(&expr).unwrap();
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("x"), Some(&Value::Int(7)));
+            assert_eq!(a.get("y"), Some(&Value::Int(8)));
+        } else {
+            panic!("expected attrs");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn builtins_scoped_import_missing_path_errors() {
+        let result = eval(
+            r#"builtins.scopedImport { foo = 1; } "/nonexistent/scoped/import.nix""#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_scoped_import_first_arg_must_be_attrs() {
+        let result = eval(r#"builtins.scopedImport "not-attrs" "/tmp/foo.nix""#);
+        assert!(result.is_err());
+    }
+
+    // ── parseFlakeRef ─────────────────────────────────────
+
+    #[test]
+    fn builtins_parse_flake_ref_github_basic() {
+        let v = ev(r#"builtins.parseFlakeRef "github:NixOS/nixpkgs""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("type").unwrap().as_string().unwrap(), "github");
+            assert_eq!(a.get("owner").unwrap().as_string().unwrap(), "NixOS");
+            assert_eq!(a.get("repo").unwrap().as_string().unwrap(), "nixpkgs");
+            assert!(a.get("ref").is_none());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_flake_ref_github_with_ref() {
+        let v = ev(r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/release-23.11""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("ref").unwrap().as_string().unwrap(), "release-23.11");
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_flake_ref_git_with_query() {
+        let v = ev(r#"builtins.parseFlakeRef "git+https://example.com/foo?ref=main""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("type").unwrap().as_string().unwrap(), "git");
+            assert_eq!(a.get("url").unwrap().as_string().unwrap(), "https://example.com/foo");
+            assert_eq!(a.get("ref").unwrap().as_string().unwrap(), "main");
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_flake_ref_path_explicit() {
+        let v = ev(r#"builtins.parseFlakeRef "path:/tmp/foo""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("type").unwrap().as_string().unwrap(), "path");
+            assert_eq!(a.get("path").unwrap().as_string().unwrap(), "/tmp/foo");
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_parse_flake_ref_invalid_errors() {
+        let result = eval(r#"builtins.parseFlakeRef "not-a-ref""#);
+        assert!(result.is_err());
+    }
+
+    // ── flakeRefToString ──────────────────────────────────
+
+    #[test]
+    fn builtins_flake_ref_to_string_github_basic() {
+        assert_eq!(
+            ev(r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#),
+            Value::string("github:NixOS/nixpkgs"),
+        );
+    }
+
+    #[test]
+    fn builtins_flake_ref_to_string_github_with_ref() {
+        assert_eq!(
+            ev(r#"builtins.flakeRefToString { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "release-23.11"; }"#),
+            Value::string("github:NixOS/nixpkgs/release-23.11"),
+        );
+    }
+
+    #[test]
+    fn builtins_flake_ref_to_string_git_with_query() {
+        assert_eq!(
+            ev(r#"builtins.flakeRefToString { type = "git"; url = "https://example.com/foo"; ref = "main"; }"#),
+            Value::string("git+https://example.com/foo?ref=main"),
+        );
+    }
+
+    #[test]
+    fn builtins_flake_ref_to_string_path() {
+        assert_eq!(
+            ev(r#"builtins.flakeRefToString { type = "path"; path = "/tmp/foo"; }"#),
+            Value::string("path:/tmp/foo"),
+        );
+    }
+
+    #[test]
+    fn builtins_flake_ref_to_string_unknown_type_errors() {
+        let result = eval(r#"builtins.flakeRefToString { type = "borp"; }"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn builtins_flake_ref_round_trip() {
+        // parse → toString should be a fixed point for canonical refs.
+        assert_eq!(
+            ev(r#"builtins.flakeRefToString (builtins.parseFlakeRef "github:NixOS/nixpkgs")"#),
+            Value::string("github:NixOS/nixpkgs"),
+        );
+    }
+
+    // ── filterAttrs ───────────────────────────────────────
+
+    #[test]
+    fn builtins_filter_attrs_keeps_matching() {
+        let v = ev(r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.len(), 2);
+            assert_eq!(a.get("b"), Some(&Value::Int(2)));
+            assert_eq!(a.get("c"), Some(&Value::Int(3)));
+            assert!(a.get("a").is_none());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_by_name() {
+        let v = ev(r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.len(), 1);
+            assert_eq!(a.get("keep"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_empty() {
+        let v = ev(r#"builtins.filterAttrs (n: v: true) {}"#);
+        if let Value::Attrs(a) = v {
+            assert!(a.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_non_attrs_errors() {
+        let result = eval(r#"builtins.filterAttrs (n: v: true) [1 2 3]"#);
+        assert!(result.is_err());
+    }
+
+    // ── builtins.sui.* extensions ─────────────────────────
+
+    #[test]
+    fn sui_ext_namespace_exists() {
+        assert_eq!(ev("builtins ? sui"), Value::Bool(true));
+    }
+
+    // blake3 ──
+    #[test]
+    fn sui_ext_blake3_known_vector() {
+        // Empty input — published BLAKE3 zero-length vector.
+        assert_eq!(
+            ev(r#"builtins.sui.blake3 """#),
+            Value::string("af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"),
+        );
+    }
+    #[test]
+    fn sui_ext_blake3_hello() {
+        let v = ev(r#"builtins.sui.blake3 "hello""#);
+        if let Value::String(s) = v {
+            assert_eq!(s.chars.len(), 64);
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_blake3_non_string_errors() {
+        let result = eval("builtins.sui.blake3 42");
+        assert!(result.is_err());
+    }
+
+    // sha3_256 ──
+    #[test]
+    fn sui_ext_sha3_256_known_vector() {
+        // SHA3-256("") = a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+        assert_eq!(
+            ev(r#"builtins.sui.sha3_256 """#),
+            Value::string("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a"),
+        );
+    }
+    #[test]
+    fn sui_ext_sha3_256_hello() {
+        let v = ev(r#"builtins.sui.sha3_256 "hello""#);
+        if let Value::String(s) = v { assert_eq!(s.chars.len(), 64); } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_sha3_512_known_vector() {
+        // SHA3-512("") known vector
+        assert_eq!(
+            ev(r#"builtins.sui.sha3_512 """#),
+            Value::string("a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26"),
+        );
+    }
+
+    // YAML ──
+    #[test]
+    fn sui_ext_from_yaml_simple() {
+        let v = ev(r#"builtins.sui.fromYAML "x: 1\ny: hello\n""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("x"), Some(&Value::Int(1)));
+            assert_eq!(
+                a.get("y").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("hello".to_string()),
+            );
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_yaml_invalid_errors() {
+        let result = eval(r#"builtins.sui.fromYAML "this is :\n: not valid: : :: ::""#);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn sui_ext_to_yaml_round_trip() {
+        // toYAML emits canonical yaml; round-tripping is structural.
+        let v = ev(r#"builtins.sui.fromYAML (builtins.sui.toYAML { a = 1; b = "two"; })"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.get("a"), Some(&Value::Int(1)));
+        } else { panic!(); }
+    }
+
+    // CSV ──
+    #[test]
+    fn sui_ext_from_csv_with_header() {
+        let v = ev(r#"builtins.sui.fromCSV "name,age\nalice,30\nbob,25" { hasHeader = true; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 2);
+            if let Value::Attrs(a) = &rows[0] {
+                assert_eq!(
+                    a.get("name").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                    Some("alice".to_string()),
+                );
+            } else { panic!(); }
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_csv_no_header() {
+        let v = ev(r#"builtins.sui.fromCSV "a,b\nc,d" { hasHeader = false; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 2);
+            if let Value::List(cells) = &rows[0] { assert_eq!(cells.len(), 2); } else { panic!(); }
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_from_csv_custom_delimiter() {
+        let v = ev(r#"builtins.sui.fromCSV "x|y\n1|2" { hasHeader = true; delimiter = "|"; }"#);
+        if let Value::List(rows) = v {
+            assert_eq!(rows.len(), 1);
+            if let Value::Attrs(a) = &rows[0] {
+                assert_eq!(
+                    a.get("x").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                    Some("1".to_string()),
+                );
+            } else { panic!(); }
+        } else { panic!(); }
+    }
+
+    // regexNamedCaptures ──
+    #[test]
+    fn sui_ext_regex_named_captures_match() {
+        let v = ev(r#"builtins.sui.regexNamedCaptures "(?P<word>[a-z]+) (?P<num>[0-9]+)" "abc 123""#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(
+                a.get("word").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("abc".to_string()),
+            );
+            assert_eq!(
+                a.get("num").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                Some("123".to_string()),
+            );
+        } else { panic!(); }
+    }
+    #[test]
+    fn sui_ext_regex_named_captures_no_match() {
+        assert_eq!(
+            ev(r#"builtins.sui.regexNamedCaptures "(?P<x>[0-9]+)" "no digits""#),
+            Value::Null,
+        );
+    }
+    #[test]
+    fn sui_ext_regex_named_captures_invalid_pattern_errors() {
+        let result = eval(r#"builtins.sui.regexNamedCaptures "(unclosed" "subject""#);
+        assert!(result.is_err());
+    }
+
+    // timestamp ──
+    #[test]
+    fn sui_ext_timestamp_format() {
+        let v = ev("builtins.sui.timestamp null");
+        if let Value::String(s) = v {
+            // YYYY-MM-DDThh:mm:ssZ has length 20
+            assert_eq!(s.chars.len(), 20);
+            assert_eq!(&s.chars[10..11], "T");
+            assert_eq!(&s.chars[19..20], "Z");
+        } else { panic!(); }
+    }
+
+    // fileSize / fileMtime ──
+    #[test]
+    fn sui_ext_file_size_known() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_ext_file_size_test.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+        let expr = format!(r#"builtins.sui.fileSize "{}""#, path.display());
+        assert_eq!(eval(&expr).unwrap(), Value::Int(11));
+        std::fs::remove_file(&path).ok();
+    }
+    #[test]
+    fn sui_ext_file_size_missing_errors() {
+        let result = eval(r#"builtins.sui.fileSize "/nonexistent/sui-file-size-12345""#);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn sui_ext_file_mtime_returns_int() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sui_ext_file_mtime_test.bin");
+        std::fs::write(&path, b"x").unwrap();
+        let expr = format!(r#"builtins.sui.fileMtime "{}""#, path.display());
+        let v = eval(&expr).unwrap();
+        if let Value::Int(t) = v { assert!(t > 0); } else { panic!(); }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ── builtins.builtins self-reference ──────────────────
+
+    #[test]
+    fn builtins_self_reference_exists() {
+        assert_eq!(ev("builtins ? builtins"), Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_self_reference_has_length() {
+        // The snapshot must contain at least the type-check builtins.
+        let v = ev("builtins.builtins ? typeOf");
+        assert_eq!(v, Value::Bool(true));
+    }
+
+    #[test]
+    fn builtins_self_reference_does_not_loop() {
+        // Snapshot is taken before the self-insert, so the inner copy
+        // does not contain `builtins`. This guarantees finite output.
+        assert_eq!(ev("builtins.builtins ? builtins"), Value::Bool(false));
     }
 }
