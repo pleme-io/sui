@@ -709,9 +709,10 @@ pub fn register(env: &mut Env) {
                 match &closure.param {
                     rnix::ast::Param::Pattern(pat) => {
                         for entry in pat.pat_entries() {
-                            let name = entry.ident().unwrap().to_string();
-                            let has_default = entry.default().is_some();
-                            result.insert(name, Value::Bool(has_default));
+                            if let Some(ident) = entry.ident() {
+                                let has_default = entry.default().is_some();
+                                result.insert(ident.to_string(), Value::Bool(has_default));
+                            }
                         }
                     }
                     _ => {}
