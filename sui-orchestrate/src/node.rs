@@ -287,6 +287,34 @@ impl NodeRegistry {
     }
 }
 
+impl<'a> IntoIterator for &'a NodeRegistry {
+    type Item = (&'a String, &'a Node);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, Node>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.iter()
+    }
+}
+
+impl IntoIterator for NodeRegistry {
+    type Item = (String, Node);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Node>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.into_iter()
+    }
+}
+
+impl std::iter::FromIterator<Node> for NodeRegistry {
+    fn from_iter<I: IntoIterator<Item = Node>>(iter: I) -> Self {
+        let mut registry = Self::new();
+        for node in iter {
+            registry.add(node);
+        }
+        registry
+    }
+}
+
 /// Aggregate counts of node statuses across a fleet.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StatusCounts {
