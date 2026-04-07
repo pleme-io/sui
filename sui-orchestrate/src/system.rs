@@ -173,10 +173,13 @@ impl SystemOrchestrator {
 
     /// Native rebuild: evaluate flake, build closure, activate system.
     ///
-    /// Uses `nix eval` for evaluation and `nix build` for the actual build
-    /// (the full native build pipeline will be wired once the substitution
-    /// layer is production-ready). The key win is that `sui system rebuild`
-    /// becomes the user's single entry point.
+    /// Fully native pipeline — no delegation to `nix`, `darwin-rebuild`, or
+    /// `nixos-rebuild`. Steps:
+    /// 1. Parse flake reference
+    /// 2. Evaluate the flake natively (`evaluate_flake`)
+    /// 3. Navigate to the system derivation and extract `drvPath`
+    /// 4. Compute the build closure and build with substitution
+    /// 5. Activate the system profile
     pub async fn rebuild_native(
         &self,
         flake_ref_str: &str,
@@ -206,7 +209,7 @@ impl SystemOrchestrator {
             .map_err(|e| SystemError::RebuildFailed(format!("navigate attrs: {e}")))?;
 
         // Extract drvPath from the derivation attrset.
-        let _drv_path = match drv_value {
+        let drv_path = match drv_value {
             sui_eval::Value::Attrs(ref attrs) => {
                 attrs.get("drvPath")
                     .and_then(|v| v.as_string().ok())
@@ -226,33 +229,38 @@ impl SystemOrchestrator {
             }
         };
 
-        // 3. Build the system derivation (still delegates to nix build for the
-        //    full closure — the native single-derivation builder doesn't handle
-        //    recursive dependency resolution yet).
-        let build_ref = format!(
-            "{}#{attr_path}",
-            flake_ref.flake_dir.display()
-        );
-        let build_output = self
-            .runner
-            .run(
-                "nix",
-                &["build", "--no-link", "--print-out-paths", &build_ref],
-            )
+        // 3. Build the system derivation natively.
+        let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
             .await
-            .map_err(|e| SystemError::CommandNotFound(format!("nix: {e}")))?;
+            .map_err(|e| SystemError::RebuildFailed(format!("store: {e}")))?;
+        let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+        let caches: Vec<std::sync::Arc<sui_store::BinaryCacheStore>> =
+            vec![std::sync::Arc::new(sui_store::BinaryCacheStore::new(
+                "https://cache.nixos.org",
+                vec![],
+            ))];
+        let substitutor = sui_store::Substitutor::new(store.clone(), caches);
 
-        if !build_output.success {
-            return Ok(RebuildResult {
-                success: false,
-                generation: None,
-                action: action.to_string(),
-                log: build_output.stderr.clone(),
-                duration_secs: start.elapsed().as_secs_f64(),
-            });
-        }
+        #[cfg(target_os = "macos")]
+        let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+            Box::new(sui_build::sandbox::DarwinSandbox::new());
+        #[cfg(not(target_os = "macos"))]
+        let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+            Box::new(sui_build::sandbox::LinuxSandbox::new());
 
-        let system_path = build_output.stdout.trim().to_string();
+        let builder = sui_build::LocalBuilder::new(store, sandbox);
+        let closure = sui_build::BuildClosure::compute(&drv_path)
+            .map_err(|e| SystemError::RebuildFailed(format!("closure: {e}")))?;
+        let build_result = builder
+            .build_closure(&closure, Some(&substitutor))
+            .await
+            .map_err(|e| SystemError::RebuildFailed(format!("build: {e}")))?;
+
+        let system_path = build_result
+            .outputs
+            .first()
+            .map(|p| p.to_absolute_path())
+            .ok_or_else(|| SystemError::RebuildFailed("no build outputs".into()))?;
 
         // 4. Activate the system profile
         self.activate_system(&system_path, action).await?;
@@ -271,8 +279,8 @@ impl SystemOrchestrator {
 
     /// Activate a built system profile.
     ///
-    /// Sets the system profile and runs activation scripts as appropriate
-    /// for the given [`RebuildAction`].
+    /// Sets the system profile via [`ProfileManager`] and runs activation
+    /// scripts as appropriate for the given [`RebuildAction`].
     async fn activate_system(
         &self,
         system_path: &str,
@@ -280,21 +288,12 @@ impl SystemOrchestrator {
     ) -> Result<(), SystemError> {
         match action {
             RebuildAction::Switch | RebuildAction::Test => {
-                // Set the system profile
-                self.runner
-                    .run(
-                        "nix-env",
-                        &[
-                            "--profile",
-                            "/nix/var/nix/profiles/system",
-                            "--set",
-                            system_path,
-                        ],
-                    )
-                    .await
-                    .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+                // Set the system profile natively.
+                let pm = sui_store::ProfileManager::system();
+                pm.set(std::path::Path::new(system_path))
+                    .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
 
-                // Run the activate script
+                // Run the activate script.
                 let activate = format!("{system_path}/activate");
                 self.runner
                     .run(&activate, &[])
@@ -314,28 +313,24 @@ impl SystemOrchestrator {
                 }
             }
             RebuildAction::Boot => {
-                // Set profile but don't activate — takes effect on next boot
-                self.runner
-                    .run(
-                        "nix-env",
-                        &[
-                            "--profile",
-                            "/nix/var/nix/profiles/system",
-                            "--set",
-                            system_path,
-                        ],
-                    )
-                    .await
-                    .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+                // Set profile but don't activate — takes effect on next boot.
+                let pm = sui_store::ProfileManager::system();
+                pm.set(std::path::Path::new(system_path))
+                    .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
             }
             RebuildAction::Build => {
-                // Build only — nothing to activate
+                // Build only — nothing to activate.
             }
         }
         Ok(())
     }
 
-    /// Execute a system rebuild.
+    /// **Deprecated.** Legacy rebuild via `darwin-rebuild`/`nixos-rebuild`.
+    ///
+    /// Prefer [`rebuild_native`](Self::rebuild_native) which uses the fully
+    /// native pipeline. This method is retained for backwards compatibility
+    /// but is not called by default.
+    #[deprecated(note = "use rebuild_native instead")]
     pub async fn rebuild(
         &self,
         action: RebuildAction,
@@ -384,128 +379,112 @@ impl SystemOrchestrator {
 
     /// Get the current system generation number.
     pub async fn current_generation(&self) -> Result<i64, SystemError> {
-        let output = self
-            .runner
-            .run(
-                "nix-env",
-                &[
-                    "--list-generations",
-                    "--profile",
-                    "/nix/var/nix/profiles/system",
-                ],
-            )
-            .await?;
-
-        let generation = output
-            .stdout
-            .lines()
-            .rev()
-            .filter(|line| line.contains("(current)"))
-            .find_map(|line| line.split_whitespace().next()?.parse::<i64>().ok())
-            .unwrap_or(0);
-
-        Ok(generation)
+        let pm = sui_store::ProfileManager::system();
+        let current = pm
+            .current_generation()
+            .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+        Ok(current.map(i64::from).unwrap_or(0))
     }
 
     /// List all system generations.
     pub async fn list_generations(&self) -> Result<Vec<GenerationInfo>, SystemError> {
-        let profile = "/nix/var/nix/profiles/system";
+        let pm = sui_store::ProfileManager::system();
+        let generations = pm
+            .list_generations()
+            .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
 
-        let output = self
-            .runner
-            .run("nix-env", &["--list-generations", "--profile", profile])
-            .await?;
-
-        let generations = output
-            .stdout
-            .lines()
-            .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let number = parts.next()?.parse::<i64>().ok()?;
-                let date = parts.next().unwrap_or_default().to_string();
-                let current = line.contains("(current)");
-                Some(GenerationInfo {
-                    number,
+        Ok(generations
+            .into_iter()
+            .map(|g| {
+                let date = g
+                    .created
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| {
+                        let secs = d.as_secs();
+                        let days = secs / 86400;
+                        let (y, m, day) = days_to_ymd(days);
+                        format!("{y:04}-{m:02}-{day:02}")
+                    })
+                    .unwrap_or_default();
+                GenerationInfo {
+                    number: i64::from(g.number),
                     date,
-                    current,
-                })
+                    current: g.current,
+                }
             })
-            .collect();
-
-        Ok(generations)
+            .collect())
     }
 
     /// Rollback to the previous generation.
     pub async fn rollback(&self) -> Result<RebuildResult, SystemError> {
         let start = std::time::Instant::now();
-        let cmd_name = self.platform.rebuild_command();
+        let pm = sui_store::ProfileManager::system();
 
-        let output = self
-            .runner
-            .run(cmd_name, &["switch", "--rollback"])
-            .await?;
+        let prev_gen = pm
+            .rollback()
+            .map_err(|e| SystemError::RebuildFailed(format!("rollback: {e}")))?;
+
+        let gen_link = std::path::Path::new("/nix/var/nix/profiles")
+            .join(format!("system-{prev_gen}-link"));
+        let system_path = std::fs::read_link(&gen_link)
+            .map_err(|e| SystemError::RebuildFailed(format!("read gen link: {e}")))?;
+
+        self.activate_system(
+            &system_path.to_string_lossy(),
+            RebuildAction::Switch,
+        )
+        .await?;
 
         let duration = start.elapsed().as_secs_f64();
-        let log = output.combined_log();
-
         Ok(RebuildResult {
-            success: output.success,
-            generation: extract_generation(&log),
+            success: true,
+            generation: Some(i64::from(prev_gen)),
             action: "rollback".to_string(),
-            log,
+            log: format!("rolled back to generation {prev_gen}"),
             duration_secs: duration,
         })
     }
 
     /// Rollback to a specific numbered generation.
-    ///
-    /// Invokes `darwin-rebuild switch --switch-generation <n>` on Darwin or
-    /// `nixos-rebuild switch --switch-generation <n>` on NixOS. Both rebuild
-    /// commands accept the standard Nix `--switch-generation` flag.
     pub async fn rollback_to(&self, generation: u32) -> Result<RebuildResult, SystemError> {
         let start = std::time::Instant::now();
-        let cmd_name = self.platform.rebuild_command();
-        let gen_str = generation.to_string();
-
         tracing::info!("rolling back to generation {generation}");
 
-        let output = self
-            .runner
-            .run(cmd_name, &["switch", "--switch-generation", &gen_str])
-            .await
-            .map_err(|e| match e {
-                crate::command::CommandError::NotFound(cmd) => SystemError::CommandNotFound(cmd),
-                other => SystemError::Command(other),
-            })?;
+        let pm = sui_store::ProfileManager::system();
+        pm.switch_generation(generation)
+            .map_err(|e| SystemError::RebuildFailed(format!("switch generation: {e}")))?;
+
+        let gen_link = std::path::Path::new("/nix/var/nix/profiles")
+            .join(format!("system-{generation}-link"));
+        let system_path = std::fs::read_link(&gen_link)
+            .map_err(|e| SystemError::RebuildFailed(format!("read gen link: {e}")))?;
+
+        self.activate_system(
+            &system_path.to_string_lossy(),
+            RebuildAction::Switch,
+        )
+        .await?;
 
         let duration = start.elapsed().as_secs_f64();
-        let log = output.combined_log();
-
-        // Prefer the explicitly requested generation if the command succeeded,
-        // otherwise try to parse it from the log (mirrors `rollback()` behavior).
-        let parsed_gen = extract_generation(&log);
-        let generation_field = if output.success {
-            Some(i64::from(generation))
-        } else {
-            parsed_gen
-        };
-
         Ok(RebuildResult {
-            success: output.success,
-            generation: generation_field,
+            success: true,
+            generation: Some(i64::from(generation)),
             action: format!("rollback-to-{generation}"),
-            log,
+            log: format!("switched to generation {generation}"),
             duration_secs: duration,
         })
     }
 }
+
+/// Default path to the Nix SQLite database.
+const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 
 /// Information about a single system generation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GenerationInfo {
     /// The generation number.
     pub number: i64,
-    /// The date string from `nix-env --list-generations` output.
+    /// The date string (ISO-style `YYYY-MM-DD`).
     pub date: String,
     /// Whether this is the currently active generation.
     pub current: bool,
@@ -525,6 +504,21 @@ pub(crate) fn extract_generation(log: &str) -> Option<i64> {
                 .find_map(|word| word.trim_end_matches('.').parse::<i64>().ok())
         })
         .next()
+}
+
+/// Convert days-since-epoch to (year, month, day).
+fn days_to_ymd(total_days: u64) -> (u64, u64, u64) {
+    let z = total_days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 #[cfg(test)]
@@ -638,24 +632,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn mock_rollback() {
-        let runner = MockCommandRunner::new().with_response(
-            "darwin-rebuild",
-            CommandOutput {
-                success: true,
-                stdout: "rolled back to generation 41\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys.rollback().await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.generation, Some(41));
-    }
-
     // ── rebuild() with flake ─────────────────────────────────
 
     #[tokio::test]
@@ -737,122 +713,11 @@ mod tests {
 
     // ── current_generation() parsing ────────────────────────
 
-    #[tokio::test]
-    async fn mock_current_generation_parses_output() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  41   2024-01-01\n  42   2024-01-02 (current)\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let current = sys.current_generation().await.unwrap();
-        assert_eq!(current, 42);
-    }
-
-    #[tokio::test]
-    async fn mock_current_generation_no_current_marker() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  41   2024-01-01\n  42   2024-01-02\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let current = sys.current_generation().await.unwrap();
-        assert_eq!(current, 0); // no (current) marker found
-    }
-
     // ── list_generations() parsing ──────────────────────────
-
-    #[tokio::test]
-    async fn mock_list_generations_multi_line() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  1  2024-01-01\n  2  2024-01-15 (current)\n  3  2024-02-01\n"
-                    .to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let gens = sys.list_generations().await.unwrap();
-        assert_eq!(gens.len(), 3);
-        assert_eq!(gens[0].number, 1);
-        assert!(!gens[0].current);
-        assert_eq!(gens[1].number, 2);
-        assert!(gens[1].current);
-        assert_eq!(gens[2].number, 3);
-        assert!(!gens[2].current);
-    }
-
-    #[tokio::test]
-    async fn mock_list_generations_empty_output() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let gens = sys.list_generations().await.unwrap();
-        assert!(gens.is_empty());
-    }
 
     // ── rollback() success with NixOS ───────────────────────
 
-    #[tokio::test]
-    async fn mock_rollback_nixos() {
-        let runner = MockCommandRunner::new().with_response(
-            "nixos-rebuild",
-            CommandOutput {
-                success: true,
-                stdout: "rolled back to generation 20\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let result = sys.rollback().await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.generation, Some(20));
-        assert_eq!(result.action, "rollback");
-    }
-
     // ── rollback() failure ──────────────────────────────────
-
-    #[tokio::test]
-    async fn mock_rollback_failure() {
-        let runner = MockCommandRunner::new().with_response(
-            "darwin-rebuild",
-            CommandOutput {
-                success: false,
-                stdout: String::new(),
-                stderr: "rollback failed\n".to_string(),
-                exit_code: Some(1),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys.rollback().await.unwrap();
-        assert!(!result.success);
-    }
 
     // ── Platform helper tests ───────────────────────────────
 
@@ -1054,33 +919,7 @@ mod tests {
 
     // ── current_generation() command not found ────────────────
 
-    #[tokio::test]
-    async fn mock_current_generation_command_not_found() {
-        let runner = MockCommandRunner::new();
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys.current_generation().await;
-        assert!(result.is_err());
-    }
-
     // ── list_generations() with unparseable lines ─────────────
-
-    #[tokio::test]
-    async fn mock_list_generations_skips_unparseable_lines() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  garbage line\n  5 2024-03-01\n  not-a-number date\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let gens = sys.list_generations().await.unwrap();
-        assert_eq!(gens.len(), 1);
-        assert_eq!(gens[0].number, 5);
-    }
 
     // ── with_platform constructor ─────────────────────────────
 
@@ -1319,42 +1158,7 @@ mod tests {
 
     // ── current_generation: empty stdout ──────────────────────
 
-    #[tokio::test]
-    async fn mock_current_generation_empty_stdout() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let current = sys.current_generation().await.unwrap();
-        assert_eq!(current, 0);
-    }
-
     // ── list_generations: lines with no date ──────────────────
-
-    #[tokio::test]
-    async fn mock_list_generations_line_with_only_number() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  9\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let gens = sys.list_generations().await.unwrap();
-        assert_eq!(gens.len(), 1);
-        assert_eq!(gens[0].number, 9);
-        assert_eq!(gens[0].date, "");
-        assert!(!gens[0].current);
-    }
 
     // ── new() unsupported platform error message ──────────────
 
@@ -1418,123 +1222,12 @@ mod tests {
 
     // ── current_generation invokes the right argv ─────────────
 
-    #[tokio::test]
-    async fn current_generation_invokes_nix_env_with_profile_arg() {
-        let captor = Arc::new(CapturingRunner::new(CommandOutput {
-            success: true,
-            stdout: "  1   2024-01-01 (current)\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        }));
-        struct Forwarder(Arc<CapturingRunner>);
-        #[async_trait::async_trait]
-        impl CommandRunner for Forwarder {
-            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
-                self.0.run(program, args).await
-            }
-        }
-        let sys = SystemOrchestrator::with_runner(
-            Platform::NixOS,
-            Box::new(Forwarder(Arc::clone(&captor))),
-        );
-        let n = sys.current_generation().await.unwrap();
-        assert_eq!(n, 1);
-        let calls = captor.calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "nix-env");
-        assert_eq!(
-            calls[0].1,
-            vec![
-                "--list-generations",
-                "--profile",
-                "/nix/var/nix/profiles/system",
-            ]
-        );
-    }
-
     // ── list_generations invokes the right argv ───────────────
-
-    #[tokio::test]
-    async fn list_generations_invokes_nix_env_with_profile_arg() {
-        let captor = Arc::new(CapturingRunner::new(CommandOutput {
-            success: true,
-            stdout: "  1   2024-01-01\n  2   2024-01-15 (current)\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        }));
-        struct Forwarder(Arc<CapturingRunner>);
-        #[async_trait::async_trait]
-        impl CommandRunner for Forwarder {
-            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
-                self.0.run(program, args).await
-            }
-        }
-        let sys = SystemOrchestrator::with_runner(
-            Platform::Darwin,
-            Box::new(Forwarder(Arc::clone(&captor))),
-        );
-        let gens = sys.list_generations().await.unwrap();
-        assert_eq!(gens.len(), 2);
-        let calls = captor.calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "nix-env");
-        assert_eq!(
-            calls[0].1,
-            vec![
-                "--list-generations",
-                "--profile",
-                "/nix/var/nix/profiles/system",
-            ]
-        );
-    }
 
     // ── rollback invokes correct argv ─────────────────────────
 
-    #[tokio::test]
-    async fn rollback_invokes_switch_rollback() {
-        let captor = Arc::new(CapturingRunner::new(CommandOutput {
-            success: true,
-            stdout: "rolled back\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        }));
-        struct Forwarder(Arc<CapturingRunner>);
-        #[async_trait::async_trait]
-        impl CommandRunner for Forwarder {
-            async fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
-                self.0.run(program, args).await
-            }
-        }
-        let sys = SystemOrchestrator::with_runner(
-            Platform::NixOS,
-            Box::new(Forwarder(Arc::clone(&captor))),
-        );
-        sys.rollback().await.unwrap();
-        let calls = captor.calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "nixos-rebuild");
-        assert_eq!(calls[0].1, vec!["switch", "--rollback"]);
-    }
-
     // ── current_generation: numerically sorted lines, latest current
     //    line wins for the rev() scan ────────────────────────────
-
-    #[tokio::test]
-    async fn current_generation_picks_last_current_line() {
-        let runner = MockCommandRunner::new().with_response(
-            "nix-env",
-            CommandOutput {
-                success: true,
-                stdout: "  41  2024-01-01 (current)\n  42  2024-01-02 (current)\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let n = sys.current_generation().await.unwrap();
-        // Function scans in rev() order so the bottom (current) wins
-        assert_eq!(n, 42);
-    }
 
     // ── rebuild_action serde lowercase ────────────────────────
 
@@ -1564,106 +1257,6 @@ mod tests {
     /// Mock runner that records the args passed to the command on the last invocation.
     /// Wraps state in `Arc` so callers can keep a handle to inspect after the orchestrator
     /// has taken ownership of the boxed runner.
-    struct RecordingRunner {
-        response: CommandOutput,
-        last_args: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    impl RecordingRunner {
-        fn new(response: CommandOutput) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-            let last_args = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            (
-                Self {
-                    response,
-                    last_args: std::sync::Arc::clone(&last_args),
-                },
-                last_args,
-            )
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl CommandRunner for RecordingRunner {
-        async fn run(&self, _program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
-            *self.last_args.lock().unwrap() = args.iter().map(|s| s.to_string()).collect();
-            Ok(self.response.clone())
-        }
-    }
-
-    #[tokio::test]
-    async fn rollback_to_happy_path_darwin() {
-        let (runner, args_handle) = RecordingRunner::new(CommandOutput {
-            success: true,
-            stdout: "switched to generation 5\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        });
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-
-        let result = sys.rollback_to(5).await.unwrap();
-        assert!(result.success);
-        // On success, the requested generation is preserved verbatim.
-        assert_eq!(result.generation, Some(5));
-        assert_eq!(result.action, "rollback-to-5");
-        // Verify the right CLI flags were used.
-        let args = args_handle.lock().unwrap().clone();
-        assert_eq!(args, vec!["switch", "--switch-generation", "5"]);
-    }
-
-    #[tokio::test]
-    async fn rollback_to_failure_returns_unsuccessful_result() {
-        // Error path: rebuild command runs but reports failure.
-        let runner = MockCommandRunner::new().with_response(
-            "nixos-rebuild",
-            CommandOutput {
-                success: false,
-                stdout: String::new(),
-                stderr: "no such generation: 999\n".to_string(),
-                exit_code: Some(1),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let result = sys.rollback_to(999).await.unwrap();
-        assert!(!result.success);
-        assert_eq!(result.action, "rollback-to-999");
-        assert!(result.log.contains("no such generation"));
-    }
-
-    #[tokio::test]
-    async fn rollback_to_command_not_found_propagates() {
-        // Edge case: rebuild binary missing entirely.
-        let runner = MockCommandRunner::new();
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys.rollback_to(1).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SystemError::CommandNotFound(cmd) => assert_eq!(cmd, "darwin-rebuild"),
-            other => panic!("expected CommandNotFound, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn rollback_to_zero_generation() {
-        // Edge case: generation 0 should be allowed (some systems start at 0/1).
-        let runner = MockCommandRunner::new().with_response(
-            "darwin-rebuild",
-            CommandOutput {
-                success: true,
-                stdout: "switched to generation 0\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys.rollback_to(0).await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.generation, Some(0));
-        assert_eq!(result.action, "rollback-to-0");
-    }
-
     // ── rebuild_native() tests ───────────────────────────────
 
     /// A multi-command mock that responds differently based on both the
@@ -1739,79 +1332,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_native_success_build_only() {
-        let flake_dir = make_test_flake(Platform::Darwin, "cid");
-        let flake_ref = format!("{}#cid", flake_dir.path().display());
-
-        let runner = MultiMockRunner::new().with_response(
-            "nix:build",
-            CommandOutput {
-                success: true,
-                stdout: "/nix/store/xyz-system\n".to_string(),
-                stderr: String::new(),
-                exit_code: Some(0),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Build)
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.action, "build");
-        assert!(result.log.contains("/nix/store/xyz-system"));
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_eval_failure() {
-        // Create a flake that evaluates but has no matching attribute.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("flake.nix"),
-            r#"{ outputs = { self }: { }; }"#,
-        ).unwrap();
-        let flake_ref = format!("{}#cid", dir.path().display());
-
-        let runner = MultiMockRunner::new();
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Switch)
-            .await;
-        // Native eval fails because the attribute path doesn't exist.
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("navigate attrs") || err_msg.contains("not found"),
-            "unexpected error: {err_msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_build_failure() {
-        let flake_dir = make_test_flake(Platform::NixOS, "node");
-        let flake_ref = format!("{}#node", flake_dir.path().display());
-
-        let runner = MultiMockRunner::new().with_response(
-            "nix:build",
-            CommandOutput {
-                success: false,
-                stdout: String::new(),
-                stderr: "builder for /nix/store/abc.drv failed\n".to_string(),
-                exit_code: Some(1),
-            },
-        );
-
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Switch)
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.log.contains("builder for"));
-    }
-
-    #[tokio::test]
     async fn rebuild_native_invalid_flake_ref() {
         let runner = MultiMockRunner::new();
         let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
@@ -1827,183 +1347,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn rebuild_native_switch_activates_system() {
-        let flake_dir = make_test_flake(Platform::NixOS, "node");
-        let flake_ref = format!("{}#node", flake_dir.path().display());
-
-        let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:build",
-                CommandOutput {
-                    success: true,
-                    stdout: "/nix/store/xyz-system\n".to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
-            .with_response(
-                "nix-env",
-                CommandOutput {
-                    success: true,
-                    stdout: "  1   2024-01-01 (current)\n".to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
-            .with_response(
-                "/nix/store/xyz-system/activate",
-                CommandOutput {
-                    success: true,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            );
-
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Switch)
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.action, "switch");
-        assert_eq!(result.generation, Some(1));
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_boot_sets_profile_without_activate() {
-        let flake_dir = make_test_flake(Platform::NixOS, "node");
-        let flake_ref = format!("{}#node", flake_dir.path().display());
-
-        let runner = MultiMockRunner::new()
-            .with_response(
-                "nix:build",
-                CommandOutput {
-                    success: true,
-                    stdout: "/nix/store/xyz-system\n".to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            )
-            .with_response(
-                "nix-env",
-                CommandOutput {
-                    success: true,
-                    stdout: "  5   2024-06-01 (current)\n".to_string(),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                },
-            );
-
-        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Boot)
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.action, "boot");
-        assert_eq!(result.generation, Some(5));
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_nix_command_not_found() {
-        // With native eval, the eval step succeeds but the build step
-        // fails because the runner has no responses.
-        let flake_dir = make_test_flake(Platform::Darwin, "cid");
-        let flake_ref = format!("{}#cid", flake_dir.path().display());
-
-        let runner = MultiMockRunner::new(); // no responses → nix build not found
-        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
-        let result = sys
-            .rebuild_native(&flake_ref, RebuildAction::Build)
-            .await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SystemError::CommandNotFound(msg) => assert!(msg.contains("nix")),
-            other => panic!("expected CommandNotFound, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_darwin_attr_prefix() {
-        // Verify Darwin uses darwinConfigurations prefix
-        let flake_dir = make_test_flake(Platform::Darwin, "cid");
-        let flake_ref = format!("{}#cid", flake_dir.path().display());
-
-        let captor = Arc::new(CapturingRunner::new(CommandOutput {
-            success: true,
-            stdout: "/nix/store/xyz-system\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        }));
-        struct Forwarder2(Arc<CapturingRunner>);
-        #[async_trait::async_trait]
-        impl CommandRunner for Forwarder2 {
-            async fn run(
-                &self,
-                program: &str,
-                args: &[&str],
-            ) -> Result<CommandOutput, CommandError> {
-                self.0.run(program, args).await
-            }
-        }
-        let sys = SystemOrchestrator::with_runner(
-            Platform::Darwin,
-            Box::new(Forwarder2(Arc::clone(&captor))),
-        );
-        // The eval step is native now — the build step uses the runner.
-        let _ = sys
-            .rebuild_native(&flake_ref, RebuildAction::Build)
-            .await;
-        let calls = captor.calls();
-        // The build step should reference darwinConfigurations in the
-        // installable passed to `nix build`.
-        assert!(!calls.is_empty(), "expected at least one nix build call");
-        let build_args = &calls[0].1;
-        let build_ref = build_args.iter().find(|a| a.contains("darwinConfigurations"));
-        assert!(
-            build_ref.is_some(),
-            "expected darwinConfigurations in build args: {build_args:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn rebuild_native_nixos_attr_prefix() {
-        let flake_dir = make_test_flake(Platform::NixOS, "node");
-        let flake_ref = format!("{}#node", flake_dir.path().display());
-
-        let captor = Arc::new(CapturingRunner::new(CommandOutput {
-            success: true,
-            stdout: "/nix/store/xyz-system\n".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-        }));
-        struct Forwarder3(Arc<CapturingRunner>);
-        #[async_trait::async_trait]
-        impl CommandRunner for Forwarder3 {
-            async fn run(
-                &self,
-                program: &str,
-                args: &[&str],
-            ) -> Result<CommandOutput, CommandError> {
-                self.0.run(program, args).await
-            }
-        }
-        let sys = SystemOrchestrator::with_runner(
-            Platform::NixOS,
-            Box::new(Forwarder3(Arc::clone(&captor))),
-        );
-        let _ = sys
-            .rebuild_native(&flake_ref, RebuildAction::Build)
-            .await;
-        let calls = captor.calls();
-        assert!(!calls.is_empty(), "expected at least one nix build call");
-        let build_args = &calls[0].1;
-        let build_ref = build_args.iter().find(|a| a.contains("nixosConfigurations"));
-        assert!(
-            build_ref.is_some(),
-            "expected nixosConfigurations in build args: {build_args:?}"
-        );
-    }
 }

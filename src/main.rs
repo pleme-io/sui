@@ -213,84 +213,99 @@ async fn main() -> Result<(), CliError> {
         }
 
         Commands::Build { installable } => {
-            // Native evaluation: parse the installable, evaluate the flake,
-            // navigate to the derivation, then build using nix build with
-            // the resolved .drv path.
-            match sui_compat::flake_ref::FlakeRef::parse(&installable) {
-                Ok(flake_ref) => {
-                    // Evaluate the flake natively.
-                    let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)?;
+            use sui_build::{BuildClosure, LocalBuilder};
+            use sui_store::{BinaryCacheStore, Substitutor};
 
-                    // Navigate to the requested attribute.
-                    let attr_segments: Vec<&str> = flake_ref.attribute.split('.').collect();
-                    let target = sui_eval::builtins::navigate_attrs(
-                        &flake_result,
-                        &attr_segments,
-                    )?;
+            // Open the store and set up the build infrastructure.
+            let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
+                .await
+                .map_err(|e| CliError::Orchestrate {
+                    operation: "build",
+                    message: format!("store open: {e}"),
+                })?;
+            let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+            let caches: Vec<std::sync::Arc<BinaryCacheStore>> = vec![std::sync::Arc::new(
+                BinaryCacheStore::new("https://cache.nixos.org", vec![]),
+            )];
+            let substitutor = Substitutor::new(store.clone(), caches);
 
-                    // Extract drvPath if it's a derivation.
-                    let drv_path = match &target {
-                        sui_eval::Value::Attrs(attrs) => {
-                            attrs.get("drvPath")
-                                .and_then(|v| v.as_string().ok())
-                                .map(|s| s.to_string())
-                        }
-                        _ => None,
-                    };
+            #[cfg(target_os = "macos")]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::DarwinSandbox::new());
+            #[cfg(not(target_os = "macos"))]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::LinuxSandbox::new());
 
-                    if let Some(drv_path) = drv_path {
-                        // Build using the resolved drv path.  The native
-                        // single-derivation builder doesn't handle recursive
-                        // closure builds yet, so we delegate the actual build
-                        // to nix build with the concrete .drv path.
-                        let output = tokio::process::Command::new("nix")
-                            .args(["build", "--print-out-paths", &drv_path])
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .output()
-                            .await?;
+            let builder = LocalBuilder::new(store, sandbox);
 
-                        if output.status.success() {
-                            let paths = String::from_utf8_lossy(&output.stdout);
-                            for path in paths.lines() {
-                                println!("{path}");
-                            }
-                        } else {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            eprintln!("{stderr}");
-                            return Err(CliError::Orchestrate {
-                                operation: "build",
-                                message: "nix build failed".into(),
-                            });
-                        }
-                    } else {
-                        // Not a derivation — just display the value.
-                        println!("{target}");
+            if installable.ends_with(".drv") {
+                // Direct .drv path — build it.
+                let closure = BuildClosure::compute(&installable).map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "build",
+                        message: format!("closure: {e}"),
                     }
+                })?;
+                let result = builder
+                    .build_closure(&closure, Some(&substitutor))
+                    .await
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "build",
+                        message: e.to_string(),
+                    })?;
+                for output in &result.outputs {
+                    println!("{}", output.to_absolute_path());
                 }
-                Err(_) => {
-                    // Not a parseable flake ref — pass through to nix build
-                    // as a raw installable (e.g., nixpkgs#hello).
-                    let output = tokio::process::Command::new("nix")
-                        .args(["build", "--print-out-paths", &installable])
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .output()
-                        .await?;
-
-                    if output.status.success() {
-                        let paths = String::from_utf8_lossy(&output.stdout);
-                        for path in paths.lines() {
-                            println!("{path}");
-                        }
-                    } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        eprintln!("{stderr}");
-                        return Err(CliError::Orchestrate {
+            } else {
+                // Parse as a flake reference, evaluate, extract drvPath, build.
+                let flake_ref =
+                    sui_compat::flake_ref::FlakeRef::parse(&installable).map_err(|e| {
+                        CliError::Orchestrate {
                             operation: "build",
-                            message: "nix build failed".into(),
-                        });
+                            message: format!("flake ref parse: {e}"),
+                        }
+                    })?;
+                let flake_result = sui_eval::builtins::evaluate_flake(
+                    &flake_ref.flake_dir,
+                )
+                .map_err(|e| CliError::Orchestrate {
+                    operation: "build",
+                    message: format!("eval: {e}"),
+                })?;
+                let attr_segments: Vec<&str> = flake_ref.attribute.split('.').collect();
+                let target = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "build",
+                        message: format!("navigate: {e}"),
+                    })?;
+                // Extract drvPath from the derivation attrset.
+                let drv_path = match &target {
+                    sui_eval::Value::Attrs(attrs) => {
+                        attrs.get("drvPath")
+                            .and_then(|v| v.as_string().ok())
+                            .map(|s| s.to_string())
                     }
+                    _ => None,
+                };
+                if let Some(drv_path) = drv_path {
+                    let closure =
+                        BuildClosure::compute(&drv_path).map_err(|e| CliError::Orchestrate {
+                            operation: "build",
+                            message: format!("closure: {e}"),
+                        })?;
+                    let result = builder
+                        .build_closure(&closure, Some(&substitutor))
+                        .await
+                        .map_err(|e| CliError::Orchestrate {
+                            operation: "build",
+                            message: e.to_string(),
+                        })?;
+                    for output in &result.outputs {
+                        println!("{}", output.to_absolute_path());
+                    }
+                } else {
+                    // Not a derivation — just display the evaluated value.
+                    println!("{target}");
                 }
             }
         }
@@ -303,56 +318,57 @@ async fn main() -> Result<(), CliError> {
                 );
             }
             FlakeCommands::Update { input } => {
-                let mut args = vec!["flake"];
-                if let Some(ref inp) = input {
-                    args.extend(["lock", "--update-input", inp]);
+                let flake_dir = std::env::current_dir()?;
+                if let Some(ref name) = input {
+                    sui_eval::flake_lock::update_input(&flake_dir, name).map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "flake update",
+                            message: e.to_string(),
+                        }
+                    })?;
+                    println!("updated input: {name}");
                 } else {
-                    args.push("update");
-                }
-                let output = tokio::process::Command::new("nix")
-                    .args(&args)
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .await?;
-                if !output.success() {
-                    return Err(CliError::Orchestrate {
-                        operation: "flake update",
-                        message: "nix flake update failed".into(),
-                    });
+                    let updated =
+                        sui_eval::flake_lock::update_all_inputs(&flake_dir).map_err(|e| {
+                            CliError::Orchestrate {
+                                operation: "flake update",
+                                message: e.to_string(),
+                            }
+                        })?;
+                    println!(
+                        "updated {} inputs: {}",
+                        updated.len(),
+                        updated.join(", ")
+                    );
                 }
             }
-            FlakeCommands::Check { no_build } => {
-                let mut args = vec!["flake", "check"];
-                if no_build {
-                    args.push("--no-build");
-                }
-                let output = tokio::process::Command::new("nix")
-                    .args(&args)
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .await?;
-                if !output.success() {
-                    return Err(CliError::Orchestrate {
-                        operation: "flake check",
-                        message: "nix flake check failed".into(),
-                    });
+            FlakeCommands::Check { no_build: _ } => {
+                let flake_dir = std::env::current_dir()?;
+                let result =
+                    sui_eval::flake_lock::check_flake(&flake_dir).map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "flake check",
+                            message: e.to_string(),
+                        }
+                    })?;
+                if result.valid {
+                    println!("flake check passed");
+                } else {
+                    for err in &result.errors {
+                        eprintln!("error: {err}");
+                    }
+                    std::process::exit(1);
                 }
             }
             FlakeCommands::Lock => {
-                let output = tokio::process::Command::new("nix")
-                    .args(["flake", "lock"])
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .await?;
-                if !output.success() {
-                    return Err(CliError::Orchestrate {
+                let flake_dir = std::env::current_dir()?;
+                sui_eval::flake_lock::update_all_inputs(&flake_dir).map_err(|e| {
+                    CliError::Orchestrate {
                         operation: "flake lock",
-                        message: "nix flake lock failed".into(),
-                    });
-                }
+                        message: e.to_string(),
+                    }
+                })?;
+                println!("flake.lock written");
             }
             FlakeCommands::Metadata { flake_ref } => {
                 println!(
@@ -383,29 +399,13 @@ async fn main() -> Result<(), CliError> {
             match command {
                 SystemCommands::Rebuild { flake } => {
                     let action = sui_orchestrate::RebuildAction::Switch;
-                    let result = if let Some(ref flake_ref) = flake {
-                        // Try native rebuild first — this uses sui's own
-                        // eval+build pipeline with nix delegation for the MVP.
-                        match sys.rebuild_native(flake_ref, action).await {
-                            Ok(r) => r,
-                            Err(e) => {
-                                tracing::warn!("native rebuild failed ({e}), falling back to delegated rebuild");
-                                sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
-                                    CliError::Orchestrate {
-                                        operation: "rebuild",
-                                        message: e.to_string(),
-                                    }
-                                })?
-                            }
+                    let flake_ref = flake.unwrap_or_else(|| ".".to_string());
+                    let result = sys.rebuild_native(&flake_ref, action).await.map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "rebuild",
+                            message: e.to_string(),
                         }
-                    } else {
-                        sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
-                            CliError::Orchestrate {
-                                operation: "rebuild",
-                                message: e.to_string(),
-                            }
-                        })?
-                    };
+                    })?;
                     println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
                     if let Some(generation) = result.generation {
                         println!("generation: {generation}");
