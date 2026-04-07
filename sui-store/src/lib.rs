@@ -3,6 +3,19 @@
 //! Provides the [`Store`] trait that all store backends implement (local filesystem,
 //! binary cache over HTTP). Includes SeaORM entity models that map 1:1 to the Nix
 //! SQLite schema.
+//!
+//! # Architecture
+//!
+//! - [`Store`] — async trait defining the store contract (query, add, GC)
+//! - [`LocalStore`] — reads `/nix/store` + SQLite via SeaORM
+//! - [`BinaryCacheStore`] — read-only HTTP client for cache.nixos.org / Cachix / Attic
+//! - [`HttpClient`] — pluggable HTTP backend for testability
+//!
+//! # Error handling
+//!
+//! All store operations return [`StoreResult<T>`], which wraps [`StoreError`].
+//! Binary cache operations produce [`BinaryCacheError`] internally, which converts
+//! into [`StoreError`] via `From` impls.
 
 pub mod binary_cache;
 pub mod entity;
