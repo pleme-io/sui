@@ -642,11 +642,7 @@ pub fn register(env: &mut Env) {
 
     // readFile — read file contents to string
     register_builtin(&mut builtins_set, "readFile", |args| {
-        let path = match &args[0] {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("readFile: expected path or string".to_string())),
-        };
+        let path = args[0].coerce_to_path("readFile")?;
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::TypeError(format!("readFile: {e}")))?;
         Ok(Value::string(contents))
@@ -972,11 +968,7 @@ pub fn register(env: &mut Env) {
     // ── Tier 2: readDir, toPath, storePath, placeholder ────
 
     register_builtin(&mut builtins_set, "readDir", |args| {
-        let path_str = match &args[0] {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("readDir: expected path".into())),
-        };
+        let path_str = args[0].coerce_to_path("readDir")?;
         let mut attrs = NixAttrs::new();
         for entry in std::fs::read_dir(&path_str)
             .map_err(|e| EvalError::TypeError(format!("readDir: {e}")))?
@@ -1023,11 +1015,7 @@ pub fn register(env: &mut Env) {
     // ── import ─────────────────────────────────────────────
 
     register_builtin(&mut builtins_set, "import", |args| {
-        let raw_path = match &args[0] {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("import: expected path".into())),
-        };
+        let raw_path = args[0].coerce_to_path("import")?;
         // Resolve relative paths against the *currently evaluating
         // file's directory*, not the process cwd. This is what
         // makes `import ./foo.nix` work correctly inside nested
@@ -1209,11 +1197,7 @@ pub fn register(env: &mut Env) {
             .get("path")
             .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
         let path_forced = crate::eval::force_value(path_val)?;
-        let path_str = match &path_forced {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("path: expected path".into())),
-        };
+        let path_str = path_forced.coerce_to_path("path")?;
         let name = attrs
             .get("name")
             .map(|v| v.to_str())
@@ -1359,11 +1343,7 @@ pub fn register(env: &mut Env) {
     // builtins.pathExists path → bool
 
     register_builtin(&mut builtins_set, "pathExists", |args| {
-        let path_str = match &args[0] {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("pathExists: expected path or string".into())),
-        };
+        let path_str = args[0].coerce_to_path("pathExists")?;
         Ok(Value::Bool(std::path::Path::new(&path_str).exists()))
     });
 
@@ -1387,11 +1367,7 @@ pub fn register(env: &mut Env) {
 
     register_curried(&mut builtins_set, "hashFile", |algo, path_val| {
         let algo_str = algo.as_string()?;
-        let path_str = match path_val {
-            Value::Path(p) => p.clone(),
-            Value::String(ns) => ns.chars.clone(),
-            _ => return Err(EvalError::TypeError("hashFile: expected path or string".into())),
-        };
+        let path_str = path_val.coerce_to_path("hashFile")?;
         let contents = std::fs::read(&path_str)
             .map_err(|e| EvalError::TypeError(format!("hashFile: {e}")))?;
         let hex = match algo_str {

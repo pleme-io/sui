@@ -681,6 +681,22 @@ impl Value {
         }
     }
 
+    /// Extract a filesystem path from a `Path` or `String` value.
+    ///
+    /// Many builtins (`readFile`, `import`, `pathExists`, etc.) accept
+    /// either `Path` or `String` arguments. This method centralises
+    /// that coercion so every call-site doesn't repeat the same match.
+    pub fn coerce_to_path(&self, context: &str) -> Result<String, EvalError> {
+        match self {
+            Value::Path(p) => Ok(p.clone()),
+            Value::String(ns) => Ok(ns.chars.clone()),
+            _ => Err(EvalError::TypeError(format!(
+                "{context}: expected path or string, got {}",
+                self.type_name()
+            ))),
+        }
+    }
+
     /// Coerce a numeric value to float.
     pub fn as_float(&self) -> Result<f64, EvalError> {
         match self {
