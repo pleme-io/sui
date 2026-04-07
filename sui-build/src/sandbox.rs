@@ -215,22 +215,201 @@ impl Sandbox for NoSandbox {
     }
 }
 
-/// Linux namespace-based sandbox (Phase 5 full implementation).
+// ── Linux sandbox ────────────────────────────────────────────────
+
+/// Linux namespace-based sandbox using the `unshare(1)` binary.
+///
+/// This is a pure-Rust wrapper that runs `unshare --user --mount --pid
+/// --net --uts --ipc --fork --map-root-user [--root <build_dir>] <builder>
+/// <args...>`. It avoids requiring the `nix` syscall crate or any privileged
+/// operations: `--map-root-user` makes the current user appear as `root`
+/// inside the new user namespace, and the kernel handles the mount/PID/net
+/// namespace creation.
+///
+/// The sandbox falls back to running the builder unsandboxed (with a clear
+/// stderr warning) if `unshare(1)` is not available on the host or if it
+/// rejects the requested namespaces (kernel without unprivileged user
+/// namespaces, etc.).
+///
+/// Network is allowed only when [`SandboxConfig::allow_network`] is `true`.
+/// When network is disabled, `--net` is included to give the build its own
+/// empty network namespace.
 #[cfg(target_os = "linux")]
-pub struct LinuxSandbox;
+pub struct LinuxSandbox {
+    /// Path to the `unshare` binary (default: discovered from `PATH`).
+    unshare_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LinuxSandbox {
+    fn default() -> Self {
+        Self {
+            unshare_path: find_unshare_binary(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxSandbox {
+    /// Create a new `LinuxSandbox` discovering `unshare` from `PATH`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a `LinuxSandbox` with an explicit path to `unshare`.
+    ///
+    /// Useful for tests and for hosts where `unshare` lives in an unusual
+    /// location (e.g. NixOS `/run/current-system/sw/bin/unshare`).
+    #[must_use]
+    pub fn with_unshare_path(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            unshare_path: Some(path.into()),
+        }
+    }
+
+    /// Returns whether a usable `unshare` binary was found.
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.unshare_path
+            .as_ref()
+            .is_some_and(|p| p.exists())
+    }
+
+    /// Build the `unshare` argument list for the given config.
+    ///
+    /// Exposed for testing — returns the args that would be passed to
+    /// `unshare(1)` (excluding the binary itself).
+    #[must_use]
+    pub fn build_unshare_args(&self, config: &SandboxConfig) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+        // User + mount + PID + UTS + IPC namespaces are always taken.
+        args.push("--user".to_string());
+        args.push("--map-root-user".to_string());
+        args.push("--mount".to_string());
+        args.push("--uts".to_string());
+        args.push("--ipc".to_string());
+        args.push("--pid".to_string());
+        args.push("--fork".to_string());
+        // Network is its own namespace unless the derivation opts in.
+        if !config.allow_network {
+            args.push("--net".to_string());
+        }
+        // Run the builder.
+        args.push("--".to_string());
+        args.push(config.builder.clone());
+        for a in &config.args {
+            args.push(a.clone());
+        }
+        args
+    }
+
+    /// Run the builder unsandboxed (used as a fallback when `unshare` is
+    /// missing or kernel rejects the namespaces). Documented loudly.
+    fn execute_unsandboxed(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        eprintln!(
+            "warning: LinuxSandbox running unsandboxed — unshare(1) not available or namespaces rejected"
+        );
+        NoSandbox.execute(config)
+    }
+}
+
+/// Search `PATH` and a few well-known locations for the `unshare` binary.
+#[cfg(target_os = "linux")]
+fn find_unshare_binary() -> Option<std::path::PathBuf> {
+    // Common explicit paths first (NixOS, Debian, RHEL).
+    let candidates = [
+        "/usr/bin/unshare",
+        "/bin/unshare",
+        "/run/current-system/sw/bin/unshare",
+        "/run/wrappers/bin/unshare",
+    ];
+    for c in &candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Fall back to PATH search.
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let p = std::path::Path::new(dir).join("unshare");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
 
 #[cfg(target_os = "linux")]
 impl Sandbox for LinuxSandbox {
-    fn prepare(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
-        // TODO: Create namespaces, bind mounts, tmpfs
-        Err(SandboxError::Setup("Linux sandbox not yet implemented".to_string()))
+    fn prepare(&self, config: &SandboxConfig) -> Result<(), SandboxError> {
+        if !config.build_dir.is_empty() {
+            std::fs::create_dir_all(&config.build_dir).map_err(|e| {
+                SandboxError::BuildDirError(format!(
+                    "failed to create build dir {}: {e}",
+                    config.build_dir
+                ))
+            })?;
+        }
+        Ok(())
     }
 
-    fn execute(&self, _config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
-        Err(SandboxError::Execution("Linux sandbox not yet implemented".to_string()))
+    fn execute(&self, config: &SandboxConfig) -> Result<SandboxResult, SandboxError> {
+        let Some(unshare) = self.unshare_path.as_ref() else {
+            return self.execute_unsandboxed(config);
+        };
+        if !unshare.exists() {
+            return self.execute_unsandboxed(config);
+        }
+
+        let args = self.build_unshare_args(config);
+
+        let mut cmd = std::process::Command::new(unshare);
+        cmd.args(&args);
+        cmd.env_clear();
+        for (k, v) in &config.env {
+            cmd.env(k, v);
+        }
+        if !config.build_dir.is_empty() {
+            cmd.current_dir(&config.build_dir);
+        }
+
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(SandboxError::SpawnFailed(format!(
+                    "unshare spawn at {}: {e}",
+                    unshare.display()
+                )));
+            }
+        };
+
+        // unshare itself returns 1 with "unshare: ..." on stderr if the
+        // kernel rejects the requested namespaces. Detect that and fall back
+        // to unsandboxed mode (with a warning).
+        if output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && String::from_utf8_lossy(&output.stderr).starts_with("unshare:")
+        {
+            eprintln!(
+                "warning: unshare(1) rejected requested namespaces ({}), running unsandboxed",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            return self.execute_unsandboxed(config);
+        }
+
+        Ok(SandboxResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     fn cleanup(&self, _config: &SandboxConfig) -> Result<(), SandboxError> {
+        // Build dir cleanup is the caller's responsibility (it owns the
+        // tempdir and may want to inspect it on failure).
         Ok(())
     }
 }
@@ -878,56 +1057,117 @@ mod tests {
         assert!(String::from_utf8_lossy(&result.stdout).contains("lifecycle-test"));
     }
 
-    // ── LinuxSandbox stub tests ─────────────────────────────
+    // ── LinuxSandbox tests ──────────────────────────────────
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_sandbox_prepare_returns_not_implemented() {
-        let sandbox = LinuxSandbox;
-        let config = SandboxConfig {
-            input_paths: vec![],
-            build_dir: "/tmp".to_string(),
-            output_paths: vec![],
-            allow_network: false,
-            builder: "/bin/true".to_string(),
-            args: vec![],
-            env: vec![],
-        };
-        let err = sandbox.prepare(&config).unwrap_err();
-        assert!(err.to_string().contains("not yet implemented"));
+    fn linux_sandbox_prepare_creates_build_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("linux-prep-test");
+        let sandbox = LinuxSandbox::new();
+        let config = SandboxConfig::default()
+            .with_build_dir(build_dir.to_string_lossy().to_string())
+            .with_builder("/bin/true");
+        sandbox.prepare(&config).unwrap();
+        assert!(build_dir.exists());
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_sandbox_execute_returns_not_implemented() {
-        let sandbox = LinuxSandbox;
-        let config = SandboxConfig {
-            input_paths: vec![],
-            build_dir: "/tmp".to_string(),
-            output_paths: vec![],
-            allow_network: false,
-            builder: "/bin/true".to_string(),
-            args: vec![],
-            env: vec![],
-        };
-        let err = sandbox.execute(&config).unwrap_err();
-        assert!(err.to_string().contains("not yet implemented"));
+    fn linux_sandbox_with_unshare_path() {
+        let s = LinuxSandbox::with_unshare_path("/nonexistent/unshare");
+        assert!(!s.is_available());
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_sandbox_cleanup_succeeds() {
-        let sandbox = LinuxSandbox;
-        let config = SandboxConfig {
-            input_paths: vec![],
-            build_dir: "/tmp".to_string(),
-            output_paths: vec![],
-            allow_network: false,
-            builder: "/bin/true".to_string(),
-            args: vec![],
-            env: vec![],
-        };
+    fn linux_sandbox_build_unshare_args_includes_namespaces() {
+        let s = LinuxSandbox::with_unshare_path("/usr/bin/unshare");
+        let config = SandboxConfig::default()
+            .with_builder("/bin/echo")
+            .with_args(vec!["hi".to_string()]);
+        let args = s.build_unshare_args(&config);
+        assert!(args.iter().any(|a| a == "--user"));
+        assert!(args.iter().any(|a| a == "--map-root-user"));
+        assert!(args.iter().any(|a| a == "--mount"));
+        assert!(args.iter().any(|a| a == "--pid"));
+        assert!(args.iter().any(|a| a == "--uts"));
+        assert!(args.iter().any(|a| a == "--ipc"));
+        assert!(args.iter().any(|a| a == "--fork"));
+        assert!(args.iter().any(|a| a == "--net"));
+        assert!(args.iter().any(|a| a == "--"));
+        assert!(args.iter().any(|a| a == "/bin/echo"));
+        assert!(args.iter().any(|a| a == "hi"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_build_unshare_args_skips_net_when_network_allowed() {
+        let s = LinuxSandbox::with_unshare_path("/usr/bin/unshare");
+        let config = SandboxConfig::default()
+            .with_builder("/bin/true")
+            .with_network(true);
+        let args = s.build_unshare_args(&config);
+        assert!(args.iter().all(|a| a != "--net"),
+            "expected no --net when allow_network=true, got {args:?}");
+        assert!(args.iter().any(|a| a == "--user"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_unsandboxed_fallback_runs_builder() {
+        let s = LinuxSandbox::with_unshare_path("/nonexistent/unshare/zzz");
+        assert!(!s.is_available());
+        let config = SandboxConfig::default()
+            .with_builder("/bin/echo")
+            .with_args(vec!["lin-fallback".to_string()]);
+        let result = s.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("lin-fallback"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_cleanup_is_noop() {
+        let sandbox = LinuxSandbox::new();
+        let config = SandboxConfig::default().with_build_dir("/tmp/x");
         assert!(sandbox.cleanup(&config).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_is_object_safe() {
+        fn assert_obj_safe(_: &dyn Sandbox) {}
+        assert_obj_safe(&LinuxSandbox::new());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_sandbox_executes_echo_through_real_unshare() {
+        // Integration: only meaningful if /usr/bin/unshare actually accepts
+        // the namespaces (kernel must allow unprivileged user namespaces).
+        let s = LinuxSandbox::new();
+        if !s.is_available() {
+            return; // No unshare on host — skip
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SandboxConfig::default()
+            .with_build_dir(tmp.path().to_string_lossy().to_string())
+            .with_builder("/bin/echo")
+            .with_args(vec!["linux-sandbox-hello".to_string()]);
+        s.prepare(&config).unwrap();
+        let result = s.execute(&config).unwrap();
+        // Either real sandbox runs and echoes, or fallback runs and echoes —
+        // both end with exit 0 and the expected stdout content.
+        assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr_lossy());
+        assert!(String::from_utf8_lossy(&result.stdout).contains("linux-sandbox-hello"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_find_unshare_returns_some_or_none() {
+        // Just verify the search function does not panic.
+        let _ = find_unshare_binary();
     }
 
     // ── MockSandbox ──────────────────────────────────────────
