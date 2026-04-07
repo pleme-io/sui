@@ -66,7 +66,9 @@ pub fn scan_references(data: &[u8], known_hashes: &[&str]) -> Vec<String> {
         return Vec::new();
     }
 
-    let ac = AhoCorasick::new(&valid).expect("valid patterns");
+    let Ok(ac) = AhoCorasick::new(&valid) else {
+        return Vec::new();
+    };
     let mut found = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
