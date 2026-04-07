@@ -321,4 +321,76 @@ mod tests {
         fn _assert(_: &dyn SignatureVerifier) {}
         _assert(&AlwaysValidVerifier);
     }
+
+    // ── StorePathSignature error cases ───────────────────
+
+    #[test]
+    fn parse_empty_string() {
+        assert!(StorePathSignature::parse("").is_err());
+    }
+
+    #[test]
+    fn parse_only_colon() {
+        let sig = StorePathSignature::parse(":");
+        // ":" has empty key_name and empty base64 → decode yields empty vec
+        assert!(sig.is_ok());
+        let s = sig.unwrap();
+        assert_eq!(s.key_name, "");
+        assert!(s.signature.is_empty());
+    }
+
+    #[test]
+    fn parse_invalid_base64_after_colon() {
+        let result = StorePathSignature::parse("key:!!!not-base64!!!");
+        assert!(result.is_err());
+    }
+
+    // ── compute_fingerprint edge cases ──────────────────
+
+    #[test]
+    fn fingerprint_with_single_reference() {
+        let fp = compute_fingerprint("/nix/store/abc", "sha256:xxx", 500, &["dep".to_string()]);
+        assert_eq!(fp, "1;/nix/store/abc;sha256:xxx;500;dep");
+    }
+
+    #[test]
+    fn fingerprint_with_zero_nar_size() {
+        let fp = compute_fingerprint("/nix/store/empty", "sha256:000", 0, &[]);
+        assert_eq!(fp, "1;/nix/store/empty;sha256:000;0;");
+    }
+
+    #[test]
+    fn fingerprint_with_large_nar_size() {
+        let fp = compute_fingerprint("/nix/store/big", "sha256:aaa", u64::MAX, &[]);
+        assert!(fp.contains(&u64::MAX.to_string()));
+    }
+
+    // ── Ed25519Verifier direct tests ────────────────────
+
+    #[test]
+    fn ed25519_verifier_invalid_key_length() {
+        let verifier = Ed25519Verifier;
+        let result = verifier.verify(b"data", &[0; 64], &[0; 16]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ed25519_verifier_invalid_signature_length() {
+        let verifier = Ed25519Verifier;
+        let result = verifier.verify(b"data", &[0; 32], &[0; 32]);
+        assert!(result.is_err());
+    }
+
+    // ── to_string_repr / parse roundtrip ────────────────
+
+    #[test]
+    fn to_string_repr_format() {
+        let sig = StorePathSignature {
+            key_name: "cache.nixos.org-1".to_string(),
+            signature: vec![1; 64],
+        };
+        let s = sig.to_string_repr();
+        assert!(s.starts_with("cache.nixos.org-1:"));
+        assert!(s.len() > "cache.nixos.org-1:".len());
+    }
 }
