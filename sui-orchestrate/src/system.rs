@@ -267,7 +267,7 @@ pub struct GenerationInfo {
 }
 
 /// Try to extract a generation number from rebuild output.
-fn extract_generation(log: &str) -> Option<i64> {
+pub(crate) fn extract_generation(log: &str) -> Option<i64> {
     for line in log.lines().rev() {
         // Look for patterns like "generation 42" or "switched to generation 42"
         if let Some(idx) = line.find("generation") {

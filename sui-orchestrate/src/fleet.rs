@@ -244,7 +244,7 @@ impl FleetOrchestrator {
 }
 
 /// Deploy to a single node via SSH + nixos-rebuild.
-async fn deploy_single_node(
+pub(crate) async fn deploy_single_node(
     node: &Node,
     flake_override: Option<&str>,
     runner: &dyn CommandRunner,
@@ -297,13 +297,13 @@ async fn deploy_single_node(
     }
 }
 
-fn is_local_hostname(hostname: &str) -> bool {
+pub(crate) fn is_local_hostname(hostname: &str) -> bool {
     hostname == "localhost"
         || hostname == "127.0.0.1"
         || gethostname().is_some_and(|h| h == hostname)
 }
 
-fn gethostname() -> Option<String> {
+pub(crate) fn gethostname() -> Option<String> {
     let mut buf = [0u8; 256];
     #[cfg(unix)]
     {
