@@ -21,10 +21,21 @@
       repo = "pleme-io/sui";
     }
     // {
+      # Three module flavors share the same `services.sui.*` namespace
+      # but bind to the right service manager for each platform.
+      #
+      # - homeManagerModules.default → user-level (launchd agent on
+      #   darwin, systemd user service on linux). Dev workstations.
+      # - nixosModules.default → NixOS system service (DynamicUser,
+      #   /var/lib/sui).
+      # - darwinModules.default → nix-darwin system launchd daemon
+      #   (root, /var/log/sui.log). Survives logout, multi-user.
       homeManagerModules.default = import ./module {
         hmHelpers = import "${substrate}/lib/hm-service-helpers.nix" {
           lib = nixpkgs.lib;
         };
       };
+      nixosModules.default = import ./module/nixos.nix;
+      darwinModules.default = import ./module/darwin.nix;
     };
 }
