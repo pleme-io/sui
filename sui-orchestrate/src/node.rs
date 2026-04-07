@@ -656,4 +656,328 @@ mod tests {
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.get("host").unwrap().flake_ref, ".#new");
     }
+
+    // ── try_add: detects duplicates ───────────────────────────
+
+    #[test]
+    fn try_add_succeeds_on_first_insert() {
+        let mut reg = NodeRegistry::new();
+        let result = reg.try_add(Node::new("alpha", ".#alpha"));
+        assert!(result.is_ok());
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn try_add_rejects_duplicate_hostname() {
+        let mut reg = NodeRegistry::new();
+        reg.try_add(Node::new("alpha", ".#alpha-v1")).unwrap();
+        let result = reg.try_add(Node::new("alpha", ".#alpha-v2"));
+        match result {
+            Err(NodeError::AlreadyRegistered { hostname }) => {
+                assert_eq!(hostname, "alpha");
+            }
+            other => panic!("expected AlreadyRegistered, got {other:?}"),
+        }
+        // First insert is preserved
+        assert_eq!(reg.get("alpha").unwrap().flake_ref, ".#alpha-v1");
+        assert_eq!(reg.len(), 1);
+    }
+
+    // ── get_or_err / get_mut_or_err / remove_or_err ───────────
+
+    #[test]
+    fn get_or_err_returns_node_when_present() {
+        let reg = sample_registry();
+        let node = reg.get_or_err("plo").unwrap();
+        assert_eq!(node.hostname, "plo");
+    }
+
+    #[test]
+    fn get_or_err_returns_not_found_when_absent() {
+        let reg = sample_registry();
+        let result = reg.get_or_err("ghost");
+        match result {
+            Err(NodeError::NotFound { hostname }) => {
+                assert_eq!(hostname, "ghost");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_mut_or_err_mutates_existing_node() {
+        let mut reg = sample_registry();
+        let node = reg.get_mut_or_err("plo").unwrap();
+        node.status = NodeStatus::Online;
+        node.current_generation = Some(42);
+        assert_eq!(reg.get("plo").unwrap().status, NodeStatus::Online);
+        assert_eq!(reg.get("plo").unwrap().current_generation, Some(42));
+    }
+
+    #[test]
+    fn get_mut_or_err_errors_for_missing_node() {
+        let mut reg = sample_registry();
+        let result = reg.get_mut_or_err("ghost");
+        match result {
+            Err(NodeError::NotFound { hostname }) => assert_eq!(hostname, "ghost"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_or_err_returns_owned_node() {
+        let mut reg = sample_registry();
+        let node = reg.remove_or_err("plo").unwrap();
+        assert_eq!(node.hostname, "plo");
+        assert!(!reg.contains("plo"));
+    }
+
+    #[test]
+    fn remove_or_err_errors_for_missing_node() {
+        let mut reg = sample_registry();
+        let result = reg.remove_or_err("ghost");
+        match result {
+            Err(NodeError::NotFound { hostname }) => assert_eq!(hostname, "ghost"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    // ── NodeError display strings ─────────────────────────────
+
+    #[test]
+    fn node_error_not_found_display() {
+        let e = NodeError::NotFound {
+            hostname: "missing".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("not found"));
+        assert!(s.contains("missing"));
+    }
+
+    #[test]
+    fn node_error_already_registered_display() {
+        let e = NodeError::AlreadyRegistered {
+            hostname: "dup".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("already registered"));
+        assert!(s.contains("dup"));
+    }
+
+    // ── contains ──────────────────────────────────────────────
+
+    #[test]
+    fn contains_returns_true_for_present_node() {
+        let reg = sample_registry();
+        assert!(reg.contains("plo"));
+        assert!(reg.contains("zek"));
+        assert!(reg.contains("cid"));
+    }
+
+    #[test]
+    fn contains_returns_false_for_absent_node() {
+        let reg = sample_registry();
+        assert!(!reg.contains("ghost"));
+        assert!(!reg.contains(""));
+    }
+
+    // ── hostnames() iteration order ───────────────────────────
+
+    #[test]
+    fn hostnames_yields_sorted_order() {
+        let reg = sample_registry();
+        let hostnames: Vec<&str> = reg.hostnames().collect();
+        assert_eq!(hostnames, vec!["cid", "plo", "zek"]);
+    }
+
+    // ── by_status ─────────────────────────────────────────────
+
+    #[test]
+    fn by_status_filters_only_matching_nodes() {
+        let mut reg = sample_registry();
+        reg.get_mut("plo").unwrap().status = NodeStatus::Online;
+        reg.get_mut("zek").unwrap().status = NodeStatus::Failed;
+        // cid stays Unknown
+
+        let online: Vec<&Node> = reg.by_status(NodeStatus::Online).collect();
+        assert_eq!(online.len(), 1);
+        assert_eq!(online[0].hostname, "plo");
+
+        let failed: Vec<&Node> = reg.by_status(NodeStatus::Failed).collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].hostname, "zek");
+
+        let unknown: Vec<&Node> = reg.by_status(NodeStatus::Unknown).collect();
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].hostname, "cid");
+    }
+
+    // ── IntoIterator (&NodeRegistry) ──────────────────────────
+
+    #[test]
+    fn into_iterator_borrowed_yields_pairs() {
+        let reg = sample_registry();
+        let pairs: Vec<(&String, &Node)> = (&reg).into_iter().collect();
+        assert_eq!(pairs.len(), 3);
+        // BTreeMap iteration is sorted
+        assert_eq!(pairs[0].0, "cid");
+        assert_eq!(pairs[1].0, "plo");
+        assert_eq!(pairs[2].0, "zek");
+    }
+
+    // ── IntoIterator (owned NodeRegistry) ─────────────────────
+
+    #[test]
+    fn into_iterator_owned_yields_owned_pairs() {
+        let reg = sample_registry();
+        let pairs: Vec<(String, Node)> = reg.into_iter().collect();
+        assert_eq!(pairs.len(), 3);
+        let hostnames: Vec<&str> = pairs.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(hostnames, vec!["cid", "plo", "zek"]);
+    }
+
+    // ── FromIterator<Node> ────────────────────────────────────
+
+    #[test]
+    fn from_iterator_constructs_registry() {
+        let nodes = vec![
+            Node::new("zeta", ".#zeta"),
+            Node::new("alpha", ".#alpha"),
+            Node::new("delta", ".#delta"),
+        ];
+        let reg: NodeRegistry = nodes.into_iter().collect();
+        assert_eq!(reg.len(), 3);
+        // sorted ordering preserved
+        let hostnames: Vec<&str> = reg.hostnames().collect();
+        assert_eq!(hostnames, vec!["alpha", "delta", "zeta"]);
+    }
+
+    #[test]
+    fn from_iterator_collapses_duplicates() {
+        let nodes = vec![
+            Node::new("host", ".#first"),
+            Node::new("host", ".#second"),
+        ];
+        let reg: NodeRegistry = nodes.into_iter().collect();
+        assert_eq!(reg.len(), 1);
+        // last write wins (matches add() semantics)
+        assert_eq!(reg.get("host").unwrap().flake_ref, ".#second");
+    }
+
+    // ── Extend<Node> ──────────────────────────────────────────
+
+    #[test]
+    fn extend_appends_to_existing_registry() {
+        let mut reg = NodeRegistry::new();
+        reg.add(Node::new("alpha", ".#alpha"));
+        reg.extend(vec![
+            Node::new("beta", ".#beta"),
+            Node::new("gamma", ".#gamma"),
+        ]);
+        assert_eq!(reg.len(), 3);
+        assert!(reg.contains("alpha"));
+        assert!(reg.contains("beta"));
+        assert!(reg.contains("gamma"));
+    }
+
+    // ── NodeStatus FromStr ────────────────────────────────────
+
+    #[test]
+    fn node_status_from_str_valid_values() {
+        use std::str::FromStr;
+        assert_eq!(NodeStatus::from_str("online").unwrap(), NodeStatus::Online);
+        assert_eq!(NodeStatus::from_str("offline").unwrap(), NodeStatus::Offline);
+        assert_eq!(NodeStatus::from_str("deploying").unwrap(), NodeStatus::Deploying);
+        assert_eq!(NodeStatus::from_str("failed").unwrap(), NodeStatus::Failed);
+        assert_eq!(NodeStatus::from_str("unknown").unwrap(), NodeStatus::Unknown);
+    }
+
+    #[test]
+    fn node_status_from_str_rejects_garbage() {
+        use std::str::FromStr;
+        let err = NodeStatus::from_str("garbage").unwrap_err();
+        assert!(err.contains("invalid node status"));
+        assert!(err.contains("garbage"));
+    }
+
+    #[test]
+    fn node_status_from_str_is_case_sensitive() {
+        use std::str::FromStr;
+        assert!(NodeStatus::from_str("Online").is_err());
+        assert!(NodeStatus::from_str("ONLINE").is_err());
+        assert!(NodeStatus::from_str("").is_err());
+    }
+
+    // ── NodeStatus is_healthy / is_transitional ───────────────
+
+    #[test]
+    fn node_status_is_healthy_only_for_online() {
+        assert!(NodeStatus::Online.is_healthy());
+        assert!(!NodeStatus::Offline.is_healthy());
+        assert!(!NodeStatus::Deploying.is_healthy());
+        assert!(!NodeStatus::Failed.is_healthy());
+        assert!(!NodeStatus::Unknown.is_healthy());
+    }
+
+    #[test]
+    fn node_status_is_transitional_only_for_deploying() {
+        assert!(!NodeStatus::Online.is_transitional());
+        assert!(!NodeStatus::Offline.is_transitional());
+        assert!(NodeStatus::Deploying.is_transitional());
+        assert!(!NodeStatus::Failed.is_transitional());
+        assert!(!NodeStatus::Unknown.is_transitional());
+    }
+
+    // ── NodeStatus default ────────────────────────────────────
+
+    #[test]
+    fn node_status_default_is_unknown() {
+        assert_eq!(NodeStatus::default(), NodeStatus::Unknown);
+    }
+
+    // ── Node::is_darwin ───────────────────────────────────────
+
+    #[test]
+    fn node_is_darwin_for_aarch64_darwin() {
+        let node = Node::new("mac", ".#mac").with_system("aarch64-darwin");
+        assert!(node.is_darwin());
+    }
+
+    #[test]
+    fn node_is_darwin_for_x86_64_darwin() {
+        let node = Node::new("mac", ".#mac").with_system("x86_64-darwin");
+        assert!(node.is_darwin());
+    }
+
+    #[test]
+    fn node_is_darwin_false_for_linux() {
+        let node = Node::new("nix", ".#nix").with_system("x86_64-linux");
+        assert!(!node.is_darwin());
+    }
+
+    #[test]
+    fn node_is_darwin_false_when_system_unset() {
+        let node = Node::new("ghost", ".#ghost");
+        assert!(!node.is_darwin());
+    }
+
+    // ── Node::rebuild_command ─────────────────────────────────
+
+    #[test]
+    fn node_rebuild_command_darwin() {
+        let node = Node::new("cid", ".#cid").with_system("aarch64-darwin");
+        assert_eq!(node.rebuild_command(), "darwin-rebuild");
+    }
+
+    #[test]
+    fn node_rebuild_command_nixos() {
+        let node = Node::new("plo", ".#plo").with_system("x86_64-linux");
+        assert_eq!(node.rebuild_command(), "nixos-rebuild");
+    }
+
+    #[test]
+    fn node_rebuild_command_defaults_to_nixos_when_system_unset() {
+        let node = Node::new("ghost", ".#ghost");
+        assert_eq!(node.rebuild_command(), "nixos-rebuild");
+    }
 }
