@@ -304,6 +304,17 @@ impl DarwinSandbox {
 /// The generated profile is a deterministic function of the config, so two
 /// configs with the same fields produce identical profiles. Suitable for
 /// passing via `sandbox-exec -p`.
+///
+/// Profile structure (matches Nix's own macOS sandbox approach):
+/// - Default deny
+/// - Allow `process-fork`/`process-exec`/`signal (target self)`
+/// - Allow `sysctl-read` and `mach-lookup` (needed by dyld and libSystem)
+/// - Allow `file-read*` globally — restricting reads breaks dyld/dyld-cache.
+///   The `input_paths` from the config are included as a comment for audit.
+/// - Allow `file-write*` only inside the build directory and the standard
+///   `/dev` device nodes.
+/// - Restrict network: deny all unless `allow_network` is set; loopback always
+///   allowed so tools can bind localhost ports during the build.
 #[cfg(target_os = "macos")]
 #[must_use]
 pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
@@ -311,62 +322,51 @@ pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
     profile.push_str("(version 1)\n");
     profile.push_str("(deny default)\n");
 
-    // Allow basic process operations.
+    // Process / signal primitives.
     profile.push_str("(allow process-fork)\n");
     profile.push_str("(allow process-exec)\n");
     profile.push_str("(allow signal (target self))\n");
 
-    // Allow sysctl reads (often needed for libc init, malloc, etc.).
+    // Required for dyld + libSystem startup.
     profile.push_str("(allow sysctl-read)\n");
+    profile.push_str("(allow mach-lookup)\n");
 
-    // Allow access to /dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/dtracehelper.
-    profile.push_str("(allow file-read* file-write*\n");
+    // Filesystem reads — wildcard. Subpath restrictions on reads are hostile
+    // to dyld and the system shared cache; production Nix uses the same
+    // approach. The audit list of input_paths is emitted as a comment.
+    if !config.input_paths.is_empty() {
+        profile.push_str("; declared input_paths:\n");
+        for input in &config.input_paths {
+            profile.push_str(";   ");
+            profile.push_str(input);
+            profile.push('\n');
+        }
+    }
+    profile.push_str("(allow file-read*)\n");
+
+    // Writable device nodes.
+    profile.push_str("(allow file-write*\n");
     profile.push_str("    (literal \"/dev/null\")\n");
     profile.push_str("    (literal \"/dev/zero\")\n");
-    profile.push_str("    (literal \"/dev/random\")\n");
-    profile.push_str("    (literal \"/dev/urandom\")\n");
     profile.push_str("    (literal \"/dev/dtracehelper\")\n");
     profile.push_str("    (literal \"/dev/tty\")\n");
     profile.push_str(")\n");
 
-    // Allow reads from standard system locations and any input paths.
-    profile.push_str("(allow file-read*\n");
-    profile.push_str("    (subpath \"/usr\")\n");
-    profile.push_str("    (subpath \"/bin\")\n");
-    profile.push_str("    (subpath \"/sbin\")\n");
-    profile.push_str("    (subpath \"/System\")\n");
-    profile.push_str("    (subpath \"/Library\")\n");
-    profile.push_str("    (subpath \"/private/etc\")\n");
-    profile.push_str("    (subpath \"/private/var/db\")\n");
-    profile.push_str("    (subpath \"/private/var/empty\")\n");
-    profile.push_str("    (subpath \"/private/var/folders\")\n");
-    profile.push_str("    (subpath \"/private/var/run\")\n");
-    profile.push_str("    (subpath \"/private/tmp\")\n");
-    for input in &config.input_paths {
-        profile.push_str("    (subpath ");
-        profile.push_str(&sbpl_quote(input));
-        profile.push_str(")\n");
-    }
-    profile.push_str(")\n");
-
-    // Allow writes only to the build directory.
+    // Build dir is the only writable disk location.
     if !config.build_dir.is_empty() {
-        profile.push_str("(allow file-write*\n");
-        profile.push_str("    (subpath ");
+        profile.push_str("(allow file-write*\n    (subpath ");
         profile.push_str(&sbpl_quote(&config.build_dir));
-        profile.push_str(")\n");
-        profile.push_str(")\n");
+        profile.push_str(")\n)\n");
     }
 
     // Network operations.
     if config.allow_network {
         profile.push_str("(allow network*)\n");
         profile.push_str("(allow system-socket)\n");
-        profile.push_str("(allow mach-lookup)\n");
     } else {
-        // Allow loopback only (helps with tools that bind localhost ports).
+        // Loopback only — useful for build helpers binding localhost ports.
         profile.push_str("(allow network* (local ip \"localhost:*\"))\n");
-        profile.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+        profile.push_str("(allow network* (remote ip \"localhost:*\"))\n");
     }
 
     profile
@@ -1078,5 +1078,151 @@ mod tests {
         };
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    // ── Darwin sandbox tests ────────────────────────────────
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_default_uses_system_path() {
+        let s = DarwinSandbox::new();
+        assert!(s.is_available(), "/usr/bin/sandbox-exec should exist on macOS");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_with_missing_exec_falls_back() {
+        let s = DarwinSandbox::with_exec_path("/nonexistent/sandbox-exec/zzz");
+        assert!(!s.is_available());
+        let config = SandboxConfig::default()
+            .with_builder("/bin/echo")
+            .with_args(vec!["fallback".to_string()]);
+        let result = s.execute(&config).expect("fallback execute should succeed");
+        assert_eq!(result.exit_code, 0);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("fallback"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_has_required_directives() {
+        let config = SandboxConfig::default()
+            .with_builder("/bin/echo")
+            .with_build_dir("/tmp/sui-build-darwin");
+        let profile = generate_sbpl_profile(&config);
+        assert!(profile.starts_with("(version 1)"));
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(allow process-fork)"));
+        assert!(profile.contains("(allow process-exec)"));
+        assert!(profile.contains("(allow file-read*)"));
+        assert!(profile.contains("(allow sysctl-read)"));
+        assert!(profile.contains("(allow mach-lookup)"));
+        assert!(profile.contains("/dev/null"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_includes_input_paths_audit() {
+        let mut config = SandboxConfig::default();
+        config.input_paths.push("/nix/store/abc-foo".to_string());
+        config.input_paths.push("/nix/store/def-bar".to_string());
+        let profile = generate_sbpl_profile(&config);
+        // Inputs are emitted as audit comments since reads are wildcard.
+        assert!(profile.contains("declared input_paths"));
+        assert!(profile.contains("/nix/store/abc-foo"));
+        assert!(profile.contains("/nix/store/def-bar"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_includes_build_dir_write() {
+        let config = SandboxConfig::default()
+            .with_build_dir("/tmp/sui-build-write-test");
+        let profile = generate_sbpl_profile(&config);
+        // file-write* must contain the build dir as a subpath
+        let write_section_idx = profile
+            .find("(allow file-write*")
+            .expect("expected file-write* section");
+        let write_section = &profile[write_section_idx..];
+        assert!(write_section.contains("/tmp/sui-build-write-test"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_network_disabled_by_default() {
+        let config = SandboxConfig::default().with_build_dir("/tmp/x");
+        let profile = generate_sbpl_profile(&config);
+        assert!(!profile.contains("(allow network*)"));
+        // Localhost-only is OK
+        assert!(profile.contains("localhost"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_generate_sbpl_profile_network_enabled() {
+        let config = SandboxConfig::default()
+            .with_build_dir("/tmp/x")
+            .with_network(true);
+        let profile = generate_sbpl_profile(&config);
+        assert!(profile.contains("(allow network*)"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sbpl_quote_escapes_special_chars() {
+        assert_eq!(sbpl_quote("/tmp/foo"), "\"/tmp/foo\"");
+        assert_eq!(sbpl_quote("/path/with\"quote"), "\"/path/with\\\"quote\"");
+        assert_eq!(sbpl_quote("/back\\slash"), "\"/back\\\\slash\"");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_prepare_creates_build_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build_dir = tmp.path().join("build-prep-test");
+        let config = SandboxConfig::default()
+            .with_build_dir(build_dir.to_string_lossy().to_string())
+            .with_builder("/bin/true");
+        let s = DarwinSandbox::new();
+        s.prepare(&config).unwrap();
+        assert!(build_dir.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_executes_echo_through_real_sandbox_exec() {
+        // Integration test — runs /bin/echo via real sandbox-exec.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = SandboxConfig::default()
+            .with_build_dir(tmp.path().to_string_lossy().to_string())
+            .with_builder("/bin/echo")
+            .with_args(vec!["hello".to_string()]);
+        let s = DarwinSandbox::new();
+        if !s.is_available() {
+            // Skip if sandbox-exec missing (CI sometimes hides it).
+            return;
+        }
+        s.prepare(&config).unwrap();
+        let result = s.execute(&config).unwrap();
+        assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr_lossy());
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains("hello"),
+            "expected stdout to contain 'hello', got {:?}",
+            result.stdout_lossy()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_cleanup_is_noop() {
+        let s = DarwinSandbox::new();
+        let config = SandboxConfig::default().with_build_dir("/tmp/x");
+        assert!(s.cleanup(&config).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_sandbox_is_object_safe() {
+        fn assert_obj_safe(_: &dyn Sandbox) {}
+        assert_obj_safe(&DarwinSandbox::new());
     }
 }
