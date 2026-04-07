@@ -151,9 +151,29 @@ fn flake_help_lists_subcommands() {
         .success()
         .stdout(
             predicate::str::contains("show")
+                .and(predicate::str::contains("update"))
+                .and(predicate::str::contains("check"))
                 .and(predicate::str::contains("lock"))
                 .and(predicate::str::contains("metadata")),
         );
+}
+
+#[test]
+fn flake_update_help_shows_input_arg() {
+    sui()
+        .args(["flake", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("INPUT").or(predicate::str::contains("input")));
+}
+
+#[test]
+fn flake_check_help_shows_no_build_flag() {
+    sui()
+        .args(["flake", "check", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-build"));
 }
 
 // ── Daemon subcommand ───────────────────────────────────────────────

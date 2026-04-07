@@ -89,7 +89,18 @@ enum StoreCommands {
 enum FlakeCommands {
     /// Show flake outputs
     Show { flake_ref: Option<String> },
-    /// Update flake lock file
+    /// Update flake lock file (or a specific input)
+    Update {
+        /// Specific input to update (e.g. `nixpkgs`)
+        input: Option<String>,
+    },
+    /// Check the flake for errors
+    Check {
+        /// Skip building checks
+        #[arg(long)]
+        no_build: bool,
+    },
+    /// Lock the flake inputs without updating
     Lock,
     /// Show flake metadata
     Metadata { flake_ref: Option<String> },
@@ -202,22 +213,92 @@ async fn main() -> Result<(), CliError> {
         }
 
         Commands::Build { installable } => {
-            println!("sui build {installable} — not yet implemented (Phase 5)");
+            // Delegate to `nix build` for now — native build pipeline will
+            // be wired once the substitution layer is production-ready.
+            let output = tokio::process::Command::new("nix")
+                .args(["build", "--print-out-paths", &installable])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await?;
+
+            if output.status.success() {
+                let paths = String::from_utf8_lossy(&output.stdout);
+                for path in paths.lines() {
+                    println!("{path}");
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("{stderr}");
+                return Err(CliError::Orchestrate {
+                    operation: "build",
+                    message: "nix build failed".into(),
+                });
+            }
         }
 
         Commands::Flake { command } => match command {
             FlakeCommands::Show { flake_ref } => {
                 println!(
-                    "sui flake show {} — not yet implemented (Phase 5)",
+                    "sui flake show {} — not yet implemented",
                     flake_ref.unwrap_or_default()
                 );
             }
+            FlakeCommands::Update { input } => {
+                let mut args = vec!["flake"];
+                if let Some(ref inp) = input {
+                    args.extend(["lock", "--update-input", inp]);
+                } else {
+                    args.push("update");
+                }
+                let output = tokio::process::Command::new("nix")
+                    .args(&args)
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status()
+                    .await?;
+                if !output.success() {
+                    return Err(CliError::Orchestrate {
+                        operation: "flake update",
+                        message: "nix flake update failed".into(),
+                    });
+                }
+            }
+            FlakeCommands::Check { no_build } => {
+                let mut args = vec!["flake", "check"];
+                if no_build {
+                    args.push("--no-build");
+                }
+                let output = tokio::process::Command::new("nix")
+                    .args(&args)
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status()
+                    .await?;
+                if !output.success() {
+                    return Err(CliError::Orchestrate {
+                        operation: "flake check",
+                        message: "nix flake check failed".into(),
+                    });
+                }
+            }
             FlakeCommands::Lock => {
-                println!("sui flake lock — not yet implemented (Phase 5)");
+                let output = tokio::process::Command::new("nix")
+                    .args(["flake", "lock"])
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .status()
+                    .await?;
+                if !output.success() {
+                    return Err(CliError::Orchestrate {
+                        operation: "flake lock",
+                        message: "nix flake lock failed".into(),
+                    });
+                }
             }
             FlakeCommands::Metadata { flake_ref } => {
                 println!(
-                    "sui flake metadata {} — not yet implemented (Phase 5)",
+                    "sui flake metadata {} — not yet implemented",
                     flake_ref.unwrap_or_default()
                 );
             }
@@ -244,15 +325,35 @@ async fn main() -> Result<(), CliError> {
             match command {
                 SystemCommands::Rebuild { flake } => {
                     let action = sui_orchestrate::RebuildAction::Switch;
-                    let result = sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
-                        CliError::Orchestrate {
-                            operation: "rebuild",
-                            message: e.to_string(),
+                    let result = if let Some(ref flake_ref) = flake {
+                        // Try native rebuild first — this uses sui's own
+                        // eval+build pipeline with nix delegation for the MVP.
+                        match sys.rebuild_native(flake_ref, action).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!("native rebuild failed ({e}), falling back to delegated rebuild");
+                                sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
+                                    CliError::Orchestrate {
+                                        operation: "rebuild",
+                                        message: e.to_string(),
+                                    }
+                                })?
+                            }
                         }
-                    })?;
+                    } else {
+                        sys.rebuild(action, flake.as_deref()).await.map_err(|e| {
+                            CliError::Orchestrate {
+                                operation: "rebuild",
+                                message: e.to_string(),
+                            }
+                        })?
+                    };
                     println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
                     if let Some(generation) = result.generation {
                         println!("generation: {generation}");
+                    }
+                    if !result.success {
+                        eprintln!("{}", result.log);
                     }
                 }
                 SystemCommands::Status => {
