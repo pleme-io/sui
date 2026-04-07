@@ -376,6 +376,31 @@ pub fn register(env: &mut Env) {
         }))
     });
 
+    // ── filterAttrs ───────────────────────────────────────
+    //
+    // `builtins.filterAttrs pred attrs` — return the attrset
+    // containing only those entries where `pred name value` is true.
+    // CppNix exposes this via lib in older versions but ships it as
+    // a primop in nix >= 2.27. The predicate sees the *unforced*
+    // value: applying it forces only the entries the user asked for.
+    register_builtin(&mut builtins_set, "filterAttrs", |args| {
+        let pred = args[0].clone();
+        Ok(Value::Builtin(BuiltinFn {
+            name: "filterAttrs<partial>",
+            func: Arc::new(move |args2| {
+                let attrs = args2[0].to_attrs()?;
+                let mut result = NixAttrs::new();
+                for (k, v) in attrs.iter() {
+                    let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
+                    if crate::eval::apply(partial, v.clone())?.as_bool()? {
+                        result.insert(k.clone(), v.clone());
+                    }
+                }
+                Ok(Value::Attrs(result))
+            }),
+        }))
+    });
+
     // Attrset higher-order operations
     register_builtin(&mut builtins_set, "mapAttrs", |args| {
         let func = args[0].clone();
@@ -4397,6 +4422,48 @@ mod tests {
         } else {
             panic!("expected attrs");
         }
+    }
+
+    // ── filterAttrs ───────────────────────────────────────
+
+    #[test]
+    fn builtins_filter_attrs_keeps_matching() {
+        let v = ev(r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.len(), 2);
+            assert_eq!(a.get("b"), Some(&Value::Int(2)));
+            assert_eq!(a.get("c"), Some(&Value::Int(3)));
+            assert!(a.get("a").is_none());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_by_name() {
+        let v = ev(r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#);
+        if let Value::Attrs(a) = v {
+            assert_eq!(a.len(), 1);
+            assert_eq!(a.get("keep"), Some(&Value::Int(1)));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_empty() {
+        let v = ev(r#"builtins.filterAttrs (n: v: true) {}"#);
+        if let Value::Attrs(a) = v {
+            assert!(a.is_empty());
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn builtins_filter_attrs_non_attrs_errors() {
+        let result = eval(r#"builtins.filterAttrs (n: v: true) [1 2 3]"#);
+        assert!(result.is_err());
     }
 
     // ── builtins.builtins self-reference ──────────────────

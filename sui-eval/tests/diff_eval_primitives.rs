@@ -436,6 +436,19 @@ fn diff_trace_verbose_passthrough() {
 // (passthrough) directly.
 
 #[test]
+fn diff_filter_attrs() {
+    run_cases(
+        "filter_attrs",
+        &[
+            r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#,
+            r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#,
+            r#"builtins.filterAttrs (n: v: true) {}"#,
+            r#"builtins.filterAttrs (n: v: false) { a = 1; b = 2; }"#,
+        ],
+    );
+}
+
+#[test]
 fn diff_builtins_self_reference() {
     run_cases(
         "builtins_self_reference",
