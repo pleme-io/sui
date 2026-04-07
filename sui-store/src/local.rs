@@ -134,21 +134,12 @@ impl Store for LocalStore {
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
 
-        paths
+        Ok(paths
             .into_iter()
             .filter_map(|p| StorePath::from_absolute_path(&p.path).ok())
-            .collect::<Vec<_>>()
-            .pipe_ok()
+            .collect())
     }
 }
-
-/// Helper trait to wrap a value in Ok.
-trait PipeOk: Sized {
-    fn pipe_ok(self) -> StoreResult<Self> {
-        Ok(self)
-    }
-}
-impl<T> PipeOk for T {}
 
 #[cfg(test)]
 mod tests {
