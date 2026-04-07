@@ -285,7 +285,7 @@ pub(crate) async fn deploy_single_node(
         Ok(out) => NodeDeployResult {
             hostname: node.hostname.clone(),
             success: out.success,
-            log: format!("{}{}", out.stdout, out.stderr),
+            log: out.combined_log(),
             duration_secs: duration,
         },
         Err(e) => NodeDeployResult {

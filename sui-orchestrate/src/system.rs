@@ -152,7 +152,7 @@ impl SystemOrchestrator {
         })?;
 
         let duration = start.elapsed().as_secs_f64();
-        let log = format!("{}{}", output.stdout, output.stderr);
+        let log = output.combined_log();
         let generation = extract_generation(&log);
 
         if output.success {
@@ -243,7 +243,7 @@ impl SystemOrchestrator {
             .await?;
 
         let duration = start.elapsed().as_secs_f64();
-        let log = format!("{}{}", output.stdout, output.stderr);
+        let log = output.combined_log();
 
         Ok(RebuildResult {
             success: output.success,

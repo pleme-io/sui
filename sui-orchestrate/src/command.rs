@@ -18,6 +18,14 @@ pub struct CommandOutput {
     pub exit_code: Option<i32>,
 }
 
+impl CommandOutput {
+    /// Concatenate stdout and stderr into a single log string.
+    #[must_use]
+    pub fn combined_log(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr)
+    }
+}
+
 /// Command execution errors.
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
