@@ -81,6 +81,39 @@ pub struct EvalResult {
     pub out_path: Option<String>,
 }
 
+impl EvalResult {
+    /// Build an `EvalResult` from `sui_eval::eval` output, centralizing the
+    /// success/error mapping shared by REST and GraphQL.
+    #[must_use]
+    pub fn from_eval(result: Result<sui_eval::Value, sui_eval::EvalError>) -> Self {
+        match result {
+            Ok(value) => Self {
+                value: value.to_json(),
+                errors: vec![],
+                drv_path: None,
+                out_path: None,
+            },
+            Err(e) => Self {
+                value: serde_json::Value::Null,
+                errors: vec![e.to_string()],
+                drv_path: None,
+                out_path: None,
+            },
+        }
+    }
+
+    /// Construct a stub `EvalResult` indicating a feature is not yet implemented.
+    #[must_use]
+    pub fn not_implemented() -> Self {
+        Self {
+            value: serde_json::Value::Null,
+            errors: vec!["not yet implemented".to_string()],
+            drv_path: None,
+            out_path: None,
+        }
+    }
+}
+
 /// Flake metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
 pub struct FlakeMetadata {

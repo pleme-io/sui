@@ -167,20 +167,7 @@ async fn add_to_store(body: axum::body::Bytes) -> (StatusCode, Json<PathInfoResp
 // ── Eval ────────────────────────────────────────────────────
 
 async fn eval_expression(Json(req): Json<EvalRequest>) -> Json<EvalResult> {
-    match sui_eval::eval(&req.expression) {
-        Ok(value) => Json(EvalResult {
-            value: value.to_json(),
-            errors: vec![],
-            drv_path: None,
-            out_path: None,
-        }),
-        Err(e) => Json(EvalResult {
-            value: serde_json::Value::Null,
-            errors: vec![e.to_string()],
-            drv_path: None,
-            out_path: None,
-        }),
-    }
+    Json(EvalResult::from_eval(sui_eval::eval(&req.expression)))
 }
 
 async fn eval_flake(
@@ -188,12 +175,7 @@ async fn eval_flake(
     Query(query): Query<FlakeEvalQuery>,
 ) -> Json<EvalResult> {
     let _ = (flake_ref, query);
-    Json(EvalResult {
-        value: serde_json::Value::Null,
-        errors: vec!["not yet implemented".to_string()],
-        drv_path: None,
-        out_path: None,
-    })
+    Json(EvalResult::not_implemented())
 }
 
 async fn flake_show(Path(flake_ref): Path<String>) -> Json<serde_json::Value> {

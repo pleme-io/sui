@@ -80,12 +80,7 @@ impl QueryRoot {
         attribute: Option<String>,
     ) -> EvalResult {
         let _ = (flake_ref, attribute);
-        EvalResult {
-            value: serde_json::Value::Null,
-            errors: vec!["not yet implemented".to_string()],
-            drv_path: None,
-            out_path: None,
-        }
+        EvalResult::not_implemented()
     }
 
     /// Show flake outputs.
@@ -250,20 +245,7 @@ impl MutationRoot {
 
     /// Evaluate a Nix expression.
     async fn eval(&self, _ctx: &Context<'_>, request: EvalRequest) -> EvalResult {
-        match sui_eval::eval(&request.expression) {
-            Ok(value) => EvalResult {
-                value: value.to_json(),
-                errors: vec![],
-                drv_path: None,
-                out_path: None,
-            },
-            Err(e) => EvalResult {
-                value: serde_json::Value::Null,
-                errors: vec![e.to_string()],
-                drv_path: None,
-                out_path: None,
-            },
-        }
+        EvalResult::from_eval(sui_eval::eval(&request.expression))
     }
 
     /// Update flake lock file.
