@@ -108,9 +108,12 @@ impl BuildLog {
 
     /// Append multiple lines at once.
     pub fn extend(&mut self, lines: &[&str]) {
-        for line in lines {
-            self.lines.push((*line).to_owned());
-        }
+        self.lines.extend(lines.iter().map(|l| (*l).to_owned()));
+    }
+
+    /// Iterate over logged lines.
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        self.lines.iter().map(String::as_str)
     }
 
     /// Return the number of lines logged.
