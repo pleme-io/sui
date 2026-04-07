@@ -219,11 +219,11 @@ impl std::fmt::Display for BuildOutcome {
 
 impl From<&crate::sandbox::SandboxResult> for BuildOutcome {
     fn from(result: &crate::sandbox::SandboxResult) -> Self {
-        if result.exit_code == 0 {
+        if result.is_success() {
             Self::Success
         } else {
             Self::Failure {
-                stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+                stderr: result.stderr_lossy(),
                 exit_code: result.exit_code,
             }
         }
@@ -614,7 +614,7 @@ mod tests {
 
             Ok(BuildResult {
                 outputs,
-                log: String::from_utf8_lossy(&result.stdout).to_string(),
+                log: result.stdout_lossy(),
                 success: outcome.is_success(),
                 outcome,
                 duration_secs: 0.1,
