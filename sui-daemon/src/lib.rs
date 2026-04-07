@@ -7,9 +7,10 @@
 //! ```text
 //! UnixListener (server.rs)
 //!     └── per-connection task
-//!             └── Connection (connection.rs)
-//!                     ├── handshake()   — magic + version negotiation
-//!                     └── run()         — opcode dispatch loop
+//!             └── Connection (connection/)
+//!                     ├── wire.rs       — async LE-u64 / padded-string I/O
+//!                     ├── handshake.rs  — magic + version negotiation
+//!                     └── dispatch.rs   — opcode dispatch loop + handlers
 //! ```
 //!
 //! The daemon listens on a Unix socket (default: `/nix/var/nix/daemon-socket/socket`),
