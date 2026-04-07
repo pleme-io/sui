@@ -306,19 +306,19 @@ pub struct GenerationInfo {
 }
 
 /// Try to extract a generation number from rebuild output.
+///
+/// Scans lines in reverse looking for "generation <N>" patterns such as
+/// "switched to generation 42" or "activating generation 15.".
 pub(crate) fn extract_generation(log: &str) -> Option<i64> {
-    for line in log.lines().rev() {
-        // Look for patterns like "generation 42" or "switched to generation 42"
-        if let Some(idx) = line.find("generation") {
-            let after = &line[idx + "generation".len()..];
-            for word in after.split_whitespace() {
-                if let Ok(n) = word.trim_end_matches('.').parse::<i64>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    None
+    log.lines()
+        .rev()
+        .filter_map(|line| {
+            let suffix = line.split_once("generation")?.1;
+            suffix
+                .split_whitespace()
+                .find_map(|word| word.trim_end_matches('.').parse::<i64>().ok())
+        })
+        .next()
 }
 
 #[cfg(test)]
