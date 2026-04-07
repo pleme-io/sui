@@ -897,4 +897,141 @@ mod tests {
         assert_eq!(reparsed.path, api.path);
         assert_eq!(reparsed.content_address, api.content_address);
     }
+
+    // ── Stub constructor tests ──────────────────────────────
+
+    #[test]
+    fn eval_result_from_eval_success() {
+        let value = sui_eval::eval("1 + 2").unwrap();
+        let result = EvalResult::from_eval(Ok(value));
+        assert_eq!(result.value, serde_json::json!(3));
+        assert!(result.errors.is_empty());
+        assert!(result.drv_path.is_none());
+        assert!(result.out_path.is_none());
+    }
+
+    #[test]
+    fn eval_result_from_eval_error() {
+        let err = sui_eval::eval("let x = ; in x").unwrap_err();
+        let result = EvalResult::from_eval(Err(err));
+        assert_eq!(result.value, serde_json::Value::Null);
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn eval_result_not_implemented() {
+        let result = EvalResult::not_implemented();
+        assert_eq!(result.value, serde_json::Value::Null);
+        assert_eq!(result.errors, vec!["not yet implemented"]);
+    }
+
+    #[test]
+    fn health_response_ok_has_version() {
+        let resp = HealthResponse::ok();
+        assert_eq!(resp.status, "ok");
+        assert!(!resp.version.is_empty());
+    }
+
+    #[test]
+    fn daemon_status_current_has_version() {
+        let status = DaemonStatus::current();
+        assert!(!status.version.is_empty());
+        assert_eq!(status.store_dir, "/nix/store");
+        assert_eq!(status.active_connections, 0);
+        assert_eq!(status.protocol_version, Some("1.0".to_string()));
+    }
+
+    #[test]
+    fn system_status_stub_defaults() {
+        let status = SystemStatus::stub();
+        assert_eq!(status.generation, 0);
+        assert!(status.config_path.is_empty());
+        assert!(status.nix_version.is_some());
+    }
+
+    #[test]
+    fn fleet_status_empty_defaults() {
+        let status = FleetStatus::empty();
+        assert_eq!(status.total_nodes, 0);
+        assert_eq!(status.online_nodes, 0);
+        assert!(status.nodes.is_empty());
+    }
+
+    #[test]
+    fn cache_info_default() {
+        let info = CacheInfo::default();
+        assert_eq!(info.store_dir, "/nix/store");
+        assert!(info.want_mass_query);
+        assert_eq!(info.priority, 40);
+    }
+
+    #[test]
+    fn gc_result_default() {
+        let result = GcResult::default();
+        assert_eq!(result.paths_deleted, 0);
+        assert_eq!(result.bytes_freed, 0);
+    }
+
+    #[test]
+    fn verify_result_default() {
+        let result = VerifyResult::default();
+        assert_eq!(result.valid, 0);
+        assert_eq!(result.invalid, 0);
+        assert_eq!(result.missing, 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn build_status_pending_stub() {
+        let status = BuildStatus::pending_stub();
+        assert_eq!(status.state, "pending");
+        assert!(!status.id.is_empty());
+        assert!(status.output_paths.is_none());
+    }
+
+    #[test]
+    fn fleet_deploy_status_pending() {
+        let status = FleetDeployStatus::pending("@prod".into());
+        assert_eq!(status.target, "@prod");
+        assert_eq!(status.status, "pending");
+        assert!(!status.id.is_empty());
+    }
+
+    #[test]
+    fn flake_metadata_empty_defaults() {
+        let meta = FlakeMetadata::empty();
+        assert!(meta.description.is_empty());
+        assert_eq!(meta.last_modified, 0);
+        assert!(meta.resolved_url.is_none());
+    }
+
+    #[test]
+    fn profile_from_install_request_default_name() {
+        let req = ProfileInstallRequest {
+            packages: vec!["hello".into()],
+            profile: None,
+        };
+        let profile = Profile::from(req);
+        assert_eq!(profile.name, "default");
+        assert_eq!(profile.packages, vec!["hello"]);
+        assert_eq!(profile.generation, 1);
+    }
+
+    #[test]
+    fn profile_from_install_request_custom_name() {
+        let req = ProfileInstallRequest {
+            packages: vec!["curl".into(), "wget".into()],
+            profile: Some("custom".into()),
+        };
+        let profile = Profile::from(req);
+        assert_eq!(profile.name, "custom");
+        assert_eq!(profile.packages.len(), 2);
+    }
+
+    #[test]
+    fn pagination_query_default() {
+        let pq = PaginationQuery::default();
+        assert_eq!(pq.limit, 100);
+        assert_eq!(pq.offset, 0);
+    }
 }
