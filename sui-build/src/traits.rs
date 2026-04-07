@@ -139,15 +139,7 @@ mod tests {
     impl MockBuilder {
         async fn do_build(&self, drv: &Derivation) -> Result<BuildResult, BuildError> {
             let sandbox = NoSandbox;
-            let config = SandboxConfig {
-                input_paths: drv.input_sources.clone(),
-                build_dir: "/tmp".to_string(),
-                output_paths: drv.outputs.values().map(|o| o.path.clone()).collect(),
-                allow_network: false,
-                builder: drv.builder.clone(),
-                args: drv.args.clone(),
-                env: drv.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            };
+            let config = SandboxConfig::from_derivation(drv, "/tmp");
 
             let result = sandbox.execute(&config)
                 .map_err(|e| BuildError::Sandbox(e.to_string()))?;

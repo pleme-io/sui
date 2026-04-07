@@ -21,6 +21,34 @@ pub struct SandboxConfig {
     pub env: Vec<(String, String)>,
 }
 
+impl SandboxConfig {
+    /// Construct a `SandboxConfig` from a derivation and a build directory.
+    ///
+    /// Maps derivation fields to sandbox parameters:
+    /// - `input_paths` ← `drv.input_sources`
+    /// - `output_paths` ← values of `drv.outputs`
+    /// - `allow_network` ← true when `__noChroot=1` in env
+    /// - `builder`, `args`, `env` ← derivation fields
+    pub fn from_derivation(drv: &sui_compat::derivation::Derivation, build_dir: &str) -> Self {
+        Self {
+            input_paths: drv.input_sources.clone(),
+            build_dir: build_dir.to_owned(),
+            output_paths: drv.outputs.values().map(|o| o.path.clone()).collect(),
+            allow_network: drv
+                .env
+                .get("__noChroot")
+                .is_some_and(|v| v == "1"),
+            builder: drv.builder.clone(),
+            args: drv.args.clone(),
+            env: drv
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+}
+
 /// Sandbox implementation trait.
 pub trait Sandbox: Send + Sync {
     /// Prepare the sandbox environment.
@@ -274,27 +302,7 @@ mod tests {
             env,
         };
 
-        // Construct a SandboxConfig from derivation fields
-        let config = SandboxConfig {
-            input_paths: drv.input_sources.clone(),
-            build_dir: "/tmp/sui-build".to_string(),
-            output_paths: drv
-                .outputs
-                .values()
-                .map(|o| o.path.clone())
-                .collect(),
-            allow_network: drv
-                .env
-                .get("__noChroot")
-                .is_some_and(|v| v == "1"),
-            builder: drv.builder.clone(),
-            args: drv.args.clone(),
-            env: drv
-                .env
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        };
+        let config = SandboxConfig::from_derivation(&drv, "/tmp/sui-build");
 
         assert_eq!(config.builder, "/nix/store/bash/bin/bash");
         assert_eq!(config.args, vec!["-e", "/nix/store/setup"]);
