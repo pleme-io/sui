@@ -768,6 +768,116 @@ pub fn register(env: &mut Env) {
         Ok(Value::Int(now))
     });
 
+    // ── convertHash ────────────────────────────────────────
+    //
+    // builtins.convertHash { hash; hashAlgo; toHashFormat } → string
+    //
+    // Converts a hash value between encodings (`base16`, `nix32`,
+    // `base64`, `sri`). nixpkgs `lib/default.nix` inherits this
+    // builtin even though most lib functions don't use it directly,
+    // so missing it breaks the inherit and crashes any nixpkgs
+    // import. We support sha256/sha512/md5/sha1 and the four
+    // formats; other input combinations error out.
+
+    register_builtin(&mut builtins_set, "convertHash", |args| {
+        use base64::Engine;
+        let attrs = args[0].as_attrs()?;
+        let hash_str = attrs
+            .get("hash")
+            .ok_or_else(|| EvalError::AttrNotFound("hash".into()))?
+            .to_str()?;
+        let to_format = attrs
+            .get("toHashFormat")
+            .ok_or_else(|| EvalError::AttrNotFound("toHashFormat".into()))?
+            .to_str()?;
+        // hashAlgo can be omitted if the hash is SRI-prefixed; we
+        // accept either an explicit algo or strip the SRI prefix.
+        let (algo, raw_hash): (String, String) = if let Some(algo_v) =
+            attrs.get("hashAlgo")
+        {
+            (algo_v.to_str()?, hash_str.clone())
+        } else if let Some(stripped) = hash_str.strip_prefix("sha256-") {
+            ("sha256".to_string(), stripped.to_string())
+        } else if let Some(stripped) = hash_str.strip_prefix("sha512-") {
+            ("sha512".to_string(), stripped.to_string())
+        } else {
+            return Err(EvalError::TypeError(
+                "convertHash: missing hashAlgo".into(),
+            ));
+        };
+        let expected_len = match algo.as_str() {
+            "md5" => 16,
+            "sha1" => 20,
+            "sha256" => 32,
+            "sha512" => 64,
+            other => {
+                return Err(EvalError::TypeError(format!(
+                    "convertHash: unsupported algo {other}"
+                )))
+            }
+        };
+        // Decode the input hash from any of the accepted formats.
+        let bytes: Vec<u8> = if raw_hash.len() == expected_len * 2
+            && raw_hash.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            // base16 (hex)
+            (0..raw_hash.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&raw_hash[i..i + 2], 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| EvalError::TypeError(format!("convertHash hex: {e}")))?
+        } else if let Ok(b) = sui_compat::store_path::nix_base32_decode(&raw_hash) {
+            if expected_len != 20 {
+                return Err(EvalError::TypeError(
+                    "convertHash: nix32 only supported for 20-byte (sha1) hashes".into(),
+                ));
+            }
+            b.to_vec()
+        } else if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(&raw_hash)
+        {
+            b
+        } else {
+            return Err(EvalError::TypeError(format!(
+                "convertHash: cannot decode hash '{raw_hash}'"
+            )));
+        };
+        if bytes.len() != expected_len {
+            return Err(EvalError::TypeError(format!(
+                "convertHash: decoded {} bytes, expected {expected_len} for {algo}",
+                bytes.len()
+            )));
+        }
+        // Re-encode in the requested format.
+        let out = match to_format.as_str() {
+            "base16" => {
+                let mut s = String::with_capacity(bytes.len() * 2);
+                for b in &bytes {
+                    s.push_str(&format!("{b:02x}"));
+                }
+                s
+            }
+            "nix32" => {
+                if expected_len != 20 {
+                    return Err(EvalError::TypeError(
+                        "convertHash: nix32 output only supported for 20-byte hashes".into(),
+                    ));
+                }
+                sui_compat::store_path::nix_base32_encode(&bytes)
+            }
+            "base64" => base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "sri" => format!(
+                "{algo}-{}",
+                base64::engine::general_purpose::STANDARD.encode(&bytes)
+            ),
+            other => {
+                return Err(EvalError::TypeError(format!(
+                    "convertHash: unsupported toHashFormat {other}"
+                )))
+            }
+        };
+        Ok(Value::string(out))
+    });
+
     register_builtin(&mut builtins_set, "readFileType", |args| {
         let path = args[0].as_string()?;
         match std::fs::symlink_metadata(path) {

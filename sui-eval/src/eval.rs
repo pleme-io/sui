@@ -252,6 +252,13 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
         }
 
         ast::Expr::HasAttr(ha) => {
+            // `expr ? a.b.c` checks key presence WITHOUT forcing
+            // value thunks. We force only enough to walk to the
+            // next segment — i.e., we don't force the value at
+            // the LAST segment (just confirm it's present in the
+            // current attrset). This is critical for makeExtensible-
+            // style fixpoints where forcing a sibling attribute
+            // would re-enter the still-being-built `self`.
             let base_expr = ha.expr().ok_or_else(|| {
                 EvalError::ParseError("hasattr missing expression".to_string())
             })?;
@@ -259,11 +266,16 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let attrpath = ha.attrpath().ok_or_else(|| {
                 EvalError::ParseError("hasattr missing attrpath".to_string())
             })?;
-            for attr in attrpath.attrs() {
-                let key = eval_attr(&attr, env)?;
+            let segments: Vec<_> = attrpath.attrs().collect();
+            for (i, attr) in segments.iter().enumerate() {
+                let key = eval_attr(attr, env)?;
+                let is_last = i == segments.len() - 1;
                 match value {
                     Value::Attrs(ref attrs) => {
                         if let Some(v) = attrs.get(&key) {
+                            if is_last {
+                                return Ok(Value::Bool(true));
+                            }
                             value = force_value(v)?;
                         } else {
                             return Ok(Value::Bool(false));
@@ -413,27 +425,33 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         }
                     }
                     ast::Entry::Inherit(ref inherit) => {
-                        // Inherit entries: bind eagerly (they reference
-                        // existing bindings from the enclosing scope).
                         if let Some(from) = inherit.from() {
+                            // `inherit (source) name1 name2 ...` —
+                            // bind each name to a thunk that defers
+                            // evaluating `source` until the name is
+                            // actually used. Required for nixpkgs
+                            // self-referential patterns where
+                            // `inherit (lib.X) ...` lives in a file
+                            // that itself contributes to lib.X.
                             let source_expr = from.expr().ok_or_else(|| {
                                 EvalError::ParseError(
                                     "inherit from missing expr".to_string(),
                                 )
                             })?;
-                            let source = force_value(&eval_expr(&source_expr, env)?)?;
-                            let source_attrs = source.as_attrs()?;
                             for attr in inherit.attrs() {
                                 let name = eval_attr(&attr, env)?;
-                                let value = source_attrs
-                                    .get(&name)
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        EvalError::AttrNotFound(name.clone())
-                                    })?;
-                                new_env.bind(name, value);
+                                let thunk = Thunk::new_inherit_select(
+                                    source_expr.clone(),
+                                    name.clone(),
+                                    env.clone(),
+                                );
+                                new_env.bind(name, Value::Thunk(thunk));
                             }
                         } else {
+                            // `inherit name1 name2 ...` from the
+                            // enclosing lexical scope. This stays
+                            // eager because the names already exist
+                            // in `env` — no fixpoint involved.
                             for attr in inherit.attrs() {
                                 let name = eval_attr(&attr, env)?;
                                 let value = env.lookup(&name).ok_or_else(|| {
@@ -698,21 +716,26 @@ fn eval_inherit(
 ) -> Result<(), EvalError> {
     if let Some(from) = inherit.from() {
         // inherit (expr) a b c;
+        //
+        // The source expression must NOT be eagerly evaluated. nixpkgs
+        // `lib/trivial.nix` has `inherit (lib.trivial) isFunction ...`
+        // at the top of a file that itself defines `lib.trivial`. If
+        // we eagerly force `lib.trivial`, we hit a self-referential
+        // thunk blackhole. Instead: build a thunk per inherited
+        // name that, when forced, evaluates the source and pulls
+        // out that one attribute. This is what real Nix does.
         let source_expr = from
             .expr()
             .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
-        let source = force_value(&eval_expr(&source_expr, env)?)?;
-        let source_attrs = source.as_attrs()?;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
-            let value = source_attrs
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| EvalError::AttrNotFound(name.clone()))?;
-            if let Some(ref mut be) = bind_env.as_deref() {
-                let _ = be; // we handle binding below
-            }
-            attrs.insert(name, value);
+            // Build the per-name thunk by parsing `(<source_expr>).<name>`
+            // as a fresh select expression. The cleanest way is to
+            // construct a Thunk whose suspended state evaluates the
+            // source and then selects the name at force time.
+            let thunk = Thunk::new_inherit_select(source_expr.clone(), name.clone(), env.clone());
+            let _ = bind_env; // bind_env is only used by the rec case below
+            attrs.insert(name, Value::Thunk(thunk));
         }
     } else {
         // inherit a b c;

@@ -121,6 +121,19 @@ pub enum ThunkRepr {
         expr: rnix::ast::Expr,
         env: Env,
     },
+    /// Pending `inherit (source) name` selection. When forced,
+    /// evaluates `source_expr` in `env` then pulls out `name`. This
+    /// is its own variant (rather than synthesizing a Select AST
+    /// node) because rnix doesn't expose a public AST builder, and
+    /// we want each inherited name to defer evaluation of the
+    /// source expression so that `inherit (lib.trivial) ...` at
+    /// the top of trivial.nix doesn't blackhole on the still-being-
+    /// constructed `lib.trivial`.
+    InheritSelect {
+        source: rnix::ast::Expr,
+        name: String,
+        env: Env,
+    },
     /// Currently being evaluated -- detects infinite recursion.
     Blackhole,
     /// Already evaluated and memoized.
@@ -135,6 +148,18 @@ impl Thunk {
     /// Create a thunk that will evaluate `expr` in `env` when forced.
     pub fn new_suspended(expr: rnix::ast::Expr, env: Env) -> Self {
         Self(Rc::new(RefCell::new(ThunkRepr::Suspended { expr, env })))
+    }
+
+    /// Create a thunk that, when forced, evaluates `source` in
+    /// `env` and pulls out the attribute named `name`. Used for
+    /// `inherit (source) name` so the source is not eagerly
+    /// forced and self-referential patterns don't blackhole.
+    pub fn new_inherit_select(source: rnix::ast::Expr, name: String, env: Env) -> Self {
+        Self(Rc::new(RefCell::new(ThunkRepr::InheritSelect {
+            source,
+            name,
+            env,
+        })))
     }
 
     /// Create a thunk that is already evaluated (an optimization).
@@ -188,6 +213,45 @@ impl Thunk {
                     }
                 }
             }
+            ThunkRepr::InheritSelect { source, name, env } => {
+                // Evaluate source, force, then select `name`. The
+                // restore-on-error semantics mirror the Suspended
+                // branch so a transient error doesn't permanently
+                // blackhole this thunk.
+                let attempt = (|| -> Result<Value, EvalError> {
+                    let raw = evaluator(&source, &env)?;
+                    let mut forced = raw;
+                    while let Value::Thunk(inner) = forced {
+                        forced = inner.force(evaluator)?;
+                    }
+                    let attrs = match &forced {
+                        Value::Attrs(a) => a,
+                        _ => {
+                            return Err(EvalError::TypeError(format!(
+                                "inherit (source) {name}: source is {}, not a set",
+                                forced.type_name()
+                            )))
+                        }
+                    };
+                    attrs
+                        .get(&name)
+                        .cloned()
+                        .ok_or_else(|| EvalError::AttrNotFound(name.clone()))
+                })();
+                match attempt {
+                    Ok(mut value) => {
+                        while let Value::Thunk(inner) = value {
+                            value = inner.force(evaluator)?;
+                        }
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        *self.0.borrow_mut() = ThunkRepr::InheritSelect { source, name, env };
+                        Err(e)
+                    }
+                }
+            }
             ThunkRepr::Blackhole => {
                 // Already being evaluated -- infinite recursion.
                 Err(EvalError::TypeError(
@@ -208,6 +272,7 @@ impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.0.borrow() {
             ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
+            ThunkRepr::InheritSelect { name, .. } => write!(f, "<inherit-select {name}>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
         }
