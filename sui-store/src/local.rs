@@ -1,5 +1,7 @@
 //! Local store implementation — reads /nix/store + existing SQLite DB via SeaORM.
 
+use std::path::Path;
+
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Database};
 use sui_compat::store_path::StorePath;
 
@@ -15,22 +17,26 @@ pub struct LocalStore {
 impl LocalStore {
     /// Open the local store using the existing Nix database.
     ///
-    /// Default path: `/nix/var/nix/db/db.sqlite`
-    pub async fn open(db_path: &str) -> StoreResult<Self> {
-        let url = format!("sqlite://{db_path}?mode=ro");
-        let db = Database::connect(&url)
-            .await
-            .map_err(|e| StoreError::Database(e.to_string()))?;
-
-        Ok(Self {
-            db,
-            store_dir: "/nix/store".to_string(),
-        })
+    /// Default path: `/nix/var/nix/db/db.sqlite`.
+    /// Accepts any type convertible to a path (`&str`, `&Path`, `PathBuf`, etc.).
+    pub async fn open(db_path: impl AsRef<Path>) -> StoreResult<Self> {
+        Self::open_inner(db_path.as_ref(), "/nix/store").await
     }
 
     /// Open with a custom store directory (for testing).
-    pub async fn open_with_dir(db_path: &str, store_dir: &str) -> StoreResult<Self> {
-        let url = format!("sqlite://{db_path}?mode=ro");
+    pub async fn open_with_dir(
+        db_path: impl AsRef<Path>,
+        store_dir: impl AsRef<Path>,
+    ) -> StoreResult<Self> {
+        Self::open_inner(db_path.as_ref(), store_dir.as_ref().to_str().unwrap_or("/nix/store"))
+            .await
+    }
+
+    async fn open_inner(db_path: &Path, store_dir: &str) -> StoreResult<Self> {
+        let db_path_str = db_path.to_str().ok_or_else(|| {
+            StoreError::Database("database path is not valid UTF-8".to_string())
+        })?;
+        let url = format!("sqlite://{db_path_str}?mode=ro");
         let db = Database::connect(&url)
             .await
             .map_err(|e| StoreError::Database(e.to_string()))?;
