@@ -436,4 +436,118 @@ mod tests {
         let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
         assert_eq!(parsed, node);
     }
+
+    // ── Executable empty file ────────────────────────────
+
+    #[test]
+    fn roundtrip_executable_empty_file() {
+        let node = NarNode::Regular { executable: true, contents: vec![] };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        assert_eq!(buf.len() % 8, 0);
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Large symlink target ─────────────────────────────
+
+    #[test]
+    fn roundtrip_large_symlink_target() {
+        let long_target = "/nix/store/".to_string() + &"a".repeat(500) + "-long-package/lib/libfoo.so.1.2.3";
+        let node = NarNode::Symlink { target: long_target };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        assert_eq!(buf.len() % 8, 0);
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Deeply nested directories (10+ levels) ──────────
+
+    #[test]
+    fn deeply_nested_10_levels() {
+        let leaf = NarNode::Regular { executable: false, contents: b"leaf data".to_vec() };
+        let mut node = leaf;
+        for i in (0..10).rev() {
+            node = NarNode::Directory {
+                entries: vec![NarEntry { name: format!("d{i}"), node }],
+            };
+        }
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Deeply nested with multiple entries at each level ──
+
+    #[test]
+    fn deeply_nested_with_siblings() {
+        let leaf_file = NarNode::Regular { executable: false, contents: b"f".to_vec() };
+        let leaf_link = NarNode::Symlink { target: "f".to_string() };
+
+        let inner = NarNode::Directory {
+            entries: vec![
+                NarEntry { name: "data".to_string(), node: leaf_file.clone() },
+                NarEntry { name: "link".to_string(), node: leaf_link },
+            ],
+        };
+        let mid = NarNode::Directory {
+            entries: vec![
+                NarEntry { name: "inner".to_string(), node: inner },
+                NarEntry { name: "readme".to_string(), node: NarNode::Regular { executable: false, contents: b"README".to_vec() } },
+            ],
+        };
+        let root = NarNode::Directory {
+            entries: vec![
+                NarEntry { name: "bin".to_string(), node: NarNode::Regular { executable: true, contents: b"#!/bin/sh".to_vec() } },
+                NarEntry { name: "lib".to_string(), node: mid },
+            ],
+        };
+
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &root).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, root);
+    }
+
+    // ── Binary file content with all byte values ────────
+
+    #[test]
+    fn roundtrip_binary_content_all_byte_values() {
+        let contents: Vec<u8> = (0..=255).collect();
+        let node = NarNode::Regular { executable: false, contents };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Symlink with special characters ─────────────────
+
+    #[test]
+    fn roundtrip_symlink_with_special_chars() {
+        let node = NarNode::Symlink { target: "../foo bar/baz\ttab".to_string() };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        let parsed = NarReader::read_complete(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(parsed, node);
+    }
+
+    // ── Error: invalid magic ─────────────────────────────
+
+    #[test]
+    fn reader_rejects_bad_magic() {
+        let mut buf = Vec::new();
+        // Write wrong magic
+        write_str(&mut buf, b"not-nar-magic").unwrap();
+        let result = NarReader::read_complete(&mut Cursor::new(&buf));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reader_rejects_empty_input() {
+        let result = NarReader::read_complete(&mut Cursor::new(&[]));
+        assert!(result.is_err());
+    }
 }
