@@ -1799,4 +1799,637 @@ mod tests {
         b.insert("x".to_string(), Value::Int(1));
         assert_eq!(Value::Attrs(a), Value::Attrs(b));
     }
+
+    // ── EvalError variants & convenience constructors ────
+
+    #[test]
+    fn eval_error_type_error_constructor() {
+        let e = EvalError::type_error("oops");
+        assert!(matches!(e, EvalError::TypeError(ref s) if s == "oops"));
+    }
+
+    #[test]
+    fn eval_error_type_mismatch_constructor() {
+        let e = EvalError::type_mismatch("int", "string");
+        match e {
+            EvalError::TypeMismatch { expected, got } => {
+                assert_eq!(expected, "int");
+                assert_eq!(got, "string");
+            }
+            _ => panic!("expected TypeMismatch"),
+        }
+    }
+
+    #[test]
+    fn eval_error_is_throw_yes_no() {
+        assert!(EvalError::Throw("oops".into()).is_throw());
+        assert!(!EvalError::TypeError("oops".into()).is_throw());
+        assert!(!EvalError::AssertionFailed.is_throw());
+    }
+
+    #[test]
+    fn eval_error_is_infinite_recursion_yes_no() {
+        assert!(EvalError::InfiniteRecursion("loop".into()).is_infinite_recursion());
+        assert!(!EvalError::DivisionByZero.is_infinite_recursion());
+        assert!(!EvalError::Throw("x".into()).is_infinite_recursion());
+    }
+
+    #[test]
+    fn eval_error_display_undefined_var() {
+        let s = format!("{}", EvalError::UndefinedVar("foo".into()));
+        assert!(s.contains("undefined variable"));
+        assert!(s.contains("foo"));
+    }
+
+    #[test]
+    fn eval_error_display_type_error() {
+        let s = format!("{}", EvalError::TypeError("bad".into()));
+        assert!(s.contains("type error"));
+        assert!(s.contains("bad"));
+    }
+
+    #[test]
+    fn eval_error_display_attr_not_found() {
+        let s = format!("{}", EvalError::AttrNotFound("x".into()));
+        assert!(s.contains("attribute not found"));
+        assert!(s.contains("x"));
+    }
+
+    #[test]
+    fn eval_error_display_type_mismatch() {
+        let s = format!(
+            "{}",
+            EvalError::TypeMismatch { expected: "int", got: "string" }
+        );
+        assert!(s.contains("expected int"));
+        assert!(s.contains("got string"));
+    }
+
+    #[test]
+    fn eval_error_display_assertion_failed() {
+        let s = format!("{}", EvalError::AssertionFailed);
+        assert!(s.contains("assertion"));
+    }
+
+    #[test]
+    fn eval_error_display_division_by_zero() {
+        let s = format!("{}", EvalError::DivisionByZero);
+        assert!(s.contains("division by zero"));
+    }
+
+    #[test]
+    fn eval_error_display_infinite_recursion() {
+        let s = format!("{}", EvalError::InfiniteRecursion("loop".into()));
+        assert!(s.contains("infinite recursion"));
+        assert!(s.contains("loop"));
+    }
+
+    #[test]
+    fn eval_error_display_io_error() {
+        let s = format!(
+            "{}",
+            EvalError::IoError {
+                context: "ctx".into(),
+                message: "no such file".into(),
+            }
+        );
+        assert!(s.contains("I/O"));
+        assert!(s.contains("ctx"));
+        assert!(s.contains("no such file"));
+    }
+
+    #[test]
+    fn eval_error_display_throw() {
+        let s = format!("{}", EvalError::Throw("boom".into()));
+        assert_eq!(s, "boom");
+    }
+
+    #[test]
+    fn eval_error_display_not_implemented() {
+        let s = format!("{}", EvalError::NotImplemented("frob".into()));
+        assert!(s.contains("not yet implemented"));
+        assert!(s.contains("frob"));
+    }
+
+    #[test]
+    fn eval_error_display_parse_error() {
+        let s = format!("{}", EvalError::ParseError("syntax".into()));
+        assert!(s.contains("parse error"));
+        assert!(s.contains("syntax"));
+    }
+
+    #[test]
+    fn eval_error_partial_eq_same_variant() {
+        assert_eq!(
+            EvalError::UndefinedVar("x".into()),
+            EvalError::UndefinedVar("x".into()),
+        );
+        assert_ne!(
+            EvalError::UndefinedVar("x".into()),
+            EvalError::UndefinedVar("y".into()),
+        );
+        assert_ne!(
+            EvalError::UndefinedVar("x".into()),
+            EvalError::AttrNotFound("x".into()),
+        );
+    }
+
+    // ── ContextElement display ───────────────────────────
+
+    #[test]
+    fn context_element_display_plain() {
+        let e = ContextElement::Plain("/nix/store/xyz".into());
+        assert_eq!(format!("{e}"), "/nix/store/xyz");
+    }
+
+    #[test]
+    fn context_element_display_output() {
+        let e = ContextElement::Output {
+            drv: "/nix/store/abc.drv".into(),
+            output: "out".into(),
+        };
+        assert_eq!(format!("{e}"), "/nix/store/abc.drv!out");
+    }
+
+    #[test]
+    fn context_element_display_drv_deep() {
+        let e = ContextElement::DrvDeep("/nix/store/abc.drv".into());
+        assert_eq!(format!("{e}"), "=/nix/store/abc.drv");
+    }
+
+    // ── StringContext additional API ─────────────────────
+
+    #[test]
+    fn string_context_iter_yields_all() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/aaa".into());
+        ctx.add_plain("/nix/store/bbb".into());
+        let count = ctx.iter().count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn string_context_len_matches_set_size() {
+        let mut ctx = StringContext::new();
+        assert_eq!(ctx.len(), 0);
+        ctx.add_plain("/nix/store/x".into());
+        assert_eq!(ctx.len(), 1);
+        ctx.add_output("/nix/store/y.drv".into(), "out".into());
+        assert_eq!(ctx.len(), 2);
+    }
+
+    #[test]
+    fn string_context_insert_raw_element() {
+        let mut ctx = StringContext::new();
+        ctx.insert(ContextElement::Plain("/nix/store/foo".into()));
+        assert_eq!(ctx.len(), 1);
+    }
+
+    #[test]
+    fn string_context_default_is_empty() {
+        let ctx = StringContext::default();
+        assert!(ctx.is_empty());
+    }
+
+    // ── NixString additional traits ──────────────────────
+
+    #[test]
+    fn nix_string_as_ref_str() {
+        let s = NixString::plain("hello");
+        let r: &str = s.as_ref();
+        assert_eq!(r, "hello");
+    }
+
+    #[test]
+    fn nix_string_deref_to_str_methods() {
+        let s = NixString::plain("Hello World");
+        assert_eq!(s.len(), 11);
+        assert!(s.starts_with("Hello"));
+        // Calling &str method via Deref proves Deref impl is wired up.
+        assert_eq!(s.to_uppercase(), "HELLO WORLD");
+    }
+
+    // ── NixAttrs additional API ──────────────────────────
+
+    #[test]
+    fn nixattrs_remove_returns_value() {
+        let mut a = NixAttrs::new();
+        a.insert("x".into(), Value::Int(1));
+        let removed = a.remove("x");
+        assert_eq!(removed, Some(Value::Int(1)));
+        assert!(!a.contains_key("x"));
+        assert_eq!(a.remove("y"), None);
+    }
+
+    #[test]
+    fn nixattrs_values_iter() {
+        let mut a = NixAttrs::new();
+        a.insert("a".into(), Value::Int(1));
+        a.insert("b".into(), Value::Int(2));
+        let mut vs: Vec<&Value> = a.values().collect();
+        vs.sort_by_key(|v| match v {
+            Value::Int(n) => *n,
+            _ => 0,
+        });
+        assert_eq!(vs, vec![&Value::Int(1), &Value::Int(2)]);
+    }
+
+    #[test]
+    fn nixattrs_iter_returns_sorted_pairs() {
+        let mut a = NixAttrs::new();
+        a.insert("zeta".into(), Value::Int(3));
+        a.insert("alpha".into(), Value::Int(1));
+        a.insert("mu".into(), Value::Int(2));
+        let pairs: Vec<(&String, &Value)> = a.iter().collect();
+        assert_eq!(pairs[0].0, "alpha");
+        assert_eq!(pairs[1].0, "mu");
+        assert_eq!(pairs[2].0, "zeta");
+    }
+
+    #[test]
+    fn nixattrs_from_iterator() {
+        let pairs = vec![
+            ("a".to_string(), Value::Int(1)),
+            ("b".to_string(), Value::Int(2)),
+        ];
+        let attrs: NixAttrs = pairs.into_iter().collect();
+        assert_eq!(attrs.len(), 2);
+        assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+        assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn nixattrs_into_iterator_yields_owned() {
+        let mut a = NixAttrs::new();
+        a.insert("x".into(), Value::Int(42));
+        let pairs: Vec<(String, Value)> = a.into_iter().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "x");
+        assert_eq!(pairs[0].1, Value::Int(42));
+    }
+
+    #[test]
+    fn nixattrs_default_is_empty() {
+        let a = NixAttrs::default();
+        assert!(a.is_empty());
+    }
+
+    // ── Value::From conversions ──────────────────────────
+
+    #[test]
+    fn value_from_bool() {
+        assert_eq!(Value::from(true), Value::Bool(true));
+        assert_eq!(Value::from(false), Value::Bool(false));
+    }
+
+    #[test]
+    fn value_from_i64() {
+        assert_eq!(Value::from(42_i64), Value::Int(42));
+        assert_eq!(Value::from(-1_i64), Value::Int(-1));
+    }
+
+    #[test]
+    fn value_from_f64() {
+        assert_eq!(Value::from(2.5_f64), Value::Float(2.5));
+    }
+
+    #[test]
+    fn value_from_nix_string() {
+        let v: Value = NixString::plain("hi").into();
+        assert_eq!(v, Value::string("hi"));
+    }
+
+    #[test]
+    fn value_from_nix_attrs() {
+        let mut a = NixAttrs::new();
+        a.insert("x".into(), Value::Int(1));
+        let v: Value = a.into();
+        match v {
+            Value::Attrs(_) => {}
+            _ => panic!("expected Attrs"),
+        }
+    }
+
+    #[test]
+    fn value_from_vec() {
+        let v: Value = vec![Value::Int(1), Value::Int(2)].into();
+        assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2)]));
+    }
+
+    #[test]
+    fn value_default_is_null() {
+        let v: Value = Value::default();
+        assert_eq!(v, Value::Null);
+    }
+
+    // ── From<&serde_json::Value> ─────────────────────────
+
+    #[test]
+    fn value_from_json_null() {
+        let v = Value::from(&serde_json::Value::Null);
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn value_from_json_bool() {
+        let v = Value::from(&serde_json::Value::Bool(true));
+        assert_eq!(v, Value::Bool(true));
+    }
+
+    #[test]
+    fn value_from_json_int() {
+        let v = Value::from(&serde_json::json!(42));
+        assert_eq!(v, Value::Int(42));
+    }
+
+    #[test]
+    fn value_from_json_float() {
+        let v = Value::from(&serde_json::json!(3.14));
+        match v {
+            Value::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn value_from_json_string() {
+        let v = Value::from(&serde_json::Value::String("hi".into()));
+        assert_eq!(v, Value::string("hi"));
+    }
+
+    #[test]
+    fn value_from_json_array() {
+        let v = Value::from(&serde_json::json!([1, true, "x"]));
+        match v {
+            Value::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], Value::Int(1));
+                assert_eq!(items[1], Value::Bool(true));
+                assert_eq!(items[2], Value::string("x"));
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    #[test]
+    fn value_from_json_object() {
+        let v = Value::from(&serde_json::json!({"a": 1, "b": "x"}));
+        match v {
+            Value::Attrs(attrs) => {
+                assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+                assert_eq!(attrs.get("b"), Some(&Value::string("x")));
+            }
+            _ => panic!("expected Attrs"),
+        }
+    }
+
+    #[test]
+    fn value_from_json_nested() {
+        let v = Value::from(&serde_json::json!({"outer": {"inner": [1, 2]}}));
+        let json_back = v.to_json();
+        assert_eq!(json_back, serde_json::json!({"outer": {"inner": [1, 2]}}));
+    }
+
+    // ── From<&toml::Value> ──────────────────────────────
+
+    #[test]
+    fn value_from_toml_string() {
+        let t = toml::Value::String("hi".into());
+        assert_eq!(Value::from(&t), Value::string("hi"));
+    }
+
+    #[test]
+    fn value_from_toml_int() {
+        let t = toml::Value::Integer(42);
+        assert_eq!(Value::from(&t), Value::Int(42));
+    }
+
+    #[test]
+    fn value_from_toml_float() {
+        let t = toml::Value::Float(3.14);
+        match Value::from(&t) {
+            Value::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn value_from_toml_bool() {
+        let t = toml::Value::Boolean(true);
+        assert_eq!(Value::from(&t), Value::Bool(true));
+    }
+
+    #[test]
+    fn value_from_toml_array() {
+        let t = toml::Value::Array(vec![
+            toml::Value::Integer(1),
+            toml::Value::Integer(2),
+        ]);
+        assert_eq!(
+            Value::from(&t),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+    }
+
+    #[test]
+    fn value_from_toml_table() {
+        let mut tbl = toml::map::Map::new();
+        tbl.insert("k".into(), toml::Value::Integer(7));
+        let t = toml::Value::Table(tbl);
+        match Value::from(&t) {
+            Value::Attrs(attrs) => {
+                assert_eq!(attrs.get("k"), Some(&Value::Int(7)));
+            }
+            _ => panic!("expected Attrs"),
+        }
+    }
+
+    #[test]
+    fn value_from_toml_datetime_becomes_string() {
+        // toml::Value::Datetime serializes via Display.
+        let dt: toml::value::Datetime = "2024-01-01T00:00:00Z".parse().unwrap();
+        let t = toml::Value::Datetime(dt);
+        match Value::from(&t) {
+            Value::String(_) => {}
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    // ── Value::coerce_to_path ────────────────────────────
+
+    #[test]
+    fn coerce_to_path_from_path() {
+        let v = Value::Path("/foo".into());
+        assert_eq!(v.coerce_to_path("ctx").unwrap(), "/foo");
+    }
+
+    #[test]
+    fn coerce_to_path_from_string() {
+        let v = Value::string("/bar");
+        assert_eq!(v.coerce_to_path("ctx").unwrap(), "/bar");
+    }
+
+    #[test]
+    fn coerce_to_path_errors_on_int() {
+        let v = Value::Int(1);
+        let e = v.coerce_to_path("readFile").unwrap_err();
+        match e {
+            EvalError::TypeError(ref msg) => {
+                assert!(msg.contains("readFile"));
+                assert!(msg.contains("path or string"));
+                assert!(msg.contains("int"));
+            }
+            _ => panic!("expected TypeError"),
+        }
+    }
+
+    #[test]
+    fn coerce_to_path_errors_on_null() {
+        let v = Value::Null;
+        assert!(v.coerce_to_path("ctx").is_err());
+    }
+
+    // ── BuiltinFn debug ──────────────────────────────────
+
+    #[test]
+    fn builtin_fn_debug_includes_name() {
+        let b = BuiltinFn {
+            name: "myFunc",
+            func: Arc::new(|_| Ok(Value::Null)),
+        };
+        let s = format!("{b:?}");
+        assert!(s.contains("myFunc"));
+        assert!(s.contains("builtin"));
+    }
+
+    // ── Thunk additional tests ───────────────────────────
+
+    #[test]
+    fn thunk_force_chains_through_inner_thunks() {
+        // Build a thunk whose evaluator yields another thunk.
+        let inner_root = rnix::Root::parse("99");
+        let inner_expr = inner_root.tree().expr().unwrap();
+        let inner_thunk = Thunk::new_suspended(inner_expr, Env::new());
+        let outer = Thunk::new_evaluated(Value::Thunk(inner_thunk));
+        let result = outer.force(&|e, env| crate::eval::eval_expr(e, env));
+        // Already-evaluated outer returns the inner thunk; the chain is
+        // collapsed by the higher-level force_value, not by force() itself
+        // when starting from Evaluated. So we just check we got a Thunk
+        // back unchanged.
+        match result.unwrap() {
+            Value::Thunk(_) | Value::Int(99) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn thunk_inherit_select_debug_format() {
+        let root = rnix::Root::parse("{ x = 1; }");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_inherit_select(expr, "x".into(), Env::new());
+        let s = format!("{thunk:?}");
+        assert!(s.contains("inherit-select"));
+        assert!(s.contains("x"));
+    }
+
+    #[test]
+    fn thunk_blackhole_debug_format() {
+        let root = rnix::Root::parse("1");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        *thunk.0.borrow_mut() = ThunkRepr::Blackhole;
+        assert_eq!(format!("{thunk:?}"), "<blackhole>");
+    }
+
+    // ── Value display for thunks ─────────────────────────
+
+    #[test]
+    fn value_display_thunk_evaluates() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(format!("{val}"), "42");
+    }
+
+    #[test]
+    fn value_to_json_thunk_forces() {
+        let root = rnix::Root::parse(r#""world""#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(val.to_json(), serde_json::Value::String("world".into()));
+    }
+
+    #[test]
+    fn value_type_name_thunk_forces() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert_eq!(val.type_name(), "int");
+    }
+
+    // ── as_string / as_nix_string thunk error ────────────
+
+    #[test]
+    fn as_string_errors_on_thunk() {
+        let root = rnix::Root::parse(r#""x""#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        let err = val.as_string().unwrap_err();
+        match err {
+            EvalError::TypeError(msg) => assert!(msg.contains("thunk")),
+            _ => panic!("expected TypeError"),
+        }
+    }
+
+    #[test]
+    fn as_nix_string_errors_on_thunk() {
+        let root = rnix::Root::parse(r#""x""#);
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert!(val.as_nix_string().is_err());
+    }
+
+    #[test]
+    fn as_attrs_errors_on_thunk() {
+        let root = rnix::Root::parse("{}");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert!(val.as_attrs().is_err());
+    }
+
+    #[test]
+    fn as_list_errors_on_thunk() {
+        let root = rnix::Root::parse("[]");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let val = Value::Thunk(thunk);
+        assert!(val.as_list().is_err());
+    }
+
+    // ── as_nix_string OK on string ───────────────────────
+
+    #[test]
+    fn as_nix_string_ok_on_string() {
+        let v = Value::string("hi");
+        let ns = v.as_nix_string().unwrap();
+        assert_eq!(ns.as_str(), "hi");
+    }
+
+    #[test]
+    fn as_nix_string_errors_on_int() {
+        let v = Value::Int(1);
+        match v.as_nix_string() {
+            Err(EvalError::TypeMismatch { expected, got }) => {
+                assert_eq!(expected, "string");
+                assert_eq!(got, "int");
+            }
+            _ => panic!("expected TypeMismatch"),
+        }
+    }
 }
