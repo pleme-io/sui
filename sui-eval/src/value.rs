@@ -19,6 +19,16 @@ pub enum ContextElement {
     DrvDeep(String),
 }
 
+impl fmt::Display for ContextElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ContextElement::Plain(p) => write!(f, "{p}"),
+            ContextElement::Output { drv, output } => write!(f, "{drv}!{output}"),
+            ContextElement::DrvDeep(d) => write!(f, "={d}"),
+        }
+    }
+}
+
 /// The context attached to a Nix string: a set of store-path references that
 /// the string depends on. Plain string literals have an empty context.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
