@@ -252,6 +252,16 @@ impl NodeRegistry {
         self.nodes.values()
     }
 
+    /// Iterate over hostnames in sorted order.
+    pub fn hostnames(&self) -> impl Iterator<Item = &str> {
+        self.nodes.keys().map(String::as_str)
+    }
+
+    /// Iterate over nodes matching a given status.
+    pub fn by_status(&self, status: NodeStatus) -> impl Iterator<Item = &Node> {
+        self.nodes.values().filter(move |n| n.status == status)
+    }
+
     /// Returns the number of nodes in the registry.
     #[must_use]
     pub fn len(&self) -> usize {
