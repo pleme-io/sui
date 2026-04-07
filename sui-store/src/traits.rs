@@ -910,4 +910,551 @@ mod tests {
         let closure = store.compute_closure(&[bash_path()]).await.unwrap();
         assert_eq!(closure.len(), 1);
     }
+
+    // ── PathInfo::new constructor ──────────────────────────
+
+    #[test]
+    fn path_info_new_sets_path_and_hash() {
+        let info = PathInfo::new("/nix/store/abc-x", "sha256:aaa");
+        assert_eq!(info.path, "/nix/store/abc-x");
+        assert_eq!(info.nar_hash, "sha256:aaa");
+        assert_eq!(info.nar_size, 0);
+        assert!(info.references.is_empty());
+        assert!(info.deriver.is_none());
+        assert!(info.signatures.is_empty());
+        assert_eq!(info.registration_time, 0);
+        assert!(info.content_address.is_none());
+    }
+
+    #[test]
+    fn path_info_new_accepts_string_owned() {
+        let info = PathInfo::new(String::from("/nix/store/abc-x"), String::from("sha256:aaa"));
+        assert_eq!(info.path, "/nix/store/abc-x");
+    }
+
+    #[test]
+    fn path_info_default_is_zero() {
+        let info = PathInfo::default();
+        assert!(info.path.is_empty());
+        assert_eq!(info.nar_size, 0);
+    }
+
+    // ── PathInfo Display ───────────────────────────────────
+
+    #[test]
+    fn path_info_display_includes_path_and_size() {
+        let info = PathInfo {
+            path: "/nix/store/abc-hello".to_string(),
+            nar_hash: "sha256:aaa".to_string(),
+            nar_size: 1024,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 0,
+            content_address: None,
+        };
+        let s = info.to_string();
+        assert!(s.contains("/nix/store/abc-hello"));
+        assert!(s.contains("1024"));
+    }
+
+    // ── PathInfo From<&NarInfo> conversion ─────────────────
+
+    #[test]
+    fn path_info_from_narinfo_full() {
+        let narinfo = sui_compat::narinfo::NarInfo {
+            store_path: "/nix/store/abc-hello".to_string(),
+            url: "nar/abc.nar.xz".to_string(),
+            compression: "xz".to_string(),
+            file_hash: "sha256:fhash".to_string(),
+            file_size: 500,
+            nar_hash: "sha256:nhash".to_string(),
+            nar_size: 1024,
+            references: vec!["dep1".to_string(), "dep2".to_string()],
+            deriver: Some("abc.drv".to_string()),
+            signatures: vec!["k:s".to_string()],
+            ca: Some("fixed:out:r:sha256:cafe".to_string()),
+        };
+        let info = PathInfo::from(&narinfo);
+        assert_eq!(info.path, "/nix/store/abc-hello");
+        assert_eq!(info.nar_hash, "sha256:nhash");
+        assert_eq!(info.nar_size, 1024);
+        assert_eq!(info.references.len(), 2);
+        assert_eq!(info.deriver.as_deref(), Some("abc.drv"));
+        assert_eq!(info.signatures, vec!["k:s"]);
+        assert_eq!(info.content_address.as_deref(), Some("fixed:out:r:sha256:cafe"));
+        // registration_time is not in NarInfo, defaults to 0
+        assert_eq!(info.registration_time, 0);
+    }
+
+    #[test]
+    fn path_info_from_narinfo_minimal() {
+        let narinfo = sui_compat::narinfo::NarInfo {
+            store_path: "/nix/store/abc-leaf".to_string(),
+            url: "nar/abc.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:f".to_string(),
+            file_size: 0,
+            nar_hash: "sha256:n".to_string(),
+            nar_size: 0,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+        let info = PathInfo::from(&narinfo);
+        assert!(info.references.is_empty());
+        assert!(info.deriver.is_none());
+        assert!(info.content_address.is_none());
+        assert_eq!(info.nar_size, 0);
+    }
+
+    // ── StoreError discriminants ───────────────────────────
+
+    #[test]
+    fn store_error_is_path_not_found_true() {
+        let e = StoreError::PathNotFound("/nix/store/x".to_string());
+        assert!(e.is_path_not_found());
+        assert!(!e.is_not_supported());
+    }
+
+    #[test]
+    fn store_error_is_path_not_found_false() {
+        let e = StoreError::Database("x".to_string());
+        assert!(!e.is_path_not_found());
+    }
+
+    #[test]
+    fn store_error_is_not_supported_true() {
+        let e = StoreError::NotSupported("gc".to_string());
+        assert!(e.is_not_supported());
+        assert!(!e.is_path_not_found());
+    }
+
+    #[test]
+    fn store_error_is_not_supported_false_for_io() {
+        let e = StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "boom",
+        ));
+        assert!(!e.is_not_supported());
+        assert!(!e.is_path_not_found());
+    }
+
+    #[test]
+    fn store_error_io_display_contains_message() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
+        let e: StoreError = io_err.into();
+        assert!(e.to_string().contains("missing file"));
+        assert!(e.to_string().contains("io error"));
+    }
+
+    #[test]
+    fn store_error_not_supported_display() {
+        let e = StoreError::NotSupported("gc not implemented".to_string());
+        let s = e.to_string();
+        assert!(s.contains("not supported"));
+        assert!(s.contains("gc"));
+    }
+
+    // ── StoreError From<HttpError> ─────────────────────────
+
+    #[test]
+    fn store_error_from_http_error_request() {
+        use crate::http::HttpError;
+        let http_err = HttpError::Request("dns failed".to_string());
+        let store_err: StoreError = http_err.into();
+        assert!(matches!(store_err, StoreError::Http(_)));
+        assert!(store_err.to_string().contains("dns failed"));
+    }
+
+    #[test]
+    fn store_error_from_http_error_decode() {
+        use crate::http::HttpError;
+        let http_err = HttpError::Decode("bad utf-8".to_string());
+        let store_err: StoreError = http_err.into();
+        assert!(matches!(store_err, StoreError::Http(_)));
+        assert!(store_err.to_string().contains("bad utf-8"));
+    }
+
+    // ── GcOptions builder methods ──────────────────────────
+
+    #[test]
+    fn gc_options_with_max_freed() {
+        let opts = GcOptions::default().with_max_freed(1024);
+        assert_eq!(opts.max_freed, 1024);
+        assert!(opts.delete_older_than.is_none());
+    }
+
+    #[test]
+    fn gc_options_with_delete_older_than() {
+        let opts = GcOptions::default().with_delete_older_than(3600);
+        assert_eq!(opts.delete_older_than, Some(3600));
+        assert_eq!(opts.max_freed, 0);
+    }
+
+    #[test]
+    fn gc_options_chain_builder() {
+        let opts = GcOptions::default()
+            .with_max_freed(1_000_000)
+            .with_delete_older_than(7200);
+        assert_eq!(opts.max_freed, 1_000_000);
+        assert_eq!(opts.delete_older_than, Some(7200));
+    }
+
+    #[test]
+    fn gc_options_eq() {
+        let a = GcOptions::default().with_max_freed(100);
+        let b = GcOptions {
+            max_freed: 100,
+            delete_older_than: None,
+        };
+        assert_eq!(a, b);
+    }
+
+    // ── GcResult Display ───────────────────────────────────
+
+    #[test]
+    fn gc_result_display_format() {
+        let r = GcResult {
+            paths_deleted: 5,
+            bytes_freed: 1024,
+        };
+        let s = r.to_string();
+        assert!(s.contains("5"));
+        assert!(s.contains("1024"));
+        assert!(s.contains("paths"));
+    }
+
+    #[test]
+    fn gc_result_default() {
+        let r = GcResult::default();
+        assert_eq!(r.paths_deleted, 0);
+        assert_eq!(r.bytes_freed, 0);
+    }
+
+    #[test]
+    fn gc_result_eq() {
+        let a = GcResult {
+            paths_deleted: 1,
+            bytes_freed: 100,
+        };
+        let b = GcResult {
+            paths_deleted: 1,
+            bytes_freed: 100,
+        };
+        let c = GcResult {
+            paths_deleted: 1,
+            bytes_freed: 200,
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // ── compute_closure ordering & determinism ─────────────
+
+    #[tokio::test]
+    async fn compute_closure_dedup_with_diamond_deps() {
+        // diamond: a -> b, a -> c, b -> d, c -> d
+        let a_path =
+            StorePath::from_absolute_path("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a")
+                .unwrap();
+        let b_path =
+            StorePath::from_absolute_path("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b")
+                .unwrap();
+        let c_path =
+            StorePath::from_absolute_path("/nix/store/cccccccccccccccccccccccccccccccc-c")
+                .unwrap();
+        let d_path =
+            StorePath::from_absolute_path("/nix/store/dddddddddddddddddddddddddddddddd-d")
+                .unwrap();
+
+        let store = TestStore::new()
+            .with_path(PathInfo {
+                path: a_path.to_absolute_path(),
+                nar_hash: "sha256:a".to_string(),
+                nar_size: 1,
+                references: vec![b_path.to_absolute_path(), c_path.to_absolute_path()],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 0,
+                content_address: None,
+            })
+            .with_path(PathInfo {
+                path: b_path.to_absolute_path(),
+                nar_hash: "sha256:b".to_string(),
+                nar_size: 1,
+                references: vec![d_path.to_absolute_path()],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 0,
+                content_address: None,
+            })
+            .with_path(PathInfo {
+                path: c_path.to_absolute_path(),
+                nar_hash: "sha256:c".to_string(),
+                nar_size: 1,
+                references: vec![d_path.to_absolute_path()],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 0,
+                content_address: None,
+            })
+            .with_path(PathInfo {
+                path: d_path.to_absolute_path(),
+                nar_hash: "sha256:d".to_string(),
+                nar_size: 1,
+                references: vec![],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 0,
+                content_address: None,
+            });
+
+        let closure = store.compute_closure(&[a_path.clone()]).await.unwrap();
+        // a, b, c, d each appear exactly once
+        assert_eq!(closure.len(), 4);
+        let paths: Vec<String> = closure.iter().map(|p| p.to_absolute_path()).collect();
+        assert!(paths.contains(&a_path.to_absolute_path()));
+        assert!(paths.contains(&b_path.to_absolute_path()));
+        assert!(paths.contains(&c_path.to_absolute_path()));
+        assert!(paths.contains(&d_path.to_absolute_path()));
+
+        // d should appear once even though both b and c reference it
+        let d_count = paths
+            .iter()
+            .filter(|p| **p == d_path.to_absolute_path())
+            .count();
+        assert_eq!(d_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compute_closure_propagates_query_error() {
+        // The store has hello but hello references glibc which is missing.
+        // query_references for hello succeeds (info present), then while
+        // walking, glibc isn't in the store -> query_references for glibc errors.
+        let store = TestStore::new().with_path(hello_info());
+        let result = store.compute_closure(&[hello_path()]).await;
+        assert!(result.is_err());
+    }
+
+    // ── PartialEq on PathInfo ──────────────────────────────
+
+    #[test]
+    fn path_info_eq_full_match() {
+        let a = hello_info();
+        let b = hello_info();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn path_info_neq_when_size_differs() {
+        let a = hello_info();
+        let mut b = hello_info();
+        b.nar_size = 9999;
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn path_info_neq_when_signatures_differ() {
+        let a = hello_info();
+        let mut b = hello_info();
+        b.signatures = vec!["other:sig".to_string()];
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn path_info_neq_when_deriver_differs() {
+        let a = hello_info();
+        let mut b = hello_info();
+        b.deriver = None;
+        assert_ne!(a, b);
+    }
+
+    // ── MockStore (alternate Store impl) ──────────────────
+    // Verifies that multiple Store implementations can coexist via dyn dispatch.
+
+    /// Counts every Store-trait call. Useful for verifying call dispatch.
+    struct MockStore {
+        info: Option<PathInfo>,
+        query_count: std::sync::atomic::AtomicUsize,
+        valid_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockStore {
+        fn new(info: Option<PathInfo>) -> Self {
+            Self {
+                info,
+                query_count: std::sync::atomic::AtomicUsize::new(0),
+                valid_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn query_count(&self) -> usize {
+            self.query_count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn valid_count(&self) -> usize {
+            self.valid_count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Store for MockStore {
+        async fn query_path_info(
+            &self,
+            _path: &StorePath,
+        ) -> StoreResult<Option<PathInfo>> {
+            self.query_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self.info.clone())
+        }
+        async fn is_valid_path(
+            &self,
+            _path: &StorePath,
+        ) -> StoreResult<bool> {
+            self.valid_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self.info.is_some())
+        }
+        async fn query_all_valid_paths(&self) -> StoreResult<Vec<StorePath>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_store_counts_query_calls() {
+        let store = MockStore::new(Some(hello_info()));
+        let _ = store.query_path_info(&hello_path()).await.unwrap();
+        let _ = store.query_path_info(&hello_path()).await.unwrap();
+        let _ = store.query_path_info(&hello_path()).await.unwrap();
+        assert_eq!(store.query_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn mock_store_counts_valid_calls() {
+        let store = MockStore::new(Some(hello_info()));
+        let _ = store.is_valid_path(&hello_path()).await.unwrap();
+        let _ = store.is_valid_path(&hello_path()).await.unwrap();
+        assert_eq!(store.valid_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn mock_store_via_dyn_dispatch() {
+        let store: Box<dyn Store> = Box::new(MockStore::new(Some(hello_info())));
+        let info = store.query_path_info(&hello_path()).await.unwrap();
+        assert!(info.is_some());
+    }
+
+    #[tokio::test]
+    async fn mock_store_returns_none_when_empty() {
+        let store = MockStore::new(None);
+        let info = store.query_path_info(&hello_path()).await.unwrap();
+        assert!(info.is_none());
+    }
+
+    #[tokio::test]
+    async fn mock_store_returns_false_when_empty() {
+        let store = MockStore::new(None);
+        assert!(!store.is_valid_path(&hello_path()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mock_store_query_all_returns_empty() {
+        let store = MockStore::new(Some(hello_info()));
+        let paths = store.query_all_valid_paths().await.unwrap();
+        assert!(paths.is_empty());
+    }
+
+    // ── Multiple Store impls coexist via Vec<Box<dyn Store>> ──
+
+    #[tokio::test]
+    async fn vec_of_dyn_store_dispatch() {
+        let stores: Vec<Box<dyn Store>> = vec![
+            Box::new(TestStore::new().with_path(hello_info())),
+            Box::new(MockStore::new(Some(hello_info()))),
+        ];
+        for store in &stores {
+            let info = store.query_path_info(&hello_path()).await.unwrap();
+            assert!(info.is_some());
+        }
+    }
+
+    // ── compute_closure with multiple roots ────────────────
+
+    #[tokio::test]
+    async fn compute_closure_multiple_roots_no_overlap() {
+        let store = TestStore::new()
+            .with_path(hello_info())
+            .with_path(glibc_info())
+            .with_path(bash_info());
+
+        let closure = store
+            .compute_closure(&[glibc_path(), bash_path()])
+            .await
+            .unwrap();
+        // glibc + bash + bash (already in glibc closure) = 2 unique
+        assert_eq!(closure.len(), 2);
+    }
+
+    // ── add_to_store / register_path / add_signatures error messages ──
+
+    #[tokio::test]
+    async fn add_to_store_error_includes_method_name() {
+        let store = TestStore::new();
+        let err = store.add_to_store("x", b"d", &[]).await.unwrap_err();
+        assert!(err.to_string().contains("add_to_store"));
+    }
+
+    #[tokio::test]
+    async fn register_path_error_includes_method_name() {
+        let store = TestStore::new();
+        let err = store.register_path(&hello_info()).await.unwrap_err();
+        assert!(err.to_string().contains("register_path"));
+    }
+
+    #[tokio::test]
+    async fn add_signatures_error_includes_method_name() {
+        let store = TestStore::new();
+        let err = store
+            .add_signatures(&hello_path(), &[])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("add_signatures"));
+    }
+
+    #[tokio::test]
+    async fn query_referrers_error_includes_method_name() {
+        let store = TestStore::new();
+        let err = store.query_referrers(&hello_path()).await.unwrap_err();
+        assert!(err.to_string().contains("query_referrers"));
+    }
+
+    #[tokio::test]
+    async fn collect_garbage_error_includes_method_name() {
+        let store = TestStore::new();
+        let err = store
+            .collect_garbage(&GcOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("garbage collection"));
+    }
+
+    // ── Send + Sync constraints ────────────────────────────
+
+    #[test]
+    fn store_trait_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+        assert_send_sync::<dyn Store>();
+    }
+
+    #[test]
+    fn path_info_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<PathInfo>();
+    }
+
+    #[test]
+    fn store_error_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StoreError>();
+    }
 }
