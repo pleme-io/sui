@@ -16,7 +16,7 @@ use tsunagu::SocketPath;
 ///
 /// All fields have sensible defaults so the daemon can start without
 /// a config file present.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct SuiDaemonConfig {
     /// TCP listen address for the REST/GraphQL API.

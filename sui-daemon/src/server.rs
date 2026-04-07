@@ -33,7 +33,7 @@ pub fn xdg_socket_path() -> PathBuf {
 }
 
 /// Configuration for the daemon server.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
     /// Unix socket path to listen on.
     pub socket_path: PathBuf,
