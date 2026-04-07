@@ -52,6 +52,7 @@ impl SuiDaemonConfig {
     /// Returns the loaded config store for hot-reloadable access, or
     /// `None` if no config file was found (in which case callers should
     /// use [`SuiDaemonConfig::default()`]).
+    #[must_use]
     pub fn discover_and_load() -> Option<ConfigStore<Self>> {
         let path = ConfigDiscovery::new("sui")
             .env_override("SUI_CONFIG")
@@ -73,8 +74,8 @@ impl SuiDaemonConfig {
     /// # Errors
     ///
     /// Returns a shikumi error if the file cannot be parsed.
-    pub fn load_from(path: &Path) -> Result<ConfigStore<Self>, shikumi::ShikumiError> {
-        ConfigStore::<Self>::load(path, "SUI_")
+    pub fn load_from(path: impl AsRef<Path>) -> Result<ConfigStore<Self>, shikumi::ShikumiError> {
+        ConfigStore::<Self>::load(path.as_ref(), "SUI_")
     }
 }
 
