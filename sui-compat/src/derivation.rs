@@ -17,7 +17,7 @@ pub enum DerivationError {
 }
 
 /// A derivation output descriptor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DerivationOutput {
     /// Store path for this output (empty for floating content-addressed outputs).
     pub path: String,
@@ -28,7 +28,7 @@ pub struct DerivationOutput {
 }
 
 /// A parsed Nix derivation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Derivation {
     /// Named outputs (e.g. `"out"`, `"dev"`, `"lib"`).
     pub outputs: BTreeMap<String, DerivationOutput>,
