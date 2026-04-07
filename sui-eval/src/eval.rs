@@ -4496,4 +4496,190 @@ mod tests {
         let v = ev("(builtins.tryEval 42).value");
         assert_eq!(v, Value::Int(42));
     }
+
+    // ── LegacyLet (`let { body = ...; ...}`) ───────────────
+
+    #[test]
+    fn legacy_let_returns_body_attr() {
+        // `let { x = 1; body = x + 41; }` is the legacy let form: it
+        // is desugared as a recursive set whose `body` attr is the
+        // result.
+        assert_eq!(ev("let { x = 1; body = x + 41; }"), Value::Int(42));
+    }
+
+    #[test]
+    fn legacy_let_missing_body_errors() {
+        let result = eval("let { x = 1; }");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn legacy_let_with_inherit_from_scope() {
+        assert_eq!(
+            ev("let outer = 5; in let { inherit outer; body = outer * 2; }"),
+            Value::Int(10),
+        );
+    }
+
+    // ── eval_str interpolation more cases ──────────────────
+
+    #[test]
+    fn interp_with_string_concat_preserves_order() {
+        assert_eq!(
+            ev(r#"let a = "x"; b = "y"; in "${a}-${b}""#),
+            Value::string("x-y"),
+        );
+    }
+
+    #[test]
+    fn interp_only_literal_part() {
+        assert_eq!(ev(r#""no interp here""#), Value::string("no interp here"));
+    }
+
+    // ── eval_attr dynamic / string keys ────────────────────
+
+    #[test]
+    fn dynamic_attr_via_string_key_in_set() {
+        // `{ "a" = 1; }.a` works because attr keys can be string literals.
+        assert_eq!(ev(r#"{ "a" = 1; }.a"#), Value::Int(1));
+    }
+
+    #[test]
+    fn dynamic_attr_via_interpolated_key() {
+        let v = ev(r#"let k = "foo"; in { ${k} = 99; }.foo"#);
+        assert_eq!(v, Value::Int(99));
+    }
+
+    // ── String key access via select with dynamic ──────────
+
+    #[test]
+    fn select_with_string_key() {
+        let v = ev(r#"{ a = 42; }."a""#);
+        assert_eq!(v, Value::Int(42));
+    }
+
+    // ── Apply via __functor on attrset ─────────────────────
+
+    #[test]
+    fn apply_attrset_with_functor_works() {
+        let v = ev("let s = { __functor = self: x: x + 1; }; in s 5");
+        assert_eq!(v, Value::Int(6));
+    }
+
+    // ── Negation of negative ───────────────────────────────
+
+    #[test]
+    fn double_negate_int() {
+        assert_eq!(ev("- (-5)"), Value::Int(5));
+    }
+
+    // ── Inherit from rec scope binding visibility ──────────
+
+    #[test]
+    fn inherit_in_let_makes_name_available() {
+        assert_eq!(
+            ev("let src = { a = 7; }; in let inherit (src) a; in a"),
+            Value::Int(7),
+        );
+    }
+
+    // ── String + path ──────────────────────────────────────
+
+    #[test]
+    fn path_plus_string_yields_path() {
+        let v = ev(r#"/foo + "/bar""#);
+        match v {
+            Value::Path(p) => assert_eq!(p, "/foo/bar"),
+            _ => panic!("expected path"),
+        }
+    }
+
+    // ── Lazy attrset value not forced unless selected ──────
+
+    #[test]
+    fn attrset_value_not_forced_unless_selected() {
+        // `bad` is an attr whose value would error if forced, but we
+        // only ever select `good`, so it's never touched.
+        assert_eq!(
+            ev(r#"{ bad = builtins.throw "boom"; good = 42; }.good"#),
+            Value::Int(42),
+        );
+    }
+
+    // ── Lambda calling itself via let ──────────────────────
+
+    #[test]
+    fn lambda_recursive_via_let() {
+        // factorial via let-bound recursive function
+        assert_eq!(
+            ev("let fact = n: if n == 0 then 1 else n * fact (n - 1); in fact 5"),
+            Value::Int(120),
+        );
+    }
+
+    // ── Dynamic key in select ──────────────────────────────
+
+    #[test]
+    fn select_with_dynamic_key_via_var() {
+        // ${k} interpolation in select position is not standard Nix
+        // syntax, but a string-literal key works for select.
+        assert_eq!(ev(r#"let k = { x = 1; }; in k.x"#), Value::Int(1));
+    }
+
+    // ── Compare strings ────────────────────────────────────
+
+    #[test]
+    fn compare_string_lex_greater_or_equal() {
+        assert_eq!(ev(r#""b" >= "a""#), Value::Bool(true));
+        assert_eq!(ev(r#""a" >= "a""#), Value::Bool(true));
+        assert_eq!(ev(r#""a" >= "b""#), Value::Bool(false));
+    }
+
+    // ── PartialEq across types ─────────────────────────────
+
+    #[test]
+    fn equal_int_string_false() {
+        assert_eq!(ev(r#"1 == "1""#), Value::Bool(false));
+    }
+
+    #[test]
+    fn equal_null_int_false() {
+        assert_eq!(ev("null == 0"), Value::Bool(false));
+    }
+
+    // ── Update operator on thunked operands ────────────────
+
+    #[test]
+    fn update_with_let_bound_operands() {
+        assert_eq!(
+            ev("let a = { x = 1; }; b = { y = 2; }; in (a // b).y"),
+            Value::Int(2),
+        );
+    }
+
+    // ── Concat on let-bound lists ──────────────────────────
+
+    #[test]
+    fn concat_lists_from_let() {
+        assert_eq!(
+            ev("let a = [1 2]; b = [3 4]; in builtins.length (a ++ b)"),
+            Value::Int(4),
+        );
+    }
+
+    // ── String interpolation: list-of-string error ─────────
+
+    #[test]
+    fn interp_list_errors() {
+        let result = eval(r#""${[1 2]}""#);
+        assert!(result.is_err());
+    }
+
+    // ── String interpolation: lambda error ─────────────────
+
+    #[test]
+    fn interp_lambda_errors() {
+        let result = eval(r#""${x: x}""#);
+        assert!(result.is_err());
+    }
 }
