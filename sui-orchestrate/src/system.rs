@@ -292,6 +292,48 @@ impl SystemOrchestrator {
             duration_secs: duration,
         })
     }
+
+    /// Rollback to a specific numbered generation.
+    ///
+    /// Invokes `darwin-rebuild switch --switch-generation <n>` on Darwin or
+    /// `nixos-rebuild switch --switch-generation <n>` on NixOS. Both rebuild
+    /// commands accept the standard Nix `--switch-generation` flag.
+    pub async fn rollback_to(&self, generation: u32) -> Result<RebuildResult, SystemError> {
+        let start = std::time::Instant::now();
+        let cmd_name = self.platform.rebuild_command();
+        let gen_str = generation.to_string();
+
+        tracing::info!("rolling back to generation {generation}");
+
+        let output = self
+            .runner
+            .run(cmd_name, &["switch", "--switch-generation", &gen_str])
+            .await
+            .map_err(|e| match e {
+                crate::command::CommandError::NotFound(cmd) => SystemError::CommandNotFound(cmd),
+                other => SystemError::Command(other),
+            })?;
+
+        let duration = start.elapsed().as_secs_f64();
+        let log = output.combined_log();
+
+        // Prefer the explicitly requested generation if the command succeeded,
+        // otherwise try to parse it from the log (mirrors `rollback()` behavior).
+        let parsed_gen = extract_generation(&log);
+        let generation_field = if output.success {
+            Some(i64::from(generation))
+        } else {
+            parsed_gen
+        };
+
+        Ok(RebuildResult {
+            success: output.success,
+            generation: generation_field,
+            action: format!("rollback-to-{generation}"),
+            log,
+            duration_secs: duration,
+        })
+    }
 }
 
 /// Information about a single system generation.
@@ -903,5 +945,110 @@ mod tests {
             let log = format!("switched to generation {n}");
             assert_eq!(extract_generation(&log), Some(n));
         }
+    }
+
+    // ── rollback_to(generation) ───────────────────────────────
+
+    /// Mock runner that records the args passed to the command on the last invocation.
+    /// Wraps state in `Arc` so callers can keep a handle to inspect after the orchestrator
+    /// has taken ownership of the boxed runner.
+    struct RecordingRunner {
+        response: CommandOutput,
+        last_args: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingRunner {
+        fn new(response: CommandOutput) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+            let last_args = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    response,
+                    last_args: std::sync::Arc::clone(&last_args),
+                },
+                last_args,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CommandRunner for RecordingRunner {
+        async fn run(&self, _program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> {
+            *self.last_args.lock().unwrap() = args.iter().map(|s| s.to_string()).collect();
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_to_happy_path_darwin() {
+        let (runner, args_handle) = RecordingRunner::new(CommandOutput {
+            success: true,
+            stdout: "switched to generation 5\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        });
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+
+        let result = sys.rollback_to(5).await.unwrap();
+        assert!(result.success);
+        // On success, the requested generation is preserved verbatim.
+        assert_eq!(result.generation, Some(5));
+        assert_eq!(result.action, "rollback-to-5");
+        // Verify the right CLI flags were used.
+        let args = args_handle.lock().unwrap().clone();
+        assert_eq!(args, vec!["switch", "--switch-generation", "5"]);
+    }
+
+    #[tokio::test]
+    async fn rollback_to_failure_returns_unsuccessful_result() {
+        // Error path: rebuild command runs but reports failure.
+        let runner = MockCommandRunner::new().with_response(
+            "nixos-rebuild",
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "no such generation: 999\n".to_string(),
+                exit_code: Some(1),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(runner));
+        let result = sys.rollback_to(999).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.action, "rollback-to-999");
+        assert!(result.log.contains("no such generation"));
+    }
+
+    #[tokio::test]
+    async fn rollback_to_command_not_found_propagates() {
+        // Edge case: rebuild binary missing entirely.
+        let runner = MockCommandRunner::new();
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rollback_to(1).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SystemError::CommandNotFound(cmd) => assert_eq!(cmd, "darwin-rebuild"),
+            other => panic!("expected CommandNotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_to_zero_generation() {
+        // Edge case: generation 0 should be allowed (some systems start at 0/1).
+        let runner = MockCommandRunner::new().with_response(
+            "darwin-rebuild",
+            CommandOutput {
+                success: true,
+                stdout: "switched to generation 0\n".to_string(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            },
+        );
+
+        let sys = SystemOrchestrator::with_runner(Platform::Darwin, Box::new(runner));
+        let result = sys.rollback_to(0).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.generation, Some(0));
+        assert_eq!(result.action, "rollback-to-0");
     }
 }
