@@ -1067,6 +1067,449 @@ mod tests {
         assert!(bar_edges.contains(&("nixpkgs".to_string(), "nixpkgs".to_string())));
     }
 
+    // ── Additional Follows-of-Follows-of-Follows ────────
+
+    #[test]
+    fn follows_chain_four_levels_deep() {
+        let json = r#"{
+  "nodes": {
+    "nixpkgs": {
+      "locked": { "lastModified": 1, "narHash": "sha256-NP", "owner": "n", "repo": "p", "rev": "final", "type": "github" },
+      "original": { "owner": "n", "repo": "p", "type": "github" }
+    },
+    "root": {
+      "inputs": { "a": "a", "b": "b", "c": "c", "d": "d", "nixpkgs": "nixpkgs" }
+    },
+    "a": {
+      "inputs": { "nixpkgs": ["nixpkgs"] },
+      "locked": { "lastModified": 2, "narHash": "sha256-A", "owner": "x", "repo": "a", "rev": "a1", "type": "github" },
+      "original": { "owner": "x", "repo": "a", "type": "github" }
+    },
+    "b": {
+      "inputs": { "nixpkgs": ["a", "nixpkgs"] },
+      "locked": { "lastModified": 3, "narHash": "sha256-B", "owner": "x", "repo": "b", "rev": "b1", "type": "github" },
+      "original": { "owner": "x", "repo": "b", "type": "github" }
+    },
+    "c": {
+      "inputs": { "nixpkgs": ["b", "nixpkgs"] },
+      "locked": { "lastModified": 4, "narHash": "sha256-C", "owner": "x", "repo": "c", "rev": "c1", "type": "github" },
+      "original": { "owner": "x", "repo": "c", "type": "github" }
+    },
+    "d": {
+      "inputs": { "nixpkgs": ["c", "nixpkgs"] },
+      "locked": { "lastModified": 5, "narHash": "sha256-D", "owner": "x", "repo": "d", "rev": "d1", "type": "github" },
+      "original": { "owner": "x", "repo": "d", "type": "github" }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        // d -> c -> b -> a -> root nixpkgs
+        let node = lock.resolve_input(&["d", "nixpkgs"]).unwrap();
+        assert_eq!(node.locked.as_ref().unwrap().rev.as_deref(), Some("final"));
+    }
+
+    // ── FlakeNode extra (catch-all) field preservation ──
+
+    #[test]
+    fn flake_node_extra_field_roundtrips() {
+        // Some path-typed inputs have a "parent" field on the node itself
+        let json = r#"{
+  "nodes": {
+    "root": {
+      "inputs": { "self-ref": "self-ref" }
+    },
+    "self-ref": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "path": "/tmp/foo",
+        "type": "path"
+      },
+      "original": {
+        "type": "path",
+        "url": "/tmp/foo"
+      },
+      "parent": ["root"]
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let node = lock.get_node("self-ref").unwrap();
+        assert!(node.extra.contains_key("parent"));
+
+        let reserialized = lock.to_json().unwrap();
+        let reparsed = FlakeLock::parse(&reserialized).unwrap();
+        let node2 = reparsed.get_node("self-ref").unwrap();
+        assert!(node2.extra.contains_key("parent"));
+    }
+
+    // ── OriginalInput extra fields roundtrip ────────────
+
+    #[test]
+    fn original_input_extra_fields_roundtrip() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "x": "x" } },
+    "x": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "owner": "o",
+        "repo": "r",
+        "rev": "abc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "o",
+        "repo": "r",
+        "type": "github",
+        "submodules": true,
+        "shallow": false
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let x = lock.get_node("x").unwrap();
+        let original = x.original.as_ref().unwrap();
+        assert_eq!(original.extra.get("submodules"), Some(&serde_json::json!(true)));
+        assert_eq!(original.extra.get("shallow"), Some(&serde_json::json!(false)));
+
+        let reserialized = lock.to_json().unwrap();
+        let reparsed = FlakeLock::parse(&reserialized).unwrap();
+        let x2 = reparsed.get_node("x").unwrap();
+        let orig2 = x2.original.as_ref().unwrap();
+        assert_eq!(orig2.extra.get("submodules"), Some(&serde_json::json!(true)));
+    }
+
+    // ── More error variants ─────────────────────────────
+
+    #[test]
+    fn unsupported_version_error_includes_found() {
+        let json = r#"{ "nodes": { "root": {} }, "root": "root", "version": 99 }"#;
+        let err = FlakeLock::parse(json).unwrap_err();
+        match err {
+            FlakeLockError::UnsupportedVersion { expected, found } => {
+                assert_eq!(expected, 7);
+                assert_eq!(found, 99);
+            }
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_root_error_includes_name() {
+        let json = r#"{ "nodes": { "x": {} }, "root": "missing-root", "version": 7 }"#;
+        match FlakeLock::parse(json).unwrap_err() {
+            FlakeLockError::MissingRoot(name) => assert_eq!(name, "missing-root"),
+            other => panic!("expected MissingRoot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_node_returns_node_not_found_with_name() {
+        let lock = FlakeLock::parse(minimal_lock_json()).unwrap();
+        match lock.get_node("nope") {
+            Err(FlakeLockError::NodeNotFound(n)) => assert_eq!(n, "nope"),
+            other => panic!("expected NodeNotFound, got {other:?}"),
+        }
+    }
+
+    // ── version field as float rejected ─────────────────
+
+    #[test]
+    fn version_as_float_rejected() {
+        let json = r#"{ "nodes": { "root": {} }, "root": "root", "version": 7.5 }"#;
+        assert!(FlakeLock::parse(json).is_err());
+    }
+
+    // ── Adjacency map for minimal ────────────────────────
+
+    #[test]
+    fn adjacency_map_minimal() {
+        let lock = FlakeLock::parse(minimal_lock_json()).unwrap();
+        let adj = lock.adjacency_map();
+        assert_eq!(adj.len(), 2);
+        assert_eq!(adj["root"].len(), 1);
+        assert_eq!(adj["root"][0], ("nixpkgs".to_string(), "nixpkgs".to_string()));
+        assert!(adj["nixpkgs"].is_empty());
+    }
+
+    // ── adjacency_map skips unresolvable edges ──────────
+
+    #[test]
+    fn adjacency_map_skips_unresolvable() {
+        // Hand-crafted lock where one edge points to a non-existent node
+        let mut nodes = BTreeMap::new();
+        nodes.insert("root".to_string(), FlakeNode {
+            inputs: {
+                let mut m = BTreeMap::new();
+                m.insert("ghost".to_string(), InputRef::Direct("nonexistent".to_string()));
+                m
+            },
+            locked: None,
+            original: None,
+            flake: None,
+            extra: BTreeMap::new(),
+        });
+        let lock = FlakeLock {
+            nodes,
+            root: "root".to_string(),
+            version: 7,
+        };
+        let adj = lock.adjacency_map();
+        // The unresolvable edge is silently skipped
+        assert!(adj["root"].is_empty());
+    }
+
+    // ── resolve_input on root with empty path ───────────
+
+    #[test]
+    fn resolve_input_empty_path_returns_root() {
+        let lock = FlakeLock::parse(minimal_lock_json()).unwrap();
+        let node = lock.resolve_input(&[]).unwrap();
+        // With empty path, returns root node
+        assert!(node.inputs.contains_key("nixpkgs"));
+    }
+
+    // ── root_inputs returns sorted by BTreeMap ───────────
+
+    #[test]
+    fn root_inputs_sorted_alphabetically() {
+        let lock = FlakeLock::parse(deep_follows_json()).unwrap();
+        let inputs = lock.root_inputs().unwrap();
+        // BTreeMap iterates in alphabetical key order: bar, foo, nixpkgs
+        let names: Vec<&str> = inputs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["bar", "foo", "nixpkgs"]);
+    }
+
+    // ── InputRef Direct serialization preserves value ───
+
+    #[test]
+    fn input_ref_direct_serialize_to_string_literal() {
+        let r = InputRef::Direct("nixpkgs".to_string());
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#""nixpkgs""#);
+    }
+
+    #[test]
+    fn input_ref_follows_serialize_to_array() {
+        let r = InputRef::Follows(vec!["a".to_string(), "b".to_string()]);
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"["a","b"]"#);
+    }
+
+    // ── Tarball-type input ──────────────────────────────
+
+    #[test]
+    fn tarball_type_input_with_url() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "src": "src" } },
+    "src": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "type": "tarball",
+        "url": "https://example.com/v1.0.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://example.com/latest.tar.gz"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let src = lock.get_node("src").unwrap();
+        let locked = src.locked.as_ref().unwrap();
+        assert_eq!(locked.source_type, "tarball");
+        assert_eq!(locked.url.as_deref(), Some("https://example.com/v1.0.tar.gz"));
+    }
+
+    // ── Git-ref input ───────────────────────────────────
+
+    #[test]
+    fn git_ref_input_preserved() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "deps": "deps" } },
+    "deps": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "owner": "o",
+        "repo": "r",
+        "rev": "abc",
+        "ref": "refs/heads/main",
+        "type": "github"
+      },
+      "original": {
+        "owner": "o",
+        "repo": "r",
+        "ref": "main",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let deps = lock.get_node("deps").unwrap();
+        let locked = deps.locked.as_ref().unwrap();
+        assert_eq!(locked.git_ref.as_deref(), Some("refs/heads/main"));
+        let orig = deps.original.as_ref().unwrap();
+        assert_eq!(orig.git_ref.as_deref(), Some("main"));
+    }
+
+    // ── git dir field ───────────────────────────────────
+
+    #[test]
+    fn git_dir_subdirectory_field() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "subdir": "subdir" } },
+    "subdir": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "owner": "o",
+        "repo": "r",
+        "rev": "abc",
+        "type": "github",
+        "dir": "subdir/inside"
+      },
+      "original": {
+        "owner": "o",
+        "repo": "r",
+        "type": "github",
+        "dir": "subdir/inside"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let s = lock.get_node("subdir").unwrap();
+        let locked = s.locked.as_ref().unwrap();
+        assert_eq!(locked.dir.as_deref(), Some("subdir/inside"));
+        let orig = s.original.as_ref().unwrap();
+        assert_eq!(orig.dir.as_deref(), Some("subdir/inside"));
+    }
+
+    // ── Indirect / id-based input ───────────────────────
+
+    #[test]
+    fn indirect_id_input() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "nixpkgs": "nixpkgs" } },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1700000000,
+        "narHash": "sha256-X",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "abc",
+        "type": "github"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "type": "indirect"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        let np = lock.get_node("nixpkgs").unwrap();
+        let orig = np.original.as_ref().unwrap();
+        assert_eq!(orig.source_type, "indirect");
+        assert_eq!(orig.id.as_deref(), Some("nixpkgs"));
+    }
+
+    // ── Resolve direct input that is itself a follows ──
+
+    #[test]
+    fn resolve_follows_when_target_segment_is_direct() {
+        let lock = FlakeLock::parse(follows_lock_json()).unwrap();
+        // utils.systems is a Direct input → resolve_follows_path goes through the
+        // Direct branch when walking
+        let node = lock.resolve_input(&["utils", "systems"]).unwrap();
+        let locked = node.locked.as_ref().unwrap();
+        assert_eq!(locked.source_type, "github");
+    }
+
+    // ── Trailing whitespace in JSON ──────────────────────
+
+    #[test]
+    fn trailing_whitespace_in_json_ok() {
+        let json = format!("{}\n\n   \n", minimal_lock_json());
+        let lock = FlakeLock::parse(&json).unwrap();
+        assert_eq!(lock.version, 7);
+    }
+
+    // ── Two distinct nodes referencing same locked rev ─
+
+    #[test]
+    fn two_nodes_with_same_underlying_rev() {
+        let json = r#"{
+  "nodes": {
+    "root": { "inputs": { "a": "a", "b": "b" } },
+    "a": {
+      "locked": {
+        "lastModified": 1, "narHash": "sha256-X",
+        "owner": "n", "repo": "p", "rev": "abc",
+        "type": "github"
+      },
+      "original": { "owner": "n", "repo": "p", "type": "github" }
+    },
+    "b": {
+      "locked": {
+        "lastModified": 1, "narHash": "sha256-X",
+        "owner": "n", "repo": "p", "rev": "abc",
+        "type": "github"
+      },
+      "original": { "owner": "n", "repo": "p", "type": "github" }
+    }
+  },
+  "root": "root",
+  "version": 7
+}"#;
+        let lock = FlakeLock::parse(json).unwrap();
+        assert_eq!(lock.nodes.len(), 3);
+        let a = lock.get_node("a").unwrap();
+        let b = lock.get_node("b").unwrap();
+        // Different node names, same underlying rev
+        assert_eq!(
+            a.locked.as_ref().unwrap().rev,
+            b.locked.as_ref().unwrap().rev
+        );
+    }
+
+    // ── FlakeLockError Display ──────────────────────────
+
+    #[test]
+    fn flake_lock_error_display_includes_context() {
+        let err = FlakeLockError::FollowsFailed {
+            from: "node-x".to_string(),
+            path: vec!["a".to_string(), "b".to_string()],
+        };
+        let s = format!("{err}");
+        assert!(s.contains("node-x"));
+    }
+
     // ── Extra fields preserved ──────────────────────────
 
     #[test]
