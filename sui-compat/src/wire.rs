@@ -385,12 +385,125 @@ mod tests {
 
     #[test]
     fn worker_op_invalid_codes() {
-        // 0, 2, 15, 17 are not valid opcodes
         assert_eq!(WorkerOp::from_u64(0), None);
         assert_eq!(WorkerOp::from_u64(2), None);
         assert_eq!(WorkerOp::from_u64(15), None);
         assert_eq!(WorkerOp::from_u64(17), None);
         assert_eq!(WorkerOp::from_u64(46), None);
         assert_eq!(WorkerOp::from_u64(u64::MAX), None);
+    }
+
+    // ── Additional wire primitive tests ──────────────────
+
+    #[test]
+    fn u64_zero_roundtrip() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 0).unwrap();
+        let v = read_u64(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(v, 0);
+    }
+
+    #[test]
+    fn bytes_empty_roundtrip() {
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, &[]).unwrap();
+        assert_eq!(buf.len(), 8);
+        let read = read_bytes(&mut Cursor::new(&buf)).unwrap();
+        assert!(read.is_empty());
+    }
+
+    #[test]
+    fn string_with_unicode() {
+        let s = "日本語テスト 🎉";
+        let mut buf = Vec::new();
+        write_string(&mut buf, s).unwrap();
+        assert_eq!(buf.len() % 8, 0);
+        let read = read_string(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, s);
+    }
+
+    #[test]
+    fn string_list_single_entry() {
+        let list = vec!["only-one".to_string()];
+        let mut buf = Vec::new();
+        write_string_list(&mut buf, &list).unwrap();
+        let read = read_string_list(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, list);
+    }
+
+    #[test]
+    fn string_list_many_entries() {
+        let list: Vec<String> = (0..100).map(|i| format!("item-{i}")).collect();
+        let mut buf = Vec::new();
+        write_string_list(&mut buf, &list).unwrap();
+        let read = read_string_list(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(read, list);
+    }
+
+    #[test]
+    fn worker_op_exhaustive_coverage() {
+        let all: Vec<(u64, WorkerOp)> = vec![
+            (1, WorkerOp::IsValidPath),
+            (3, WorkerOp::HasSubstitutes),
+            (4, WorkerOp::QueryPathHash),
+            (5, WorkerOp::QueryReferences),
+            (6, WorkerOp::QueryReferrers),
+            (7, WorkerOp::AddToStore),
+            (8, WorkerOp::AddTextToStore),
+            (9, WorkerOp::BuildPaths),
+            (10, WorkerOp::EnsurePath),
+            (11, WorkerOp::AddTempRoot),
+            (12, WorkerOp::AddIndirectRoot),
+            (13, WorkerOp::SyncWithGC),
+            (14, WorkerOp::FindRoots),
+            (16, WorkerOp::ExportPath),
+            (18, WorkerOp::QueryDeriver),
+            (19, WorkerOp::SetOptions),
+            (20, WorkerOp::CollectGarbage),
+            (21, WorkerOp::QuerySubstitutablePathInfo),
+            (22, WorkerOp::QueryDerivationOutputs),
+            (23, WorkerOp::QueryAllValidPaths),
+            (24, WorkerOp::QueryFailedPaths),
+            (25, WorkerOp::ClearFailedPaths),
+            (26, WorkerOp::QueryPathInfo),
+            (27, WorkerOp::ImportPaths),
+            (28, WorkerOp::QueryDerivationOutputNames),
+            (29, WorkerOp::QueryPathFromHashPart),
+            (30, WorkerOp::QuerySubstitutablePathInfos),
+            (31, WorkerOp::QueryValidPaths),
+            (32, WorkerOp::QuerySubstitutablePaths),
+            (33, WorkerOp::QueryValidDerivers),
+            (34, WorkerOp::OptimiseStore),
+            (35, WorkerOp::VerifyStore),
+            (36, WorkerOp::BuildDerivation),
+            (37, WorkerOp::AddSignatures),
+            (38, WorkerOp::NarFromPath),
+            (39, WorkerOp::AddToStoreNar),
+            (40, WorkerOp::QueryMissing),
+            (41, WorkerOp::QueryDerivationOutputMap),
+            (42, WorkerOp::RegisterDrvOutput),
+            (43, WorkerOp::QueryRealisation),
+            (44, WorkerOp::AddMultipleToStore),
+            (45, WorkerOp::AddBuildLog),
+        ];
+        for (code, expected) in &all {
+            assert_eq!(WorkerOp::from_u64(*code), Some(*expected), "failed for code {code}");
+        }
+        assert_eq!(all.len(), 42);
+    }
+
+    #[test]
+    fn read_u64_truncated_input() {
+        let result = read_u64(&mut Cursor::new(&[0u8; 4]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_bytes_truncated_data() {
+        let mut buf = Vec::new();
+        write_u64(&mut buf, 100).unwrap();
+        buf.extend_from_slice(&[0u8; 10]);
+        let result = read_bytes(&mut Cursor::new(&buf));
+        assert!(result.is_err());
     }
 }
