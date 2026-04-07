@@ -313,11 +313,11 @@ pub fn register(env: &mut Env) {
     });
     register_builtin(&mut builtins_set, "concatLists", |args| {
         let lists = args[0].as_list()?;
-        let mut result = Vec::new();
-        for l in lists {
-            result.extend_from_slice(l.as_list()?);
-        }
-        Ok(Value::List(result))
+        let result: Result<Vec<Value>, _> = lists.iter()
+            .map(|l| l.as_list())
+            .collect::<Result<Vec<_>, _>>()
+            .map(|vecs| vecs.into_iter().flatten().cloned().collect());
+        Ok(Value::List(result?))
     });
     register_builtin(&mut builtins_set, "sort", |args| {
         let cmp = args[0].clone();
@@ -508,11 +508,10 @@ pub fn register(env: &mut Env) {
     // concatStrings — concat without separator
     register_builtin(&mut builtins_set, "concatStrings", |args| {
         let list = args[0].as_list()?;
-        let mut result = String::new();
-        for v in list {
-            result.push_str(v.as_string()?);
-        }
-        Ok(Value::string(result))
+        let result: Result<String, _> = list.iter()
+            .map(|v| v.as_string())
+            .collect();
+        Ok(Value::string(result?))
     });
 
     // partition — split list by predicate into { right, wrong }
