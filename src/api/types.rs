@@ -361,6 +361,19 @@ pub struct FleetDeployStatus {
     pub nodes: Vec<FleetNode>,
 }
 
+impl FleetDeployStatus {
+    /// Build a pending deploy stub for the given target.
+    #[must_use]
+    pub fn pending(target: String) -> Self {
+        Self {
+            id: "deploy-stub-0001".to_string(),
+            target,
+            status: "pending".to_string(),
+            nodes: vec![],
+        }
+    }
+}
+
 /// Fleet-wide status.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
 pub struct FleetStatus {

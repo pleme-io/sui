@@ -196,14 +196,9 @@ async fn build_derivation(Json(req): Json<BuildRequest>) -> (StatusCode, Json<Bu
 }
 
 async fn get_build_status(Path(build_id): Path<String>) -> Json<BuildStatus> {
-    Json(BuildStatus {
-        id: build_id,
-        state: "pending".to_string(),
-        output_paths: None,
-        started_at: None,
-        completed_at: None,
-        log_lines: vec![],
-    })
+    let mut status = BuildStatus::pending_stub();
+    status.id = build_id;
+    Json(status)
 }
 
 async fn get_build_log(
@@ -262,16 +257,7 @@ async fn fleet_nodes() -> Json<Vec<FleetNode>> {
 }
 
 async fn fleet_deploy(Json(req): Json<FleetDeployRequest>) -> (StatusCode, Json<FleetDeployStatus>) {
-    let _ = &req;
-    (
-        StatusCode::ACCEPTED,
-        Json(FleetDeployStatus {
-            id: "deploy-stub-0001".to_string(),
-            target: req.target,
-            status: "pending".to_string(),
-            nodes: vec![],
-        }),
-    )
+    (StatusCode::ACCEPTED, Json(FleetDeployStatus::pending(req.target)))
 }
 
 async fn fleet_status() -> Json<FleetStatus> {

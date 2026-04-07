@@ -109,14 +109,9 @@ impl QueryRoot {
 
     /// Get build status by ID.
     async fn build_status(&self, _ctx: &Context<'_>, build_id: String) -> BuildStatus {
-        BuildStatus {
-            id: build_id,
-            state: "pending".to_string(),
-            output_paths: None,
-            started_at: None,
-            completed_at: None,
-            log_lines: vec![],
-        }
+        let mut status = BuildStatus::pending_stub();
+        status.id = build_id;
+        status
     }
 
     /// Get build log lines.
@@ -258,12 +253,7 @@ impl MutationRoot {
         _ctx: &Context<'_>,
         request: FleetDeployRequest,
     ) -> FleetDeployStatus {
-        FleetDeployStatus {
-            id: "deploy-stub-0001".to_string(),
-            target: request.target,
-            status: "pending".to_string(),
-            nodes: vec![],
-        }
+        FleetDeployStatus::pending(request.target)
     }
 
     /// Rollback fleet deployment.
