@@ -98,7 +98,7 @@ impl std::fmt::Display for StorePath {
 /// silently disagreed with CppNix.
 pub fn nix_base32_encode(input: &[u8]) -> String {
     let len = (input.len() * 8 + 4) / 5;
-    let mut out = vec![0u8; len];
+    let mut out = String::with_capacity(len);
 
     for n in 0..len {
         let b = (len - 1 - n) * 5;
@@ -108,10 +108,10 @@ pub fn nix_base32_encode(input: &[u8]) -> String {
         if i + 1 < input.len() {
             c |= u16::from(input[i + 1]) << (8 - j);
         }
-        out[n] = NIX_BASE32_CHARS[(c & 0x1f) as usize];
+        out.push(NIX_BASE32_CHARS[(c & 0x1f) as usize] as char);
     }
 
-    String::from_utf8(out).expect("base32 chars are ASCII")
+    out
 }
 
 /// Decode Nix's custom base-32 encoding to bytes.
