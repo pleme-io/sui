@@ -157,6 +157,16 @@ pub struct GcResult {
     pub bytes_freed: u64,
 }
 
+impl std::fmt::Display for GcResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GC: {} paths deleted, {} bytes freed",
+            self.paths_deleted, self.bytes_freed
+        )
+    }
+}
+
 /// The core store interface.
 ///
 /// All store backends (local, remote, binary cache) implement this trait.
