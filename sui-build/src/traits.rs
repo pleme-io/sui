@@ -266,6 +266,9 @@ pub enum BuildError {
     /// Requested functionality is not yet available.
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    /// The build was cancelled before completion.
+    #[error("build cancelled")]
+    Cancelled,
 }
 
 // ── Builder trait ────────────────────────────────────────────────
