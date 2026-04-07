@@ -1,7 +1,13 @@
 //! Async wire primitives for the Nix worker protocol.
 //!
-//! Mirrors `sui_compat::wire` but async via `tokio::io`.
-//! All integers are u64 LE. Strings are length-prefixed with 8-byte padding.
+//! Mirrors `sui_compat::wire` but async via `tokio::io`. The Nix wire
+//! format uses:
+//!
+//! - **Integers**: u64 little-endian (8 bytes)
+//! - **Bytes**: u64 length prefix + payload + zero-padding to 8-byte boundary
+//! - **Strings**: bytes-encoded UTF-8
+//! - **Booleans**: u64 where `0 = false`, `1 = true`
+//! - **String lists**: u64 count + N string frames
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
