@@ -110,6 +110,7 @@ impl Drop for DepthGuard {
 }
 
 /// Evaluate a Nix expression string.
+#[must_use = "evaluation result should be used"]
 pub fn eval(input: &str) -> Result<Value, EvalError> {
     eval_with_file(input, None)
 }
