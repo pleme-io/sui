@@ -333,14 +333,15 @@ mod tests {
     // ── TestStore: implements only required methods ───────────
 
     /// Minimal store for exercising default trait methods.
+    /// Uses BTreeMap for deterministic iteration order.
     struct TestStore {
-        infos: std::collections::HashMap<String, PathInfo>,
+        infos: std::collections::BTreeMap<String, PathInfo>,
     }
 
     impl TestStore {
         fn new() -> Self {
             Self {
-                infos: std::collections::HashMap::new(),
+                infos: std::collections::BTreeMap::new(),
             }
         }
 
@@ -708,5 +709,126 @@ mod tests {
         assert!(store.register_path(&hello_info()).await.is_err());
         assert!(store.add_signatures(&hello_path(), &["sig".to_string()]).await.is_err());
         assert!(store.query_referrers(&hello_path()).await.is_err());
+    }
+
+    // ── Box<dyn Store> dispatch ────────────────────────────
+
+    #[tokio::test]
+    async fn box_dyn_store_query_path_info() {
+        let store: Box<dyn Store> = Box::new(
+            TestStore::new().with_path(hello_info()),
+        );
+        let info = store.query_path_info(&hello_path()).await.unwrap();
+        assert!(info.is_some());
+    }
+
+    #[tokio::test]
+    async fn box_dyn_store_is_valid_path() {
+        let store: Box<dyn Store> = Box::new(
+            TestStore::new().with_path(hello_info()),
+        );
+        assert!(store.is_valid_path(&hello_path()).await.unwrap());
+        assert!(!store.is_valid_path(&glibc_path()).await.unwrap());
+    }
+
+    // ── GcResult and GcOptions ─────────────────────────────
+
+    #[test]
+    fn gc_result_fields() {
+        let result = GcResult {
+            paths_deleted: 42,
+            bytes_freed: 1_000_000,
+        };
+        assert_eq!(result.paths_deleted, 42);
+        assert_eq!(result.bytes_freed, 1_000_000);
+    }
+
+    #[test]
+    fn gc_options_with_values() {
+        let opts = GcOptions {
+            max_freed: 500_000,
+            delete_older_than: Some(3600),
+        };
+        assert_eq!(opts.max_freed, 500_000);
+        assert_eq!(opts.delete_older_than, Some(3600));
+    }
+
+    #[test]
+    fn gc_result_clone() {
+        let result = GcResult {
+            paths_deleted: 10,
+            bytes_freed: 5000,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.paths_deleted, result.paths_deleted);
+        assert_eq!(cloned.bytes_freed, result.bytes_freed);
+    }
+
+    #[test]
+    fn gc_options_clone() {
+        let opts = GcOptions {
+            max_freed: 100,
+            delete_older_than: Some(60),
+        };
+        let cloned = opts.clone();
+        assert_eq!(cloned.max_freed, opts.max_freed);
+        assert_eq!(cloned.delete_older_than, opts.delete_older_than);
+    }
+
+    // ── StoreError debug ───────────────────────────────────
+
+    #[test]
+    fn store_error_debug_format() {
+        let e = StoreError::PathNotFound("/nix/store/abc".to_string());
+        let debug = format!("{e:?}");
+        assert!(debug.contains("PathNotFound"));
+    }
+
+    // ── query_path_info missing returns None ────────────────
+
+    #[tokio::test]
+    async fn query_path_info_missing_returns_none() {
+        let store = TestStore::new();
+        let result = store.query_path_info(&hello_path()).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── is_valid_path false for missing ────────────────────
+
+    #[tokio::test]
+    async fn is_valid_path_false_when_missing() {
+        let store = TestStore::new();
+        assert!(!store.is_valid_path(&hello_path()).await.unwrap());
+    }
+
+    // ── query_all_valid_paths empty store ──────────────────
+
+    #[tokio::test]
+    async fn query_all_valid_paths_empty_store() {
+        let store = TestStore::new();
+        let paths = store.query_all_valid_paths().await.unwrap();
+        assert!(paths.is_empty());
+    }
+
+    // ── PathInfo debug ─────────────────────────────────────
+
+    #[test]
+    fn path_info_debug_format() {
+        let info = hello_info();
+        let debug = format!("{info:?}");
+        assert!(debug.contains("hello"));
+        assert!(debug.contains("sha256:aaa"));
+    }
+
+    // ── compute_closure with cycle-like duplicates ─────────
+
+    #[tokio::test]
+    async fn compute_closure_handles_self_reference() {
+        let mut info = bash_info();
+        info.references = vec![bash_path().to_absolute_path()];
+        let store = TestStore::new().with_path(info);
+
+        let closure = store.compute_closure(&[bash_path()]).await.unwrap();
+        assert_eq!(closure.len(), 1);
     }
 }
