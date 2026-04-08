@@ -1,4 +1,10 @@
 //! Nix value types and environments.
+//!
+//! The evaluator is single-threaded: `Env` and `NixAttrs` contain
+//! `Rc<RefCell<ThunkRepr>>` thunks.  Some fields use `Arc` for
+//! cheap cloning rather than thread-safety, which is fine because the
+//! values are never sent across threads.
+#![allow(clippy::arc_with_non_send_sync)]
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

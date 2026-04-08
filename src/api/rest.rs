@@ -85,10 +85,12 @@ async fn list_paths(
         .await
         .unwrap_or_default();
 
+    let offset = usize::try_from(pagination.offset).unwrap_or(0);
+    let limit = usize::try_from(pagination.limit).unwrap_or(usize::MAX);
     let result = paths
         .into_iter()
-        .skip(pagination.offset as usize)
-        .take(pagination.limit as usize)
+        .skip(offset)
+        .take(limit)
         .map(|p| p.to_absolute_path())
         .collect();
     Json(result)

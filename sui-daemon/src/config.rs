@@ -74,6 +74,7 @@ impl SuiDaemonConfig {
     /// # Errors
     ///
     /// Returns a shikumi error if the file cannot be parsed.
+    #[allow(clippy::result_large_err)]
     pub fn load_from(path: impl AsRef<Path>) -> Result<ConfigStore<Self>, shikumi::ShikumiError> {
         ConfigStore::<Self>::load(path.as_ref(), "SUI_")
     }

@@ -134,6 +134,7 @@ enum FleetCommands {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), CliError> {
     tracing_subscriber::fmt()
         .with_env_filter(

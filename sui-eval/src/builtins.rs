@@ -8,6 +8,12 @@
 //! complex builtins (curried, multi-stage, I/O) are still registered
 //! with the imperative [`register_builtin`] / [`register_curried`]
 //! helpers.
+//!
+//! The evaluator uses Tvix-style lazy evaluation with `Rc<RefCell<ThunkRepr>>`
+//! thunks.  Curried builtins capture these non-Send/Sync values in `Arc`
+//! closures — this is intentional for the single-threaded evaluator and
+//! safe because the `Arc` is never sent across threads.
+#![allow(clippy::arc_with_non_send_sync)]
 
 use std::sync::Arc;
 

@@ -15,6 +15,10 @@ pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 /// This is the shared logic for both CLI `store path-info` and REST `get_path_info`,
 /// which accept either a basename like `abc123-hello` or a full path like
 /// `/nix/store/abc123-hello`.
+///
+/// # Errors
+///
+/// Returns `StorePathError` if the input cannot be parsed as a valid store path.
 pub fn parse_store_path(input: &str) -> Result<sui_compat::store_path::StorePath, sui_compat::store_path::StorePathError> {
     sui_compat::store_path::StorePath::from_absolute_path(input)
         .or_else(|_| sui_compat::store_path::StorePath::from_absolute_path(&format!("/nix/store/{input}")))
