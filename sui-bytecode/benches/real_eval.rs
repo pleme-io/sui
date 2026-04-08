@@ -189,9 +189,9 @@ fn bench_bytecode_vm(c: &mut Criterion) {
         b.iter(|| bc_eval(black_box(WITH_LOOKUP)))
     });
 
-    // NOTE: fixpoint is skipped for the bytecode VM because the VM does
-    // not yet support the lazy fixpoint pattern (fix = f: let x = f x; in x)
-    // correctly. The tree-walker handles it via Tvix-style thunks.
+    group.bench_function("fixpoint", |b| {
+        b.iter(|| bc_eval(black_box(FIXPOINT)))
+    });
 
     group.bench_function("pattern_destr", |b| {
         b.iter(|| bc_eval(black_box(PATTERN_DESTR)))
@@ -275,9 +275,13 @@ fn bench_compile_vs_execute(c: &mut Criterion) {
         b.iter(|| bc_execute(chunk.clone(), &mut interner))
     });
 
-    // Fixpoint: compile-only (execution not supported by VM yet).
+    // Fixpoint: compile + execute (lazy let bindings).
     group.bench_function("compile_fixpoint", |b| {
         b.iter(|| bc_compile(black_box(FIXPOINT)))
+    });
+    group.bench_function("execute_fixpoint", |b| {
+        let (chunk, mut interner) = bc_compile(FIXPOINT);
+        b.iter(|| bc_execute(chunk.clone(), &mut interner))
     });
 
     group.finish();

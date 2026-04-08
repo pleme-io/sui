@@ -523,14 +523,26 @@ impl Compiler {
         }
 
         // Phase 2: Compile each binding's value and store into its slot.
+        // Two-pass thunk approach for lazy let-bindings:
+        //   Pass A: Create thunks (0 upvalues), store in slots.
+        //   Pass B: Patch each thunk's upvalues (siblings now exist).
+        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
+
         for (name, binding) in &bindings {
             let slot = self.find_local_slot(name);
             match binding {
                 LetBinding::Value(expr) => {
-                    self.compile_expr(expr)?;
+                    if Self::is_trivial_value(expr) {
+                        self.compile_expr(expr)?;
+                    } else {
+                        let uv_descs = self.compile_thunk_deferred(expr)?;
+                        if !uv_descs.is_empty() {
+                            thunk_slots.push((slot, uv_descs));
+                        }
+                    }
                     self.emit(OpCode::SetLocal);
                     self.emit_u16(slot);
-                    self.emit(OpCode::Pop); // SetLocal peeks; discard the copy.
+                    self.emit(OpCode::Pop);
                 }
                 LetBinding::Inherit => {
                     // Temporarily hide this local so lookup finds the outer one.
@@ -570,6 +582,17 @@ impl Compiler {
             }
         }
 
+        // Pass B: Patch thunk upvalues now that all siblings exist in slots.
+        for (slot, uv_descs) in &thunk_slots {
+            self.emit(OpCode::PatchThunkUpvalues);
+            self.emit_u16(*slot);
+            self.emit_u16(uv_descs.len() as u16);
+            for uv in uv_descs {
+                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+                self.emit_u16(uv.index);
+            }
+        }
+
         // Compile the body expression. Its result lands on top of the
         // local variable slots on the stack.
         let body = letin
@@ -580,6 +603,70 @@ impl Compiler {
         // Clean up: move the body result down past the locals, then pop them.
         self.end_scope(binding_count);
 
+        Ok(())
+    }
+
+    /// Check if an expression is trivial (compile eagerly, no thunk needed).
+    fn is_trivial_value(expr: &ast::Expr) -> bool {
+        match expr {
+            ast::Expr::Literal(_) => true,
+            ast::Expr::Str(s) => {
+                for part in s.normalized_parts() {
+                    if !matches!(part, InterpolPart::Literal(_)) {
+                        return false;
+                    }
+                }
+                true
+            }
+            ast::Expr::Ident(id) => {
+                let name = ident_text(id);
+                matches!(name.as_str(), "true" | "false" | "null")
+            }
+            ast::Expr::Lambda(_) => true,
+            ast::Expr::Paren(p) => p.expr().map_or(false, |inner| Self::is_trivial_value(&inner)),
+            ast::Expr::List(list) => list.items().next().is_none(),
+            ast::Expr::AttrSet(set) => set.rec_token().is_none() && set.entries().next().is_none(),
+            _ => false,
+        }
+    }
+
+    /// Compile a thunk with 0 upvalues (deferred patching via PatchThunkUpvalues).
+    fn compile_thunk_deferred(&mut self, expr: &ast::Expr) -> Result<Vec<UpvalueDesc>, CompileError> {
+        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+        tc.scope_depth = 1;
+        tc.enclosing = Some(self as *mut Compiler);
+        tc.compile_expr(expr)?;
+        tc.emit(OpCode::Return);
+        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
+        let closure = VMValue::Closure(VMClosure {
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+        });
+        let idx = self.chunk.add_constant(closure)?;
+        self.emit(OpCode::MakeThunk);
+        self.emit_u16(idx);
+        self.emit_u16(0); // 0 upvalues, patched later
+        Ok(uv_descs)
+    }
+
+    /// Compile a thunk with upvalues captured immediately (for non-rec attrsets).
+    fn compile_thunk_immediate(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
+        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+        tc.scope_depth = 1;
+        tc.enclosing = Some(self as *mut Compiler);
+        tc.compile_expr(expr)?;
+        tc.emit(OpCode::Return);
+        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
+        let closure = VMValue::Closure(VMClosure {
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+        });
+        let idx = self.chunk.add_constant(closure)?;
+        self.emit(OpCode::MakeThunk);
+        self.emit_u16(idx);
+        self.emit_u16(uv_descs.len() as u16);
+        for uv in &uv_descs {
+            self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+            self.emit_u16(uv.index);
+        }
         Ok(())
     }
 
@@ -653,9 +740,14 @@ impl Compiler {
 
         let mut count: u16 = 0;
 
-        // Emit flat entries.
+        // Emit flat entries. Non-trivial values are wrapped in thunks
+        // so that `{ a = expensive; }.b` doesn't evaluate `expensive`.
         for (key, value_expr) in &flat_entries {
-            self.compile_expr(value_expr)?;
+            if Self::is_trivial_value(value_expr) {
+                self.compile_expr(value_expr)?;
+            } else {
+                self.compile_thunk_immediate(value_expr)?;
+            }
             self.emit_constant(VMValue::String(key.clone()))?;
             count += 1;
         }

@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use crate::error::VMError;
 use crate::intern::Symbol;
-use crate::value::{VMBuiltin, VMClosure, VMThunk, VMValue};
+use crate::value::{HigherOrderBuiltin, VMBuiltin, VMClosure, VMThunk, VMValue};
 
 /// Quiet NaN base: exponent all 1s, mantissa MSB = 1.
 const QNAN: u64 = 0x7FF8_0000_0000_0000;
@@ -75,6 +75,7 @@ pub enum HeapObject {
     Closure(VMClosure),
     Builtin(VMBuiltin),
     Thunk(VMThunk),
+    HigherOrderBuiltin(HigherOrderBuiltin),
 }
 
 impl NanBox {
@@ -177,6 +178,12 @@ impl NanBox {
     #[must_use]
     pub fn thunk(t: VMThunk) -> Self {
         Self::heap(HeapObject::Thunk(t))
+    }
+
+    /// Create a higher-order builtin value (heap-allocated).
+    #[must_use]
+    pub fn higher_order_builtin(h: HigherOrderBuiltin) -> Self {
+        Self::heap(HeapObject::HigherOrderBuiltin(h))
     }
 
     // ── Type checks ───────────────────────────────────────────
@@ -291,7 +298,7 @@ impl NanBox {
                 HeapObject::Path(_) => "path",
                 HeapObject::List(_) => "list",
                 HeapObject::Attrs(_) => "set",
-                HeapObject::Closure(_) | HeapObject::Builtin(_) => "lambda",
+                HeapObject::Closure(_) | HeapObject::Builtin(_) | HeapObject::HigherOrderBuiltin(_) => "lambda",
                 HeapObject::Thunk(_) => "thunk",
             }
         } else {
@@ -364,6 +371,13 @@ impl NanBox {
         if let Some(HeapObject::Thunk(_)) = self.as_heap() { true } else { false }
     }
 
+    /// Check if this is a higher-order builtin.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_higher_order_builtin(&self) -> bool {
+        matches!(self.as_heap(), Some(HeapObject::HigherOrderBuiltin(_)))
+    }
+
     /// Extract a string reference. Returns `None` if not a string.
     #[must_use]
     pub fn as_string(&self) -> Option<&str> {
@@ -434,6 +448,16 @@ impl NanBox {
         }
     }
 
+    /// Extract a higher-order builtin reference.
+    #[must_use]
+    pub fn as_higher_order_builtin(&self) -> Option<&HigherOrderBuiltin> {
+        if let Some(HeapObject::HigherOrderBuiltin(h)) = self.as_heap() {
+            Some(h)
+        } else {
+            None
+        }
+    }
+
     // ── Conversion to/from VMValue ────────────────────────────
 
     /// Convert a `VMValue` to a `NanBox`.
@@ -459,6 +483,7 @@ impl NanBox {
             VMValue::Closure(c) => Self::closure(c.clone()),
             VMValue::Builtin(b) => Self::builtin(b.clone()),
             VMValue::Thunk(t) => Self::thunk(t.clone()),
+            VMValue::HigherOrderBuiltin(h) => Self::higher_order_builtin(h.clone()),
         }
     }
 
@@ -489,6 +514,7 @@ impl NanBox {
                 HeapObject::Closure(c) => VMValue::Closure(c.clone()),
                 HeapObject::Builtin(b) => VMValue::Builtin(b.clone()),
                 HeapObject::Thunk(t) => VMValue::Thunk(t.clone()),
+                HeapObject::HigherOrderBuiltin(h) => VMValue::HigherOrderBuiltin(h.clone()),
             }
         } else {
             // Should not happen.
@@ -507,6 +533,7 @@ impl Clone for HeapObject {
             HeapObject::Closure(c) => HeapObject::Closure(c.clone()),
             HeapObject::Builtin(b) => HeapObject::Builtin(b.clone()),
             HeapObject::Thunk(t) => HeapObject::Thunk(t.clone()),
+            HeapObject::HigherOrderBuiltin(h) => HeapObject::HigherOrderBuiltin(h.clone()),
         }
     }
 }
@@ -611,6 +638,7 @@ impl fmt::Debug for NanBox {
                 HeapObject::Closure(c) => write!(f, "NanBox({c:?})"),
                 HeapObject::Builtin(b) => write!(f, "NanBox({b:?})"),
                 HeapObject::Thunk(_) => write!(f, "NanBox(<thunk>)"),
+                HeapObject::HigherOrderBuiltin(h) => write!(f, "NanBox({h:?})"),
             }
         } else {
             write!(f, "NanBox(0x{:016x})", self.0)

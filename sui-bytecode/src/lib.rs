@@ -233,4 +233,26 @@ mod tests {
             Err(EvalError::Runtime(VMError::DivisionByZero))
         ));
     }
+
+    #[test]
+    fn eval_lazy_let_thunk() {
+        // Non-trivial let binding should be lazily evaluated.
+        assert_eq!(eval("let x = 2 * 3; in x").unwrap(), VMValue::Int(6));
+    }
+
+    #[test]
+    fn eval_fixpoint_simple() {
+        // The core fixpoint pattern.
+        clear_compile_cache();
+        let result = eval("let fix = f: let x = f x; in x; in (fix (self: { a = 1; })).a");
+        assert_eq!(result.unwrap(), VMValue::Int(1));
+    }
+
+    #[test]
+    fn eval_fixpoint_self_ref() {
+        // Fixpoint with self-reference.
+        clear_compile_cache();
+        let result = eval("let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; })).b");
+        assert_eq!(result.unwrap(), VMValue::Int(2));
+    }
 }

@@ -627,3 +627,202 @@ fn parity_dynamic_attr_basic() {
 fn parity_dynamic_attr_interpolation() {
     assert_same(r#"let k = "hello"; in { ${k} = 42; }"#);
 }
+
+// ── Fixpoint / lazy let bindings ─────────────────────────────
+
+#[test]
+fn parity_fixpoint_basic() {
+    assert_same("let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; })).b");
+}
+
+#[test]
+fn parity_lazy_let_unused_binding() {
+    // Unused non-trivial binding should not error.
+    assert_same("let x = 1 + 2; y = 1; in y");
+}
+
+#[test]
+fn parity_make_extensible() {
+    assert_same(r#"
+        let
+            makeExtensible = rattrs: let self = rattrs self; in self;
+        in (makeExtensible (self: { a = 1; b = self.a + 1; })).b
+    "#);
+}
+
+#[test]
+fn parity_mutual_recursion_let() {
+    assert_same("let even = n: if n == 0 then true else odd (n - 1); odd = n: if n == 0 then false else even (n - 1); in even 10");
+}
+
+// ── Higher-order builtins (closure calling) ──────────────────
+
+#[test]
+fn parity_map_basic() {
+    assert_same("builtins.map (x: x + 1) [1 2 3]");
+}
+
+#[test]
+fn parity_map_identity() {
+    assert_same("builtins.map (x: x) [1 2 3]");
+}
+
+#[test]
+fn parity_map_empty() {
+    assert_same("builtins.map (x: x + 1) []");
+}
+
+#[test]
+fn parity_map_strings() {
+    assert_same(r#"builtins.map (x: x + "!") ["a" "b" "c"]"#);
+}
+
+#[test]
+fn parity_filter_basic() {
+    assert_same("builtins.filter (x: x > 2) [1 2 3 4 5]");
+}
+
+#[test]
+fn parity_filter_all_true() {
+    assert_same("builtins.filter (x: true) [1 2 3]");
+}
+
+#[test]
+fn parity_filter_all_false() {
+    assert_same("builtins.filter (x: false) [1 2 3]");
+}
+
+#[test]
+fn parity_filter_empty() {
+    assert_same("builtins.filter (x: x > 0) []");
+}
+
+#[test]
+fn parity_foldl_sum() {
+    assert_same("builtins.foldl' (acc: x: acc + x) 0 [1 2 3]");
+}
+
+#[test]
+fn parity_foldl_product() {
+    assert_same("builtins.foldl' (acc: x: acc * x) 1 [1 2 3 4]");
+}
+
+#[test]
+fn parity_foldl_empty() {
+    assert_same("builtins.foldl' (acc: x: acc + x) 42 []");
+}
+
+#[test]
+fn parity_sort_basic() {
+    assert_same("builtins.sort (a: b: a < b) [3 1 2]");
+}
+
+#[test]
+fn parity_sort_descending() {
+    assert_same("builtins.sort (a: b: a > b) [3 1 2]");
+}
+
+#[test]
+fn parity_sort_empty() {
+    assert_same("builtins.sort (a: b: a < b) []");
+}
+
+#[test]
+fn parity_sort_single() {
+    assert_same("builtins.sort (a: b: a < b) [42]");
+}
+
+#[test]
+fn parity_genlist_basic() {
+    assert_same("builtins.genList (i: i * 2) 5");
+}
+
+#[test]
+fn parity_genlist_zero() {
+    assert_same("builtins.genList (i: i) 0");
+}
+
+#[test]
+fn parity_genlist_identity() {
+    assert_same("builtins.genList (i: i) 4");
+}
+
+#[test]
+fn parity_concatmap_basic() {
+    assert_same("builtins.concatMap (x: [x (x+1)]) [1 2 3]");
+}
+
+#[test]
+fn parity_concatmap_empty_results() {
+    assert_same("builtins.concatMap (x: []) [1 2 3]");
+}
+
+#[test]
+fn parity_concatmap_singleton() {
+    assert_same("builtins.concatMap (x: [x]) [1 2 3]");
+}
+
+#[test]
+fn parity_any_true() {
+    assert_same("builtins.any (x: x > 3) [1 2 3 4]");
+}
+
+#[test]
+fn parity_any_false() {
+    assert_same("builtins.any (x: x > 10) [1 2 3]");
+}
+
+#[test]
+fn parity_any_empty() {
+    assert_same("builtins.any (x: true) []");
+}
+
+#[test]
+fn parity_all_true() {
+    assert_same("builtins.all (x: x > 0) [1 2 3]");
+}
+
+#[test]
+fn parity_all_false() {
+    assert_same("builtins.all (x: x > 2) [1 2 3]");
+}
+
+#[test]
+fn parity_all_empty() {
+    assert_same("builtins.all (x: false) []");
+}
+
+#[test]
+fn parity_partition_basic() {
+    assert_same("builtins.partition (x: x > 2) [1 2 3 4 5]");
+}
+
+#[test]
+fn parity_partition_all_right() {
+    assert_same("builtins.partition (x: true) [1 2 3]");
+}
+
+#[test]
+fn parity_partition_all_wrong() {
+    assert_same("builtins.partition (x: false) [1 2 3]");
+}
+
+#[test]
+fn parity_groupby_basic() {
+    assert_same(r#"builtins.groupBy (x: if x > 2 then "big" else "small") [1 2 3 4]"#);
+}
+
+#[test]
+fn parity_map_square() {
+    assert_same("builtins.map (x: x * x) [1 2 3 4]");
+}
+
+#[test]
+fn parity_filter_even() {
+    assert_same("builtins.filter (x: x - (x / 2) * 2 == 0) [1 2 3 4 5 6]");
+}
+
+#[test]
+fn parity_foldl_string_concat() {
+    assert_same(r#"builtins.foldl' (acc: x: acc + x) "" ["a" "b" "c"]"#);
+}

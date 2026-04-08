@@ -142,17 +142,11 @@ pub enum OpCode {
     Pop = 110,
 
     // ── Superinstructions ─────────────────────────────────────
-    // Fused opcodes for common instruction sequences. Each saves
-    // one dispatch cycle (opcode fetch + decode + branch).
-
     /// Fused `GetLocal` + `GetAttr`: push `stack[base+slot].key`.
     /// Operands: u16 local slot, u16 key constant index.
-    /// Equivalent to: `GetLocal slot; GetAttr key_idx`.
     GetLocalAttr = 120,
     /// Fused `GetLocal` + `Call`: call `stack[base+slot]` with TOS as arg.
     /// Operand: u16 local slot.
-    /// Equivalent to: `GetLocal slot; <arg already on stack>; Call`.
-    /// Note: the argument must be on the stack before this instruction.
     GetLocalCall = 121,
 
     // ── Builtins ─────────────────────────────────────────────────
@@ -164,22 +158,24 @@ pub enum OpCode {
 
     // ── Thunks (lazy evaluation) ─────────────────────────────────
     /// Create a thunk wrapping a sub-chunk (lazy value).
-    /// Operand: u16 constant index pointing to the thunk's Chunk.
+    /// Operand: u16 constant index, u16 upvalue count,
+    /// then for each upvalue: u8 is_local, u16 index.
     MakeThunk = 140,
     /// Force the top of stack: if it is a thunk, evaluate and replace.
-    /// If already a concrete value, no-op.
     Force = 141,
+    /// Patch upvalues of a thunk in a local slot.
+    /// Operand: u16 slot, u16 upvalue count,
+    /// then for each: u8 is_local, u16 index.
+    PatchThunkUpvalues = 142,
 
     // ── Import ───────────────────────────────────────────────────
     /// Pop a path from the stack, import the file, push the result.
-    /// Uses the shared import cache.
     Import = 150,
 }
 
 impl OpCode {
     /// Convert a raw byte to an opcode.
     pub fn from_byte(byte: u8) -> Option<OpCode> {
-        // Safety: we validate the byte matches a known variant.
         match byte {
             0 => Some(OpCode::Constant),
             1 => Some(OpCode::Null),
@@ -229,6 +225,7 @@ impl OpCode {
             131 => Some(OpCode::CallBuiltin),
             140 => Some(OpCode::MakeThunk),
             141 => Some(OpCode::Force),
+            142 => Some(OpCode::PatchThunkUpvalues),
             150 => Some(OpCode::Import),
             _ => None,
         }
@@ -242,54 +239,22 @@ mod tests {
     #[test]
     fn roundtrip_all_opcodes() {
         let opcodes = [
-            OpCode::Constant,
-            OpCode::Null,
-            OpCode::True,
-            OpCode::False,
-            OpCode::Add,
-            OpCode::Sub,
-            OpCode::Mul,
-            OpCode::Div,
-            OpCode::Negate,
-            OpCode::Not,
-            OpCode::And,
-            OpCode::Or,
-            OpCode::Implication,
-            OpCode::Equal,
-            OpCode::NotEqual,
-            OpCode::Less,
-            OpCode::Greater,
-            OpCode::LessEqual,
-            OpCode::GreaterEqual,
-            OpCode::Interpolate,
-            OpCode::GetLocal,
-            OpCode::SetLocal,
-            OpCode::GetUpvalue,
-            OpCode::SetUpvalue,
-            OpCode::PushWith,
-            OpCode::PopWith,
-            OpCode::LookupWith,
-            OpCode::MakeAttrs,
-            OpCode::GetAttr,
-            OpCode::HasAttr,
-            OpCode::UpdateAttrs,
-            OpCode::SelectOrDefault,
-            OpCode::MakeList,
-            OpCode::Concat,
-            OpCode::MakeClosure,
-            OpCode::Call,
-            OpCode::Return,
-            OpCode::Jump,
-            OpCode::JumpIfFalse,
-            OpCode::JumpIfTrue,
-            OpCode::Assert,
-            OpCode::Pop,
-            OpCode::GetLocalAttr,
-            OpCode::GetLocalCall,
-            OpCode::PushBuiltins,
-            OpCode::CallBuiltin,
-            OpCode::MakeThunk,
-            OpCode::Force,
+            OpCode::Constant, OpCode::Null, OpCode::True, OpCode::False,
+            OpCode::Add, OpCode::Sub, OpCode::Mul, OpCode::Div, OpCode::Negate,
+            OpCode::Not, OpCode::And, OpCode::Or, OpCode::Implication,
+            OpCode::Equal, OpCode::NotEqual, OpCode::Less, OpCode::Greater,
+            OpCode::LessEqual, OpCode::GreaterEqual, OpCode::Interpolate,
+            OpCode::GetLocal, OpCode::SetLocal, OpCode::GetUpvalue, OpCode::SetUpvalue,
+            OpCode::PushWith, OpCode::PopWith, OpCode::LookupWith,
+            OpCode::MakeAttrs, OpCode::GetAttr, OpCode::HasAttr,
+            OpCode::UpdateAttrs, OpCode::SelectOrDefault,
+            OpCode::MakeList, OpCode::Concat,
+            OpCode::MakeClosure, OpCode::Call, OpCode::Return,
+            OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,
+            OpCode::Assert, OpCode::Pop,
+            OpCode::GetLocalAttr, OpCode::GetLocalCall,
+            OpCode::PushBuiltins, OpCode::CallBuiltin,
+            OpCode::MakeThunk, OpCode::Force, OpCode::PatchThunkUpvalues,
             OpCode::Import,
         ];
         for op in opcodes {

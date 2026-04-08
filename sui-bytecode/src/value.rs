@@ -51,6 +51,54 @@ pub enum VMValue {
     Builtin(VMBuiltin),
     /// A lazy thunk: deferred computation, evaluated on first force.
     Thunk(VMThunk),
+    /// A higher-order builtin: partially applied operation that needs VM
+    /// access to call closures. The VM intercepts calls to these and
+    /// executes them with full execution context.
+    HigherOrderBuiltin(HigherOrderBuiltin),
+}
+
+/// Tag identifying which higher-order operation a partially-applied
+/// builtin represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HigherOrderOp {
+    /// `map f list` -- apply f to each element
+    Map,
+    /// `filter pred list` -- keep elements where pred returns true
+    Filter,
+    /// `foldl' f init` -- strict left fold (first partial: has f only)
+    FoldlP1,
+    /// `foldl' f init list` -- strict left fold (second partial: has f + init)
+    FoldlP2,
+    /// `sort comparator list` -- sort using comparator function
+    Sort,
+    /// `genList f n` -- generate list by calling f(0)..f(n-1)
+    GenList,
+    /// `concatMap f list` -- map then concatenate results
+    ConcatMap,
+    /// `any pred list` -- true if any element satisfies pred
+    Any,
+    /// `all pred list` -- true if all elements satisfy pred
+    All,
+    /// `partition pred list` -- split into { right, wrong }
+    Partition,
+    /// `groupBy f list` -- group elements by f result
+    GroupBy,
+    /// `mapAttrs f attrs` -- apply f to each attr value
+    MapAttrs,
+    /// `filterAttrs pred attrs` -- keep attrs where pred name value is true
+    FilterAttrs,
+}
+
+/// A partially-applied higher-order builtin that needs VM access to
+/// call user closures.
+#[derive(Clone)]
+pub struct HigherOrderBuiltin {
+    /// Which operation this represents.
+    pub op: HigherOrderOp,
+    /// The captured function/predicate/comparator.
+    pub func: Box<VMValue>,
+    /// Additional captured arguments (e.g., `init` for foldl').
+    pub extra_args: Vec<VMValue>,
 }
 
 /// A compiled closure: the function's bytecode chunk plus captured values.
@@ -84,6 +132,12 @@ impl fmt::Debug for VMBuiltin {
     }
 }
 
+impl fmt::Debug for HigherOrderBuiltin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<hof {:?}>", self.op)
+    }
+}
+
 /// State of a thunk's evaluation lifecycle.
 #[derive(Clone)]
 pub enum ThunkState {
@@ -93,7 +147,7 @@ pub enum ThunkState {
         chunk: Rc<Chunk>,
         upvalues: Vec<VMValue>,
     },
-    /// Currently being evaluated — detects infinite recursion (blackhole).
+    /// Currently being evaluated -- detects infinite recursion (blackhole).
     Evaluating,
     /// Already evaluated and memoized.
     Done(Box<VMValue>),
@@ -150,7 +204,7 @@ impl VMValue {
             VMValue::Path(_) => "path",
             VMValue::List(_) => "list",
             VMValue::Attrs(_) => "set",
-            VMValue::Closure(_) | VMValue::Builtin(_) => "lambda",
+            VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => "lambda",
             VMValue::Thunk(_) => "thunk",
         }
     }
@@ -206,7 +260,9 @@ impl VMValue {
                     .collect();
                 StringKeyedValue::Attrs(map)
             }
-            VMValue::Closure(_) | VMValue::Builtin(_) => StringKeyedValue::Lambda,
+            VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
+                StringKeyedValue::Lambda
+            }
             VMValue::Thunk(_) => StringKeyedValue::Lambda, // thunks should be forced before conversion
         }
     }
@@ -245,7 +301,8 @@ impl VMValue {
                 write!(f, "}}")
             }
             VMValue::Closure(_) => write!(f, "<<lambda>>"),
-            VMValue::Builtin(b) => write!(f, "<<builtin {}>>" , b.name),
+            VMValue::Builtin(b) => write!(f, "<<builtin {}>>", b.name),
+            VMValue::HigherOrderBuiltin(h) => write!(f, "<<builtin {:?}>>", h.op),
             VMValue::Thunk(_) => write!(f, "<<thunk>>"),
         }
     }
@@ -279,6 +336,7 @@ impl VMValue {
             }
             VMValue::Closure(c) => write!(f, "{c:?}"),
             VMValue::Builtin(b) => write!(f, "{b:?}"),
+            VMValue::HigherOrderBuiltin(h) => write!(f, "{h:?}"),
             VMValue::Thunk(t) => write!(f, "{t:?}"),
         }
     }
@@ -337,7 +395,7 @@ impl fmt::Display for StringKeyedValue {
     }
 }
 
-// ── Debug / Display without interner (best-effort) ────────────────
+// -- Debug / Display without interner (best-effort) --------------------
 
 impl fmt::Debug for VMValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -364,6 +422,7 @@ impl fmt::Debug for VMValue {
             }
             VMValue::Closure(c) => write!(f, "{c:?}"),
             VMValue::Builtin(b) => write!(f, "{b:?}"),
+            VMValue::HigherOrderBuiltin(h) => write!(f, "{h:?}"),
             VMValue::Thunk(t) => write!(f, "{t:?}"),
         }
     }
@@ -401,6 +460,7 @@ impl fmt::Display for VMValue {
             }
             VMValue::Closure(_) => write!(f, "<<lambda>>"),
             VMValue::Builtin(b) => write!(f, "<<builtin {}>>", b.name),
+            VMValue::HigherOrderBuiltin(h) => write!(f, "<<builtin {:?}>>", h.op),
             VMValue::Thunk(_) => write!(f, "<<thunk>>"),
         }
     }

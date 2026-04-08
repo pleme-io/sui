@@ -26,7 +26,7 @@ use crate::error::VMError;
 use crate::intern::{Interner, Symbol};
 use crate::nanbox::NanBox;
 use crate::opcode::OpCode;
-use crate::value::{ThunkState, VMValue};
+use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMValue};
 
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
@@ -85,6 +85,8 @@ impl<'a> VM<'a> {
         });
 
         let result = vm.run()?;
+        // Force the top-level result so we never return a thunk.
+        let result = vm.force_value(result)?;
         Ok(result.to_vmvalue())
     }
 
@@ -119,30 +121,30 @@ impl<'a> VM<'a> {
 
                 // -- Arithmetic -----------------------------------------
                 OpCode::Add => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(self.add(&a, &b)?);
                 }
                 OpCode::Sub => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(self.num_op(&a, &b, |x, y| x - y, |x, y| x - y, "subtraction")?);
                 }
                 OpCode::Mul => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(self.num_op(&a, &b, |x, y| x * y, |x, y| x * y, "multiplication")?);
                 }
                 OpCode::Div => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     if a.is_int() && b.as_int() == Some(0) {
                         return Err(VMError::DivisionByZero);
                     }
                     self.push(self.num_op(&a, &b, |x, y| x / y, |x, y| x / y, "division")?);
                 }
                 OpCode::Negate => {
-                    let val = self.pop()?;
+                    let val = self.pop_forced()?;
                     if let Some(n) = val.as_int() {
                         self.push(NanBox::int(-n));
                     } else if let Some(f) = val.as_float() {
@@ -158,59 +160,59 @@ impl<'a> VM<'a> {
 
                 // -- Logical --------------------------------------------
                 OpCode::Not => {
-                    let val = self.pop()?;
+                    let val = self.pop_forced()?;
                     let b = val.is_truthy()?;
                     self.push(NanBox::bool(!b));
                 }
                 OpCode::And => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(a.is_truthy()? && b.is_truthy()?));
                 }
                 OpCode::Or => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(a.is_truthy()? || b.is_truthy()?));
                 }
                 OpCode::Implication => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(!a.is_truthy()? || b.is_truthy()?));
                 }
 
                 // -- Comparison -----------------------------------------
                 OpCode::Equal => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(a == b));
                 }
                 OpCode::NotEqual => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(a != b));
                 }
                 OpCode::Less => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(self.compare(&a, &b)? == std::cmp::Ordering::Less));
                 }
                 OpCode::Greater => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(
                         self.compare(&a, &b)? == std::cmp::Ordering::Greater,
                     ));
                 }
                 OpCode::LessEqual => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(
                         self.compare(&a, &b)? != std::cmp::Ordering::Greater,
                     ));
                 }
                 OpCode::GreaterEqual => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     self.push(NanBox::bool(
                         self.compare(&a, &b)? != std::cmp::Ordering::Less,
                     ));
@@ -220,6 +222,13 @@ impl<'a> VM<'a> {
                 OpCode::Interpolate => {
                     let count = self.read_u16()? as usize;
                     let start = self.stack.len() - count;
+                    // Force all interpolation parts.
+                    for i in start..self.stack.len() {
+                        let v = self.stack[i].clone();
+                        if v.is_thunk() {
+                            self.stack[i] = self.force_value(v)?;
+                        }
+                    }
                     let mut result = String::new();
                     for i in start..self.stack.len() {
                         let v = &self.stack[i];
@@ -335,10 +344,16 @@ impl<'a> VM<'a> {
                 OpCode::GetAttr => {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
-                    let attrset = self.pop()?;
+                    let attrset = self.pop_forced()?;
                     if let Some(attrs) = attrset.as_attrs() {
                         if let Some(val) = attrs.get(&key_sym) {
-                            self.push(val.clone());
+                            // Force the attr value (may be a thunk in lazy attrsets).
+                            let forced = if val.is_thunk() {
+                                self.force_value(val.clone())?
+                            } else {
+                                val.clone()
+                            };
+                            self.push(forced);
                         } else {
                             let key_str = self.interner.resolve(key_sym).to_string();
                             return Err(VMError::AttrNotFound(key_str));
@@ -355,7 +370,7 @@ impl<'a> VM<'a> {
                 OpCode::HasAttr => {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
-                    let attrset = self.pop()?;
+                    let attrset = self.pop_forced()?;
                     let result = if let Some(attrs) = attrset.as_attrs() {
                         attrs.contains_key(&key_sym)
                     } else {
@@ -364,8 +379,8 @@ impl<'a> VM<'a> {
                     self.push(NanBox::bool(result));
                 }
                 OpCode::UpdateAttrs => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     // Both must be attrsets. Convert through VMValue for mutation.
                     let b_vmval = b.to_vmvalue();
                     let a_vmval = a.to_vmvalue();
@@ -395,8 +410,8 @@ impl<'a> VM<'a> {
                 OpCode::SelectOrDefault => {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
-                    let default = self.pop()?;
-                    let attrset = self.pop()?;
+                    let default = self.pop()?; // Don't force default (may not be used)
+                    let attrset = self.pop_forced()?;
                     if let Some(attrs) = attrset.as_attrs() {
                         if let Some(val) = attrs.get(&key_sym) {
                             self.push(val.clone());
@@ -416,8 +431,8 @@ impl<'a> VM<'a> {
                     self.push(NanBox::list(items));
                 }
                 OpCode::Concat => {
-                    let b = self.pop()?;
-                    let a = self.pop()?;
+                    let b = self.pop_forced()?;
+                    let a = self.pop_forced()?;
                     let a_vmval = a.to_vmvalue();
                     let b_vmval = b.to_vmvalue();
                     match (a_vmval, b_vmval) {
@@ -470,8 +485,8 @@ impl<'a> VM<'a> {
                     }
                 }
                 OpCode::Call => {
-                    let arg = self.pop()?;
-                    let func = self.pop()?;
+                    let arg = self.pop()?; // Don't force arg (may be thunk for fixpoint)
+                    let func = self.pop_forced()?; // Force to get closure/builtin
                     if let Some(closure) = func.as_closure() {
                         let is_tail = self.peek_next_is_return();
                         let chunk = closure.chunk.clone();
@@ -499,6 +514,10 @@ impl<'a> VM<'a> {
                                 upvalues,
                             });
                         }
+                    } else if func.is_higher_order_builtin() {
+                        let hob = func.as_higher_order_builtin().unwrap().clone();
+                        let result = self.call_higher_order_builtin(&hob, arg)?;
+                        self.push(result);
                     } else if let Some(builtin) = func.as_builtin() {
                         let arg_vmval = arg.to_vmvalue();
                         let builtin_func = builtin.func.clone();
@@ -529,14 +548,14 @@ impl<'a> VM<'a> {
                 }
                 OpCode::JumpIfFalse => {
                     let target = self.read_u16()? as usize;
-                    let cond = self.pop()?;
+                    let cond = self.pop_forced()?;
                     if !cond.is_truthy()? {
                         self.current_frame_mut().ip = target;
                     }
                 }
                 OpCode::JumpIfTrue => {
                     let target = self.read_u16()? as usize;
-                    let cond = self.pop()?;
+                    let cond = self.pop_forced()?;
                     if cond.is_truthy()? {
                         self.current_frame_mut().ip = target;
                     }
@@ -544,7 +563,7 @@ impl<'a> VM<'a> {
 
                 // -- Assert ---------------------------------------------
                 OpCode::Assert => {
-                    let cond = self.pop()?;
+                    let cond = self.pop_forced()?;
                     if !cond.is_truthy()? {
                         return Err(VMError::AssertionFailed);
                     }
@@ -561,10 +580,16 @@ impl<'a> VM<'a> {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
                     let abs_slot = self.current_frame().stack_base + slot;
-                    let local = &self.stack[abs_slot];
+                    let local = self.stack[abs_slot].clone();
+                    let local = self.force_value(local)?;
                     if let Some(attrs) = local.as_attrs() {
                         if let Some(val) = attrs.get(&key_sym) {
-                            self.push(val.clone());
+                            let forced = if val.is_thunk() {
+                                self.force_value(val.clone())?
+                            } else {
+                                val.clone()
+                            };
+                            self.push(forced);
                         } else {
                             let key_str = self.interner.resolve(key_sym).to_string();
                             return Err(VMError::AttrNotFound(key_str));
@@ -582,7 +607,8 @@ impl<'a> VM<'a> {
                     let slot = self.read_u16()? as usize;
                     let abs_slot = self.current_frame().stack_base + slot;
                     let func = self.stack[abs_slot].clone();
-                    let arg = self.pop()?;
+                    let func = self.force_value(func)?;
+                    let arg = self.pop()?; // Don't force arg
                     if let Some(closure) = func.as_closure() {
                         if self.frames.len() >= MAX_CALL_DEPTH {
                             return Err(VMError::StackOverflow);
@@ -598,6 +624,10 @@ impl<'a> VM<'a> {
                             stack_base,
                             upvalues,
                         });
+                    } else if func.is_higher_order_builtin() {
+                        let hob = func.as_higher_order_builtin().unwrap().clone();
+                        let result = self.call_higher_order_builtin(&hob, arg)?;
+                        self.push(result);
                     } else if let Some(builtin) = func.as_builtin() {
                         let arg_vmval = arg.to_vmvalue();
                         let builtin_func = builtin.func.clone();
@@ -626,6 +656,7 @@ impl<'a> VM<'a> {
                 // -- Thunks (lazy evaluation) ---------------------------
                 OpCode::MakeThunk => {
                     let chunk_idx = self.read_u16()?;
+                    let upvalue_count = self.read_u16()? as usize;
                     let thunk_chunk =
                         match &self.current_chunk().constants[chunk_idx as usize] {
                             VMValue::Closure(c) => c.chunk.clone(),
@@ -635,13 +666,52 @@ impl<'a> VM<'a> {
                                 ))
                             }
                         };
-                    let thunk = crate::value::VMThunk::new(thunk_chunk, Vec::new());
+                    // Capture upvalues (same mechanism as MakeClosure).
+                    let mut upvalues = Vec::with_capacity(upvalue_count);
+                    for _ in 0..upvalue_count {
+                        let is_local = self.read_byte()? != 0;
+                        let uv_index = self.read_u16()? as usize;
+                        if is_local {
+                            let abs_slot = self.current_frame().stack_base + uv_index;
+                            upvalues.push(self.stack[abs_slot].to_vmvalue());
+                        } else {
+                            let val = self.current_frame().upvalues[uv_index].to_vmvalue();
+                            upvalues.push(val);
+                        }
+                    }
+                    let thunk = crate::value::VMThunk::new(thunk_chunk, upvalues);
                     self.push(NanBox::thunk(thunk));
                 }
                 OpCode::Force => {
                     let val = self.pop()?;
                     let forced = self.force_value(val)?;
                     self.push(forced);
+                }
+                OpCode::PatchThunkUpvalues => {
+                    let patch_slot = self.read_u16()? as usize;
+                    let patch_uv_count = self.read_u16()? as usize;
+                    let patch_abs = self.current_frame().stack_base + patch_slot;
+                    let mut patch_uvs: Vec<VMValue> = Vec::with_capacity(patch_uv_count);
+                    for _ in 0..patch_uv_count {
+                        let il = self.read_byte()? != 0;
+                        let ui = self.read_u16()? as usize;
+                        if il {
+                            let a = self.current_frame().stack_base + ui;
+                            patch_uvs.push(self.stack[a].to_vmvalue());
+                        } else {
+                            patch_uvs.push(self.current_frame().upvalues[ui].to_vmvalue());
+                        }
+                    }
+                    let patch_nb = self.stack[patch_abs].clone();
+                    let patch_vm = patch_nb.to_vmvalue();
+                    if let VMValue::Thunk(ref t) = patch_vm {
+                        let s = t.state.take();
+                        if let Some(ThunkState::Pending { chunk: c, .. }) = s {
+                            t.state.set(Some(ThunkState::Pending { chunk: c, upvalues: patch_uvs }));
+                        } else {
+                            t.state.set(s);
+                        }
+                    }
                 }
 
                 // -- Import ---------------------------------------------
@@ -673,6 +743,13 @@ impl<'a> VM<'a> {
 
     fn pop(&mut self) -> Result<NanBox, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow)
+    }
+
+    /// Pop a value from the stack, forcing it if it is a thunk.
+    /// Use this when the operation needs a concrete (non-thunk) value.
+    fn pop_forced(&mut self) -> Result<NanBox, VMError> {
+        let val = self.pop()?;
+        self.force_value(val)
     }
 
     fn peek(&self) -> Result<&NanBox, VMError> {
@@ -849,24 +926,30 @@ impl<'a> VM<'a> {
                         thunk.state.set(Some(ThunkState::Evaluating));
                         Err(VMError::InfiniteRecursion)
                     }
-                    Some(ThunkState::Pending { chunk, upvalues: _ }) => {
+                    Some(ThunkState::Pending { chunk, upvalues }) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
 
                         if self.frames.len() >= MAX_CALL_DEPTH {
                             thunk.state.set(Some(ThunkState::Pending {
                                 chunk,
-                                upvalues: Vec::new(),
+                                upvalues,
                             }));
                             return Err(VMError::StackOverflow);
                         }
 
                         let return_depth = self.frames.len();
                         let stack_base = self.stack.len();
+                        // Convert captured upvalues to NanBox for the frame.
+                        let frame_upvalues: Vec<NanBox> = upvalues
+                            .iter()
+                            .map(|v| NanBox::from_vmvalue(v))
+                            .collect();
+                        let upvalues_for_restore = upvalues;
                         self.frames.push(CallFrame {
                             chunk: chunk.clone(),
                             ip: 0,
                             stack_base,
-                            upvalues: Vec::new(),
+                            upvalues: frame_upvalues,
                         });
 
                         let result = self.run_until(return_depth);
@@ -887,7 +970,7 @@ impl<'a> VM<'a> {
                             Err(e) => {
                                 thunk.state.set(Some(ThunkState::Pending {
                                     chunk,
-                                    upvalues: Vec::new(),
+                                    upvalues: upvalues_for_restore,
                                 }));
                                 Err(e)
                             }
@@ -897,6 +980,308 @@ impl<'a> VM<'a> {
                 }
             }
             _ => Ok(NanBox::from_vmvalue(&vmval)),
+        }
+    }
+
+
+    // -- Higher-order builtin execution -----------------------------------
+
+    fn call_callable(&mut self, func: &NanBox, arg: NanBox) -> Result<NanBox, VMError> {
+        if let Some(closure) = func.as_closure() {
+            if self.frames.len() >= MAX_CALL_DEPTH {
+                return Err(VMError::StackOverflow);
+            }
+            let upvalues: Vec<NanBox> =
+                closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+            let chunk = closure.chunk.clone();
+            let return_depth = self.frames.len();
+            let stack_base = self.stack.len();
+            self.push(arg);
+            self.frames.push(CallFrame {
+                chunk,
+                ip: 0,
+                stack_base,
+                upvalues,
+            });
+            self.run_until(return_depth)
+        } else if func.is_higher_order_builtin() {
+            let hob = func.as_higher_order_builtin().unwrap().clone();
+            self.call_higher_order_builtin(&hob, arg)
+        } else if let Some(builtin) = func.as_builtin() {
+            let arg_vmval = arg.to_vmvalue();
+            let builtin_func = builtin.func.clone();
+            let result = builtin_func(vec![arg_vmval])?;
+            Ok(NanBox::from_vmvalue(&result))
+        } else {
+            Err(VMError::NotCallable(func.type_name().to_string()))
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn call_higher_order_builtin(
+        &mut self,
+        hob: &HigherOrderBuiltin,
+        arg: NanBox,
+    ) -> Result<NanBox, VMError> {
+        use HigherOrderOp::*;
+        match hob.op {
+            Map => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.map".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut results = Vec::with_capacity(list.len());
+                for item in list {
+                    let r = self.call_callable(&func_nb, NanBox::from_vmvalue(item))?;
+                    results.push(r);
+                }
+                Ok(NanBox::list(results))
+            }
+            Filter => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.filter".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut results = Vec::new();
+                for item in list {
+                    let item_nb = NanBox::from_vmvalue(item);
+                    let r = self.call_callable(&func_nb, item_nb.clone())?;
+                    if r.is_truthy()? { results.push(item_nb); }
+                }
+                Ok(NanBox::list(results))
+            }
+            FoldlP1 => {
+                let init_vmval = arg.to_vmvalue();
+                Ok(NanBox::from_vmvalue(&VMValue::HigherOrderBuiltin(
+                    HigherOrderBuiltin {
+                        op: FoldlP2,
+                        func: hob.func.clone(),
+                        extra_args: vec![init_vmval],
+                    },
+                )))
+            }
+            FoldlP2 => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.foldl'".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut acc = NanBox::from_vmvalue(&hob.extra_args[0]);
+                for item in list {
+                    let partial = self.call_callable(&func_nb, acc)?;
+                    acc = self.call_callable(&partial, NanBox::from_vmvalue(item))?;
+                }
+                Ok(acc)
+            }
+            Sort => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l.clone(),
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.sort".to_string(),
+                    }),
+                };
+                if list.len() <= 1 {
+                    return Ok(NanBox::from_vmvalue(&VMValue::List(list)));
+                }
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut sorted: Vec<VMValue> = Vec::with_capacity(list.len());
+                for item in &list {
+                    let item_nb = NanBox::from_vmvalue(item);
+                    let mut pos = sorted.len();
+                    for (i, existing) in sorted.iter().enumerate() {
+                        let existing_nb = NanBox::from_vmvalue(existing);
+                        let partial = self.call_callable(&func_nb, item_nb.clone())?;
+                        let cmp_result = self.call_callable(&partial, existing_nb)?;
+                        if cmp_result.is_truthy()? { pos = i; break; }
+                    }
+                    sorted.insert(pos, item.clone());
+                }
+                Ok(NanBox::from_vmvalue(&VMValue::List(sorted)))
+            }
+            GenList => {
+                let n = match arg.to_vmvalue() {
+                    VMValue::Int(n) => n,
+                    other => return Err(VMError::TypeError {
+                        expected: "int", got: other.type_name(),
+                        context: "builtins.genList".to_string(),
+                    }),
+                };
+                if n < 0 { return Err(VMError::Throw("genList: negative length".to_string())); }
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut results = Vec::with_capacity(n as usize);
+                for i in 0..n {
+                    results.push(self.call_callable(&func_nb, NanBox::int(i))?);
+                }
+                Ok(NanBox::list(results))
+            }
+            ConcatMap => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.concatMap".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut results = Vec::new();
+                for item in list {
+                    let mapped = self.call_callable(&func_nb, NanBox::from_vmvalue(item))?;
+                    match mapped.to_vmvalue() {
+                        VMValue::List(inner) => {
+                            for v in &inner { results.push(NanBox::from_vmvalue(v)); }
+                        }
+                        other => return Err(VMError::TypeError {
+                            expected: "list", got: other.type_name(),
+                            context: "builtins.concatMap result".to_string(),
+                        }),
+                    }
+                }
+                Ok(NanBox::list(results))
+            }
+            Any => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.any".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                for item in list {
+                    if self.call_callable(&func_nb, NanBox::from_vmvalue(item))?.is_truthy()? {
+                        return Ok(NanBox::bool(true));
+                    }
+                }
+                Ok(NanBox::bool(false))
+            }
+            All => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.all".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                for item in list {
+                    if !self.call_callable(&func_nb, NanBox::from_vmvalue(item))?.is_truthy()? {
+                        return Ok(NanBox::bool(false));
+                    }
+                }
+                Ok(NanBox::bool(true))
+            }
+            Partition => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.partition".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let (mut right, mut wrong) = (Vec::new(), Vec::new());
+                for item in list {
+                    let item_nb = NanBox::from_vmvalue(item);
+                    if self.call_callable(&func_nb, item_nb.clone())?.is_truthy()? {
+                        right.push(item_nb);
+                    } else {
+                        wrong.push(item_nb);
+                    }
+                }
+                let rs = self.interner.intern("right");
+                let ws = self.interner.intern("wrong");
+                let mut attrs = BTreeMap::new();
+                attrs.insert(rs, NanBox::list(right));
+                attrs.insert(ws, NanBox::list(wrong));
+                Ok(NanBox::attrs(attrs))
+            }
+            GroupBy => {
+                let list_val = arg.to_vmvalue();
+                let list = match &list_val {
+                    VMValue::List(l) => l,
+                    other => return Err(VMError::TypeError {
+                        expected: "list", got: other.type_name(),
+                        context: "builtins.groupBy".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let mut groups: BTreeMap<String, Vec<NanBox>> = BTreeMap::new();
+                for item in list {
+                    let item_nb = NanBox::from_vmvalue(item);
+                    let kr = self.call_callable(&func_nb, item_nb.clone())?;
+                    let ks = kr.as_string().ok_or_else(|| VMError::TypeError {
+                        expected: "string", got: kr.type_name(),
+                        context: "builtins.groupBy key".to_string(),
+                    })?.to_string();
+                    groups.entry(ks).or_default().push(item_nb);
+                }
+                let mut attrs = BTreeMap::new();
+                for (k, vs) in groups {
+                    attrs.insert(self.interner.intern(&k), NanBox::list(vs));
+                }
+                Ok(NanBox::attrs(attrs))
+            }
+            MapAttrs => {
+                let attrs_val = arg.to_vmvalue();
+                let attrs = match &attrs_val {
+                    VMValue::Attrs(a) => a,
+                    other => return Err(VMError::TypeError {
+                        expected: "set", got: other.type_name(),
+                        context: "builtins.mapAttrs".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let entries: Vec<_> = attrs.iter().map(|(k, v)| (*k, v.clone())).collect();
+                let mut result = BTreeMap::new();
+                for (sym, val) in entries {
+                    let key_str = self.interner.resolve(sym).to_string();
+                    let partial = self.call_callable(&func_nb, NanBox::string(key_str))?;
+                    let mapped = self.call_callable(&partial, NanBox::from_vmvalue(&val))?;
+                    result.insert(sym, mapped);
+                }
+                Ok(NanBox::attrs(result))
+            }
+            FilterAttrs => {
+                let attrs_val = arg.to_vmvalue();
+                let attrs = match &attrs_val {
+                    VMValue::Attrs(a) => a,
+                    other => return Err(VMError::TypeError {
+                        expected: "set", got: other.type_name(),
+                        context: "builtins.filterAttrs".to_string(),
+                    }),
+                };
+                let func_nb = NanBox::from_vmvalue(&hob.func);
+                let entries: Vec<_> = attrs.iter().map(|(k, v)| (*k, v.clone())).collect();
+                let mut result = BTreeMap::new();
+                for (sym, val) in entries {
+                    let key_str = self.interner.resolve(sym).to_string();
+                    let partial = self.call_callable(&func_nb, NanBox::string(key_str))?;
+                    if self.call_callable(&partial, NanBox::from_vmvalue(&val))?.is_truthy()? {
+                        result.insert(sym, NanBox::from_vmvalue(&val));
+                    }
+                }
+                Ok(NanBox::attrs(result))
+            }
         }
     }
 

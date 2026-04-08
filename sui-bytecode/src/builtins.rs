@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use crate::error::VMError;
 use crate::intern::{Interner, Symbol};
-use crate::value::{VMBuiltin, VMValue};
+use crate::value::{HigherOrderBuiltin, HigherOrderOp, VMBuiltin, VMValue};
 
 /// Registry of builtin functions accessible from the VM.
 pub struct BuiltinRegistry {
@@ -126,6 +126,7 @@ impl BuiltinRegistry {
     fn register_all(&mut self) {
         self.register_type_checks();
         self.register_list_ops();
+        self.register_higher_order_ops();
         self.register_attrset_ops();
         self.register_string_ops();
         self.register_conversion_ops();
@@ -146,7 +147,7 @@ impl BuiltinRegistry {
                 VMValue::Path(_) => "path",
                 VMValue::List(_) => "list",
                 VMValue::Attrs(_) => "set",
-                VMValue::Closure(_) | VMValue::Builtin(_) => "lambda",
+                VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => "lambda",
                 VMValue::Thunk(_) => "thunk",
             };
             Ok(VMValue::String(name.to_string()))
@@ -175,7 +176,7 @@ impl BuiltinRegistry {
         self.register("isFunction", 1, |args| {
             Ok(VMValue::Bool(matches!(
                 args[0],
-                VMValue::Closure(_) | VMValue::Builtin(_)
+                VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_)
             )))
         });
         self.register("isPath", 1, |args| {
@@ -233,49 +234,28 @@ impl BuiltinRegistry {
         });
 
         self.register("genList", 1, |args| {
-            let func = args[0].clone();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "genList<partial>",
-                func: Rc::new(move |_args2| {
-                    // genList requires calling VM closures — return a placeholder.
-                    // For now, genList with closures needs the tree-walker.
-                    // genList with builtins works via apply in the VM.
-                    let _ = &func;
-                    Err(VMError::Throw(
-                        "genList: VM closure calls in builtins not yet supported".to_string(),
-                    ))
-                }),
-                arity: 1,
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::GenList,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
             }))
         });
 
-        // map: curried, returns partial
+        // map: curried, returns partial (VM handles closure calling)
         self.register("map", 1, |args| {
-            let func = args[0].clone();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "map<partial>",
-                func: Rc::new(move |_args2| {
-                    let _ = &func;
-                    Err(VMError::Throw(
-                        "map: VM closure calls in builtins not yet supported".to_string(),
-                    ))
-                }),
-                arity: 1,
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Map,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
             }))
         });
 
-        // filter: curried, returns partial
+        // filter: curried, returns partial (VM handles closure calling)
         self.register("filter", 1, |args| {
-            let pred = args[0].clone();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "filter<partial>",
-                func: Rc::new(move |_args2| {
-                    let _ = &pred;
-                    Err(VMError::Throw(
-                        "filter: VM closure calls in builtins not yet supported".to_string(),
-                    ))
-                }),
-                arity: 1,
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Filter,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
             }))
         });
 
@@ -290,12 +270,105 @@ impl BuiltinRegistry {
         });
 
         self.register("sort", 1, |args| {
-            let _cmp = args[0].clone();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "sort<partial>",
-                func: Rc::new(|_args2| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Sort,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+    }
+
+
+    // ── Higher-order operations (need VM access) ─────────────────
+
+    fn register_higher_order_ops(&mut self) {
+        self.register("foldl'", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::FoldlP1,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("concatMap", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::ConcatMap,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("any", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Any,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("all", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::All,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("partition", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Partition,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("groupBy", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::GroupBy,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("mapAttrs", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::MapAttrs,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("filterAttrs", 1, |args| {
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::FilterAttrs,
+                func: Box::new(args[0].clone()),
+                extra_args: Vec::new(),
+            }))
+        });
+        self.register("functionArgs", 1, |args| {
+            match &args[0] {
+                VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
+                    Ok(VMValue::Attrs(BTreeMap::new()))
+                }
+                VMValue::Closure(_) => {
                     Err(VMError::Throw(
-                        "sort: VM closure calls in builtins not yet supported".to_string(),
+                        "functionArgs: requires VM-level implementation for closures".to_string(),
+                    ))
+                }
+                other => Err(VMError::TypeError {
+                    expected: "lambda",
+                    got: other.type_name(),
+                    context: "functionArgs".to_string(),
+                }),
+            }
+        });
+        self.register("catAttrs", 1, |args| {
+            let name = as_string(&args[0])?.to_string();
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "catAttrs<partial>",
+                func: Rc::new(move |args2| {
+                    let list = as_list(&args2[0])?;
+                    let mut result: Vec<VMValue> = Vec::new();
+                    for item in list {
+                        if let VMValue::Attrs(_) = item {
+                            let _ = &name;
+                        }
+                    }
+                    Err(VMError::Throw(
+                        "catAttrs: requires interner access (use VM dispatch)".to_string(),
                     ))
                 }),
                 arity: 1,
@@ -517,7 +590,7 @@ impl BuiltinRegistry {
                         "toString: cannot convert set or list".to_string(),
                     ));
                 }
-                VMValue::Closure(_) | VMValue::Builtin(_) => {
+                VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
                     return Err(VMError::Throw(
                         "toString: cannot convert function".to_string(),
                     ));
@@ -800,7 +873,7 @@ fn vm_value_to_json(v: &VMValue) -> Result<serde_json::Value, VMError> {
                 "toJSON: attrset conversion requires interner".to_string(),
             ))
         }
-        VMValue::Closure(_) | VMValue::Builtin(_) => {
+        VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
             Err(VMError::Throw("toJSON: cannot convert function".to_string()))
         }
         VMValue::Thunk(_) => {
