@@ -234,11 +234,7 @@ impl SystemOrchestrator {
             .await
             .map_err(|e| SystemError::RebuildFailed(format!("store: {e}")))?;
         let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
-        let caches: Vec<std::sync::Arc<sui_store::BinaryCacheStore>> =
-            vec![std::sync::Arc::new(sui_store::BinaryCacheStore::new(
-                "https://cache.nixos.org",
-                vec![],
-            ))];
+        let caches = build_caches(&get_substituters());
         let substitutor = sui_store::Substitutor::new(store.clone(), caches);
 
         #[cfg(target_os = "macos")]
@@ -478,6 +474,115 @@ impl SystemOrchestrator {
 
 /// Default path to the Nix SQLite database.
 const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
+
+/// A configured binary cache substituter with its trusted public keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubstituterConfig {
+    /// Base URL of the binary cache (e.g., `https://cache.nixos.org`).
+    pub url: String,
+    /// Trusted public keys for signature verification (`keyname:base64pubkey`).
+    pub trusted_keys: Vec<String>,
+    /// Optional authorization scheme (e.g., `"Bearer"`).
+    pub auth_scheme: Option<String>,
+    /// Optional authorization credentials (e.g., an Attic token).
+    pub auth_credentials: Option<String>,
+}
+
+/// Read the list of configured substituters.
+///
+/// Resolution order:
+/// 1. `SUI_SUBSTITUTERS` environment variable (comma-separated URLs)
+/// 2. `SUI_TRUSTED_KEYS` environment variable (space-separated keys)
+/// 3. Default: `cache.nixos.org` with its well-known public key
+///
+/// The format for `SUI_SUBSTITUTERS` is:
+///   `https://cache.nixos.org,http://cache.plo.quero.lan/nexus`
+///
+/// Each cache's trusted keys come from `SUI_TRUSTED_KEYS` (shared)
+/// or `SUI_CACHE_<N>_KEYS` for per-cache keys (e.g., `SUI_CACHE_1_KEYS`).
+///
+/// For authenticated caches (e.g., Attic), set `SUI_CACHE_<N>_AUTH`
+/// to `Bearer <token>`.
+pub fn get_substituters() -> Vec<SubstituterConfig> {
+    const DEFAULT_CACHE_URL: &str = "https://cache.nixos.org";
+    const DEFAULT_CACHE_KEY: &str =
+        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=";
+
+    let shared_keys: Vec<String> = std::env::var("SUI_TRUSTED_KEYS")
+        .ok()
+        .map(|v| v.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+
+    let urls: Vec<String> = match std::env::var("SUI_SUBSTITUTERS") {
+        Ok(val) if !val.is_empty() => {
+            val.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }
+        _ => vec![DEFAULT_CACHE_URL.to_string()],
+    };
+
+    urls.iter()
+        .enumerate()
+        .map(|(i, url)| {
+            // Per-cache keys override shared keys.
+            let per_cache_keys: Vec<String> = std::env::var(format!("SUI_CACHE_{}_KEYS", i + 1))
+                .ok()
+                .map(|v| v.split_whitespace().map(String::from).collect())
+                .unwrap_or_default();
+
+            let keys = if per_cache_keys.is_empty() {
+                if !shared_keys.is_empty() {
+                    shared_keys.clone()
+                } else if url == DEFAULT_CACHE_URL {
+                    vec![DEFAULT_CACHE_KEY.to_string()]
+                } else {
+                    vec![]
+                }
+            } else {
+                per_cache_keys
+            };
+
+            // Per-cache auth (e.g., "Bearer <token>").
+            let (auth_scheme, auth_credentials) =
+                match std::env::var(format!("SUI_CACHE_{}_AUTH", i + 1)) {
+                    Ok(val) if !val.is_empty() => {
+                        if let Some((scheme, creds)) = val.split_once(' ') {
+                            (Some(scheme.to_string()), Some(creds.to_string()))
+                        } else {
+                            (None, None)
+                        }
+                    }
+                    _ => (None, None),
+                };
+
+            SubstituterConfig {
+                url: url.clone(),
+                trusted_keys: keys,
+                auth_scheme,
+                auth_credentials,
+            }
+        })
+        .collect()
+}
+
+/// Build `BinaryCacheStore` instances from substituter configuration.
+pub fn build_caches(configs: &[SubstituterConfig]) -> Vec<std::sync::Arc<sui_store::BinaryCacheStore>> {
+    configs
+        .iter()
+        .map(|cfg| {
+            let mut builder = sui_store::BinaryCacheStore::builder(&cfg.url)
+                .trusted_keys(cfg.trusted_keys.clone());
+
+            if let (Some(scheme), Some(creds)) = (&cfg.auth_scheme, &cfg.auth_credentials) {
+                builder = builder.auth_header(scheme, creds);
+            }
+
+            std::sync::Arc::new(builder.build())
+        })
+        .collect()
+}
 
 /// Information about a single system generation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1347,4 +1452,91 @@ mod tests {
         }
     }
 
+    // ── Substituter configuration tests ─────────────────────────
+
+    #[test]
+    fn build_caches_creates_correct_stores() {
+        let configs = vec![
+            SubstituterConfig {
+                url: "https://cache.nixos.org".to_string(),
+                trusted_keys: vec!["cache.nixos.org-1:key".to_string()],
+                auth_scheme: None,
+                auth_credentials: None,
+            },
+            SubstituterConfig {
+                url: "http://attic.local/store".to_string(),
+                trusted_keys: vec!["attic:key2".to_string()],
+                auth_scheme: Some("Bearer".to_string()),
+                auth_credentials: Some("token123".to_string()),
+            },
+        ];
+
+        let caches = build_caches(&configs);
+        assert_eq!(caches.len(), 2);
+        assert_eq!(caches[0].base_url(), "https://cache.nixos.org");
+        assert!(caches[0].auth_header().is_none());
+        assert_eq!(caches[1].base_url(), "http://attic.local/store");
+        let (scheme, creds) = caches[1].auth_header().unwrap();
+        assert_eq!(scheme, "Bearer");
+        assert_eq!(creds, "token123");
+    }
+
+    #[test]
+    fn build_caches_empty_config_produces_no_caches() {
+        let caches = build_caches(&[]);
+        assert!(caches.is_empty());
+    }
+
+    #[test]
+    fn build_caches_without_auth() {
+        let configs = vec![SubstituterConfig {
+            url: "https://cache.nixos.org".to_string(),
+            trusted_keys: vec!["cache.nixos.org-1:key".to_string()],
+            auth_scheme: None,
+            auth_credentials: None,
+        }];
+        let caches = build_caches(&configs);
+        assert_eq!(caches.len(), 1);
+        assert!(caches[0].auth_header().is_none());
+        assert_eq!(caches[0].trusted_keys().len(), 1);
+    }
+
+    #[test]
+    fn substituter_config_derives_debug_clone_eq() {
+        let cfg = SubstituterConfig {
+            url: "https://test.com".to_string(),
+            trusted_keys: vec![],
+            auth_scheme: None,
+            auth_credentials: None,
+        };
+        let cfg2 = cfg.clone();
+        assert_eq!(cfg, cfg2);
+        let _ = format!("{cfg:?}");
+    }
+
+    #[test]
+    fn substituter_config_with_all_fields() {
+        let cfg = SubstituterConfig {
+            url: "http://attic.local/nexus".to_string(),
+            trusted_keys: vec!["nexus:key...".to_string()],
+            auth_scheme: Some("Bearer".to_string()),
+            auth_credentials: Some("token".to_string()),
+        };
+        assert_eq!(cfg.url, "http://attic.local/nexus");
+        assert_eq!(cfg.trusted_keys.len(), 1);
+        assert_eq!(cfg.auth_scheme.as_deref(), Some("Bearer"));
+        assert_eq!(cfg.auth_credentials.as_deref(), Some("token"));
+    }
+
+    #[test]
+    fn build_caches_preserves_trusted_keys() {
+        let configs = vec![SubstituterConfig {
+            url: "https://test.com".to_string(),
+            trusted_keys: vec!["k1:aaa".to_string(), "k2:bbb".to_string()],
+            auth_scheme: None,
+            auth_credentials: None,
+        }];
+        let caches = build_caches(&configs);
+        assert_eq!(caches[0].trusted_keys().len(), 2);
+    }
 }
