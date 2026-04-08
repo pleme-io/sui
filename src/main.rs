@@ -5,9 +5,12 @@ use sui_store::{LocalStore, Store, Substitutor};
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]
 struct Cli {
-    /// Use bytecode VM instead of tree-walker for evaluation
+    /// Use bytecode VM for evaluation (default; kept for compatibility)
     #[arg(long, global = true)]
     vm: bool,
+    /// Fall back to tree-walker instead of bytecode VM
+    #[arg(long, global = true, conflicts_with = "vm")]
+    no_vm: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -232,11 +235,19 @@ async fn main() -> Result<(), CliError> {
         Commands::Eval { expression, json } => {
             let expr = expression
                 .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
-            if cli.vm {
-                // Bytecode VM evaluation path.
+            if cli.no_vm {
+                // Tree-walker evaluation path (legacy fallback).
+                let value = sui_eval::eval(&expr)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&value.to_json())?);
+                } else {
+                    println!("{value}");
+                }
+            } else {
+                // Bytecode VM evaluation path (default).
                 let result = sui_bytecode::eval_full(&expr).map_err(|e| {
                     CliError::Orchestrate {
-                        operation: "vm eval",
+                        operation: "eval",
                         message: e.to_string(),
                     }
                 })?;
@@ -247,14 +258,6 @@ async fn main() -> Result<(), CliError> {
                 } else {
                     let sk = result.to_string_keyed();
                     println!("{sk}");
-                }
-            } else {
-                // Tree-walker evaluation path.
-                let value = sui_eval::eval(&expr)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&value.to_json())?);
-                } else {
-                    println!("{value}");
                 }
             }
         }

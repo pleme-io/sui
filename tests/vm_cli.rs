@@ -1,15 +1,16 @@
-//! CLI tests for the `--vm` flag.
+//! CLI tests for the VM eval backend.
 //!
-//! Verifies that `sui --vm eval` produces the same results as `sui eval`
-//! for expressions the bytecode VM supports.
+//! The bytecode VM is now the default for `sui eval`. The tree-walker is
+//! available via `--no-vm`. These tests verify parity between the two
+//! backends and that both `--vm` (explicit, no-op) and `--no-vm` flags work.
 
 use assert_cmd::Command;
 
-/// Run `sui --vm eval --json <expr>` and return parsed JSON.
+/// Run `sui eval --json <expr>` (default = VM) and return parsed JSON.
 fn vm_eval_json(expr: &str) -> serde_json::Value {
     let assert = Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["--vm", "eval", "--json", expr])
+        .args(["eval", "--json", expr])
         .assert()
         .success();
     let output = assert.get_output();
@@ -19,11 +20,11 @@ fn vm_eval_json(expr: &str) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("vm eval JSON parse failed for {expr:?}: {e}\n{trimmed}"))
 }
 
-/// Run `sui eval --json <expr>` (tree-walker) and return parsed JSON.
+/// Run `sui --no-vm eval --json <expr>` (tree-walker) and return parsed JSON.
 fn tw_eval_json(expr: &str) -> serde_json::Value {
     let assert = Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["eval", "--json", expr])
+        .args(["--no-vm", "eval", "--json", expr])
         .assert()
         .success();
     let output = assert.get_output();
@@ -210,13 +211,49 @@ fn vm_parity_builtins_type_of() {
     assert_vm_tw_parity("builtins.typeOf 42");
 }
 
+// ── Flag variants ─────────────────────────────────────────────
+
+#[test]
+fn explicit_vm_flag_is_noop() {
+    // --vm is redundant (VM is default) but should still work.
+    let assert = Command::cargo_bin("sui")
+        .expect("cargo_bin sui")
+        .args(["--vm", "eval", "--json", "1 + 2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val, serde_json::json!(3));
+}
+
+#[test]
+fn no_vm_flag_uses_tree_walker() {
+    let assert = Command::cargo_bin("sui")
+        .expect("cargo_bin sui")
+        .args(["--no-vm", "eval", "--json", "1 + 2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val, serde_json::json!(3));
+}
+
 // ── Error paths ───────────────────────────────────────────────
 
 #[test]
 fn vm_eval_error_exits_nonzero() {
     Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["--vm", "eval", "let in"])
+        .args(["eval", "let in"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn no_vm_eval_error_exits_nonzero() {
+    Command::cargo_bin("sui")
+        .expect("cargo_bin sui")
+        .args(["--no-vm", "eval", "let in"])
         .assert()
         .failure();
 }
