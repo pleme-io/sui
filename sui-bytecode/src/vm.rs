@@ -534,8 +534,10 @@ impl<'a> VM<'a> {
                         } else {
                             let arg_vmval = arg.to_vmvalue();
                             let builtin_func = builtin.func.clone();
-                            let result = builtin_func(vec![arg_vmval])?;
-                            self.push(NanBox::from_vmvalue(&result));
+                            let result = self.call_builtin_with_scoped_import_dispatch(
+                                builtin_func, arg_vmval,
+                            )?;
+                            self.push(result);
                         }
                     } else {
                         return Err(VMError::NotCallable(func.type_name().to_string()));
@@ -648,8 +650,10 @@ impl<'a> VM<'a> {
                         } else {
                             let arg_vmval = arg.to_vmvalue();
                             let builtin_func = builtin.func.clone();
-                            let result = builtin_func(vec![arg_vmval])?;
-                            self.push(NanBox::from_vmvalue(&result));
+                            let result = self.call_builtin_with_scoped_import_dispatch(
+                                builtin_func, arg_vmval,
+                            )?;
+                            self.push(result);
                         }
                     } else {
                         return Err(VMError::NotCallable(func.type_name().to_string()));
@@ -1246,6 +1250,116 @@ impl<'a> VM<'a> {
                     },
                 ))))
             }
+            "getFlake" => {
+                let forced = self.force_value(arg.clone())?;
+                let flake_ref = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: other.type_name(),
+                            context: "getFlake".to_string(),
+                        });
+                    }
+                };
+                let result = self.vm_get_flake(&flake_ref)?;
+                Ok(Some(result))
+            }
+            "scopedImport" => {
+                // scopedImport is curried: first call takes scope, returns partial
+                let forced = self.force_value(arg.clone())?;
+                let scope_vmval = forced.to_vmvalue();
+                match scope_vmval {
+                    VMValue::Attrs(_) => {}
+                    ref other => {
+                        return Err(VMError::TypeError {
+                            expected: "set",
+                            got: other.type_name(),
+                            context: "scopedImport".to_string(),
+                        });
+                    }
+                }
+                // Build a string-keyed scope for wrapping
+                let scope_str = if let Some(attrs) = forced.as_attrs() {
+                    let mut parts = String::from("{");
+                    for (k, v) in attrs {
+                        let key = self.interner.resolve(*k).to_string();
+                        let val_vm = v.to_vmvalue();
+                        let rhs = match &val_vm {
+                            VMValue::Int(n) => n.to_string(),
+                            VMValue::Float(f) => format!("{f}"),
+                            VMValue::Bool(true) => "true".to_string(),
+                            VMValue::Bool(false) => "false".to_string(),
+                            VMValue::Null => "null".to_string(),
+                            VMValue::String(s) => {
+                                let escaped = s
+                                    .replace('\\', "\\\\")
+                                    .replace('"', "\\\"")
+                                    .replace('$', "\\$");
+                                format!("\"{escaped}\"")
+                            }
+                            VMValue::Path(p) => format!("\"{p}\""),
+                            _ => {
+                                return Err(VMError::Throw(format!(
+                                    "scopedImport: cannot render scope value of type {}",
+                                    val_vm.type_name()
+                                )));
+                            }
+                        };
+                        parts.push_str(&format!(" {key} = {rhs};"));
+                    }
+                    parts.push_str(" }");
+                    parts
+                } else {
+                    "{}".to_string()
+                };
+
+                // Return a partial that takes the path
+                let result = VMValue::Builtin(crate::value::VMBuiltin {
+                    name: "scopedImport<partial>",
+                    func: Rc::new(move |args2| {
+                        let path = match &args2[0] {
+                            VMValue::String(s) => s.clone(),
+                            VMValue::Path(p) => p.clone(),
+                            other => {
+                                return Err(VMError::TypeError {
+                                    expected: "path or string",
+                                    got: other.type_name(),
+                                    context: "scopedImport".to_string(),
+                                });
+                            }
+                        };
+                        // The actual import needs VM context. Store a placeholder
+                        // that the VM will intercept.
+                        Err(VMError::Throw(format!(
+                            "__scopedImport_dispatch__:{}:{}",
+                            scope_str, path
+                        )))
+                    }),
+                    arity: 1,
+                });
+                Ok(Some(NanBox::from_vmvalue(&result)))
+            }
+            "scopedImport<partial>" => {
+                // Intercept the partial application's result
+                let forced = self.force_value(arg.clone())?;
+                let path = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    VMValue::Path(p) => p,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "path or string",
+                            got: other.type_name(),
+                            context: "scopedImport".to_string(),
+                        });
+                    }
+                };
+                // This won't actually be called via try_vm_builtin because the
+                // partial closure captures the scope. The __scopedImport_dispatch__
+                // error is caught and processed by the VM. For now, fall through.
+                let _ = path;
+                Ok(None)
+            }
             "catAttrs" => {
                 let forced = self.force_value(arg.clone())?;
                 let name_str = match forced.to_vmvalue() {
@@ -1587,6 +1701,199 @@ impl<'a> VM<'a> {
         Ok(NanBox::attrs(result))
     }
 
+    /// Call a builtin function, intercepting scopedImport dispatch errors.
+    fn call_builtin_with_scoped_import_dispatch(
+        &mut self,
+        func: Rc<dyn Fn(Vec<VMValue>) -> Result<VMValue, VMError>>,
+        arg: VMValue,
+    ) -> Result<NanBox, VMError> {
+        match func(vec![arg]) {
+            Ok(result) => Ok(NanBox::from_vmvalue(&result)),
+            Err(VMError::Throw(ref msg))
+                if msg.starts_with("__scopedImport_dispatch__:") =>
+            {
+                let rest = &msg["__scopedImport_dispatch__:".len()..];
+                if let Some(colon_pos) = rest.rfind(':') {
+                    let scope_nix = &rest[..colon_pos];
+                    let path = &rest[colon_pos + 1..];
+                    self.vm_scoped_import(scope_nix, path)
+                } else {
+                    Err(VMError::Throw(msg.clone()))
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Evaluate `builtins.getFlake` for a path-based flake reference.
+    fn vm_get_flake(&mut self, flake_ref: &str) -> Result<NanBox, VMError> {
+        let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
+            std::path::PathBuf::from(flake_ref)
+        } else if let Some(path) = flake_ref.strip_prefix("path:") {
+            std::path::PathBuf::from(path)
+        } else {
+            return Err(VMError::Throw(format!(
+                "getFlake: unsupported flake reference: {flake_ref} (only path: refs supported in VM)"
+            )));
+        };
+
+        let flake_nix = flake_dir.join("flake.nix");
+        if !flake_nix.exists() {
+            return Err(VMError::Throw(format!(
+                "getFlake: flake.nix not found in {}",
+                flake_dir.display()
+            )));
+        }
+
+        // Import flake.nix to get the raw flake attrset.
+        let flake_nix_str = flake_nix.to_string_lossy().to_string();
+        let flake_attrs = self.import_file(&flake_nix_str)?;
+        let flake_attrs = self.force_value(flake_attrs)?;
+
+        // Build the inputs attrset. For now, create a minimal `self` input.
+        let self_sym = self.interner.intern("self");
+        let out_path_sym = self.interner.intern("outPath");
+        let flake_dir_str = flake_dir.to_string_lossy().to_string();
+        let mut self_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+        self_attrs.insert(out_path_sym, NanBox::string(flake_dir_str.clone()));
+        let mut inputs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+        inputs.insert(self_sym, NanBox::attrs(self_attrs));
+
+        // Try to read flake.lock and resolve inputs.
+        let lock_path = flake_dir.join("flake.lock");
+        if lock_path.exists() {
+            if let Ok(lock_str) = std::fs::read_to_string(&lock_path) {
+                if let Ok(lock_json) = serde_json::from_str::<serde_json::Value>(&lock_str) {
+                    self.resolve_flake_lock_inputs(&lock_json, &flake_dir, &mut inputs);
+                }
+            }
+        }
+
+        // Extract the `outputs` function and call it with the inputs attrset.
+        let outputs_sym = self.interner.intern("outputs");
+        if let Some(attrs) = flake_attrs.as_attrs() {
+            if let Some(outputs_func) = attrs.get(&outputs_sym) {
+                let outputs_func = outputs_func.clone();
+                let outputs_func = self.force_value(outputs_func)?;
+                let inputs_nb = NanBox::attrs(inputs);
+                let result = self.call_callable(&outputs_func, inputs_nb)?;
+                let mut result_forced = self.force_value(result)?;
+
+                // Merge top-level metadata (description) into the result.
+                let desc_sym = self.interner.intern("description");
+                if let Some(desc) = attrs.get(&desc_sym) {
+                    if let Some(result_attrs) = result_forced.as_attrs() {
+                        let mut merged = result_attrs.clone();
+                        merged.insert(desc_sym, desc.clone());
+                        result_forced = NanBox::attrs(merged);
+                    }
+                }
+
+                return Ok(result_forced);
+            }
+        }
+
+        // If no outputs function, return the raw flake attrset.
+        Ok(flake_attrs)
+    }
+
+    /// Resolve flake.lock inputs into the inputs attrset.
+    fn resolve_flake_lock_inputs(
+        &mut self,
+        lock: &serde_json::Value,
+        flake_dir: &std::path::Path,
+        inputs: &mut BTreeMap<Symbol, NanBox>,
+    ) {
+        let nodes = match lock.get("nodes").and_then(|n| n.as_object()) {
+            Some(n) => n,
+            None => return,
+        };
+        let root_node = match lock.get("root").and_then(|r| r.as_str()) {
+            Some(r) => r.to_string(),
+            None => "root".to_string(),
+        };
+        let root_inputs = match nodes
+            .get(&root_node)
+            .and_then(|n| n.get("inputs"))
+            .and_then(|i| i.as_object())
+        {
+            Some(i) => i,
+            None => return,
+        };
+
+        for (input_name, node_ref) in root_inputs {
+            let node_key = match node_ref.as_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    if let Some(arr) = node_ref.as_array() {
+                        if let Some(s) = arr.first().and_then(|v| v.as_str()) {
+                            s.to_string()
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            if let Some(node) = nodes.get(&node_key) {
+                if let Some(locked) = node.get("locked") {
+                    let locked_type = locked.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    let out_path = match locked_type {
+                        "path" => {
+                            if let Some(p) = locked.get("path").and_then(|p| p.as_str()) {
+                                let path = if p.starts_with('/') {
+                                    std::path::PathBuf::from(p)
+                                } else {
+                                    flake_dir.join(p)
+                                };
+                                path.to_string_lossy().to_string()
+                            } else {
+                                continue;
+                            }
+                        }
+                        _ => continue, // Only path inputs for now
+                    };
+                    let input_sym = self.interner.intern(input_name);
+                    let out_path_sym = self.interner.intern("outPath");
+                    let mut input_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+                    input_attrs.insert(out_path_sym, NanBox::string(out_path));
+                    inputs.insert(input_sym, NanBox::attrs(input_attrs));
+                }
+            }
+        }
+    }
+
+    /// Import a file with a scope (for scopedImport).
+    fn vm_scoped_import(
+        &mut self,
+        scope_nix: &str,
+        path: &str,
+    ) -> Result<NanBox, VMError> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+
+        // Wrap the source in `with <scope>; <source>` to inject the scope.
+        let wrapped = format!("with {scope_nix}; {source}");
+
+        let (chunk, _file_interner) = Compiler::compile(&wrapped)
+            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+
+        if self.frames.len() >= MAX_CALL_DEPTH {
+            return Err(VMError::StackOverflow);
+        }
+        let return_depth = self.frames.len();
+        let stack_base = self.stack.len();
+        self.frames.push(CallFrame {
+            chunk: Rc::new(chunk),
+            ip: 0,
+            stack_base,
+            upvalues: Vec::new(),
+        });
+
+        self.run_until(return_depth)
+    }
+
     // -- Higher-order builtin execution -----------------------------------
 
     fn call_callable(&mut self, func: &NanBox, arg: NanBox) -> Result<NanBox, VMError> {
@@ -1616,8 +1923,10 @@ impl<'a> VM<'a> {
             } else {
                 let arg_vmval = arg.to_vmvalue();
                 let builtin_func = builtin.func.clone();
-                let result = builtin_func(vec![arg_vmval])?;
-                Ok(NanBox::from_vmvalue(&result))
+                let result = self.call_builtin_with_scoped_import_dispatch(
+                    builtin_func, arg_vmval,
+                )?;
+                Ok(result)
             }
         } else {
             Err(VMError::NotCallable(func.type_name().to_string()))

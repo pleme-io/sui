@@ -803,6 +803,18 @@ impl BuiltinRegistry {
                 "derivationStrict: requires VM-level dispatch".to_string(),
             ))
         });
+        // getFlake: VM-level dispatch (needs import mechanism).
+        self.register("getFlake", 1, |_args| {
+            Err(VMError::Throw(
+                "getFlake: requires VM-level dispatch".to_string(),
+            ))
+        });
+        // scopedImport: VM-level dispatch (needs import + interner).
+        self.register("scopedImport", 1, |_args| {
+            Err(VMError::Throw(
+                "scopedImport: requires VM-level dispatch".to_string(),
+            ))
+        });
     }
 }
 
