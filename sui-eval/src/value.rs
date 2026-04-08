@@ -5,7 +5,8 @@
 //! (not `Arc`) because the values are never sent across threads.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
 use std::fmt;
 use std::rc::Rc;
 
@@ -34,33 +35,51 @@ impl fmt::Display for ContextElement {
 
 /// The context attached to a Nix string: a set of store-path references that
 /// the string depends on. Plain string literals have an empty context.
+///
+/// Uses a `Vec` with linear deduplication instead of `BTreeSet`.  Most strings
+/// have 0-2 context elements where linear search is faster than tree overhead,
+/// and `Vec` has the same size as `BTreeSet` (3 words) without per-node heap
+/// allocations for small sets.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct StringContext(pub BTreeSet<ContextElement>);
+pub struct StringContext(Vec<ContextElement>);
 
 impl StringContext {
     /// Create an empty context.
     pub fn new() -> Self {
-        Self(BTreeSet::new())
+        Self(Vec::new())
     }
 
     /// Merge another context into this one.
     pub fn merge(&mut self, other: &StringContext) {
-        self.0.extend(other.0.iter().cloned());
+        for elem in &other.0 {
+            if !self.0.contains(elem) {
+                self.0.push(elem.clone());
+            }
+        }
     }
 
     /// Add a plain store-path reference.
     pub fn add_plain(&mut self, path: String) {
-        self.0.insert(ContextElement::Plain(path));
+        let elem = ContextElement::Plain(path);
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
     }
 
     /// Add a derivation output reference.
     pub fn add_output(&mut self, drv: String, output: String) {
-        self.0.insert(ContextElement::Output { drv, output });
+        let elem = ContextElement::Output { drv, output };
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
     }
 
     /// Add a derivation-deep reference.
     pub fn add_drv_deep(&mut self, drv: String) {
-        self.0.insert(ContextElement::DrvDeep(drv));
+        let elem = ContextElement::DrvDeep(drv);
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
     }
 
     /// Whether this context set is empty.
@@ -80,9 +99,16 @@ impl StringContext {
         self.0.iter()
     }
 
-    /// Insert a raw context element.
+    /// Insert a raw context element (deduplicating).
     pub fn insert(&mut self, elem: ContextElement) {
-        self.0.insert(elem);
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
+    }
+
+    /// Return the elements as a slice.
+    pub fn elements(&self) -> &[ContextElement] {
+        &self.0
     }
 }
 
@@ -121,7 +147,7 @@ impl NixString {
     /// Whether this string carries any context (store path references).
     #[must_use]
     pub fn has_context(&self) -> bool {
-        !self.context.0.is_empty()
+        !self.context.is_empty()
     }
 }
 
@@ -1488,9 +1514,9 @@ mod tests {
         let mut ctx_b = StringContext::new();
         ctx_b.add_plain("/nix/store/bbb".to_string());
         ctx_a.merge(&ctx_b);
-        assert_eq!(ctx_a.0.len(), 2);
-        assert!(ctx_a.0.contains(&ContextElement::Plain("/nix/store/aaa".to_string())));
-        assert!(ctx_a.0.contains(&ContextElement::Plain("/nix/store/bbb".to_string())));
+        assert_eq!(ctx_a.len(), 2);
+        assert!(ctx_a.elements().contains(&ContextElement::Plain("/nix/store/aaa".to_string())));
+        assert!(ctx_a.elements().contains(&ContextElement::Plain("/nix/store/bbb".to_string())));
     }
 
     #[test]
@@ -1498,7 +1524,7 @@ mod tests {
         let mut ctx = StringContext::new();
         ctx.add_plain("/nix/store/same".to_string());
         ctx.add_plain("/nix/store/same".to_string());
-        assert_eq!(ctx.0.len(), 1);
+        assert_eq!(ctx.len(), 1);
     }
 
     #[test]
@@ -1507,7 +1533,7 @@ mod tests {
         ctx.add_plain("/nix/store/foo".to_string());
         ctx.add_output("/nix/store/bar.drv".to_string(), "out".to_string());
         ctx.add_drv_deep("/nix/store/baz.drv".to_string());
-        assert_eq!(ctx.0.len(), 3);
+        assert_eq!(ctx.len(), 3);
         assert!(!ctx.is_empty());
     }
 
@@ -1515,7 +1541,7 @@ mod tests {
     fn string_context_new_is_empty() {
         let ctx = StringContext::new();
         assert!(ctx.is_empty());
-        assert_eq!(ctx.0.len(), 0);
+        assert_eq!(ctx.len(), 0);
     }
 
     #[test]
