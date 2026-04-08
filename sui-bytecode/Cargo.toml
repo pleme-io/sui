@@ -1,0 +1,20 @@
+[package]
+name = "sui-bytecode"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bytecode compiler and VM for the Nix evaluator"
+
+[dependencies]
+rnix.workspace = true
+rowan.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+sui-eval = { path = "../sui-eval" }
+pretty_assertions.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

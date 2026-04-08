@@ -1,0 +1,461 @@
+//! Parity tests: verify the bytecode VM produces identical results
+//! to the tree-walking evaluator for every supported expression.
+//!
+//! These tests are the primary correctness guarantee: they compile and
+//! execute an expression via both backends and assert the results match.
+
+/// Convert a tree-walker `Value` to a bytecode `VMValue` for comparison.
+///
+/// This only handles the value types we can currently produce in Phase 1.
+fn tree_to_vm(val: &sui_eval::Value) -> sui_bytecode::VMValue {
+    match val {
+        sui_eval::Value::Null => sui_bytecode::VMValue::Null,
+        sui_eval::Value::Bool(b) => sui_bytecode::VMValue::Bool(*b),
+        sui_eval::Value::Int(n) => sui_bytecode::VMValue::Int(*n),
+        sui_eval::Value::Float(f) => sui_bytecode::VMValue::Float(*f),
+        sui_eval::Value::String(s) => sui_bytecode::VMValue::String(s.chars.clone()),
+        sui_eval::Value::Path(p) => sui_bytecode::VMValue::Path(p.clone()),
+        sui_eval::Value::List(items) => {
+            sui_bytecode::VMValue::List(items.iter().map(|v| tree_to_vm(v)).collect())
+        }
+        sui_eval::Value::Attrs(attrs) => {
+            let map = attrs
+                .iter()
+                .map(|(k, v)| (k.clone(), tree_to_vm(v)))
+                .collect();
+            sui_bytecode::VMValue::Attrs(map)
+        }
+        sui_eval::Value::Lambda(_) | sui_eval::Value::Builtin(_) => {
+            // Functions can't be compared structurally; skip.
+            sui_bytecode::VMValue::Null
+        }
+        sui_eval::Value::Thunk(thunk) => {
+            // Force the thunk for comparison.
+            match thunk.force(&|e, env| sui_eval::eval::eval_expr(e, env)) {
+                Ok(v) => tree_to_vm(&v),
+                Err(_) => sui_bytecode::VMValue::Null,
+            }
+        }
+    }
+}
+
+/// Assert that both evaluation backends produce the same result.
+///
+/// Panics with a clear message showing both results on mismatch.
+fn assert_same(expr: &str) {
+    let tree_result = sui_eval::eval(expr)
+        .unwrap_or_else(|e| panic!("tree-walker failed for '{expr}': {e}"));
+    let tree_as_vm = tree_to_vm(&tree_result);
+
+    let bc_result = sui_bytecode::eval(expr)
+        .unwrap_or_else(|e| panic!("bytecode VM failed for '{expr}': {e}"));
+
+    assert_eq!(
+        tree_as_vm, bc_result,
+        "parity mismatch for: {expr}\n  tree-walker => {tree_as_vm:?}\n  bytecode VM => {bc_result:?}"
+    );
+}
+
+// ── Integer arithmetic ─────────────────────────────────────────
+
+#[test]
+fn parity_int_addition() {
+    assert_same("1 + 2");
+}
+
+#[test]
+fn parity_int_subtraction() {
+    assert_same("10 - 3");
+}
+
+#[test]
+fn parity_int_multiplication() {
+    assert_same("3 * 4");
+}
+
+#[test]
+fn parity_int_division() {
+    assert_same("10 / 3");
+}
+
+#[test]
+fn parity_compound_arithmetic() {
+    assert_same("2 * 3 + 1");
+}
+
+#[test]
+fn parity_nested_arithmetic() {
+    assert_same("(1 + 2) * (3 + 4)");
+}
+
+#[test]
+fn parity_negative_integer() {
+    assert_same("-42");
+}
+
+// ── Float arithmetic ───────────────────────────────────────────
+
+#[test]
+fn parity_float_literal() {
+    assert_same("3.14");
+}
+
+#[test]
+fn parity_float_addition() {
+    assert_same("1.5 + 2.5");
+}
+
+#[test]
+fn parity_mixed_int_float() {
+    assert_same("1 + 2.0");
+}
+
+#[test]
+fn parity_negate_float() {
+    assert_same("-3.14");
+}
+
+// ── Booleans and logic ─────────────────────────────────────────
+
+#[test]
+fn parity_bool_true() {
+    assert_same("true");
+}
+
+#[test]
+fn parity_bool_false() {
+    assert_same("false");
+}
+
+#[test]
+fn parity_not() {
+    assert_same("!true");
+    assert_same("!false");
+}
+
+#[test]
+fn parity_and() {
+    assert_same("true && true");
+    assert_same("true && false");
+    assert_same("false && true");
+    assert_same("false && false");
+}
+
+#[test]
+fn parity_or() {
+    assert_same("true || true");
+    assert_same("true || false");
+    assert_same("false || true");
+    assert_same("false || false");
+}
+
+#[test]
+fn parity_implication() {
+    assert_same("true -> true");
+    assert_same("true -> false");
+    assert_same("false -> true");
+    assert_same("false -> false");
+}
+
+// ── Comparison ─────────────────────────────────────────────────
+
+#[test]
+fn parity_equal() {
+    assert_same("1 == 1");
+    assert_same("1 == 2");
+}
+
+#[test]
+fn parity_not_equal() {
+    assert_same("1 != 2");
+    assert_same("1 != 1");
+}
+
+#[test]
+fn parity_less() {
+    assert_same("1 < 2");
+    assert_same("2 < 1");
+    assert_same("1 < 1");
+}
+
+#[test]
+fn parity_greater() {
+    assert_same("2 > 1");
+    assert_same("1 > 2");
+    assert_same("1 > 1");
+}
+
+#[test]
+fn parity_less_equal() {
+    assert_same("1 <= 2");
+    assert_same("2 <= 1");
+    assert_same("1 <= 1");
+}
+
+#[test]
+fn parity_greater_equal() {
+    assert_same("2 >= 1");
+    assert_same("1 >= 2");
+    assert_same("1 >= 1");
+}
+
+#[test]
+fn parity_string_comparison() {
+    assert_same(r#""abc" < "abd""#);
+    assert_same(r#""abc" == "abc""#);
+}
+
+// ── Null ───────────────────────────────────────────────────────
+
+#[test]
+fn parity_null() {
+    assert_same("null");
+}
+
+#[test]
+fn parity_null_equality() {
+    assert_same("null == null");
+}
+
+// ── Strings ────────────────────────────────────────────────────
+
+#[test]
+fn parity_string_literal() {
+    assert_same(r#""hello world""#);
+}
+
+#[test]
+fn parity_empty_string() {
+    assert_same(r#""""#);
+}
+
+#[test]
+fn parity_string_addition() {
+    assert_same(r#""hello" + " " + "world""#);
+}
+
+#[test]
+fn parity_string_interpolation() {
+    assert_same(r#"let x = "world"; in "hello ${x}""#);
+}
+
+// ── Conditionals ───────────────────────────────────────────────
+
+#[test]
+fn parity_if_true() {
+    assert_same("if true then 1 else 2");
+}
+
+#[test]
+fn parity_if_false() {
+    assert_same("if false then 1 else 2");
+}
+
+#[test]
+fn parity_if_expression() {
+    assert_same(r#"if 1 > 2 then "yes" else "no""#);
+}
+
+#[test]
+fn parity_nested_if() {
+    assert_same("if true then (if false then 1 else 2) else 3");
+}
+
+// ── Let/in ─────────────────────────────────────────────────────
+
+#[test]
+fn parity_let_simple() {
+    assert_same("let x = 1; y = 2; in x + y");
+}
+
+#[test]
+fn parity_let_nested() {
+    assert_same("let a = 10; in let b = 20; in a + b");
+}
+
+#[test]
+fn parity_let_shadow() {
+    assert_same("let x = 1; in let x = 2; in x");
+}
+
+#[test]
+fn parity_let_with_expression() {
+    assert_same("let x = 2 * 3; in x + 1");
+}
+
+#[test]
+fn parity_let_chain() {
+    assert_same("let a = 1; b = 1; c = a + b; d = b + c; e = c + d; in e");
+}
+
+// ── Functions ──────────────────────────────────────────────────
+
+#[test]
+fn parity_identity() {
+    assert_same("(x: x) 42");
+}
+
+#[test]
+fn parity_lambda_arithmetic() {
+    assert_same("(x: x + 1) 5");
+}
+
+#[test]
+fn parity_let_lambda() {
+    assert_same("let f = x: x * 2; in f 5");
+}
+
+#[test]
+fn parity_pattern_lambda() {
+    assert_same("({ a, b }: a + b) { a = 3; b = 4; }");
+}
+
+#[test]
+fn parity_pattern_lambda_default() {
+    assert_same("({ a, b ? 10 }: a + b) { a = 5; }");
+}
+
+#[test]
+fn parity_lambda_composition() {
+    assert_same("let inc = x: x + 1; double = x: x * 2; in double (inc 3)");
+}
+
+// ── Lists ──────────────────────────────────────────────────────
+
+#[test]
+fn parity_empty_list() {
+    assert_same("[]");
+}
+
+#[test]
+fn parity_list() {
+    assert_same("[1 2 3]");
+}
+
+#[test]
+fn parity_list_concat() {
+    assert_same("[1 2] ++ [3 4]");
+}
+
+#[test]
+fn parity_list_mixed() {
+    assert_same(r#"[1 "hello" true null]"#);
+}
+
+// ── Attribute sets ─────────────────────────────────────────────
+
+#[test]
+fn parity_empty_attrset() {
+    assert_same("{ }");
+}
+
+#[test]
+fn parity_attrset() {
+    assert_same("{ a = 1; b = 2; }");
+}
+
+#[test]
+fn parity_attrset_select() {
+    assert_same("{ a = 1; b = 2; }.a");
+}
+
+#[test]
+fn parity_nested_attrset_select() {
+    assert_same("{ a = { b = 42; }; }.a.b");
+}
+
+#[test]
+fn parity_attrset_update() {
+    assert_same("{ a = 1; } // { b = 2; }");
+}
+
+#[test]
+fn parity_attrset_update_override() {
+    assert_same("({ a = 1; } // { a = 2; }).a");
+}
+
+#[test]
+fn parity_has_attr_true() {
+    assert_same("{ a = 1; } ? a");
+}
+
+#[test]
+fn parity_has_attr_false() {
+    assert_same("{ a = 1; } ? b");
+}
+
+#[test]
+fn parity_select_or_default() {
+    assert_same("{ a = 1; }.b or 0");
+    assert_same("{ a = 1; }.a or 0");
+}
+
+// ── Assert ─────────────────────────────────────────────────────
+
+#[test]
+fn parity_assert_pass() {
+    assert_same("assert true; 42");
+}
+
+#[test]
+fn parity_assert_with_expression() {
+    assert_same("assert 1 < 2; 42");
+}
+
+// ── Complex expressions ────────────────────────────────────────
+
+#[test]
+fn parity_let_with_attrset() {
+    assert_same("let set = { x = 10; y = 20; }; in set.x + set.y");
+}
+
+#[test]
+fn parity_conditional_attrset() {
+    assert_same("(if true then { a = 1; } else { a = 2; }).a");
+}
+
+#[test]
+fn parity_lambda_returning_attrset() {
+    assert_same("(x: { result = x * 2; }) 5");
+}
+
+#[test]
+fn parity_lambda_with_conditional() {
+    assert_same("(x: if x > 0 then x else 0 - x) (-5)");
+}
+
+#[test]
+fn parity_list_in_attrset() {
+    assert_same("{ items = [1 2 3]; }");
+}
+
+#[test]
+fn parity_attrset_in_list() {
+    assert_same("[{ a = 1; } { b = 2; }]");
+}
+
+// ── Error parity ───────────────────────────────────────────────
+
+#[test]
+fn parity_div_zero_is_error() {
+    let tree = sui_eval::eval("1 / 0");
+    let bc = sui_bytecode::eval("1 / 0");
+    assert!(tree.is_err(), "tree-walker should error on div by zero");
+    assert!(bc.is_err(), "bytecode VM should error on div by zero");
+}
+
+#[test]
+fn parity_assert_fail_is_error() {
+    let tree = sui_eval::eval("assert false; 42");
+    let bc = sui_bytecode::eval("assert false; 42");
+    assert!(tree.is_err(), "tree-walker should error on assert false");
+    assert!(bc.is_err(), "bytecode VM should error on assert false");
+}
+
+#[test]
+fn parity_attr_not_found_is_error() {
+    let tree = sui_eval::eval("{ a = 1; }.b");
+    let bc = sui_bytecode::eval("{ a = 1; }.b");
+    assert!(tree.is_err(), "tree-walker should error on missing attr");
+    assert!(bc.is_err(), "bytecode VM should error on missing attr");
+}

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "sui-bytecode",
     "sui-compat",
     "sui-store",
     "sui-eval",
@@ -17,6 +18,7 @@ repository = "https://github.com/pleme-io/sui"
 
 [workspace.dependencies]
 # Internal crates
+sui-bytecode = { path = "sui-bytecode" }
 sui-compat = { path = "sui-compat" }
 sui-store = { path = "sui-store" }
 sui-eval = { path = "sui-eval" }

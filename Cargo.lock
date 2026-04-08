@@ -5572,6 +5572,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-bytecode"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "rnix",
+ "rowan",
+ "sui-eval",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sui-compat"
 version = "0.1.0"
 dependencies = [
