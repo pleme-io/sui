@@ -299,11 +299,27 @@ impl Thunk {
                 let _file_guard = env.eval_file.clone().map(crate::eval::push_eval_file);
                 match evaluator(&expr, &env) {
                     Ok(mut value) => {
-                        // Transitively force inner thunks.
-                        while let Value::Thunk(inner) = value {
+                        // Store the result FIRST, then transitively force.
+                        // This order is critical: by storing before forcing
+                        // inner thunks, any re-entrant access to THIS thunk
+                        // during inner-thunk forcing will find Evaluated
+                        // (not Blackhole), enabling self-referential fixpoints
+                        // like nixpkgs `let self = f self; in self`.
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        // Transitively unwrap thunk-in-thunk chains, with a
+                        // depth limit to catch `let x = x; in x` cycles.
+                        let mut depth = 0u32;
+                        while let Value::Thunk(ref inner) = value {
+                            depth += 1;
+                            if depth > 2000 {
+                                *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
+                                return Err(EvalError::InfiniteRecursion(
+                                    "thunk chain depth exceeded".to_string(),
+                                ));
+                            }
                             value = inner.force(evaluator)?;
                         }
-                        // Store the deeply-forced value.
+                        // Update with the fully-unwrapped value.
                         *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
                         Ok(value)
                     }
@@ -343,6 +359,9 @@ impl Thunk {
                 })();
                 match attempt {
                     Ok(mut value) => {
+                        // Store first, then transitively force (same pattern
+                        // as Suspended — enables fixpoint re-entry).
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
