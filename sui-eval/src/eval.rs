@@ -1171,7 +1171,15 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                 let value = if let Some(v) = attrs.get(&name) {
                     v.clone()
                 } else if let Some(default_expr) = entry.default() {
-                    eval_expr(&default_expr, env)?
+                    // Default values in pattern parameters must be lazy
+                    // (wrapped in thunks), matching CppNix semantics.
+                    // Patterns like `vendor ? assert false; null` rely on
+                    // the default never being forced when the body checks
+                    // `args ? vendor` instead of using `vendor` directly.
+                    Value::Thunk(Thunk::new_suspended(
+                        ast::Expr::cast(default_expr.syntax().clone()).unwrap(),
+                        env.clone(),
+                    ))
                 } else {
                     return Err(EvalError::TypeError(format!(
                         "missing argument '{name}'"
@@ -3955,6 +3963,26 @@ mod tests {
         assert_eq!(
             ev("({ x, y ? x + 1 }: y) { x = 10; }"),
             Value::Int(11),
+        );
+    }
+
+    #[test]
+    fn formals_default_lazy_assert_false() {
+        // nixpkgs parse.nix pattern: default is `assert false; null` but
+        // the body checks `args ? vendor` instead of using `vendor`
+        // directly, so the default must never be forced.
+        assert_eq!(
+            ev("({ cpu, vendor ? assert false; null, kernel } @ args: if args ? vendor then vendor else \"inferred\") { cpu = \"x86_64\"; kernel = \"linux\"; }"),
+            Value::String(NixString::plain("inferred")),
+        );
+    }
+
+    #[test]
+    fn formals_default_lazy_only_forced_when_accessed() {
+        // When the default IS accessed, it should still evaluate correctly.
+        assert_eq!(
+            ev("({ a, b ? 42 }: b) { a = 1; }"),
+            Value::Int(42),
         );
     }
 
