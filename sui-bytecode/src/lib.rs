@@ -13,7 +13,7 @@
 //!                                                  VM --> VMValue
 //! ```
 //!
-//! # Phase 1 Coverage
+//! # Phase 1 + 2 Coverage
 //!
 //! Currently supports:
 //! - Literals: int, float, bool, null, string, path
@@ -27,20 +27,23 @@
 //! - Attribute sets: construction, `.` selection, `?` has-attr,
 //!   `//` update, `or` default
 //! - Control flow: `if`/`then`/`else`, `assert`
+//! - Upvalue capture: Lua 5.x-style closures over non-local variables
+//! - `with` scopes: dynamic variable lookup via with-scope stack
+//! - `rec` attribute sets: self-referencing bindings
+//! - `inherit` and `inherit (source)`: in both `let` and attrset
+//! - Dotted attribute paths: `{ a.b = 1; a.c = 2; }` merging
+//! - Dynamic attribute keys: `{ ${expr} = value; }`
 //!
 //! # Not Yet Implemented
 //!
-//! - `with` scopes
-//! - `rec` attribute sets
 //! - Thunks / lazy evaluation
-//! - Upvalue capture (closures over non-local variables)
 //! - `import` / `scopedImport`
 //! - Builtins (100+ functions)
 //! - String interpolation contexts
 //! - Dotted attribute paths in let bindings
-//! - Dynamic attribute keys
-//! - `inherit (source)` in let/attrset
 
+/// Built-in function registry for the VM.
+pub mod builtins;
 /// Bytecode container (instructions + constant pool).
 pub mod chunk;
 /// AST-to-bytecode compiler.
@@ -59,12 +62,13 @@ pub mod value;
 pub mod vm;
 
 // Re-exports for ergonomic use.
+pub use builtins::BuiltinRegistry;
 pub use chunk::Chunk;
 pub use compiler::Compiler;
 pub use error::{CompileError, VMError};
 pub use intern::{Interner, Symbol};
 pub use opcode::OpCode;
-pub use value::{StringKeyedValue, VMValue};
+pub use value::{StringKeyedValue, VMBuiltin, VMThunk, VMValue};
 pub use vm::VM;
 
 /// Result of bytecode evaluation: the value plus the interner needed

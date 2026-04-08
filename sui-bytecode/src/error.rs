@@ -60,6 +60,18 @@ pub enum VMError {
     /// Maximum call depth exceeded.
     #[error("stack overflow: call depth exceeded")]
     StackOverflow,
+    /// A `throw` or `abort` was invoked.
+    #[error("{0}")]
+    Throw(String),
+    /// An unknown builtin was referenced.
+    #[error("unknown builtin: {0}")]
+    UnknownBuiltin(String),
+    /// A thunk entered infinite recursion (blackhole).
+    #[error("infinite recursion detected")]
+    InfiniteRecursion,
+    /// An I/O error during import.
+    #[error("import error: {0}")]
+    ImportError(String),
 }
 
 #[cfg(test)]

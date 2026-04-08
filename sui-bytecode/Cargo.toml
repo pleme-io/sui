@@ -10,12 +10,14 @@ description = "Bytecode compiler and VM for the Nix evaluator"
 [dependencies]
 rnix.workspace = true
 rowan.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 sui-eval = { path = "../sui-eval" }
 pretty_assertions.workspace = true
 criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "vm_perf"

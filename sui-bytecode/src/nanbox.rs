@@ -36,7 +36,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::chunk::Chunk;
 use crate::intern::Symbol;
 use crate::value::{VMClosure, VMValue};
 
@@ -280,6 +279,11 @@ impl NanBox {
                 Self::attrs(boxed)
             }
             VMValue::Closure(c) => Self::closure(c.clone()),
+            VMValue::Builtin(_) | VMValue::Thunk(_) => {
+                // Builtins and thunks are not NaN-boxable; store as closure placeholder.
+                // This should be handled at a higher level.
+                Self::null()
+            }
         }
     }
 
@@ -351,7 +355,7 @@ impl Clone for NanBox {
             unsafe {
                 let rc = Rc::from_raw(ptr);
                 let cloned = Rc::clone(&rc);
-                Rc::into_raw(rc); // don't drop the original
+                let _ = Rc::into_raw(rc); // don't drop the original
                 let new_ptr = Rc::into_raw(cloned);
                 Self(TAG_PTR | (new_ptr as u64 & PAYLOAD_MASK))
             }

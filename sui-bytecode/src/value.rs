@@ -11,6 +11,7 @@
 //! of O(n) (byte-by-byte string comparison). The interner is shared
 //! between the compiler and VM via `Rc<RefCell<Interner>>`.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
@@ -46,6 +47,10 @@ pub enum VMValue {
     Attrs(BTreeMap<Symbol, VMValue>),
     /// A closure: compiled function body + captured upvalues.
     Closure(VMClosure),
+    /// A built-in function (native Rust implementation).
+    Builtin(VMBuiltin),
+    /// A lazy thunk: deferred computation, evaluated on first force.
+    Thunk(VMThunk),
 }
 
 /// A compiled closure: the function's bytecode chunk plus captured values.
@@ -60,6 +65,66 @@ pub struct VMClosure {
     pub arity: u16,
     /// Name hint for error messages (e.g., the parameter name).
     pub name: Option<String>,
+}
+
+/// A built-in function callable from the VM.
+#[derive(Clone)]
+pub struct VMBuiltin {
+    /// Name for error messages (e.g., "length", "map<partial>").
+    pub name: &'static str,
+    /// The native implementation. Takes args and returns a result.
+    pub func: Rc<dyn Fn(Vec<VMValue>) -> Result<VMValue, crate::error::VMError>>,
+    /// How many arguments this builtin expects (0 = variadic/partial).
+    pub arity: u8,
+}
+
+impl fmt::Debug for VMBuiltin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<builtin {}>", self.name)
+    }
+}
+
+/// State of a thunk's evaluation lifecycle.
+#[derive(Clone)]
+pub enum ThunkState {
+    /// Not yet evaluated. Holds the bytecode chunk to execute and
+    /// captured upvalues for the thunk body.
+    Pending {
+        chunk: Rc<Chunk>,
+        upvalues: Vec<VMValue>,
+    },
+    /// Currently being evaluated — detects infinite recursion (blackhole).
+    Evaluating,
+    /// Already evaluated and memoized.
+    Done(Box<VMValue>),
+}
+
+/// A lazy thunk with memoization and blackhole detection.
+#[derive(Clone)]
+pub struct VMThunk {
+    pub state: Rc<Cell<Option<ThunkState>>>,
+}
+
+impl VMThunk {
+    /// Create a new pending thunk.
+    pub fn new(chunk: Rc<Chunk>, upvalues: Vec<VMValue>) -> Self {
+        Self {
+            state: Rc::new(Cell::new(Some(ThunkState::Pending { chunk, upvalues }))),
+        }
+    }
+
+    /// Create a thunk that is already evaluated (optimization).
+    pub fn new_done(value: VMValue) -> Self {
+        Self {
+            state: Rc::new(Cell::new(Some(ThunkState::Done(Box::new(value))))),
+        }
+    }
+}
+
+impl fmt::Debug for VMThunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<thunk>")
+    }
 }
 
 impl fmt::Debug for VMClosure {
@@ -85,7 +150,8 @@ impl VMValue {
             VMValue::Path(_) => "path",
             VMValue::List(_) => "list",
             VMValue::Attrs(_) => "set",
-            VMValue::Closure(_) => "lambda",
+            VMValue::Closure(_) | VMValue::Builtin(_) => "lambda",
+            VMValue::Thunk(_) => "thunk",
         }
     }
 
@@ -140,7 +206,8 @@ impl VMValue {
                     .collect();
                 StringKeyedValue::Attrs(map)
             }
-            VMValue::Closure(_) => StringKeyedValue::Lambda,
+            VMValue::Closure(_) | VMValue::Builtin(_) => StringKeyedValue::Lambda,
+            VMValue::Thunk(_) => StringKeyedValue::Lambda, // thunks should be forced before conversion
         }
     }
 
@@ -178,6 +245,8 @@ impl VMValue {
                 write!(f, "}}")
             }
             VMValue::Closure(_) => write!(f, "<<lambda>>"),
+            VMValue::Builtin(b) => write!(f, "<<builtin {}>>" , b.name),
+            VMValue::Thunk(_) => write!(f, "<<thunk>>"),
         }
     }
 
@@ -209,6 +278,8 @@ impl VMValue {
                 write!(f, "}}")
             }
             VMValue::Closure(c) => write!(f, "{c:?}"),
+            VMValue::Builtin(b) => write!(f, "{b:?}"),
+            VMValue::Thunk(t) => write!(f, "{t:?}"),
         }
     }
 }
@@ -292,6 +363,8 @@ impl fmt::Debug for VMValue {
                 write!(f, "}}")
             }
             VMValue::Closure(c) => write!(f, "{c:?}"),
+            VMValue::Builtin(b) => write!(f, "{b:?}"),
+            VMValue::Thunk(t) => write!(f, "{t:?}"),
         }
     }
 }
@@ -327,6 +400,8 @@ impl fmt::Display for VMValue {
                 write!(f, "}}")
             }
             VMValue::Closure(_) => write!(f, "<<lambda>>"),
+            VMValue::Builtin(b) => write!(f, "<<builtin {}>>", b.name),
+            VMValue::Thunk(_) => write!(f, "<<thunk>>"),
         }
     }
 }

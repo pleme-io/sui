@@ -71,6 +71,21 @@ pub enum OpCode {
     /// Set a local variable by stack slot index.
     /// Operand: u16 slot index.
     SetLocal = 51,
+    /// Push an upvalue from the current closure's upvalue array.
+    /// Operand: u8 upvalue index.
+    GetUpvalue = 52,
+    /// Set an upvalue in the current closure's upvalue array.
+    /// Operand: u8 upvalue index.
+    SetUpvalue = 53,
+
+    // ── With scopes ────────────────────────────────────────────
+    /// Push the TOS value onto the with-scope stack.
+    PushWith = 54,
+    /// Pop from the with-scope stack.
+    PopWith = 55,
+    /// Look up a name in the with-scope stack (innermost first).
+    /// Operand: u16 constant index for the variable name string.
+    LookupWith = 56,
 
     // ── Attribute sets ─────────────────────────────────────────
     /// Pop N key-value pairs (key on top, value below), construct attrset.
@@ -139,6 +154,26 @@ pub enum OpCode {
     /// Equivalent to: `GetLocal slot; <arg already on stack>; Call`.
     /// Note: the argument must be on the stack before this instruction.
     GetLocalCall = 121,
+
+    // ── Builtins ─────────────────────────────────────────────────
+    /// Push the `builtins` attribute set onto the stack.
+    PushBuiltins = 130,
+    /// Call a builtin function by index.
+    /// Operand: u16 builtin index, u16 arg count.
+    CallBuiltin = 131,
+
+    // ── Thunks (lazy evaluation) ─────────────────────────────────
+    /// Create a thunk wrapping a sub-chunk (lazy value).
+    /// Operand: u16 constant index pointing to the thunk's Chunk.
+    MakeThunk = 140,
+    /// Force the top of stack: if it is a thunk, evaluate and replace.
+    /// If already a concrete value, no-op.
+    Force = 141,
+
+    // ── Import ───────────────────────────────────────────────────
+    /// Pop a path from the stack, import the file, push the result.
+    /// Uses the shared import cache.
+    Import = 150,
 }
 
 impl OpCode {
@@ -168,6 +203,11 @@ impl OpCode {
             40 => Some(OpCode::Interpolate),
             50 => Some(OpCode::GetLocal),
             51 => Some(OpCode::SetLocal),
+            52 => Some(OpCode::GetUpvalue),
+            53 => Some(OpCode::SetUpvalue),
+            54 => Some(OpCode::PushWith),
+            55 => Some(OpCode::PopWith),
+            56 => Some(OpCode::LookupWith),
             60 => Some(OpCode::MakeAttrs),
             61 => Some(OpCode::GetAttr),
             62 => Some(OpCode::HasAttr),
@@ -185,6 +225,11 @@ impl OpCode {
             110 => Some(OpCode::Pop),
             120 => Some(OpCode::GetLocalAttr),
             121 => Some(OpCode::GetLocalCall),
+            130 => Some(OpCode::PushBuiltins),
+            131 => Some(OpCode::CallBuiltin),
+            140 => Some(OpCode::MakeThunk),
+            141 => Some(OpCode::Force),
+            150 => Some(OpCode::Import),
             _ => None,
         }
     }
@@ -219,6 +264,11 @@ mod tests {
             OpCode::Interpolate,
             OpCode::GetLocal,
             OpCode::SetLocal,
+            OpCode::GetUpvalue,
+            OpCode::SetUpvalue,
+            OpCode::PushWith,
+            OpCode::PopWith,
+            OpCode::LookupWith,
             OpCode::MakeAttrs,
             OpCode::GetAttr,
             OpCode::HasAttr,
@@ -236,6 +286,11 @@ mod tests {
             OpCode::Pop,
             OpCode::GetLocalAttr,
             OpCode::GetLocalCall,
+            OpCode::PushBuiltins,
+            OpCode::CallBuiltin,
+            OpCode::MakeThunk,
+            OpCode::Force,
+            OpCode::Import,
         ];
         for op in opcodes {
             let byte = op as u8;

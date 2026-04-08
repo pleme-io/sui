@@ -110,6 +110,9 @@ impl std::fmt::Debug for Chunk {
                     OpCode::Constant
                     | OpCode::GetLocal
                     | OpCode::SetLocal
+                    | OpCode::GetUpvalue
+                    | OpCode::SetUpvalue
+                    | OpCode::LookupWith
                     | OpCode::GetAttr
                     | OpCode::HasAttr
                     | OpCode::SelectOrDefault
@@ -120,7 +123,11 @@ impl std::fmt::Debug for Chunk {
                     | OpCode::Jump
                     | OpCode::JumpIfFalse
                     | OpCode::JumpIfTrue
-                    | OpCode::GetLocalCall => {
+                    | OpCode::GetLocalCall
+                    | OpCode::PushBuiltins
+                    | OpCode::MakeThunk
+                    | OpCode::Force
+                    | OpCode::Import => {
                         if offset + 1 < self.code.len() {
                             let operand = self.read_u16(offset);
                             write!(f, " {operand}")?;
@@ -128,7 +135,7 @@ impl std::fmt::Debug for Chunk {
                         }
                     }
                     // Two u16 operands.
-                    OpCode::GetLocalAttr => {
+                    OpCode::GetLocalAttr | OpCode::CallBuiltin => {
                         if offset + 3 < self.code.len() {
                             let slot = self.read_u16(offset);
                             let key = self.read_u16(offset + 2);

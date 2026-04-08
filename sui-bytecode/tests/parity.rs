@@ -465,3 +465,165 @@ fn parity_attr_not_found_is_error() {
     assert!(tree.is_err(), "tree-walker should error on missing attr");
     assert!(bc.is_err(), "bytecode VM should error on missing attr");
 }
+
+// ── Upvalues (closures) ───────────────────────────────────────
+
+#[test]
+fn parity_upvalue_basic() {
+    assert_same("let f = let x = 10; in y: x + y; in f 5");
+}
+
+#[test]
+fn parity_upvalue_curried() {
+    assert_same("let add = a: b: a + b; in add 3 4");
+}
+
+#[test]
+fn parity_upvalue_nested_closure() {
+    assert_same("let x = 1; f = y: z: x + y + z; in f 2 3");
+}
+
+#[test]
+fn parity_upvalue_shared() {
+    assert_same("let x = 10; f = a: x + a; g = b: x * b; in f 1 + g 2");
+}
+
+#[test]
+fn parity_upvalue_let_closure() {
+    assert_same("let x = 5; in (y: x + y) 10");
+}
+
+#[test]
+fn parity_upvalue_deep_nesting() {
+    assert_same("let a = 1; in let b = 2; in let c = 3; in a + b + c");
+}
+
+#[test]
+fn parity_upvalue_lambda_returning_lambda() {
+    assert_same("let f = x: y: x + y; g = f 10; in g 20");
+}
+
+// ── With expressions ──────────────────────────────────────────
+
+#[test]
+fn parity_with_basic() {
+    assert_same("with { x = 1; }; x");
+}
+
+#[test]
+fn parity_with_nested_inner_wins() {
+    assert_same("with { x = 1; }; with { x = 2; }; x");
+}
+
+#[test]
+fn parity_with_let_shadows() {
+    assert_same("with { x = 1; }; let x = 2; in x");
+}
+
+#[test]
+fn parity_with_multiple_attrs() {
+    assert_same("with { x = 1; y = 2; }; x + y");
+}
+
+#[test]
+fn parity_with_outer_fallback() {
+    assert_same("with { x = 1; }; with { y = 2; }; x + y");
+}
+
+#[test]
+fn parity_with_set_expr() {
+    assert_same("let s = { a = 10; b = 20; }; in with s; a + b");
+}
+
+// ── Rec attrsets ──────────────────────────────────────────────
+
+#[test]
+fn parity_rec_basic() {
+    assert_same("rec { a = 1; b = a + 1; }.b");
+}
+
+#[test]
+fn parity_rec_mutual() {
+    assert_same("rec { a = 1; b = a + 1; c = b + 1; }.c");
+}
+
+#[test]
+fn parity_rec_full_set() {
+    assert_same("rec { a = 1; b = a + 1; }");
+}
+
+// ── Inherit ───────────────────────────────────────────────────
+
+#[test]
+fn parity_inherit_in_let() {
+    assert_same("let x = 1; in let inherit x; in x");
+}
+
+#[test]
+fn parity_inherit_from_in_let() {
+    assert_same("let inherit ({ x = 42; }) x; in x");
+}
+
+#[test]
+fn parity_inherit_in_attrset() {
+    assert_same("let x = 1; in { inherit x; }");
+}
+
+#[test]
+fn parity_inherit_from_in_attrset() {
+    assert_same("{ inherit ({ x = 1; y = 2; }) x y; }");
+}
+
+#[test]
+fn parity_inherit_from_multiple() {
+    assert_same("let src = { a = 10; b = 20; }; in { inherit (src) a b; }");
+}
+
+#[test]
+fn parity_rec_inherit() {
+    assert_same("let x = 100; in rec { inherit x; y = x + 1; }.y");
+}
+
+#[test]
+fn parity_rec_inherit_from() {
+    assert_same("rec { inherit ({ x = 5; }) x; y = x + 1; }.y");
+}
+
+// ── Dotted bindings ───────────────────────────────────────────
+
+#[test]
+fn parity_dotted_basic() {
+    assert_same("{ a.b = 1; }");
+}
+
+#[test]
+fn parity_dotted_merge() {
+    assert_same("{ a.b = 1; a.c = 2; }");
+}
+
+#[test]
+fn parity_dotted_deep() {
+    assert_same("{ a.b.c = 1; }");
+}
+
+#[test]
+fn parity_dotted_select() {
+    assert_same("{ a.b = 1; a.c = 2; }.a.b");
+}
+
+#[test]
+fn parity_dotted_select_deep() {
+    assert_same("{ a.b.c = 42; }.a.b.c");
+}
+
+// ── Dynamic attribute keys ────────────────────────────────────
+
+#[test]
+fn parity_dynamic_attr_basic() {
+    assert_same(r#"let name = "x"; in { ${name} = 1; }.x"#);
+}
+
+#[test]
+fn parity_dynamic_attr_interpolation() {
+    assert_same(r#"let k = "hello"; in { ${k} = 42; }"#);
+}

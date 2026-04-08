@@ -5578,7 +5578,9 @@ dependencies = [
  "pretty_assertions",
  "rnix",
  "rowan",
+ "serde_json",
  "sui-eval",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

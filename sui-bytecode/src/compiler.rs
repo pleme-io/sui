@@ -23,6 +23,18 @@ struct Local {
     name: String,
     /// Scope depth (0 = outermost).
     depth: u32,
+    /// Whether this local has been captured as an upvalue by a nested function.
+    is_captured: bool,
+}
+
+/// An upvalue descriptor: tells a closure how to capture a variable.
+#[derive(Debug, Clone, Copy)]
+struct UpvalueDesc {
+    /// If true, the upvalue captures a local from the immediately enclosing compiler.
+    /// If false, it captures an upvalue from the enclosing compiler's upvalue list.
+    is_local: bool,
+    /// The index: either a local slot (if `is_local`) or an upvalue index.
+    index: u16,
 }
 
 /// A let-binding entry (for the two-pass compilation).
@@ -31,6 +43,20 @@ enum LetBinding {
     Value(ast::Expr),
     /// A bare `inherit name;` from the enclosing scope.
     Inherit,
+    /// An `inherit (source) name;` — copies from source expression.
+    InheritFrom(ast::Expr, String),
+}
+
+/// A rec attrset binding entry.
+enum RecAttrBinding {
+    /// A regular `name = expr;` binding.
+    Value(ast::Expr),
+    /// A bare `inherit name;` from the enclosing scope.
+    Inherit,
+    /// An `inherit (source) name;`.
+    InheritFrom(ast::Expr, String),
+    /// Dotted bindings grouped under this top-level key.
+    Dotted(Vec<(Vec<String>, ast::Expr)>),
 }
 
 /// The bytecode compiler.
@@ -46,12 +72,18 @@ pub struct Compiler {
     chunk: Chunk,
     /// Local variable stack (simulates the runtime value stack layout).
     locals: Vec<Local>,
+    /// Upvalue descriptors for this compiler (function scope).
+    upvalues: Vec<UpvalueDesc>,
     /// Current scope depth.
     scope_depth: u32,
     /// Current source line for error reporting.
     current_line: u32,
     /// Shared string interner for attribute names and identifiers.
     interner: Rc<RefCell<Interner>>,
+    /// Reference to the enclosing (parent) compiler, for upvalue resolution.
+    enclosing: Option<*mut Compiler>,
+    /// Whether this compiler has any `with` scopes active (used for variable resolution).
+    with_depth: u32,
 }
 
 impl Compiler {
@@ -60,9 +92,12 @@ impl Compiler {
         Self {
             chunk: Chunk::new(),
             locals: Vec::new(),
+            upvalues: Vec::new(),
             scope_depth: 0,
             current_line: 0,
             interner: Rc::new(RefCell::new(Interner::new())),
+            enclosing: None,
+            with_depth: 0,
         }
     }
 
@@ -71,9 +106,12 @@ impl Compiler {
         Self {
             chunk: Chunk::new(),
             locals: Vec::new(),
+            upvalues: Vec::new(),
             scope_depth: 0,
             current_line: 0,
             interner,
+            enclosing: None,
+            with_depth: 0,
         }
     }
 
@@ -279,6 +317,7 @@ impl Compiler {
             ast::Expr::Apply(app) => self.compile_apply(app),
             ast::Expr::BinOp(op) => self.compile_binop(op),
             ast::Expr::UnaryOp(op) => self.compile_unary(op),
+            ast::Expr::With(w) => self.compile_with(w),
             ast::Expr::Assert(a) => self.compile_assert(a),
             ast::Expr::List(l) => self.compile_list(l),
             ast::Expr::Paren(p) => {
@@ -393,18 +432,36 @@ impl Compiler {
                 Ok(())
             }
             _ => {
-                // Look up in locals.
+                // 1. Look up in locals.
                 if let Some(idx) = self.resolve_local(&name) {
                     self.emit(OpCode::GetLocal);
                     self.emit_u16(idx);
-                    Ok(())
-                } else {
-                    // In Phase 1, unresolved variables are an error.
-                    // Phase 2 will add upvalue/with-scope resolution.
-                    Err(CompileError::Unsupported(format!(
-                        "unresolved variable: {name} (upvalues/with not yet implemented)"
-                    )))
+                    return Ok(());
                 }
+                // 2. Look up in upvalues (captures from enclosing scopes).
+                if let Some(idx) = self.resolve_upvalue(&name) {
+                    self.emit(OpCode::GetUpvalue);
+                    self.emit_u16(idx as u16);
+                    return Ok(());
+                }
+                // 3. `builtins` is a global — push the builtins attrset.
+                if name == "builtins" {
+                    self.emit(OpCode::PushBuiltins);
+                    return Ok(());
+                }
+                // 4. `import` is a global — treated as a special form
+                //    in compile_apply, but if referenced as a bare value,
+                //    it's an error for now.
+                // 5. Look up in with-scope (dynamic scope).
+                if self.has_with_scope() {
+                    let name_idx = self.chunk.add_constant(VMValue::String(name))?;
+                    self.emit(OpCode::LookupWith);
+                    self.emit_u16(name_idx);
+                    return Ok(());
+                }
+                Err(CompileError::Unsupported(format!(
+                    "unresolved variable: {name}"
+                )))
             }
         }
     }
@@ -416,7 +473,7 @@ impl Compiler {
 
         // Collect all binding names and value expressions first so we
         // can allocate all local slots before compiling any values
-        // (enabling mutual references between let-bindings in Phase 2).
+        // (enabling mutual references between let-bindings).
         let mut bindings: Vec<(String, LetBinding)> = Vec::new();
 
         for entry in letin.entries() {
@@ -438,14 +495,19 @@ impl Compiler {
                     bindings.push((key, LetBinding::Value(value_expr)));
                 }
                 ast::Entry::Inherit(ref inherit) => {
-                    if inherit.from().is_some() {
-                        return Err(CompileError::Unsupported(
-                            "inherit (source) in let".to_string(),
-                        ));
-                    }
-                    for attr in inherit.attrs() {
-                        let name = static_attr_name(&attr)?;
-                        bindings.push((name, LetBinding::Inherit));
+                    if let Some(from) = inherit.from() {
+                        let source_expr = from.expr().ok_or_else(|| {
+                            CompileError::MissingNode("inherit from expr".to_string())
+                        })?;
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name.clone(), LetBinding::InheritFrom(source_expr.clone(), name)));
+                        }
+                    } else {
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name, LetBinding::Inherit));
+                        }
                     }
                 }
             }
@@ -477,6 +539,13 @@ impl Compiler {
                     if let Some(outer_slot) = self.resolve_local(name) {
                         self.emit(OpCode::GetLocal);
                         self.emit_u16(outer_slot);
+                    } else if let Some(uv_idx) = self.resolve_upvalue(name) {
+                        self.emit(OpCode::GetUpvalue);
+                        self.emit_u16(uv_idx as u16);
+                    } else if self.has_with_scope() {
+                        let name_idx = self.chunk.add_constant(VMValue::String(name.clone()))?;
+                        self.emit(OpCode::LookupWith);
+                        self.emit_u16(name_idx);
                     } else {
                         self.locals[slot as usize].depth = saved_depth;
                         return Err(CompileError::Unsupported(format!(
@@ -484,6 +553,16 @@ impl Compiler {
                         )));
                     }
                     self.locals[slot as usize].depth = saved_depth;
+                    self.emit(OpCode::SetLocal);
+                    self.emit_u16(slot);
+                    self.emit(OpCode::Pop);
+                }
+                LetBinding::InheritFrom(source_expr, attr_name) => {
+                    // Compile source, then GetAttr.
+                    self.compile_expr(source_expr)?;
+                    let key_idx = self.chunk.add_constant(VMValue::String(attr_name.clone()))?;
+                    self.emit(OpCode::GetAttr);
+                    self.emit_u16(key_idx);
                     self.emit(OpCode::SetLocal);
                     self.emit_u16(slot);
                     self.emit(OpCode::Pop);
@@ -508,10 +587,17 @@ impl Compiler {
 
     fn compile_attrset(&mut self, set: &ast::AttrSet) -> Result<(), CompileError> {
         if set.rec_token().is_some() {
-            return Err(CompileError::Unsupported("rec attrset".to_string()));
+            return self.compile_rec_attrset(set);
         }
 
-        let mut count: u16 = 0;
+        // Collect all entries, handling dotted bindings by merging them.
+        // We need to group dotted bindings by their top-level key.
+        let mut flat_entries: Vec<(String, ast::Expr)> = Vec::new();
+        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
+            std::collections::BTreeMap::new();
+        let mut inherit_entries: Vec<(String, Option<ast::Expr>)> = Vec::new();
+        let mut dynamic_entries: Vec<(ast::Expr, ast::Expr)> = Vec::new();
+
         for entry in set.entries() {
             match entry {
                 ast::Entry::AttrpathValue(ref apv) => {
@@ -519,47 +605,302 @@ impl Compiler {
                         CompileError::MissingNode("attrset attrpath".to_string())
                     })?;
                     let keys: Vec<_> = attrpath.attrs().collect();
-                    if keys.len() != 1 {
-                        return Err(CompileError::Unsupported(
-                            "dotted attrset keys".to_string(),
-                        ));
-                    }
-                    let key = static_attr_name(&keys[0])?;
                     let value_expr = apv.value().ok_or_else(|| {
                         CompileError::MissingNode("attrset value".to_string())
                     })?;
-                    // Push value first, then key (VM pops key then value).
-                    self.compile_expr(&value_expr)?;
-                    self.emit_constant(VMValue::String(key))?;
-                    count += 1;
+
+                    if keys.len() == 1 {
+                        // Check for dynamic key.
+                        match &keys[0] {
+                            ast::Attr::Dynamic(dyn_attr) => {
+                                let key_expr = dyn_attr.expr().ok_or_else(|| {
+                                    CompileError::MissingNode("dynamic attr key".to_string())
+                                })?;
+                                dynamic_entries.push((key_expr, value_expr));
+                            }
+                            ast::Attr::Str(s) => {
+                                // String key like `${"foo"}` — compile it.
+                                let key_expr = ast::Expr::Str(s.clone());
+                                dynamic_entries.push((key_expr, value_expr));
+                            }
+                            _ => {
+                                let key = static_attr_name(&keys[0])?;
+                                flat_entries.push((key, value_expr));
+                            }
+                        }
+                    } else {
+                        // Dotted binding: group by top-level key.
+                        let top_key = static_attr_name(&keys[0])?;
+                        let rest_keys: Vec<String> = keys[1..]
+                            .iter()
+                            .map(static_attr_name)
+                            .collect::<Result<_, _>>()?;
+                        dotted_entries
+                            .entry(top_key)
+                            .or_default()
+                            .push((rest_keys, value_expr));
+                    }
                 }
                 ast::Entry::Inherit(ref inherit) => {
-                    if inherit.from().is_some() {
-                        return Err(CompileError::Unsupported(
-                            "inherit (source) in attrset".to_string(),
-                        ));
-                    }
+                    let source_expr = inherit.from().and_then(|f| f.expr());
                     for attr in inherit.attrs() {
                         let name = static_attr_name(&attr)?;
-                        // Value: look up in current scope.
-                        if let Some(slot) = self.resolve_local(&name) {
-                            self.emit(OpCode::GetLocal);
-                            self.emit_u16(slot);
-                        } else {
-                            return Err(CompileError::Unsupported(format!(
-                                "inherit: cannot resolve '{name}'"
-                            )));
-                        }
-                        // Key.
-                        self.emit_constant(VMValue::String(name))?;
-                        count += 1;
+                        inherit_entries.push((name, source_expr.clone()));
                     }
                 }
             }
         }
 
+        let mut count: u16 = 0;
+
+        // Emit flat entries.
+        for (key, value_expr) in &flat_entries {
+            self.compile_expr(value_expr)?;
+            self.emit_constant(VMValue::String(key.clone()))?;
+            count += 1;
+        }
+
+        // Emit dotted entries as nested attrsets.
+        for (top_key, sub_bindings) in &dotted_entries {
+            self.compile_nested_attrset(sub_bindings)?;
+            self.emit_constant(VMValue::String(top_key.clone()))?;
+            count += 1;
+        }
+
+        // Emit inherit entries.
+        for (name, source_expr) in &inherit_entries {
+            if let Some(src) = source_expr {
+                // inherit (source) name; — compile source, then GetAttr.
+                self.compile_expr(src)?;
+                let key_idx = self.chunk.add_constant(VMValue::String(name.clone()))?;
+                self.emit(OpCode::GetAttr);
+                self.emit_u16(key_idx);
+            } else {
+                // inherit name; — look up in current scope.
+                self.emit_variable_load(name)?;
+            }
+            self.emit_constant(VMValue::String(name.clone()))?;
+            count += 1;
+        }
+
+        // Emit dynamic entries.
+        for (key_expr, value_expr) in &dynamic_entries {
+            self.compile_expr(value_expr)?;
+            self.compile_expr(key_expr)?;
+            count += 1;
+        }
+
         self.emit(OpCode::MakeAttrs);
         self.emit_u16(count);
+
+        // If there were both flat/dotted and we need to merge, the MakeAttrs
+        // handles it by creating one set. Dotted entries that share top-level
+        // keys with flat entries need merging. For now, dotted entries that
+        // share keys with flat entries override. This matches Nix semantics
+        // where the last definition wins (for simple cases).
+
+        Ok(())
+    }
+
+    /// Compile a `rec { ... }` attrset.
+    fn compile_rec_attrset(&mut self, set: &ast::AttrSet) -> Result<(), CompileError> {
+        self.begin_scope();
+
+        // Collect all binding names and their expressions.
+        let mut bindings: Vec<(String, RecAttrBinding)> = Vec::new();
+        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
+            std::collections::BTreeMap::new();
+
+        for entry in set.entries() {
+            match entry {
+                ast::Entry::AttrpathValue(ref apv) => {
+                    let attrpath = apv.attrpath().ok_or_else(|| {
+                        CompileError::MissingNode("rec attrset attrpath".to_string())
+                    })?;
+                    let keys: Vec<_> = attrpath.attrs().collect();
+                    let value_expr = apv.value().ok_or_else(|| {
+                        CompileError::MissingNode("rec attrset value".to_string())
+                    })?;
+                    if keys.len() == 1 {
+                        let key = static_attr_name(&keys[0])?;
+                        bindings.push((key, RecAttrBinding::Value(value_expr)));
+                    } else {
+                        let top_key = static_attr_name(&keys[0])?;
+                        let rest_keys: Vec<String> = keys[1..]
+                            .iter()
+                            .map(static_attr_name)
+                            .collect::<Result<_, _>>()?;
+                        dotted_entries
+                            .entry(top_key)
+                            .or_default()
+                            .push((rest_keys, value_expr));
+                    }
+                }
+                ast::Entry::Inherit(ref inherit) => {
+                    if let Some(from) = inherit.from() {
+                        let source_expr = from.expr().ok_or_else(|| {
+                            CompileError::MissingNode("inherit from expr".to_string())
+                        })?;
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name.clone(), RecAttrBinding::InheritFrom(source_expr.clone(), name)));
+                        }
+                    } else {
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name, RecAttrBinding::Inherit));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add dotted entries as bindings.
+        for (top_key, sub) in &dotted_entries {
+            bindings.push((top_key.clone(), RecAttrBinding::Dotted(sub.clone())));
+        }
+
+        let binding_count = u16::try_from(bindings.len())
+            .map_err(|_| CompileError::TooManyLocals)?;
+
+        // Phase 1: Allocate local slots with null placeholders.
+        for (name, _) in &bindings {
+            self.emit(OpCode::Null);
+            self.add_local(name.clone())?;
+        }
+
+        // Phase 2: Compile each binding's value.
+        for (name, binding) in &bindings {
+            let slot = self.find_local_slot(name);
+            match binding {
+                RecAttrBinding::Value(expr) => {
+                    self.compile_expr(expr)?;
+                }
+                RecAttrBinding::Inherit => {
+                    // Temporarily hide this local so lookup finds the outer one.
+                    let saved_depth = self.locals[slot as usize].depth;
+                    self.locals[slot as usize].depth = u32::MAX;
+                    self.emit_variable_load_restore(name, slot, saved_depth)?;
+                    self.locals[slot as usize].depth = saved_depth;
+                }
+                RecAttrBinding::InheritFrom(source_expr, attr_name) => {
+                    self.compile_expr(source_expr)?;
+                    let key_idx = self.chunk.add_constant(VMValue::String(attr_name.clone()))?;
+                    self.emit(OpCode::GetAttr);
+                    self.emit_u16(key_idx);
+                }
+                RecAttrBinding::Dotted(sub_bindings) => {
+                    self.compile_nested_attrset(sub_bindings)?;
+                }
+            }
+            self.emit(OpCode::SetLocal);
+            self.emit_u16(slot);
+            self.emit(OpCode::Pop);
+        }
+
+        // Build the attrset from the local variables.
+        for (name, _) in &bindings {
+            let slot = self.find_local_slot(name);
+            self.emit(OpCode::GetLocal);
+            self.emit_u16(slot);
+            self.emit_constant(VMValue::String(name.clone()))?;
+        }
+        self.emit(OpCode::MakeAttrs);
+        self.emit_u16(binding_count);
+
+        // Clean up scope: move the attrset result down past the locals.
+        self.end_scope(binding_count);
+
+        Ok(())
+    }
+
+    /// Compile a nested attrset from a list of (remaining-path, value) pairs.
+    /// Used for dotted bindings like `{ a.b = 1; a.c = 2; }`.
+    fn compile_nested_attrset(
+        &mut self,
+        sub_bindings: &[(Vec<String>, ast::Expr)],
+    ) -> Result<(), CompileError> {
+        // Group by next key.
+        let mut groups: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
+            std::collections::BTreeMap::new();
+
+        for (path, expr) in sub_bindings {
+            if path.len() == 1 {
+                // Leaf binding.
+                groups
+                    .entry(path[0].clone())
+                    .or_default()
+                    .push((vec![], expr.clone()));
+            } else {
+                // Nested further.
+                groups
+                    .entry(path[0].clone())
+                    .or_default()
+                    .push((path[1..].to_vec(), expr.clone()));
+            }
+        }
+
+        let mut count: u16 = 0;
+        for (key, nested) in &groups {
+            if nested.len() == 1 && nested[0].0.is_empty() {
+                // Simple leaf.
+                self.compile_expr(&nested[0].1)?;
+            } else {
+                // Recurse for deeper nesting.
+                self.compile_nested_attrset(nested)?;
+            }
+            self.emit_constant(VMValue::String(key.clone()))?;
+            count += 1;
+        }
+
+        self.emit(OpCode::MakeAttrs);
+        self.emit_u16(count);
+        Ok(())
+    }
+
+    /// Emit a variable load for a name (local, upvalue, or with-scope).
+    fn emit_variable_load(&mut self, name: &str) -> Result<(), CompileError> {
+        if let Some(slot) = self.resolve_local(name) {
+            self.emit(OpCode::GetLocal);
+            self.emit_u16(slot);
+        } else if let Some(uv_idx) = self.resolve_upvalue(name) {
+            self.emit(OpCode::GetUpvalue);
+            self.emit_u16(uv_idx as u16);
+        } else if self.has_with_scope() {
+            let name_idx = self.chunk.add_constant(VMValue::String(name.to_string()))?;
+            self.emit(OpCode::LookupWith);
+            self.emit_u16(name_idx);
+        } else {
+            return Err(CompileError::Unsupported(format!(
+                "inherit: cannot resolve '{name}'"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Emit variable load, restoring local depth on error.
+    fn emit_variable_load_restore(
+        &mut self,
+        name: &str,
+        slot: u16,
+        saved_depth: u32,
+    ) -> Result<(), CompileError> {
+        if let Some(outer_slot) = self.resolve_local(name) {
+            self.emit(OpCode::GetLocal);
+            self.emit_u16(outer_slot);
+        } else if let Some(uv_idx) = self.resolve_upvalue(name) {
+            self.emit(OpCode::GetUpvalue);
+            self.emit_u16(uv_idx as u16);
+        } else if self.has_with_scope() {
+            let name_idx = self.chunk.add_constant(VMValue::String(name.to_string()))?;
+            self.emit(OpCode::LookupWith);
+            self.emit_u16(name_idx);
+        } else {
+            self.locals[slot as usize].depth = saved_depth;
+            return Err(CompileError::Unsupported(format!(
+                "inherit: cannot resolve '{name}' in enclosing scope"
+            )));
+        }
         Ok(())
     }
 
@@ -703,6 +1044,8 @@ impl Compiler {
         // Compile the function body as a separate chunk (sharing the interner).
         let mut func_compiler = Compiler::with_interner(Rc::clone(&self.interner));
         func_compiler.scope_depth = 1; // function body is its own scope
+        // Link to enclosing compiler for upvalue resolution.
+        func_compiler.enclosing = Some(self as *mut Compiler);
 
         let (arity, name) = match &param {
             ast::Param::IdentParam(ip) => {
@@ -766,8 +1109,6 @@ impl Compiler {
                         func_compiler.emit_u16(key_idx);
                     }
                     // Store into the field's local slot.
-                    // Slot 0 is the arg, then fields start at slot 1
-                    // (or slot 1 if there's an @-binding occupying slot 0).
                     let field_slot = func_compiler.find_local_slot(fname);
                     func_compiler.emit(OpCode::SetLocal);
                     func_compiler.emit_u16(field_slot);
@@ -782,14 +1123,35 @@ impl Compiler {
         func_compiler.compile_expr(&body)?;
         func_compiler.emit(OpCode::Return);
 
+        // Collect upvalue descriptors from the function compiler.
+        let upvalue_count = func_compiler.upvalues.len();
+        let upvalue_descs: Vec<UpvalueDesc> = func_compiler.upvalues.clone();
+
         // Store the compiled function as a constant in the outer chunk.
         let closure = VMValue::Closure(VMClosure {
             chunk: Rc::new(func_compiler.chunk),
-            upvalues: Vec::new(), // Phase 2: upvalue capture
+            upvalues: Vec::new(), // populated at runtime by MakeClosure
             arity,
             name,
         });
-        self.emit_constant(closure)
+
+        if upvalue_count == 0 {
+            // No upvalues: simple constant closure.
+            self.emit_constant(closure)
+        } else {
+            // Emit MakeClosure with upvalue descriptors.
+            let idx = self.chunk.add_constant(closure)?;
+            self.emit(OpCode::MakeClosure);
+            self.emit_u16(idx);
+            // Emit upvalue count as u16.
+            self.emit_u16(upvalue_count as u16);
+            // For each upvalue: is_local (u8) + index (u16).
+            for uv in &upvalue_descs {
+                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+                self.emit_u16(uv.index);
+            }
+            Ok(())
+        }
     }
 
     // ── Apply (function call) ──────────────────────────────────
@@ -801,6 +1163,16 @@ impl Compiler {
         let arg = app
             .argument()
             .ok_or_else(|| CompileError::MissingNode("apply argument".to_string()))?;
+
+        // Special form: `import <path>` compiles to path + Import opcode.
+        if let ast::Expr::Ident(ref id) = func {
+            let name = ident_text(id);
+            if name == "import" {
+                self.compile_expr(&arg)?;
+                self.emit(OpCode::Import);
+                return Ok(());
+            }
+        }
 
         // Superinstruction: if the function is a local variable, use
         // GetLocalCall to save one dispatch cycle.
@@ -905,6 +1277,31 @@ impl Compiler {
             ast::UnaryOpKind::Negate => self.emit(OpCode::Negate),
             ast::UnaryOpKind::Invert => self.emit(OpCode::Not),
         }
+        Ok(())
+    }
+
+    // ── With ───────────────────────────────────────────────────
+
+    fn compile_with(&mut self, with: &ast::With) -> Result<(), CompileError> {
+        let ns = with
+            .namespace()
+            .ok_or_else(|| CompileError::MissingNode("with namespace".to_string()))?;
+        let body = with
+            .body()
+            .ok_or_else(|| CompileError::MissingNode("with body".to_string()))?;
+
+        // Compile the namespace expression and push onto with-scope stack.
+        self.compile_expr(&ns)?;
+        self.emit(OpCode::PushWith);
+        self.with_depth += 1;
+
+        // Compile the body.
+        self.compile_expr(&body)?;
+
+        // Pop the with-scope.
+        self.emit(OpCode::PopWith);
+        self.with_depth -= 1;
+
         Ok(())
     }
 
@@ -1076,6 +1473,7 @@ impl Compiler {
         self.locals.push(Local {
             name,
             depth: self.scope_depth,
+            is_captured: false,
         });
         Ok(slot)
     }
@@ -1095,6 +1493,68 @@ impl Compiler {
     fn find_local_slot(&self, name: &str) -> u16 {
         self.resolve_local(name)
             .unwrap_or_else(|| panic!("local '{name}' not found"))
+    }
+
+    /// Add an upvalue to this compiler's upvalue list.
+    /// Returns the upvalue index. Deduplicates: if the same upvalue
+    /// (same is_local + index) already exists, returns its index.
+    fn add_upvalue(&mut self, is_local: bool, index: u16) -> Result<u8, CompileError> {
+        // Check for existing identical upvalue.
+        for (i, uv) in self.upvalues.iter().enumerate() {
+            if uv.is_local == is_local && uv.index == index {
+                return Ok(i as u8);
+            }
+        }
+        if self.upvalues.len() >= 256 {
+            return Err(CompileError::Unsupported("too many upvalues (max 256)".to_string()));
+        }
+        let idx = self.upvalues.len() as u8;
+        self.upvalues.push(UpvalueDesc { is_local, index });
+        Ok(idx)
+    }
+
+    /// Resolve a variable as an upvalue by walking the enclosing compiler chain.
+    /// Uses Lua 5.x-style upvalue resolution: if the variable is a local in
+    /// the enclosing scope, capture it directly. If it's an upvalue in the
+    /// enclosing scope, capture that upvalue.
+    fn resolve_upvalue(&mut self, name: &str) -> Option<u8> {
+        let enclosing_ptr = self.enclosing?;
+        // SAFETY: The enclosing compiler is on the stack and outlives this call.
+        // We only use raw pointers to avoid Rust's borrow checker issues with
+        // the recursive compiler hierarchy, which is purely compile-time.
+        let enclosing = unsafe { &mut *enclosing_ptr };
+
+        // Try to find as a local in the enclosing scope.
+        if let Some(local_idx) = enclosing.resolve_local(name) {
+            enclosing.locals[local_idx as usize].is_captured = true;
+            return Some(self.add_upvalue(true, local_idx).ok()?);
+        }
+
+        // Try to find as an upvalue in the enclosing scope (recursive).
+        if let Some(uv_idx) = enclosing.resolve_upvalue(name) {
+            return Some(self.add_upvalue(false, uv_idx as u16).ok()?);
+        }
+
+        // Check if enclosing has a with-scope (propagate with-scope awareness).
+        if enclosing.has_with_scope() {
+            // Mark this compiler as having a transitive with-scope.
+            // We set a flag so that compile_ident can emit LookupWith.
+            self.with_depth = self.with_depth.max(1);
+        }
+
+        None
+    }
+
+    /// Check if this compiler or any enclosing compiler has an active with-scope.
+    fn has_with_scope(&self) -> bool {
+        if self.with_depth > 0 {
+            return true;
+        }
+        if let Some(enclosing_ptr) = self.enclosing {
+            let enclosing = unsafe { &*enclosing_ptr };
+            return enclosing.has_with_scope();
+        }
+        false
     }
 }
 
