@@ -48,6 +48,8 @@ pub struct BinaryCacheStore {
     base_url: String,
     /// Trusted public keys for signature verification (`keyname:base64pubkey`).
     trusted_keys: Vec<String>,
+    /// Optional authorization header (`("Bearer", "<token>")` or `("Basic", "<creds>")`).
+    auth_header: Option<(String, String)>,
 }
 
 /// Builder for [`BinaryCacheStore`].
@@ -55,6 +57,7 @@ pub struct BinaryCacheStoreBuilder {
     base_url: String,
     trusted_keys: Vec<String>,
     client: Option<Box<dyn HttpClient>>,
+    auth_header: Option<(String, String)>,
 }
 
 impl BinaryCacheStoreBuilder {
@@ -72,6 +75,13 @@ impl BinaryCacheStoreBuilder {
         self
     }
 
+    /// Set an authorization header (e.g., `("Bearer", "<token>")` for Attic).
+    #[must_use]
+    pub fn auth_header(mut self, scheme: &str, credentials: &str) -> Self {
+        self.auth_header = Some((scheme.to_string(), credentials.to_string()));
+        self
+    }
+
     /// Build the [`BinaryCacheStore`].
     #[must_use]
     pub fn build(self) -> BinaryCacheStore {
@@ -79,6 +89,7 @@ impl BinaryCacheStoreBuilder {
             client: self.client.unwrap_or_else(|| Box::new(ReqwestHttpClient::new())),
             base_url: self.base_url,
             trusted_keys: self.trusted_keys,
+            auth_header: self.auth_header,
         }
     }
 }
@@ -91,6 +102,7 @@ impl BinaryCacheStore {
             base_url: base_url.trim_end_matches('/').to_string(),
             trusted_keys: Vec::new(),
             client: None,
+            auth_header: None,
         }
     }
 
@@ -113,13 +125,27 @@ impl BinaryCacheStore {
             .build()
     }
 
+    /// Build the request headers, including auth if configured.
+    fn request_headers(&self, extra: &[(&str, &str)]) -> Vec<(String, String)> {
+        let mut headers: Vec<(String, String)> = extra
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        if let Some((scheme, creds)) = &self.auth_header {
+            headers.push(("Authorization".to_string(), format!("{scheme} {creds}")));
+        }
+        headers
+    }
+
     /// Fetch NarInfo for a store path hash.
     pub async fn fetch_narinfo(&self, hash: &str) -> StoreResult<Option<NarInfo>> {
         let url = format!("{}/{hash}.narinfo", self.base_url);
+        let headers = self.request_headers(&[("Accept", "text/x-nix-narinfo")]);
+        let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 
         let response = self
             .client
-            .get(&url, &[("Accept", "text/x-nix-narinfo")])
+            .get(&url, &header_refs)
             .await
             .map_err(BinaryCacheError::from)?;
 
@@ -150,6 +176,12 @@ impl BinaryCacheStore {
     #[must_use]
     pub fn trusted_keys(&self) -> &[String] {
         &self.trusted_keys
+    }
+
+    /// Return the configured authorization header, if any.
+    #[must_use]
+    pub fn auth_header(&self) -> Option<(&str, &str)> {
+        self.auth_header.as_ref().map(|(s, c)| (s.as_str(), c.as_str()))
     }
 
     /// Download a NAR file from the cache.
@@ -1887,5 +1919,47 @@ References:
         )
         .unwrap();
         assert!(result);
+    }
+
+    // ── Auth header tests ────────────────────────────────────────
+
+    #[test]
+    fn builder_auth_header_none_by_default() {
+        let store = BinaryCacheStore::builder("https://cache.example.com").build();
+        assert!(store.auth_header().is_none());
+    }
+
+    #[test]
+    fn builder_auth_header_set() {
+        let store = BinaryCacheStore::builder("https://cache.example.com")
+            .auth_header("Bearer", "my-token-123")
+            .build();
+        let (scheme, creds) = store.auth_header().unwrap();
+        assert_eq!(scheme, "Bearer");
+        assert_eq!(creds, "my-token-123");
+    }
+
+    #[test]
+    fn request_headers_without_auth() {
+        let store = BinaryCacheStore::builder("https://cache.example.com").build();
+        let headers = store.request_headers(&[("Accept", "text/plain")]);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0], ("Accept".to_string(), "text/plain".to_string()));
+    }
+
+    #[test]
+    fn request_headers_with_auth() {
+        let store = BinaryCacheStore::builder("https://cache.example.com")
+            .auth_header("Bearer", "token123")
+            .build();
+        let headers = store.request_headers(&[("Accept", "text/plain")]);
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[1], ("Authorization".to_string(), "Bearer token123".to_string()));
+    }
+
+    #[test]
+    fn new_constructor_has_no_auth() {
+        let store = BinaryCacheStore::new("https://cache.example.com", vec![]);
+        assert!(store.auth_header().is_none());
     }
 }
