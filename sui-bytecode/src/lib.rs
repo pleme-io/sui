@@ -33,14 +33,17 @@
 //! - `inherit` and `inherit (source)`: in both `let` and attrset
 //! - Dotted attribute paths: `{ a.b = 1; a.c = 2; }` merging
 //! - Dynamic attribute keys: `{ ${expr} = value; }`
+//! - Builtins: 50+ functions (type checks, list ops, attrset ops,
+//!   string ops, arithmetic, control flow, conversion)
+//! - `import` with file caching
+//! - Thunks / lazy evaluation (MakeThunk/Force opcodes, blackhole detection)
 //!
 //! # Not Yet Implemented
 //!
-//! - Thunks / lazy evaluation
-//! - `import` / `scopedImport`
-//! - Builtins (100+ functions)
+//! - `scopedImport`
+//! - Higher-order builtins that invoke VM closures (map, filter, foldl')
+//! - `derivation` / `derivationStrict`
 //! - String interpolation contexts
-//! - Dotted attribute paths in let bindings
 
 /// Built-in function registry for the VM.
 pub mod builtins;
