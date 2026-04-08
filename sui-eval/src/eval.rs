@@ -409,9 +409,13 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = with
                 .body()
                 .ok_or_else(|| EvalError::ParseError("with missing body".to_string()))?;
-            let scope = force_value(&eval_expr(&ns, env)?)?;
-            let attrs = scope.as_attrs()?.clone();
-            let new_env = env.child().with_scope(attrs);
+            // Don't force the namespace yet — store as a lazy value.
+            // CppNix evaluates with-scopes lazily: the namespace is only
+            // forced when a name lookup actually falls through lexical scope.
+            // This is critical for `fix (self: with self; { … })` patterns
+            // used throughout nixpkgs.
+            let scope_val = eval_expr(&ns, env)?;
+            let new_env = env.child().with_scope(scope_val);
             eval_expr(&body, &new_env)
         }
 
@@ -1868,6 +1872,59 @@ mod tests {
             ev("with { a = 1; }; with { b = 2; }; a + b"),
             Value::Int(3),
         );
+    }
+
+    #[test]
+    fn control_with_lazy_fix_self() {
+        // THE critical pattern that nixpkgs requires:
+        // fix (self: with self; { a = 1; b = a + 1; })
+        // Before the lazy-with fix, this would hit the blackhole detector
+        // because `with` eagerly forced `self`.
+        let result = eval(
+            "let fix = f: let x = f x; in x; in fix (self: with self; { a = 1; b = a + 1; })"
+        );
+        assert!(result.is_ok(), "fix with self should work: {:?}", result);
+        if let Ok(Value::Attrs(attrs)) = result {
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected Attrs, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn control_with_lazy_fix_self_lib_pattern() {
+        // The nixpkgs pattern: self-referential package set with lib.
+        // Access via select to force through the thunk layer.
+        let result = eval(r#"
+            let fix = f: let x = f x; in x;
+            in (fix (self: with self; {
+                lib = { version = "1.0"; };
+                hello = "hello ${lib.version}";
+            })).hello
+        "#);
+        assert!(result.is_ok(), "nixpkgs-style lib pattern: {:?}", result);
+        assert_eq!(
+            result.unwrap(),
+            Value::String(NixString::plain("hello 1.0")),
+        );
+    }
+
+    #[test]
+    fn control_with_non_attrset_errors() {
+        // CppNix errors when with-scope is not an attrset and a lookup hits it
+        let result = eval("with 42; 1");
+        // The body `1` is a literal and doesn't look up anything in the
+        // with-scope, so this should succeed (the scope is never forced).
+        assert_eq!(result.unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn control_with_non_attrset_lookup_falls_through() {
+        // If the with scope is not an attrset, lookups should fall through
+        // to outer scopes rather than crashing.
+        let result = eval("let x = 1; in with 42; x");
+        assert_eq!(result.unwrap(), Value::Int(1));
     }
 
     #[test]

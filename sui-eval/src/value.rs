@@ -501,7 +501,11 @@ pub struct Env {
     bindings: BTreeMap<String, Value>,
     parent: Option<Arc<Env>>,
     /// Dynamic scope from `with` expressions.
-    with_scope: Option<Arc<NixAttrs>>,
+    /// Stored as a lazy `Value` (boxed to break the Env→Value→Closure→Env
+    /// size cycle) — only forced when a name lookup actually falls through
+    /// to the with-scope (matching CppNix semantics where `with` does not
+    /// eagerly evaluate its namespace).
+    with_scope: Option<Box<Value>>,
     /// Source file currently being evaluated, for relative path
     /// literals (`./foo.nix`) inside function defaults that get
     /// evaluated *after* control has left the file scope. The
@@ -537,9 +541,12 @@ impl Env {
     }
 
     /// Attach a `with` scope to this environment.
+    ///
+    /// The value is stored lazily and only forced when a name lookup
+    /// actually needs it, matching CppNix's lazy `with` semantics.
     #[must_use]
-    pub fn with_scope(mut self, attrs: NixAttrs) -> Self {
-        self.with_scope = Some(Arc::new(attrs));
+    pub fn with_scope(mut self, value: Value) -> Self {
+        self.with_scope = Some(Box::new(value));
         self
     }
 
@@ -577,10 +584,19 @@ impl Env {
     }
 
     fn lookup_with(&self, name: &str) -> Option<Value> {
-        if let Some(ref attrs) = self.with_scope
-            && let Some(v) = attrs.get(name) {
-                return Some(v.clone());
+        if let Some(ref scope_val) = self.with_scope {
+            // Force the with-scope lazily — only when a name lookup
+            // actually needs it.  This matches CppNix semantics and
+            // allows `fix (self: with self; { … })` to work.
+            if let Ok(forced) = crate::eval::force_value(scope_val) {
+                if let Value::Attrs(ref attrs) = forced {
+                    if let Some(v) = attrs.get(name) {
+                        return Some(v.clone());
+                    }
+                }
             }
+            // If forcing fails or it's not an attrset, fall through to parent
+        }
         self.parent.as_ref().and_then(|p| p.lookup_with(name))
     }
 }
@@ -1449,7 +1465,7 @@ mod tests {
     fn env_with_scope_lookup() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
-        let env = Env::new().with_scope(attrs);
+        let env = Env::new().with_scope(Value::Attrs(attrs));
         assert_eq!(env.lookup("x"), Some(Value::Int(42)));
         assert_eq!(env.lookup("y"), None);
     }
@@ -1458,7 +1474,7 @@ mod tests {
     fn env_local_shadows_with_scope() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
-        let mut env = Env::new().with_scope(attrs);
+        let mut env = Env::new().with_scope(Value::Attrs(attrs));
         env.bind("x".to_string(), Value::Int(99));
         assert_eq!(env.lookup("x"), Some(Value::Int(99)));
     }
@@ -1552,10 +1568,10 @@ mod tests {
     fn env_nested_with_inner_wins() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(outer_attrs);
+        let outer = Env::new().with_scope(Value::Attrs(outer_attrs));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("x".to_string(), Value::Int(2));
-        let inner = outer.child().with_scope(inner_attrs);
+        let inner = outer.child().with_scope(Value::Attrs(inner_attrs));
         assert_eq!(inner.lookup("x"), Some(Value::Int(2)));
     }
 
@@ -1563,10 +1579,10 @@ mod tests {
     fn env_nested_with_fallback_to_outer() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(outer_attrs);
+        let outer = Env::new().with_scope(Value::Attrs(outer_attrs));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("y".to_string(), Value::Int(2));
-        let inner = outer.child().with_scope(inner_attrs);
+        let inner = outer.child().with_scope(Value::Attrs(inner_attrs));
         assert_eq!(inner.lookup("x"), Some(Value::Int(1)));
         assert_eq!(inner.lookup("y"), Some(Value::Int(2)));
     }
@@ -1575,10 +1591,10 @@ mod tests {
     fn env_lexical_binding_wins_over_all_with_scopes() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(outer_attrs);
+        let outer = Env::new().with_scope(Value::Attrs(outer_attrs));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("x".to_string(), Value::Int(2));
-        let mut inner = outer.child().with_scope(inner_attrs);
+        let mut inner = outer.child().with_scope(Value::Attrs(inner_attrs));
         inner.bind("x".to_string(), Value::Int(99));
         assert_eq!(inner.lookup("x"), Some(Value::Int(99)));
     }
@@ -1589,7 +1605,7 @@ mod tests {
         root.bind("x".to_string(), Value::Int(10));
         let mut child_attrs = NixAttrs::new();
         child_attrs.insert("x".to_string(), Value::Int(20));
-        let child = root.child().with_scope(child_attrs);
+        let child = root.child().with_scope(Value::Attrs(child_attrs));
         assert_eq!(child.lookup("x"), Some(Value::Int(10)));
     }
 
@@ -1597,15 +1613,15 @@ mod tests {
     fn env_deeply_nested_with_scopes_three_levels() {
         let mut a = NixAttrs::new();
         a.insert("x".to_string(), Value::Int(1));
-        let env1 = Env::new().with_scope(a);
+        let env1 = Env::new().with_scope(Value::Attrs(a));
 
         let mut b = NixAttrs::new();
         b.insert("y".to_string(), Value::Int(2));
-        let env2 = env1.child().with_scope(b);
+        let env2 = env1.child().with_scope(Value::Attrs(b));
 
         let mut c = NixAttrs::new();
         c.insert("z".to_string(), Value::Int(3));
-        let env3 = env2.child().with_scope(c);
+        let env3 = env2.child().with_scope(Value::Attrs(c));
 
         assert_eq!(env3.lookup("x"), Some(Value::Int(1)));
         assert_eq!(env3.lookup("y"), Some(Value::Int(2)));
@@ -1617,7 +1633,7 @@ mod tests {
     fn env_lookup_lexical_only_skips_with_scope() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
-        let env = Env::new().with_scope(attrs);
+        let env = Env::new().with_scope(Value::Attrs(attrs));
         assert_eq!(env.lookup_lexical("x"), None);
     }
 
