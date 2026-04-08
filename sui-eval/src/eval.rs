@@ -427,8 +427,8 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let mut thunks: Vec<(String, Thunk)> = Vec::new();
 
             // Accumulator for dotted-path bindings (`let a.b = 1; a.c = 2; ...`).
-            // These are eagerly evaluated, same as CppNix — they do NOT
-            // participate in the rec-env thunk fixpoint.
+            // Leaf values are wrapped in thunks so they can reference
+            // sibling let-bindings (the let scope is recursive in Nix).
             let mut dotted_attrs: NixAttrs = NixAttrs::new();
 
             for entry in letin.entries() {
@@ -450,10 +450,17 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
                             thunks.push((key, thunk));
                         } else if path_keys.len() > 1 {
-                            // Multi-segment dotted path: eagerly build
-                            // a nested attrset and merge into the accumulator.
+                            // Multi-segment dotted path: build a nested
+                            // attrset with thunks at the leaves so the
+                            // value expression can reference sibling
+                            // let-bindings.
                             let key = path_keys[0].clone();
-                            let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
+                            let value = build_nested_attr_thunk(
+                                &path_keys[1..],
+                                &value_expr,
+                                env,
+                                &mut thunks,
+                            );
                             merge_nested_insert(&mut dotted_attrs, key, value);
                         }
                     }
@@ -548,7 +555,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             Ok(Value::Lambda(Closure {
                 param,
                 body,
-                env: env.clone(),
+                env: std::rc::Rc::new(env.clone()),
             }))
         }
 
@@ -651,6 +658,13 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         let mut rec_env = env.child();
         let mut thunks: Vec<(String, Thunk)> = Vec::new();
 
+        // Accumulator for dotted-path bindings (`rec { a.b = 1; a.c = 2; ... }`).
+        // Leaf values are wrapped in thunks so they participate in the
+        // recursive env fixpoint, matching CppNix semantics where
+        // `rec { types.a = f 1; f = x: x + 1; }` allows `f` to be a
+        // sibling binding.
+        let mut dotted_attrs: NixAttrs = NixAttrs::new();
+
         // Phase 1: Create thunks with placeholder env and bind them.
         for entry in set.entries() {
             match entry {
@@ -673,14 +687,43 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         attrs.insert(key.clone(), thunk_val);
                         thunks.push((key, thunk));
                     } else {
+                        // Multi-segment dotted path: build a nested attrset
+                        // with a thunk at the leaf so the value expression
+                        // can reference sibling rec-bindings.
                         let key = path_keys[0].clone();
-                        let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
-                        merge_nested_insert(&mut attrs, key, value);
+                        let value =
+                            build_nested_attr_thunk(&path_keys[1..], &value_expr, env, &mut thunks);
+                        merge_nested_insert(&mut dotted_attrs, key, value);
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
                     eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env), Some(&mut thunks))?;
                 }
+            }
+        }
+
+        // Phase 1b: Bind accumulated dotted-path attrs into attrs and rec_env.
+        // If a top-level key already exists (e.g. from an inherit), the
+        // dotted attrset is merged into the existing value (forcing the
+        // existing thunk if necessary, which is safe because inherit
+        // source expressions resolve in the parent scope).
+        for (key, value) in dotted_attrs.iter() {
+            if let Some(existing) = attrs.get(key).cloned() {
+                let forced = force_value(&existing)?;
+                if let (Value::Attrs(mut ea), Value::Attrs(na)) = (forced, value.clone()) {
+                    for (k, v) in na.iter() {
+                        merge_nested_insert(&mut ea, k.clone(), v.clone());
+                    }
+                    let merged = Value::Attrs(ea);
+                    attrs.insert(key.clone(), merged.clone());
+                    rec_env.bind(key.clone(), merged);
+                } else {
+                    attrs.insert(key.clone(), value.clone());
+                    rec_env.bind(key.clone(), value.clone());
+                }
+            } else {
+                attrs.insert(key.clone(), value.clone());
+                rec_env.bind(key.clone(), value.clone());
             }
         }
 
@@ -795,6 +838,32 @@ fn build_nested_attr(
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(attrs))
+}
+
+/// Like [`build_nested_attr`] but wraps the leaf in a [`Thunk`] instead of
+/// eagerly evaluating it. Used inside `rec { ... }` and `let ... in` so
+/// that dotted-path leaf expressions can reference sibling bindings
+/// through the recursive env (which is finalised in Phase 2).
+///
+/// Every thunk created is appended to `thunks` so Phase 2 can update
+/// its captured environment.
+fn build_nested_attr_thunk(
+    path: &[String],
+    expr: &ast::Expr,
+    env: &Env,
+    thunks: &mut Vec<(String, Thunk)>,
+) -> Value {
+    if path.is_empty() {
+        let thunk = Thunk::new_suspended(expr.clone(), env.clone());
+        let val = Value::Thunk(thunk.clone());
+        thunks.push((String::new(), thunk));
+        return val;
+    }
+    let key = path[0].clone();
+    let inner = build_nested_attr_thunk(&path[1..], expr, env, thunks);
+    let mut attrs = NixAttrs::new();
+    attrs.insert(key, inner);
+    Value::Attrs(attrs)
 }
 
 /// Insert `value` at `key` in `target`. If `target` already has a

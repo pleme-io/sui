@@ -493,11 +493,15 @@ impl IntoIterator for NixAttrs {
 /// A closure — lambda + captured environment.
 ///
 /// Stores rnix AST nodes so we can re-evaluate the body in the captured env.
+///
+/// The environment is `Rc`-wrapped so that cloning a closure (e.g., once per
+/// element in `map`/`filter`) is a refcount bump instead of a deep copy of the
+/// entire binding map.
 #[derive(Debug, Clone)]
 pub struct Closure {
     pub param: rnix::ast::Param,
     pub body: rnix::ast::Expr,
-    pub env: Env,
+    pub env: Rc<Env>,
 }
 
 /// The function signature stored inside a [`BuiltinFn`].
@@ -1241,7 +1245,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Env::new(),
+            env: Rc::new(Env::new()),
         };
         assert_eq!(
             Value::Lambda(closure).to_json(),
@@ -1298,7 +1302,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Env::new(),
+            env: Rc::new(Env::new()),
         };
         assert_eq!(Value::Lambda(closure).type_name(), "lambda");
     }
@@ -1433,7 +1437,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Env::new(),
+            env: Rc::new(Env::new()),
         };
         assert_eq!(format!("{}", Value::Lambda(closure)), "<<lambda>>");
     }
@@ -2564,7 +2568,7 @@ mod tests {
                 rnix::ast::Expr::Lambda(ref l) => l.body().unwrap(),
                 _ => panic!("expected lambda"),
             },
-            env: Env::new(),
+            env: Rc::new(Env::new()),
         };
         let val = Value::Lambda(closure);
         assert!(val.coerce_to_string().is_err());
