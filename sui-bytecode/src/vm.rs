@@ -1870,12 +1870,20 @@ impl<'a> VM<'a> {
     }
 
     /// Import a file with a scope (for scopedImport).
+    ///
+    /// Handles the directory → `default.nix` fallback like `import_file`.
     fn vm_scoped_import(
         &mut self,
         scope_nix: &str,
         path: &str,
     ) -> Result<NanBox, VMError> {
-        let source = std::fs::read_to_string(path)
+        // Directory → default.nix fallback (Nix convention).
+        let resolved = if std::path::Path::new(path).is_dir() {
+            format!("{path}/default.nix")
+        } else {
+            path.to_string()
+        };
+        let source = std::fs::read_to_string(&resolved)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
 
         // Wrap the source in `with <scope>; <source>` to inject the scope.
@@ -2209,11 +2217,21 @@ impl<'a> VM<'a> {
     // -- Import ---------------------------------------------------------
 
     /// Import a Nix file: compile it, execute it, cache the result.
+    ///
+    /// Handles the Nix convention that importing a directory is equivalent
+    /// to importing `<directory>/default.nix`.
     fn import_file(&mut self, path: &str) -> Result<NanBox, VMError> {
-        let canonical = std::fs::canonicalize(path)
-            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?
-            .to_string_lossy()
-            .to_string();
+        let resolved = std::fs::canonicalize(path)
+            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+
+        // Directory → default.nix fallback (Nix convention).
+        let resolved = if resolved.is_dir() {
+            resolved.join("default.nix")
+        } else {
+            resolved
+        };
+
+        let canonical = resolved.to_string_lossy().to_string();
 
         // Check cache.
         if let Some(cached) = self.import_cache.borrow().get(&canonical) {
@@ -3079,6 +3097,49 @@ mod tests {
         std::fs::write(&file_path, "{ greeting = \"hello\"; }").unwrap();
         let nix_expr = format!("(import {}).greeting", file_path.display());
         assert_eq!(eval(&nix_expr), VMValue::String("hello".to_string()));
+    }
+
+    #[test]
+    fn import_directory_default_nix() {
+        // Importing a directory should resolve to <dir>/default.nix
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("mylib");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("default.nix"), "{ x = 42; }").unwrap();
+        let nix_expr = format!("(import {}).x", sub.display());
+        assert_eq!(eval(&nix_expr), VMValue::Int(42));
+    }
+
+    #[test]
+    fn import_directory_cached() {
+        // Importing the same directory twice should hit the cache.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("lib");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("default.nix"), "{ v = 99; }").unwrap();
+        let nix_expr = format!(
+            "let a = import {}; b = import {}; in a == b",
+            sub.display(),
+            sub.display()
+        );
+        assert_eq!(eval(&nix_expr), VMValue::Bool(true));
+    }
+
+    #[test]
+    fn import_directory_nested() {
+        // Nested directory imports: lib/default.nix imports sub/default.nix
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        let sub = lib.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("default.nix"), "{ val = 7; }").unwrap();
+        std::fs::write(
+            lib.join("default.nix"),
+            &format!("(import {}).val + 3", sub.display()),
+        )
+        .unwrap();
+        let nix_expr = format!("import {}", lib.display());
+        assert_eq!(eval(&nix_expr), VMValue::Int(10));
     }
 
     // -- Lazy evaluation tests ------------------------------------------
