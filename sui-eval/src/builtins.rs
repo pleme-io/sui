@@ -13,9 +13,6 @@ use std::sync::Arc;
 
 use crate::value::*;
 
-// Re-use the canonical normalize_path from eval.rs.
-use crate::eval::normalize_path;
-
 /// Descriptor for a simple single-argument builtin function.
 ///
 /// The implementation closure receives the full `&[Value]` argument
@@ -1306,11 +1303,8 @@ pub fn register(env: &mut Env) {
         // file's directory*, not the process cwd. This is what
         // makes `import ./foo.nix` work correctly inside nested
         // imports.
-        let eval_dir = crate::eval::current_eval_dir();
-        #[cfg(test)]
-        eprintln!("[DEBUG import] raw_path={raw_path:?} eval_dir={eval_dir:?} arg_type={:?}", args[0].type_name());
         let resolved = crate::path::resolve_import(
-            eval_dir.as_deref(),
+            crate::eval::current_eval_dir().as_deref(),
             &raw_path,
         ).unwrap_or_else(|_| std::path::PathBuf::from(&raw_path));
         let path = resolved.to_string_lossy().into_owned();
@@ -7176,25 +7170,114 @@ mod tests {
     }
 
     // ── normalize_path unit tests ─────────────────────────────
+    //
+    // These test the centralized `crate::path::normalize` through the
+    // `crate::eval::normalize_path` re-export to ensure the delegation
+    // path remains intact.
 
     #[test]
     fn normalize_path_removes_dot() {
-        use crate::eval::normalize_path;
         let p = std::path::Path::new("/a/b/./c");
-        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/b/c"));
+        assert_eq!(crate::path::normalize(p), std::path::PathBuf::from("/a/b/c"));
     }
 
     #[test]
     fn normalize_path_resolves_parent() {
-        use crate::eval::normalize_path;
         let p = std::path::Path::new("/a/b/../c");
-        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/c"));
+        assert_eq!(crate::path::normalize(p), std::path::PathBuf::from("/a/c"));
     }
 
     #[test]
     fn normalize_path_complex() {
-        use crate::eval::normalize_path;
         let p = std::path::Path::new("/a/b/./c/../d/./e/../f");
-        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/b/d/f"));
+        assert_eq!(crate::path::normalize(p), std::path::PathBuf::from("/a/b/d/f"));
+    }
+
+    #[test]
+    fn evaluate_flake_depth_limit_triggers() {
+        // Simulate deep nesting by manually saturating the thread-local counter
+        // then calling evaluate_flake on a nonexistent directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let flake_dir = tmp.path().join("deep-flake");
+        std::fs::create_dir_all(&flake_dir).unwrap();
+        // No flake.nix — but the depth check triggers before reading it.
+
+        FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() = MAX_FLAKE_EVAL_DEPTH);
+        let result = evaluate_flake(&flake_dir);
+        // Reset counter before asserting so panics don't leave stale state.
+        FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() = 0);
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("recursion limit"),
+            "expected recursion limit error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn evaluate_flake_depth_counter_resets_on_error() {
+        // Ensure the depth counter decrements even when evaluate_flake errors.
+        let tmp = tempfile::tempdir().unwrap();
+        let flake_dir = tmp.path().join("no-flake");
+        std::fs::create_dir_all(&flake_dir).unwrap();
+        // No flake.nix — will produce an IoError.
+
+        FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() = 0);
+        let _ = evaluate_flake(&flake_dir);
+        let depth = FLAKE_EVAL_DEPTH.with(|d| *d.borrow());
+        assert_eq!(depth, 0, "depth counter should reset to 0 after error");
+    }
+
+    #[test]
+    fn evaluate_flake_fetch_failure_returns_error() {
+        // A flake that declares a github input but has no network access
+        // should return an error rather than a placeholder path.
+        let tmp = tempfile::tempdir().unwrap();
+        let flake_dir = tmp.path();
+        std::fs::write(
+            flake_dir.join("flake.nix"),
+            r#"{ outputs = { self, ... }: { }; }"#,
+        )
+        .unwrap();
+        // Create a lock file with a github input that cannot be fetched.
+        std::fs::write(
+            flake_dir.join("flake.lock"),
+            r#"{
+                "nodes": {
+                    "root": {
+                        "inputs": { "fake-input": "fake-input" }
+                    },
+                    "fake-input": {
+                        "locked": {
+                            "type": "github",
+                            "owner": "nonexistent-owner-zzz",
+                            "repo": "nonexistent-repo-zzz",
+                            "rev": "0000000000000000000000000000000000000000",
+                            "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                        },
+                        "original": {
+                            "type": "github",
+                            "owner": "nonexistent-owner-zzz",
+                            "repo": "nonexistent-repo-zzz"
+                        }
+                    }
+                },
+                "root": "root",
+                "version": 7
+            }"#,
+        )
+        .unwrap();
+
+        let result = evaluate_flake(flake_dir);
+        assert!(
+            result.is_err(),
+            "expected fetch failure to produce an error, got: {result:?}"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("fetch flake input"),
+            "expected fetch error message, got: {msg}"
+        );
     }
 }
