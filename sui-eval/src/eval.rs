@@ -52,6 +52,22 @@ impl Drop for EvalFileGuard {
     }
 }
 
+// ── Path normalization ────────────────────────────────────────
+//
+// Normalize a path by removing `.` components and resolving `..`
+// components.  Unlike `canonicalize()`, this doesn't require the
+// path to exist on disk — critical for flake evaluation where
+// files may not be materialized yet.
+
+/// Normalize a path by removing `.` and resolving `..` components
+/// without touching the filesystem.
+///
+/// Delegates to [`crate::path::normalize`] — kept as a public re-export
+/// so existing call-sites continue to compile without changes.
+pub fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    crate::path::normalize(path)
+}
+
 // ── Pure (hermetic) evaluation mode ────────────────────────────
 //
 // When pure mode is enabled, impure builtins (`storePath`, `fetchurl`/`fetchTarball`
@@ -170,9 +186,10 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let text = p.syntax().text().to_string();
             let resolved = if let Some(dir) = current_eval_dir() {
                 let joined = dir.join(&text);
-                joined
-                    .canonicalize()
-                    .unwrap_or(joined)
+                // Use normalize_path instead of canonicalize so that
+                // paths with ./  and .. are cleaned without requiring
+                // the path to exist on disk.
+                normalize_path(&joined)
                     .to_string_lossy()
                     .into_owned()
             } else {
@@ -996,11 +1013,15 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             // resolve against the file where the closure was
             // *defined*, not where it's called from. The guard
             // pops on drop.
+            #[cfg(test)]
+            eprintln!("[DEBUG apply] closure.env.eval_file={:?} stack_before={}", closure.env.eval_file, EVAL_FILE_STACK.with(|s| s.borrow().len()));
             let _file_guard = closure
                 .env
                 .eval_file
                 .clone()
                 .map(push_eval_file);
+            #[cfg(test)]
+            eprintln!("[DEBUG apply] stack_after_push={}", EVAL_FILE_STACK.with(|s| s.borrow().len()));
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {
                     // Simple ident param: bind argument WITHOUT forcing.

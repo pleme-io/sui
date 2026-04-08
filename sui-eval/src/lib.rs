@@ -15,6 +15,8 @@ pub mod fetcher;
 pub mod flake_lock;
 /// Pure-Rust git operations via gix/gitoxide (no CLI spawning, no C deps).
 pub mod git;
+/// Centralized path resolution (normalize, resolve relative, import).
+pub mod path;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 
@@ -54,7 +56,9 @@ impl Evaluator for TreeWalkEvaluator {
                 context: format!("eval_file: {}", path.display()),
                 message: e.to_string(),
             })?;
-        eval(&source)
+        let path_buf = path.to_path_buf();
+        let _guard = eval::push_eval_file(path_buf.clone());
+        eval::eval_with_file(&source, Some(path_buf))
     }
 }
 

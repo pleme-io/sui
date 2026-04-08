@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 use crate::value::*;
 
+// Re-use the canonical normalize_path from eval.rs.
+use crate::eval::normalize_path;
+
 /// Descriptor for a simple single-argument builtin function.
 ///
 /// The implementation closure receives the full `&[Value]` argument
@@ -1243,18 +1246,11 @@ pub fn register(env: &mut Env) {
     register_curried(&mut builtins_set, "scopedImport", |scope_val, path_val| {
         let scope = scope_val.to_attrs()?.clone();
         let raw_path = path_val.coerce_to_path("scopedImport")?;
-        let resolved_raw = if std::path::Path::new(&raw_path).is_absolute() {
-            raw_path
-        } else if let Some(dir) = crate::eval::current_eval_dir() {
-            dir.join(&raw_path).to_string_lossy().into_owned()
-        } else {
-            raw_path
-        };
-        let path = if std::path::Path::new(&resolved_raw).is_dir() {
-            format!("{resolved_raw}/default.nix")
-        } else {
-            resolved_raw
-        };
+        let resolved = crate::path::resolve_import(
+            crate::eval::current_eval_dir().as_deref(),
+            &raw_path,
+        ).unwrap_or_else(|_| std::path::PathBuf::from(&raw_path));
+        let path = resolved.to_string_lossy().into_owned();
         let source = std::fs::read_to_string(&path).map_err(|e| EvalError::IoError {
             context: format!("scopedImport {path}"),
             message: e.to_string(),
@@ -1310,22 +1306,14 @@ pub fn register(env: &mut Env) {
         // file's directory*, not the process cwd. This is what
         // makes `import ./foo.nix` work correctly inside nested
         // imports.
-        let resolved_raw = if std::path::Path::new(&raw_path).is_absolute() {
-            raw_path
-        } else if let Some(dir) = crate::eval::current_eval_dir() {
-            dir.join(&raw_path).to_string_lossy().into_owned()
-        } else {
-            raw_path
-        };
-        // Real Nix: importing a directory is equivalent to importing
-        // `<dir>/default.nix`. nixpkgs and every flake-style consumer
-        // relies on this, so without it `import <nixpkgs>` errors
-        // immediately.
-        let path = if std::path::Path::new(&resolved_raw).is_dir() {
-            format!("{resolved_raw}/default.nix")
-        } else {
-            resolved_raw
-        };
+        let eval_dir = crate::eval::current_eval_dir();
+        #[cfg(test)]
+        eprintln!("[DEBUG import] raw_path={raw_path:?} eval_dir={eval_dir:?} arg_type={:?}", args[0].type_name());
+        let resolved = crate::path::resolve_import(
+            eval_dir.as_deref(),
+            &raw_path,
+        ).unwrap_or_else(|_| std::path::PathBuf::from(&raw_path));
+        let path = resolved.to_string_lossy().into_owned();
         let source = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::IoError { context: format!("import {path}"), message: e.to_string() })?;
         // Push this file onto the eval stack so further relative
@@ -2404,10 +2392,12 @@ fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
         .join(&cache_hash);
     let head_ref = ref_opt.as_deref().unwrap_or("HEAD");
     if !target.exists() {
-        std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| EvalError::IoError {
-            context: format!("fetchGit: {}", target.display()),
-            message: e.to_string(),
-        })?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| EvalError::IoError {
+                context: format!("fetchGit: {}", target.display()),
+                message: e.to_string(),
+            })?;
+        }
         // Clone using gix (no CLI spawning).
         let shallow = rev_opt.is_none();
         let branch = if ref_opt.is_some() && rev_opt.is_none() {
@@ -2524,10 +2514,12 @@ fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
         .join("sui-fetchMercurial")
         .join(&cache_hash);
     if !target.exists() {
-        std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| EvalError::IoError {
-            context: format!("fetchMercurial: {}", target.display()),
-            message: e.to_string(),
-        })?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| EvalError::IoError {
+                context: format!("fetchMercurial: {}", target.display()),
+                message: e.to_string(),
+            })?;
+        }
         let status = std::process::Command::new("hg")
             .args(["clone", &url, &target.to_string_lossy()])
             .stdout(std::process::Stdio::null())
@@ -2631,7 +2623,10 @@ fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
             a.insert("url".into(), url_v);
             // We can't call `fetchTarball` from this free function
             // ergonomically, so re-implement the minimal flow here.
-            let url = a.get("url").unwrap().to_str()?;
+            let url = a
+                .get("url")
+                .ok_or_else(|| EvalError::AttrNotFound("url".into()))?
+                .to_str()?;
             let bytes = fetch_url_bytes(&url)
                 .map_err(|e| EvalError::TypeError(format!("fetchTree(tarball): {e}")))?;
             use sha2::{Digest, Sha256};
@@ -2788,6 +2783,12 @@ fn register_curried(
 // Non-path flake references (`github:`, `git+`, registry refs, etc.) require
 // fetching and store-path materialization, which is out of scope here.
 
+thread_local! {
+    static FLAKE_EVAL_DEPTH: std::cell::RefCell<u32> = const { std::cell::RefCell::new(0) };
+}
+
+const MAX_FLAKE_EVAL_DEPTH: u32 = 50;
+
 /// Evaluate a flake directory — reads flake.nix, parses flake.lock, resolves
 /// inputs, calls `outputs(inputs)`, and returns the merged result attrset.
 ///
@@ -2795,17 +2796,44 @@ fn register_curried(
 /// references.  External callers (orchestrate, CLI) can use this to evaluate
 /// a local flake without shelling out to `nix eval`.
 pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
+    let depth = FLAKE_EVAL_DEPTH.with(|d| {
+        let mut d = d.borrow_mut();
+        *d += 1;
+        *d
+    });
+
+    if depth > MAX_FLAKE_EVAL_DEPTH {
+        FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() -= 1);
+        return Err(EvalError::RecursionLimit(
+            format!(
+                "maximum flake evaluation depth ({MAX_FLAKE_EVAL_DEPTH}) exceeded at {}",
+                flake_dir.display()
+            ),
+        ));
+    }
+
+    let result = evaluate_flake_inner(flake_dir);
+    FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() -= 1);
+    result
+}
+
+fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
     let flake_nix = flake_dir.join("flake.nix");
     let flake_lock_path = flake_dir.join("flake.lock");
 
     // 1. Read and evaluate flake.nix.
+    //    Push the flake.nix path onto the eval file stack so that
+    //    relative imports (e.g. `import ./lib.nix`) inside the flake
+    //    resolve against the flake directory. The RAII guard pops it
+    //    on drop (including on error paths).
     let source = std::fs::read_to_string(&flake_nix).map_err(|e| {
         EvalError::IoError {
             context: format!("getFlake: {}", flake_nix.display()),
             message: e.to_string(),
         }
     })?;
-    let flake_value = crate::eval::eval(&source)?;
+    let _flake_file_guard = crate::eval::push_eval_file(flake_nix.clone());
+    let flake_value = crate::eval::eval_with_file(&source, Some(flake_nix.clone()))?;
     let flake_attrs = flake_value.to_attrs()?.clone();
 
     // 2. Pull out the outputs function (required by every flake).
@@ -2862,11 +2890,11 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
                         // Attempt to fetch the input via the content-addressed fetcher.
                         match fetcher.fetch(locked) {
                             Ok(fetched_path) => fetched_path.to_string_lossy().to_string(),
-                            Err(_) => {
-                                // Fetching failed (offline, missing tool, etc.) —
-                                // fall back to a synthetic placeholder so evaluation
-                                // can still proceed for inputs that are not accessed.
-                                format!("/nix/store/flake-input-{input_name}")
+                            Err(e) => {
+                                return Err(EvalError::IoError {
+                                    context: format!("fetch flake input '{input_name}'"),
+                                    message: e.to_string(),
+                                });
                             }
                         }
                     }
@@ -7072,5 +7100,101 @@ mod tests {
         let unlocked = format!(r#"(builtins.getFlake "{flake_path}").unlocked-has-out"#);
         assert_eq!(eval(&locked).unwrap(), Value::Bool(true));
         assert_eq!(eval(&unlocked).unwrap(), Value::Bool(true));
+    }
+
+    // ── Path normalization in imports ─────────────────────────
+
+    #[test]
+    fn import_relative_dot_normalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bar.nix"), "42").unwrap();
+        std::fs::write(tmp.path().join("foo.nix"), "import ./bar.nix").unwrap();
+        let foo_path = tmp.path().join("foo.nix");
+        let expr = format!(r#"import {}"#, foo_path.display());
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn import_relative_parent_normalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        std::fs::write(tmp.path().join("bar.nix"), "99").unwrap();
+        std::fs::write(tmp.path().join("sub/foo.nix"), "import ../bar.nix").unwrap();
+        let foo_path = tmp.path().join("sub/foo.nix");
+        let expr = format!(r#"import {}"#, foo_path.display());
+        let result = eval(&expr).unwrap();
+        assert_eq!(result, Value::Int(99));
+    }
+
+    // ── evaluate_flake with relative imports ──────────────────
+
+    #[test]
+    fn evaluate_flake_with_relative_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("lib.nix"), "{ x = 1; }").unwrap();
+        std::fs::write(
+            tmp.path().join("flake.nix"),
+            r#"{
+                description = "test";
+                outputs = { self }: { value = (import ./lib.nix).x; };
+            }"#,
+        )
+        .unwrap();
+        let repo = crate::git::init_repo(tmp.path(), "main").unwrap();
+        crate::git::commit_all(&repo, "init", "test", "test@test.com").ok();
+
+        let result = crate::builtins::evaluate_flake(tmp.path()).unwrap();
+        let val = crate::builtins::navigate_attrs(&result, &["value"]).unwrap();
+        assert_eq!(val, Value::Int(1));
+    }
+
+    #[test]
+    fn evaluate_flake_nested_relative_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("lib")).unwrap();
+        std::fs::write(tmp.path().join("lib/helper.nix"), "{ y = 2; }").unwrap();
+        std::fs::write(
+            tmp.path().join("lib/default.nix"),
+            "{ x = 1; helper = import ./helper.nix; }",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("flake.nix"),
+            r#"{
+                description = "test";
+                outputs = { self }: let lib = import ./lib; in { value = lib.x + lib.helper.y; };
+            }"#,
+        )
+        .unwrap();
+        let repo = crate::git::init_repo(tmp.path(), "main").unwrap();
+        crate::git::commit_all(&repo, "init", "test", "test@test.com").ok();
+
+        let result = crate::builtins::evaluate_flake(tmp.path()).unwrap();
+        let val = crate::builtins::navigate_attrs(&result, &["value"]).unwrap();
+        assert_eq!(val, Value::Int(3));
+    }
+
+    // ── normalize_path unit tests ─────────────────────────────
+
+    #[test]
+    fn normalize_path_removes_dot() {
+        use crate::eval::normalize_path;
+        let p = std::path::Path::new("/a/b/./c");
+        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/b/c"));
+    }
+
+    #[test]
+    fn normalize_path_resolves_parent() {
+        use crate::eval::normalize_path;
+        let p = std::path::Path::new("/a/b/../c");
+        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn normalize_path_complex() {
+        use crate::eval::normalize_path;
+        let p = std::path::Path::new("/a/b/./c/../d/./e/../f");
+        assert_eq!(normalize_path(p), std::path::PathBuf::from("/a/b/d/f"));
     }
 }
