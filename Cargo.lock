@@ -5574,6 +5574,7 @@ dependencies = [
 name = "sui-bytecode"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pretty_assertions",
  "rnix",
  "rowan",
