@@ -5,6 +5,7 @@
 //! constant pool.
 
 use crate::error::CompileError;
+use crate::intern::Symbol;
 use crate::opcode::OpCode;
 use crate::value::VMValue;
 
@@ -22,6 +23,12 @@ pub struct Chunk {
     /// Source line number for each byte in `code` (1:1 mapping).
     /// Used for error messages. Line 0 means "unknown".
     pub lines: Vec<u32>,
+    /// Pre-resolved symbols for constant pool entries that are string keys.
+    ///
+    /// Maps constant index -> interned Symbol. Populated at compile time
+    /// so the VM can skip the `intern()` call on every `GetAttr`/`HasAttr`
+    /// dispatch. Only entries used as attrset keys are populated.
+    pub key_symbols: Vec<Option<Symbol>>,
 }
 
 impl Chunk {
@@ -32,6 +39,7 @@ impl Chunk {
             code: Vec::new(),
             constants: Vec::new(),
             lines: Vec::new(),
+            key_symbols: Vec::new(),
         }
     }
 
@@ -62,6 +70,21 @@ impl Chunk {
         }
         let idx = self.constants.len() as u16;
         self.constants.push(value);
+        self.key_symbols.push(None);
+        Ok(idx)
+    }
+
+    /// Add a constant string and its pre-interned symbol to the pool.
+    ///
+    /// The symbol is stored in `key_symbols` so the VM can skip the
+    /// `intern()` call when resolving attribute keys at runtime.
+    pub fn add_key_constant(&mut self, value: VMValue, sym: Symbol) -> Result<u16, CompileError> {
+        if self.constants.len() >= u16::MAX as usize {
+            return Err(CompileError::ConstantPoolOverflow);
+        }
+        let idx = self.constants.len() as u16;
+        self.constants.push(value);
+        self.key_symbols.push(Some(sym));
         Ok(idx)
     }
 

@@ -463,21 +463,36 @@ impl<'a> VM<'a> {
                     let func = self.pop()?;
                     match func {
                         VMValue::Closure(closure) => {
-                            if self.frames.len() >= MAX_CALL_DEPTH {
-                                return Err(VMError::StackOverflow);
+                            // Tail-call optimization: if the next instruction
+                            // is Return, reuse the current frame instead of
+                            // pushing a new one. This eliminates stack growth
+                            // for tail-recursive patterns.
+                            let is_tail = self.peek_next_is_return();
+
+                            if is_tail && self.frames.len() > 1 {
+                                // Reuse current frame: discard locals, reset.
+                                let base = self.current_frame().stack_base;
+                                self.stack.truncate(base);
+                                self.push(arg);
+                                let frame = self.current_frame_mut();
+                                frame.chunk = closure.chunk.clone();
+                                frame.ip = 0;
+                                frame.upvalues = closure.upvalues.clone();
+                            } else {
+                                if self.frames.len() >= MAX_CALL_DEPTH {
+                                    return Err(VMError::StackOverflow);
+                                }
+                                let upvalues = closure.upvalues.clone();
+                                // Push the argument as the first local (slot 0).
+                                let stack_base = self.stack.len();
+                                self.push(arg);
+                                self.frames.push(CallFrame {
+                                    chunk: closure.chunk.clone(),
+                                    ip: 0,
+                                    stack_base,
+                                    upvalues,
+                                });
                             }
-                            let upvalues = closure.upvalues.clone();
-                            // Push the argument as the first local (slot 0).
-                            let stack_base = self.stack.len();
-                            self.push(arg);
-                            self.frames.push(CallFrame {
-                                chunk: closure.chunk.clone(),
-                                ip: 0,
-                                stack_base,
-                                upvalues,
-                            });
-                            // The function's compiled code will access
-                            // its locals starting at stack_base.
                         }
                         VMValue::Builtin(builtin) => {
                             // Call the native builtin function.
@@ -696,14 +711,35 @@ impl<'a> VM<'a> {
         Ok(u16::from_le_bytes([lo, hi]))
     }
 
+    /// Peek ahead: check if the next instruction in the current frame
+    /// is a `Return` opcode (used for tail-call optimization).
+    fn peek_next_is_return(&self) -> bool {
+        let frame = self.current_frame();
+        if frame.ip < frame.chunk.code.len() {
+            frame.chunk.code[frame.ip] == OpCode::Return as u8
+        } else {
+            false
+        }
+    }
+
     // ── Interning helpers ──────────────────────────────────────
 
     /// Resolve a constant pool string to a `Symbol`.
-    /// The string must have been interned at compile time.
+    ///
+    /// Checks the chunk's pre-resolved `key_symbols` cache first (O(1)
+    /// array index). Falls back to `interner.intern()` on cache miss and
+    /// populates the cache for future lookups.
     fn resolve_key_constant(&mut self, idx: u16) -> Result<Symbol, VMError> {
-        // Clone the string to avoid holding an immutable borrow on self
-        // while we need a mutable borrow on self.interner.
-        let key_string = match &self.current_chunk().constants[idx as usize] {
+        let idx_usize = idx as usize;
+        let chunk = self.current_frame().chunk.clone();
+
+        // Fast path: check pre-resolved symbol cache.
+        if let Some(Some(sym)) = chunk.key_symbols.get(idx_usize) {
+            return Ok(*sym);
+        }
+
+        // Slow path: intern the string and cache the result.
+        let key_string = match &chunk.constants[idx_usize] {
             VMValue::String(s) => s.clone(),
             _ => return Err(VMError::Internal("attr key constant not a string".to_string())),
         };

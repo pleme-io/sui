@@ -560,7 +560,7 @@ impl Compiler {
                 LetBinding::InheritFrom(source_expr, attr_name) => {
                     // Compile source, then GetAttr.
                     self.compile_expr(source_expr)?;
-                    let key_idx = self.chunk.add_constant(VMValue::String(attr_name.clone()))?;
+                    let key_idx = self.add_attr_key(attr_name.clone())?;
                     self.emit(OpCode::GetAttr);
                     self.emit_u16(key_idx);
                     self.emit(OpCode::SetLocal);
@@ -672,7 +672,7 @@ impl Compiler {
             if let Some(src) = source_expr {
                 // inherit (source) name; — compile source, then GetAttr.
                 self.compile_expr(src)?;
-                let key_idx = self.chunk.add_constant(VMValue::String(name.clone()))?;
+                let key_idx = self.add_attr_key(name.clone())?;
                 self.emit(OpCode::GetAttr);
                 self.emit_u16(key_idx);
             } else {
@@ -785,7 +785,7 @@ impl Compiler {
                 }
                 RecAttrBinding::InheritFrom(source_expr, attr_name) => {
                     self.compile_expr(source_expr)?;
-                    let key_idx = self.chunk.add_constant(VMValue::String(attr_name.clone()))?;
+                    let key_idx = self.add_attr_key(attr_name.clone())?;
                     self.emit(OpCode::GetAttr);
                     self.emit_u16(key_idx);
                 }
@@ -931,7 +931,7 @@ impl Compiler {
             self.compile_expr(&base)?;
             for (i, attr) in segments.iter().enumerate() {
                 let key = static_attr_name(attr)?;
-                let key_idx = self.chunk.add_constant(VMValue::String(key))?;
+                let key_idx = self.add_attr_key(key)?;
                 if i == segments.len() - 1 {
                     self.compile_expr(&default_expr)?;
                     self.emit(OpCode::SelectOrDefault);
@@ -948,7 +948,7 @@ impl Compiler {
 
             for (i, attr) in segments.iter().enumerate() {
                 let key = static_attr_name(attr)?;
-                let key_idx = self.chunk.add_constant(VMValue::String(key))?;
+                let key_idx = self.add_attr_key(key)?;
 
                 if i == 0 {
                     if let Some(slot) = local_slot {
@@ -995,7 +995,7 @@ impl Compiler {
 
         self.compile_expr(&base)?;
         let key = static_attr_name(&segments[0])?;
-        let key_idx = self.chunk.add_constant(VMValue::String(key))?;
+        let key_idx = self.add_attr_key(key)?;
         self.emit(OpCode::HasAttr);
         self.emit_u16(key_idx);
         Ok(())
@@ -1092,8 +1092,7 @@ impl Compiler {
 
                 // Extract each field from slot 0 (the arg attrset).
                 for (i, (fname, default)) in field_names.iter().enumerate() {
-                    let key_idx =
-                        func_compiler.chunk.add_constant(VMValue::String(fname.clone()))?;
+                    let key_idx = func_compiler.add_attr_key(fname.clone())?;
                     if let Some(default_expr) = default {
                         // Use SelectOrDefault.
                         func_compiler.emit(OpCode::GetLocal);
@@ -1349,6 +1348,15 @@ impl Compiler {
         self.emit(OpCode::Constant);
         self.emit_u16(idx);
         Ok(())
+    }
+
+    /// Add a string constant for an attribute key and pre-intern its symbol.
+    ///
+    /// The pre-interned symbol is stored in `chunk.key_symbols` so the VM
+    /// can skip the `intern()` call on every `GetAttr`/`HasAttr` dispatch.
+    fn add_attr_key(&mut self, key: String) -> Result<u16, CompileError> {
+        let sym = self.interner.borrow_mut().intern(&key);
+        self.chunk.add_key_constant(VMValue::String(key), sym)
     }
 
     /// Emit a jump instruction with a placeholder target.
