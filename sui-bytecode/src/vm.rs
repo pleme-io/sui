@@ -1059,11 +1059,16 @@ impl<'a> VM<'a> {
             "attrNames" => {
                 let forced = self.force_value(arg.clone())?;
                 if let Some(attrs) = forced.as_attrs() {
-                    let mut names: Vec<NanBox> = Vec::with_capacity(attrs.len());
-                    for k in attrs.keys() {
-                        let name_str = self.interner.resolve(*k).to_string();
-                        names.push(NanBox::string(name_str));
-                    }
+                    // Nix sorts attrNames alphabetically.
+                    let mut name_strs: Vec<String> = attrs
+                        .keys()
+                        .map(|k| self.interner.resolve(*k).to_string())
+                        .collect();
+                    name_strs.sort();
+                    let names: Vec<NanBox> = name_strs
+                        .into_iter()
+                        .map(NanBox::string)
+                        .collect();
                     Ok(Some(NanBox::list(names)))
                 } else {
                     Err(VMError::TypeError {

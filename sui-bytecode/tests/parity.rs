@@ -821,3 +821,157 @@ fn parity_filter_even() {
 fn parity_foldl_string_concat() {
     assert_same(r#"builtins.foldl' (acc: x: acc + x) "" ["a" "b" "c"]"#);
 }
+
+// ── Lazy attrset values ──────────────────────────────────────
+
+#[test]
+fn parity_lazy_attrset_unused_value() {
+    // Non-trivial value in unused attr should not be evaluated.
+    assert_same("{ a = builtins.throw \"unused\"; b = 1; }.b");
+}
+
+#[test]
+fn parity_lazy_attrset_computed_value() {
+    assert_same("let s = { x = 1 + 1; y = 2 + 2; }; in s.x");
+}
+
+#[test]
+fn parity_lazy_attrset_or_default_thunk() {
+    assert_same("{ a = 1 + 2; }.a or 0");
+}
+
+#[test]
+fn parity_lazy_attrset_or_default_missing() {
+    assert_same("{ a = 1 + 2; }.b or 0");
+}
+
+#[test]
+fn parity_lazy_attrset_nested_thunk() {
+    assert_same("{ a = { b = 1 + 2; }; }.a.b");
+}
+
+// ── Thunk-select (accessing thunked values) ──────────────────
+
+#[test]
+fn parity_thunk_select_simple() {
+    assert_same("let x = { a = 1; }; in x.a");
+}
+
+#[test]
+fn parity_thunk_select_from_function() {
+    assert_same("let f = x: { a = x; }; x = f 42; in x.a");
+}
+
+#[test]
+fn parity_thunk_select_fixpoint() {
+    assert_same(
+        "let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; })).b",
+    );
+}
+
+// ── Derivation builtin ──────────────────────────────────────
+
+#[test]
+fn parity_derivation_name() {
+    assert_same(
+        r#"(builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }).name"#,
+    );
+}
+
+#[test]
+fn parity_derivation_type() {
+    assert_same(
+        r#"(builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }).type"#,
+    );
+}
+
+#[test]
+fn parity_derivation_has_drvpath() {
+    // Both backends should produce a drvPath that is a string.
+    assert_same(
+        r#"builtins.isString (builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }).drvPath"#,
+    );
+}
+
+#[test]
+fn parity_derivation_has_outpath() {
+    assert_same(
+        r#"builtins.isString (builtins.derivation { name = "test"; system = "x86_64-linux"; builder = "/bin/sh"; }).outPath"#,
+    );
+}
+
+// ── VM-dispatch builtins (attrNames, listToAttrs, etc.) ──────
+
+#[test]
+fn parity_attrnames() {
+    assert_same("builtins.attrNames { b = 2; a = 1; c = 3; }");
+}
+
+#[test]
+fn parity_attrnames_empty() {
+    assert_same("builtins.attrNames { }");
+}
+
+#[test]
+fn parity_hasattr_true() {
+    assert_same(r#"builtins.hasAttr "a" { a = 1; }"#);
+}
+
+#[test]
+fn parity_hasattr_false() {
+    assert_same(r#"builtins.hasAttr "b" { a = 1; }"#);
+}
+
+#[test]
+fn parity_getattr() {
+    assert_same(r#"builtins.getAttr "a" { a = 42; }"#);
+}
+
+#[test]
+fn parity_removeattrs() {
+    assert_same(r#"builtins.removeAttrs { a = 1; b = 2; c = 3; } ["b"]"#);
+}
+
+#[test]
+fn parity_listtoattrs() {
+    assert_same(
+        r#"builtins.listToAttrs [{ name = "x"; value = 1; } { name = "y"; value = 2; }]"#,
+    );
+}
+
+#[test]
+fn parity_catattrs() {
+    assert_same(
+        r#"builtins.catAttrs "a" [{ a = 1; } { b = 2; } { a = 3; }]"#,
+    );
+}
+
+// ── scopedImport ─────────────────────────────────────────────
+
+#[test]
+fn parity_scoped_import_basic() {
+    let dir = std::env::temp_dir().join("sui_bc_parity_scoped_import");
+    std::fs::create_dir_all(&dir).ok();
+    let nix_file = dir.join("scoped.nix");
+    std::fs::write(&nix_file, "foo + 1").unwrap();
+    let expr = format!(
+        r#"builtins.scopedImport {{ foo = 41; }} "{}""#,
+        nix_file.display()
+    );
+    assert_same(&expr);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn parity_scoped_import_returns_attrs() {
+    let dir = std::env::temp_dir().join("sui_bc_parity_scoped_import_attrs");
+    std::fs::create_dir_all(&dir).ok();
+    let nix_file = dir.join("scoped_attrs.nix");
+    std::fs::write(&nix_file, "{ result = bar * 2; }").unwrap();
+    let expr = format!(
+        r#"(builtins.scopedImport {{ bar = 7; }} "{}").result"#,
+        nix_file.display()
+    );
+    assert_same(&expr);
+    std::fs::remove_dir_all(&dir).ok();
+}

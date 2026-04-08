@@ -635,6 +635,7 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
+        tc.with_depth = self.with_depth;
         tc.compile_expr(expr)?;
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -653,6 +654,7 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
+        tc.with_depth = self.with_depth;
         tc.compile_expr(expr)?;
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -740,9 +742,11 @@ impl Compiler {
 
         let mut count: u16 = 0;
 
-        // Emit flat entries (lazy: wrap non-trivial values in thunks).
+        // Emit flat entries (lazy: wrap non-trivial values in thunks,
+        // except inside with-scopes where thunks can't capture the
+        // dynamic scope).
         for (key, value_expr) in &flat_entries {
-            if Self::is_trivial_value(value_expr) {
+            if Self::is_trivial_value(value_expr) || self.with_depth > 0 {
                 self.compile_expr(value_expr)?;
             } else {
                 self.compile_thunk_immediate(value_expr)?;
