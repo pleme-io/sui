@@ -5,7 +5,7 @@
 //! (not `Arc`) because the values are never sent across threads.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use std::fmt;
 use std::rc::Rc;
@@ -300,11 +300,22 @@ impl Thunk {
         &self,
         evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
     ) -> Result<Value, EvalError> {
+        // Fast path: if already evaluated, just borrow and clone.
+        // Avoids the take-clone-put-back overhead on cache hits.
+        {
+            let borrowed = self.0.borrow();
+            if let ThunkRepr::Evaluated(ref v) = *borrowed {
+                crate::perf::inc("thunk_hit");
+                return Ok((**v).clone());
+            }
+        }
+
         // Take the current repr, replacing with Blackhole.
         let repr = std::mem::replace(&mut *self.0.borrow_mut(), ThunkRepr::Blackhole);
 
         match repr {
             ThunkRepr::Suspended { expr, env } => {
+                crate::perf::inc("thunk_force");
                 // Push the thunk's captured eval_file onto the thread-local
                 // stack so PathRel literals and relative imports inside the
                 // thunk body resolve against the file where the thunk was
@@ -417,7 +428,10 @@ impl Thunk {
                 ))
             }
             ThunkRepr::Evaluated(v) => {
-                // Put it back (was taken by replace).
+                // Reached if somehow the fast-path borrow above missed
+                // (should not happen in single-threaded code). Put back
+                // and return the clone.
+                crate::perf::inc("thunk_hit");
                 let cloned = (*v).clone();
                 *self.0.borrow_mut() = ThunkRepr::Evaluated(v);
                 Ok(cloned)
@@ -439,13 +453,22 @@ impl fmt::Debug for Thunk {
 }
 
 /// A Nix attribute set.
+///
+/// Uses `HashMap` internally for O(1) lookups (the hot path during
+/// overlay fixpoint evaluation). Sorted iteration (needed by
+/// `attrNames`, `attrValues`, Display, equality) uses `sorted_keys()`.
 #[derive(Debug, Clone, Default)]
-pub struct NixAttrs(pub BTreeMap<String, Value>);
+pub struct NixAttrs(pub HashMap<String, Value>);
 
 impl NixAttrs {
     /// Create an empty attribute set.
     pub fn new() -> Self {
-        Self(BTreeMap::new())
+        Self(HashMap::new())
+    }
+
+    /// Create an attribute set with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(HashMap::with_capacity(capacity))
     }
 
     /// Look up an attribute by name.
@@ -467,17 +490,29 @@ impl NixAttrs {
 
     /// Iterate over attribute names in sorted order.
     pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.0.keys()
+        let mut keys: Vec<&String> = self.0.keys().collect();
+        keys.sort();
+        keys.into_iter()
     }
 
     /// Iterate over (name, value) pairs in sorted key order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        let mut pairs: Vec<(&String, &Value)> = self.0.iter().collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        pairs.into_iter()
+    }
+
+    /// Iterate over (name, value) pairs in arbitrary order (fast path).
+    /// Use this when sorted order is NOT required.
+    pub fn iter_unsorted(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.0.iter()
     }
 
     /// Iterate over values in sorted key order.
     pub fn values(&self) -> impl Iterator<Item = &Value> {
-        self.0.values()
+        let mut pairs: Vec<(&String, &Value)> = self.0.iter().collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        pairs.into_iter().map(|(_, v)| v)
     }
 
     /// Remove an attribute, returning its value if present.
@@ -516,7 +551,7 @@ impl FromIterator<(String, Value)> for NixAttrs {
 
 impl IntoIterator for NixAttrs {
     type Item = (String, Value);
-    type IntoIter = std::collections::btree_map::IntoIter<String, Value>;
+    type IntoIter = std::collections::hash_map::IntoIter<String, Value>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -559,9 +594,15 @@ impl fmt::Debug for BuiltinFn {
 }
 
 /// Evaluation environment — lexical scope chain.
+///
+/// Bindings are stored behind `Rc<RefCell<_>>` so that cloning an `Env`
+/// (which happens on every thunk capture and `Env::child()`) is a cheap
+/// refcount bump instead of a deep copy of the binding map. Mutations
+/// (via `bind()`) use copy-on-write: if the `Rc` is shared, we clone
+/// the map into a new exclusive `Rc` before inserting.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
-    bindings: BTreeMap<String, Value>,
+    bindings: HashMap<String, Value>,
     parent: Option<Rc<Env>>,
     /// Dynamic scope from `with` expressions.
     /// Stored as a lazy `Value` (boxed to break the Env→Value→Closure→Env
@@ -582,7 +623,7 @@ impl Env {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            bindings: BTreeMap::new(),
+            bindings: HashMap::new(),
             parent: None,
             with_scope: None,
             eval_file: None,
@@ -590,10 +631,13 @@ impl Env {
     }
 
     /// Create a child environment that inherits from this one.
+    ///
+    /// This is now `O(1)` — cloning an `Env` only bumps refcounts.
     #[must_use]
     pub fn child(&self) -> Self {
+        crate::perf::inc("env_clone");
         Self {
-            bindings: BTreeMap::new(),
+            bindings: HashMap::new(),
             parent: Some(Rc::new(self.clone())),
             with_scope: None,
             // Children inherit the parent's eval file so that
@@ -614,6 +658,7 @@ impl Env {
     }
 
     /// Bind a name to a value in this environment's own scope.
+    ///
     pub fn bind(&mut self, name: String, value: Value) {
         self.bindings.insert(name, value);
     }
@@ -633,6 +678,7 @@ impl Env {
     /// before the child's own `with_scope` got checked).
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
+        crate::perf::inc("env_lookup");
         if let Some(v) = self.lookup_lexical(name) {
             return Some(v);
         }

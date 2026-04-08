@@ -110,14 +110,19 @@ const MAX_EVAL_DEPTH: usize = 2_048;
 #[cfg(not(test))]
 const MAX_EVAL_DEPTH: usize = usize::MAX;
 
-/// RAII guard that decrements the eval depth counter on drop.
+/// Lightweight depth guard.
+///
+/// In non-test builds where `MAX_EVAL_DEPTH == usize::MAX`, the guard
+/// is effectively a no-op (the overflow check never fires). The
+/// compiler should be able to elide most of the overhead.
 struct DepthGuard;
 
 impl DepthGuard {
+    #[inline(always)]
     fn enter() -> Result<Self, EvalError> {
         EVAL_DEPTH.with(|d| {
             let depth = d.get();
-            if depth > MAX_EVAL_DEPTH {
+            if MAX_EVAL_DEPTH != usize::MAX && depth > MAX_EVAL_DEPTH {
                 return Err(EvalError::InfiniteRecursion(
                     "eval depth exceeded".into(),
                 ));
@@ -129,6 +134,7 @@ impl DepthGuard {
 }
 
 impl Drop for DepthGuard {
+    #[inline(always)]
     fn drop(&mut self) {
         EVAL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
     }
@@ -140,38 +146,83 @@ pub fn eval(input: &str) -> Result<Value, EvalError> {
     eval_with_file(input, None)
 }
 
+// Whether we are inside a top-level eval (used to avoid nested perf reports).
+thread_local! {
+    static EVAL_NESTING: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Evaluate a Nix expression string, optionally tagged with the
 /// path of the source file. The file is stored on the root `Env`
 /// so that any closure created during evaluation captures it and
 /// can resolve relative path literals (`./foo.nix`) in function
 /// defaults that fire after control has left the file's scope.
+
 pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<Value, EvalError> {
+    let nesting = EVAL_NESTING.with(|n| {
+        let v = n.get();
+        n.set(v + 1);
+        v
+    });
+    if nesting == 0 {
+        crate::perf::init();
+        crate::perf::start();
+    }
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {
         let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
+        EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
         return Err(EvalError::ParseError(msgs.join("; ")));
     }
     let root = parse.tree();
-    let expr = root.expr().ok_or_else(|| EvalError::ParseError("empty expression".to_string()))?;
+    let expr = match root.expr() {
+        Some(e) => e,
+        None => {
+            EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
+            return Err(EvalError::ParseError("empty expression".to_string()));
+        }
+    };
     let mut env = Env::new();
     env.eval_file = file;
     builtins::register(&mut env);
     let result = eval_expr(&expr, &env)?;
     // Force the top-level result so callers always see a concrete value.
-    force_value(&result)
+    let final_result = force_value(&result);
+    EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
+    if nesting == 0 {
+        crate::perf::report();
+    }
+    final_result
 }
 
 /// Force a value: if it is a thunk, evaluate and memoize the result.
 /// Concrete values are returned unchanged.
+/// Force a value: if it is a thunk, evaluate and memoize the result.
+/// Concrete values are returned unchanged.
+///
+/// Inlined aggressively so the non-thunk fast path compiles to a
+/// simple clone without a function-call boundary.
+#[inline(always)]
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
+    crate::perf::inc("force_value");
+    // Fast path: non-thunk values don't need stacker or recursion.
+    if let Value::Thunk(thunk) = value {
+        force_thunk(thunk)
+    } else {
+        Ok(value.clone())
+    }
+}
+
+/// Force a thunk — split out from [`force_value`] so the fast path
+/// (non-thunk clone) stays fully inlined while this cold path can
+/// be a regular function call with stacker protection.
+fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
-        match value {
-            Value::Thunk(thunk) => {
-                let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
-                // Recursively force in case a thunk yields another thunk.
-                force_value(&forced)
-            }
-            other => Ok(other.clone()),
+        let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
+        // Recursively force in case a thunk yields another thunk.
+        if let Value::Thunk(inner) = &forced {
+            force_thunk(inner)
+        } else {
+            Ok(forced)
         }
     })
 }
@@ -182,6 +233,7 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
 /// it is close to exhaustion.  This prevents stack overflow on deeply
 /// nested nixpkgs fixpoints (50+ overlay applications each creating
 /// multiple recursive `eval_expr` / `force_value` frames).
+#[inline(always)]
 pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
         eval_expr_inner(expr, env)
@@ -190,16 +242,29 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
 /// Inner implementation of [`eval_expr`] — called from the `stacker`
 /// trampoline so that the stack is guaranteed to have headroom.
+///
+/// Uses a tail-call loop: for expressions in tail position (`if/else`,
+/// `let..in`, `with`, `assert`, `paren`, `root`), we update the local
+/// `expr` and `env` variables and loop instead of recursing. This
+/// eliminates millions of stack frames in nixpkgs evaluation.
 fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
-    let _guard = DepthGuard::enter()?;
-    match expr {
-        ast::Expr::Literal(lit) => eval_literal(lit),
+    // Tail-call trampoline: expressions in tail position update these
+    // and `continue` instead of recursing into eval_expr.
+    let mut cur_expr = expr.clone();
+    let mut cur_env = env.clone();
 
-        ast::Expr::Str(s) => eval_str(s, env),
+    loop {
+    crate::perf::inc("eval_expr");
+    let _guard = DepthGuard::enter()?;
+    let env = &cur_env;
+    match &cur_expr {
+        ast::Expr::Literal(lit) => return eval_literal(lit),
+
+        ast::Expr::Str(s) => return eval_str(s, env),
 
         ast::Expr::PathAbs(p) => {
             let text = p.syntax().text().to_string();
-            Ok(Value::Path(text))
+            return Ok(Value::Path(text));
         }
         ast::Expr::PathRel(p) => {
             // Real Nix resolves `./foo.nix` against the directory
@@ -219,11 +284,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             } else {
                 text
             };
-            Ok(Value::Path(resolved))
+            return Ok(Value::Path(resolved));
         }
         ast::Expr::PathHome(p) => {
             let text = p.syntax().text().to_string();
-            Ok(Value::Path(text))
+            return Ok(Value::Path(text));
         }
         ast::Expr::PathSearch(p) => {
             // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
@@ -238,31 +303,32 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
                 return Ok(Value::Path(resolved));
             }
-            Err(EvalError::TypeError(format!(
+            return Err(EvalError::TypeError(format!(
                 "search path '{text}' not in NIX_PATH"
-            )))
+            )));
         }
 
         ast::Expr::Ident(ident) => {
             let name = ident_text(ident);
-            match name.as_str() {
+            return match name.as_str() {
                 "true" => Ok(Value::Bool(true)),
                 "false" => Ok(Value::Bool(false)),
                 "null" => Ok(Value::Null),
                 _ => env
                     .lookup(&name)
                     .ok_or(EvalError::UndefinedVar(name)),
-            }
+            };
         }
 
         ast::Expr::List(list) => {
             let values: Result<Vec<_>, _> = list.items().map(|e| eval_expr(&e, env)).collect();
-            Ok(Value::List(values?))
+            return Ok(Value::List(values?));
         }
 
-        ast::Expr::AttrSet(set) => eval_attrset(set, env),
+        ast::Expr::AttrSet(set) => return eval_attrset(set, env),
 
         ast::Expr::Select(sel) => {
+            crate::perf::inc("select");
             let base_expr = sel.expr().ok_or_else(|| {
                 EvalError::ParseError("select missing expression".to_string())
             })?;
@@ -292,7 +358,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
             }
-            Ok(value)
+            return Ok(value);
         }
 
         ast::Expr::HasAttr(ha) => {
@@ -328,7 +394,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                     _ => return Ok(Value::Bool(false)),
                 }
             }
-            Ok(Value::Bool(true))
+            return Ok(Value::Bool(true));
         }
 
         ast::Expr::UnaryOp(op) => {
@@ -339,7 +405,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let kind = op
                 .operator()
                 .ok_or_else(|| EvalError::ParseError("unary op missing operator".to_string()))?;
-            match kind {
+            return match kind {
                 ast::UnaryOpKind::Negate => match val {
                     Value::Int(n) => Ok(Value::Int(-n)),
                     Value::Float(f) => Ok(Value::Float(-f)),
@@ -349,7 +415,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                     ))),
                 },
                 ast::UnaryOpKind::Invert => Ok(Value::Bool(!val.as_bool()?)),
-            }
+            };
         }
 
         ast::Expr::BinOp(binop) => {
@@ -362,7 +428,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let kind = binop
                 .operator()
                 .ok_or_else(|| EvalError::ParseError("binop missing operator".to_string()))?;
-            eval_binop(kind, &lhs_expr, &rhs_expr, env)
+            return eval_binop(kind, &lhs_expr, &rhs_expr, env);
         }
 
         ast::Expr::Apply(app) => {
@@ -393,7 +459,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 }
                 _ => eval_expr(&arg_expr, env)?,
             };
-            apply(func, arg)
+            return apply(func, arg);
         }
 
         ast::Expr::IfElse(ie) => {
@@ -407,10 +473,12 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .else_body()
                 .ok_or_else(|| EvalError::ParseError("if missing else body".to_string()))?;
             if force_value(&eval_expr(&cond, env)?)?.as_bool()? {
-                eval_expr(&body, env)
+                cur_expr = body;
             } else {
-                eval_expr(&else_body, env)
+                cur_expr = else_body;
             }
+            // env stays the same — tail call
+            continue;
         }
 
         ast::Expr::Assert(assert) => {
@@ -423,7 +491,8 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if !force_value(&eval_expr(&cond, env)?)?.as_bool()? {
                 return Err(EvalError::AssertionFailed);
             }
-            eval_expr(&body, env)
+            cur_expr = body;
+            continue;
         }
 
         ast::Expr::With(with) => {
@@ -440,7 +509,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // used throughout nixpkgs.
             let scope_val = eval_expr(&ns, env)?;
             let new_env = env.child().with_scope(scope_val);
-            eval_expr(&body, &new_env)
+            cur_expr = body;
+            cur_env = new_env;
+            continue;
         }
 
         ast::Expr::LetIn(letin) => {
@@ -554,7 +625,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = letin
                 .body()
                 .ok_or_else(|| EvalError::ParseError("let missing body".to_string()))?;
-            eval_expr(&body, &new_env)
+            cur_expr = body;
+            cur_env = new_env;
+            continue;
         }
 
         ast::Expr::Lambda(lam) => {
@@ -564,39 +637,42 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = lam
                 .body()
                 .ok_or_else(|| EvalError::ParseError("lambda missing body".to_string()))?;
-            Ok(Value::Lambda(Closure {
+            return Ok(Value::Lambda(Closure {
                 param,
                 body,
                 env: std::rc::Rc::new(env.clone()),
-            }))
+            }));
         }
 
         ast::Expr::Paren(p) => {
             let inner = p
                 .expr()
                 .ok_or_else(|| EvalError::ParseError("paren missing expr".to_string()))?;
-            eval_expr(&inner, env)
+            cur_expr = inner;
+            continue;
         }
 
         ast::Expr::Root(r) => {
             let inner = r
                 .expr()
                 .ok_or_else(|| EvalError::ParseError("root missing expr".to_string()))?;
-            eval_expr(&inner, env)
+            cur_expr = inner;
+            continue;
         }
 
         ast::Expr::LegacyLet(ll) => {
             let mut new_env = env.child();
             eval_entries(ll, &mut new_env)?;
             // legacy let returns the `body` attr from its bindings
-            new_env
+            return new_env
                 .lookup("body")
-                .ok_or_else(|| EvalError::AttrNotFound("body".to_string()))
+                .ok_or_else(|| EvalError::AttrNotFound("body".to_string()));
         }
 
-        ast::Expr::CurPos(_) => Err(EvalError::NotImplemented("__curPos".to_string())),
-        ast::Expr::Error(_) => Err(EvalError::ParseError("parse error node".to_string())),
-    }
+        ast::Expr::CurPos(_) => return Err(EvalError::NotImplemented("__curPos".to_string())),
+        ast::Expr::Error(_) => return Err(EvalError::ParseError("parse error node".to_string())),
+    } // match
+    } // loop — unreachable, all arms either return or continue
 }
 
 fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
@@ -663,6 +739,7 @@ fn ident_text(ident: &ast::Ident) -> String {
 }
 
 fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
+    crate::perf::inc("attrset");
     let mut attrs = NixAttrs::new();
     let is_rec = set.rec_token().is_some();
 
@@ -1101,6 +1178,7 @@ fn compare(
 /// before binding -- this enables fixpoint combinators (`lib.fix`) where
 /// the argument is a self-referential thunk.
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
+    crate::perf::inc("apply");
     let func = force_value(&func)?;
     match func {
         Value::Lambda(closure) => {

@@ -17,6 +17,8 @@ pub mod flake_lock;
 pub mod git;
 /// Centralized path resolution (normalize, resolve relative, import).
 pub mod path;
+/// Lightweight evaluation profiling counters.
+pub mod perf;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 

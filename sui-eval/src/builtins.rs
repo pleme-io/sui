@@ -1355,6 +1355,7 @@ pub fn register(env: &mut Env) {
     });
 
     register_builtin(&mut builtins_set, "import", |args| {
+        crate::perf::inc("import");
         let raw_path = args[0].coerce_to_path("import")?;
         // Resolve relative paths against the *currently evaluating
         // file's directory*, not the process cwd. This is what
@@ -1377,6 +1378,7 @@ pub fn register(env: &mut Env) {
         // once. Return the cached value directly if present.
         let cached = IMPORT_CACHE.with(|c| c.borrow().get(&canonical).cloned());
         if let Some(value) = cached {
+            crate::perf::inc("import_hit");
             return Ok(value);
         }
 
