@@ -1549,6 +1549,56 @@ mod tests {
     }
 
     #[test]
+    fn string_context_merge_zero_elements() {
+        let mut ctx_a = StringContext::new();
+        let ctx_b = StringContext::new();
+        ctx_a.merge(&ctx_b);
+        assert!(ctx_a.is_empty());
+    }
+
+    #[test]
+    fn string_context_merge_one_element() {
+        let mut ctx = StringContext::new();
+        let mut other = StringContext::new();
+        other.add_plain("/nix/store/only".to_string());
+        ctx.merge(&other);
+        assert_eq!(ctx.len(), 1);
+        assert!(ctx.elements().contains(&ContextElement::Plain("/nix/store/only".to_string())));
+    }
+
+    #[test]
+    fn string_context_merge_two_elements() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/a".to_string());
+        let mut other = StringContext::new();
+        other.add_plain("/nix/store/b".to_string());
+        ctx.merge(&other);
+        assert_eq!(ctx.len(), 2);
+    }
+
+    #[test]
+    fn string_context_merge_five_elements() {
+        let mut ctx = StringContext::new();
+        for i in 0..5 {
+            ctx.add_plain(format!("/nix/store/path-{i}"));
+        }
+        assert_eq!(ctx.len(), 5);
+        for i in 0..5 {
+            assert!(ctx.elements().contains(&ContextElement::Plain(format!("/nix/store/path-{i}"))));
+        }
+    }
+
+    #[test]
+    fn string_context_insert_deduplicates() {
+        let mut ctx = StringContext::new();
+        ctx.insert(ContextElement::Plain("/nix/store/dup".to_string()));
+        ctx.insert(ContextElement::Plain("/nix/store/dup".to_string()));
+        ctx.insert(ContextElement::Output { drv: "/nix/store/x.drv".to_string(), output: "out".to_string() });
+        ctx.insert(ContextElement::Output { drv: "/nix/store/x.drv".to_string(), output: "out".to_string() });
+        assert_eq!(ctx.len(), 2);
+    }
+
+    #[test]
     fn nix_string_plain_has_no_context() {
         let s = NixString::plain("hello");
         assert!(!s.has_context());

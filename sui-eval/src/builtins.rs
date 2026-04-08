@@ -3825,6 +3825,50 @@ mod tests {
     }
 
     #[test]
+    fn builtins_sort_large_list() {
+        // Verify O(n log n) sort handles 1000 elements correctly.
+        // The list is [1000 999 ... 1] and should become [1 2 ... 1000].
+        let expr = "builtins.sort (a: b: a < b) (builtins.genList (i: 1000 - i) 1000)";
+        let result = ev(expr);
+        let expected: Vec<Value> = (1..=1000).map(Value::Int).collect();
+        assert_eq!(result, Value::List(expected));
+    }
+
+    #[test]
+    fn builtins_sort_already_sorted() {
+        // Already-sorted input — worst case for insertion sort, O(n log n) for merge sort.
+        let expr = "builtins.sort (a: b: a < b) (builtins.genList (i: i) 100)";
+        let result = ev(expr);
+        let expected: Vec<Value> = (0..100).map(Value::Int).collect();
+        assert_eq!(result, Value::List(expected));
+    }
+
+    #[test]
+    fn builtins_sort_empty() {
+        assert_eq!(
+            ev("builtins.sort (a: b: a < b) []"),
+            Value::List(vec![]),
+        );
+    }
+
+    #[test]
+    fn builtins_sort_single_element() {
+        assert_eq!(
+            ev("builtins.sort (a: b: a < b) [42]"),
+            Value::List(vec![Value::Int(42)]),
+        );
+    }
+
+    #[test]
+    fn builtins_map_large_list() {
+        // Verify map over a large list completes without performance regression.
+        let expr = "builtins.map (x: x * 2) (builtins.genList (i: i) 1000)";
+        let result = ev(expr);
+        let expected: Vec<Value> = (0..1000).map(|i| Value::Int(i * 2)).collect();
+        assert_eq!(result, Value::List(expected));
+    }
+
+    #[test]
     fn builtins_cat_attrs() {
         assert_eq!(
             ev(r#"builtins.catAttrs "a" [{ a = 1; } { b = 2; } { a = 3; }]"#),
