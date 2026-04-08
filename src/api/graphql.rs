@@ -7,7 +7,7 @@ use async_graphql::{Context, Object, Schema, Subscription};
 use axum::Router;
 use tokio_stream::Stream;
 
-use super::types::*;
+use super::types::{HealthResponse, PathInfoResponse, DaemonStatus, DaemonConnection, EvalResult, FlakeMetadata, SearchResult, BuildStatus, SystemStatus, Generation, FleetNode, FleetStatus, Profile, CacheInfo, GcRequest, GcResult, VerifyResult, EvalRequest, FlakeLockRequest, BuildRequest, SystemRebuildRequest, FleetDeployRequest, FleetDeployStatus, ProfileInstallRequest, CachePushRequest, CacheSignRequest, BuildLogLine, SystemEvent};
 
 /// The full GraphQL schema type combining queries, mutations, and subscriptions.
 pub type SuiSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
@@ -351,7 +351,6 @@ pub fn build_schema(state: super::state::AppState) -> SuiSchema {
 }
 
 /// Build the GraphQL axum router with POST and WebSocket subscription endpoints.
-#[must_use]
 pub fn router<S>(schema: SuiSchema) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,

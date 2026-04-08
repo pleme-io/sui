@@ -7,7 +7,7 @@
 
 pub mod api;
 
-/// Default path to the Nix SQLite database.
+/// Default path to the Nix `SQLite` database.
 pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";
 
 /// Parse a store path string, trying it as-is first, then with `/nix/store/` prefix.

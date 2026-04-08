@@ -168,7 +168,7 @@ impl InputFetcher {
         let hash_suffix = locked
             .nar_hash
             .as_deref()
-            .map_or_else(|| url_to_safe_name(url), |h| sanitize_hash(h));
+            .map_or_else(|| url_to_safe_name(url), sanitize_hash);
         let dest = self.dest_dir(locked, &format!("tarball-{hash_suffix}"));
 
         if dest.exists() {
@@ -216,7 +216,7 @@ fn sanitize_hash(hash: &str) -> String {
 fn is_non_empty_dir(dir: &Path) -> bool {
     std::fs::read_dir(dir)
         .ok()
-        .map_or(false, |mut rd| rd.next().is_some())
+        .is_some_and(|mut rd| rd.next().is_some())
 }
 
 /// If the directory contains exactly one child directory (common for GitHub
@@ -298,11 +298,10 @@ fn url_to_safe_name(url: &str) -> String {
 /// Platform-aware cache directory discovery.
 fn dirs_cache_dir() -> PathBuf {
     // Try XDG_CACHE_HOME first, then platform default, then /tmp.
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
+        && !xdg.is_empty() {
             return PathBuf::from(xdg);
         }
-    }
     if let Some(home) = std::env::var_os("HOME") {
         let default = PathBuf::from(home).join(".cache");
         if default.exists() || std::fs::create_dir_all(&default).is_ok() {

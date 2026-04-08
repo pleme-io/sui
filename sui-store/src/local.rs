@@ -255,8 +255,8 @@ impl Store for LocalStore {
         }
 
         // If the path has a deriver ending in .drv, insert into DerivationOutputs.
-        if let Some(ref deriver) = info.deriver {
-            if deriver.ends_with(".drv") {
+        if let Some(ref deriver) = info.deriver
+            && deriver.ends_with(".drv") {
                 // Look up the deriver's ValidPaths.id.
                 if let Some(drv_row) = self.find_by_path(deriver).await? {
                     let drv_output = derivation_output::ActiveModel {
@@ -267,7 +267,6 @@ impl Store for LocalStore {
                     drv_output.insert(&self.db).await.map_err(db_err)?;
                 }
             }
-        }
 
         Ok(())
     }
@@ -303,7 +302,7 @@ impl Store for LocalStore {
         // Write the NAR data to the store directory by unpacking.
         let dest = Path::new(&self.store_dir).join(&basename);
         unpack_nar(nar_data, &dest).map_err(|e| StoreError::Io(
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            std::io::Error::other(e.to_string()),
         ))?;
 
         // Build PathInfo.

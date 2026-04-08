@@ -11,10 +11,12 @@ use crate::node::{Node, NodeRegistry, NodeStatus};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
+#[derive(Default)]
 pub enum DeployStrategy {
     /// Deploy to all nodes simultaneously.
     Parallel,
     /// Deploy one node at a time, rolling forward.
+    #[default]
     Rolling,
     /// Deploy to one node first, then the rest if healthy.
     Canary,
@@ -27,19 +29,16 @@ pub enum DeployStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
+#[derive(Default)]
 pub enum DeployOrder {
     /// Order by hostname (the historical default — `BTreeMap` iteration order).
+    #[default]
     Alphabetical,
     /// Topological order using `Node::depends_on` — leaves (no deps) first,
     /// roots (most depended-on) last. Cycles return [`FleetError::Cycle`].
     Dependency,
 }
 
-impl Default for DeployOrder {
-    fn default() -> Self {
-        Self::Alphabetical
-    }
-}
 
 impl std::fmt::Display for DeployOrder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -62,11 +61,6 @@ impl std::str::FromStr for DeployOrder {
     }
 }
 
-impl Default for DeployStrategy {
-    fn default() -> Self {
-        Self::Rolling
-    }
-}
 
 impl std::fmt::Display for DeployStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -408,14 +402,13 @@ impl FleetOrchestrator {
         // matches caller expectations for one-shot deploys (e.g. `sui deploy plo`).
         // Multi-node deploys keep returning `Ok` so callers can inspect partial
         // success and decide how to proceed.
-        if nodes.len() == 1 && failed == 1 {
-            if let Some(failed_result) = results.first() {
+        if nodes.len() == 1 && failed == 1
+            && let Some(failed_result) = results.first() {
                 return Err(FleetError::DeployFailed {
                     hostname: failed_result.hostname.clone(),
                     message: failed_result.log.clone(),
                 });
             }
-        }
 
         Ok(DeployResult {
             target: target.to_string(),

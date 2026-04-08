@@ -272,7 +272,7 @@ impl FlakeLock {
 
         self.nodes
             .get(&current_name)
-            .ok_or_else(|| FlakeLockError::NodeNotFound(current_name))
+            .ok_or(FlakeLockError::NodeNotFound(current_name))
     }
 
     /// Build an adjacency list representation of the full input graph.

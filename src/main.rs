@@ -238,7 +238,7 @@ async fn main() -> Result<(), CliError> {
 
             let builder = LocalBuilder::new(store, sandbox);
 
-            if installable.ends_with(".drv") {
+            if std::path::Path::new(&installable).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("drv")) {
                 // Direct .drv path — build it.
                 let closure = BuildClosure::compute(&installable).map_err(|e| {
                     CliError::Orchestrate {
@@ -283,7 +283,7 @@ async fn main() -> Result<(), CliError> {
                     sui_eval::Value::Attrs(attrs) => {
                         attrs.get("drvPath")
                             .and_then(|v| v.as_string().ok())
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                     }
                     _ => None,
                 };

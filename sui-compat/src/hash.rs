@@ -137,7 +137,7 @@ pub(crate) mod hex {
 
     /// Decode a lowercase hexadecimal string to bytes.
     pub fn decode(s: &str) -> Result<Vec<u8>, super::HashError> {
-        if s.len() % 2 != 0 {
+        if !s.len().is_multiple_of(2) {
             return Err(super::HashError::InvalidEncoding);
         }
         (0..s.len())

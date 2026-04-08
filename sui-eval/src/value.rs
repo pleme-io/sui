@@ -146,7 +146,9 @@ impl fmt::Display for NixString {
 
 /// A Nix value.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum Value {
+    #[default]
     Null,
     Bool(bool),
     Int(i64),
@@ -533,11 +535,10 @@ impl Env {
     }
 
     fn lookup_with(&self, name: &str) -> Option<Value> {
-        if let Some(ref attrs) = self.with_scope {
-            if let Some(v) = attrs.get(name) {
+        if let Some(ref attrs) = self.with_scope
+            && let Some(v) = attrs.get(name) {
                 return Some(v.clone());
             }
-        }
         self.parent.as_ref().and_then(|p| p.lookup_with(name))
     }
 }
@@ -983,11 +984,6 @@ impl From<&toml::Value> for Value {
     }
 }
 
-impl Default for Value {
-    fn default() -> Self {
-        Value::Null
-    }
-}
 
 // ── From impls for ergonomic Value construction ─────────────
 

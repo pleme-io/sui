@@ -24,19 +24,16 @@ pub enum NodeError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
+#[derive(Default)]
 pub enum NodeStatus {
     Online,
     Offline,
     Deploying,
     Failed,
+    #[default]
     Unknown,
 }
 
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 impl std::fmt::Display for NodeStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -114,7 +114,7 @@ pub fn register(env: &mut Env) {
             name: "elem<partial>",
             func: Arc::new(move |args2| {
                 let haystack = args2[0].as_list()?;
-                Ok(Value::Bool(haystack.iter().any(|v| *v == needle)))
+                Ok(Value::Bool(haystack.contains(&needle)))
             }),
         }))
     });
@@ -455,11 +455,10 @@ pub fn register(env: &mut Env) {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for item in list {
-                    if let Ok(attrs) = item.to_attrs() {
-                        if let Some(v) = attrs.get(&name) {
+                    if let Ok(attrs) = item.to_attrs()
+                        && let Some(v) = attrs.get(&name) {
                             result.push(v.clone());
                         }
-                    }
                 }
                 Ok(Value::List(result))
             }),
@@ -788,16 +787,13 @@ pub fn register(env: &mut Env) {
         match &args[0] {
             Value::Lambda(closure) => {
                 let mut result = NixAttrs::new();
-                match &closure.param {
-                    rnix::ast::Param::Pattern(pat) => {
-                        for entry in pat.pat_entries() {
-                            if let Some(ident) = entry.ident() {
-                                let has_default = entry.default().is_some();
-                                result.insert(ident.to_string(), Value::Bool(has_default));
-                            }
+                if let rnix::ast::Param::Pattern(pat) = &closure.param {
+                    for entry in pat.pat_entries() {
+                        if let Some(ident) = entry.ident() {
+                            let has_default = entry.default().is_some();
+                            result.insert(ident.to_string(), Value::Bool(has_default));
                         }
                     }
-                    _ => {}
                 }
                 Ok(Value::Attrs(result))
             }
@@ -1360,13 +1356,12 @@ pub fn register(env: &mut Env) {
             .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
         use sha2::{Digest, Sha256};
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        if let Some(ref expected) = expected_sha256 {
-            if *expected != hash {
+        if let Some(ref expected) = expected_sha256
+            && *expected != hash {
                 return Err(EvalError::TypeError(format!(
                     "fetchurl: sha256 mismatch: expected {expected}, got {hash}"
                 )));
             }
-        }
         let dir = std::env::temp_dir().join("sui-fetchurl");
         std::fs::create_dir_all(&dir)
             .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
@@ -1406,13 +1401,12 @@ pub fn register(env: &mut Env) {
             .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
         use sha2::{Digest, Sha256};
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        if let Some(ref expected) = expected_sha256 {
-            if *expected != hash {
+        if let Some(ref expected) = expected_sha256
+            && *expected != hash {
                 return Err(EvalError::TypeError(format!(
                     "fetchTarball: sha256 mismatch: expected {expected}, got {hash}"
                 )));
             }
-        }
         let base_dir = std::env::temp_dir().join("sui-fetchTarball");
         let extract_dir = base_dir.join(&hash);
         if !extract_dir.exists() {
@@ -1536,7 +1530,7 @@ pub fn register(env: &mut Env) {
         if let Some(expected) = attrs.get("sha256") {
             let expected_str = expected.to_str()?;
             let actual = format!("{:x}", hasher.clone().finalize());
-            if &expected_str != &actual {
+            if expected_str != actual {
                 return Err(EvalError::TypeError(format!(
                     "path: sha256 mismatch: expected {expected_str}, got {actual}"
                 )));
@@ -1942,7 +1936,7 @@ pub fn register(env: &mut Env) {
     // YAML round-trip ─ uses serde_yaml_ng (already a workspace dep).
     register_builtin(&mut sui_ext, "fromYAML", |args| {
         let s = args[0].as_string()?;
-        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str(&s).map_err(|e| {
+        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str(s).map_err(|e| {
             EvalError::TypeError(format!("sui.fromYAML: {e}"))
         })?;
         // Re-route through serde_json to reuse the existing
@@ -2029,9 +2023,9 @@ pub fn register(env: &mut Env) {
     register_curried(&mut sui_ext, "regexNamedCaptures", |pat, subj| {
         let p = pat.as_string()?;
         let s = subj.as_string()?;
-        let re = regex::Regex::new(&p)
+        let re = regex::Regex::new(p)
             .map_err(|e| EvalError::TypeError(format!("sui.regexNamedCaptures: {e}")))?;
-        let Some(caps) = re.captures(&s) else {
+        let Some(caps) = re.captures(s) else {
             return Ok(Value::Null);
         };
         let mut out = NixAttrs::new();
@@ -2138,7 +2132,7 @@ pub fn register(env: &mut Env) {
         "true",
     ];
     for name in DEFAULT_SCOPE {
-        if let Some(v) = builtins_set.get(*name) {
+        if let Some(v) = builtins_set.get(name) {
             env.bind((*name).to_string(), v.clone());
         }
     }
@@ -2172,8 +2166,8 @@ fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
         let bytes = s.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let Ok(b) = u8::from_str_radix(
+            if bytes[i] == b'%' && i + 2 < bytes.len()
+                && let Ok(b) = u8::from_str_radix(
                     std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("00"),
                     16,
                 ) {
@@ -2181,7 +2175,6 @@ fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
                     i += 3;
                     continue;
                 }
-            }
             out.push(bytes[i] as char);
             i += 1;
         }
@@ -2207,13 +2200,12 @@ fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
             attrs.insert("type".into(), Value::string(*ty));
             attrs.insert("owner".into(), Value::string(parts[0].to_string()));
             attrs.insert("repo".into(), Value::string(parts[1].to_string()));
-            if let Some(reff) = parts.get(2) {
-                if !reff.is_empty() {
+            if let Some(reff) = parts.get(2)
+                && !reff.is_empty() {
                     // Could be a ref or a 40-char hex sha (rev). CppNix
                     // returns it under "ref" either way for shorthand.
                     attrs.insert("ref".into(), Value::string((*reff).to_string()));
                 }
-            }
             for (k, v) in params {
                 attrs.insert(k, Value::string(v));
             }
@@ -2865,8 +2857,8 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     // Collect resolved input attrsets (excluding `self`).
     let mut resolved_inputs = NixAttrs::new();
 
-    if let Some(ref lock) = lock {
-        if let Ok(root_node) = lock.root_node() {
+    if let Some(ref lock) = lock
+        && let Ok(root_node) = lock.root_node() {
             let input_names: Vec<String> = root_node.inputs.keys().cloned().collect();
             for input_name in input_names {
                 let segments = [input_name.as_str()];
@@ -2942,8 +2934,8 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                 let is_flake = node.flake.unwrap_or(true);
                 if is_flake {
                     let input_dir = std::path::Path::new(&out_path);
-                    if input_dir.join("flake.nix").exists() {
-                        if let Ok(flake_result) = evaluate_flake(input_dir) {
+                    if input_dir.join("flake.nix").exists()
+                        && let Ok(flake_result) = evaluate_flake(input_dir) {
                             // Merge the outputs into the input attrset so
                             // consumers can access e.g. `inputs.nixpkgs.lib`.
                             if let Value::Attrs(ref flake_out_attrs) = flake_result {
@@ -2954,13 +2946,11 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                                 }
                             }
                         }
-                    }
                 }
 
                 resolved_inputs.insert(input_name, Value::Attrs(input_val));
             }
         }
-    }
 
     // 4b. Fill in stub entries for inputs declared in flake.nix but missing from
     //     the resolved set.  This handles flakes that have no flake.lock at all
@@ -2971,9 +2961,9 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     //     For each name absent from `resolved_inputs`, we add a minimal stub
     //     with a synthetic `outPath` so the outputs function at least receives
     //     every expected argument (deep attribute access may still fail).
-    if let Some(inputs_value) = flake_attrs.get("inputs") {
-        if let Ok(inputs_forced) = crate::eval::force_value(inputs_value) {
-            if let Value::Attrs(declared_inputs) = inputs_forced {
+    if let Some(inputs_value) = flake_attrs.get("inputs")
+        && let Ok(inputs_forced) = crate::eval::force_value(inputs_value)
+            && let Value::Attrs(declared_inputs) = inputs_forced {
                 for key in declared_inputs.keys() {
                     if !resolved_inputs.contains_key(key) {
                         let mut stub = NixAttrs::new();
@@ -2985,8 +2975,6 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                     }
                 }
             }
-        }
-    }
 
     // 5. Build `self` with `outPath`, `sourceInfo`, `inputs`, and flake metadata.
     //    CppNix's `self` includes everything: outPath, inputs, sourceInfo, plus
@@ -3065,7 +3053,7 @@ pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> 
         match current {
             Value::Attrs(ref attrs) => {
                 let next = attrs
-                    .get(*key)
+                    .get(key)
                     .ok_or_else(|| EvalError::AttrNotFound((*key).to_string()))?
                     .clone();
                 current = crate::eval::force_value(&next)?;
@@ -3276,11 +3264,10 @@ fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
     // dependency). Then re-serialize and write the final ATerm content to disk.
     // CppNix also puts output paths into the env map.
     for (output_name, output_path) in &out_paths {
-        if let Some(output) = drv.outputs.get_mut(output_name) {
-            if output.path.is_empty() {
+        if let Some(output) = drv.outputs.get_mut(output_name)
+            && output.path.is_empty() {
                 output.path.clone_from(output_path);
             }
-        }
         // CppNix sets an env var for each output (e.g. `out=/nix/store/...`).
         drv.env.insert(output_name.clone(), output_path.clone());
     }
@@ -3517,11 +3504,10 @@ fn split_version(s: &str) -> Vec<String> {
             prev_digit = None;
         } else {
             let is_digit = ch.is_ascii_digit();
-            if let Some(was_digit) = prev_digit {
-                if is_digit != was_digit && !current.is_empty() {
+            if let Some(was_digit) = prev_digit
+                && is_digit != was_digit && !current.is_empty() {
                     parts.push(std::mem::take(&mut current));
                 }
-            }
             current.push(ch);
             prev_digit = Some(is_digit);
         }

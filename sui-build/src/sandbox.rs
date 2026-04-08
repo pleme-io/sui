@@ -4,6 +4,7 @@
 
 /// Sandbox configuration derived from a derivation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub struct SandboxConfig {
     /// Paths to bind-mount read-only into the sandbox.
     pub input_paths: Vec<String>,
@@ -21,19 +22,6 @@ pub struct SandboxConfig {
     pub env: Vec<(String, String)>,
 }
 
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            input_paths: Vec::new(),
-            build_dir: String::new(),
-            output_paths: Vec::new(),
-            allow_network: false,
-            builder: String::new(),
-            args: Vec::new(),
-            env: Vec::new(),
-        }
-    }
-}
 
 impl SandboxConfig {
     /// Construct a `SandboxConfig` from a derivation and a build directory.

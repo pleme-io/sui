@@ -227,7 +227,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "null" => Ok(Value::Null),
                 _ => env
                     .lookup(&name)
-                    .ok_or_else(|| EvalError::UndefinedVar(name)),
+                    .ok_or(EvalError::UndefinedVar(name)),
             }
         }
 

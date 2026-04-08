@@ -124,7 +124,7 @@ impl std::str::FromStr for StorePath {
 /// silently disagreed with CppNix.
 #[must_use]
 pub fn nix_base32_encode(input: &[u8]) -> String {
-    let len = (input.len() * 8 + 4) / 5;
+    let len = (input.len() * 8).div_ceil(5);
     let mut out = String::with_capacity(len);
 
     for n in 0..len {

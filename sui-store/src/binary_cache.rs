@@ -211,11 +211,10 @@ impl BinaryCacheStore {
         let mut key_map: std::collections::HashMap<String, Vec<u8>> =
             std::collections::HashMap::new();
         for key_str in trusted_keys {
-            if let Some((name, b64_pubkey)) = key_str.split_once(':') {
-                if let Ok(pubkey_bytes) = base64_decode(b64_pubkey) {
+            if let Some((name, b64_pubkey)) = key_str.split_once(':')
+                && let Ok(pubkey_bytes) = base64_decode(b64_pubkey) {
                     key_map.insert(name.to_string(), pubkey_bytes);
                 }
-            }
         }
 
         // Check each signature against the matching trusted key.
@@ -225,8 +224,8 @@ impl BinaryCacheStore {
                 Err(_) => continue,
             };
 
-            if let Some(pubkey_bytes) = key_map.get(&parsed.key_name) {
-                if pubkey_bytes.len() == 32 {
+            if let Some(pubkey_bytes) = key_map.get(&parsed.key_name)
+                && pubkey_bytes.len() == 32 {
                     let pubkey: [u8; 32] = pubkey_bytes
                         .as_slice()
                         .try_into()
@@ -235,7 +234,6 @@ impl BinaryCacheStore {
                         return Ok(true);
                     }
                 }
-            }
         }
 
         Ok(false)

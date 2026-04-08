@@ -52,22 +52,16 @@ pub struct GcRequest {
 
 /// Garbage collection result.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+#[derive(Default)]
 pub struct GcResult {
     pub paths_deleted: i64,
     pub bytes_freed: i64,
 }
 
-impl Default for GcResult {
-    fn default() -> Self {
-        Self {
-            paths_deleted: 0,
-            bytes_freed: 0,
-        }
-    }
-}
 
 /// Store verification result.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+#[derive(Default)]
 pub struct VerifyResult {
     pub valid: i64,
     pub invalid: i64,
@@ -75,16 +69,6 @@ pub struct VerifyResult {
     pub errors: Vec<String>,
 }
 
-impl Default for VerifyResult {
-    fn default() -> Self {
-        Self {
-            valid: 0,
-            invalid: 0,
-            missing: 0,
-            errors: vec![],
-        }
-    }
-}
 
 /// Closure request.
 #[derive(Debug, Clone, Serialize, Deserialize, InputObject)]
@@ -562,7 +546,7 @@ impl From<sui_build::BuildResult> for BuildStatus {
         Self {
             id: String::new(),
             state: if r.success { "succeeded" } else { "failed" }.to_string(),
-            output_paths: Some(r.outputs.iter().map(|p| p.to_absolute_path()).collect()),
+            output_paths: Some(r.outputs.iter().map(sui_compat::store_path::StorePath::to_absolute_path).collect()),
             started_at: None,
             completed_at: None,
             log_lines: r.log.lines().map(String::from).collect(),

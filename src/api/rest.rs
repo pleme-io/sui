@@ -9,13 +9,12 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use super::state::AppState;
-use super::types::*;
+use super::types::{HealthResponse, PaginationQuery, PathInfoResponse, ClosureRequest, GcRequest, GcResult, VerifyResult, EvalRequest, EvalResult, FlakeEvalQuery, FlakeMetadata, FlakeLockRequest, SearchQuery, SearchResult, BuildRequest, BuildStatus, BuildLogQuery, DaemonStatus, DaemonConnection, SystemRebuildRequest, SystemStatus, Generation, FleetNode, FleetDeployRequest, FleetDeployStatus, FleetStatus, FleetRollbackRequest, Profile, ProfileInstallRequest, CacheInfo, CachePushRequest, CacheSignRequest};
 
 /// Build the REST API router with all endpoint routes.
 ///
 /// All handlers are mounted under `/api/v1/` with an additional `/health` at the root.
 /// The returned router requires [`AppState`] to be provided via `.with_state()`.
-#[must_use]
 pub fn router() -> Router<AppState> {
     Router::new()
         // Health

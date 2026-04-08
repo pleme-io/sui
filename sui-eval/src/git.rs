@@ -312,11 +312,10 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
     for pattern in &candidates {
         for r in &ref_map.remote_refs {
             let (name, oid) = ref_to_name_oid(r);
-            if let Some(oid) = oid {
-                if name == *pattern {
+            if let Some(oid) = oid
+                && name == *pattern {
                     return Ok(oid);
                 }
-            }
         }
     }
 

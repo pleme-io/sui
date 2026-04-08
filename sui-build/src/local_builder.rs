@@ -544,7 +544,7 @@ pub fn compute_nar_hash(path: &str) -> Result<(String, usize), BuildError> {
 /// Recursively build a [`NarNode`] tree from a filesystem path.
 fn path_to_nar_node(path: &Path) -> Result<NarNode, BuildError> {
     let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| BuildError::Io(e))?;
+        .map_err(BuildError::Io)?;
 
     if meta.file_type().is_symlink() {
         let target = std::fs::read_link(path)?;
