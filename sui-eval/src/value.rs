@@ -242,12 +242,15 @@ impl Thunk {
         matches!(*self.0.borrow(), ThunkRepr::Evaluated(_))
     }
 
-    /// Replace the environment captured in a suspended thunk.
+    /// Replace the environment captured in a suspended or inherit-select thunk.
     /// No-op if the thunk is already evaluated or a blackhole.
     pub fn update_env(&self, new_env: Env) {
         let mut borrow = self.0.borrow_mut();
-        if let ThunkRepr::Suspended { env, .. } = &mut *borrow {
-            *env = new_env;
+        match &mut *borrow {
+            ThunkRepr::Suspended { env, .. } | ThunkRepr::InheritSelect { env, .. } => {
+                *env = new_env;
+            }
+            _ => {}
         }
     }
 

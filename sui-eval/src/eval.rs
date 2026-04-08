@@ -466,6 +466,14 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // self-referential patterns where
                             // `inherit (lib.X) ...` lives in a file
                             // that itself contributes to lib.X.
+                            //
+                            // The thunk is initially created with the
+                            // parent env and then updated in Phase 2 to
+                            // capture the full let-block env, so that
+                            // the source expression can reference other
+                            // let-bound names (e.g. `inherit (import
+                            // ./file { inherit lib; }) makeExtensible;`
+                            // where `lib` is a sibling let-binding).
                             let source_expr = from.expr().ok_or_else(|| {
                                 EvalError::ParseError(
                                     "inherit from missing expr".to_string(),
@@ -478,7 +486,8 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     name.clone(),
                                     env.clone(),
                                 );
-                                new_env.bind(name, Value::Thunk(thunk));
+                                new_env.bind(name.clone(), Value::Thunk(thunk.clone()));
+                                thunks.push((name, thunk));
                             }
                         } else {
                             // `inherit name1 name2 ...` from the
@@ -670,13 +679,13 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
-                    eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env))?;
+                    eval_inherit(&inherit, env, &mut attrs, Some(&mut rec_env), Some(&mut thunks))?;
                 }
             }
         }
 
-        // Phase 2: Update all thunks to capture the final rec_env
-        // (which now has all names bound).
+        // Phase 2: Update all thunks (both Suspended and InheritSelect)
+        // to capture the final rec_env (which now has all names bound).
         for (_key, thunk) in &thunks {
             thunk.update_env(rec_env.clone());
         }
@@ -704,7 +713,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     }
                 }
                 ast::Entry::Inherit(inherit) => {
-                    eval_inherit(&inherit, env, &mut attrs, None)?;
+                    eval_inherit(&inherit, env, &mut attrs, None, None)?;
                 }
             }
         }
@@ -718,6 +727,7 @@ fn eval_inherit(
     env: &Env,
     attrs: &mut NixAttrs,
     bind_env: Option<&mut Env>,
+    mut thunks: Option<&mut Vec<(String, Thunk)>>,
 ) -> Result<(), EvalError> {
     if let Some(from) = inherit.from() {
         // inherit (expr) a b c;
@@ -734,6 +744,11 @@ fn eval_inherit(
         // need to bind the name in the enclosing rec env so the
         // sibling `foo = name` can reference it. The caller passes
         // its rec env in `bind_env`.
+        //
+        // When `thunks` is provided (rec attrsets), InheritSelect
+        // thunks are collected so Phase 2 can update their captured
+        // env to the full recursive scope. Without this, the source
+        // expression cannot reference sibling bindings.
         let source_expr = from
             .expr()
             .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
@@ -741,10 +756,13 @@ fn eval_inherit(
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
             let thunk = Thunk::new_inherit_select(source_expr.clone(), name.clone(), env.clone());
-            let value = Value::Thunk(thunk);
+            let value = Value::Thunk(thunk.clone());
             attrs.insert(name.clone(), value.clone());
             if let Some(ref mut e) = be {
-                e.bind(name, value);
+                e.bind(name.clone(), value);
+            }
+            if let Some(ref mut t) = thunks {
+                t.push((name, thunk));
             }
         }
     } else {
