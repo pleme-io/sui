@@ -36,8 +36,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
+use crate::error::VMError;
 use crate::intern::Symbol;
-use crate::value::{VMClosure, VMValue};
+use crate::value::{VMBuiltin, VMClosure, VMThunk, VMValue};
 
 /// Quiet NaN base: exponent all 1s, mantissa MSB = 1.
 const QNAN: u64 = 0x7FF8_0000_0000_0000;
@@ -64,13 +65,16 @@ pub struct NanBox(u64);
 
 /// Heap-allocated object referenced by a `NanBox` pointer tag.
 ///
-/// Contains the non-scalar VM value types: String, Path, List, Attrs, Closure.
+/// Contains the non-scalar VM value types: String, Path, List, Attrs,
+/// Closure, Builtin, and Thunk.
 pub enum HeapObject {
     String(String),
     Path(String),
     List(Vec<NanBox>),
     Attrs(BTreeMap<Symbol, NanBox>),
     Closure(VMClosure),
+    Builtin(VMBuiltin),
+    Thunk(VMThunk),
 }
 
 impl NanBox {
@@ -161,6 +165,18 @@ impl NanBox {
     #[must_use]
     pub fn closure(c: VMClosure) -> Self {
         Self::heap(HeapObject::Closure(c))
+    }
+
+    /// Create a builtin function value (heap-allocated).
+    #[must_use]
+    pub fn builtin(b: VMBuiltin) -> Self {
+        Self::heap(HeapObject::Builtin(b))
+    }
+
+    /// Create a thunk value (heap-allocated).
+    #[must_use]
+    pub fn thunk(t: VMThunk) -> Self {
+        Self::heap(HeapObject::Thunk(t))
     }
 
     // ── Type checks ───────────────────────────────────────────
@@ -256,6 +272,168 @@ impl NanBox {
         }
     }
 
+    // ── VM-facing helpers ──────────────────────────────────────
+
+    /// Return the Nix type name for this value (mirrors `VMValue::type_name`).
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        if self.is_null() {
+            "null"
+        } else if self.is_bool() {
+            "bool"
+        } else if self.is_int() {
+            "int"
+        } else if self.is_float() {
+            "float"
+        } else if let Some(obj) = self.as_heap() {
+            match obj {
+                HeapObject::String(_) => "string",
+                HeapObject::Path(_) => "path",
+                HeapObject::List(_) => "list",
+                HeapObject::Attrs(_) => "set",
+                HeapObject::Closure(_) | HeapObject::Builtin(_) => "lambda",
+                HeapObject::Thunk(_) => "thunk",
+            }
+        } else {
+            "unknown"
+        }
+    }
+
+    /// Check if this value is truthy (for conditionals).
+    /// Only booleans are valid; everything else is a type error.
+    pub fn is_truthy(&self) -> Result<bool, VMError> {
+        if self.0 == TAG_TRUE {
+            Ok(true)
+        } else if self.0 == TAG_FALSE {
+            Ok(false)
+        } else {
+            Err(VMError::TypeError {
+                expected: "bool",
+                got: self.type_name(),
+                context: "condition".to_string(),
+            })
+        }
+    }
+
+    /// Check if this is a string.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_string(&self) -> bool {
+        if let Some(HeapObject::String(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is a path.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_path(&self) -> bool {
+        if let Some(HeapObject::Path(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is a list.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_list(&self) -> bool {
+        if let Some(HeapObject::List(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is an attrset.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_attrs(&self) -> bool {
+        if let Some(HeapObject::Attrs(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is a closure.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_closure(&self) -> bool {
+        if let Some(HeapObject::Closure(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is a builtin.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_builtin(&self) -> bool {
+        if let Some(HeapObject::Builtin(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Check if this is a thunk.
+    #[inline(always)]
+    #[must_use]
+    pub fn is_thunk(&self) -> bool {
+        if let Some(HeapObject::Thunk(_)) = self.as_heap() { true } else { false }
+    }
+
+    /// Extract a string reference. Returns `None` if not a string.
+    #[must_use]
+    pub fn as_string(&self) -> Option<&str> {
+        if let Some(HeapObject::String(s)) = self.as_heap() {
+            Some(s.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// Extract a path reference. Returns `None` if not a path.
+    #[must_use]
+    pub fn as_path(&self) -> Option<&str> {
+        if let Some(HeapObject::Path(p)) = self.as_heap() {
+            Some(p.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// Extract a list reference. Returns `None` if not a list.
+    #[must_use]
+    pub fn as_list(&self) -> Option<&[NanBox]> {
+        if let Some(HeapObject::List(items)) = self.as_heap() {
+            Some(items.as_slice())
+        } else {
+            None
+        }
+    }
+
+    /// Extract an attrs reference. Returns `None` if not an attrset.
+    #[must_use]
+    pub fn as_attrs(&self) -> Option<&BTreeMap<Symbol, NanBox>> {
+        if let Some(HeapObject::Attrs(map)) = self.as_heap() {
+            Some(map)
+        } else {
+            None
+        }
+    }
+
+    /// Extract a closure reference. Returns `None` if not a closure.
+    #[must_use]
+    pub fn as_closure(&self) -> Option<&VMClosure> {
+        if let Some(HeapObject::Closure(c)) = self.as_heap() {
+            Some(c)
+        } else {
+            None
+        }
+    }
+
+    /// Extract a builtin reference. Returns `None` if not a builtin.
+    #[must_use]
+    pub fn as_builtin(&self) -> Option<&VMBuiltin> {
+        if let Some(HeapObject::Builtin(b)) = self.as_heap() {
+            Some(b)
+        } else {
+            None
+        }
+    }
+
+    /// Extract a thunk reference. Returns `None` if not a thunk.
+    #[must_use]
+    pub fn as_thunk(&self) -> Option<&VMThunk> {
+        if let Some(HeapObject::Thunk(t)) = self.as_heap() {
+            Some(t)
+        } else {
+            None
+        }
+    }
+
     // ── Conversion to/from VMValue ────────────────────────────
 
     /// Convert a `VMValue` to a `NanBox`.
@@ -279,11 +457,8 @@ impl NanBox {
                 Self::attrs(boxed)
             }
             VMValue::Closure(c) => Self::closure(c.clone()),
-            VMValue::Builtin(_) | VMValue::Thunk(_) => {
-                // Builtins and thunks are not NaN-boxable; store as closure placeholder.
-                // This should be handled at a higher level.
-                Self::null()
-            }
+            VMValue::Builtin(b) => Self::builtin(b.clone()),
+            VMValue::Thunk(t) => Self::thunk(t.clone()),
         }
     }
 
@@ -312,6 +487,8 @@ impl NanBox {
                     VMValue::Attrs(map)
                 }
                 HeapObject::Closure(c) => VMValue::Closure(c.clone()),
+                HeapObject::Builtin(b) => VMValue::Builtin(b.clone()),
+                HeapObject::Thunk(t) => VMValue::Thunk(t.clone()),
             }
         } else {
             // Should not happen.
@@ -328,7 +505,57 @@ impl Clone for HeapObject {
             HeapObject::List(items) => HeapObject::List(items.clone()),
             HeapObject::Attrs(attrs) => HeapObject::Attrs(attrs.clone()),
             HeapObject::Closure(c) => HeapObject::Closure(c.clone()),
+            HeapObject::Builtin(b) => HeapObject::Builtin(b.clone()),
+            HeapObject::Thunk(t) => HeapObject::Thunk(t.clone()),
         }
+    }
+}
+
+impl PartialEq for NanBox {
+    fn eq(&self, other: &Self) -> bool {
+        // Fast path: same bits means same value (covers scalars and same heap ptrs).
+        if self.0 == other.0 {
+            return true;
+        }
+
+        // Float comparison (handle NaN != NaN).
+        if self.is_float() && other.is_float() {
+            return self.as_float() == other.as_float();
+        }
+
+        // Int/Float cross-type comparison (Nix coerces int to float).
+        if self.is_int() && other.is_float() {
+            if let (Some(i), Some(f)) = (self.as_int(), other.as_float()) {
+                return (i as f64) == f;
+            }
+        }
+        if self.is_float() && other.is_int() {
+            if let (Some(f), Some(i)) = (self.as_float(), other.as_int()) {
+                return f == (i as f64);
+            }
+        }
+
+        // Heap object deep comparison.
+        if self.is_ptr() && other.is_ptr() {
+            if let (Some(a), Some(b)) = (self.as_heap(), other.as_heap()) {
+                return heap_eq(a, b);
+            }
+        }
+
+        false
+    }
+}
+
+impl Eq for NanBox {}
+
+/// Deep equality comparison for heap objects.
+fn heap_eq(a: &HeapObject, b: &HeapObject) -> bool {
+    match (a, b) {
+        (HeapObject::String(a), HeapObject::String(b)) => a == b,
+        (HeapObject::Path(a), HeapObject::Path(b)) => a == b,
+        (HeapObject::List(a), HeapObject::List(b)) => a == b,
+        (HeapObject::Attrs(a), HeapObject::Attrs(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -375,8 +602,16 @@ impl fmt::Debug for NanBox {
             write!(f, "NanBox({n})")
         } else if let Some(fl) = self.as_float() {
             write!(f, "NanBox({fl})")
-        } else if self.is_ptr() {
-            write!(f, "NanBox(<heap>)")
+        } else if let Some(obj) = self.as_heap() {
+            match obj {
+                HeapObject::String(s) => write!(f, "NanBox(\"{s}\")"),
+                HeapObject::Path(p) => write!(f, "NanBox(path:{p})"),
+                HeapObject::List(items) => write!(f, "NanBox(list[{}])", items.len()),
+                HeapObject::Attrs(map) => write!(f, "NanBox(attrs[{}])", map.len()),
+                HeapObject::Closure(c) => write!(f, "NanBox({c:?})"),
+                HeapObject::Builtin(b) => write!(f, "NanBox({b:?})"),
+                HeapObject::Thunk(_) => write!(f, "NanBox(<thunk>)"),
+            }
         } else {
             write!(f, "NanBox(0x{:016x})", self.0)
         }
@@ -478,6 +713,81 @@ mod tests {
         let boxed = NanBox::from_vmvalue(&val);
         let back = boxed.to_vmvalue();
         assert_eq!(val, back);
+    }
+
+    #[test]
+    fn vmvalue_roundtrip_builtin() {
+        use crate::value::VMBuiltin;
+        use std::rc::Rc;
+        let b = VMBuiltin {
+            name: "test",
+            func: Rc::new(|_| Ok(VMValue::Null)),
+            arity: 1,
+        };
+        let val = VMValue::Builtin(b);
+        let boxed = NanBox::from_vmvalue(&val);
+        assert!(boxed.is_builtin());
+        match boxed.to_vmvalue() {
+            VMValue::Builtin(b) => assert_eq!(b.name, "test"),
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vmvalue_roundtrip_thunk() {
+        use crate::chunk::Chunk;
+        use std::rc::Rc;
+        let thunk = VMThunk::new(Rc::new(Chunk::new()), Vec::new());
+        let val = VMValue::Thunk(thunk);
+        let boxed = NanBox::from_vmvalue(&val);
+        assert!(boxed.is_thunk());
+        match boxed.to_vmvalue() {
+            VMValue::Thunk(_) => {} // ok
+            other => panic!("expected Thunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_name_all_types() {
+        assert_eq!(NanBox::null().type_name(), "null");
+        assert_eq!(NanBox::bool(true).type_name(), "bool");
+        assert_eq!(NanBox::int(42).type_name(), "int");
+        assert_eq!(NanBox::float(3.14).type_name(), "float");
+        assert_eq!(NanBox::string("hi".to_string()).type_name(), "string");
+        assert_eq!(NanBox::path("/tmp".to_string()).type_name(), "path");
+        assert_eq!(NanBox::list(vec![]).type_name(), "list");
+        assert_eq!(NanBox::attrs(BTreeMap::new()).type_name(), "set");
+    }
+
+    #[test]
+    fn nanbox_equality() {
+        assert_eq!(NanBox::null(), NanBox::null());
+        assert_eq!(NanBox::bool(true), NanBox::bool(true));
+        assert_ne!(NanBox::bool(true), NanBox::bool(false));
+        assert_eq!(NanBox::int(42), NanBox::int(42));
+        assert_ne!(NanBox::int(1), NanBox::int(2));
+        assert_eq!(NanBox::float(3.14), NanBox::float(3.14));
+        assert_eq!(NanBox::string("a".to_string()), NanBox::string("a".to_string()));
+        assert_ne!(NanBox::string("a".to_string()), NanBox::string("b".to_string()));
+    }
+
+    #[test]
+    fn nanbox_int_float_coercion() {
+        assert_eq!(NanBox::int(1), NanBox::float(1.0));
+        assert_eq!(NanBox::float(1.0), NanBox::int(1));
+        assert_ne!(NanBox::int(1), NanBox::float(1.5));
+    }
+
+    #[test]
+    fn is_truthy_bool() {
+        assert!(NanBox::bool(true).is_truthy().unwrap());
+        assert!(!NanBox::bool(false).is_truthy().unwrap());
+    }
+
+    #[test]
+    fn is_truthy_non_bool_errors() {
+        assert!(NanBox::int(1).is_truthy().is_err());
+        assert!(NanBox::null().is_truthy().is_err());
     }
 
     #[test]

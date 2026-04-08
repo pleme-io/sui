@@ -1,8 +1,19 @@
 //! Bytecode VM execution engine.
 //!
 //! A stack-based interpreter that executes compiled [`Chunk`]s. The VM
-//! maintains a value stack, a call stack for function invocations, and
-//! dispatches instructions via a `match` loop.
+//! maintains a NaN-boxed value stack (8 bytes per entry), a call stack
+//! for function invocations, and dispatches instructions via a `match` loop.
+//!
+//! # NaN-boxing
+//!
+//! The value stack uses [`NanBox`] instead of [`VMValue`]. Scalars (null,
+//! bool, int, float) are stored inline as 8-byte values without heap
+//! allocation. Complex types (strings, lists, attrsets, closures, builtins,
+//! thunks) use an `Rc<HeapObject>` pointer encoded in the NaN payload bits.
+//!
+//! The constant pool (in `Chunk`) still uses `VMValue`; values are converted
+//! to `NanBox` when pushed onto the stack and converted back only at the
+//! external API boundary (`execute` returns `VMValue`).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -13,6 +24,7 @@ use crate::chunk::Chunk;
 use crate::compiler::Compiler;
 use crate::error::VMError;
 use crate::intern::{Interner, Symbol};
+use crate::nanbox::NanBox;
 use crate::opcode::OpCode;
 use crate::value::{ThunkState, VMValue};
 
@@ -28,24 +40,25 @@ struct CallFrame {
     ip: usize,
     /// Base index in the value stack for this frame's locals.
     stack_base: usize,
-    /// Upvalues captured by this frame's closure.
-    upvalues: Vec<VMValue>,
+    /// Upvalues captured by this frame's closure (NaN-boxed).
+    upvalues: Vec<NanBox>,
 }
 
 /// The bytecode virtual machine.
 ///
-/// Holds a mutable reference to the shared [`Interner`] for resolving
-/// and interning attribute keys during execution. Attribute sets use
-/// [`Symbol`] keys for O(1) comparison instead of string comparison.
+/// Uses NaN-boxed values on the value stack: each entry is exactly 8 bytes,
+/// making the stack cache-friendly. Scalars (null, bool, int, float) are
+/// stored inline without heap allocation. Complex types use heap pointers
+/// encoded in the NaN payload bits.
 pub struct VM<'a> {
-    /// Value stack.
-    stack: Vec<VMValue>,
+    /// NaN-boxed value stack (8 bytes per entry).
+    stack: Vec<NanBox>,
     /// Call stack.
     frames: Vec<CallFrame>,
     /// Shared interner for attribute key operations.
     interner: &'a mut Interner,
-    /// With-scope stack (dynamic variable scoping).
-    with_stack: Vec<VMValue>,
+    /// With-scope stack (dynamic variable scoping, NaN-boxed).
+    with_stack: Vec<NanBox>,
     /// Registry of built-in functions.
     builtins: BuiltinRegistry,
     /// Import cache: canonical path -> evaluated result.
@@ -71,11 +84,12 @@ impl<'a> VM<'a> {
             upvalues: Vec::new(),
         });
 
-        vm.run()
+        let result = vm.run()?;
+        Ok(result.to_vmvalue())
     }
 
-    /// Main execution loop — delegates to `run_until(0)`.
-    fn run(&mut self) -> Result<VMValue, VMError> {
+    /// Main execution loop -- delegates to `run_until(0)`.
+    fn run(&mut self) -> Result<NanBox, VMError> {
         self.run_until(0)
     }
 
@@ -84,7 +98,7 @@ impl<'a> VM<'a> {
     /// When the `Return` opcode pops a frame and the stack depth equals
     /// `stop_depth`, the loop exits and returns the result. This lets
     /// `import_file` and `force_value` run sub-programs without a separate VM.
-    fn run_until(&mut self, stop_depth: usize) -> Result<VMValue, VMError> {
+    fn run_until(&mut self, stop_depth: usize) -> Result<NanBox, VMError> {
         loop {
             let op_byte = self.read_byte()?;
             // SAFETY: all opcode bytes in the bytecode stream were emitted
@@ -92,148 +106,151 @@ impl<'a> VM<'a> {
             let op = OpCode::from_byte(op_byte).ok_or(VMError::InvalidOpcode(op_byte))?;
 
             match op {
-                // ── Constants ───────────────────────────────────
+                // -- Constants ------------------------------------------
                 OpCode::Constant => {
                     let idx = self.read_u16()?;
-                    let value = self.current_chunk().constants[idx as usize].clone();
-                    self.push(value);
+                    let value = &self.current_chunk().constants[idx as usize];
+                    let boxed = NanBox::from_vmvalue(value);
+                    self.push(boxed);
                 }
-                OpCode::Null => self.push(VMValue::Null),
-                OpCode::True => self.push(VMValue::Bool(true)),
-                OpCode::False => self.push(VMValue::Bool(false)),
+                OpCode::Null => self.push(NanBox::null()),
+                OpCode::True => self.push(NanBox::bool(true)),
+                OpCode::False => self.push(NanBox::bool(false)),
 
-                // ── Arithmetic ─────────────────────────────────
+                // -- Arithmetic -----------------------------------------
                 OpCode::Add => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(self.add(a, b)?);
+                    self.push(self.add(&a, &b)?);
                 }
                 OpCode::Sub => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(self.num_op(a, b, |x, y| x - y, |x, y| x - y, "subtraction")?);
+                    self.push(self.num_op(&a, &b, |x, y| x - y, |x, y| x - y, "subtraction")?);
                 }
                 OpCode::Mul => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(self.num_op(a, b, |x, y| x * y, |x, y| x * y, "multiplication")?);
+                    self.push(self.num_op(&a, &b, |x, y| x * y, |x, y| x * y, "multiplication")?);
                 }
                 OpCode::Div => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    // Check for division by zero.
-                    if matches!((&a, &b), (VMValue::Int(_), VMValue::Int(0))) {
+                    if a.is_int() && b.as_int() == Some(0) {
                         return Err(VMError::DivisionByZero);
                     }
-                    self.push(self.num_op(a, b, |x, y| x / y, |x, y| x / y, "division")?);
+                    self.push(self.num_op(&a, &b, |x, y| x / y, |x, y| x / y, "division")?);
                 }
                 OpCode::Negate => {
                     let val = self.pop()?;
-                    match val {
-                        VMValue::Int(n) => self.push(VMValue::Int(-n)),
-                        VMValue::Float(f) => self.push(VMValue::Float(-f)),
-                        _ => {
-                            return Err(VMError::TypeError {
-                                expected: "int or float",
-                                got: val.type_name(),
-                                context: "negation".to_string(),
-                            });
-                        }
+                    if let Some(n) = val.as_int() {
+                        self.push(NanBox::int(-n));
+                    } else if let Some(f) = val.as_float() {
+                        self.push(NanBox::float(-f));
+                    } else {
+                        return Err(VMError::TypeError {
+                            expected: "int or float",
+                            got: val.type_name(),
+                            context: "negation".to_string(),
+                        });
                     }
                 }
 
-                // ── Logical ────────────────────────────────────
+                // -- Logical --------------------------------------------
                 OpCode::Not => {
                     let val = self.pop()?;
                     let b = val.is_truthy()?;
-                    self.push(VMValue::Bool(!b));
+                    self.push(NanBox::bool(!b));
                 }
                 OpCode::And => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(a.is_truthy()? && b.is_truthy()?));
+                    self.push(NanBox::bool(a.is_truthy()? && b.is_truthy()?));
                 }
                 OpCode::Or => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(a.is_truthy()? || b.is_truthy()?));
+                    self.push(NanBox::bool(a.is_truthy()? || b.is_truthy()?));
                 }
                 OpCode::Implication => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(!a.is_truthy()? || b.is_truthy()?));
+                    self.push(NanBox::bool(!a.is_truthy()? || b.is_truthy()?));
                 }
 
-                // ── Comparison ─────────────────────────────────
+                // -- Comparison -----------------------------------------
                 OpCode::Equal => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(a == b));
+                    self.push(NanBox::bool(a == b));
                 }
                 OpCode::NotEqual => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(a != b));
+                    self.push(NanBox::bool(a != b));
                 }
                 OpCode::Less => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(self.compare(&a, &b)? == std::cmp::Ordering::Less));
+                    self.push(NanBox::bool(self.compare(&a, &b)? == std::cmp::Ordering::Less));
                 }
                 OpCode::Greater => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(
+                    self.push(NanBox::bool(
                         self.compare(&a, &b)? == std::cmp::Ordering::Greater,
                     ));
                 }
                 OpCode::LessEqual => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(
+                    self.push(NanBox::bool(
                         self.compare(&a, &b)? != std::cmp::Ordering::Greater,
                     ));
                 }
                 OpCode::GreaterEqual => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    self.push(VMValue::Bool(
+                    self.push(NanBox::bool(
                         self.compare(&a, &b)? != std::cmp::Ordering::Less,
                     ));
                 }
 
-                // ── Strings ────────────────────────────────────
+                // -- Strings --------------------------------------------
                 OpCode::Interpolate => {
                     let count = self.read_u16()? as usize;
                     let start = self.stack.len() - count;
                     let mut result = String::new();
                     for i in start..self.stack.len() {
-                        match &self.stack[i] {
-                            VMValue::String(s) => result.push_str(s),
-                            VMValue::Int(n) => result.push_str(&n.to_string()),
-                            VMValue::Float(f) => result.push_str(&format!("{f}")),
-                            VMValue::Path(p) => result.push_str(p),
-                            VMValue::Bool(b) => {
-                                return Err(VMError::TypeError {
-                                    expected: "string, int, float, or path",
-                                    got: if *b { "bool (true)" } else { "bool (false)" },
-                                    context: "string interpolation".to_string(),
-                                });
-                            }
-                            other => {
-                                return Err(VMError::TypeError {
-                                    expected: "string, int, float, or path",
-                                    got: other.type_name(),
-                                    context: "string interpolation".to_string(),
-                                });
-                            }
+                        let v = &self.stack[i];
+                        if let Some(s) = v.as_string() {
+                            result.push_str(s);
+                        } else if let Some(n) = v.as_int() {
+                            result.push_str(&n.to_string());
+                        } else if let Some(f) = v.as_float() {
+                            result.push_str(&format!("{f}"));
+                        } else if let Some(p) = v.as_path() {
+                            result.push_str(p);
+                        } else if v.is_bool() {
+                            let b = v.as_bool().unwrap();
+                            return Err(VMError::TypeError {
+                                expected: "string, int, float, or path",
+                                got: if b { "bool (true)" } else { "bool (false)" },
+                                context: "string interpolation".to_string(),
+                            });
+                        } else {
+                            return Err(VMError::TypeError {
+                                expected: "string, int, float, or path",
+                                got: v.type_name(),
+                                context: "string interpolation".to_string(),
+                            });
                         }
                     }
                     self.stack.truncate(start);
-                    self.push(VMValue::String(result));
+                    self.push(NanBox::string(result));
                 }
 
-                // ── Variables ──────────────────────────────────
+                // -- Variables ------------------------------------------
                 OpCode::GetLocal => {
                     let slot = self.read_u16()? as usize;
                     let abs_slot = self.current_frame().stack_base + slot;
@@ -257,7 +274,7 @@ impl<'a> VM<'a> {
                     self.current_frame_mut().upvalues[idx] = value;
                 }
 
-                // ── With scopes ──────────────────────────────────
+                // -- With scopes ----------------------------------------
                 OpCode::PushWith => {
                     let scope = self.pop()?;
                     self.with_stack.push(scope);
@@ -278,10 +295,9 @@ impl<'a> VM<'a> {
                         }
                     };
                     let sym = self.interner.intern(&name_string);
-                    // Search with-stack from top (innermost) to bottom (outermost).
                     let mut found = None;
                     for scope in self.with_stack.iter().rev() {
-                        if let VMValue::Attrs(attrs) = scope {
+                        if let Some(attrs) = scope.as_attrs() {
                             if let Some(val) = attrs.get(&sym) {
                                 found = Some(val.clone());
                                 break;
@@ -296,71 +312,69 @@ impl<'a> VM<'a> {
                     }
                 }
 
-                // ── Attribute sets ─────────────────────────────
+                // -- Attribute sets -------------------------------------
                 OpCode::MakeAttrs => {
                     let count = self.read_u16()? as usize;
-                    let mut attrs = BTreeMap::new();
-                    // Stack has pairs: [value, key, value, key, ...] (key on top of each pair).
-                    // Pop in reverse: key first, then value.
+                    let mut attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
                     for _ in 0..count {
                         let key = self.pop()?;
                         let value = self.pop()?;
-                        let key_sym = match key {
-                            VMValue::String(s) => self.interner.intern(&s),
-                            _ => {
-                                return Err(VMError::TypeError {
-                                    expected: "string",
-                                    got: key.type_name(),
-                                    context: "attrset key".to_string(),
-                                });
-                            }
+                        let key_sym = if let Some(s) = key.as_string() {
+                            self.interner.intern(s)
+                        } else {
+                            return Err(VMError::TypeError {
+                                expected: "string",
+                                got: key.type_name(),
+                                context: "attrset key".to_string(),
+                            });
                         };
                         attrs.insert(key_sym, value);
                     }
-                    self.push(VMValue::Attrs(attrs));
+                    self.push(NanBox::attrs(attrs));
                 }
                 OpCode::GetAttr => {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
                     let attrset = self.pop()?;
-                    match attrset {
-                        VMValue::Attrs(ref attrs) => {
-                            if let Some(val) = attrs.get(&key_sym) {
-                                self.push(val.clone());
-                            } else {
-                                let key_str = self.interner.resolve(key_sym).to_string();
-                                return Err(VMError::AttrNotFound(key_str));
-                            }
-                        }
-                        _ => {
+                    if let Some(attrs) = attrset.as_attrs() {
+                        if let Some(val) = attrs.get(&key_sym) {
+                            self.push(val.clone());
+                        } else {
                             let key_str = self.interner.resolve(key_sym).to_string();
-                            return Err(VMError::TypeError {
-                                expected: "set",
-                                got: attrset.type_name(),
-                                context: format!("attribute selection '.{key_str}'"),
-                            });
+                            return Err(VMError::AttrNotFound(key_str));
                         }
+                    } else {
+                        let key_str = self.interner.resolve(key_sym).to_string();
+                        return Err(VMError::TypeError {
+                            expected: "set",
+                            got: attrset.type_name(),
+                            context: format!("attribute selection '.{key_str}'"),
+                        });
                     }
                 }
                 OpCode::HasAttr => {
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
                     let attrset = self.pop()?;
-                    let result = match attrset {
-                        VMValue::Attrs(ref attrs) => attrs.contains_key(&key_sym),
-                        _ => false,
+                    let result = if let Some(attrs) = attrset.as_attrs() {
+                        attrs.contains_key(&key_sym)
+                    } else {
+                        false
                     };
-                    self.push(VMValue::Bool(result));
+                    self.push(NanBox::bool(result));
                 }
                 OpCode::UpdateAttrs => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    match (a, b) {
+                    // Both must be attrsets. Convert through VMValue for mutation.
+                    let b_vmval = b.to_vmvalue();
+                    let a_vmval = a.to_vmvalue();
+                    match (a_vmval, b_vmval) {
                         (VMValue::Attrs(mut left), VMValue::Attrs(right)) => {
                             for (k, v) in right {
                                 left.insert(k, v);
                             }
-                            self.push(VMValue::Attrs(left));
+                            self.push(NanBox::from_vmvalue(&VMValue::Attrs(left)));
                         }
                         (VMValue::Attrs(_), other) => {
                             return Err(VMError::TypeError {
@@ -383,34 +397,33 @@ impl<'a> VM<'a> {
                     let key_sym = self.resolve_key_constant(key_idx)?;
                     let default = self.pop()?;
                     let attrset = self.pop()?;
-                    match attrset {
-                        VMValue::Attrs(ref attrs) => {
-                            if let Some(val) = attrs.get(&key_sym) {
-                                self.push(val.clone());
-                            } else {
-                                self.push(default);
-                            }
-                        }
-                        _ => {
+                    if let Some(attrs) = attrset.as_attrs() {
+                        if let Some(val) = attrs.get(&key_sym) {
+                            self.push(val.clone());
+                        } else {
                             self.push(default);
                         }
+                    } else {
+                        self.push(default);
                     }
                 }
 
-                // ── Lists ──────────────────────────────────────
+                // -- Lists ----------------------------------------------
                 OpCode::MakeList => {
                     let count = self.read_u16()? as usize;
                     let start = self.stack.len() - count;
-                    let items: Vec<VMValue> = self.stack.drain(start..).collect();
-                    self.push(VMValue::List(items));
+                    let items: Vec<NanBox> = self.stack.drain(start..).collect();
+                    self.push(NanBox::list(items));
                 }
                 OpCode::Concat => {
                     let b = self.pop()?;
                     let a = self.pop()?;
-                    match (a, b) {
+                    let a_vmval = a.to_vmvalue();
+                    let b_vmval = b.to_vmvalue();
+                    match (a_vmval, b_vmval) {
                         (VMValue::List(mut left), VMValue::List(right)) => {
                             left.extend(right);
-                            self.push(VMValue::List(left));
+                            self.push(NanBox::from_vmvalue(&VMValue::List(left)));
                         }
                         (VMValue::List(_), other) => {
                             return Err(VMError::TypeError {
@@ -429,29 +442,27 @@ impl<'a> VM<'a> {
                     }
                 }
 
-                // ── Functions ──────────────────────────────────
+                // -- Functions ------------------------------------------
                 OpCode::MakeClosure => {
                     let idx = self.read_u16()?;
                     let upvalue_count = self.read_u16()? as usize;
                     let closure_template = self.current_chunk().constants[idx as usize].clone();
                     if let VMValue::Closure(mut closure) = closure_template {
-                        // Capture upvalues based on descriptors.
                         let mut upvalues = Vec::with_capacity(upvalue_count);
                         for _ in 0..upvalue_count {
                             let is_local = self.read_byte()? != 0;
                             let uv_index = self.read_u16()? as usize;
                             if is_local {
-                                // Capture a local from the current frame's stack.
                                 let abs_slot = self.current_frame().stack_base + uv_index;
                                 upvalues.push(self.stack[abs_slot].clone());
                             } else {
-                                // Capture an upvalue from the current frame.
                                 let val = self.current_frame().upvalues[uv_index].clone();
                                 upvalues.push(val);
                             }
                         }
-                        closure.upvalues = upvalues;
-                        self.push(VMValue::Closure(closure));
+                        // Store upvalues as VMValue on the closure (constant pool compat).
+                        closure.upvalues = upvalues.iter().map(NanBox::to_vmvalue).collect();
+                        self.push(NanBox::closure(closure));
                     } else {
                         return Err(VMError::Internal(
                             "MakeClosure: constant is not a closure".to_string(),
@@ -461,47 +472,40 @@ impl<'a> VM<'a> {
                 OpCode::Call => {
                     let arg = self.pop()?;
                     let func = self.pop()?;
-                    match func {
-                        VMValue::Closure(closure) => {
-                            // Tail-call optimization: if the next instruction
-                            // is Return, reuse the current frame instead of
-                            // pushing a new one. This eliminates stack growth
-                            // for tail-recursive patterns.
-                            let is_tail = self.peek_next_is_return();
+                    if let Some(closure) = func.as_closure() {
+                        let is_tail = self.peek_next_is_return();
+                        let chunk = closure.chunk.clone();
+                        let upvalues: Vec<NanBox> =
+                            closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
 
-                            if is_tail && self.frames.len() > 1 {
-                                // Reuse current frame: discard locals, reset.
-                                let base = self.current_frame().stack_base;
-                                self.stack.truncate(base);
-                                self.push(arg);
-                                let frame = self.current_frame_mut();
-                                frame.chunk = closure.chunk.clone();
-                                frame.ip = 0;
-                                frame.upvalues = closure.upvalues.clone();
-                            } else {
-                                if self.frames.len() >= MAX_CALL_DEPTH {
-                                    return Err(VMError::StackOverflow);
-                                }
-                                let upvalues = closure.upvalues.clone();
-                                // Push the argument as the first local (slot 0).
-                                let stack_base = self.stack.len();
-                                self.push(arg);
-                                self.frames.push(CallFrame {
-                                    chunk: closure.chunk.clone(),
-                                    ip: 0,
-                                    stack_base,
-                                    upvalues,
-                                });
+                        if is_tail && self.frames.len() > 1 {
+                            let base = self.current_frame().stack_base;
+                            self.stack.truncate(base);
+                            self.push(arg);
+                            let frame = self.current_frame_mut();
+                            frame.chunk = chunk;
+                            frame.ip = 0;
+                            frame.upvalues = upvalues;
+                        } else {
+                            if self.frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VMError::StackOverflow);
                             }
+                            let stack_base = self.stack.len();
+                            self.push(arg);
+                            self.frames.push(CallFrame {
+                                chunk,
+                                ip: 0,
+                                stack_base,
+                                upvalues,
+                            });
                         }
-                        VMValue::Builtin(builtin) => {
-                            // Call the native builtin function.
-                            let result = (builtin.func)(vec![arg])?;
-                            self.push(result);
-                        }
-                        _ => {
-                            return Err(VMError::NotCallable(format!("{}", func.type_name())));
-                        }
+                    } else if let Some(builtin) = func.as_builtin() {
+                        let arg_vmval = arg.to_vmvalue();
+                        let builtin_func = builtin.func.clone();
+                        let result = builtin_func(vec![arg_vmval])?;
+                        self.push(NanBox::from_vmvalue(&result));
+                    } else {
+                        return Err(VMError::NotCallable(func.type_name().to_string()));
                     }
                 }
                 OpCode::Return => {
@@ -511,17 +515,14 @@ impl<'a> VM<'a> {
                     ))?;
 
                     if self.frames.len() <= stop_depth {
-                        // Reached the stop depth — return to caller.
                         return Ok(result);
                     }
 
-                    // Discard the callee's locals from the stack.
                     self.stack.truncate(frame.stack_base);
-                    // Push the return value.
                     self.push(result);
                 }
 
-                // ── Control flow ───────────────────────────────
+                // -- Control flow ---------------------------------------
                 OpCode::Jump => {
                     let target = self.read_u16()? as usize;
                     self.current_frame_mut().ip = target;
@@ -541,7 +542,7 @@ impl<'a> VM<'a> {
                     }
                 }
 
-                // ── Assert ─────────────────────────────────────
+                // -- Assert ---------------------------------------------
                 OpCode::Assert => {
                     let cond = self.pop()?;
                     if !cond.is_truthy()? {
@@ -549,83 +550,80 @@ impl<'a> VM<'a> {
                     }
                 }
 
-                // ── Pop ────────────────────────────────────────
+                // -- Pop ------------------------------------------------
                 OpCode::Pop => {
                     self.pop()?;
                 }
 
-                // ── Superinstructions ─────────────────────────
+                // -- Superinstructions ----------------------------------
                 OpCode::GetLocalAttr => {
-                    // Fused GetLocal + GetAttr: one dispatch instead of two.
                     let slot = self.read_u16()? as usize;
                     let key_idx = self.read_u16()?;
                     let key_sym = self.resolve_key_constant(key_idx)?;
                     let abs_slot = self.current_frame().stack_base + slot;
                     let local = &self.stack[abs_slot];
-                    match local {
-                        VMValue::Attrs(attrs) => {
-                            if let Some(val) = attrs.get(&key_sym) {
-                                self.push(val.clone());
-                            } else {
-                                let key_str = self.interner.resolve(key_sym).to_string();
-                                return Err(VMError::AttrNotFound(key_str));
-                            }
-                        }
-                        _ => {
+                    if let Some(attrs) = local.as_attrs() {
+                        if let Some(val) = attrs.get(&key_sym) {
+                            self.push(val.clone());
+                        } else {
                             let key_str = self.interner.resolve(key_sym).to_string();
-                            return Err(VMError::TypeError {
-                                expected: "set",
-                                got: local.type_name(),
-                                context: format!("attribute selection '.{key_str}'"),
-                            });
+                            return Err(VMError::AttrNotFound(key_str));
                         }
+                    } else {
+                        let key_str = self.interner.resolve(key_sym).to_string();
+                        return Err(VMError::TypeError {
+                            expected: "set",
+                            got: local.type_name(),
+                            context: format!("attribute selection '.{key_str}'"),
+                        });
                     }
                 }
                 OpCode::GetLocalCall => {
-                    // Fused GetLocal + Call: push local, then call with TOS as arg.
                     let slot = self.read_u16()? as usize;
                     let abs_slot = self.current_frame().stack_base + slot;
                     let func = self.stack[abs_slot].clone();
                     let arg = self.pop()?;
-                    match func {
-                        VMValue::Closure(closure) => {
-                            if self.frames.len() >= MAX_CALL_DEPTH {
-                                return Err(VMError::StackOverflow);
-                            }
-                            let upvalues = closure.upvalues.clone();
-                            let stack_base = self.stack.len();
-                            self.push(arg);
-                            self.frames.push(CallFrame {
-                                chunk: closure.chunk.clone(),
-                                ip: 0,
-                                stack_base,
-                                upvalues,
-                            });
+                    if let Some(closure) = func.as_closure() {
+                        if self.frames.len() >= MAX_CALL_DEPTH {
+                            return Err(VMError::StackOverflow);
                         }
-                        VMValue::Builtin(builtin) => {
-                            let result = (builtin.func)(vec![arg])?;
-                            self.push(result);
-                        }
-                        _ => {
-                            return Err(VMError::NotCallable(func.type_name().to_string()));
-                        }
+                        let upvalues: Vec<NanBox> =
+                            closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+                        let chunk = closure.chunk.clone();
+                        let stack_base = self.stack.len();
+                        self.push(arg);
+                        self.frames.push(CallFrame {
+                            chunk,
+                            ip: 0,
+                            stack_base,
+                            upvalues,
+                        });
+                    } else if let Some(builtin) = func.as_builtin() {
+                        let arg_vmval = arg.to_vmvalue();
+                        let builtin_func = builtin.func.clone();
+                        let result = builtin_func(vec![arg_vmval])?;
+                        self.push(NanBox::from_vmvalue(&result));
+                    } else {
+                        return Err(VMError::NotCallable(func.type_name().to_string()));
                     }
                 }
-                // ── Builtins ──────────────────────────────────
+
+                // -- Builtins -------------------------------------------
                 OpCode::PushBuiltins => {
                     let builtins_val = self.builtins.make_builtins_attrset(self.interner);
-                    self.push(builtins_val);
+                    self.push(NanBox::from_vmvalue(&builtins_val));
                 }
                 OpCode::CallBuiltin => {
                     let builtin_idx = self.read_u16()?;
                     let arg_count = self.read_u16()? as usize;
                     let start = self.stack.len() - arg_count;
-                    let args: Vec<VMValue> = self.stack.drain(start..).collect();
+                    let args: Vec<VMValue> =
+                        self.stack.drain(start..).map(|nb| nb.to_vmvalue()).collect();
                     let result = self.builtins.call(builtin_idx, args)?;
-                    self.push(result);
+                    self.push(NanBox::from_vmvalue(&result));
                 }
 
-                // ── Thunks (lazy evaluation) ──────────────────
+                // -- Thunks (lazy evaluation) ---------------------------
                 OpCode::MakeThunk => {
                     let chunk_idx = self.read_u16()?;
                     let thunk_chunk =
@@ -638,7 +636,7 @@ impl<'a> VM<'a> {
                             }
                         };
                     let thunk = crate::value::VMThunk::new(thunk_chunk, Vec::new());
-                    self.push(VMValue::Thunk(thunk));
+                    self.push(NanBox::thunk(thunk));
                 }
                 OpCode::Force => {
                     let val = self.pop()?;
@@ -646,19 +644,19 @@ impl<'a> VM<'a> {
                     self.push(forced);
                 }
 
-                // ── Import ────────────────────────────────────
+                // -- Import ---------------------------------------------
                 OpCode::Import => {
                     let path_val = self.pop()?;
-                    let path = match &path_val {
-                        VMValue::Path(p) => p.clone(),
-                        VMValue::String(s) => s.clone(),
-                        other => {
-                            return Err(VMError::TypeError {
-                                expected: "path or string",
-                                got: other.type_name(),
-                                context: "import".to_string(),
-                            });
-                        }
+                    let path = if let Some(p) = path_val.as_path() {
+                        p.to_string()
+                    } else if let Some(s) = path_val.as_string() {
+                        s.to_string()
+                    } else {
+                        return Err(VMError::TypeError {
+                            expected: "path or string",
+                            got: path_val.type_name(),
+                            context: "import".to_string(),
+                        });
                     };
                     let result = self.import_file(&path)?;
                     self.push(result);
@@ -667,21 +665,21 @@ impl<'a> VM<'a> {
         }
     }
 
-    // ── Stack helpers ──────────────────────────────────────────
+    // -- Stack helpers --------------------------------------------------
 
-    fn push(&mut self, value: VMValue) {
+    fn push(&mut self, value: NanBox) {
         self.stack.push(value);
     }
 
-    fn pop(&mut self) -> Result<VMValue, VMError> {
+    fn pop(&mut self) -> Result<NanBox, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow)
     }
 
-    fn peek(&self) -> Result<&VMValue, VMError> {
+    fn peek(&self) -> Result<&NanBox, VMError> {
         self.stack.last().ok_or(VMError::StackUnderflow)
     }
 
-    // ── Frame helpers ──────────────────────────────────────────
+    // -- Frame helpers --------------------------------------------------
 
     fn current_frame(&self) -> &CallFrame {
         self.frames.last().expect("no active frame")
@@ -722,23 +720,17 @@ impl<'a> VM<'a> {
         }
     }
 
-    // ── Interning helpers ──────────────────────────────────────
+    // -- Interning helpers ----------------------------------------------
 
     /// Resolve a constant pool string to a `Symbol`.
-    ///
-    /// Checks the chunk's pre-resolved `key_symbols` cache first (O(1)
-    /// array index). Falls back to `interner.intern()` on cache miss and
-    /// populates the cache for future lookups.
     fn resolve_key_constant(&mut self, idx: u16) -> Result<Symbol, VMError> {
         let idx_usize = idx as usize;
         let chunk = self.current_frame().chunk.clone();
 
-        // Fast path: check pre-resolved symbol cache.
         if let Some(Some(sym)) = chunk.key_symbols.get(idx_usize) {
             return Ok(*sym);
         }
 
-        // Slow path: intern the string and cache the result.
         let key_string = match &chunk.constants[idx_usize] {
             VMValue::String(s) => s.clone(),
             _ => return Err(VMError::Internal("attr key constant not a string".to_string())),
@@ -746,86 +738,112 @@ impl<'a> VM<'a> {
         Ok(self.interner.intern(&key_string))
     }
 
-    // ── Arithmetic helpers ─────────────────────────────────────
+    // -- Arithmetic helpers (NanBox) ------------------------------------
 
-    fn add(&self, a: VMValue, b: VMValue) -> Result<VMValue, VMError> {
-        match (&a, &b) {
-            (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(x + y)),
-            (VMValue::Float(x), VMValue::Float(y)) => Ok(VMValue::Float(x + y)),
-            (VMValue::Int(x), VMValue::Float(y)) => Ok(VMValue::Float(*x as f64 + y)),
-            (VMValue::Float(x), VMValue::Int(y)) => Ok(VMValue::Float(x + *y as f64)),
-            (VMValue::String(x), VMValue::String(y)) => {
-                Ok(VMValue::String(format!("{x}{y}")))
-            }
-            (VMValue::Path(x), VMValue::String(y)) => Ok(VMValue::Path(format!("{x}{y}"))),
-            (VMValue::Path(x), VMValue::Path(y)) => Ok(VMValue::Path(format!("{x}/{y}"))),
-            _ => Err(VMError::TypeError {
-                expected: "numbers or strings",
-                got: a.type_name(),
-                context: format!("addition ({} + {})", a.type_name(), b.type_name()),
-            }),
+    fn add(&self, a: &NanBox, b: &NanBox) -> Result<NanBox, VMError> {
+        // Fast paths for inline scalars.
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_int()) {
+            return Ok(NanBox::int(x + y));
         }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_float()) {
+            return Ok(NanBox::float(x + y));
+        }
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_float()) {
+            return Ok(NanBox::float(x as f64 + y));
+        }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_int()) {
+            return Ok(NanBox::float(x + y as f64));
+        }
+        // String/path concat (heap path).
+        if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
+            return Ok(NanBox::string(format!("{x}{y}")));
+        }
+        if let (Some(x), Some(y)) = (a.as_path(), b.as_string()) {
+            return Ok(NanBox::path(format!("{x}{y}")));
+        }
+        if let (Some(x), Some(y)) = (a.as_path(), b.as_path()) {
+            return Ok(NanBox::path(format!("{x}/{y}")));
+        }
+        Err(VMError::TypeError {
+            expected: "numbers or strings",
+            got: a.type_name(),
+            context: format!("addition ({} + {})", a.type_name(), b.type_name()),
+        })
     }
 
     fn num_op(
         &self,
-        a: VMValue,
-        b: VMValue,
+        a: &NanBox,
+        b: &NanBox,
         int_op: impl Fn(i64, i64) -> i64,
         float_op: impl Fn(f64, f64) -> f64,
         context: &str,
-    ) -> Result<VMValue, VMError> {
-        match (&a, &b) {
-            (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(int_op(*x, *y))),
-            (VMValue::Float(x), VMValue::Float(y)) => Ok(VMValue::Float(float_op(*x, *y))),
-            (VMValue::Int(x), VMValue::Float(y)) => {
-                Ok(VMValue::Float(float_op(*x as f64, *y)))
-            }
-            (VMValue::Float(x), VMValue::Int(y)) => {
-                Ok(VMValue::Float(float_op(*x, *y as f64)))
-            }
-            _ => Err(VMError::TypeError {
-                expected: "numbers",
-                got: a.type_name(),
-                context: context.to_string(),
-            }),
+    ) -> Result<NanBox, VMError> {
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_int()) {
+            return Ok(NanBox::int(int_op(x, y)));
         }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_float()) {
+            return Ok(NanBox::float(float_op(x, y)));
+        }
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_float()) {
+            return Ok(NanBox::float(float_op(x as f64, y)));
+        }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_int()) {
+            return Ok(NanBox::float(float_op(x, y as f64)));
+        }
+        Err(VMError::TypeError {
+            expected: "numbers",
+            got: a.type_name(),
+            context: context.to_string(),
+        })
     }
 
-    fn compare(&self, a: &VMValue, b: &VMValue) -> Result<std::cmp::Ordering, VMError> {
-        match (a, b) {
-            (VMValue::Int(x), VMValue::Int(y)) => Ok(x.cmp(y)),
-            (VMValue::Float(x), VMValue::Float(y)) => {
-                Ok(x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
-            }
-            (VMValue::Int(x), VMValue::Float(y)) => Ok((*x as f64)
-                .partial_cmp(y)
-                .unwrap_or(std::cmp::Ordering::Equal)),
-            (VMValue::Float(x), VMValue::Int(y)) => Ok(x
-                .partial_cmp(&(*y as f64))
-                .unwrap_or(std::cmp::Ordering::Equal)),
-            (VMValue::String(x), VMValue::String(y)) => Ok(x.cmp(y)),
-            _ => Err(VMError::TypeError {
-                expected: "comparable types",
-                got: a.type_name(),
-                context: "comparison".to_string(),
-            }),
+    fn compare(&self, a: &NanBox, b: &NanBox) -> Result<std::cmp::Ordering, VMError> {
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_int()) {
+            return Ok(x.cmp(&y));
         }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_float()) {
+            return Ok(x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        if let (Some(x), Some(y)) = (a.as_int(), b.as_float()) {
+            return Ok((x as f64)
+                .partial_cmp(&y)
+                .unwrap_or(std::cmp::Ordering::Equal));
+        }
+        if let (Some(x), Some(y)) = (a.as_float(), b.as_int()) {
+            return Ok(x
+                .partial_cmp(&(y as f64))
+                .unwrap_or(std::cmp::Ordering::Equal));
+        }
+        if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
+            return Ok(x.cmp(y));
+        }
+        Err(VMError::TypeError {
+            expected: "comparable types",
+            got: a.type_name(),
+            context: "comparison".to_string(),
+        })
     }
 
-    // ── Thunk forcing ─────────────────────────────────────────
+    // -- Thunk forcing --------------------------------------------------
 
     /// Force a value: if it is a thunk, evaluate it (with memoization
     /// and blackhole detection). If it is already a concrete value,
     /// return it unchanged.
-    fn force_value(&mut self, val: VMValue) -> Result<VMValue, VMError> {
-        match val {
+    fn force_value(&mut self, val: NanBox) -> Result<NanBox, VMError> {
+        if !val.is_thunk() {
+            return Ok(val);
+        }
+
+        // Convert to VMValue to access ThunkState machinery.
+        let vmval = val.to_vmvalue();
+        match vmval {
             VMValue::Thunk(ref thunk) => {
                 let state = thunk.state.take();
                 match state {
                     Some(ThunkState::Done(boxed)) => {
                         thunk.state.set(Some(ThunkState::Done(boxed.clone())));
-                        Ok(*boxed)
+                        Ok(NanBox::from_vmvalue(&*boxed))
                     }
                     Some(ThunkState::Evaluating) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
@@ -855,14 +873,15 @@ impl<'a> VM<'a> {
 
                         match result {
                             Ok(value) => {
-                                let forced = if matches!(value, VMValue::Thunk(_)) {
+                                let forced = if value.is_thunk() {
                                     self.force_value(value)?
                                 } else {
                                     value
                                 };
+                                let forced_vmval = forced.to_vmvalue();
                                 thunk
                                     .state
-                                    .set(Some(ThunkState::Done(Box::new(forced.clone()))));
+                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
                                 Ok(forced)
                             }
                             Err(e) => {
@@ -877,14 +896,14 @@ impl<'a> VM<'a> {
                     None => Err(VMError::Internal("thunk state is None".to_string())),
                 }
             }
-            other => Ok(other),
+            _ => Ok(NanBox::from_vmvalue(&vmval)),
         }
     }
 
-    // ── Import ────────────────────────────────────────────────
+    // -- Import ---------------------------------------------------------
 
     /// Import a Nix file: compile it, execute it, cache the result.
-    fn import_file(&mut self, path: &str) -> Result<VMValue, VMError> {
+    fn import_file(&mut self, path: &str) -> Result<NanBox, VMError> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?
             .to_string_lossy()
@@ -892,7 +911,7 @@ impl<'a> VM<'a> {
 
         // Check cache.
         if let Some(cached) = self.import_cache.borrow().get(&canonical) {
-            return Ok(cached.clone());
+            return Ok(NanBox::from_vmvalue(cached));
         }
 
         // Read and compile.
@@ -902,9 +921,6 @@ impl<'a> VM<'a> {
         let (chunk, _file_interner) = Compiler::compile(&source)
             .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
 
-        // Execute the compiled chunk in the import run loop.
-        // We record how many frames exist before pushing the import frame;
-        // the inner run_until loop will return when we drop back to this depth.
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
         }
@@ -919,10 +935,11 @@ impl<'a> VM<'a> {
 
         let result = self.run_until(return_depth)?;
 
-        // Cache and return.
+        // Cache as VMValue and return as NanBox.
+        let result_vmval = result.to_vmvalue();
         self.import_cache
             .borrow_mut()
-            .insert(canonical, result.clone());
+            .insert(canonical, result_vmval);
         Ok(result)
     }
 }
@@ -951,7 +968,7 @@ mod tests {
         VM::execute(chunk, &mut interner).unwrap_err()
     }
 
-    // ── Literals ───────────────────────────────────────────────
+    // -- Literals -------------------------------------------------------
 
     #[test]
     fn eval_integer() {
@@ -988,7 +1005,7 @@ mod tests {
         assert_eq!(eval(r#""hello""#), VMValue::String("hello".to_string()));
     }
 
-    // ── Arithmetic ─────────────────────────────────────────────
+    // -- Arithmetic -----------------------------------------------------
 
     #[test]
     fn eval_add_int() {
@@ -1043,7 +1060,7 @@ mod tests {
         );
     }
 
-    // ── Comparison ─────────────────────────────────────────────
+    // -- Comparison -----------------------------------------------------
 
     #[test]
     fn eval_equal() {
@@ -1083,7 +1100,7 @@ mod tests {
         assert_eq!(eval("1 >= 2"), VMValue::Bool(false));
     }
 
-    // ── Logical ────────────────────────────────────────────────
+    // -- Logical --------------------------------------------------------
 
     #[test]
     fn eval_not() {
@@ -1113,7 +1130,7 @@ mod tests {
         assert_eq!(eval("false -> false"), VMValue::Bool(true));
     }
 
-    // ── Conditionals ───────────────────────────────────────────
+    // -- Conditionals ---------------------------------------------------
 
     #[test]
     fn eval_if_true() {
@@ -1141,7 +1158,7 @@ mod tests {
         );
     }
 
-    // ── Let/in ─────────────────────────────────────────────────
+    // -- Let/in ---------------------------------------------------------
 
     #[test]
     fn eval_let_simple() {
@@ -1166,7 +1183,7 @@ mod tests {
         assert_eq!(eval("let x = 2 * 3; in x + 1"), VMValue::Int(7));
     }
 
-    // ── Lists ──────────────────────────────────────────────────
+    // -- Lists ----------------------------------------------------------
 
     #[test]
     fn eval_empty_list() {
@@ -1206,7 +1223,7 @@ mod tests {
         );
     }
 
-    // ── Attribute sets ─────────────────────────────────────────
+    // -- Attribute sets -------------------------------------------------
 
     #[test]
     fn eval_empty_attrset() {
@@ -1257,7 +1274,7 @@ mod tests {
         assert_eq!(eval("{ a = 1; }.a or 0"), VMValue::Int(1));
     }
 
-    // ── Lambdas / Apply ────────────────────────────────────────
+    // -- Lambdas / Apply ------------------------------------------------
 
     #[test]
     fn eval_identity_lambda() {
@@ -1304,7 +1321,7 @@ mod tests {
         );
     }
 
-    // ── Assert ─────────────────────────────────────────────────
+    // -- Assert ---------------------------------------------------------
 
     #[test]
     fn eval_assert_pass() {
@@ -1316,7 +1333,7 @@ mod tests {
         assert!(matches!(eval_err("assert false; 42"), VMError::AssertionFailed));
     }
 
-    // ── String interpolation ───────────────────────────────────
+    // -- String interpolation -------------------------------------------
 
     #[test]
     fn eval_string_interpolation() {
@@ -1335,18 +1352,17 @@ mod tests {
         );
     }
 
-    // ── Path literals ──────────────────────────────────────────
+    // -- Path literals --------------------------------------------------
 
     #[test]
     fn eval_absolute_path() {
         assert_eq!(eval("/tmp/x"), VMValue::Path("/tmp/x".to_string()));
     }
 
-    // ── Complex expressions ────────────────────────────────────
+    // -- Complex expressions --------------------------------------------
 
     #[test]
     fn eval_fibonacci_like() {
-        // Without recursion support, test a chain of let bindings.
         assert_eq!(
             eval("let a = 1; b = 1; c = a + b; d = b + c; e = c + d; in e"),
             VMValue::Int(5)
@@ -1377,7 +1393,7 @@ mod tests {
         );
     }
 
-    // ── Builtin tests ────────────────────────────────────────
+    // -- Builtin tests --------------------------------------------------
 
     #[test]
     fn builtin_length() {
@@ -1649,7 +1665,6 @@ mod tests {
 
     #[test]
     fn builtin_seq() {
-        // seq forces the first arg and returns the second
         assert_eq!(eval("builtins.seq 1 42"), VMValue::Int(42));
     }
 
@@ -1660,7 +1675,6 @@ mod tests {
 
     #[test]
     fn builtin_trace() {
-        // trace prints a message and returns the second arg
         assert_eq!(
             eval("builtins.trace \"debug\" 42"),
             VMValue::Int(42)
@@ -1682,7 +1696,6 @@ mod tests {
 
     #[test]
     fn builtin_intersect_attrs() {
-        // intersectAttrs returns keys from second set that exist in first
         let result =
             eval_full_helper("builtins.intersectAttrs { a = 1; b = 2; } { a = 10; c = 30; }");
         match result {
@@ -1701,7 +1714,6 @@ mod tests {
         match result {
             StringKeyedValue::List(items) => {
                 assert_eq!(items.len(), 2);
-                // BTreeMap keys are sorted, so a=1 comes first, then b=2
                 assert!(items.contains(&StringKeyedValue::Int(1)));
                 assert!(items.contains(&StringKeyedValue::Int(2)));
             }
@@ -1730,11 +1742,10 @@ mod tests {
         );
     }
 
-    // ── Import tests ─────────────────────────────────────────
+    // -- Import tests ---------------------------------------------------
 
     #[test]
     fn import_basic() {
-        // Create a temp file and import it.
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.nix");
         std::fs::write(&file_path, "42").unwrap();
@@ -1744,7 +1755,6 @@ mod tests {
 
     #[test]
     fn import_cached() {
-        // Importing the same file twice should return the same value.
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("cached.nix");
         std::fs::write(&file_path, "{ x = 1; }").unwrap();
@@ -1765,14 +1775,10 @@ mod tests {
         assert_eq!(eval(&nix_expr), VMValue::String("hello".to_string()));
     }
 
-    // ── Lazy evaluation tests ────────────────────────────────
+    // -- Lazy evaluation tests ------------------------------------------
 
     #[test]
     fn lazy_unused_throw_in_attrset() {
-        // Accessing only `a` should not force `b`, which would throw.
-        // This requires thunks in attrset values.
-        // For now, without thunk wrapping in the compiler, this tests
-        // that the VM at least evaluates correctly when all values are needed.
         assert_eq!(
             eval("let s = { a = 1; }; in s.a"),
             VMValue::Int(1)
@@ -1781,8 +1787,6 @@ mod tests {
 
     #[test]
     fn lazy_unused_let_binding() {
-        // An unused let binding should not be evaluated.
-        // Without thunks, this will evaluate eagerly (which is fine for now).
         assert_eq!(eval("let x = 1; y = 2; in x"), VMValue::Int(1));
     }
 }
