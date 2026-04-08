@@ -3310,9 +3310,25 @@ fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 // Best-effort: when writing to /nix/store without root
-                // privileges, silently skip.  The drv_path in the returned
-                // attrset is still correct — the file just doesn't exist
-                // on disk yet.
+                // privileges, try a fallback temp directory so the .drv
+                // content is preserved for debugging / cache lookups.
+                let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
+                std::fs::create_dir_all(&fallback_dir).ok();
+                let fallback_path = fallback_dir.join(
+                    drv_file.file_name().unwrap_or_default(),
+                );
+                if let Err(e2) = std::fs::write(&fallback_path, drv_content_final.as_bytes()) {
+                    tracing::warn!(
+                        "failed to write .drv to both {} and {}: {e}, {e2}",
+                        drv_path,
+                        fallback_path.display(),
+                    );
+                } else {
+                    tracing::debug!(
+                        "wrote .drv to fallback: {}",
+                        fallback_path.display(),
+                    );
+                }
             }
             Err(e) => {
                 return Err(EvalError::IoError {
@@ -3520,6 +3536,7 @@ fn split_version(s: &str) -> Vec<String> {
 mod tests {
     use crate::eval::eval;
     use crate::value::{NixString, StringContext, Value};
+    use super::{evaluate_flake, FLAKE_EVAL_DEPTH, MAX_FLAKE_EVAL_DEPTH};
 
     fn ev(input: &str) -> Value {
         eval(input).unwrap()

@@ -79,6 +79,8 @@ impl Substitutor {
     /// - `Substituted` — fetched from a cache and registered locally
     /// - `NotFound` — not available in any configured cache
     pub async fn substitute(&self, path: &StorePath) -> StoreResult<SubstituteResult> {
+        tracing::debug!(path = %path.to_absolute_path(), "checking store for path");
+
         // 1. Check if already in local store
         if self.local_store.is_valid_path(path).await? {
             return Ok(SubstituteResult::AlreadyPresent);
@@ -88,20 +90,27 @@ impl Substitutor {
         for cache in &self.caches {
             match self.try_cache(cache, path).await {
                 Ok(Some(result)) => return Ok(result),
-                Ok(None) => continue,
-                Err(e) => {
-                    // Log warning but try next cache
-                    tracing::warn!(
+                Ok(None) => {
+                    tracing::debug!(
+                        path = %path.to_absolute_path(),
                         cache_url = cache.base_url(),
-                        path = %path,
+                        "not found in cache",
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.to_absolute_path(),
+                        cache_url = cache.base_url(),
                         error = %e,
-                        "binary cache substitution failed, trying next"
+                        "cache error, trying next",
                     );
                     continue;
                 }
             }
         }
 
+        tracing::debug!(path = %path.to_absolute_path(), "not found in any cache");
         Ok(SubstituteResult::NotFound)
     }
 
@@ -158,6 +167,13 @@ impl Substitutor {
             .collect();
 
         let _ = self.local_store.add_to_store(name, &nar_data, &refs).await?;
+
+        tracing::info!(
+            path = %path.to_absolute_path(),
+            cache_url = cache.base_url(),
+            nar_size = narinfo.nar_size,
+            "substituted from cache",
+        );
 
         Ok(Some(SubstituteResult::Substituted {
             cache_url: cache.base_url().to_string(),

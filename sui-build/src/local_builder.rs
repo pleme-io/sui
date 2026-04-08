@@ -21,6 +21,32 @@ use crate::traits::{BuildError, BuildLog, BuildOutcome, BuildResult, Builder};
 use sui_store::substitute::{SubstituteResult, Substitutor};
 use sui_store::traits::{PathInfo, Store};
 
+/// Progress update emitted during [`LocalBuilder::build_closure_with_progress`].
+#[derive(Debug, Clone)]
+pub struct BuildProgress {
+    /// Total number of derivations in the closure.
+    pub total: usize,
+    /// Number of derivations already processed.
+    pub completed: usize,
+    /// Store path of the derivation currently being processed.
+    pub current_drv: String,
+    /// What is happening to this derivation.
+    pub action: BuildAction,
+}
+
+/// The action taken for a single derivation during closure building.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildAction {
+    /// Checking whether outputs exist in the local store.
+    Checking,
+    /// Fetching outputs from a binary cache.
+    Substituting,
+    /// Building outputs locally.
+    Building,
+    /// All outputs already present — nothing to do.
+    Skipped,
+}
+
 /// A builder that executes derivations locally with sandbox isolation.
 pub struct LocalBuilder {
     store: Arc<dyn Store>,
@@ -335,7 +361,103 @@ impl LocalBuilder {
         ));
 
         // Return result for the target (last) derivation
-        let (_target_path, target_drv) = closure.target();
+        let (_target_path, target_drv) = closure.try_target()?;
+        let output_paths: Vec<StorePath> = target_drv
+            .outputs
+            .values()
+            .filter_map(|o| StorePath::from_absolute_path(&o.path).ok())
+            .collect();
+
+        Ok(BuildResult {
+            outputs: output_paths,
+            log: log.finish(),
+            success: true,
+            outcome: BuildOutcome::Success,
+            duration_secs: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Build an entire derivation closure with progress reporting.
+    ///
+    /// Identical to [`build_closure`](Self::build_closure) but invokes
+    /// `progress` at each step so callers can display build status.
+    pub async fn build_closure_with_progress(
+        &self,
+        closure: &BuildClosure,
+        substitutor: Option<&Substitutor>,
+        progress: impl Fn(BuildProgress),
+    ) -> Result<BuildResult, BuildError> {
+        let start = std::time::Instant::now();
+        let total = closure.len();
+        let mut log = BuildLog::new();
+        let mut substituted: u32 = 0;
+        let mut built: u32 = 0;
+        let mut skipped: u32 = 0;
+        let mut completed: usize = 0;
+
+        for (drv_path, drv) in &closure.derivations {
+            progress(BuildProgress {
+                total,
+                completed,
+                current_drv: drv_path.clone(),
+                action: BuildAction::Checking,
+            });
+
+            // 1. Check if all outputs already exist
+            if self.all_outputs_exist(drv).await? {
+                skipped += 1;
+                completed += 1;
+                progress(BuildProgress {
+                    total,
+                    completed,
+                    current_drv: drv_path.clone(),
+                    action: BuildAction::Skipped,
+                });
+                continue;
+            }
+
+            // 2. Try substitution
+            if let Some(sub) = substitutor {
+                progress(BuildProgress {
+                    total,
+                    completed,
+                    current_drv: drv_path.clone(),
+                    action: BuildAction::Substituting,
+                });
+                if self.try_substitute_outputs(sub, drv).await {
+                    substituted += 1;
+                    completed += 1;
+                    continue;
+                }
+            }
+
+            // 3. Build locally
+            progress(BuildProgress {
+                total,
+                completed,
+                current_drv: drv_path.clone(),
+                action: BuildAction::Building,
+            });
+            log.push(&format!("building {drv_path}"));
+            let result = self.build_single(drv).await?;
+
+            if !result.success {
+                log.push(&format!("FAILED: {drv_path}"));
+                let merged_log = format!("{}\n{}", log.finish(), result.log);
+                return Ok(BuildResult {
+                    log: merged_log,
+                    ..result
+                });
+            }
+            built += 1;
+            completed += 1;
+        }
+
+        log.push(&format!(
+            "closure complete: {skipped} skipped, {substituted} substituted, {built} built"
+        ));
+
+        let (_target_path, target_drv) = closure.try_target()?;
         let output_paths: Vec<StorePath> = target_drv
             .outputs
             .values()
