@@ -514,23 +514,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             }
 
             // Phase 1b: Bind accumulated dotted-path attrs into new_env.
-            // If a top-level key already exists (e.g. from a simple binding),
-            // the dotted attrset is merged into the existing value.
+            // Note: CppNix rejects `inherit (src) x; x.y = ...;` as a
+            // duplicate definition, so we do not attempt to merge with
+            // existing inherit thunks — just bind directly.
             for (key, value) in dotted_attrs.iter() {
-                if let Some(existing) = new_env.lookup(key) {
-                    // Merge dotted attrs into existing binding (if both are attrs).
-                    let forced = force_value(&existing)?;
-                    if let (Value::Attrs(mut ea), Value::Attrs(na)) = (forced, value.clone()) {
-                        for (k, v) in na.iter() {
-                            merge_nested_insert(&mut ea, k.clone(), v.clone());
-                        }
-                        new_env.bind(key.clone(), Value::Attrs(ea));
-                    } else {
-                        new_env.bind(key.clone(), value.clone());
-                    }
-                } else {
-                    new_env.bind(key.clone(), value.clone());
-                }
+                new_env.bind(key.clone(), value.clone());
             }
 
             // Phase 2: Update all thunks to capture the final env
@@ -703,28 +691,12 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         }
 
         // Phase 1b: Bind accumulated dotted-path attrs into attrs and rec_env.
-        // If a top-level key already exists (e.g. from an inherit), the
-        // dotted attrset is merged into the existing value (forcing the
-        // existing thunk if necessary, which is safe because inherit
-        // source expressions resolve in the parent scope).
+        // Note: CppNix rejects `inherit (src) x; x.y = ...;` as a
+        // duplicate definition, so we do not attempt to merge with
+        // existing inherit thunks — just bind directly.
         for (key, value) in dotted_attrs.iter() {
-            if let Some(existing) = attrs.get(key).cloned() {
-                let forced = force_value(&existing)?;
-                if let (Value::Attrs(mut ea), Value::Attrs(na)) = (forced, value.clone()) {
-                    for (k, v) in na.iter() {
-                        merge_nested_insert(&mut ea, k.clone(), v.clone());
-                    }
-                    let merged = Value::Attrs(ea);
-                    attrs.insert(key.clone(), merged.clone());
-                    rec_env.bind(key.clone(), merged);
-                } else {
-                    attrs.insert(key.clone(), value.clone());
-                    rec_env.bind(key.clone(), value.clone());
-                }
-            } else {
-                attrs.insert(key.clone(), value.clone());
-                rec_env.bind(key.clone(), value.clone());
-            }
+            attrs.insert(key.clone(), value.clone());
+            rec_env.bind(key.clone(), value.clone());
         }
 
         // Phase 2: Update all thunks (both Suspended and InheritSelect)
@@ -4371,6 +4343,104 @@ mod tests {
             }
         } else {
             panic!("expected outer attrs");
+        }
+    }
+
+    // ── rec/let dotted bindings in recursive scope ────────
+
+    #[test]
+    fn rec_dotted_bindings_visible_to_siblings() {
+        // Dotted bindings in rec blocks must be visible to sibling
+        // bindings -- this is the nixpkgs lib/systems/parse.nix pattern.
+        let v = ev("rec { types.openSB = 1; types.openCpu = 2; foo = types.openSB; }.foo");
+        assert_eq!(v, Value::Int(1));
+    }
+
+    #[test]
+    fn rec_dotted_leaf_uses_rec_scope() {
+        // Leaf expressions in dotted bindings must see sibling
+        // rec-bindings, not just the parent scope.
+        let v = ev("rec { types.a = f 1; f = x: x + 1; }.types.a");
+        assert_eq!(v, Value::Int(2));
+    }
+
+    #[test]
+    fn rec_dotted_multiple_keys_merge() {
+        // Multiple dotted bindings sharing a top-level key must merge.
+        let v = ev("rec { types.a = 1; types.b = 2; x = types; }.x");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(force_value(attrs.get("a").unwrap()).unwrap(), Value::Int(1));
+            assert_eq!(force_value(attrs.get("b").unwrap()).unwrap(), Value::Int(2));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn rec_nixpkgs_parse_pattern() {
+        // Simplified nixpkgs lib/systems/parse.nix pattern:
+        // rec block with dotted types.xxx bindings that reference
+        // each other through the rec scope.
+        let v = ev(r#"
+            let
+              mkOptionType = x: x;
+              mergeOneOption = "merge";
+              attrValues = builtins.attrValues;
+              setType = name: value: { __type = name; } // value;
+              mapAttrs = builtins.mapAttrs;
+              enum = xs: mkOptionType { name = "enum"; check = x: builtins.elem x xs; };
+              setTypes = type: mapAttrs (name: value: setType type.name ({ inherit name; } // value));
+            in
+            rec {
+              types.openSB = mkOptionType { name = "sb"; merge = mergeOneOption; };
+              types.significantByte = enum (attrValues significantBytes);
+              significantBytes = setTypes types.openSB { bigEndian = {}; littleEndian = {}; };
+              types.openCpuType = mkOptionType { name = "cpu-type"; };
+              types.cpuType = enum (attrValues cpuTypes);
+              cpuTypes = setTypes types.openCpuType { arm = { bits = 32; }; };
+            }.types.openCpuType
+        "#);
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(
+                force_value(attrs.get("name").unwrap()).unwrap(),
+                Value::string("cpu-type")
+            );
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn let_dotted_leaf_uses_let_scope() {
+        // Dotted binding leaf in a let block sees sibling let-bindings.
+        let v = ev("let a.x = f 1; f = x: x + 1; in a.x");
+        assert_eq!(v, Value::Int(2));
+    }
+
+    #[test]
+    fn let_inherit_from_plus_dotted_overrides() {
+        // inherit-from and dotted bindings for the same key in a let
+        // block: CppNix rejects this as a duplicate definition.  Sui
+        // currently lets the dotted binding win (last-write-wins).
+        // This test documents the current behaviour -- when we add
+        // duplicate detection it should change to assert an error.
+        let v = ev(r#"
+            let
+              src = { types = { existing = true; }; };
+              inherit (src) types;
+              types.added = true;
+            in types
+        "#);
+        if let Value::Attrs(attrs) = v {
+            // Dotted binding overwrites the inherited value
+            assert_eq!(
+                force_value(attrs.get("added").unwrap()).unwrap(),
+                Value::Bool(true)
+            );
+            // Inherited 'existing' is lost because dotted replaced it
+            assert!(attrs.get("existing").is_none());
+        } else {
+            panic!("expected attrs");
         }
     }
 
