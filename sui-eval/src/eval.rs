@@ -1013,15 +1013,11 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             // resolve against the file where the closure was
             // *defined*, not where it's called from. The guard
             // pops on drop.
-            #[cfg(test)]
-            eprintln!("[DEBUG apply] closure.env.eval_file={:?} stack_before={}", closure.env.eval_file, EVAL_FILE_STACK.with(|s| s.borrow().len()));
             let _file_guard = closure
                 .env
                 .eval_file
                 .clone()
                 .map(push_eval_file);
-            #[cfg(test)]
-            eprintln!("[DEBUG apply] stack_after_push={}", EVAL_FILE_STACK.with(|s| s.borrow().len()));
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {
                     // Simple ident param: bind argument WITHOUT forcing.

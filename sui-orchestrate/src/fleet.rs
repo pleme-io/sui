@@ -255,6 +255,9 @@ pub enum FleetError {
         /// Hostnames participating in the cycle (the unresolved set).
         nodes: Vec<String>,
     },
+    /// An internal invariant was violated.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl FleetOrchestrator {
@@ -406,14 +409,12 @@ impl FleetOrchestrator {
         // Multi-node deploys keep returning `Ok` so callers can inspect partial
         // success and decide how to proceed.
         if nodes.len() == 1 && failed == 1 {
-            let failed_result = results
-                .into_iter()
-                .next()
-                .expect("single-node deploy must have one result");
-            return Err(FleetError::DeployFailed {
-                hostname: failed_result.hostname,
-                message: failed_result.log,
-            });
+            if let Some(failed_result) = results.first() {
+                return Err(FleetError::DeployFailed {
+                    hostname: failed_result.hostname.clone(),
+                    message: failed_result.log.clone(),
+                });
+            }
         }
 
         Ok(DeployResult {
@@ -480,9 +481,13 @@ pub fn topo_sort(nodes: Vec<Node>) -> Result<Vec<Node>, FleetError> {
 
     let mut sorted: Vec<Node> = Vec::with_capacity(by_name.len());
     while let Some(name) = queue.pop() {
-        let node = by_name
-            .remove(&name)
-            .expect("queued name must still be in the map");
+        let Some(node) = by_name.remove(&name) else {
+            // This should never happen: the queue only contains names from
+            // `by_name`. If it does, treat it as a cycle-like internal error.
+            return Err(FleetError::Cycle {
+                nodes: by_name.into_keys().collect(),
+            });
+        };
         sorted.push(node);
 
         if let Some(children) = dependents.get(&name) {
@@ -1448,6 +1453,14 @@ mod tests {
         assert!(msg.contains("cycle"));
         assert!(msg.contains("a"));
         assert!(msg.contains("b"));
+    }
+
+    #[test]
+    fn fleet_error_internal_display() {
+        let e = FleetError::Internal("invariant violated".to_string());
+        let msg = e.to_string();
+        assert!(msg.contains("internal error"));
+        assert!(msg.contains("invariant violated"));
     }
 
     // ── FleetError from io::Error ─────────────────────────────

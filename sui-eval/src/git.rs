@@ -256,7 +256,7 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
         "sui_ls_remote_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp)
@@ -275,7 +275,7 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
 
     // Use a wildcard refspec so ref_map returns all remote refs
     let refspec = gix::refspec::parse("refs/*:refs/*".into(), gix::refspec::parse::Operation::Fetch)
-        .expect("valid refspec")
+        .map_err(|e| format!("internal error: invalid refspec: {e}"))?
         .to_owned();
     let options = gix::remote::ref_map::Options {
         extra_refspecs: vec![refspec],

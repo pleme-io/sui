@@ -27,6 +27,9 @@ pub enum StoreError {
     /// The operation is not supported by this store backend.
     #[error("not supported: {0}")]
     NotSupported(String),
+    /// An internal invariant was violated.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 /// Information about a store path.
@@ -1474,5 +1477,13 @@ mod tests {
     fn store_error_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StoreError>();
+    }
+
+    #[test]
+    fn store_error_internal_display() {
+        let e = StoreError::Internal("something unexpected".to_string());
+        let msg = e.to_string();
+        assert!(msg.contains("internal error"));
+        assert!(msg.contains("something unexpected"));
     }
 }

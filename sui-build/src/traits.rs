@@ -374,6 +374,9 @@ pub enum BuildError {
     /// The build was cancelled before completion.
     #[error("build cancelled")]
     Cancelled,
+    /// An internal invariant was violated.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 // ── Builder trait ────────────────────────────────────────────────
@@ -996,6 +999,14 @@ mod tests {
     fn build_error_cancelled_display() {
         let e = BuildError::Cancelled;
         assert!(e.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn build_error_internal_display() {
+        let e = BuildError::Internal("invariant violated".to_string());
+        let msg = e.to_string();
+        assert!(msg.contains("internal error"));
+        assert!(msg.contains("invariant violated"));
     }
 
     // ── BuildOutcome::from(&SandboxResult) ──────────────────

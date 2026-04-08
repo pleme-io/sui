@@ -245,6 +245,12 @@ impl Thunk {
 
         match repr {
             ThunkRepr::Suspended { expr, env } => {
+                // Push the thunk's captured eval_file onto the thread-local
+                // stack so PathRel literals and relative imports inside the
+                // thunk body resolve against the file where the thunk was
+                // *defined*, not where it is forced from. The RAII guard
+                // pops on drop (including on error paths).
+                let _file_guard = env.eval_file.clone().map(crate::eval::push_eval_file);
                 match evaluator(&expr, &env) {
                     Ok(mut value) => {
                         // Transitively force inner thunks.
@@ -268,6 +274,7 @@ impl Thunk {
                 // restore-on-error semantics mirror the Suspended
                 // branch so a transient error doesn't permanently
                 // blackhole this thunk.
+                let _file_guard = env.eval_file.clone().map(crate::eval::push_eval_file);
                 let attempt = (|| -> Result<Value, EvalError> {
                     let raw = evaluator(&source, &env)?;
                     let mut forced = raw;
@@ -575,6 +582,9 @@ pub enum EvalError {
     /// A syntax error in the input expression.
     #[error("parse error: {0}")]
     ParseError(String),
+    /// Maximum recursion depth exceeded.
+    #[error("recursion limit: {0}")]
+    RecursionLimit(String),
 }
 
 impl EvalError {
@@ -1998,6 +2008,16 @@ mod tests {
         let s = format!("{}", EvalError::ParseError("syntax".into()));
         assert!(s.contains("parse error"));
         assert!(s.contains("syntax"));
+    }
+
+    #[test]
+    fn eval_error_display_recursion_limit() {
+        let s = format!(
+            "{}",
+            EvalError::RecursionLimit("max depth exceeded".into())
+        );
+        assert!(s.contains("recursion limit"));
+        assert!(s.contains("max depth exceeded"));
     }
 
     #[test]

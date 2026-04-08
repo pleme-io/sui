@@ -42,12 +42,26 @@ impl BuildClosure {
         let derivations = sorted
             .into_iter()
             .map(|path| {
-                let drv = parsed.remove(&path).expect("parsed contains all paths");
-                (path, drv)
+                let drv = parsed.remove(&path).ok_or_else(|| {
+                    BuildError::Derivation(format!(
+                        "internal error: topo_sort produced path not in parsed set: {path}"
+                    ))
+                })?;
+                Ok((path, drv))
             })
-            .collect();
+            .collect::<Result<Vec<_>, BuildError>>()?;
 
         Ok(Self { derivations })
+    }
+
+    /// The final (target) derivation — always the last element.
+    ///
+    /// Returns an error if the closure is empty (should never happen for a
+    /// closure produced by [`compute`]).
+    pub fn try_target(&self) -> Result<&(String, Derivation), BuildError> {
+        self.derivations.last().ok_or_else(|| {
+            BuildError::Derivation("internal error: build closure is empty".into())
+        })
     }
 
     /// The final (target) derivation — always the last element.
@@ -55,6 +69,7 @@ impl BuildClosure {
     /// # Panics
     ///
     /// Panics if the closure is empty (should never happen for a valid closure).
+    /// Prefer [`try_target`] for fallible callers.
     #[must_use]
     pub fn target(&self) -> &(String, Derivation) {
         self.derivations.last().expect("closure is never empty")
@@ -462,5 +477,29 @@ mod tests {
         let (target_path, target_drv) = closure.target();
         assert_eq!(target_path, &path_a);
         assert_eq!(target_drv, &drv_a);
+    }
+
+    #[test]
+    fn try_target_returns_ok_for_valid_closure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let drv = make_drv("hello", &[]);
+        let path = write_drv(tmp.path(), "hello", &drv);
+        let closure = BuildClosure::compute(&path).unwrap();
+        let result = closure.try_target();
+        assert!(result.is_ok());
+        assert_eq!(&result.unwrap().0, &path);
+    }
+
+    #[test]
+    fn try_target_returns_err_for_empty_closure() {
+        let empty = BuildClosure {
+            derivations: vec![],
+        };
+        let result = empty.try_target();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("internal error"),
+            "expected internal error for empty closure"
+        );
     }
 }
