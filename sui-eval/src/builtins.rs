@@ -2935,23 +2935,36 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                     input_val.insert("sourceInfo".to_string(), Value::Attrs(source_info));
                 }
 
-                // If this input is itself a flake (default true), try to
-                // recursively evaluate its outputs and merge them in.
+                // If this input is itself a flake (default true), wrap the
+                // input in a lazy thunk so its outputs function is only
+                // invoked when an attribute is actually accessed.  This
+                // matches CppNix semantics where each input is a thunk
+                // and prevents eager recursive evaluation of the entire
+                // transitive dependency tree (which would fail for large
+                // inputs like nixpkgs whose outputs function requires its
+                // own inputs to already be available).
                 let is_flake = node.flake.unwrap_or(true);
                 if is_flake {
                     let input_dir = std::path::Path::new(&out_path);
-                    if input_dir.join("flake.nix").exists()
-                        && let Ok(flake_result) = evaluate_flake(input_dir) {
-                            // Merge the outputs into the input attrset so
-                            // consumers can access e.g. `inputs.nixpkgs.lib`.
-                            if let Value::Attrs(ref flake_out_attrs) = flake_result {
-                                for (k, v) in flake_out_attrs.iter() {
-                                    if !input_val.contains_key(k) {
-                                        input_val.insert(k.clone(), v.clone());
+                    if input_dir.join("flake.nix").exists() {
+                        let immediate = input_val;
+                        let dir = input_dir.to_path_buf();
+                        let thunk = Thunk::new_native(move || {
+                            let mut merged = immediate;
+                            if let Ok(flake_result) = evaluate_flake(&dir) {
+                                if let Value::Attrs(ref flake_out_attrs) = flake_result {
+                                    for (k, v) in flake_out_attrs.iter() {
+                                        if !merged.contains_key(k) {
+                                            merged.insert(k.clone(), v.clone());
+                                        }
                                     }
                                 }
                             }
-                        }
+                            Ok(Value::Attrs(merged))
+                        });
+                        resolved_inputs.insert(input_name, Value::Thunk(thunk));
+                        continue;
+                    }
                 }
 
                 resolved_inputs.insert(input_name, Value::Attrs(input_val));
@@ -7288,5 +7301,175 @@ mod tests {
             msg.contains("fetch flake input"),
             "expected fetch error message, got: {msg}"
         );
+    }
+
+    // ── Lazy flake input evaluation tests ──────────────────────
+
+    #[test]
+    fn flake_lazy_input_doesnt_fail_eagerly() {
+        // A dep flake whose outputs function would abort if forced.
+        // Because inputs are lazy, accessing dep.outPath (immediate
+        // metadata) should NOT force the dep's outputs function.
+        let tmp = tempfile::tempdir().unwrap();
+
+        let dep = tmp.path().join("dep");
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::write(
+            dep.join("flake.nix"),
+            r#"{
+                description = "broken dep";
+                outputs = { self }: { broken = builtins.abort "should not be forced"; working = 1; };
+            }"#,
+        )
+        .unwrap();
+        let dep_repo = crate::git::init_repo(&dep, "main").unwrap();
+        crate::git::commit_all(&dep_repo, "init", "test", "test@test.com").ok();
+
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(
+            main.join("flake.nix"),
+            &format!(
+                r#"{{
+                    description = "main";
+                    inputs.dep.url = "path:{dep}";
+                    outputs = {{ self, dep }}: {{ value = dep.outPath; }};
+                }}"#,
+                dep = dep.display()
+            ),
+        )
+        .unwrap();
+        // Create a minimal flake.lock so the dep is resolved as a path input.
+        std::fs::write(
+            main.join("flake.lock"),
+            &format!(
+                r#"{{
+                    "nodes": {{
+                        "root": {{
+                            "inputs": {{ "dep": "dep" }}
+                        }},
+                        "dep": {{
+                            "locked": {{
+                                "type": "path",
+                                "path": "{dep}"
+                            }},
+                            "original": {{
+                                "type": "path",
+                                "path": "{dep}"
+                            }}
+                        }}
+                    }},
+                    "root": "root",
+                    "version": 7
+                }}"#,
+                dep = dep.display()
+            ),
+        )
+        .unwrap();
+        let main_repo = crate::git::init_repo(&main, "main").unwrap();
+        crate::git::commit_all(&main_repo, "init", "test", "test@test.com").ok();
+
+        // This should succeed because dep.outPath is immediate metadata
+        // and doesn't require forcing dep's outputs function.
+        let result = evaluate_flake(&main);
+        assert!(
+            result.is_ok(),
+            "lazy input should not fail eagerly: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn flake_lazy_input_outputs_forced_on_access() {
+        // When we DO access an output attribute from a dep, the lazy
+        // evaluation kicks in and produces the correct value.
+        let tmp = tempfile::tempdir().unwrap();
+
+        let dep = tmp.path().join("dep");
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::write(
+            dep.join("flake.nix"),
+            r#"{
+                description = "good dep";
+                outputs = { self }: { answer = 42; };
+            }"#,
+        )
+        .unwrap();
+        let dep_repo = crate::git::init_repo(&dep, "main").unwrap();
+        crate::git::commit_all(&dep_repo, "init", "test", "test@test.com").ok();
+
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(
+            main.join("flake.nix"),
+            &format!(
+                r#"{{
+                    description = "main";
+                    inputs.dep.url = "path:{dep}";
+                    outputs = {{ self, dep }}: {{ value = dep.answer; }};
+                }}"#,
+                dep = dep.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            main.join("flake.lock"),
+            &format!(
+                r#"{{
+                    "nodes": {{
+                        "root": {{
+                            "inputs": {{ "dep": "dep" }}
+                        }},
+                        "dep": {{
+                            "locked": {{
+                                "type": "path",
+                                "path": "{dep}"
+                            }},
+                            "original": {{
+                                "type": "path",
+                                "path": "{dep}"
+                            }}
+                        }}
+                    }},
+                    "root": "root",
+                    "version": 7
+                }}"#,
+                dep = dep.display()
+            ),
+        )
+        .unwrap();
+        let main_repo = crate::git::init_repo(&main, "main").unwrap();
+        crate::git::commit_all(&main_repo, "init", "test", "test@test.com").ok();
+
+        // Accessing dep.answer should force the dep's outputs and return 42.
+        let result = evaluate_flake(&main).unwrap();
+        let val = crate::builtins::navigate_attrs(&result, &["value"]).unwrap();
+        assert_eq!(val, Value::Int(42));
+    }
+
+    #[test]
+    fn native_thunk_forces_correctly() {
+        // Direct unit test for Thunk::new_native.
+        use crate::value::Thunk;
+        let thunk = Thunk::new_native(|| Ok(Value::Int(99)));
+        assert!(!thunk.is_evaluated());
+        let val = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        assert_eq!(val, Value::Int(99));
+        assert!(thunk.is_evaluated());
+    }
+
+    #[test]
+    fn native_thunk_error_memoizes_null() {
+        // When a native thunk's closure returns an error, subsequent
+        // forces should see Evaluated(Null) rather than Blackhole.
+        use crate::value::Thunk;
+        let thunk = Thunk::new_native(|| {
+            Err(crate::value::EvalError::Throw("test error".into()))
+        });
+        let r1 = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert!(r1.is_err());
+        // Second force should succeed with Null (not Blackhole/infinite recursion).
+        let r2 = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert_eq!(r2.unwrap(), Value::Null);
     }
 }

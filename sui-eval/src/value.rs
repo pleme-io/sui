@@ -192,6 +192,11 @@ pub enum ThunkRepr {
         name: String,
         env: Env,
     },
+    /// A lazy value backed by a Rust closure.  Used for flake input
+    /// evaluation: the closure calls `evaluate_flake` on first access
+    /// instead of eagerly during flake setup, matching CppNix semantics
+    /// where each input's outputs function is wrapped in a thunk.
+    Native(Box<dyn FnOnce() -> Result<Value, EvalError>>),
     /// Currently being evaluated -- detects infinite recursion.
     Blackhole,
     /// Already evaluated and memoized.
@@ -218,6 +223,13 @@ impl Thunk {
             name,
             env,
         })))
+    }
+
+    /// Create a thunk backed by a Rust closure.  When forced, the
+    /// closure is called exactly once and its result is memoized.
+    /// This is used for lazy flake input evaluation.
+    pub fn new_native(f: impl FnOnce() -> Result<Value, EvalError> + 'static) -> Self {
+        Self(Rc::new(RefCell::new(ThunkRepr::Native(Box::new(f)))))
     }
 
     /// Create a thunk that is already evaluated (an optimization).
@@ -317,6 +329,29 @@ impl Thunk {
                     }
                 }
             }
+            ThunkRepr::Native(f) => {
+                // The closure is consumed (FnOnce).  On success we
+                // memoize the result.  On failure we leave Blackhole
+                // — unlike Suspended thunks the closure cannot be
+                // retried because it has been consumed.
+                match f() {
+                    Ok(mut value) => {
+                        while let Value::Thunk(inner) = value {
+                            value = inner.force(evaluator)?;
+                        }
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        // Cannot restore the closure — leave an
+                        // evaluated Null so subsequent forces don't
+                        // hit Blackhole and confuse the user with an
+                        // "infinite recursion" message.
+                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
+                        Err(e)
+                    }
+                }
+            }
             ThunkRepr::Blackhole => {
                 Err(EvalError::InfiniteRecursion(
                     "thunk blackhole".into(),
@@ -337,6 +372,7 @@ impl fmt::Debug for Thunk {
         match &*self.0.borrow() {
             ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
             ThunkRepr::InheritSelect { name, .. } => write!(f, "<inherit-select {name}>"),
+            ThunkRepr::Native(_) => write!(f, "<native-thunk>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
         }
