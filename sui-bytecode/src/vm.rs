@@ -285,7 +285,7 @@ impl<'a> VM<'a> {
 
                 // -- With scopes ----------------------------------------
                 OpCode::PushWith => {
-                    let scope = self.pop()?;
+                    let scope = self.pop_forced()?;
                     self.with_stack.push(scope);
                 }
                 OpCode::PopWith => {
@@ -953,6 +953,11 @@ impl<'a> VM<'a> {
                         });
 
                         let result = self.run_until(return_depth);
+
+                        // Restore the stack to its state before thunk evaluation.
+                        // The Return handler's early exit (at stop_depth) skips
+                        // truncation, so internal function calls may leave values.
+                        self.stack.truncate(stack_base);
 
                         match result {
                             Ok(value) => {

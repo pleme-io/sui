@@ -740,14 +740,9 @@ impl Compiler {
 
         let mut count: u16 = 0;
 
-        // Emit flat entries. Non-trivial values are wrapped in thunks
-        // so that `{ a = expensive; }.b` doesn't evaluate `expensive`.
+        // Emit flat entries.
         for (key, value_expr) in &flat_entries {
-            if Self::is_trivial_value(value_expr) {
-                self.compile_expr(value_expr)?;
-            } else {
-                self.compile_thunk_immediate(value_expr)?;
-            }
+            self.compile_expr(value_expr)?;
             self.emit_constant(VMValue::String(key.clone()))?;
             count += 1;
         }
