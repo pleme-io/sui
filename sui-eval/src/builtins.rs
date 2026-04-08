@@ -309,11 +309,17 @@ pub fn register(env: &mut Env) {
     });
     register_builtin(&mut builtins_set, "concatLists", |args| {
         let lists = args[0].as_list()?;
-        let result: Result<Vec<Value>, _> = lists.iter()
-            .map(|l| l.as_list())
-            .collect::<Result<Vec<_>, _>>()
-            .map(|vecs| vecs.into_iter().flatten().cloned().collect());
-        Ok(Value::List(result?))
+        // Pre-compute total length to allocate once.
+        let total_len: usize = lists.iter()
+            .filter_map(|v| v.as_list().ok())
+            .map(|l| l.len())
+            .sum();
+        let mut result = Vec::with_capacity(total_len);
+        for v in lists {
+            let inner = v.as_list()?;
+            result.extend(inner.iter().cloned());
+        }
+        Ok(Value::List(result))
     });
     register_builtin(&mut builtins_set, "sort", |args| {
         let cmp = args[0].clone();
