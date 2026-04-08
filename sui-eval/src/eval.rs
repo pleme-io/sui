@@ -907,6 +907,17 @@ fn eval_binop(
             }
             (Value::Path(a), Value::String(b)) => Ok(Value::Path(format!("{a}{}", b.chars))),
             (Value::Path(a), Value::Path(b)) => Ok(Value::Path(format!("{a}/{b}"))),
+            // CppNix coerces attrsets with outPath when used with +
+            (Value::Attrs(_), _) | (_, Value::Attrs(_)) => {
+                let (ls, lctx) = l.coerce_to_string()?;
+                let (rs, rctx) = r.coerce_to_string()?;
+                let mut ctx = lctx;
+                ctx.merge(&rctx);
+                Ok(Value::String(NixString::with_context(
+                    format!("{ls}{rs}"),
+                    ctx,
+                )))
+            }
             _ => Err(EvalError::TypeError(format!(
                 "cannot add {} and {}",
                 l.type_name(),
