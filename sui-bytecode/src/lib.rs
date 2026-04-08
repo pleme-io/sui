@@ -37,12 +37,16 @@
 //!   string ops, arithmetic, control flow, conversion)
 //! - `import` with file caching
 //! - Thunks / lazy evaluation (MakeThunk/Force opcodes, blackhole detection)
+//! - Lazy attrset values (non-trivial values wrapped in thunks)
+//! - `derivation` / `derivationStrict` (native implementation via sui-compat)
+//! - `builtins.getFlake` (path-based flake references)
+//! - `builtins.scopedImport` (with-wrapping approach)
+//! - VM-level dispatch for interner-dependent builtins (attrNames,
+//!   listToAttrs, removeAttrs, hasAttr, getAttr, catAttrs)
+//! - Deep-force at VM boundary (recursively forces thunks in attrsets/lists)
 //!
 //! # Not Yet Implemented
 //!
-//! - `scopedImport`
-//! - Higher-order builtins that invoke VM closures (map, filter, foldl')
-//! - `derivation` / `derivationStrict`
 //! - String interpolation contexts
 
 /// Built-in function registry for the VM.
