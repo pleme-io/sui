@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Clean-room Nix language evaluator (bytecode VM)"
 
 [dependencies]
+sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-store.workspace = true
 rnix.workspace = true

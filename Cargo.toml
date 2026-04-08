@@ -131,6 +131,7 @@ name = "sui"
 path = "src/main.rs"
 
 [dependencies]
+sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-store.workspace = true
 sui-eval.workspace = true

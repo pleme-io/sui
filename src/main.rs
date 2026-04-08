@@ -5,6 +5,9 @@ use sui_store::{LocalStore, Store, Substitutor};
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]
 struct Cli {
+    /// Use bytecode VM instead of tree-walker for evaluation
+    #[arg(long, global = true)]
+    vm: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -229,11 +232,30 @@ async fn main() -> Result<(), CliError> {
         Commands::Eval { expression, json } => {
             let expr = expression
                 .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
-            let value = sui_eval::eval(&expr)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&value.to_json())?);
+            if cli.vm {
+                // Bytecode VM evaluation path.
+                let result = sui_bytecode::eval_full(&expr).map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "vm eval",
+                        message: e.to_string(),
+                    }
+                })?;
+                if json {
+                    let sk = result.to_string_keyed();
+                    let json_val = string_keyed_to_json(&sk);
+                    println!("{}", serde_json::to_string_pretty(&json_val)?);
+                } else {
+                    let sk = result.to_string_keyed();
+                    println!("{sk}");
+                }
             } else {
-                println!("{value}");
+                // Tree-walker evaluation path.
+                let value = sui_eval::eval(&expr)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&value.to_json())?);
+                } else {
+                    println!("{value}");
+                }
             }
         }
 
@@ -810,6 +832,31 @@ fn format_input_url(node: &sui_compat::flake::FlakeNode) -> String {
         }
     } else {
         "(unknown)".to_string()
+    }
+}
+
+/// Convert a `StringKeyedValue` from the bytecode VM to `serde_json::Value`.
+fn string_keyed_to_json(sk: &sui_bytecode::StringKeyedValue) -> serde_json::Value {
+    match sk {
+        sui_bytecode::StringKeyedValue::Null => serde_json::Value::Null,
+        sui_bytecode::StringKeyedValue::Bool(b) => serde_json::Value::Bool(*b),
+        sui_bytecode::StringKeyedValue::Int(n) => serde_json::json!(n),
+        sui_bytecode::StringKeyedValue::Float(f) => serde_json::json!(f),
+        sui_bytecode::StringKeyedValue::String(s) => serde_json::Value::String(s.clone()),
+        sui_bytecode::StringKeyedValue::Path(p) => serde_json::Value::String(p.clone()),
+        sui_bytecode::StringKeyedValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(string_keyed_to_json).collect())
+        }
+        sui_bytecode::StringKeyedValue::Attrs(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), string_keyed_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        sui_bytecode::StringKeyedValue::Lambda => {
+            serde_json::Value::String("<lambda>".to_string())
+        }
     }
 }
 

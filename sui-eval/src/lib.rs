@@ -7,6 +7,8 @@
 
 /// Core Nix builtins (90+ functions).
 pub mod builtins;
+/// Bidirectional conversion between bytecode VM values and tree-walker values.
+pub mod convert;
 /// Tree-walking evaluator using rnix's typed AST.
 pub mod eval;
 /// Content-addressed input fetcher for flake.lock resolved inputs.
@@ -61,6 +63,28 @@ impl Evaluator for TreeWalkEvaluator {
         let path_buf = path.to_path_buf();
         let _guard = eval::push_eval_file(path_buf.clone());
         eval::eval_with_file(&source, Some(path_buf))
+    }
+}
+
+/// Bytecode VM evaluator — compiles to bytecode and executes on the stack VM.
+pub struct BytecodeEvaluator;
+
+impl Evaluator for BytecodeEvaluator {
+    fn eval_expr(&self, input: &str) -> Result<Value, EvalError> {
+        let result = sui_bytecode::eval_full(input).map_err(|e| match e {
+            sui_bytecode::EvalError::Compile(c) => EvalError::ParseError(c.to_string()),
+            sui_bytecode::EvalError::Runtime(r) => EvalError::TypeError(r.to_string()),
+        })?;
+        Ok(convert::string_keyed_to_eval(&result.to_string_keyed()))
+    }
+
+    fn eval_file(&self, path: &std::path::Path) -> Result<Value, EvalError> {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| EvalError::IoError {
+                context: format!("eval_file: {}", path.display()),
+                message: e.to_string(),
+            })?;
+        self.eval_expr(&source)
     }
 }
 
