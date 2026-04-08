@@ -5580,6 +5580,8 @@ dependencies = [
  "rnix",
  "rowan",
  "serde_json",
+ "sha2",
+ "sui-compat",
  "sui-eval",
  "tempfile",
  "thiserror 2.0.18",

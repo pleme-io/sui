@@ -528,10 +528,15 @@ impl<'a> VM<'a> {
                         let result = self.call_higher_order_builtin(&hob, arg)?;
                         self.push(result);
                     } else if let Some(builtin) = func.as_builtin() {
-                        let arg_vmval = arg.to_vmvalue();
-                        let builtin_func = builtin.func.clone();
-                        let result = builtin_func(vec![arg_vmval])?;
-                        self.push(NanBox::from_vmvalue(&result));
+                        // Check for builtins that need VM-level dispatch (interner access).
+                        if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
+                            self.push(result);
+                        } else {
+                            let arg_vmval = arg.to_vmvalue();
+                            let builtin_func = builtin.func.clone();
+                            let result = builtin_func(vec![arg_vmval])?;
+                            self.push(NanBox::from_vmvalue(&result));
+                        }
                     } else {
                         return Err(VMError::NotCallable(func.type_name().to_string()));
                     }
@@ -638,10 +643,14 @@ impl<'a> VM<'a> {
                         let result = self.call_higher_order_builtin(&hob, arg)?;
                         self.push(result);
                     } else if let Some(builtin) = func.as_builtin() {
-                        let arg_vmval = arg.to_vmvalue();
-                        let builtin_func = builtin.func.clone();
-                        let result = builtin_func(vec![arg_vmval])?;
-                        self.push(NanBox::from_vmvalue(&result));
+                        if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
+                            self.push(result);
+                        } else {
+                            let arg_vmval = arg.to_vmvalue();
+                            let builtin_func = builtin.func.clone();
+                            let result = builtin_func(vec![arg_vmval])?;
+                            self.push(NanBox::from_vmvalue(&result));
+                        }
                     } else {
                         return Err(VMError::NotCallable(func.type_name().to_string()));
                     }
@@ -1026,6 +1035,558 @@ impl<'a> VM<'a> {
         }
     }
 
+    // -- VM-level builtin dispatch (builtins needing interner access) ------
+
+    /// Try to handle a builtin call at the VM level (for builtins that need
+    /// interner access, like derivation, attrNames, etc.).
+    /// Returns `Some(result)` if handled, `None` to fall through to the
+    /// standard builtin dispatch.
+    fn try_vm_builtin(
+        &mut self,
+        name: &str,
+        arg: &NanBox,
+    ) -> Result<Option<NanBox>, VMError> {
+        match name {
+            "derivation" | "derivationStrict" => {
+                let forced = self.force_value(arg.clone())?;
+                let result = self.vm_build_derivation(forced)?;
+                Ok(Some(result))
+            }
+            "attrNames" => {
+                let forced = self.force_value(arg.clone())?;
+                if let Some(attrs) = forced.as_attrs() {
+                    let mut names: Vec<NanBox> = Vec::with_capacity(attrs.len());
+                    for k in attrs.keys() {
+                        let name_str = self.interner.resolve(*k).to_string();
+                        names.push(NanBox::string(name_str));
+                    }
+                    Ok(Some(NanBox::list(names)))
+                } else {
+                    Err(VMError::TypeError {
+                        expected: "set",
+                        got: forced.type_name(),
+                        context: "attrNames".to_string(),
+                    })
+                }
+            }
+            "listToAttrs" => {
+                let forced = self.force_value(arg.clone())?;
+                let vmval = forced.to_vmvalue();
+                let list = match &vmval {
+                    VMValue::List(l) => l,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "list",
+                            got: other.type_name(),
+                            context: "listToAttrs".to_string(),
+                        });
+                    }
+                };
+                let name_sym = self.interner.intern("name");
+                let value_sym = self.interner.intern("value");
+                let mut result: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+                for item in list {
+                    if let VMValue::Attrs(a) = item {
+                        let name_val = a.get(&name_sym).ok_or_else(|| {
+                            VMError::Throw(
+                                "listToAttrs: element missing 'name'".to_string(),
+                            )
+                        })?;
+                        let value_val = a.get(&value_sym).ok_or_else(|| {
+                            VMError::Throw(
+                                "listToAttrs: element missing 'value'".to_string(),
+                            )
+                        })?;
+                        let key_str = match name_val {
+                            VMValue::String(s) => s.clone(),
+                            _ => {
+                                return Err(VMError::TypeError {
+                                    expected: "string",
+                                    got: name_val.type_name(),
+                                    context: "listToAttrs name".to_string(),
+                                });
+                            }
+                        };
+                        let key_sym = self.interner.intern(&key_str);
+                        result.insert(key_sym, NanBox::from_vmvalue(value_val));
+                    } else {
+                        return Err(VMError::TypeError {
+                            expected: "set",
+                            got: item.type_name(),
+                            context: "listToAttrs element".to_string(),
+                        });
+                    }
+                }
+                Ok(Some(NanBox::attrs(result)))
+            }
+            "removeAttrs" => {
+                // removeAttrs is curried: first call takes the set, returns partial
+                let forced = self.force_value(arg.clone())?;
+                if let Some(attrs) = forced.as_attrs() {
+                    // Convert to VMValue for the closure (closures can't capture NanBox BTreeMaps)
+                    let attrs_vm: BTreeMap<Symbol, VMValue> = attrs
+                        .iter()
+                        .map(|(k, v)| (*k, v.to_vmvalue()))
+                        .collect();
+                    let interner_names: Vec<(Symbol, String)> = attrs
+                        .keys()
+                        .map(|k| (*k, self.interner.resolve(*k).to_string()))
+                        .collect();
+                    let result = VMValue::Builtin(crate::value::VMBuiltin {
+                        name: "removeAttrs<partial>",
+                        func: Rc::new(move |args2| {
+                            let to_remove = match &args2[0] {
+                                VMValue::List(l) => l,
+                                other => {
+                                    return Err(VMError::TypeError {
+                                        expected: "list",
+                                        got: other.type_name(),
+                                        context: "removeAttrs".to_string(),
+                                    });
+                                }
+                            };
+                            let remove_names: std::collections::HashSet<String> = to_remove
+                                .iter()
+                                .filter_map(|v| {
+                                    if let VMValue::String(s) = v {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            let mut result = BTreeMap::new();
+                            for &(sym, ref name) in &interner_names {
+                                if !remove_names.contains(name) {
+                                    if let Some(v) = attrs_vm.get(&sym) {
+                                        result.insert(sym, v.clone());
+                                    }
+                                }
+                            }
+                            Ok(VMValue::Attrs(result))
+                        }),
+                        arity: 1,
+                    });
+                    Ok(Some(NanBox::from_vmvalue(&result)))
+                } else {
+                    Err(VMError::TypeError {
+                        expected: "set",
+                        got: forced.type_name(),
+                        context: "removeAttrs".to_string(),
+                    })
+                }
+            }
+            "hasAttr" => {
+                // hasAttr is curried: first call takes name string, returns partial
+                let forced = self.force_value(arg.clone())?;
+                let name_str = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: other.type_name(),
+                            context: "hasAttr".to_string(),
+                        });
+                    }
+                };
+                let sym = self.interner.intern(&name_str);
+                Ok(Some(NanBox::from_vmvalue(&VMValue::Builtin(
+                    crate::value::VMBuiltin {
+                        name: "hasAttr<partial>",
+                        func: Rc::new(move |args2| {
+                            let attrs = match &args2[0] {
+                                VMValue::Attrs(a) => a,
+                                other => {
+                                    return Err(VMError::TypeError {
+                                        expected: "set",
+                                        got: other.type_name(),
+                                        context: "hasAttr".to_string(),
+                                    });
+                                }
+                            };
+                            Ok(VMValue::Bool(attrs.contains_key(&sym)))
+                        }),
+                        arity: 1,
+                    },
+                ))))
+            }
+            "getAttr" => {
+                let forced = self.force_value(arg.clone())?;
+                let name_str = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: other.type_name(),
+                            context: "getAttr".to_string(),
+                        });
+                    }
+                };
+                let sym = self.interner.intern(&name_str);
+                let name_for_err = name_str.clone();
+                Ok(Some(NanBox::from_vmvalue(&VMValue::Builtin(
+                    crate::value::VMBuiltin {
+                        name: "getAttr<partial>",
+                        func: Rc::new(move |args2| {
+                            let attrs = match &args2[0] {
+                                VMValue::Attrs(a) => a,
+                                other => {
+                                    return Err(VMError::TypeError {
+                                        expected: "set",
+                                        got: other.type_name(),
+                                        context: "getAttr".to_string(),
+                                    });
+                                }
+                            };
+                            attrs.get(&sym).cloned().ok_or_else(|| {
+                                VMError::AttrNotFound(name_for_err.clone())
+                            })
+                        }),
+                        arity: 1,
+                    },
+                ))))
+            }
+            "catAttrs" => {
+                let forced = self.force_value(arg.clone())?;
+                let name_str = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: other.type_name(),
+                            context: "catAttrs".to_string(),
+                        });
+                    }
+                };
+                let sym = self.interner.intern(&name_str);
+                Ok(Some(NanBox::from_vmvalue(&VMValue::Builtin(
+                    crate::value::VMBuiltin {
+                        name: "catAttrs<partial>",
+                        func: Rc::new(move |args2| {
+                            let list = match &args2[0] {
+                                VMValue::List(l) => l,
+                                other => {
+                                    return Err(VMError::TypeError {
+                                        expected: "list",
+                                        got: other.type_name(),
+                                        context: "catAttrs".to_string(),
+                                    });
+                                }
+                            };
+                            let mut result = Vec::new();
+                            for item in list {
+                                if let VMValue::Attrs(a) = item {
+                                    if let Some(v) = a.get(&sym) {
+                                        result.push(v.clone());
+                                    }
+                                }
+                            }
+                            Ok(VMValue::List(result))
+                        }),
+                        arity: 1,
+                    },
+                ))))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Build a derivation from a VM attrset (with interner access).
+    fn vm_build_derivation(&mut self, arg: NanBox) -> Result<NanBox, VMError> {
+        use sui_compat::derivation::{Derivation, DerivationOutput};
+
+        let attrs = match arg.as_attrs() {
+            Some(a) => a.clone(),
+            None => {
+                return Err(VMError::TypeError {
+                    expected: "set",
+                    got: arg.type_name(),
+                    context: "derivation".to_string(),
+                });
+            }
+        };
+
+        // Helper: resolve a symbol key and get string value.
+        let get_str = |attrs: &BTreeMap<Symbol, NanBox>,
+                       interner: &mut Interner,
+                       key: &str|
+         -> Result<String, VMError> {
+            let sym = interner.intern(key);
+            let val = attrs.get(&sym).ok_or_else(|| {
+                VMError::AttrNotFound(key.to_string())
+            })?;
+            match val.to_vmvalue() {
+                VMValue::String(s) => Ok(s),
+                other => Err(VMError::TypeError {
+                    expected: "string",
+                    got: other.type_name(),
+                    context: format!("derivation attr '{key}'"),
+                }),
+            }
+        };
+
+        let get_str_opt = |attrs: &BTreeMap<Symbol, NanBox>,
+                           interner: &mut Interner,
+                           key: &str|
+         -> Result<Option<String>, VMError> {
+            let sym = interner.intern(key);
+            match attrs.get(&sym) {
+                None => Ok(None),
+                Some(val) => match val.to_vmvalue() {
+                    VMValue::String(s) => Ok(Some(s)),
+                    other => Err(VMError::TypeError {
+                        expected: "string",
+                        got: other.type_name(),
+                        context: format!("derivation attr '{key}'"),
+                    }),
+                },
+            }
+        };
+
+        let name = get_str(&attrs, self.interner, "name")?;
+        let system = get_str(&attrs, self.interner, "system")?;
+        let builder = get_str(&attrs, self.interner, "builder")?;
+
+        // Optional `args` list of strings.
+        let args_sym = self.interner.intern("args");
+        let args_list: Vec<String> = if let Some(a) = attrs.get(&args_sym) {
+            let vmval = a.to_vmvalue();
+            match vmval {
+                VMValue::List(l) => {
+                    let mut out = Vec::with_capacity(l.len());
+                    for item in &l {
+                        match item {
+                            VMValue::String(s) => out.push(s.clone()),
+                            VMValue::Int(n) => out.push(n.to_string()),
+                            VMValue::Float(f) => out.push(format!("{f}")),
+                            VMValue::Bool(true) => out.push("1".to_string()),
+                            VMValue::Bool(false) => out.push(String::new()),
+                            VMValue::Null => out.push(String::new()),
+                            VMValue::Path(p) => out.push(p.clone()),
+                            _ => out.push(String::new()),
+                        }
+                    }
+                    out
+                }
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Optional `outputs` list.
+        let outputs_sym = self.interner.intern("outputs");
+        let outputs: Vec<String> = if let Some(o) = attrs.get(&outputs_sym) {
+            let vmval = o.to_vmvalue();
+            match vmval {
+                VMValue::List(l) => {
+                    let mut out = Vec::with_capacity(l.len());
+                    for item in &l {
+                        if let VMValue::String(s) = item {
+                            out.push(s.clone());
+                        }
+                    }
+                    if out.is_empty() {
+                        vec!["out".to_string()]
+                    } else {
+                        out
+                    }
+                }
+                _ => vec!["out".to_string()],
+            }
+        } else {
+            vec!["out".to_string()]
+        };
+
+        // Build env vars from non-special attributes.
+        let special = [
+            "name", "system", "builder", "args", "outputs",
+            "__impure", "__contentAddressed", "__structuredAttrs",
+        ];
+        let special_syms: Vec<Symbol> = special
+            .iter()
+            .map(|s| self.interner.intern(s))
+            .collect();
+
+        let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
+        for (k, v) in &attrs {
+            if special_syms.contains(k) {
+                continue;
+            }
+            let key_str = self.interner.resolve(*k).to_string();
+            let vmval = v.to_vmvalue();
+            let s = match &vmval {
+                VMValue::String(s) => s.clone(),
+                VMValue::Int(n) => n.to_string(),
+                VMValue::Float(f) => format!("{f}"),
+                VMValue::Bool(true) => "1".to_string(),
+                VMValue::Bool(false) => String::new(),
+                VMValue::Null => String::new(),
+                VMValue::Path(p) => p.clone(),
+                _ => continue,
+            };
+            env_vars.insert(key_str, s);
+        }
+        env_vars.insert("name".to_string(), name.clone());
+        env_vars.insert("system".to_string(), system.clone());
+        env_vars.insert("builder".to_string(), builder.clone());
+
+        // Detect fixed-output derivation.
+        let output_hash_sym = self.interner.intern("outputHash");
+        let is_fod = attrs.contains_key(&output_hash_sym);
+
+        let mut drv = Derivation {
+            outputs: BTreeMap::new(),
+            input_derivations: BTreeMap::new(),
+            input_sources: Vec::new(),
+            system,
+            builder,
+            args: args_list,
+            env: env_vars,
+        };
+
+        let (drv_path, out_paths) = if is_fod {
+            let output_hash = get_str(&attrs, self.interner, "outputHash")?;
+            let output_hash_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
+                .unwrap_or_else(|| "sha256".to_string());
+            let output_hash_mode = get_str_opt(&attrs, self.interner, "outputHashMode")?
+                .unwrap_or_else(|| "flat".to_string());
+            let is_recursive =
+                output_hash_mode == "recursive" || output_hash_mode == "nar";
+
+            let out_path = sui_compat::store_path::compute_fixed_output_hash(
+                &output_hash_algo,
+                &output_hash,
+                is_recursive,
+                &name,
+            );
+
+            drv.outputs.insert(
+                "out".to_string(),
+                DerivationOutput {
+                    path: out_path.clone(),
+                    hash_algo: if is_recursive {
+                        format!("r:{output_hash_algo}")
+                    } else {
+                        output_hash_algo.clone()
+                    },
+                    hash: output_hash,
+                },
+            );
+
+            let drv_content = drv.serialize();
+            let drv_path = sui_compat::store_path::compute_drv_path(
+                drv_content.as_bytes(),
+                &name,
+            );
+
+            let mut out_paths = BTreeMap::new();
+            out_paths.insert("out".to_string(), out_path);
+            (drv_path, out_paths)
+        } else {
+            for o in &outputs {
+                drv.outputs.insert(
+                    o.clone(),
+                    DerivationOutput {
+                        path: String::new(),
+                        hash_algo: String::new(),
+                        hash: String::new(),
+                    },
+                );
+            }
+
+            let drv_content = drv.serialize();
+            let drv_path = sui_compat::store_path::compute_drv_path(
+                drv_content.as_bytes(),
+                &name,
+            );
+
+            use sha2::{Digest, Sha256};
+            let inner = Sha256::digest(drv_content.as_bytes());
+            let inner_hex: String =
+                inner.iter().map(|b| format!("{b:02x}")).collect();
+            let mut out_paths = BTreeMap::new();
+            for o in &outputs {
+                let p = sui_compat::store_path::compute_output_path(
+                    &inner_hex, o, &name,
+                );
+                out_paths.insert(o.clone(), p);
+            }
+            (drv_path, out_paths)
+        };
+
+        // Update derivation outputs with final paths and write .drv file.
+        for (output_name, output_path) in &out_paths {
+            if let Some(output) = drv.outputs.get_mut(output_name) {
+                if output.path.is_empty() {
+                    output.path.clone_from(output_path);
+                }
+            }
+            drv.env.insert(output_name.clone(), output_path.clone());
+        }
+
+        let drv_content_final = drv.serialize();
+        let store_dir = std::env::var("SUI_STORE_DIR")
+            .unwrap_or_else(|_| "/nix/store".to_string());
+        let disk_path = if store_dir != "/nix/store" {
+            drv_path.replacen("/nix/store", &store_dir, 1)
+        } else {
+            drv_path.clone()
+        };
+        let drv_file = std::path::Path::new(&disk_path);
+        if !drv_file.exists() {
+            if let Some(parent) = drv_file.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            match std::fs::write(drv_file, drv_content_final.as_bytes()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
+                    std::fs::create_dir_all(&fallback_dir).ok();
+                    let fallback_path = fallback_dir.join(
+                        drv_file.file_name().unwrap_or_default(),
+                    );
+                    let _ = std::fs::write(&fallback_path, drv_content_final.as_bytes());
+                }
+                Err(e) => {
+                    return Err(VMError::Throw(format!(
+                        "derivation: failed to write {drv_path}: {e}"
+                    )));
+                }
+            }
+        }
+
+        // Assemble result attrset.
+        let mut result: BTreeMap<Symbol, NanBox> = attrs;
+        let type_sym = self.interner.intern("type");
+        result.insert(type_sym, NanBox::string("derivation".to_string()));
+        let drv_path_sym = self.interner.intern("drvPath");
+        result.insert(drv_path_sym, NanBox::string(drv_path.clone()));
+
+        let primary_out = out_paths
+            .get("out")
+            .cloned()
+            .or_else(|| out_paths.values().next().cloned())
+            .unwrap_or_default();
+        let out_path_sym = self.interner.intern("outPath");
+        result.insert(out_path_sym, NanBox::string(primary_out));
+
+        for (output_name, output_path) in &out_paths {
+            let mut out_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+            out_attrs.insert(out_path_sym, NanBox::string(output_path.clone()));
+            out_attrs.insert(drv_path_sym, NanBox::string(drv_path.clone()));
+            out_attrs.insert(type_sym, NanBox::string("derivation".to_string()));
+            let output_name_sym = self.interner.intern("outputName");
+            out_attrs.insert(output_name_sym, NanBox::string(output_name.clone()));
+            let name_sym = self.interner.intern("name");
+            out_attrs.insert(name_sym, NanBox::string(name.clone()));
+            let out_sym = self.interner.intern(output_name);
+            result.insert(out_sym, NanBox::attrs(out_attrs));
+        }
+
+        Ok(NanBox::attrs(result))
+    }
+
     // -- Higher-order builtin execution -----------------------------------
 
     fn call_callable(&mut self, func: &NanBox, arg: NanBox) -> Result<NanBox, VMError> {
@@ -1050,10 +1611,14 @@ impl<'a> VM<'a> {
             let hob = func.as_higher_order_builtin().unwrap().clone();
             self.call_higher_order_builtin(&hob, arg)
         } else if let Some(builtin) = func.as_builtin() {
-            let arg_vmval = arg.to_vmvalue();
-            let builtin_func = builtin.func.clone();
-            let result = builtin_func(vec![arg_vmval])?;
-            Ok(NanBox::from_vmvalue(&result))
+            if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
+                Ok(result)
+            } else {
+                let arg_vmval = arg.to_vmvalue();
+                let builtin_func = builtin.func.clone();
+                let result = builtin_func(vec![arg_vmval])?;
+                Ok(NanBox::from_vmvalue(&result))
+            }
         } else {
             Err(VMError::NotCallable(func.type_name().to_string()))
         }

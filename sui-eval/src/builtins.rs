@@ -3180,7 +3180,7 @@ pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> 
 //   5. Returns an attrset with `type`, `drvPath`, `outPath`, plus per-output
 //      sub-attrsets, matching CppNix's interface.
 
-fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
+pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
     use std::collections::BTreeMap;
     use sui_compat::derivation::{Derivation, DerivationOutput};
 

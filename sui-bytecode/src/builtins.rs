@@ -132,6 +132,7 @@ impl BuiltinRegistry {
         self.register_conversion_ops();
         self.register_control_ops();
         self.register_arithmetic_ops();
+        self.register_derivation_ops();
     }
 
     // ── Type checking ─────────────────────────────────────────────
@@ -782,6 +783,25 @@ impl BuiltinRegistry {
                 }),
                 arity: 1,
             }))
+        });
+    }
+
+    // ── Derivation ────────────────────────────────────────────────
+
+    fn register_derivation_ops(&mut self) {
+        // Both `derivation` and `derivationStrict` delegate to the same impl.
+        // The actual implementation is at the VM level (vm_build_derivation)
+        // because it needs interner access. These stubs are intercepted by
+        // try_vm_builtin before they execute.
+        self.register("derivation", 1, |_args| {
+            Err(VMError::Throw(
+                "derivation: requires VM-level dispatch".to_string(),
+            ))
+        });
+        self.register("derivationStrict", 1, |_args| {
+            Err(VMError::Throw(
+                "derivationStrict: requires VM-level dispatch".to_string(),
+            ))
         });
     }
 }
