@@ -87,6 +87,9 @@ impl<'a> VM<'a> {
         let result = vm.run()?;
         // Force the top-level result so we never return a thunk.
         let result = vm.force_value(result)?;
+        // Deep-force: recursively force thunks inside attrsets and lists
+        // so the caller never sees unforced thunks.
+        let result = vm.deep_force(result)?;
         Ok(result.to_vmvalue())
     }
 
@@ -414,7 +417,13 @@ impl<'a> VM<'a> {
                     let attrset = self.pop_forced()?;
                     if let Some(attrs) = attrset.as_attrs() {
                         if let Some(val) = attrs.get(&key_sym) {
-                            self.push(val.clone());
+                            // Force the attr value (may be a thunk in lazy attrsets).
+                            let forced = if val.is_thunk() {
+                                self.force_value(val.clone())?
+                            } else {
+                                val.clone()
+                            };
+                            self.push(forced);
                         } else {
                             self.push(default);
                         }
@@ -988,6 +997,34 @@ impl<'a> VM<'a> {
         }
     }
 
+    /// Deep-force a value: recursively force thunks inside attrsets and lists.
+    /// Used at the VM boundary so callers never receive unforced thunks.
+    fn deep_force(&mut self, val: NanBox) -> Result<NanBox, VMError> {
+        let forced = self.force_value(val)?;
+        if let Some(attrs) = forced.as_attrs() {
+            let mut new_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+            for (k, v) in attrs {
+                let forced_v = self.deep_force(v.clone())?;
+                new_attrs.insert(*k, forced_v);
+            }
+            Ok(NanBox::attrs(new_attrs))
+        } else if forced.is_list() {
+            let vmval = forced.to_vmvalue();
+            if let VMValue::List(items) = vmval {
+                let mut new_items = Vec::with_capacity(items.len());
+                for item in &items {
+                    let item_nb = NanBox::from_vmvalue(item);
+                    let forced_item = self.deep_force(item_nb)?;
+                    new_items.push(forced_item);
+                }
+                Ok(NanBox::list(new_items))
+            } else {
+                Ok(forced)
+            }
+        } else {
+            Ok(forced)
+        }
+    }
 
     // -- Higher-order builtin execution -----------------------------------
 

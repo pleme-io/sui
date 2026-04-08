@@ -740,9 +740,13 @@ impl Compiler {
 
         let mut count: u16 = 0;
 
-        // Emit flat entries.
+        // Emit flat entries (lazy: wrap non-trivial values in thunks).
         for (key, value_expr) in &flat_entries {
-            self.compile_expr(value_expr)?;
+            if Self::is_trivial_value(value_expr) {
+                self.compile_expr(value_expr)?;
+            } else {
+                self.compile_thunk_immediate(value_expr)?;
+            }
             self.emit_constant(VMValue::String(key.clone()))?;
             count += 1;
         }
