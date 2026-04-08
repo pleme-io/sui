@@ -19,7 +19,6 @@ use crate::NIX_DB_PATH;
 ///
 /// The returned router is ready to be served via [`axum::serve`]. Useful
 /// in tests that want the full router without binding to a TCP socket.
-#[must_use]
 pub fn build_router(app_state: AppState) -> Router {
     let schema = graphql::build_schema(app_state.clone());
 
@@ -34,6 +33,11 @@ pub fn build_router(app_state: AppState) -> Router {
 ///
 /// `rest_addr` is the bind address for REST + GraphQL (e.g. `"0.0.0.0:8080"`).
 /// `_grpc_addr` is reserved for the future gRPC listener.
+///
+/// # Errors
+///
+/// Returns an I/O error if the server fails to bind or encounters a
+/// runtime error.
 pub async fn serve(
     rest_addr: impl AsRef<str>,
     _grpc_addr: impl AsRef<str>,
