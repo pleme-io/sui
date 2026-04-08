@@ -322,21 +322,32 @@ pub fn register(env: &mut Env) {
             name: "sort<partial>",
             func: Arc::new(move |args2| {
                 let mut list = args2[0].as_list()?.to_vec();
-                // Simple insertion sort using the comparison function
-                for i in 1..list.len() {
-                    let mut j = i;
-                    while j > 0 {
-                        let less = crate::eval::apply(
-                            crate::eval::apply(cmp.clone(), list[j].clone())?,
-                            list[j - 1].clone(),
-                        )?.as_bool()?;
-                        if less {
-                            list.swap(j, j - 1);
-                            j -= 1;
-                        } else {
-                            break;
+                if list.len() <= 1 {
+                    return Ok(Value::List(list));
+                }
+                // O(n log n) stable sort via Rust's merge sort.
+                // Capture any comparator error and propagate after sort.
+                let mut err: Option<EvalError> = None;
+                list.sort_by(|a, b| {
+                    if err.is_some() {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    match crate::eval::apply(cmp.clone(), a.clone())
+                        .and_then(|partial| crate::eval::apply(partial, b.clone()))
+                        .and_then(|v| v.as_bool().map_err(|_| {
+                            EvalError::TypeError("sort comparator must return bool".into())
+                        }))
+                    {
+                        Ok(true) => std::cmp::Ordering::Less,
+                        Ok(false) => std::cmp::Ordering::Greater,
+                        Err(e) => {
+                            err = Some(e);
+                            std::cmp::Ordering::Equal
                         }
                     }
+                });
+                if let Some(e) = err {
+                    return Err(e);
                 }
                 Ok(Value::List(list))
             }),
