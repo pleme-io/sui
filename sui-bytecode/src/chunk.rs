@@ -119,11 +119,21 @@ impl std::fmt::Debug for Chunk {
                     | OpCode::MakeClosure
                     | OpCode::Jump
                     | OpCode::JumpIfFalse
-                    | OpCode::JumpIfTrue => {
+                    | OpCode::JumpIfTrue
+                    | OpCode::GetLocalCall => {
                         if offset + 1 < self.code.len() {
                             let operand = self.read_u16(offset);
                             write!(f, " {operand}")?;
                             offset += 2;
+                        }
+                    }
+                    // Two u16 operands.
+                    OpCode::GetLocalAttr => {
+                        if offset + 3 < self.code.len() {
+                            let slot = self.read_u16(offset);
+                            let key = self.read_u16(offset + 2);
+                            write!(f, " slot={slot} key={key}")?;
+                            offset += 4;
                         }
                     }
                     _ => {}

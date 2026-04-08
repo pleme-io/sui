@@ -4,6 +4,7 @@
 //! instructions. The compiler manages local variable resolution via
 //! a scope stack and emits appropriate `GetLocal`/`SetLocal` instructions.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use rnix::ast::{self, AstToken, HasEntry, InterpolPart};
@@ -11,6 +12,7 @@ use rowan::ast::AstNode;
 
 use crate::chunk::Chunk;
 use crate::error::CompileError;
+use crate::intern::Interner;
 use crate::opcode::OpCode;
 use crate::value::{VMClosure, VMValue};
 
@@ -36,6 +38,9 @@ enum LetBinding {
 /// Compiles a single expression (which may contain nested lambdas)
 /// into a top-level [`Chunk`]. Nested lambdas produce sub-chunks
 /// stored in the constant pool.
+///
+/// The compiler maintains a shared [`Interner`] that is also passed
+/// to the VM for attribute key resolution.
 pub struct Compiler {
     /// The chunk being compiled into.
     chunk: Chunk,
@@ -45,21 +50,35 @@ pub struct Compiler {
     scope_depth: u32,
     /// Current source line for error reporting.
     current_line: u32,
+    /// Shared string interner for attribute names and identifiers.
+    interner: Rc<RefCell<Interner>>,
 }
 
 impl Compiler {
-    /// Create a new compiler.
+    /// Create a new compiler with a fresh interner.
     fn new() -> Self {
         Self {
             chunk: Chunk::new(),
             locals: Vec::new(),
             scope_depth: 0,
             current_line: 0,
+            interner: Rc::new(RefCell::new(Interner::new())),
         }
     }
 
-    /// Compile a Nix expression string into bytecode.
-    pub fn compile(input: &str) -> Result<Chunk, CompileError> {
+    /// Create a new compiler sharing an existing interner.
+    fn with_interner(interner: Rc<RefCell<Interner>>) -> Self {
+        Self {
+            chunk: Chunk::new(),
+            locals: Vec::new(),
+            scope_depth: 0,
+            current_line: 0,
+            interner,
+        }
+    }
+
+    /// Compile a Nix expression string into bytecode and an interner.
+    pub fn compile(input: &str) -> Result<(Chunk, Interner), CompileError> {
         let parse = rnix::Root::parse(input);
         if !parse.errors().is_empty() {
             let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
@@ -69,21 +88,184 @@ impl Compiler {
         let expr = root
             .expr()
             .ok_or_else(|| CompileError::ParseError("empty expression".to_string()))?;
-        Self::compile_expr_to_chunk(&expr)
+        let mut compiler = Self::new();
+        compiler.compile_expr(&expr)?;
+        compiler.emit(OpCode::Return);
+        let interner = match Rc::try_unwrap(compiler.interner) {
+            Ok(cell) => cell.into_inner(),
+            Err(rc) => (*rc).borrow().clone(),
+        };
+        Ok((compiler.chunk, interner))
     }
 
-    /// Compile an rnix AST expression into a chunk.
-    fn compile_expr_to_chunk(expr: &ast::Expr) -> Result<Chunk, CompileError> {
-        let mut compiler = Self::new();
-        compiler.compile_expr(expr)?;
-        compiler.emit(OpCode::Return);
-        Ok(compiler.chunk)
+    // ── Constant folding ────────────────────────────────────────
+
+    /// Try to evaluate an expression as a compile-time constant.
+    /// Returns `Some(VMValue)` if the expression can be fully evaluated
+    /// at compile time, `None` otherwise.
+    fn try_eval_const(expr: &ast::Expr) -> Option<VMValue> {
+        match expr {
+            ast::Expr::Literal(lit) => Self::try_eval_literal(lit),
+            ast::Expr::Paren(p) => Self::try_eval_const(&p.expr()?),
+            ast::Expr::UnaryOp(op) => Self::try_fold_unary(op),
+            ast::Expr::BinOp(binop) => Self::try_fold_binop(binop),
+            ast::Expr::IfElse(ie) => Self::try_fold_if(ie),
+            ast::Expr::Ident(id) => {
+                let name = ident_text(id);
+                match name.as_str() {
+                    "true" => Some(VMValue::Bool(true)),
+                    "false" => Some(VMValue::Bool(false)),
+                    "null" => Some(VMValue::Null),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Try to evaluate a literal as a constant.
+    fn try_eval_literal(lit: &ast::Literal) -> Option<VMValue> {
+        match lit.kind() {
+            ast::LiteralKind::Integer(tok) => {
+                Some(VMValue::Int(tok.value().ok()?))
+            }
+            ast::LiteralKind::Float(tok) => {
+                Some(VMValue::Float(tok.value().ok()?))
+            }
+            ast::LiteralKind::Uri(_) => None,
+        }
+    }
+
+    /// Try to fold a unary operation on constants.
+    fn try_fold_unary(op: &ast::UnaryOp) -> Option<VMValue> {
+        let inner = Self::try_eval_const(&op.expr()?)?;
+        let kind = op.operator()?;
+        match kind {
+            ast::UnaryOpKind::Negate => match inner {
+                VMValue::Int(n) => Some(VMValue::Int(-n)),
+                VMValue::Float(f) => Some(VMValue::Float(-f)),
+                _ => None,
+            },
+            ast::UnaryOpKind::Invert => match inner {
+                VMValue::Bool(b) => Some(VMValue::Bool(!b)),
+                _ => None,
+            },
+        }
+    }
+
+    /// Try to fold a binary operation where both sides are constants.
+    fn try_fold_binop(binop: &ast::BinOp) -> Option<VMValue> {
+        let lhs = Self::try_eval_const(&binop.lhs()?)?;
+        let rhs = Self::try_eval_const(&binop.rhs()?)?;
+        let op = binop.operator()?;
+
+        match op {
+            ast::BinOpKind::Add => match (&lhs, &rhs) {
+                (VMValue::Int(a), VMValue::Int(b)) => Some(VMValue::Int(a + b)),
+                (VMValue::Float(a), VMValue::Float(b)) => Some(VMValue::Float(a + b)),
+                (VMValue::Int(a), VMValue::Float(b)) => Some(VMValue::Float(*a as f64 + b)),
+                (VMValue::Float(a), VMValue::Int(b)) => Some(VMValue::Float(a + *b as f64)),
+                (VMValue::String(a), VMValue::String(b)) => {
+                    Some(VMValue::String(format!("{a}{b}")))
+                }
+                _ => None,
+            },
+            ast::BinOpKind::Sub => match (&lhs, &rhs) {
+                (VMValue::Int(a), VMValue::Int(b)) => Some(VMValue::Int(a - b)),
+                (VMValue::Float(a), VMValue::Float(b)) => Some(VMValue::Float(a - b)),
+                (VMValue::Int(a), VMValue::Float(b)) => Some(VMValue::Float(*a as f64 - b)),
+                (VMValue::Float(a), VMValue::Int(b)) => Some(VMValue::Float(a - *b as f64)),
+                _ => None,
+            },
+            ast::BinOpKind::Mul => match (&lhs, &rhs) {
+                (VMValue::Int(a), VMValue::Int(b)) => Some(VMValue::Int(a * b)),
+                (VMValue::Float(a), VMValue::Float(b)) => Some(VMValue::Float(a * b)),
+                (VMValue::Int(a), VMValue::Float(b)) => Some(VMValue::Float(*a as f64 * b)),
+                (VMValue::Float(a), VMValue::Int(b)) => Some(VMValue::Float(a * *b as f64)),
+                _ => None,
+            },
+            ast::BinOpKind::Div => match (&lhs, &rhs) {
+                (VMValue::Int(_), VMValue::Int(0)) => None, // don't fold div by zero
+                (VMValue::Int(a), VMValue::Int(b)) => Some(VMValue::Int(a / b)),
+                (VMValue::Float(a), VMValue::Float(b)) => Some(VMValue::Float(a / b)),
+                (VMValue::Int(a), VMValue::Float(b)) => Some(VMValue::Float(*a as f64 / b)),
+                (VMValue::Float(a), VMValue::Int(b)) => Some(VMValue::Float(a / *b as f64)),
+                _ => None,
+            },
+            ast::BinOpKind::Equal => Some(VMValue::Bool(Self::const_eq(&lhs, &rhs))),
+            ast::BinOpKind::NotEqual => Some(VMValue::Bool(!Self::const_eq(&lhs, &rhs))),
+            ast::BinOpKind::Less => Self::const_cmp(&lhs, &rhs)
+                .map(|o| VMValue::Bool(o == std::cmp::Ordering::Less)),
+            ast::BinOpKind::LessOrEq => Self::const_cmp(&lhs, &rhs)
+                .map(|o| VMValue::Bool(o != std::cmp::Ordering::Greater)),
+            ast::BinOpKind::More => Self::const_cmp(&lhs, &rhs)
+                .map(|o| VMValue::Bool(o == std::cmp::Ordering::Greater)),
+            ast::BinOpKind::MoreOrEq => Self::const_cmp(&lhs, &rhs)
+                .map(|o| VMValue::Bool(o != std::cmp::Ordering::Less)),
+            ast::BinOpKind::And => match (&lhs, &rhs) {
+                (VMValue::Bool(a), VMValue::Bool(b)) => Some(VMValue::Bool(*a && *b)),
+                _ => None,
+            },
+            ast::BinOpKind::Or => match (&lhs, &rhs) {
+                (VMValue::Bool(a), VMValue::Bool(b)) => Some(VMValue::Bool(*a || *b)),
+                _ => None,
+            },
+            ast::BinOpKind::Implication => match (&lhs, &rhs) {
+                (VMValue::Bool(a), VMValue::Bool(b)) => Some(VMValue::Bool(!a || *b)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Try to fold `if cond then a else b` when the condition is constant.
+    fn try_fold_if(ie: &ast::IfElse) -> Option<VMValue> {
+        let cond = Self::try_eval_const(&ie.condition()?)?;
+        match cond {
+            VMValue::Bool(true) => Self::try_eval_const(&ie.body()?),
+            VMValue::Bool(false) => Self::try_eval_const(&ie.else_body()?),
+            _ => None,
+        }
+    }
+
+    /// Compile-time equality check.
+    fn const_eq(a: &VMValue, b: &VMValue) -> bool {
+        match (a, b) {
+            (VMValue::Null, VMValue::Null) => true,
+            (VMValue::Bool(a), VMValue::Bool(b)) => a == b,
+            (VMValue::Int(a), VMValue::Int(b)) => a == b,
+            (VMValue::Float(a), VMValue::Float(b)) => a == b,
+            (VMValue::Int(a), VMValue::Float(b)) | (VMValue::Float(b), VMValue::Int(a)) => {
+                (*a as f64) == *b
+            }
+            (VMValue::String(a), VMValue::String(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Compile-time comparison.
+    fn const_cmp(a: &VMValue, b: &VMValue) -> Option<std::cmp::Ordering> {
+        match (a, b) {
+            (VMValue::Int(a), VMValue::Int(b)) => Some(a.cmp(b)),
+            (VMValue::Float(a), VMValue::Float(b)) => a.partial_cmp(b),
+            (VMValue::Int(a), VMValue::Float(b)) => (*a as f64).partial_cmp(b),
+            (VMValue::Float(a), VMValue::Int(b)) => a.partial_cmp(&(*b as f64)),
+            (VMValue::String(a), VMValue::String(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
     }
 
     // ── Expression dispatch ────────────────────────────────────
 
     fn compile_expr(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
         self.current_line = line_of(expr);
+
+        // Try constant folding first — if the expression can be fully
+        // evaluated at compile time, emit a single Constant instruction.
+        if let Some(folded) = Self::try_eval_const(expr) {
+            return self.emit_constant(folded);
+        }
+
         match expr {
             ast::Expr::Literal(lit) => self.compile_literal(lit),
             ast::Expr::Str(s) => self.compile_str(s),
@@ -383,6 +565,16 @@ impl Compiler {
 
     // ── Select (attrset.key) ───────────────────────────────────
 
+    /// Try to resolve an expression as a local variable slot.
+    fn try_resolve_as_local(&self, expr: &ast::Expr) -> Option<u16> {
+        if let ast::Expr::Ident(id) = expr {
+            let name = ident_text(id);
+            self.resolve_local(&name)
+        } else {
+            None
+        }
+    }
+
     fn compile_select(&mut self, sel: &ast::Select) -> Result<(), CompileError> {
         let base = sel
             .expr()
@@ -395,14 +587,11 @@ impl Compiler {
 
         if let Some(default_expr) = sel.default_expr() {
             // `expr.key or default` — use SelectOrDefault for the last segment.
-            // For multi-segment paths with a default, only the final segment
-            // gets the or-default treatment; intermediate segments use GetAttr.
             self.compile_expr(&base)?;
             for (i, attr) in segments.iter().enumerate() {
                 let key = static_attr_name(attr)?;
                 let key_idx = self.chunk.add_constant(VMValue::String(key))?;
                 if i == segments.len() - 1 {
-                    // Last segment: compile default, push it, then SelectOrDefault.
                     self.compile_expr(&default_expr)?;
                     self.emit(OpCode::SelectOrDefault);
                     self.emit_u16(key_idx);
@@ -412,12 +601,29 @@ impl Compiler {
                 }
             }
         } else {
-            self.compile_expr(&base)?;
-            for attr in &segments {
+            // Superinstruction: if base is a local and first segment is static,
+            // use GetLocalAttr for the first access (saves one dispatch).
+            let local_slot = self.try_resolve_as_local(&base);
+
+            for (i, attr) in segments.iter().enumerate() {
                 let key = static_attr_name(attr)?;
                 let key_idx = self.chunk.add_constant(VMValue::String(key))?;
-                self.emit(OpCode::GetAttr);
-                self.emit_u16(key_idx);
+
+                if i == 0 {
+                    if let Some(slot) = local_slot {
+                        // Fused GetLocal + GetAttr.
+                        self.emit(OpCode::GetLocalAttr);
+                        self.emit_u16(slot);
+                        self.emit_u16(key_idx);
+                    } else {
+                        self.compile_expr(&base)?;
+                        self.emit(OpCode::GetAttr);
+                        self.emit_u16(key_idx);
+                    }
+                } else {
+                    self.emit(OpCode::GetAttr);
+                    self.emit_u16(key_idx);
+                }
             }
         }
 
@@ -494,8 +700,8 @@ impl Compiler {
             .body()
             .ok_or_else(|| CompileError::MissingNode("lambda body".to_string()))?;
 
-        // Compile the function body as a separate chunk.
-        let mut func_compiler = Compiler::new();
+        // Compile the function body as a separate chunk (sharing the interner).
+        let mut func_compiler = Compiler::with_interner(Rc::clone(&self.interner));
         func_compiler.scope_depth = 1; // function body is its own scope
 
         let (arity, name) = match &param {
@@ -595,10 +801,20 @@ impl Compiler {
         let arg = app
             .argument()
             .ok_or_else(|| CompileError::MissingNode("apply argument".to_string()))?;
-        // Push function, then argument, then Call.
-        self.compile_expr(&func)?;
-        self.compile_expr(&arg)?;
-        self.emit(OpCode::Call);
+
+        // Superinstruction: if the function is a local variable, use
+        // GetLocalCall to save one dispatch cycle.
+        if let Some(slot) = self.try_resolve_as_local(&func) {
+            // Compile the argument first, then fused GetLocal+Call.
+            self.compile_expr(&arg)?;
+            self.emit(OpCode::GetLocalCall);
+            self.emit_u16(slot);
+        } else {
+            // Normal: push function, then argument, then Call.
+            self.compile_expr(&func)?;
+            self.compile_expr(&arg)?;
+            self.emit(OpCode::Call);
+        }
         Ok(())
     }
 
@@ -916,7 +1132,9 @@ mod tests {
     use super::*;
 
     fn compile(input: &str) -> Chunk {
-        Compiler::compile(input).unwrap_or_else(|e| panic!("compile failed for '{input}': {e}"))
+        let (chunk, _interner) =
+            Compiler::compile(input).unwrap_or_else(|e| panic!("compile failed for '{input}': {e}"));
+        chunk
     }
 
     #[test]
@@ -936,19 +1154,25 @@ mod tests {
     #[test]
     fn compile_bool_true() {
         let chunk = compile("true");
-        assert_eq!(chunk.code[0], OpCode::True as u8);
+        // Constant-folded: true becomes Constant(Bool(true)), Return.
+        assert_eq!(chunk.code[0], OpCode::Constant as u8);
+        assert_eq!(chunk.constants[0], VMValue::Bool(true));
     }
 
     #[test]
     fn compile_bool_false() {
         let chunk = compile("false");
-        assert_eq!(chunk.code[0], OpCode::False as u8);
+        // Constant-folded: false becomes Constant(Bool(false)), Return.
+        assert_eq!(chunk.code[0], OpCode::Constant as u8);
+        assert_eq!(chunk.constants[0], VMValue::Bool(false));
     }
 
     #[test]
     fn compile_null() {
         let chunk = compile("null");
-        assert_eq!(chunk.code[0], OpCode::Null as u8);
+        // Constant-folded: null becomes Constant(Null), Return.
+        assert_eq!(chunk.code[0], OpCode::Constant as u8);
+        assert_eq!(chunk.constants[0], VMValue::Null);
     }
 
     #[test]
@@ -960,15 +1184,31 @@ mod tests {
     #[test]
     fn compile_addition() {
         let chunk = compile("1 + 2");
-        // Should have: Constant(1), Constant(2), Add, Return
+        // Constant-folded: 1 + 2 becomes Constant(3), Return.
+        assert_eq!(chunk.constants[0], VMValue::Int(3));
+        assert!(!chunk.code.contains(&(OpCode::Add as u8)));
+    }
+
+    #[test]
+    fn compile_addition_non_foldable() {
+        // When variables are involved, no folding occurs.
+        let chunk = compile("let x = 1; in x + 2");
         assert!(chunk.code.contains(&(OpCode::Add as u8)));
     }
 
     #[test]
     fn compile_if_else() {
         let chunk = compile("if true then 1 else 2");
+        // Constant-folded: `if true then 1 else 2` becomes Constant(1), Return.
+        assert_eq!(chunk.constants[0], VMValue::Int(1));
+        assert!(!chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
+    }
+
+    #[test]
+    fn compile_if_else_non_foldable() {
+        // When condition is not constant, no folding occurs.
+        let chunk = compile("let b = true; in if b then 1 else 2");
         assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
-        assert!(chunk.code.contains(&(OpCode::Jump as u8)));
     }
 
     #[test]
@@ -999,13 +1239,23 @@ mod tests {
     #[test]
     fn compile_negate() {
         let chunk = compile("-42");
+        // Constant-folded: -42 becomes Constant(Int(-42)), Return.
+        assert_eq!(chunk.constants[0], VMValue::Int(-42));
+        assert!(!chunk.code.contains(&(OpCode::Negate as u8)));
+    }
+
+    #[test]
+    fn compile_negate_non_foldable() {
+        let chunk = compile("let x = 42; in -x");
         assert!(chunk.code.contains(&(OpCode::Negate as u8)));
     }
 
     #[test]
     fn compile_not() {
         let chunk = compile("!true");
-        assert!(chunk.code.contains(&(OpCode::Not as u8)));
+        // Constant-folded: !true becomes Constant(Bool(false)), Return.
+        assert_eq!(chunk.constants[0], VMValue::Bool(false));
+        assert!(!chunk.code.contains(&(OpCode::Not as u8)));
     }
 
     #[test]
@@ -1029,13 +1279,15 @@ mod tests {
     #[test]
     fn compile_comparison() {
         let chunk = compile("1 < 2");
-        assert!(chunk.code.contains(&(OpCode::Less as u8)));
+        // Constant-folded.
+        assert_eq!(chunk.constants[0], VMValue::Bool(true));
     }
 
     #[test]
     fn compile_equality() {
         let chunk = compile("1 == 1");
-        assert!(chunk.code.contains(&(OpCode::Equal as u8)));
+        // Constant-folded.
+        assert_eq!(chunk.constants[0], VMValue::Bool(true));
     }
 
     #[test]
@@ -1053,12 +1305,26 @@ mod tests {
     #[test]
     fn compile_and_short_circuit() {
         let chunk = compile("true && false");
+        // Constant-folded.
+        assert_eq!(chunk.constants[0], VMValue::Bool(false));
+    }
+
+    #[test]
+    fn compile_and_short_circuit_non_foldable() {
+        let chunk = compile("let a = true; in a && false");
         assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
     }
 
     #[test]
     fn compile_or_short_circuit() {
         let chunk = compile("false || true");
+        // Constant-folded.
+        assert_eq!(chunk.constants[0], VMValue::Bool(true));
+    }
+
+    #[test]
+    fn compile_or_short_circuit_non_foldable() {
+        let chunk = compile("let a = false; in a || true");
         assert!(chunk.code.contains(&(OpCode::JumpIfTrue as u8)));
     }
 

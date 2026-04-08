@@ -125,6 +125,20 @@ pub enum OpCode {
     // ── Pop ────────────────────────────────────────────────────
     /// Discard the top of the stack.
     Pop = 110,
+
+    // ── Superinstructions ─────────────────────────────────────
+    // Fused opcodes for common instruction sequences. Each saves
+    // one dispatch cycle (opcode fetch + decode + branch).
+
+    /// Fused `GetLocal` + `GetAttr`: push `stack[base+slot].key`.
+    /// Operands: u16 local slot, u16 key constant index.
+    /// Equivalent to: `GetLocal slot; GetAttr key_idx`.
+    GetLocalAttr = 120,
+    /// Fused `GetLocal` + `Call`: call `stack[base+slot]` with TOS as arg.
+    /// Operand: u16 local slot.
+    /// Equivalent to: `GetLocal slot; <arg already on stack>; Call`.
+    /// Note: the argument must be on the stack before this instruction.
+    GetLocalCall = 121,
 }
 
 impl OpCode {
@@ -169,6 +183,8 @@ impl OpCode {
             92 => Some(OpCode::JumpIfTrue),
             100 => Some(OpCode::Assert),
             110 => Some(OpCode::Pop),
+            120 => Some(OpCode::GetLocalAttr),
+            121 => Some(OpCode::GetLocalCall),
             _ => None,
         }
     }
@@ -218,6 +234,8 @@ mod tests {
             OpCode::JumpIfTrue,
             OpCode::Assert,
             OpCode::Pop,
+            OpCode::GetLocalAttr,
+            OpCode::GetLocalCall,
         ];
         for op in opcodes {
             let byte = op as u8;

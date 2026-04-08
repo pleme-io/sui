@@ -47,6 +47,10 @@ pub mod chunk;
 pub mod compiler;
 /// Error types for compiler and VM.
 pub mod error;
+/// String interning for attribute names and identifiers.
+pub mod intern;
+/// NaN-boxed value representation for the VM stack.
+pub mod nanbox;
 /// Bytecode instruction set.
 pub mod opcode;
 /// VM-specific value representation.
@@ -58,17 +62,44 @@ pub mod vm;
 pub use chunk::Chunk;
 pub use compiler::Compiler;
 pub use error::{CompileError, VMError};
+pub use intern::{Interner, Symbol};
 pub use opcode::OpCode;
-pub use value::VMValue;
+pub use value::{StringKeyedValue, VMValue};
 pub use vm::VM;
+
+/// Result of bytecode evaluation: the value plus the interner needed
+/// to resolve symbol-keyed attrsets.
+pub struct EvalResult {
+    /// The evaluated value (may contain `Symbol`-keyed attrsets).
+    pub value: VMValue,
+    /// The interner used during compilation and execution.
+    pub interner: Interner,
+}
+
+impl EvalResult {
+    /// Convert the result to a fully string-keyed value.
+    #[must_use]
+    pub fn to_string_keyed(&self) -> StringKeyedValue {
+        self.value.to_string_keyed(&self.interner)
+    }
+}
 
 /// Compile and execute a Nix expression string via the bytecode VM.
 ///
-/// This is the main entry point for bytecode evaluation. Equivalent to
-/// `sui_eval::eval` but uses the bytecode path instead of tree-walking.
+/// Returns the raw [`VMValue`] (which may contain `Symbol`-keyed attrsets).
+/// For a fully resolved result, use [`eval_full`] instead.
 pub fn eval(input: &str) -> Result<VMValue, EvalError> {
-    let chunk = Compiler::compile(input).map_err(EvalError::Compile)?;
-    VM::execute(chunk).map_err(EvalError::Runtime)
+    let result = eval_full(input)?;
+    Ok(result.value)
+}
+
+/// Compile and execute a Nix expression, returning the value and interner.
+///
+/// Use this when you need to inspect attrset keys or display results.
+pub fn eval_full(input: &str) -> Result<EvalResult, EvalError> {
+    let (chunk, mut interner) = Compiler::compile(input).map_err(EvalError::Compile)?;
+    let value = VM::execute(chunk, &mut interner).map_err(EvalError::Runtime)?;
+    Ok(EvalResult { value, interner })
 }
 
 /// Unified error type wrapping both compile and runtime errors.

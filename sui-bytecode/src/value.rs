@@ -3,17 +3,29 @@
 //! Simpler than `sui_eval::Value` — no thunks, no rnix AST references.
 //! The bytecode VM handles laziness through its own mechanisms; values
 //! here are always fully evaluated.
+//!
+//! # String Interning
+//!
+//! Attribute set keys use [`Symbol`] handles instead of heap-allocated
+//! `String`s. This makes key comparison O(1) (integer equality) instead
+//! of O(n) (byte-by-byte string comparison). The interner is shared
+//! between the compiler and VM via `Rc<RefCell<Interner>>`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
 use crate::chunk::Chunk;
+use crate::intern::{Interner, Symbol};
 
 /// A value in the bytecode VM.
 ///
 /// Intentionally simpler than the tree-walker's `Value` type: no thunks
 /// (the VM manages laziness via its call stack), no rnix AST nodes.
+///
+/// Attribute sets use [`Symbol`] keys for O(1) comparisons. Use
+/// [`VMValue::attrs_to_strings`] to convert back to `BTreeMap<String, VMValue>`
+/// for external consumption.
 #[derive(Clone)]
 pub enum VMValue {
     /// Nix `null`.
@@ -30,8 +42,8 @@ pub enum VMValue {
     Path(String),
     /// Nix list.
     List(Vec<VMValue>),
-    /// Nix attribute set.
-    Attrs(BTreeMap<String, VMValue>),
+    /// Nix attribute set with interned keys.
+    Attrs(BTreeMap<Symbol, VMValue>),
     /// A closure: compiled function body + captured upvalues.
     Closure(VMClosure),
 }
@@ -88,7 +100,173 @@ impl VMValue {
             }),
         }
     }
+
+    /// Convert a `Symbol`-keyed attrset to a `String`-keyed `BTreeMap`
+    /// using the provided interner. Returns `None` if not an `Attrs`.
+    #[must_use]
+    pub fn attrs_to_strings(&self, interner: &Interner) -> Option<BTreeMap<String, VMValue>> {
+        match self {
+            VMValue::Attrs(attrs) => {
+                let map = attrs
+                    .iter()
+                    .map(|(sym, val)| (interner.resolve(*sym).to_string(), val.clone()))
+                    .collect();
+                Some(map)
+            }
+            _ => None,
+        }
+    }
+
+    /// Convert this entire value tree to use string keys (for external API).
+    /// Recursively resolves all `Symbol` keys in nested attrsets and lists.
+    #[must_use]
+    pub fn to_string_keyed(&self, interner: &Interner) -> StringKeyedValue {
+        match self {
+            VMValue::Null => StringKeyedValue::Null,
+            VMValue::Bool(b) => StringKeyedValue::Bool(*b),
+            VMValue::Int(n) => StringKeyedValue::Int(*n),
+            VMValue::Float(f) => StringKeyedValue::Float(*f),
+            VMValue::String(s) => StringKeyedValue::String(s.clone()),
+            VMValue::Path(p) => StringKeyedValue::Path(p.clone()),
+            VMValue::List(items) => {
+                StringKeyedValue::List(items.iter().map(|v| v.to_string_keyed(interner)).collect())
+            }
+            VMValue::Attrs(attrs) => {
+                let map = attrs
+                    .iter()
+                    .map(|(sym, val)| {
+                        (interner.resolve(*sym).to_string(), val.to_string_keyed(interner))
+                    })
+                    .collect();
+                StringKeyedValue::Attrs(map)
+            }
+            VMValue::Closure(_) => StringKeyedValue::Lambda,
+        }
+    }
+
+    /// Format this value for display using the interner for key resolution.
+    pub fn display_with(&self, interner: &Interner, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VMValue::Null => write!(f, "null"),
+            VMValue::Bool(b) => write!(f, "{b}"),
+            VMValue::Int(n) => write!(f, "{n}"),
+            VMValue::Float(n) => {
+                if n.fract() == 0.0 {
+                    write!(f, "{n:.6}")
+                } else {
+                    write!(f, "{n}")
+                }
+            }
+            VMValue::String(s) => write!(f, "\"{s}\""),
+            VMValue::Path(p) => write!(f, "{p}"),
+            VMValue::List(items) => {
+                write!(f, "[ ")?;
+                for item in items {
+                    item.display_with(interner, f)?;
+                    write!(f, " ")?;
+                }
+                write!(f, "]")
+            }
+            VMValue::Attrs(map) => {
+                write!(f, "{{ ")?;
+                for (sym, v) in map {
+                    let key = interner.resolve(*sym);
+                    write!(f, "{key} = ")?;
+                    v.display_with(interner, f)?;
+                    write!(f, "; ")?;
+                }
+                write!(f, "}}")
+            }
+            VMValue::Closure(_) => write!(f, "<<lambda>>"),
+        }
+    }
+
+    /// Debug this value using the interner for key resolution.
+    pub fn debug_with(&self, interner: &Interner, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VMValue::Null => write!(f, "null"),
+            VMValue::Bool(b) => write!(f, "{b}"),
+            VMValue::Int(n) => write!(f, "{n}"),
+            VMValue::Float(n) => write!(f, "{n}"),
+            VMValue::String(s) => write!(f, "{s:?}"),
+            VMValue::Path(p) => write!(f, "{p}"),
+            VMValue::List(items) => {
+                write!(f, "[ ")?;
+                for item in items {
+                    item.debug_with(interner, f)?;
+                    write!(f, " ")?;
+                }
+                write!(f, "]")
+            }
+            VMValue::Attrs(map) => {
+                write!(f, "{{ ")?;
+                for (sym, v) in map {
+                    let key = interner.resolve(*sym);
+                    write!(f, "{key} = ")?;
+                    v.debug_with(interner, f)?;
+                    write!(f, "; ")?;
+                }
+                write!(f, "}}")
+            }
+            VMValue::Closure(c) => write!(f, "{c:?}"),
+        }
+    }
 }
+
+/// A string-keyed value for external API consumption.
+///
+/// Produced by [`VMValue::to_string_keyed`]. Uses `BTreeMap<String, _>`
+/// for attrsets so callers don't need access to the interner.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringKeyedValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Path(String),
+    List(Vec<StringKeyedValue>),
+    Attrs(BTreeMap<String, StringKeyedValue>),
+    Lambda,
+}
+
+impl Eq for StringKeyedValue {}
+
+impl fmt::Display for StringKeyedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StringKeyedValue::Null => write!(f, "null"),
+            StringKeyedValue::Bool(b) => write!(f, "{b}"),
+            StringKeyedValue::Int(n) => write!(f, "{n}"),
+            StringKeyedValue::Float(n) => {
+                if n.fract() == 0.0 {
+                    write!(f, "{n:.6}")
+                } else {
+                    write!(f, "{n}")
+                }
+            }
+            StringKeyedValue::String(s) => write!(f, "\"{s}\""),
+            StringKeyedValue::Path(p) => write!(f, "{p}"),
+            StringKeyedValue::List(items) => {
+                write!(f, "[ ")?;
+                for item in items {
+                    write!(f, "{item} ")?;
+                }
+                write!(f, "]")
+            }
+            StringKeyedValue::Attrs(map) => {
+                write!(f, "{{ ")?;
+                for (k, v) in map {
+                    write!(f, "{k} = {v}; ")?;
+                }
+                write!(f, "}}")
+            }
+            StringKeyedValue::Lambda => write!(f, "<<lambda>>"),
+        }
+    }
+}
+
+// ── Debug / Display without interner (best-effort) ────────────────
 
 impl fmt::Debug for VMValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -108,8 +286,8 @@ impl fmt::Debug for VMValue {
             }
             VMValue::Attrs(map) => {
                 write!(f, "{{ ")?;
-                for (k, v) in map {
-                    write!(f, "{k} = {v:?}; ")?;
+                for (sym, v) in map {
+                    write!(f, "#{} = {v:?}; ", sym.index())?;
                 }
                 write!(f, "}}")
             }
@@ -143,8 +321,8 @@ impl fmt::Display for VMValue {
             }
             VMValue::Attrs(map) => {
                 write!(f, "{{ ")?;
-                for (k, v) in map {
-                    write!(f, "{k} = {v}; ")?;
+                for (sym, v) in map {
+                    write!(f, "#{} = {v}; ", sym.index())?;
                 }
                 write!(f, "}}")
             }
@@ -226,5 +404,44 @@ mod tests {
     fn is_truthy_non_bool_errors() {
         assert!(VMValue::Int(1).is_truthy().is_err());
         assert!(VMValue::Null.is_truthy().is_err());
+    }
+
+    #[test]
+    fn attrs_to_strings_conversion() {
+        let mut interner = Interner::new();
+        let key = interner.intern("hello");
+        let mut attrs = BTreeMap::new();
+        attrs.insert(key, VMValue::Int(42));
+        let val = VMValue::Attrs(attrs);
+        let string_map = val.attrs_to_strings(&interner).unwrap();
+        assert_eq!(string_map.get("hello"), Some(&VMValue::Int(42)));
+    }
+
+    #[test]
+    fn to_string_keyed_roundtrip() {
+        let mut interner = Interner::new();
+        let key = interner.intern("x");
+        let mut attrs = BTreeMap::new();
+        attrs.insert(key, VMValue::Int(1));
+        let val = VMValue::Attrs(attrs);
+        let sk = val.to_string_keyed(&interner);
+        match sk {
+            StringKeyedValue::Attrs(map) => {
+                assert_eq!(map.get("x"), Some(&StringKeyedValue::Int(1)));
+            }
+            _ => panic!("expected Attrs"),
+        }
+    }
+
+    #[test]
+    fn symbol_keyed_attrs_equality() {
+        let mut interner = Interner::new();
+        let k1 = interner.intern("a");
+        let k2 = interner.intern("a");
+        let mut a1 = BTreeMap::new();
+        a1.insert(k1, VMValue::Int(1));
+        let mut a2 = BTreeMap::new();
+        a2.insert(k2, VMValue::Int(1));
+        assert_eq!(VMValue::Attrs(a1), VMValue::Attrs(a2));
     }
 }

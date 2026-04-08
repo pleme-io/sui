@@ -3,37 +3,42 @@
 //!
 //! These tests are the primary correctness guarantee: they compile and
 //! execute an expression via both backends and assert the results match.
+//!
+//! Comparison is done via [`StringKeyedValue`] which resolves all
+//! interned `Symbol` keys back to strings for structural equality.
 
-/// Convert a tree-walker `Value` to a bytecode `VMValue` for comparison.
+use sui_bytecode::StringKeyedValue;
+
+/// Convert a tree-walker `Value` to a `StringKeyedValue` for comparison.
 ///
 /// This only handles the value types we can currently produce in Phase 1.
-fn tree_to_vm(val: &sui_eval::Value) -> sui_bytecode::VMValue {
+fn tree_to_skv(val: &sui_eval::Value) -> StringKeyedValue {
     match val {
-        sui_eval::Value::Null => sui_bytecode::VMValue::Null,
-        sui_eval::Value::Bool(b) => sui_bytecode::VMValue::Bool(*b),
-        sui_eval::Value::Int(n) => sui_bytecode::VMValue::Int(*n),
-        sui_eval::Value::Float(f) => sui_bytecode::VMValue::Float(*f),
-        sui_eval::Value::String(s) => sui_bytecode::VMValue::String(s.chars.clone()),
-        sui_eval::Value::Path(p) => sui_bytecode::VMValue::Path(p.clone()),
+        sui_eval::Value::Null => StringKeyedValue::Null,
+        sui_eval::Value::Bool(b) => StringKeyedValue::Bool(*b),
+        sui_eval::Value::Int(n) => StringKeyedValue::Int(*n),
+        sui_eval::Value::Float(f) => StringKeyedValue::Float(*f),
+        sui_eval::Value::String(s) => StringKeyedValue::String(s.chars.clone()),
+        sui_eval::Value::Path(p) => StringKeyedValue::Path(p.clone()),
         sui_eval::Value::List(items) => {
-            sui_bytecode::VMValue::List(items.iter().map(|v| tree_to_vm(v)).collect())
+            StringKeyedValue::List(items.iter().map(|v| tree_to_skv(v)).collect())
         }
         sui_eval::Value::Attrs(attrs) => {
             let map = attrs
                 .iter()
-                .map(|(k, v)| (k.clone(), tree_to_vm(v)))
+                .map(|(k, v)| (k.clone(), tree_to_skv(v)))
                 .collect();
-            sui_bytecode::VMValue::Attrs(map)
+            StringKeyedValue::Attrs(map)
         }
         sui_eval::Value::Lambda(_) | sui_eval::Value::Builtin(_) => {
             // Functions can't be compared structurally; skip.
-            sui_bytecode::VMValue::Null
+            StringKeyedValue::Lambda
         }
         sui_eval::Value::Thunk(thunk) => {
             // Force the thunk for comparison.
             match thunk.force(&|e, env| sui_eval::eval::eval_expr(e, env)) {
-                Ok(v) => tree_to_vm(&v),
-                Err(_) => sui_bytecode::VMValue::Null,
+                Ok(v) => tree_to_skv(&v),
+                Err(_) => StringKeyedValue::Null,
             }
         }
     }
@@ -45,14 +50,15 @@ fn tree_to_vm(val: &sui_eval::Value) -> sui_bytecode::VMValue {
 fn assert_same(expr: &str) {
     let tree_result = sui_eval::eval(expr)
         .unwrap_or_else(|e| panic!("tree-walker failed for '{expr}': {e}"));
-    let tree_as_vm = tree_to_vm(&tree_result);
+    let tree_as_skv = tree_to_skv(&tree_result);
 
-    let bc_result = sui_bytecode::eval(expr)
+    let bc_result = sui_bytecode::eval_full(expr)
         .unwrap_or_else(|e| panic!("bytecode VM failed for '{expr}': {e}"));
+    let bc_as_skv = bc_result.to_string_keyed();
 
     assert_eq!(
-        tree_as_vm, bc_result,
-        "parity mismatch for: {expr}\n  tree-walker => {tree_as_vm:?}\n  bytecode VM => {bc_result:?}"
+        tree_as_skv, bc_as_skv,
+        "parity mismatch for: {expr}\n  tree-walker => {tree_as_skv:?}\n  bytecode VM => {bc_as_skv:?}"
     );
 }
 

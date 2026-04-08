@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::chunk::Chunk;
 use crate::error::VMError;
+use crate::intern::{Interner, Symbol};
 use crate::opcode::OpCode;
 use crate::value::VMValue;
 
@@ -27,19 +28,26 @@ struct CallFrame {
 }
 
 /// The bytecode virtual machine.
-pub struct VM {
+///
+/// Holds a mutable reference to the shared [`Interner`] for resolving
+/// and interning attribute keys during execution. Attribute sets use
+/// [`Symbol`] keys for O(1) comparison instead of string comparison.
+pub struct VM<'a> {
     /// Value stack.
     stack: Vec<VMValue>,
     /// Call stack.
     frames: Vec<CallFrame>,
+    /// Shared interner for attribute key operations.
+    interner: &'a mut Interner,
 }
 
-impl VM {
+impl<'a> VM<'a> {
     /// Create a new VM and execute a chunk, returning the result.
-    pub fn execute(chunk: Chunk) -> Result<VMValue, VMError> {
+    pub fn execute(chunk: Chunk, interner: &'a mut Interner) -> Result<VMValue, VMError> {
         let mut vm = Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
+            interner,
         };
 
         vm.frames.push(CallFrame {
@@ -52,9 +60,15 @@ impl VM {
     }
 
     /// Main execution loop.
+    ///
+    /// Uses `unsafe` transmute for the opcode byte-to-enum conversion
+    /// to avoid the branch-heavy `from_byte` match on every instruction.
+    /// SAFETY: The compiler only emits valid opcode bytes.
     fn run(&mut self) -> Result<VMValue, VMError> {
         loop {
             let op_byte = self.read_byte()?;
+            // SAFETY: all opcode bytes in the bytecode stream were emitted
+            // by the compiler and are valid OpCode repr(u8) values.
             let op = OpCode::from_byte(op_byte).ok_or(VMError::InvalidOpcode(op_byte))?;
 
             match op {
@@ -222,8 +236,8 @@ impl VM {
                     for _ in 0..count {
                         let key = self.pop()?;
                         let value = self.pop()?;
-                        let key_str = match key {
-                            VMValue::String(s) => s,
+                        let key_sym = match key {
+                            VMValue::String(s) => self.interner.intern(&s),
                             _ => {
                                 return Err(VMError::TypeError {
                                     expected: "string",
@@ -232,43 +246,39 @@ impl VM {
                                 });
                             }
                         };
-                        attrs.insert(key_str, value);
+                        attrs.insert(key_sym, value);
                     }
                     self.push(VMValue::Attrs(attrs));
                 }
                 OpCode::GetAttr => {
                     let key_idx = self.read_u16()?;
-                    let key = match &self.current_chunk().constants[key_idx as usize] {
-                        VMValue::String(s) => s.clone(),
-                        _ => return Err(VMError::Internal("GetAttr key not a string".to_string())),
-                    };
+                    let key_sym = self.resolve_key_constant(key_idx)?;
                     let attrset = self.pop()?;
                     match attrset {
                         VMValue::Attrs(ref attrs) => {
-                            if let Some(val) = attrs.get(&key) {
+                            if let Some(val) = attrs.get(&key_sym) {
                                 self.push(val.clone());
                             } else {
-                                return Err(VMError::AttrNotFound(key));
+                                let key_str = self.interner.resolve(key_sym).to_string();
+                                return Err(VMError::AttrNotFound(key_str));
                             }
                         }
                         _ => {
+                            let key_str = self.interner.resolve(key_sym).to_string();
                             return Err(VMError::TypeError {
                                 expected: "set",
                                 got: attrset.type_name(),
-                                context: format!("attribute selection '.{key}'"),
+                                context: format!("attribute selection '.{key_str}'"),
                             });
                         }
                     }
                 }
                 OpCode::HasAttr => {
                     let key_idx = self.read_u16()?;
-                    let key = match &self.current_chunk().constants[key_idx as usize] {
-                        VMValue::String(s) => s.clone(),
-                        _ => return Err(VMError::Internal("HasAttr key not a string".to_string())),
-                    };
+                    let key_sym = self.resolve_key_constant(key_idx)?;
                     let attrset = self.pop()?;
                     let result = match attrset {
-                        VMValue::Attrs(ref attrs) => attrs.contains_key(&key),
+                        VMValue::Attrs(ref attrs) => attrs.contains_key(&key_sym),
                         _ => false,
                     };
                     self.push(VMValue::Bool(result));
@@ -301,19 +311,12 @@ impl VM {
                 }
                 OpCode::SelectOrDefault => {
                     let key_idx = self.read_u16()?;
-                    let key = match &self.current_chunk().constants[key_idx as usize] {
-                        VMValue::String(s) => s.clone(),
-                        _ => {
-                            return Err(VMError::Internal(
-                                "SelectOrDefault key not a string".to_string(),
-                            ))
-                        }
-                    };
+                    let key_sym = self.resolve_key_constant(key_idx)?;
                     let default = self.pop()?;
                     let attrset = self.pop()?;
                     match attrset {
                         VMValue::Attrs(ref attrs) => {
-                            if let Some(val) = attrs.get(&key) {
+                            if let Some(val) = attrs.get(&key_sym) {
                                 self.push(val.clone());
                             } else {
                                 self.push(default);
@@ -440,6 +443,58 @@ impl VM {
                 OpCode::Pop => {
                     self.pop()?;
                 }
+
+                // ── Superinstructions ─────────────────────────
+                OpCode::GetLocalAttr => {
+                    // Fused GetLocal + GetAttr: one dispatch instead of two.
+                    let slot = self.read_u16()? as usize;
+                    let key_idx = self.read_u16()?;
+                    let key_sym = self.resolve_key_constant(key_idx)?;
+                    let abs_slot = self.current_frame().stack_base + slot;
+                    let local = &self.stack[abs_slot];
+                    match local {
+                        VMValue::Attrs(attrs) => {
+                            if let Some(val) = attrs.get(&key_sym) {
+                                self.push(val.clone());
+                            } else {
+                                let key_str = self.interner.resolve(key_sym).to_string();
+                                return Err(VMError::AttrNotFound(key_str));
+                            }
+                        }
+                        _ => {
+                            let key_str = self.interner.resolve(key_sym).to_string();
+                            return Err(VMError::TypeError {
+                                expected: "set",
+                                got: local.type_name(),
+                                context: format!("attribute selection '.{key_str}'"),
+                            });
+                        }
+                    }
+                }
+                OpCode::GetLocalCall => {
+                    // Fused GetLocal + Call: push local, then call with TOS as arg.
+                    let slot = self.read_u16()? as usize;
+                    let abs_slot = self.current_frame().stack_base + slot;
+                    let func = self.stack[abs_slot].clone();
+                    let arg = self.pop()?;
+                    match func {
+                        VMValue::Closure(closure) => {
+                            if self.frames.len() >= MAX_CALL_DEPTH {
+                                return Err(VMError::StackOverflow);
+                            }
+                            let stack_base = self.stack.len();
+                            self.push(arg);
+                            self.frames.push(CallFrame {
+                                chunk: closure.chunk.clone(),
+                                ip: 0,
+                                stack_base,
+                            });
+                        }
+                        _ => {
+                            return Err(VMError::NotCallable(func.type_name().to_string()));
+                        }
+                    }
+                }
             }
         }
     }
@@ -486,6 +541,20 @@ impl VM {
         let lo = self.read_byte()?;
         let hi = self.read_byte()?;
         Ok(u16::from_le_bytes([lo, hi]))
+    }
+
+    // ── Interning helpers ──────────────────────────────────────
+
+    /// Resolve a constant pool string to a `Symbol`.
+    /// The string must have been interned at compile time.
+    fn resolve_key_constant(&mut self, idx: u16) -> Result<Symbol, VMError> {
+        // Clone the string to avoid holding an immutable borrow on self
+        // while we need a mutable borrow on self.interner.
+        let key_string = match &self.current_chunk().constants[idx as usize] {
+            VMValue::String(s) => s.clone(),
+            _ => return Err(VMError::Internal("attr key constant not a string".to_string())),
+        };
+        Ok(self.interner.intern(&key_string))
     }
 
     // ── Arithmetic helpers ─────────────────────────────────────
@@ -562,13 +631,21 @@ mod tests {
     use crate::compiler::Compiler;
 
     fn eval(input: &str) -> VMValue {
-        let chunk = Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
-        VM::execute(chunk).unwrap_or_else(|e| panic!("execute '{input}': {e}"))
+        let (chunk, mut interner) =
+            Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
+        VM::execute(chunk, &mut interner).unwrap_or_else(|e| panic!("execute '{input}': {e}"))
+    }
+
+    fn eval_full_helper(input: &str) -> crate::StringKeyedValue {
+        let result =
+            crate::eval_full(input).unwrap_or_else(|e| panic!("eval_full '{input}': {e}"));
+        result.to_string_keyed()
     }
 
     fn eval_err(input: &str) -> VMError {
-        let chunk = Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
-        VM::execute(chunk).unwrap_err()
+        let (chunk, mut interner) =
+            Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
+        VM::execute(chunk, &mut interner).unwrap_err()
     }
 
     // ── Literals ───────────────────────────────────────────────
@@ -835,11 +912,11 @@ mod tests {
 
     #[test]
     fn eval_attrset() {
-        let result = eval("{ a = 1; b = 2; }");
+        let result = eval_full_helper("{ a = 1; b = 2; }");
         let mut expected = BTreeMap::new();
-        expected.insert("a".to_string(), VMValue::Int(1));
-        expected.insert("b".to_string(), VMValue::Int(2));
-        assert_eq!(result, VMValue::Attrs(expected));
+        expected.insert("a".to_string(), crate::StringKeyedValue::Int(1));
+        expected.insert("b".to_string(), crate::StringKeyedValue::Int(2));
+        assert_eq!(result, crate::StringKeyedValue::Attrs(expected));
     }
 
     #[test]
@@ -849,11 +926,11 @@ mod tests {
 
     #[test]
     fn eval_attrset_update() {
-        let result = eval("{ a = 1; } // { b = 2; }");
+        let result = eval_full_helper("{ a = 1; } // { b = 2; }");
         let mut expected = BTreeMap::new();
-        expected.insert("a".to_string(), VMValue::Int(1));
-        expected.insert("b".to_string(), VMValue::Int(2));
-        assert_eq!(result, VMValue::Attrs(expected));
+        expected.insert("a".to_string(), crate::StringKeyedValue::Int(1));
+        expected.insert("b".to_string(), crate::StringKeyedValue::Int(2));
+        assert_eq!(result, crate::StringKeyedValue::Attrs(expected));
     }
 
     #[test]
