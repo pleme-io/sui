@@ -1,16 +1,13 @@
 //! Nix value types and environments.
 //!
 //! The evaluator is single-threaded: `Env` and `NixAttrs` contain
-//! `Rc<RefCell<ThunkRepr>>` thunks.  Some fields use `Arc` for
-//! cheap cloning rather than thread-safety, which is fine because the
-//! values are never sent across threads.
-#![allow(clippy::arc_with_non_send_sync)]
+//! `Rc<RefCell<ThunkRepr>>` thunks.  All shared pointers use `Rc`
+//! (not `Arc`) because the values are never sent across threads.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
-use std::sync::Arc;
 
 // ── Nix string context ─────────────────────────────────────────
 
@@ -489,7 +486,7 @@ pub struct BuiltinFn {
     /// Name used for display and debug printing.
     pub name: &'static str,
     /// The implementation closure.
-    pub func: Arc<BuiltinFunc>,
+    pub func: Rc<BuiltinFunc>,
 }
 
 impl fmt::Debug for BuiltinFn {
@@ -502,7 +499,7 @@ impl fmt::Debug for BuiltinFn {
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     bindings: BTreeMap<String, Value>,
-    parent: Option<Arc<Env>>,
+    parent: Option<Rc<Env>>,
     /// Dynamic scope from `with` expressions.
     /// Stored as a lazy `Value` (boxed to break the Env→Value→Closure→Env
     /// size cycle) — only forced when a name lookup actually falls through
@@ -534,7 +531,7 @@ impl Env {
     pub fn child(&self) -> Self {
         Self {
             bindings: BTreeMap::new(),
-            parent: Some(Arc::new(self.clone())),
+            parent: Some(Rc::new(self.clone())),
             with_scope: None,
             // Children inherit the parent's eval file so that
             // path literals nested deep in let-chains still
@@ -1151,7 +1148,7 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::rc::Rc;
 
     // ── Value::to_json for every variant ─────────────────
 
@@ -1230,7 +1227,7 @@ mod tests {
     fn to_json_builtin() {
         let b = BuiltinFn {
             name: "test",
-            func: Arc::new(|_| Ok(Value::Null)),
+            func: Rc::new(|_| Ok(Value::Null)),
         };
         assert_eq!(
             Value::Builtin(b).to_json(),
@@ -1284,7 +1281,7 @@ mod tests {
     fn type_name_builtin() {
         let b = BuiltinFn {
             name: "t",
-            func: Arc::new(|_| Ok(Value::Null)),
+            func: Rc::new(|_| Ok(Value::Null)),
         };
         assert_eq!(Value::Builtin(b).type_name(), "lambda");
     }
@@ -1419,7 +1416,7 @@ mod tests {
     fn display_builtin() {
         let b = BuiltinFn {
             name: "add",
-            func: Arc::new(|_| Ok(Value::Null)),
+            func: Rc::new(|_| Ok(Value::Null)),
         };
         assert_eq!(format!("{}", Value::Builtin(b)), "<<builtin add>>");
     }
@@ -2553,7 +2550,7 @@ mod tests {
     fn builtin_fn_debug_includes_name() {
         let b = BuiltinFn {
             name: "myFunc",
-            func: Arc::new(|_| Ok(Value::Null)),
+            func: Rc::new(|_| Ok(Value::Null)),
         };
         let s = format!("{b:?}");
         assert!(s.contains("myFunc"));

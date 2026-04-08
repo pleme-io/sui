@@ -10,12 +10,11 @@
 //! helpers.
 //!
 //! The evaluator uses Tvix-style lazy evaluation with `Rc<RefCell<ThunkRepr>>`
-//! thunks.  Curried builtins capture these non-Send/Sync values in `Arc`
+//! thunks.  Curried builtins capture these non-Send/Sync values in `Rc`
 //! closures — this is intentional for the single-threaded evaluator and
-//! safe because the `Arc` is never sent across threads.
-#![allow(clippy::arc_with_non_send_sync)]
+//! safe because the evaluator is single-threaded.
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use crate::value::*;
 
@@ -106,7 +105,7 @@ pub fn register(env: &mut Env) {
         let list = args[0].as_list()?.to_vec();
         Ok(Value::Builtin(BuiltinFn {
             name: "elemAt<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let idx = args2[0].as_int()? as usize;
                 list.get(idx)
                     .cloned()
@@ -118,7 +117,7 @@ pub fn register(env: &mut Env) {
         let needle = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "elem<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let haystack = args2[0].as_list()?;
                 Ok(Value::Bool(haystack.contains(&needle)))
             }),
@@ -128,7 +127,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "genList<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let n = args2[0].as_int()?;
                 let mut result = Vec::new();
                 for i in 0..n {
@@ -152,7 +151,7 @@ pub fn register(env: &mut Env) {
         let name = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "hasAttr<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 Ok(Value::Bool(attrs.contains_key(&name)))
             }),
@@ -162,7 +161,7 @@ pub fn register(env: &mut Env) {
         let name = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "getAttr<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 attrs.get(&name).cloned().ok_or_else(|| EvalError::AttrNotFound(name.clone()))
             }),
@@ -172,7 +171,7 @@ pub fn register(env: &mut Env) {
         let a = args[0].to_attrs()?.clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "intersectAttrs<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let b = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in b.iter() {
@@ -198,11 +197,11 @@ pub fn register(env: &mut Env) {
         let start = args[0].as_int()? as usize;
         Ok(Value::Builtin(BuiltinFn {
             name: "substring<p1>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let len = args2[0].as_int()? as usize;
                 Ok(Value::Builtin(BuiltinFn {
                     name: "substring<p2>",
-                    func: Arc::new(move |args3| {
+                    func: Rc::new(move |args3| {
                         let s = args3[0].as_string()?;
                         let end = (start + len).min(s.len());
                         let start = start.min(s.len());
@@ -246,7 +245,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "map<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let result: Result<Vec<_>, _> = list.iter()
                     .map(|v| crate::eval::apply(func.clone(), v.clone()))
@@ -259,7 +258,7 @@ pub fn register(env: &mut Env) {
         let pred = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "filter<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for v in list {
@@ -275,12 +274,12 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "foldl'<p1>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let init = args2[0].clone();
                 let func2 = func.clone();
                 Ok(Value::Builtin(BuiltinFn {
                     name: "foldl'<p2>",
-                    func: Arc::new(move |args3| {
+                    func: Rc::new(move |args3| {
                         let list = args3[0].as_list()?;
                         let mut acc = init.clone();
                         for v in list {
@@ -297,7 +296,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "concatMap<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for v in list {
@@ -320,7 +319,7 @@ pub fn register(env: &mut Env) {
         let cmp = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "sort<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let mut list = args2[0].as_list()?.to_vec();
                 if list.len() <= 1 {
                     return Ok(Value::List(list));
@@ -357,7 +356,7 @@ pub fn register(env: &mut Env) {
         let pred = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "all<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 for v in list {
                     if !crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
@@ -372,7 +371,7 @@ pub fn register(env: &mut Env) {
         let pred = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "any<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 for v in list {
                     if crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
@@ -418,7 +417,7 @@ pub fn register(env: &mut Env) {
         let pred = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "filterAttrs<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
@@ -437,7 +436,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "mapAttrs<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
@@ -468,7 +467,7 @@ pub fn register(env: &mut Env) {
         let name = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "catAttrs<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for item in list {
@@ -485,7 +484,7 @@ pub fn register(env: &mut Env) {
         let set = args[0].to_attrs()?.clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "removeAttrs<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let names = args2[0].as_list()?;
                 let remove: Vec<String> = names.iter()
                     .filter_map(|v| v.as_string().ok().map(|s| s.to_string()))
@@ -506,14 +505,14 @@ pub fn register(env: &mut Env) {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Value::Builtin(BuiltinFn {
             name: "replaceStrings<p1>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let to = args2[0].as_list()?.iter()
                     .map(|v| v.as_string().map(|s| s.to_string()))
                     .collect::<Result<Vec<_>, _>>()?;
                 let from2 = from.clone();
                 Ok(Value::Builtin(BuiltinFn {
                     name: "replaceStrings<p2>",
-                    func: Arc::new(move |args3| {
+                    func: Rc::new(move |args3| {
                         let mut s = args3[0].as_string()?.to_string();
                         for (f, t) in from2.iter().zip(to.iter()) {
                             if !f.is_empty() {
@@ -530,7 +529,7 @@ pub fn register(env: &mut Env) {
         let sep = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "concatStringsSep<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let strings: Result<Vec<_>, _> = list.iter()
                     .map(|v| v.as_string().map(|s| s.to_string()))
@@ -543,7 +542,7 @@ pub fn register(env: &mut Env) {
         let prefix = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "hasPrefix<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let s = args2[0].as_string()?;
                 Ok(Value::Bool(s.starts_with(&prefix)))
             }),
@@ -553,7 +552,7 @@ pub fn register(env: &mut Env) {
         let suffix = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "hasSuffix<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let s = args2[0].as_string()?;
                 Ok(Value::Bool(s.ends_with(&suffix)))
             }),
@@ -574,7 +573,7 @@ pub fn register(env: &mut Env) {
         let pred = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "partition<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let mut right = Vec::new();
                 let mut wrong = Vec::new();
@@ -598,7 +597,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "groupBy<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 let mut groups: std::collections::BTreeMap<String, Vec<Value>> =
                     std::collections::BTreeMap::new();
@@ -621,7 +620,7 @@ pub fn register(env: &mut Env) {
         let func = args[0].clone();
         Ok(Value::Builtin(BuiltinFn {
             name: "zipAttrsWith<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 // Collect all keys and their values across all attrsets
                 let mut collected: std::collections::BTreeMap<String, Vec<Value>> =
@@ -651,7 +650,7 @@ pub fn register(env: &mut Env) {
         let a = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "compareVersions<partial>",
-            func: Arc::new(move |args2| {
+            func: Rc::new(move |args2| {
                 let b = args2[0].as_string()?;
                 let result = compare_versions(&a, b);
                 Ok(Value::Int(result))
@@ -712,7 +711,7 @@ pub fn register(env: &mut Env) {
         let _ctx = args[0].as_string()?.to_string();
         Ok(Value::Builtin(BuiltinFn {
             name: "addErrorContext<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
 
@@ -755,7 +754,7 @@ pub fn register(env: &mut Env) {
         tracing::debug!("trace: {msg}");
         Ok(Value::Builtin(BuiltinFn {
             name: "trace<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
     // ── warn ──────────────────────────────────────────────
@@ -770,7 +769,7 @@ pub fn register(env: &mut Env) {
         eprintln!("evaluation warning: {msg}");
         Ok(Value::Builtin(BuiltinFn {
             name: "warn<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
     // ── traceVerbose ──────────────────────────────────────
@@ -787,7 +786,7 @@ pub fn register(env: &mut Env) {
         tracing::trace!("traceVerbose: {msg}");
         Ok(Value::Builtin(BuiltinFn {
             name: "traceVerbose<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
     // ── break ─────────────────────────────────────────────
@@ -832,14 +831,14 @@ pub fn register(env: &mut Env) {
         let _forced = args[0].clone(); // force first arg
         Ok(Value::Builtin(BuiltinFn {
             name: "seq<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
     register_builtin(&mut builtins_set, "deepSeq", |args| {
         let _forced = args[0].clone(); // force first arg (deep in real impl)
         Ok(Value::Builtin(BuiltinFn {
             name: "deepSeq<partial>",
-            func: Arc::new(|args2| Ok(args2[0].clone())),
+            func: Rc::new(|args2| Ok(args2[0].clone())),
         }))
     });
 
@@ -2745,7 +2744,7 @@ fn register_builtin(
         name.to_string(),
         Value::Builtin(BuiltinFn {
             name,
-            func: Arc::new(func),
+            func: Rc::new(func),
         }),
     );
 }
@@ -2760,12 +2759,12 @@ fn register_curried(
         name.to_string(),
         Value::Builtin(BuiltinFn {
             name,
-            func: Arc::new(move |args| {
+            func: Rc::new(move |args| {
                 let a = args[0].clone();
                 let f2 = f.clone();
                 Ok(Value::Builtin(BuiltinFn {
                     name: "curried<partial>",
-                    func: Arc::new(move |args2| f2(&a, &args2[0])),
+                    func: Rc::new(move |args2| f2(&a, &args2[0])),
                 }))
             }),
         }),
