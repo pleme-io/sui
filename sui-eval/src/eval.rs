@@ -92,14 +92,23 @@ pub fn is_pure_mode() -> bool {
 
 /// Maximum evaluation depth before we report infinite recursion.
 ///
-/// In debug/test builds the stack frames are large (~20-40 KB each due to
-/// rnix AST nodes and thunk forcing), so we use a lower limit to stay
-/// within the 8 MB default test-thread stack. Release builds can afford a
-/// higher limit.
+/// With `stacker` dynamically growing the call stack, we are no longer
+/// limited by the default 8 MB thread stack.
+///
+/// **Test builds** keep a low limit (2 048) so that infinite-recursion
+/// tests fail quickly instead of spinning for minutes.
+///
+/// **Non-test builds** disable the depth guard entirely (`usize::MAX`).
+/// nixpkgs uses deeply nested fixpoints (50+ overlay applications, each
+/// creating cascading chains of millions of `eval_expr` calls when
+/// attributes are forced). CppNix has no explicit depth limit — it
+/// relies on the OS stack, which `stacker` now emulates for us. True
+/// infinite recursion is caught by the thunk blackhole detector in
+/// `Thunk::force`, not by this counter.
 #[cfg(test)]
-const MAX_EVAL_DEPTH: usize = 64;
+const MAX_EVAL_DEPTH: usize = 2_048;
 #[cfg(not(test))]
-const MAX_EVAL_DEPTH: usize = 500;
+const MAX_EVAL_DEPTH: usize = usize::MAX;
 
 /// RAII guard that decrements the eval depth counter on drop.
 struct DepthGuard;
@@ -155,18 +164,33 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
 /// Force a value: if it is a thunk, evaluate and memoize the result.
 /// Concrete values are returned unchanged.
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
-    match value {
-        Value::Thunk(thunk) => {
-            let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
-            // Recursively force in case a thunk yields another thunk.
-            force_value(&forced)
+    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
+        match value {
+            Value::Thunk(thunk) => {
+                let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
+                // Recursively force in case a thunk yields another thunk.
+                force_value(&forced)
+            }
+            other => Ok(other.clone()),
         }
-        other => Ok(other.clone()),
-    }
+    })
 }
 
 /// Evaluate an rnix expression in an environment.
+///
+/// Uses `stacker::maybe_grow` to dynamically extend the call stack when
+/// it is close to exhaustion.  This prevents stack overflow on deeply
+/// nested nixpkgs fixpoints (50+ overlay applications each creating
+/// multiple recursive `eval_expr` / `force_value` frames).
 pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
+    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
+        eval_expr_inner(expr, env)
+    })
+}
+
+/// Inner implementation of [`eval_expr`] — called from the `stacker`
+/// trampoline so that the stack is guaranteed to have headroom.
+fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
     let _guard = DepthGuard::enter()?;
     match expr {
         ast::Expr::Literal(lit) => eval_literal(lit),

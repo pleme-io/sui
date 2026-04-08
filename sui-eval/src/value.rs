@@ -282,7 +282,21 @@ impl Thunk {
     /// On first force: transitions Suspended -> Blackhole -> Evaluated.
     /// Re-entering a Blackhole signals infinite recursion.
     /// If the evaluated result is itself a thunk, it is forced transitively.
+    ///
+    /// Uses `stacker::maybe_grow` to ensure sufficient stack space for
+    /// deeply nested thunk chains (e.g., nixpkgs overlay fixpoints).
     pub fn force(
+        &self,
+        evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
+    ) -> Result<Value, EvalError> {
+        stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
+            self.force_inner(evaluator)
+        })
+    }
+
+    /// Inner implementation of [`Thunk::force`] — called from the
+    /// `stacker` trampoline.
+    fn force_inner(
         &self,
         evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
     ) -> Result<Value, EvalError> {

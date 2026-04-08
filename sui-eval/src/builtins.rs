@@ -14,9 +14,36 @@
 //! closures — this is intentional for the single-threaded evaluator and
 //! safe because the evaluator is single-threaded.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::value::*;
+
+thread_local! {
+    /// Cache of imported file values, keyed by canonical absolute path.
+    ///
+    /// CppNix caches `import` results so that `import ./lib.nix` evaluated
+    /// from different call sites returns the same thunk/value. This is
+    /// critical for nixpkgs performance — without it, ~500 unique files
+    /// times 50+ overlay applications produce 25,000+ redundant parse-
+    /// and-evaluate cycles, easily blowing the eval depth limit.
+    ///
+    /// The cache persists for the entire evaluation session (including
+    /// recursive `evaluate_flake` calls for flake inputs) so that shared
+    /// dependencies like nixpkgs are evaluated only once.
+    static IMPORT_CACHE: RefCell<HashMap<std::path::PathBuf, Value>> = RefCell::new(HashMap::new());
+}
+
+/// Clear the import cache.
+///
+/// Call at the start of a fresh top-level evaluation when you need to
+/// guarantee that no stale values survive from a previous session.
+/// During normal flake evaluation this should **not** be called — the
+/// cache intentionally spans recursive `evaluate_flake` calls.
+pub fn clear_import_cache() {
+    IMPORT_CACHE.with(|c| c.borrow_mut().clear());
+}
 
 /// Descriptor for a simple single-argument builtin function.
 ///
@@ -1338,6 +1365,21 @@ pub fn register(env: &mut Env) {
             &raw_path,
         ).unwrap_or_else(|_| std::path::PathBuf::from(&raw_path));
         let path = resolved.to_string_lossy().into_owned();
+
+        // Canonical key for the import cache — normalize away any
+        // leftover `.`/`..` components so the same file reached via
+        // different relative paths hits a single cache entry.
+        let canonical = crate::path::normalize(std::path::Path::new(&path));
+
+        // Check the import cache. CppNix caches import results by
+        // absolute path so that the same file imported N times
+        // (common in nixpkgs overlays) is only parsed and evaluated
+        // once. Return the cached value directly if present.
+        let cached = IMPORT_CACHE.with(|c| c.borrow().get(&canonical).cloned());
+        if let Some(value) = cached {
+            return Ok(value);
+        }
+
         let source = std::fs::read_to_string(&path)
             .map_err(|e| EvalError::IoError { context: format!("import {path}"), message: e.to_string() })?;
         // Push this file onto the eval stack so further relative
@@ -1348,7 +1390,12 @@ pub fn register(env: &mut Env) {
         // import scope).
         let path_buf = std::path::PathBuf::from(&path);
         let _guard = crate::eval::push_eval_file(path_buf.clone());
-        crate::eval::eval_with_file(&source, Some(path_buf))
+        let value = crate::eval::eval_with_file(&source, Some(path_buf))?;
+
+        // Store in the import cache for subsequent calls.
+        IMPORT_CACHE.with(|c| c.borrow_mut().insert(canonical, value.clone()));
+
+        Ok(value)
     });
 
     // ── derivation ─────────────────────────────────────────
@@ -7543,5 +7590,85 @@ mod tests {
         // Second force should succeed with Null (not Blackhole/infinite recursion).
         let r2 = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
         assert_eq!(r2.unwrap(), Value::Null);
+    }
+
+    // ── Import cache tests ───────────────────────────────────
+
+    #[test]
+    fn import_cache_returns_same_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cached.nix");
+        std::fs::write(&path, "42").unwrap();
+
+        super::clear_import_cache();
+
+        let v1 = eval(&format!("import {}", path.display())).unwrap();
+        let v2 = eval(&format!("import {}", path.display())).unwrap();
+        assert_eq!(v1, v2);
+        assert_eq!(v1, Value::Int(42));
+    }
+
+    #[test]
+    fn import_cache_function_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("func.nix");
+        std::fs::write(&path, "x: x + 1").unwrap();
+
+        super::clear_import_cache();
+
+        // Same function imported, applied with different args.
+        let v1 = eval(&format!("(import {}) 1", path.display())).unwrap();
+        let v2 = eval(&format!("(import {}) 2", path.display())).unwrap();
+        assert_eq!(v1, Value::Int(2));
+        assert_eq!(v2, Value::Int(3));
+    }
+
+    #[test]
+    fn import_cache_survives_across_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lib.nix");
+        std::fs::write(&path, "{ x = 1; }").unwrap();
+
+        super::clear_import_cache();
+
+        // First import caches the value.
+        let _ = eval(&format!("import {}", path.display())).unwrap();
+
+        // Modify the file on disk.
+        std::fs::write(&path, "{ x = 2; }").unwrap();
+
+        // Second import returns the CACHED value (x = 1, not 2).
+        let v = eval(&format!("(import {}).x", path.display())).unwrap();
+        assert_eq!(v, Value::Int(1)); // cached!
+    }
+
+    #[test]
+    fn import_cache_different_paths_different_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path_a = tmp.path().join("a.nix");
+        let path_b = tmp.path().join("b.nix");
+        std::fs::write(&path_a, "10").unwrap();
+        std::fs::write(&path_b, "20").unwrap();
+
+        super::clear_import_cache();
+
+        let va = eval(&format!("import {}", path_a.display())).unwrap();
+        let vb = eval(&format!("import {}", path_b.display())).unwrap();
+        assert_eq!(va, Value::Int(10));
+        assert_eq!(vb, Value::Int(20));
+    }
+
+    #[test]
+    fn import_cache_attrs_cached() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("attrs.nix");
+        std::fs::write(&path, "{ a = 1; b = 2; }").unwrap();
+
+        super::clear_import_cache();
+
+        let v1 = eval(&format!("(import {}).a", path.display())).unwrap();
+        let v2 = eval(&format!("(import {}).b", path.display())).unwrap();
+        assert_eq!(v1, Value::Int(1));
+        assert_eq!(v2, Value::Int(2));
     }
 }
