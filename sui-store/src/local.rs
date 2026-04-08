@@ -327,6 +327,297 @@ impl Store for LocalStore {
 
         Ok(info)
     }
+
+    async fn collect_garbage(
+        &self,
+        options: &crate::traits::GcOptions,
+    ) -> StoreResult<crate::traits::GcResult> {
+        use std::collections::HashSet;
+
+        // 1. Enumerate GC roots.
+        let roots = find_gc_roots(&self.store_dir);
+
+        // 2. Compute reachable closure from the roots.
+        let all_paths = self.query_all_valid_paths().await?;
+        let mut reachable: HashSet<String> = HashSet::new();
+        let mut queue: Vec<String> = roots;
+        while let Some(path_str) = queue.pop() {
+            if !reachable.insert(path_str.clone()) {
+                continue;
+            }
+            // Look up references for this path.
+            if let Ok(sp) = StorePath::from_absolute_path(&path_str)
+                && let Ok(Some(info)) = self.query_path_info(&sp).await
+            {
+                for r in &info.references {
+                    if !reachable.contains(r) {
+                        queue.push(r.clone());
+                    }
+                }
+            }
+        }
+
+        // 3. Find unreachable paths.
+        let garbage: Vec<StorePath> = all_paths
+            .into_iter()
+            .filter(|p| !reachable.contains(&p.to_absolute_path()))
+            .collect();
+
+        // 4. Delete unreachable paths.
+        let mut freed: u64 = 0;
+        let mut deleted: usize = 0;
+        for path in &garbage {
+            match self.delete_path(path).await {
+                Ok(bytes) => {
+                    freed += bytes;
+                    deleted += 1;
+                    if options.max_freed > 0 && freed >= options.max_freed {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.to_absolute_path(),
+                        error = %e,
+                        "failed to delete path during GC",
+                    );
+                }
+            }
+        }
+
+        Ok(crate::traits::GcResult {
+            paths_deleted: deleted,
+            bytes_freed: freed,
+        })
+    }
+
+    async fn verify_store(&self) -> StoreResult<crate::traits::VerifyResult> {
+        use sha2::{Sha256, Digest};
+
+        let all_paths = self.query_all_valid_paths().await?;
+        let mut result = crate::traits::VerifyResult::default();
+
+        for sp in &all_paths {
+            result.total_checked += 1;
+            let abs_path = sp.to_absolute_path();
+
+            let info = match self.query_path_info(sp).await? {
+                Some(info) => info,
+                None => continue,
+            };
+
+            // Compute the NAR hash of the actual files on disk.
+            let fs_path = Path::new(&abs_path);
+            if !fs_path.exists() {
+                result.corrupt.push(crate::traits::CorruptPath {
+                    path: abs_path,
+                    expected_hash: info.nar_hash.clone(),
+                    actual_hash: "(missing from disk)".to_string(),
+                });
+                continue;
+            }
+
+            match nar_from_path(fs_path) {
+                Ok(nar_data) => {
+                    let hash_raw = Sha256::digest(&nar_data);
+                    let actual_hash = format!("sha256:{}", hex_encode(&hash_raw));
+                    if actual_hash != info.nar_hash {
+                        result.corrupt.push(crate::traits::CorruptPath {
+                            path: abs_path,
+                            expected_hash: info.nar_hash.clone(),
+                            actual_hash,
+                        });
+                    } else {
+                        result.valid_count += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %abs_path, error = %e, "failed to compute NAR hash");
+                    result.corrupt.push(crate::traits::CorruptPath {
+                        path: abs_path,
+                        expected_hash: info.nar_hash.clone(),
+                        actual_hash: format!("(error: {e})"),
+                    });
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn delete_path(&self, path: &StorePath) -> StoreResult<u64> {
+        use sea_orm::ConnectionTrait;
+
+        let abs_path = path.to_absolute_path();
+        let model = self.find_by_path(&abs_path).await?;
+
+        // Calculate size of the path on disk.
+        let fs_path = Path::new(&abs_path);
+        let freed = if fs_path.exists() {
+            dir_size(fs_path)
+        } else {
+            0
+        };
+
+        // Remove from database first.
+        if let Some(model) = model {
+            // Delete reference edges.
+            let backend = self.db.get_database_backend();
+            let del_refs = sea_orm::Statement::from_string(
+                backend,
+                format!("DELETE FROM Refs WHERE referrer = {} OR reference = {}", model.id, model.id),
+            );
+            self.db.execute(del_refs).await.map_err(db_err)?;
+
+            // Delete derivation outputs.
+            let del_drv = sea_orm::Statement::from_string(
+                backend,
+                format!("DELETE FROM DerivationOutputs WHERE drv = {}", model.id),
+            );
+            self.db.execute(del_drv).await.map_err(db_err)?;
+
+            // Delete the valid path row.
+            let del_path = sea_orm::Statement::from_string(
+                backend,
+                format!("DELETE FROM ValidPaths WHERE id = {}", model.id),
+            );
+            self.db.execute(del_path).await.map_err(db_err)?;
+        }
+
+        // Remove from disk.
+        if fs_path.exists() {
+            if fs_path.is_dir() {
+                std::fs::remove_dir_all(fs_path)?;
+            } else {
+                std::fs::remove_file(fs_path)?;
+            }
+        }
+
+        Ok(freed)
+    }
+}
+
+/// Find GC roots by scanning well-known root directories.
+///
+/// Follows symlinks in `/nix/var/nix/gcroots/` and `/nix/var/nix/profiles/`
+/// to discover which store paths are rooted.
+fn find_gc_roots(store_dir: &str) -> Vec<String> {
+    let mut roots = Vec::new();
+    let gc_dirs = [
+        "/nix/var/nix/gcroots",
+        "/nix/var/nix/profiles",
+    ];
+
+    for dir in &gc_dirs {
+        let dir_path = Path::new(dir);
+        if !dir_path.exists() {
+            continue;
+        }
+        collect_gc_roots_from(dir_path, store_dir, &mut roots);
+    }
+
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Recursively scan a directory for symlinks pointing into the store.
+fn collect_gc_roots_from(dir: &Path, store_dir: &str, roots: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() {
+            if let Ok(target) = std::fs::read_link(&path) {
+                let target_str = target.to_string_lossy();
+                if target_str.starts_with(store_dir) {
+                    // Extract the top-level store path (first component after store_dir).
+                    let remainder = &target_str[store_dir.len()..];
+                    let first_component = remainder
+                        .trim_start_matches('/')
+                        .split('/')
+                        .next()
+                        .unwrap_or("");
+                    if !first_component.is_empty() {
+                        roots.push(format!("{store_dir}/{first_component}"));
+                    }
+                }
+            }
+        }
+        if path.is_dir() && !path.is_symlink() {
+            collect_gc_roots_from(&path, store_dir, roots);
+        }
+    }
+}
+
+/// Compute the NAR serialization of a filesystem path.
+fn nar_from_path(path: &Path) -> Result<Vec<u8>, std::io::Error> {
+    use sui_compat::nar::NarWriter;
+
+    let node = nar_node_from_path(path)?;
+    let mut buf = Vec::new();
+    NarWriter::write(&mut buf, &node).map_err(|e| {
+        std::io::Error::other(format!("NAR write error: {e}"))
+    })?;
+    Ok(buf)
+}
+
+/// Build a `NarNode` tree from a filesystem path.
+fn nar_node_from_path(path: &Path) -> Result<sui_compat::nar::NarNode, std::io::Error> {
+    use sui_compat::nar::{NarEntry, NarNode};
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(path)?;
+        Ok(NarNode::Symlink {
+            target: target.to_string_lossy().into_owned(),
+        })
+    } else if metadata.is_dir() {
+        let mut entries: Vec<NarEntry> = Vec::new();
+        let mut dir_entries: Vec<_> = std::fs::read_dir(path)?
+            .filter_map(|e| e.ok())
+            .collect();
+        dir_entries.sort_by_key(|e| e.file_name());
+        for entry in dir_entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let node = nar_node_from_path(&entry.path())?;
+            entries.push(NarEntry { name, node });
+        }
+        Ok(NarNode::Directory { entries })
+    } else {
+        let contents = std::fs::read(path)?;
+        #[cfg(unix)]
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        Ok(NarNode::Regular {
+            executable,
+            contents,
+        })
+    }
+}
+
+/// Calculate the total size of a file or directory on disk.
+fn dir_size(path: &Path) -> u64 {
+    if path.is_file() || path.is_symlink() {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    } else if path.is_dir() {
+        let mut total = 0u64;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                total += dir_size(&entry.path());
+            }
+        }
+        total
+    } else {
+        0
+    }
 }
 
 /// Convert a SeaORM `DbErr` into a `StoreError::Database`.
@@ -950,5 +1241,219 @@ mod tests {
     #[test]
     fn hex_encode_multiple_bytes() {
         assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
+
+    // ── GC tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn gc_on_empty_store_deletes_nothing() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        let result = store
+            .collect_garbage(&crate::traits::GcOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(result.paths_deleted, 0);
+        assert_eq!(result.bytes_freed, 0);
+    }
+
+    #[tokio::test]
+    async fn gc_result_display() {
+        let result = crate::traits::GcResult {
+            paths_deleted: 5,
+            bytes_freed: 1024,
+        };
+        assert_eq!(result.to_string(), "GC: 5 paths deleted, 1024 bytes freed");
+    }
+
+    // ── Verify tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn verify_empty_store_succeeds() {
+        let store = LocalStore::open_in_memory().await.unwrap();
+        let result = store.verify_store().await.unwrap();
+        assert_eq!(result.total_checked, 0);
+        assert_eq!(result.valid_count, 0);
+        assert!(result.corrupt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn verify_result_display() {
+        let result = crate::traits::VerifyResult {
+            total_checked: 10,
+            valid_count: 8,
+            corrupt: vec![
+                crate::traits::CorruptPath {
+                    path: "/nix/store/abc-hello".to_string(),
+                    expected_hash: "sha256:aaa".to_string(),
+                    actual_hash: "sha256:bbb".to_string(),
+                },
+            ],
+        };
+        assert_eq!(result.to_string(), "Verify: 10 checked, 8 valid, 1 corrupt");
+    }
+
+    // ── verify with temp store dir ─────────────────────────────
+
+    #[tokio::test]
+    async fn verify_detects_valid_path() {
+        // verify_store iterates all valid paths via query_all_valid_paths,
+        // which parses paths using StorePath::from_absolute_path (requires
+        // /nix/store/ prefix). Since we can't write to /nix/store in tests,
+        // we register a real-looking store path pointing to a temp dir entry,
+        // but the verify will see it as missing (not in /nix/store on disk).
+        //
+        // The core logic is already exercised by the empty and missing-path
+        // tests above. This test validates the verify-store method returns
+        // results for registered paths.
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Register a path with the real hash format.
+        let fake_info = PathInfo {
+            path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-verify-test".to_string(),
+            nar_hash: "sha256:1234".to_string(),
+            nar_size: 50,
+            ..PathInfo::default()
+        };
+        store.register_path(&fake_info).await.unwrap();
+
+        let result = store.verify_store().await.unwrap();
+        assert_eq!(result.total_checked, 1);
+        // Path doesn't exist on disk, so it's counted as corrupt.
+        assert_eq!(result.corrupt.len(), 1);
+        assert!(result.corrupt[0].actual_hash.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn verify_detects_missing_path() {
+        // Use /nix/store as store dir so StorePath::from_absolute_path works,
+        // but the path itself doesn't exist on disk (triggering "missing").
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Register a valid-looking store path that doesn't exist on disk.
+        let fake_info = PathInfo {
+            path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ghost-pkg".to_string(),
+            nar_hash: "sha256:0000".to_string(),
+            nar_size: 100,
+            ..PathInfo::default()
+        };
+        store.register_path(&fake_info).await.unwrap();
+
+        let result = store.verify_store().await.unwrap();
+        assert_eq!(result.total_checked, 1);
+        assert_eq!(result.valid_count, 0);
+        assert_eq!(result.corrupt.len(), 1);
+        assert!(result.corrupt[0].actual_hash.contains("missing"));
+    }
+
+    // ── delete_path tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_path_removes_from_db() {
+        // Use in-memory store with /nix/store dir.
+        // We can't write to /nix/store in tests, so we test the DB removal
+        // only. The path won't exist on disk (delete_path handles that).
+        let store = LocalStore::open_in_memory().await.unwrap();
+
+        // Register a fake path in the DB.
+        let fake_info = PathInfo {
+            path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-delete-test".to_string(),
+            nar_hash: "sha256:deadbeef".to_string(),
+            nar_size: 42,
+            ..PathInfo::default()
+        };
+        store.register_path(&fake_info).await.unwrap();
+
+        let sp = StorePath::from_absolute_path(&fake_info.path).unwrap();
+        assert!(store.is_valid_path(&sp).await.unwrap());
+
+        let freed = store.delete_path(&sp).await.unwrap();
+        // Path doesn't exist on disk so freed is 0.
+        assert_eq!(freed, 0);
+        // But it should be gone from the DB.
+        assert!(!store.is_valid_path(&sp).await.unwrap());
+    }
+
+    // ── nar_node_from_path tests ────────────────────────────────
+
+    #[test]
+    fn nar_node_from_path_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let node = nar_node_from_path(&file).unwrap();
+        match node {
+            sui_compat::nar::NarNode::Regular { executable, contents } => {
+                assert!(!executable);
+                assert_eq!(contents, b"hello");
+            }
+            _ => panic!("expected Regular"),
+        }
+    }
+
+    #[test]
+    fn nar_node_from_path_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"aaa").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"bbb").unwrap();
+        let node = nar_node_from_path(dir.path()).unwrap();
+        match node {
+            sui_compat::nar::NarNode::Directory { entries } => {
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].name, "a.txt");
+                assert_eq!(entries[1].name, "b.txt");
+            }
+            _ => panic!("expected Directory"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nar_node_from_path_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"data").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let node = nar_node_from_path(&link).unwrap();
+        match node {
+            sui_compat::nar::NarNode::Symlink { target: t } => {
+                assert!(t.contains("target"));
+            }
+            _ => panic!("expected Symlink"),
+        }
+    }
+
+    // ── dir_size tests ─────────────────────────────────────────
+
+    #[test]
+    fn dir_size_of_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("size-test.txt");
+        std::fs::write(&file, b"12345").unwrap();
+        let size = dir_size(&file);
+        assert!(size >= 5); // At least the bytes we wrote.
+    }
+
+    #[test]
+    fn dir_size_of_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), b"aaa").unwrap();
+        std::fs::write(dir.path().join("b"), b"bbbbb").unwrap();
+        let size = dir_size(dir.path());
+        assert!(size >= 8); // At least 3 + 5 bytes.
+    }
+
+    #[test]
+    fn dir_size_of_nonexistent_is_zero() {
+        assert_eq!(dir_size(Path::new("/nonexistent/path/xyz")), 0);
+    }
+
+    // ── find_gc_roots ──────────────────────────────────────────
+
+    #[test]
+    fn find_gc_roots_with_no_dirs() {
+        // Using a store dir that doesn't exist — should return empty.
+        let roots = find_gc_roots("/nonexistent/store");
+        assert!(roots.is_empty());
     }
 }

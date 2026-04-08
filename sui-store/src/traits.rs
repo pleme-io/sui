@@ -172,6 +172,42 @@ impl std::fmt::Display for GcResult {
     }
 }
 
+/// Information about a corrupt store path detected during verification.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[must_use]
+pub struct CorruptPath {
+    /// The store path that failed verification.
+    pub path: String,
+    /// The hash recorded in the database.
+    pub expected_hash: String,
+    /// The hash computed from the actual files on disk.
+    pub actual_hash: String,
+}
+
+/// Result of store integrity verification.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[must_use]
+pub struct VerifyResult {
+    /// Total number of paths checked.
+    pub total_checked: usize,
+    /// Number of paths that passed verification.
+    pub valid_count: usize,
+    /// Paths that failed hash verification.
+    pub corrupt: Vec<CorruptPath>,
+}
+
+impl std::fmt::Display for VerifyResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Verify: {} checked, {} valid, {} corrupt",
+            self.total_checked,
+            self.valid_count,
+            self.corrupt.len()
+        )
+    }
+}
+
 /// The core store interface.
 ///
 /// All store backends (local, remote, binary cache) implement this trait.
@@ -286,6 +322,22 @@ pub trait Store: Send + Sync {
     ) -> StoreResult<Vec<StorePath>> {
         Err(StoreError::NotSupported(
             "query_referrers not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Verify store integrity by checking NAR hashes of all valid paths.
+    async fn verify_store(&self) -> StoreResult<VerifyResult> {
+        Err(StoreError::NotSupported(
+            "verify_store not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Delete a store path from disk and the database.
+    ///
+    /// Returns the number of bytes freed.
+    async fn delete_path(&self, _path: &StorePath) -> StoreResult<u64> {
+        Err(StoreError::NotSupported(
+            "delete_path not implemented for this backend".to_string(),
         ))
     }
 }
@@ -1485,5 +1537,75 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("internal error"));
         assert!(msg.contains("something unexpected"));
+    }
+
+    // ── New type tests ─────────────────────────────────────────
+
+    #[test]
+    fn corrupt_path_serialization_roundtrip() {
+        let cp = CorruptPath {
+            path: "/nix/store/abc-hello".to_string(),
+            expected_hash: "sha256:aaa".to_string(),
+            actual_hash: "sha256:bbb".to_string(),
+        };
+        let json = serde_json::to_string(&cp).unwrap();
+        let cp2: CorruptPath = serde_json::from_str(&json).unwrap();
+        assert_eq!(cp, cp2);
+    }
+
+    #[test]
+    fn verify_result_display() {
+        let r = VerifyResult {
+            total_checked: 10,
+            valid_count: 8,
+            corrupt: vec![],
+        };
+        assert!(r.to_string().contains("10 checked"));
+        assert!(r.to_string().contains("8 valid"));
+    }
+
+    #[test]
+    fn gc_options_builder() {
+        let opts = GcOptions::default()
+            .with_max_freed(1024)
+            .with_delete_older_than(3600);
+        assert_eq!(opts.max_freed, 1024);
+        assert_eq!(opts.delete_older_than, Some(3600));
+    }
+
+    #[test]
+    fn gc_result_display() {
+        let r = GcResult {
+            paths_deleted: 42,
+            bytes_freed: 1_000_000,
+        };
+        assert!(r.to_string().contains("42 paths"));
+        assert!(r.to_string().contains("1000000 bytes"));
+    }
+
+    #[tokio::test]
+    async fn verify_store_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.verify_store().await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("verify_store"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_path_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.delete_path(&hello_path()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("delete_path"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
     }
 }

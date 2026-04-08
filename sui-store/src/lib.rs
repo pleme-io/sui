@@ -32,4 +32,4 @@ pub use local::{LocalStore, LocalStoreMode};
 pub use nar::decompress_nar;
 pub use profile::{Generation, ProfileError, ProfileManager};
 pub use substitute::{SubstituteResult, Substitutor};
-pub use traits::{PathInfo, Store, StoreError, StoreResult};
+pub use traits::{CorruptPath, GcOptions, GcResult, PathInfo, Store, StoreError, StoreResult, VerifyResult};
