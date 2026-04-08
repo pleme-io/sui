@@ -23,5 +23,9 @@ tempfile.workspace = true
 name = "vm_perf"
 harness = false
 
+[[bench]]
+name = "real_eval"
+harness = false
+
 [lints.clippy]
 pedantic = "warn"
