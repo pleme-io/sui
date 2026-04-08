@@ -446,9 +446,21 @@ pub fn register(env: &mut Env) {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
-                    let partial = crate::eval::apply(func.clone(), Value::string(k.clone()))?;
-                    let mapped = crate::eval::apply(partial, v.clone())?;
-                    result.insert(k.clone(), mapped);
+                    // Wrap each mapped value in a native thunk so that
+                    // the function application is deferred until the
+                    // attribute is actually accessed.  This matches
+                    // CppNix semantics where `mapAttrs` produces a lazy
+                    // attrset — critical for fixpoint patterns like
+                    // `makeExtensible` where the mapped function may
+                    // reference the still-being-constructed `self`.
+                    let f = func.clone();
+                    let key = k.clone();
+                    let val = v.clone();
+                    let thunk = Thunk::new_native(move || {
+                        let partial = crate::eval::apply(f, Value::string(key))?;
+                        crate::eval::apply(partial, val)
+                    });
+                    result.insert(k.clone(), Value::Thunk(thunk));
                 }
                 Ok(Value::Attrs(result))
             }),
