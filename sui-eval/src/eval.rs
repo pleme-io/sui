@@ -328,96 +328,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
         ast::Expr::AttrSet(set) => return eval_attrset(set, env),
 
-        ast::Expr::Select(sel) => {
-            crate::perf::inc("select");
-            let base_expr = sel.expr().ok_or_else(|| {
-                EvalError::ParseError("select missing expression".to_string())
-            })?;
-            let mut value = force_value(&eval_expr(&base_expr, env)?)?;
-            let attrpath = sel.attrpath().ok_or_else(|| {
-                EvalError::ParseError("select missing attrpath".to_string())
-            })?;
-            for attr in attrpath.attrs() {
-                let key = eval_attr(&attr, env)?;
-                match value {
-                    Value::Attrs(ref attrs) => {
-                        if let Some(v) = attrs.get(&key) {
-                            // Force the retrieved attr value before continuing
-                            // the attr path traversal.
-                            value = force_value(v)?;
-                        } else if let Some(def) = sel.default_expr() {
-                            return eval_expr(&def, env);
-                        } else {
-                            return Err(EvalError::AttrNotFound(key));
-                        }
-                    }
-                    _ => {
-                        return Err(EvalError::TypeError(format!(
-                            "cannot select from {}",
-                            value.type_name()
-                        )));
-                    }
-                }
-            }
-            return Ok(value);
-        }
+        ast::Expr::Select(sel) => return eval_select(sel, env),
 
-        ast::Expr::HasAttr(ha) => {
-            // `expr ? a.b.c` checks key presence WITHOUT forcing
-            // value thunks. We force only enough to walk to the
-            // next segment — i.e., we don't force the value at
-            // the LAST segment (just confirm it's present in the
-            // current attrset). This is critical for makeExtensible-
-            // style fixpoints where forcing a sibling attribute
-            // would re-enter the still-being-built `self`.
-            let base_expr = ha.expr().ok_or_else(|| {
-                EvalError::ParseError("hasattr missing expression".to_string())
-            })?;
-            let mut value = force_value(&eval_expr(&base_expr, env)?)?;
-            let attrpath = ha.attrpath().ok_or_else(|| {
-                EvalError::ParseError("hasattr missing attrpath".to_string())
-            })?;
-            let segments: Vec<_> = attrpath.attrs().collect();
-            for (i, attr) in segments.iter().enumerate() {
-                let key = eval_attr(attr, env)?;
-                let is_last = i == segments.len() - 1;
-                match value {
-                    Value::Attrs(ref attrs) => {
-                        if let Some(v) = attrs.get(&key) {
-                            if is_last {
-                                return Ok(Value::Bool(true));
-                            }
-                            value = force_value(v)?;
-                        } else {
-                            return Ok(Value::Bool(false));
-                        }
-                    }
-                    _ => return Ok(Value::Bool(false)),
-                }
-            }
-            return Ok(Value::Bool(true));
-        }
+        ast::Expr::HasAttr(ha) => return eval_has_attr(ha, env),
 
-        ast::Expr::UnaryOp(op) => {
-            let inner = op
-                .expr()
-                .ok_or_else(|| EvalError::ParseError("unary op missing expr".to_string()))?;
-            let val = force_value(&eval_expr(&inner, env)?)?;
-            let kind = op
-                .operator()
-                .ok_or_else(|| EvalError::ParseError("unary op missing operator".to_string()))?;
-            return match kind {
-                ast::UnaryOpKind::Negate => match val {
-                    Value::Int(n) => Ok(Value::Int(-n)),
-                    Value::Float(f) => Ok(Value::Float(-f)),
-                    _ => Err(EvalError::TypeError(format!(
-                        "cannot negate {}",
-                        val.type_name()
-                    ))),
-                },
-                ast::UnaryOpKind::Invert => Ok(Value::Bool(!val.as_bool()?)),
-            };
-        }
+        ast::Expr::UnaryOp(op) => return eval_unary_op(op, env),
 
         ast::Expr::BinOp(binop) => {
             let lhs_expr = binop
@@ -432,36 +347,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             return eval_binop(kind, &lhs_expr, &rhs_expr, env);
         }
 
-        ast::Expr::Apply(app) => {
-            let func_expr = app
-                .lambda()
-                .ok_or_else(|| EvalError::ParseError("apply missing function".to_string()))?;
-            let arg_expr = app
-                .argument()
-                .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
-            let func = force_value(&eval_expr(&func_expr, env)?)?;
-            // Lambda arguments are wrapped in a thunk for call-by-
-            // need semantics. This is REQUIRED for two reasons:
-            //   1. User-defined wrappers around `tryEval` (like
-            //      nixpkgs' `try = x: def: ...`) need lazy args so
-            //      the error fires *inside* the wrapper's body
-            //      where tryEval can catch it.
-            //   2. Fixpoint patterns like `fix = f: let x = f x; in x`
-            //      need their argument to remain unforced.
-            // Builtins still get a forced argument (apply() handles
-            // the difference), with `tryEval` itself opting back
-            // out via the special-case in apply().
-            let arg = match &func {
-                Value::Lambda(_) => {
-                    Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
-                }
-                Value::Builtin(b) if b.name == "tryEval" => {
-                    Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
-                }
-                _ => eval_expr(&arg_expr, env)?,
-            };
-            return apply(func, arg);
-        }
+        ast::Expr::Apply(app) => return eval_apply(app, env),
 
         ast::Expr::IfElse(ie) => {
             let cond = ie
@@ -693,6 +579,110 @@ fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
         }
         LiteralKind::Uri(tok) => Ok(Value::string(tok.syntax().text().to_string())),
     }
+}
+
+fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
+    crate::perf::inc("select");
+    let base_expr = sel.expr().ok_or_else(|| {
+        EvalError::ParseError("select missing expression".to_string())
+    })?;
+    let mut value = force_value(&eval_expr(&base_expr, env)?)?;
+    let attrpath = sel.attrpath().ok_or_else(|| {
+        EvalError::ParseError("select missing attrpath".to_string())
+    })?;
+    for attr in attrpath.attrs() {
+        let key = eval_attr(&attr, env)?;
+        match value {
+            Value::Attrs(ref attrs) => {
+                if let Some(v) = attrs.get(&key) {
+                    value = force_value(v)?;
+                } else if let Some(def) = sel.default_expr() {
+                    return eval_expr(&def, env);
+                } else {
+                    return Err(EvalError::AttrNotFound(key));
+                }
+            }
+            _ => {
+                return Err(EvalError::TypeError(format!(
+                    "cannot select from {}",
+                    value.type_name()
+                )));
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// Evaluate `expr ? a.b.c` — check key presence without forcing value thunks.
+fn eval_has_attr(ha: &ast::HasAttr, env: &Env) -> Result<Value, EvalError> {
+    let base_expr = ha.expr().ok_or_else(|| {
+        EvalError::ParseError("hasattr missing expression".to_string())
+    })?;
+    let mut value = force_value(&eval_expr(&base_expr, env)?)?;
+    let attrpath = ha.attrpath().ok_or_else(|| {
+        EvalError::ParseError("hasattr missing attrpath".to_string())
+    })?;
+    let segments: Vec<_> = attrpath.attrs().collect();
+    for (i, attr) in segments.iter().enumerate() {
+        let key = eval_attr(attr, env)?;
+        let is_last = i == segments.len() - 1;
+        match value {
+            Value::Attrs(ref attrs) => {
+                if let Some(v) = attrs.get(&key) {
+                    if is_last {
+                        return Ok(Value::Bool(true));
+                    }
+                    value = force_value(v)?;
+                } else {
+                    return Ok(Value::Bool(false));
+                }
+            }
+            _ => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+fn eval_unary_op(op: &ast::UnaryOp, env: &Env) -> Result<Value, EvalError> {
+    let inner = op
+        .expr()
+        .ok_or_else(|| EvalError::ParseError("unary op missing expr".to_string()))?;
+    let val = force_value(&eval_expr(&inner, env)?)?;
+    let kind = op
+        .operator()
+        .ok_or_else(|| EvalError::ParseError("unary op missing operator".to_string()))?;
+    match kind {
+        ast::UnaryOpKind::Negate => match val {
+            Value::Int(n) => Ok(Value::Int(-n)),
+            Value::Float(f) => Ok(Value::Float(-f)),
+            _ => Err(EvalError::TypeError(format!(
+                "cannot negate {}",
+                val.type_name()
+            ))),
+        },
+        ast::UnaryOpKind::Invert => Ok(Value::Bool(!val.as_bool()?)),
+    }
+}
+
+fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
+    let func_expr = app
+        .lambda()
+        .ok_or_else(|| EvalError::ParseError("apply missing function".to_string()))?;
+    let arg_expr = app
+        .argument()
+        .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
+    let func = force_value(&eval_expr(&func_expr, env)?)?;
+    // Lambda arguments are wrapped in a thunk for call-by-need semantics.
+    let arg = match &func {
+        Value::Lambda(_) => {
+            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+        }
+        Value::Builtin(b) if b.name == "tryEval" => {
+            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+        }
+        _ => eval_expr(&arg_expr, env)?,
+    };
+    apply(func, arg)
 }
 
 fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
