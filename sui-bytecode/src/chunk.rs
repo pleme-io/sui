@@ -61,6 +61,14 @@ impl Chunk {
         self.write_byte(bytes[1], line);
     }
 
+    /// Write a u32 operand as four little-endian bytes.
+    pub fn write_u32(&mut self, value: u32, line: u32) {
+        let bytes = value.to_le_bytes();
+        for &b in &bytes {
+            self.write_byte(b, line);
+        }
+    }
+
     /// Add a constant to the pool and return its index.
     ///
     /// Returns an error if the pool exceeds `u16::MAX` entries.
@@ -94,6 +102,17 @@ impl Chunk {
     #[must_use]
     pub fn read_u16(&self, offset: usize) -> u16 {
         u16::from_le_bytes([self.code[offset], self.code[offset + 1]])
+    }
+
+    /// Read a u32 operand from the bytecode at the given offset.
+    #[must_use]
+    pub fn read_u32(&self, offset: usize) -> u32 {
+        u32::from_le_bytes([
+            self.code[offset],
+            self.code[offset + 1],
+            self.code[offset + 2],
+            self.code[offset + 3],
+        ])
     }
 
     /// Return the current length of the bytecode stream.

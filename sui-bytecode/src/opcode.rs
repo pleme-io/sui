@@ -170,6 +170,11 @@ pub enum OpCode {
     /// Operand: u16 slot, u16 upvalue count,
     /// then for each: u8 is_local, u16 index.
     PatchThunkUpvalues = 142,
+    /// Create a lazy thunk from a source span (deferred compilation).
+    /// Operand: u16 source_constant_idx, u32 offset, u32 length,
+    ///          u16 base_dir_constant_idx, u16 upvalue count,
+    ///          then for each upvalue: u8 is_local, u16 index.
+    MakeLazyThunk = 143,
 
     // ── Import ───────────────────────────────────────────────────
     /// Pop a path from the stack, import the file, push the result.
@@ -230,6 +235,7 @@ impl OpCode {
             140 => Some(OpCode::MakeThunk),
             141 => Some(OpCode::Force),
             142 => Some(OpCode::PatchThunkUpvalues),
+            143 => Some(OpCode::MakeLazyThunk),
             150 => Some(OpCode::Import),
             _ => None,
         }
@@ -258,7 +264,7 @@ mod tests {
             OpCode::Assert, OpCode::Pop,
             OpCode::GetLocalAttr, OpCode::GetLocalCall,
             OpCode::PushBuiltins, OpCode::CallBuiltin,
-            OpCode::MakeThunk, OpCode::Force, OpCode::PatchThunkUpvalues,
+            OpCode::MakeThunk, OpCode::Force, OpCode::PatchThunkUpvalues, OpCode::MakeLazyThunk,
             OpCode::Import,
         ];
         for op in opcodes {

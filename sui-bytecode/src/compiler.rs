@@ -97,6 +97,9 @@ pub struct Compiler {
     /// anonymous values (partial application results, etc.) sit on the
     /// stack between named locals.
     stack_depth: u16,
+    /// Shared source text for lazy thunk compilation.
+    /// When set, thunks can store source spans instead of eagerly compiling.
+    source_text: Option<Rc<String>>,
 }
 
 impl Compiler {
@@ -113,6 +116,7 @@ impl Compiler {
             with_depth: 0,
             base_dir: None,
             stack_depth: 0,
+            source_text: None,
         }
     }
 
@@ -129,6 +133,7 @@ impl Compiler {
             with_depth: 0,
             base_dir: None,
             stack_depth: 0,
+            source_text: None,
         }
     }
 
@@ -177,6 +182,30 @@ impl Compiler {
             .ok_or_else(|| CompileError::ParseError("empty expression".to_string()))?;
         let mut compiler = Self::with_interner(interner);
         compiler.base_dir = Some(base_dir);
+        compiler.source_text = Some(Rc::new(input.to_string()));
+        compiler.compile_expr(&expr)?;
+        compiler.emit(OpCode::Return);
+        Ok(compiler.chunk)
+    }
+
+    /// Compile a standalone expression string (used for lazy thunk compilation).
+    /// The expression is parsed and compiled fresh with the given interner and base directory.
+    pub fn compile_expression(
+        input: &str,
+        base_dir: &std::path::Path,
+        interner: Rc<RefCell<Interner>>,
+    ) -> Result<Chunk, CompileError> {
+        let parse = rnix::Root::parse(input);
+        if !parse.errors().is_empty() {
+            let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
+            return Err(CompileError::ParseError(msgs.join("; ")));
+        }
+        let root = parse.tree();
+        let expr = root
+            .expr()
+            .ok_or_else(|| CompileError::ParseError("empty expression".to_string()))?;
+        let mut compiler = Self::with_interner(interner);
+        compiler.base_dir = Some(base_dir.to_path_buf());
         compiler.compile_expr(&expr)?;
         compiler.emit(OpCode::Return);
         Ok(compiler.chunk)
@@ -778,7 +807,40 @@ impl Compiler {
     }
 
     /// Compile a thunk with upvalues captured immediately (for non-rec attrsets).
+    ///
+    /// When the compiler has source text available and the expression has no
+    /// free variables (no locals, no upvalues, no with-scopes), emit a
+    /// `MakeLazyThunk` that defers compilation until the thunk is forced.
+    /// Otherwise, fall through to the eager compilation path.
     fn compile_thunk_immediate(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
+        // Try lazy thunk: only when source text is available and there are
+        // no variables in scope that the expression could reference.
+        if let Some(ref source) = self.source_text {
+            if self.locals.is_empty() && self.with_depth == 0 && self.upvalues.is_empty() {
+                let range = AstNode::syntax(expr).text_range();
+                let offset: usize = range.start().into();
+                let length: usize = range.len().into();
+                let base_dir_str = self.base_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                // Store source text and base_dir in the constant pool.
+                let src_idx = self.chunk.add_constant(VMValue::String((**source).clone()))?;
+                let dir_idx = self.chunk.add_constant(VMValue::String(base_dir_str))?;
+
+                self.emit(OpCode::MakeLazyThunk);
+                self.stack_depth += 1;
+                self.emit_u16(src_idx);
+                self.chunk.write_u32(offset as u32, self.current_line);
+                self.chunk.write_u32(length as u32, self.current_line);
+                self.emit_u16(dir_idx);
+                self.emit_u16(0); // 0 upvalues
+                return Ok(());
+            }
+        }
+
+        // Eager path: compile the thunk body now.
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
@@ -1739,7 +1801,7 @@ impl Compiler {
             // Interpolate: pops count, pushes 1 (handled by caller)
             // PatchThunkUpvalues: no stack change
             OpCode::Constant | OpCode::MakeAttrs | OpCode::MakeList
-            | OpCode::MakeClosure | OpCode::MakeThunk
+            | OpCode::MakeClosure | OpCode::MakeThunk | OpCode::MakeLazyThunk
             | OpCode::Interpolate | OpCode::PatchThunkUpvalues => {}
         }
     }

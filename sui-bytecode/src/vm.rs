@@ -784,6 +784,53 @@ impl<'a> VM<'a> {
                     }
                 }
 
+                OpCode::MakeLazyThunk => {
+                    let src_idx = self.read_u16()? as usize;
+                    let offset = self.read_u32()? as usize;
+                    let length = self.read_u32()? as usize;
+                    let dir_idx = self.read_u16()? as usize;
+                    let upvalue_count = self.read_u16()? as usize;
+
+                    let source_text = match &self.current_chunk().constants[src_idx] {
+                        VMValue::String(s) => Rc::new(s.clone()),
+                        _ => return Err(VMError::Internal(
+                            "MakeLazyThunk: source constant not a string".to_string(),
+                        )),
+                    };
+                    let base_dir_str = match &self.current_chunk().constants[dir_idx] {
+                        VMValue::String(s) => s.clone(),
+                        _ => return Err(VMError::Internal(
+                            "MakeLazyThunk: base_dir constant not a string".to_string(),
+                        )),
+                    };
+                    let base_dir = PathBuf::from(base_dir_str);
+
+                    // Capture upvalues (same as MakeThunk).
+                    let mut upvalues = Vec::with_capacity(upvalue_count);
+                    for _ in 0..upvalue_count {
+                        let is_local = self.read_byte()? != 0;
+                        let uv_index = self.read_u16()? as usize;
+                        if is_local {
+                            let abs_slot = self.current_frame().stack_base + uv_index;
+                            upvalues.push(self.stack[abs_slot].to_vmvalue());
+                        } else {
+                            let val = self.current_frame().upvalues[uv_index].to_vmvalue();
+                            upvalues.push(val);
+                        }
+                    }
+
+                    let thunk = crate::value::VMThunk {
+                        state: Rc::new(std::cell::Cell::new(Some(ThunkState::LazySource {
+                            source: source_text,
+                            offset,
+                            length,
+                            base_dir,
+                            upvalues,
+                        }))),
+                    };
+                    self.push(NanBox::thunk(thunk));
+                }
+
                 // -- Import ---------------------------------------------
                 OpCode::Import => {
                     let path_val = self.pop()?;
@@ -854,6 +901,14 @@ impl<'a> VM<'a> {
         let lo = self.read_byte()?;
         let hi = self.read_byte()?;
         Ok(u16::from_le_bytes([lo, hi]))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, VMError> {
+        let b0 = self.read_byte()?;
+        let b1 = self.read_byte()?;
+        let b2 = self.read_byte()?;
+        let b3 = self.read_byte()?;
+        Ok(u32::from_le_bytes([b0, b1, b2, b3]))
     }
 
     /// Peek ahead: check if the next instruction in the current frame
@@ -1046,6 +1101,84 @@ impl<'a> VM<'a> {
                                 thunk.state.set(Some(ThunkState::Pending {
                                     chunk,
                                     upvalues: upvalues_for_restore,
+                                }));
+                                Err(e)
+                            }
+                        }
+                    }
+                    Some(ThunkState::LazySource { source, offset, length, base_dir, upvalues }) => {
+                        thunk.state.set(Some(ThunkState::Evaluating));
+
+                        // Compile the expression span on demand.
+                        let expr_text = &source[offset..offset + length];
+                        let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
+                        let compiled = Compiler::compile_expression(
+                            expr_text,
+                            &base_dir,
+                            shared_interner.clone(),
+                        ).map_err(|e| {
+                            // Restore interner on compile failure.
+                            *self.interner = match Rc::try_unwrap(shared_interner.clone()) {
+                                Ok(cell) => cell.into_inner(),
+                                Err(rc) => rc.borrow().clone(),
+                            };
+                            thunk.state.set(Some(ThunkState::LazySource {
+                                source: source.clone(),
+                                offset,
+                                length,
+                                base_dir: base_dir.clone(),
+                                upvalues: upvalues.clone(),
+                            }));
+                            VMError::ImportError(format!("lazy thunk compile: {e}"))
+                        })?;
+                        *self.interner = match Rc::try_unwrap(shared_interner) {
+                            Ok(cell) => cell.into_inner(),
+                            Err(rc) => rc.borrow().clone(),
+                        };
+
+                        let chunk = Rc::new(compiled);
+
+                        if self.frames.len() >= MAX_CALL_DEPTH {
+                            thunk.state.set(Some(ThunkState::LazySource {
+                                source, offset, length, base_dir, upvalues,
+                            }));
+                            return Err(VMError::StackOverflow);
+                        }
+
+                        let return_depth = self.frames.len();
+                        let stack_base = self.stack.len();
+                        let frame_upvalues: Vec<NanBox> = upvalues
+                            .iter()
+                            .map(|v| NanBox::from_vmvalue(v))
+                            .collect();
+                        self.frames.push(CallFrame {
+                            chunk: chunk.clone(),
+                            ip: 0,
+                            stack_base,
+                            upvalues: frame_upvalues,
+                        });
+
+                        let result = self.run_until(return_depth);
+                        self.stack.truncate(stack_base);
+
+                        match result {
+                            Ok(value) => {
+                                let forced = if value.is_thunk() {
+                                    self.force_value(value)?
+                                } else {
+                                    value
+                                };
+                                let forced_vmval = forced.to_vmvalue();
+                                thunk
+                                    .state
+                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
+                                Ok(forced)
+                            }
+                            Err(e) => {
+                                // On error, convert to a Pending thunk with the compiled chunk.
+                                thunk.state.set(Some(ThunkState::Pending {
+                                    chunk,
+                                    upvalues,
                                 }));
                                 Err(e)
                             }
@@ -2286,23 +2419,6 @@ impl<'a> VM<'a> {
                     }
                 }
                 Ok(NanBox::attrs(result))
-            }
-        }
-    }
-
-    /// Recursively clear key_symbols caches in a chunk and all nested chunks
-    /// (closures/thunks in the constant pool). This forces the VM to re-intern
-    /// all attribute key strings using the VM's interner at runtime.
-    fn clear_key_symbol_cache(chunk: &mut Chunk) {
-        for sym in &mut chunk.key_symbols {
-            *sym = None;
-        }
-        // Also clear caches in nested chunks (closures/thunks in constants).
-        for constant in &mut chunk.constants {
-            if let VMValue::Closure(closure) = constant {
-                if let Some(inner_chunk) = Rc::get_mut(&mut closure.chunk) {
-                    Self::clear_key_symbol_cache(inner_chunk);
-                }
             }
         }
     }

@@ -14,6 +14,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::chunk::Chunk;
@@ -145,6 +146,21 @@ pub enum ThunkState {
     /// captured upvalues for the thunk body.
     Pending {
         chunk: Rc<Chunk>,
+        upvalues: Vec<VMValue>,
+    },
+    /// Lazy source: the thunk body has not been compiled yet.
+    /// On first force, the source span is compiled and then executed.
+    /// This avoids compiling thunk bodies that are never forced.
+    LazySource {
+        /// Shared source text of the file containing this thunk.
+        source: Rc<String>,
+        /// Byte offset of the expression within the source.
+        offset: usize,
+        /// Byte length of the expression.
+        length: usize,
+        /// Base directory for resolving relative imports.
+        base_dir: PathBuf,
+        /// Captured upvalues (resolved at thunk creation time).
         upvalues: Vec<VMValue>,
     },
     /// Currently being evaluated -- detects infinite recursion (blackhole).
