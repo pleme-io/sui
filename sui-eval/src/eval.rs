@@ -183,7 +183,7 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         }
     };
     let mut env = Env::new();
-    env.eval_file = file;
+    env.set_eval_file(file);
     builtins::register(&mut env);
     let result = eval_expr(&expr, &env)?;
     // Force the top-level result so callers always see a concrete value.
@@ -641,7 +641,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             return Ok(Value::Lambda(Closure {
                 param,
                 body,
-                env: std::rc::Rc::new(env.clone()),
+                env: env.clone(),
             }));
         }
 
@@ -1192,8 +1192,8 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             // pops on drop.
             let _file_guard = closure
                 .env
-                .eval_file
-                .clone()
+                .eval_file()
+                .cloned()
                 .map(push_eval_file);
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {

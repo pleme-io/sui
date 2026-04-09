@@ -334,13 +334,13 @@ impl Thunk {
                     .take(60)
                     .collect();
                 crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: env.eval_file.clone(),
+                    defined_in: env.eval_file().cloned(),
                     description: desc.clone(),
                     thunk_id,
                 });
                 // Trace mode logging.
                 crate::trace::trace_force_enter(
-                    env.eval_file.as_deref(),
+                    env.eval_file().map(|p| p.as_path()),
                     &desc,
                 );
                 // Check max force depth limit.
@@ -359,7 +359,7 @@ impl Thunk {
                 // thunk body resolve against the file where the thunk was
                 // *defined*, not where it is forced from. The RAII guard
                 // pops on drop (including on error paths).
-                let _file_guard = env.eval_file.clone().map(crate::eval::push_eval_file);
+                let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
                 match evaluator(&expr, &env) {
                     Ok(mut value) => {
                         // Store the result FIRST, then transitively force.
@@ -406,12 +406,12 @@ impl Thunk {
                 // Push force frame for inherit-select thunks.
                 let desc = format!("inherit (..) {name}");
                 crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: env.eval_file.clone(),
+                    defined_in: env.eval_file().cloned(),
                     description: desc.clone(),
                     thunk_id,
                 });
                 crate::trace::trace_force_enter(
-                    env.eval_file.as_deref(),
+                    env.eval_file().map(|p| p.as_path()),
                     &desc,
                 );
                 crate::trace::inc_thunks_forced_unique();
@@ -431,7 +431,7 @@ impl Thunk {
                 // restore-on-error semantics mirror the Suspended
                 // branch so a transient error doesn't permanently
                 // blackhole this thunk.
-                let _file_guard = env.eval_file.clone().map(crate::eval::push_eval_file);
+                let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
                 let attempt = (|| -> Result<Value, EvalError> {
                     let raw = evaluator(&source, &env)?;
                     let mut forced = raw;
@@ -658,7 +658,7 @@ impl IntoIterator for NixAttrs {
 pub struct Closure {
     pub param: rnix::ast::Param,
     pub body: rnix::ast::Expr,
-    pub env: Rc<Env>,
+    pub env: Env,
 }
 
 /// The function signature stored inside a [`BuiltinFn`].
@@ -682,58 +682,64 @@ impl fmt::Debug for BuiltinFn {
     }
 }
 
-/// Evaluation environment — lexical scope chain.
+/// Inner data for an evaluation environment.
 ///
-/// Bindings are stored behind `Rc<RefCell<_>>` so that cloning an `Env`
-/// (which happens on every thunk capture and `Env::child()`) is a cheap
-/// refcount bump instead of a deep copy of the binding map. Mutations
-/// (via `bind()`) use copy-on-write: if the `Rc` is shared, we clone
-/// the map into a new exclusive `Rc` before inserting.
+/// Wrapped in `Rc` by [`Env`] so that cloning an `Env` is always a
+/// refcount bump — never a deep copy of the binding map.
 #[derive(Debug, Clone, Default)]
-pub struct Env {
+struct EnvInner {
     bindings: HashMap<String, Value>,
-    parent: Option<Rc<Env>>,
+    parent: Option<Env>,
     /// Dynamic scope from `with` expressions.
-    /// Stored as a lazy `Value` (boxed to break the Env→Value→Closure→Env
-    /// size cycle) — only forced when a name lookup actually falls through
-    /// to the with-scope (matching CppNix semantics where `with` does not
-    /// eagerly evaluate its namespace).
     with_scope: Option<Box<Value>>,
     /// Source file currently being evaluated, for relative path
     /// literals (`./foo.nix`) inside function defaults that get
-    /// evaluated *after* control has left the file scope. The
-    /// closure captures this when it is created and `apply`
-    /// pushes it onto the eval-file stack before running the body.
-    pub eval_file: Option<std::path::PathBuf>,
+    /// evaluated *after* control has left the file scope.
+    eval_file: Option<std::path::PathBuf>,
+}
+
+/// Evaluation environment — lexical scope chain.
+///
+/// Internally an `Rc<EnvInner>`, so cloning is always O(1) (refcount
+/// bump).  `child()` stores `parent: Some(self.clone())` which is also
+/// just a refcount bump.  `bind()` uses `Rc::make_mut` for copy-on-write:
+/// if the Rc is shared, only then does it clone the inner data.
+#[derive(Clone, Default)]
+pub struct Env(Rc<EnvInner>);
+
+impl fmt::Debug for Env {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 impl Env {
     /// Create a root environment with no bindings.
     #[must_use]
     pub fn new() -> Self {
-        Self {
+        Self(Rc::new(EnvInner {
             bindings: HashMap::new(),
             parent: None,
             with_scope: None,
             eval_file: None,
-        }
+        }))
     }
 
     /// Create a child environment that inherits from this one.
     ///
-    /// This is now `O(1)` — cloning an `Env` only bumps refcounts.
+    /// O(1) — `self.clone()` is just a refcount bump on the inner `Rc`.
     #[must_use]
     pub fn child(&self) -> Self {
         crate::perf::inc("env_clone");
-        Self {
+        Self(Rc::new(EnvInner {
             bindings: HashMap::new(),
-            parent: Some(Rc::new(self.clone())),
+            parent: Some(self.clone()),
             with_scope: None,
             // Children inherit the parent's eval file so that
             // path literals nested deep in let-chains still
             // resolve against the right directory.
-            eval_file: self.eval_file.clone(),
-        }
+            eval_file: self.0.eval_file.clone(),
+        }))
     }
 
     /// Attach a `with` scope to this environment.
@@ -742,14 +748,27 @@ impl Env {
     /// actually needs it, matching CppNix's lazy `with` semantics.
     #[must_use]
     pub fn with_scope(mut self, value: Value) -> Self {
-        self.with_scope = Some(Box::new(value));
+        Rc::make_mut(&mut self.0).with_scope = Some(Box::new(value));
         self
     }
 
     /// Bind a name to a value in this environment's own scope.
     ///
+    /// Uses copy-on-write: if the inner `Rc` is shared, clones the
+    /// inner data before mutating.
     pub fn bind(&mut self, name: String, value: Value) {
-        self.bindings.insert(name, value);
+        Rc::make_mut(&mut self.0).bindings.insert(name, value);
+    }
+
+    /// Get the eval_file for this environment.
+    #[must_use]
+    pub fn eval_file(&self) -> Option<&std::path::PathBuf> {
+        self.0.eval_file.as_ref()
+    }
+
+    /// Set the eval_file for this environment.
+    pub fn set_eval_file(&mut self, file: Option<std::path::PathBuf>) {
+        Rc::make_mut(&mut self.0).eval_file = file;
     }
 
     /// Two-pass lookup matching Nix semantics:
@@ -775,14 +794,14 @@ impl Env {
     }
 
     fn lookup_lexical(&self, name: &str) -> Option<Value> {
-        if let Some(v) = self.bindings.get(name) {
+        if let Some(v) = self.0.bindings.get(name) {
             return Some(v.clone());
         }
-        self.parent.as_ref().and_then(|p| p.lookup_lexical(name))
+        self.0.parent.as_ref().and_then(|p| p.lookup_lexical(name))
     }
 
     fn lookup_with(&self, name: &str) -> Option<Value> {
-        if let Some(ref scope_val) = self.with_scope {
+        if let Some(ref scope_val) = self.0.with_scope {
             // Force the with-scope lazily — only when a name lookup
             // actually needs it.  This matches CppNix semantics and
             // allows `fix (self: with self; { … })` to work.
@@ -795,7 +814,7 @@ impl Env {
             }
             // If forcing fails or it's not an attrset, fall through to parent
         }
-        self.parent.as_ref().and_then(|p| p.lookup_with(name))
+        self.0.parent.as_ref().and_then(|p| p.lookup_with(name))
     }
 }
 
@@ -1413,7 +1432,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Rc::new(Env::new()),
+            env: Env::new(),
         };
         assert_eq!(
             Value::Lambda(closure).to_json(),
@@ -1470,7 +1489,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Rc::new(Env::new()),
+            env: Env::new(),
         };
         assert_eq!(Value::Lambda(closure).type_name(), "lambda");
     }
@@ -1605,7 +1624,7 @@ mod tests {
         let closure = Closure {
             param: lambda.param().unwrap(),
             body: lambda.body().unwrap(),
-            env: Rc::new(Env::new()),
+            env: Env::new(),
         };
         assert_eq!(format!("{}", Value::Lambda(closure)), "<<lambda>>");
     }
@@ -1895,16 +1914,16 @@ mod tests {
     #[test]
     fn env_child_inherits_eval_file() {
         let mut env = Env::new();
-        env.eval_file = Some(std::path::PathBuf::from("/foo/bar.nix"));
+        env.set_eval_file(Some(std::path::PathBuf::from("/foo/bar.nix")));
         let child = env.child();
-        assert_eq!(child.eval_file, Some(std::path::PathBuf::from("/foo/bar.nix")));
+        assert_eq!(child.eval_file().cloned(), Some(std::path::PathBuf::from("/foo/bar.nix")));
     }
 
     #[test]
     fn env_new_has_no_parent_no_with() {
         let env = Env::new();
         assert_eq!(env.lookup("anything"), None);
-        assert!(env.eval_file.is_none());
+        assert!(env.eval_file().is_none());
     }
 
     // ── Thunk state machine ───────────────────────────────
@@ -2786,7 +2805,7 @@ mod tests {
                 rnix::ast::Expr::Lambda(ref l) => l.body().unwrap(),
                 _ => panic!("expected lambda"),
             },
-            env: Rc::new(Env::new()),
+            env: Env::new(),
         };
         let val = Value::Lambda(closure);
         assert!(val.coerce_to_string().is_err());
