@@ -1,7 +1,31 @@
 //! String builtins: stringLength, substring, replaceStrings, hasPrefix, hasSuffix,
 //! toLower, toUpper, match, split, concatStringsSep, concatStrings.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use super::*;
+
+thread_local! {
+    /// LRU-ish regex cache: avoids recompiling the same pattern on every
+    /// `builtins.match` / `builtins.split` call.  Nix expressions like
+    /// `map (builtins.match "([0-9]+)") list` hit the same pattern
+    /// thousands of times during nixpkgs evaluation.
+    static REGEX_CACHE: RefCell<HashMap<String, regex::Regex>> = RefCell::new(HashMap::new());
+}
+
+fn cached_regex(pattern: &str) -> Result<regex::Regex, EvalError> {
+    REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(re) = cache.get(pattern) {
+            return Ok(re.clone());
+        }
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| EvalError::TypeError(format!("invalid regex '{pattern}': {e}")))?;
+        cache.insert(pattern.to_string(), re.clone());
+        Ok(re)
+    })
+}
 
 /// Register a curried string predicate builtin (first arg is a pattern, second is the subject).
 macro_rules! register_string_predicate {
@@ -137,8 +161,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "match", |pattern, s| {
         let pat = pattern.as_string()?;
         let input = s.as_string()?;
-        let re = regex::Regex::new(&format!("^{pat}$"))
-            .map_err(|e| EvalError::TypeError(format!("match: invalid regex: {e}")))?;
+        let re = cached_regex(&format!("^{pat}$"))?;
         match re.captures(input) {
             Some(caps) => {
                 let groups: Vec<Value> = (1..caps.len())
@@ -157,8 +180,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "split", |pattern, s| {
         let pat = pattern.as_string()?;
         let input = s.as_string()?;
-        let re = regex::Regex::new(pat)
-            .map_err(|e| EvalError::TypeError(format!("split: invalid regex: {e}")))?;
+        let re = cached_regex(pat)?;
         let mut result: Vec<Value> = Vec::new();
         let mut last_end = 0;
         for m in re.find_iter(input) {
