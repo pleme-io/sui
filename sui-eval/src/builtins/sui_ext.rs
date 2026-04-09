@@ -85,7 +85,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                 }
                 rows.push(Value::Attrs(a));
             }
-            Ok(Value::List(rows))
+            Ok(Value::List(Rc::new(rows)))
         } else {
             let mut rows: Vec<Value> = Vec::new();
             for line in lines {
@@ -96,9 +96,9 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                     .split(delimiter)
                     .map(Value::string)
                     .collect();
-                rows.push(Value::List(cells));
+                rows.push(Value::List(Rc::new(cells)));
             }
-            Ok(Value::List(rows))
+            Ok(Value::List(Rc::new(rows)))
         }
     });
 

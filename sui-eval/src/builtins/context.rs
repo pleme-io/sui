@@ -35,7 +35,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
         for (d, os) in &om {
             let mut a = NixAttrs::new();
-            a.insert("outputs".to_string(), Value::List(os.iter().map(|o| Value::string(o.clone())).collect()));
+            a.insert("outputs".to_string(), Value::List(Rc::new(os.iter().map(|o| Value::string(o.clone())).collect())));
             result.insert(d.clone(), Value::Attrs(a));
         }
         for d in &deep {

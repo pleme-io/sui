@@ -269,7 +269,7 @@ mod tests {
         let val = e.eval_expr("[1 2 3]").unwrap();
         assert_eq!(
             val,
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 

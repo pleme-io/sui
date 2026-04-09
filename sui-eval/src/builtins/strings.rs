@@ -170,7 +170,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         None => Value::Null,
                     })
                     .collect();
-                Ok(Value::List(groups))
+                Ok(Value::List(Rc::new(groups)))
             }
             None => Ok(Value::Null),
         }
@@ -196,15 +196,15 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     .collect();
                 // If no capture groups, wrap the whole match in a list
                 if groups.is_empty() {
-                    result.push(Value::List(vec![Value::string(m.as_str())]));
+                    result.push(Value::List(Rc::new(vec![Value::string(m.as_str())])));
                 } else {
-                    result.push(Value::List(groups));
+                    result.push(Value::List(Rc::new(groups)));
                 }
             }
             last_end = m.end();
         }
         // Add trailing non-matching part
         result.push(Value::string(&input[last_end..]));
-        Ok(Value::List(result))
+        Ok(Value::List(Rc::new(result)))
     });
 }

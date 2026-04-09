@@ -32,6 +32,7 @@ flate2.workspace = true
 tar.workspace = true
 stacker.workspace = true
 im-rc.workspace = true
+rustc-hash.workspace = true
 smallvec.workspace = true
 smol_str.workspace = true
 

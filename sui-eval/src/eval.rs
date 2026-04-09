@@ -204,7 +204,7 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
 /// simple clone without a function-call boundary.
 #[inline(always)]
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
-    crate::perf::inc("force_value");
+    crate::perf::inc(crate::perf::Counter::ForceValue);
     // Fast path: non-thunk values don't need stacker or recursion.
     if let Value::Thunk(thunk) = value {
         force_thunk(thunk)
@@ -255,7 +255,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
     let mut cur_env = env.clone();
 
     loop {
-    crate::perf::inc("eval_expr");
+    crate::perf::inc(crate::perf::Counter::EvalExpr);
     let _guard = DepthGuard::enter()?;
     let env = &cur_env;
     match &cur_expr {
@@ -323,7 +323,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
         ast::Expr::List(list) => {
             let values: Result<Vec<_>, _> = list.items().map(|e| eval_expr(&e, env)).collect();
-            return Ok(Value::List(values?));
+            return Ok(Value::list(values?));
         }
 
         ast::Expr::AttrSet(set) => return eval_attrset(set, env),
@@ -422,12 +422,12 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         let value_expr = apv.value().ok_or_else(|| {
                             EvalError::ParseError("binding missing value".to_string())
                         })?;
-                        let path_keys: Vec<String> = attrpath
+                        let mut path_keys: Vec<String> = attrpath
                             .attrs()
                             .map(|a| eval_attr(&a, env))
                             .collect::<Result<_, _>>()?;
-                        if let [ref key] = path_keys[..] {
-                            let key = key.clone();
+                        if path_keys.len() == 1 {
+                            let key = path_keys.pop().unwrap();
                             let thunk = Thunk::new_suspended(value_expr, env.clone());
                             new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
                             thunks.push((key, thunk));
@@ -506,7 +506,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // Phase 2: Update all thunks to capture the final env
             // (which now has all names bound).
             for (_key, thunk) in &thunks {
-                thunk.update_env(new_env.clone());
+                thunk.update_env(&new_env);
             }
 
             let body = letin
@@ -582,7 +582,7 @@ fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
 }
 
 fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
-    crate::perf::inc("select");
+    crate::perf::inc(crate::perf::Counter::Select);
     let base_expr = sel.expr().ok_or_else(|| {
         EvalError::ParseError("select missing expression".to_string())
     })?;
@@ -730,7 +730,7 @@ fn ident_text(ident: &ast::Ident) -> String {
 }
 
 fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
-    crate::perf::inc("attrset");
+    crate::perf::inc(crate::perf::Counter::Attrset);
     let mut attrs = NixAttrs::new();
     let is_rec = set.rec_token().is_some();
 
@@ -755,16 +755,15 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     let value_expr = apv.value().ok_or_else(|| {
                         EvalError::ParseError("binding missing value".to_string())
                     })?;
-                    let path_keys: Vec<String> = attrpath
+                    let mut path_keys: Vec<String> = attrpath
                         .attrs()
                         .map(|a| eval_attr(&a, env))
                         .collect::<Result<_, _>>()?;
-                    if let [ref key] = path_keys[..] {
-                        let key = key.clone();
+                    if path_keys.len() == 1 {
+                        let key = path_keys.pop().unwrap();
                         let thunk = Thunk::new_suspended(value_expr, env.clone());
-                        let thunk_val = Value::Thunk(thunk.clone());
-                        rec_env.bind(key.clone(), thunk_val.clone());
-                        attrs.insert(key.clone(), thunk_val);
+                        rec_env.bind(key.clone(), Value::Thunk(thunk.clone()));
+                        attrs.insert(key.clone(), Value::Thunk(thunk.clone()));
                         thunks.push((key, thunk));
                     } else {
                         // Multi-segment dotted path: build a nested attrset
@@ -794,7 +793,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         // Phase 2: Update all thunks (both Suspended and InheritSelect)
         // to capture the final rec_env (which now has all names bound).
         for (_key, thunk) in &thunks {
-            thunk.update_env(rec_env.clone());
+            thunk.update_env(&rec_env);
         }
     } else {
         for entry in set.entries() {
@@ -806,13 +805,14 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     let value_expr = apv.value().ok_or_else(|| {
                         EvalError::ParseError("binding missing value".to_string())
                     })?;
-                    let path_keys: Vec<String> = attrpath
+                    let mut path_keys: Vec<String> = attrpath
                         .attrs()
                         .map(|a| eval_attr(&a, env))
                         .collect::<Result<_, _>>()?;
-                    if let [ref key] = path_keys[..] {
+                    if path_keys.len() == 1 {
+                        let key = path_keys.pop().unwrap();
                         let thunk = Thunk::new_suspended(value_expr, env.clone());
-                        attrs.insert(key.clone(), Value::Thunk(thunk));
+                        attrs.insert(key, Value::Thunk(thunk));
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
@@ -971,13 +971,14 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                 let value_expr = apv.value().ok_or_else(|| {
                     EvalError::ParseError("binding missing value".to_string())
                 })?;
-                let path_keys: Vec<String> = attrpath
+                let mut path_keys: Vec<String> = attrpath
                     .attrs()
                     .map(|a| eval_attr(&a, env))
                     .collect::<Result<_, _>>()?;
-                if let [ref key] = path_keys[..] {
+                if path_keys.len() == 1 {
+                    let key = path_keys.pop().unwrap();
                     let value = eval_expr(&value_expr, env)?;
-                    env.bind(key.clone(), value);
+                    env.bind(key, value);
                 }
                 // Multi-key paths in let are not standard; skip for now.
             }
@@ -1102,7 +1103,7 @@ fn eval_binop(
         ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();
             la.extend_from_slice(r.as_list()?);
-            Ok(Value::List(la))
+            Ok(Value::list(la))
         }
         ast::BinOpKind::And | ast::BinOpKind::Or | ast::BinOpKind::Implication => {
             unreachable!("handled above")
@@ -1169,7 +1170,7 @@ fn compare(
 /// before binding -- this enables fixpoint combinators (`lib.fix`) where
 /// the argument is a self-referential thunk.
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
-    crate::perf::inc("apply");
+    crate::perf::inc(crate::perf::Counter::Apply);
     let func = force_value(&func)?;
     match func {
         Value::Lambda(closure) => {
@@ -1419,13 +1420,13 @@ mod tests {
     #[test]
     fn eval_list() {
         let v = ev("[1 2 3]");
-        assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        assert_eq!(v, Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
     }
 
     #[test]
     fn eval_list_concat() {
         let v = ev("[1 2] ++ [3 4]");
-        assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]));
+        assert_eq!(v, Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]));
     }
 
     #[test]
@@ -1593,7 +1594,7 @@ mod tests {
         // BTreeMap keys are already sorted
         assert_eq!(
             v,
-            Value::List(vec![
+            Value::list(vec![
                 Value::string("a"),
                 Value::string("m"),
                 Value::string("z"),
@@ -1605,7 +1606,7 @@ mod tests {
     fn eval_builtins_attr_values() {
         let v = ev("builtins.attrValues { a = 1; b = 2; }");
         // BTreeMap iteration is sorted by key, so a=1 first, b=2 second
-        assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(v, Value::list(vec![Value::Int(1), Value::Int(2)]));
     }
 
     #[test]
@@ -1659,7 +1660,7 @@ mod tests {
         );
         assert_eq!(
             ev(r#"builtins.fromJSON (builtins.toJSON [1 2 3])"#),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 
@@ -1704,7 +1705,7 @@ mod tests {
         let v = ev("{ x = [1 2 3]; }.x");
         assert_eq!(
             v,
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 
@@ -1952,11 +1953,11 @@ mod tests {
     fn op_list_concat() {
         assert_eq!(
             ev("[1 2] ++ [3 4]"),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]),
         );
         // Empty list concat
-        assert_eq!(ev("[] ++ [1]"), Value::List(vec![Value::Int(1)]));
-        assert_eq!(ev("[1] ++ []"), Value::List(vec![Value::Int(1)]));
+        assert_eq!(ev("[] ++ [1]"), Value::list(vec![Value::Int(1)]));
+        assert_eq!(ev("[1] ++ []"), Value::list(vec![Value::Int(1)]));
     }
 
     #[test]
@@ -2184,7 +2185,7 @@ mod tests {
     fn func_higher_order_map() {
         assert_eq!(
             ev("builtins.map (x: x * 2) [1 2 3]"),
-            Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
+            Value::list(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
         );
     }
 
@@ -2192,7 +2193,7 @@ mod tests {
     fn func_higher_order_filter() {
         assert_eq!(
             ev("builtins.filter (x: x > 2) [1 2 3 4 5]"),
-            Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+            Value::list(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
         );
     }
 
@@ -2317,7 +2318,7 @@ mod tests {
     fn attrs_attr_names_sorted() {
         assert_eq!(
             ev("builtins.attrNames { z = 1; m = 2; a = 3; }"),
-            Value::List(vec![
+            Value::list(vec![
                 Value::string("a"),
                 Value::string("m"),
                 Value::string("z"),
@@ -2330,7 +2331,7 @@ mod tests {
         // BTreeMap iteration order: a=1, b=2, c=3
         assert_eq!(
             ev("builtins.attrValues { c = 3; a = 1; b = 2; }"),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 
@@ -2353,19 +2354,19 @@ mod tests {
 
     #[test]
     fn list_empty() {
-        assert_eq!(ev("[]"), Value::List(vec![]));
+        assert_eq!(ev("[]"), Value::list(vec![]));
     }
 
     #[test]
     fn list_single_element() {
-        assert_eq!(ev("[1]"), Value::List(vec![Value::Int(1)]));
+        assert_eq!(ev("[1]"), Value::list(vec![Value::Int(1)]));
     }
 
     #[test]
     fn list_mixed_types() {
         assert_eq!(
             ev(r#"[1 "two" true null]"#),
-            Value::List(vec![
+            Value::list(vec![
                 Value::Int(1),
                 Value::string("two"),
                 Value::Bool(true),
@@ -2378,9 +2379,9 @@ mod tests {
     fn list_nested() {
         assert_eq!(
             ev("[[1 2] [3 4]]"),
-            Value::List(vec![
-                Value::List(vec![Value::Int(1), Value::Int(2)]),
-                Value::List(vec![Value::Int(3), Value::Int(4)]),
+            Value::list(vec![
+                Value::list(vec![Value::Int(1), Value::Int(2)]),
+                Value::list(vec![Value::Int(3), Value::Int(4)]),
             ]),
         );
     }
@@ -2389,7 +2390,7 @@ mod tests {
     fn list_concat_operator() {
         assert_eq!(
             ev("[1] ++ [2] ++ [3]"),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 
@@ -2492,12 +2493,12 @@ mod tests {
         // map
         assert_eq!(
             ev("builtins.map (x: x + 10) [1 2 3]"),
-            Value::List(vec![Value::Int(11), Value::Int(12), Value::Int(13)]),
+            Value::list(vec![Value::Int(11), Value::Int(12), Value::Int(13)]),
         );
         // filter
         assert_eq!(
             ev("builtins.filter (x: x > 1) [1 2 3]"),
-            Value::List(vec![Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(2), Value::Int(3)]),
         );
         // foldl' — product
         assert_eq!(
@@ -2530,7 +2531,7 @@ mod tests {
     fn builtins_concat_map() {
         assert_eq!(
             ev("builtins.concatMap (x: [x (x * 2)]) [1 2 3]"),
-            Value::List(vec![
+            Value::list(vec![
                 Value::Int(1), Value::Int(2),
                 Value::Int(2), Value::Int(4),
                 Value::Int(3), Value::Int(6),
@@ -2542,7 +2543,7 @@ mod tests {
     fn builtins_concat_lists() {
         assert_eq!(
             ev("builtins.concatLists [[1 2] [3] [4 5]]"),
-            Value::List(vec![
+            Value::list(vec![
                 Value::Int(1), Value::Int(2), Value::Int(3),
                 Value::Int(4), Value::Int(5),
             ]),
@@ -2593,7 +2594,7 @@ mod tests {
     fn builtins_sort() {
         assert_eq!(
             ev("builtins.sort (a: b: a < b) [3 1 2]"),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
     }
 
@@ -2665,7 +2666,7 @@ mod tests {
         // list roundtrip
         assert_eq!(
             ev("builtins.fromJSON (builtins.toJSON [1 2 3])"),
-            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
         // null roundtrip
         assert_eq!(ev("builtins.fromJSON (builtins.toJSON null)"), Value::Null);
@@ -2697,12 +2698,12 @@ mod tests {
     fn builtins_gen_list() {
         assert_eq!(
             ev("builtins.genList (x: x * x) 5"),
-            Value::List(vec![
+            Value::list(vec![
                 Value::Int(0), Value::Int(1), Value::Int(4),
                 Value::Int(9), Value::Int(16),
             ]),
         );
-        assert_eq!(ev("builtins.genList (x: x) 0"), Value::List(vec![]));
+        assert_eq!(ev("builtins.genList (x: x) 0"), Value::list(vec![]));
     }
 
     #[test]
@@ -2717,7 +2718,7 @@ mod tests {
         assert_eq!(ev("builtins.head [10 20 30]"), Value::Int(10));
         assert_eq!(
             ev("builtins.tail [10 20 30]"),
-            Value::List(vec![Value::Int(20), Value::Int(30)]),
+            Value::list(vec![Value::Int(20), Value::Int(30)]),
         );
     }
 
@@ -3043,7 +3044,7 @@ mod tests {
         // Build a list using genList and map
         assert_eq!(
             ev("builtins.map (x: x * x) (builtins.genList (x: x + 1) 4)"),
-            Value::List(vec![Value::Int(1), Value::Int(4), Value::Int(9), Value::Int(16)]),
+            Value::list(vec![Value::Int(1), Value::Int(4), Value::Int(9), Value::Int(16)]),
         );
     }
 
@@ -3105,7 +3106,7 @@ mod tests {
     fn integration_cat_attrs() {
         assert_eq!(
             ev(r#"builtins.catAttrs "x" [{ x = 1; } { y = 2; } { x = 3; }]"#),
-            Value::List(vec![Value::Int(1), Value::Int(3)]),
+            Value::list(vec![Value::Int(1), Value::Int(3)]),
         );
     }
 
@@ -3147,11 +3148,11 @@ mod tests {
         // split "/" "a/b/c" => ["a" ["/"] "b" ["/"] "c"]
         assert_eq!(
             ev(r#"builtins.split "/" "a/b/c""#),
-            Value::List(vec![
+            Value::list(vec![
                 Value::string("a"),
-                Value::List(vec![Value::string("/")]),
+                Value::list(vec![Value::string("/")]),
                 Value::string("b"),
-                Value::List(vec![Value::string("/")]),
+                Value::list(vec![Value::string("/")]),
                 Value::string("c"),
             ]),
         );
@@ -3312,8 +3313,8 @@ mod tests {
     fn eval_builtins_partition() {
         let v = ev("builtins.partition (x: x > 3) [1 2 3 4 5]");
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("right"), Some(&Value::List(vec![Value::Int(4), Value::Int(5)])));
-            assert_eq!(a.get("wrong"), Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])));
+            assert_eq!(a.get("right"), Some(&Value::list(vec![Value::Int(4), Value::Int(5)])));
+            assert_eq!(a.get("wrong"), Some(&Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)])));
         } else {
             panic!("expected attrs");
         }
@@ -3323,8 +3324,8 @@ mod tests {
     fn eval_builtins_group_by() {
         let v = ev(r#"builtins.groupBy (x: if x > 0 then "pos" else "neg") [1 (0 - 2) 3 (0 - 4)]"#);
         if let Value::Attrs(a) = v {
-            assert_eq!(a.get("pos"), Some(&Value::List(vec![Value::Int(1), Value::Int(3)])));
-            assert_eq!(a.get("neg"), Some(&Value::List(vec![Value::Int(-2), Value::Int(-4)])));
+            assert_eq!(a.get("pos"), Some(&Value::list(vec![Value::Int(1), Value::Int(3)])));
+            assert_eq!(a.get("neg"), Some(&Value::list(vec![Value::Int(-2), Value::Int(-4)])));
         } else {
             panic!("expected attrs");
         }
@@ -3454,7 +3455,7 @@ mod tests {
     fn eval_builtins_match() {
         assert_eq!(
             ev(r#"builtins.match "([0-9]+)" "42""#),
-            Value::List(vec![Value::string("42")]),
+            Value::list(vec![Value::string("42")]),
         );
     }
 
@@ -4028,17 +4029,17 @@ mod tests {
 
     #[test]
     fn list_concat_empty_left() {
-        assert_eq!(ev("[] ++ [1 2]"), Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(ev("[] ++ [1 2]"), Value::list(vec![Value::Int(1), Value::Int(2)]));
     }
 
     #[test]
     fn list_concat_empty_right() {
-        assert_eq!(ev("[1 2] ++ []"), Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(ev("[1 2] ++ []"), Value::list(vec![Value::Int(1), Value::Int(2)]));
     }
 
     #[test]
     fn list_concat_both_empty() {
-        assert_eq!(ev("[] ++ []"), Value::List(vec![]));
+        assert_eq!(ev("[] ++ []"), Value::list(vec![]));
     }
 
     // ── pattern matching / formals edge cases ─────────────

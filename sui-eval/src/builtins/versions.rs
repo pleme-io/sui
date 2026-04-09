@@ -30,7 +30,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "splitVersion", |args| {
         let s = args[0].as_string()?;
         let parts = split_version(s);
-        Ok(Value::List(parts.into_iter().map(Value::string).collect()))
+        Ok(Value::List(Rc::new(parts.into_iter().map(Value::string).collect())))
     });
 }
 

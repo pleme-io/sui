@@ -5736,6 +5736,7 @@ dependencies = [
  "regex",
  "rnix",
  "rowan",
+ "rustc-hash 2.1.2",
  "serde",
  "serde_json",
  "serde_yaml_ng",

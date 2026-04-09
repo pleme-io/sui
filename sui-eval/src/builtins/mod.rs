@@ -104,7 +104,7 @@ pub fn register(env: &mut Env) {
                 Value::Attrs(a)
             })
             .collect();
-        Value::List(list)
+        Value::list(list)
     };
     builtins_set.insert("nixPath".to_string(), nix_path_value);
 

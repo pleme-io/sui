@@ -79,7 +79,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             work_list.extend(new_list);
         }
 
-        Ok(Value::List(result))
+        Ok(Value::List(Rc::new(result)))
     });
 
     // scopedImport
@@ -135,7 +135,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     // import
     register_builtin(builtins, "import", |args| {
-        crate::perf::inc("import");
+        crate::perf::inc(crate::perf::Counter::Import);
         let raw_path = args[0].coerce_to_path("import")?;
         let resolved = crate::path::resolve_import(
             crate::eval::current_eval_dir().as_deref(),
@@ -147,7 +147,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
         let cached = IMPORT_CACHE.with(|c| c.borrow().get(&canonical).cloned());
         if let Some(value) = cached {
-            crate::perf::inc("import_hit");
+            crate::perf::inc(crate::perf::Counter::ImportHit);
             return Ok(value);
         }
 

@@ -24,7 +24,7 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
         StringKeyedValue::String(s) => Value::string(s.clone()),
         StringKeyedValue::Path(p) => Value::Path(SmolStr::from(p.as_str())),
         StringKeyedValue::List(items) => {
-            Value::List(items.iter().map(string_keyed_to_eval).collect())
+            Value::list(items.iter().map(string_keyed_to_eval).collect())
         }
         StringKeyedValue::Attrs(map) => {
             let mut attrs = NixAttrs::with_capacity(map.len());
@@ -157,7 +157,7 @@ mod tests {
             StringKeyedValue::Int(2),
         ]);
         let val = string_keyed_to_eval(&sk);
-        assert_eq!(val, Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(val, Value::list(vec![Value::Int(1), Value::Int(2)]));
     }
 
     #[test]

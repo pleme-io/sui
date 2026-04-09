@@ -108,6 +108,7 @@ smallvec = { version = "1", features = ["union"] }
 smol_str = "0.3"
 
 # Performance
+rustc-hash = "2"
 mimalloc = { version = "0.1", default-features = false }
 aho-corasick = "1"
 base64 = "0.22"

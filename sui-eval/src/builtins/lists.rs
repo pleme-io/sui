@@ -18,7 +18,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         if list.is_empty() {
             return Err(EvalError::TypeError("tail: empty list".to_string()));
         }
-        Ok(Value::List(list[1..].to_vec()))
+        Ok(Value::List(Rc::new(list[1..].to_vec())))
     });
     register_builtin(builtins, "elemAt", |args| {
         // Curried: builtins.elemAt list index
@@ -53,7 +53,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 for i in 0..n {
                     result.push(crate::eval::apply(func.clone(), Value::Int(i))?);
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(Rc::new(result)))
             }),
         }))
     });
@@ -87,7 +87,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let result: Result<Vec<_>, _> = list.iter()
                     .map(|v| crate::eval::apply(func.clone(), v.clone()))
                     .collect();
-                Ok(Value::List(result?))
+                Ok(Value::List(Rc::new(result?)))
             }),
         }))
     });
@@ -103,7 +103,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         result.push(v.clone());
                     }
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(Rc::new(result)))
             }),
         }))
     });
@@ -140,7 +140,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     let mapped = crate::eval::apply(func.clone(), v.clone())?;
                     result.extend_from_slice(mapped.as_list()?);
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(Rc::new(result)))
             }),
         }))
     });
@@ -156,7 +156,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             let inner = v.as_list()?;
             result.extend(inner.iter().cloned());
         }
-        Ok(Value::List(result))
+        Ok(Value::List(Rc::new(result)))
     });
     register_builtin(builtins, "sort", |args| {
         let cmp = args[0].clone();
@@ -165,7 +165,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let mut list = args2[0].as_list()?.to_vec();
                 if list.len() <= 1 {
-                    return Ok(Value::List(list));
+                    return Ok(Value::List(Rc::new(list)));
                 }
                 // O(n log n) stable sort via Rust's merge sort.
                 // Capture any comparator error and propagate after sort.
@@ -191,7 +191,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 if let Some(e) = err {
                     return Err(e);
                 }
-                Ok(Value::List(list))
+                Ok(Value::List(Rc::new(list)))
             }),
         }))
     });
@@ -243,8 +243,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     }
                 }
                 let mut result = NixAttrs::new();
-                result.insert("right".to_string(), Value::List(right));
-                result.insert("wrong".to_string(), Value::List(wrong));
+                result.insert("right".to_string(), Value::List(Rc::new(right)));
+                result.insert("wrong".to_string(), Value::List(Rc::new(wrong)));
                 Ok(Value::Attrs(result))
             }),
         }))
@@ -266,7 +266,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 let mut result = NixAttrs::new();
                 for (k, vs) in groups {
-                    result.insert(k, Value::List(vs));
+                    result.insert(k, Value::List(Rc::new(vs)));
                 }
                 Ok(Value::Attrs(result))
             }),

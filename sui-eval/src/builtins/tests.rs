@@ -12,7 +12,7 @@ fn builtins_gen_list_generates_correct_list() {
     let v = ev("builtins.genList (x: x * 2) 4");
     assert_eq!(
         v,
-        Value::List(vec![
+        Value::list(vec![
             Value::Int(0),
             Value::Int(2),
             Value::Int(4),
@@ -24,7 +24,7 @@ fn builtins_gen_list_generates_correct_list() {
 #[test]
 fn builtins_gen_list_zero_length() {
     let v = ev("builtins.genList (x: x) 0");
-    assert_eq!(v, Value::List(vec![]));
+    assert_eq!(v, Value::list(vec![]));
 }
 
 #[test]
@@ -115,26 +115,26 @@ fn builtins_get_attr() {
 fn builtins_map() {
     assert_eq!(
         ev("builtins.map (x: x * 2) [1 2 3]"),
-        Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
+        Value::list(vec![Value::Int(2), Value::Int(4), Value::Int(6)]),
     );
 }
 
 #[test]
 fn builtins_map_empty() {
-    assert_eq!(ev("builtins.map (x: x) []"), Value::List(vec![]));
+    assert_eq!(ev("builtins.map (x: x) []"), Value::list(vec![]));
 }
 
 #[test]
 fn builtins_filter() {
     assert_eq!(
         ev("builtins.filter (x: x > 2) [1 2 3 4 5]"),
-        Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
+        Value::list(vec![Value::Int(3), Value::Int(4), Value::Int(5)]),
     );
 }
 
 #[test]
 fn builtins_filter_empty() {
-    assert_eq!(ev("builtins.filter (x: false) [1 2 3]"), Value::List(vec![]));
+    assert_eq!(ev("builtins.filter (x: false) [1 2 3]"), Value::list(vec![]));
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn builtins_foldl_empty() {
 fn builtins_concat_map() {
     assert_eq!(
         ev("builtins.concatMap (x: [x (x * 2)]) [1 2 3]"),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(2), Value::Int(4), Value::Int(3), Value::Int(6)]),
+        Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(2), Value::Int(4), Value::Int(3), Value::Int(6)]),
     );
 }
 
@@ -159,7 +159,7 @@ fn builtins_concat_map() {
 fn builtins_concat_lists() {
     assert_eq!(
         ev("builtins.concatLists [[1 2] [3] [4 5]]"),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4), Value::Int(5)]),
+        Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4), Value::Int(5)]),
     );
 }
 
@@ -263,7 +263,7 @@ fn builtins_function_args() {
 fn builtins_sort() {
     assert_eq!(
         ev("builtins.sort (a: b: a < b) [3 1 2]"),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
     );
 }
 
@@ -274,7 +274,7 @@ fn builtins_sort_large_list() {
     let expr = "builtins.sort (a: b: a < b) (builtins.genList (i: 1000 - i) 1000)";
     let result = ev(expr);
     let expected: Vec<Value> = (1..=1000).map(Value::Int).collect();
-    assert_eq!(result, Value::List(expected));
+    assert_eq!(result, Value::list(expected));
 }
 
 #[test]
@@ -283,14 +283,14 @@ fn builtins_sort_already_sorted() {
     let expr = "builtins.sort (a: b: a < b) (builtins.genList (i: i) 100)";
     let result = ev(expr);
     let expected: Vec<Value> = (0..100).map(Value::Int).collect();
-    assert_eq!(result, Value::List(expected));
+    assert_eq!(result, Value::list(expected));
 }
 
 #[test]
 fn builtins_sort_empty() {
     assert_eq!(
         ev("builtins.sort (a: b: a < b) []"),
-        Value::List(vec![]),
+        Value::list(vec![]),
     );
 }
 
@@ -298,7 +298,7 @@ fn builtins_sort_empty() {
 fn builtins_sort_single_element() {
     assert_eq!(
         ev("builtins.sort (a: b: a < b) [42]"),
-        Value::List(vec![Value::Int(42)]),
+        Value::list(vec![Value::Int(42)]),
     );
 }
 
@@ -308,14 +308,14 @@ fn builtins_map_large_list() {
     let expr = "builtins.map (x: x * 2) (builtins.genList (i: i) 1000)";
     let result = ev(expr);
     let expected: Vec<Value> = (0..1000).map(|i| Value::Int(i * 2)).collect();
-    assert_eq!(result, Value::List(expected));
+    assert_eq!(result, Value::list(expected));
 }
 
 #[test]
 fn builtins_cat_attrs() {
     assert_eq!(
         ev(r#"builtins.catAttrs "a" [{ a = 1; } { b = 2; } { a = 3; }]"#),
-        Value::List(vec![Value::Int(1), Value::Int(3)]),
+        Value::list(vec![Value::Int(1), Value::Int(3)]),
     );
 }
 
@@ -345,11 +345,11 @@ fn builtins_partition_basic() {
     if let Value::Attrs(a) = v {
         assert_eq!(
             a.get("right"),
-            Some(&Value::List(vec![Value::Int(3), Value::Int(4), Value::Int(5)])),
+            Some(&Value::list(vec![Value::Int(3), Value::Int(4), Value::Int(5)])),
         );
         assert_eq!(
             a.get("wrong"),
-            Some(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            Some(&Value::list(vec![Value::Int(1), Value::Int(2)])),
         );
     } else {
         panic!("expected attrs");
@@ -362,9 +362,9 @@ fn builtins_partition_all_right() {
     if let Value::Attrs(a) = v {
         assert_eq!(
             a.get("right"),
-            Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
+            Some(&Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
         );
-        assert_eq!(a.get("wrong"), Some(&Value::List(vec![])));
+        assert_eq!(a.get("wrong"), Some(&Value::list(vec![])));
     } else {
         panic!("expected attrs");
     }
@@ -374,8 +374,8 @@ fn builtins_partition_all_right() {
 fn builtins_partition_empty() {
     let v = ev("builtins.partition (x: true) []");
     if let Value::Attrs(a) = v {
-        assert_eq!(a.get("right"), Some(&Value::List(vec![])));
-        assert_eq!(a.get("wrong"), Some(&Value::List(vec![])));
+        assert_eq!(a.get("right"), Some(&Value::list(vec![])));
+        assert_eq!(a.get("wrong"), Some(&Value::list(vec![])));
     } else {
         panic!("expected attrs");
     }
@@ -389,21 +389,21 @@ fn builtins_group_by_basic() {
     if let Value::Attrs(a) = v {
         assert_eq!(
             a.get("a"),
-            Some(&Value::List(vec![
+            Some(&Value::list(vec![
                 Value::string("a"),
                 Value::string("a"),
             ])),
         );
         assert_eq!(
             a.get("b"),
-            Some(&Value::List(vec![
+            Some(&Value::list(vec![
                 Value::string("b"),
                 Value::string("b"),
             ])),
         );
         assert_eq!(
             a.get("c"),
-            Some(&Value::List(vec![Value::string("c")])),
+            Some(&Value::list(vec![Value::string("c")])),
         );
     } else {
         panic!("expected attrs");
@@ -429,11 +429,11 @@ fn builtins_zip_attrs_with_basic() {
     if let Value::Attrs(a) = v {
         assert_eq!(
             a.get("a"),
-            Some(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            Some(&Value::list(vec![Value::Int(1), Value::Int(2)])),
         );
         assert_eq!(
             a.get("b"),
-            Some(&Value::List(vec![Value::Int(3)])),
+            Some(&Value::list(vec![Value::Int(3)])),
         );
     } else {
         panic!("expected attrs");
@@ -667,7 +667,7 @@ fn builtins_match_regex() {
     // match returns null on no match, list of groups on match
     assert_eq!(
         ev(r#"builtins.match "([0-9]+)\\.([0-9]+)" "1.23""#),
-        Value::List(vec![Value::string("1"), Value::string("23")]),
+        Value::list(vec![Value::string("1"), Value::string("23")]),
     );
     assert_eq!(
         ev(r#"builtins.match "([0-9]+)" "abc""#),
@@ -680,7 +680,7 @@ fn builtins_match_full_string() {
     // match anchors to full string
     assert_eq!(
         ev(r#"builtins.match "([0-9]+)" "42""#),
-        Value::List(vec![Value::string("42")]),
+        Value::list(vec![Value::string("42")]),
     );
     // Partial match should return null (anchored)
     assert_eq!(
@@ -2167,7 +2167,7 @@ fn builtins_from_toml_arrays() {
     if let Value::Attrs(a) = v {
         assert_eq!(
             a.get("ports"),
-            Some(&Value::List(vec![Value::Int(80), Value::Int(443)])),
+            Some(&Value::list(vec![Value::Int(80), Value::Int(443)])),
         );
     } else {
         panic!("expected attrs");
@@ -2219,7 +2219,7 @@ fn builtins_split_version_standard() {
     // Real nix drops separators: "1.2.3" → ["1","2","3"]
     assert_eq!(
         ev(r#"builtins.splitVersion "1.2.3""#),
-        Value::List(vec![
+        Value::list(vec![
             Value::string("1"),
             Value::string("2"),
             Value::string("3"),
@@ -2232,7 +2232,7 @@ fn builtins_split_version_pre_release() {
     // Digit/non-digit transitions still split, but the `.` is dropped.
     assert_eq!(
         ev(r#"builtins.splitVersion "1.0pre1""#),
-        Value::List(vec![
+        Value::list(vec![
             Value::string("1"),
             Value::string("0"),
             Value::string("pre"),
@@ -2325,7 +2325,7 @@ fn builtins_store_dir() {
 
 #[test]
 fn builtins_nix_path_empty() {
-    assert_eq!(ev(r#"builtins.nixPath"#), Value::List(vec![]));
+    assert_eq!(ev(r#"builtins.nixPath"#), Value::list(vec![]));
 }
 
 // ── findFile tests ──────────────────────────────────────
@@ -2379,7 +2379,7 @@ fn builtins_find_file_not_found() {
 #[test] fn builtins_bit_xor_12_10() { assert_eq!(ev("builtins.bitXor 12 10"), Value::Int(6)); }
 
 #[test] fn builtins_split_version() {
-    assert_eq!(ev(r#"builtins.splitVersion "1.2.3""#), Value::List(vec![
+    assert_eq!(ev(r#"builtins.splitVersion "1.2.3""#), Value::list(vec![
         Value::string("1"), Value::string("2"), Value::string("3")
     ]));
 }
@@ -2700,7 +2700,7 @@ fn builtins_head_empty_errors() {
 
 #[test]
 fn builtins_tail_single() {
-    assert_eq!(ev("builtins.tail [42]"), Value::List(vec![]));
+    assert_eq!(ev("builtins.tail [42]"), Value::list(vec![]));
 }
 
 #[test]
@@ -2714,7 +2714,7 @@ fn builtins_tail_empty_errors() {
 fn builtins_attr_names_sorted() {
     assert_eq!(
         ev(r#"builtins.attrNames { z = 1; a = 2; m = 3; }"#),
-        Value::List(vec![
+        Value::list(vec![
             Value::string("a"),
             Value::string("m"),
             Value::string("z"),
@@ -2726,7 +2726,7 @@ fn builtins_attr_names_sorted() {
 fn builtins_attr_values_follows_sorted_keys() {
     assert_eq!(
         ev(r#"builtins.attrValues { z = 3; a = 1; m = 2; }"#),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
     );
 }
 
@@ -2806,7 +2806,7 @@ fn builtins_from_json_bool() {
 fn builtins_from_json_list() {
     assert_eq!(
         ev(r#"builtins.fromJSON "[1,2,3]""#),
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
     );
 }
 
@@ -2901,7 +2901,7 @@ fn builtins_trace_verbose_with_attrs() {
 fn builtins_trace_verbose_with_list() {
     assert_eq!(
         ev(r#"builtins.traceVerbose "x" [1 2]"#),
-        Value::List(vec![Value::Int(1), Value::Int(2)]),
+        Value::list(vec![Value::Int(1), Value::Int(2)]),
     );
 }
 

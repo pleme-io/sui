@@ -8,13 +8,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // (typically small interned identifiers).
     register_builtin(builtins, "attrNames", |args| {
         let attrs = args[0].to_attrs()?;
-        Ok(Value::List(attrs.keys().map(|k| Value::string(k.clone())).collect()))
+        Ok(Value::List(Rc::new(attrs.keys().map(|k| Value::string(k.clone())).collect())))
     });
     // attrValues: iterates BTreeMap values. Each `.cloned()` is an Rc
     // bump for heap-backed Value variants (no deep copy).
     register_builtin(builtins, "attrValues", |args| {
         let attrs = args[0].to_attrs()?;
-        Ok(Value::List(attrs.values().cloned().collect()))
+        Ok(Value::List(Rc::new(attrs.values().cloned().collect())))
     });
     register_builtin(builtins, "hasAttr", |args| {
         let name = args[0].as_string()?.to_string();
@@ -122,7 +122,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                             result.push(v.clone());
                         }
                 }
-                Ok(Value::List(result))
+                Ok(Value::List(Rc::new(result)))
             }),
         }))
     });
@@ -166,7 +166,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         func.clone(),
                         Value::string(k.clone()),
                     )?;
-                    let val = crate::eval::apply(partial, Value::List(vs))?;
+                    let val = crate::eval::apply(partial, Value::List(Rc::new(vs)))?;
                     result.insert(k, val);
                 }
                 Ok(Value::Attrs(result))

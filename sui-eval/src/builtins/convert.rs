@@ -149,7 +149,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 Value::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
                 Value::List(items) => {
                     let mut out = format!("{pad}<list>\n");
-                    for item in items { out.push_str(&value_to_xml(item, indent + 2)); out.push('\n'); }
+                    for item in items.iter() { out.push_str(&value_to_xml(item, indent + 2)); out.push('\n'); }
                     out.push_str(&format!("{pad}</list>"));
                     out
                 }

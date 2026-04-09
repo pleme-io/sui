@@ -9,12 +9,20 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 pub use smol_str::SmolStr;
 
 use rowan::ast::AstNode;
 
 use sui_bytecode::intern::{Interner, Symbol};
+
+/// Type alias for the persistent hash map used by `NixAttrs` and `Env`.
+///
+/// Uses `FxBuildHasher` (fast multiplication-based hash) instead of the
+/// default `RandomState`. This is optimal for `Symbol(u32)` keys where
+/// the hash is a single multiply-shift — no SipHash overhead.
+pub type FxHashMap<K, V> = im_rc::HashMap<K, V, FxBuildHasher>;
 
 // -- Thread-local string interner --
 
@@ -207,7 +215,7 @@ pub enum Value {
     Float(f64),
     String(NixString),
     Path(SmolStr),
-    List(Vec<Value>),
+    List(Rc<Vec<Value>>),
     Attrs(NixAttrs),
     Lambda(Closure),
     Builtin(BuiltinFn),
@@ -302,12 +310,13 @@ impl Thunk {
     }
 
     /// Replace the environment captured in a suspended or inherit-select thunk.
-    /// No-op if the thunk is already evaluated or a blackhole.
-    pub fn update_env(&self, new_env: Env) {
+    /// No-op if the thunk is already evaluated or a blackhole (avoids an Rc
+    /// clone in that case).
+    pub fn update_env(&self, new_env: &Env) {
         let mut borrow = self.0.borrow_mut();
         match &mut *borrow {
             ThunkRepr::Suspended { env, .. } | ThunkRepr::InheritSelect { env, .. } => {
-                *env = new_env;
+                *env = new_env.clone();
             }
             _ => {}
         }
@@ -341,7 +350,7 @@ impl Thunk {
         {
             let borrowed = self.0.borrow();
             if let ThunkRepr::Evaluated(ref v) = *borrowed {
-                crate::perf::inc("thunk_hit");
+                crate::perf::inc(crate::perf::Counter::ThunkHit);
                 return Ok((**v).clone());
             }
         }
@@ -353,7 +362,7 @@ impl Thunk {
 
         match repr {
             ThunkRepr::Suspended { expr, env } => {
-                crate::perf::inc("thunk_force");
+                crate::perf::inc(crate::perf::Counter::ThunkForce);
                 crate::trace::inc_thunks_forced_unique();
                 // Push force frame for chain capture (always on).
                 let desc: String = expr
@@ -550,7 +559,7 @@ impl Thunk {
                 // Reached if somehow the fast-path borrow above missed
                 // (should not happen in single-threaded code). Put back
                 // and return the clone.
-                crate::perf::inc("thunk_hit");
+                crate::perf::inc(crate::perf::Counter::ThunkHit);
                 let cloned = (*v).clone();
                 *self.0.borrow_mut() = ThunkRepr::Evaluated(v);
                 Ok(cloned)
@@ -573,23 +582,24 @@ impl fmt::Debug for Thunk {
 
 /// A Nix attribute set.
 ///
-/// Uses `im_rc::HashMap` internally for O(log32 n) lookups with O(1)
-/// structural-sharing clones (the hot path during overlay fixpoint
-/// evaluation). Sorted iteration (needed by `attrNames`, `attrValues`,
-/// Display, equality) collects and sorts.
+/// Uses `FxHashMap` (im_rc::HashMap with FxBuildHasher) internally for
+/// O(log32 n) lookups with O(1) structural-sharing clones (the hot path
+/// during overlay fixpoint evaluation). FxHash is optimal for `Symbol(u32)`
+/// keys — a single multiply-shift instead of SipHash. Sorted iteration
+/// (needed by `attrNames`, `attrValues`, Display, equality) collects and sorts.
 #[derive(Debug, Clone, Default)]
-pub struct NixAttrs(pub im_rc::HashMap<Symbol, Value>);
+pub struct NixAttrs(pub FxHashMap<Symbol, Value>);
 
 impl NixAttrs {
     /// Create an empty attribute set.
     pub fn new() -> Self {
-        Self(im_rc::HashMap::new())
+        Self(FxHashMap::default())
     }
 
     /// Create an attribute set (capacity hint ignored — `im_rc::HashMap`
     /// uses structural sharing instead of pre-allocation).
     pub fn with_capacity(_capacity: usize) -> Self {
-        Self(im_rc::HashMap::new())
+        Self(FxHashMap::default())
     }
 
     /// Look up an attribute by name.
@@ -665,7 +675,7 @@ impl NixAttrs {
 
     /// Merge two attrsets (right overrides left, like `//`).
     ///
-    /// O(m log n) where m = `other.len()` thanks to `im_rc::HashMap`'s
+    /// O(m log n) where m = `other.len()` thanks to `FxHashMap`'s
     /// structural sharing — the left side is cloned in O(1).
     #[must_use]
     pub fn update(&self, other: &NixAttrs) -> NixAttrs {
@@ -758,13 +768,13 @@ impl fmt::Debug for WithScope {
 /// Wrapped in `Rc` by [`Env`] so that cloning an `Env` is always a
 /// refcount bump — never a deep copy of the binding map.
 ///
-/// Uses a flattened `im_rc::HashMap` for bindings: `child()` clones
+/// Uses a flattened `FxHashMap` for bindings: `child()` clones
 /// the parent's map with O(1) structural sharing instead of building
 /// a linked parent chain. Lookups are a single O(log32 n) probe
 /// instead of walking a chain.
 #[derive(Debug, Clone, Default)]
 struct EnvInner {
-    bindings: im_rc::HashMap<Symbol, Value>,
+    bindings: FxHashMap<Symbol, Value>,
     /// Dynamic `with` scopes, innermost last.
     with_scopes: Vec<WithScope>,
     /// Source file currently being evaluated, for relative path
@@ -776,7 +786,7 @@ struct EnvInner {
 /// Evaluation environment — flattened binding map with structural sharing.
 ///
 /// Internally an `Rc<EnvInner>`, so cloning is always O(1) (refcount
-/// bump).  `child()` clones the `im_rc::HashMap` (O(1) structural
+/// bump).  `child()` clones the `FxHashMap` (O(1) structural
 /// sharing) instead of building a parent chain.  `bind()` uses
 /// `Rc::make_mut` for copy-on-write: if the Rc is shared, only then
 /// does it clone the inner data.
@@ -794,7 +804,7 @@ impl Env {
     #[must_use]
     pub fn new() -> Self {
         Self(Rc::new(EnvInner {
-            bindings: im_rc::HashMap::new(),
+            bindings: FxHashMap::default(),
             with_scopes: Vec::new(),
             eval_file: None,
         }))
@@ -802,11 +812,11 @@ impl Env {
 
     /// Create a child environment that inherits from this one.
     ///
-    /// O(1) — the `im_rc::HashMap` clone is structural sharing (refcount
+    /// O(1) — the `FxHashMap` clone is structural sharing (refcount
     /// bump on internal tree nodes), not a deep copy.
     #[must_use]
     pub fn child(&self) -> Self {
-        crate::perf::inc("env_clone");
+        crate::perf::inc(crate::perf::Counter::EnvClone);
         Self(Rc::new(EnvInner {
             bindings: self.0.bindings.clone(), // O(1) structural sharing
             with_scopes: self.0.with_scopes.clone(),
@@ -860,7 +870,7 @@ impl Env {
     ///    finds `x` in Y if Y has it, otherwise in X.
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
-        crate::perf::inc("env_lookup");
+        crate::perf::inc(crate::perf::Counter::EnvLookup);
         // 1. Flat lexical lookup — single O(1) hash + O(log32 n) probe.
         let sym = intern(name);
         if let Some(v) = self.0.bindings.get(&sym) {
@@ -970,6 +980,13 @@ impl Value {
     #[must_use]
     pub fn string(s: impl Into<SmolStr>) -> Self {
         Value::String(NixString::plain(s))
+    }
+
+    /// Convenience constructor that wraps a `Vec<Value>` in `Rc` for the
+    /// `List` variant.
+    #[must_use]
+    pub fn list(items: Vec<Value>) -> Self {
+        Value::List(Rc::new(items))
     }
 
     /// Convert a value to JSON for API output.
@@ -1141,7 +1158,7 @@ impl Value {
     /// Borrow the list content without forcing thunks.
     pub fn as_list(&self) -> Result<&[Value], EvalError> {
         match self {
-            Value::List(l) => Ok(l),
+            Value::List(l) => Ok(l.as_slice()),
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_list: force first via force_value()".into(),
             )),
@@ -1164,7 +1181,7 @@ impl Value {
     /// Force-aware list extraction. Forces the value if it is a thunk.
     pub fn to_list(&self) -> Result<Vec<Value>, EvalError> {
         match self {
-            Value::List(l) => Ok(l.clone()),
+            Value::List(l) => Ok((**l).clone()),
             Value::Thunk(thunk) => {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_list()
@@ -1265,7 +1282,7 @@ impl Value {
             }
             Value::List(items) => {
                 let mut parts = Vec::new();
-                for item in items {
+                for item in items.iter() {
                     let forced = crate::eval::force_value(item)?;
                     let (s, c) = forced.coerce_to_string()?;
                     ctx.merge(&c);
@@ -1300,7 +1317,7 @@ impl From<&serde_json::Value> for Value {
             }
             serde_json::Value::String(s) => Value::string(s.clone()),
             serde_json::Value::Array(arr) => {
-                Value::List(arr.iter().map(Value::from).collect())
+                Value::List(Rc::new(arr.iter().map(Value::from).collect()))
             }
             serde_json::Value::Object(obj) => {
                 let mut attrs = NixAttrs::new();
@@ -1321,7 +1338,7 @@ impl From<&toml::Value> for Value {
             toml::Value::Float(f) => Value::Float(*f),
             toml::Value::Boolean(b) => Value::Bool(*b),
             toml::Value::Array(arr) => {
-                Value::List(arr.iter().map(Value::from).collect())
+                Value::List(Rc::new(arr.iter().map(Value::from).collect()))
             }
             toml::Value::Table(t) => {
                 let mut attrs = NixAttrs::new();
@@ -1370,7 +1387,7 @@ impl From<NixAttrs> for Value {
 
 impl From<Vec<Value>> for Value {
     fn from(list: Vec<Value>) -> Self {
-        Value::List(list)
+        Value::List(Rc::new(list))
     }
 }
 
@@ -1414,7 +1431,7 @@ impl fmt::Display for Value {
             Value::Path(p) => write!(f, "{p}"),
             Value::List(items) => {
                 write!(f, "[ ")?;
-                for item in items {
+                for item in items.iter() {
                     write!(f, "{item} ")?;
                 }
                 write!(f, "]")
@@ -1484,7 +1501,7 @@ mod tests {
 
     #[test]
     fn to_json_list() {
-        let v = Value::List(vec![Value::Int(1), Value::Bool(true)]);
+        let v = Value::list(vec![Value::Int(1), Value::Bool(true)]);
         assert_eq!(v.to_json(), serde_json::json!([1, true]));
     }
 
@@ -1549,7 +1566,7 @@ mod tests {
     fn type_name_path() { assert_eq!(Value::Path(SmolStr::from("")).type_name(), "path"); }
 
     #[test]
-    fn type_name_list() { assert_eq!(Value::List(vec![]).type_name(), "list"); }
+    fn type_name_list() { assert_eq!(Value::list(vec![]).type_name(), "list"); }
 
     #[test]
     fn type_name_set() { assert_eq!(Value::Attrs(NixAttrs::new()).type_name(), "set"); }
@@ -1602,7 +1619,7 @@ mod tests {
     #[test]
     fn as_attrs_error_on_non_attrs() {
         assert!(Value::Int(1).as_attrs().is_err());
-        assert!(Value::List(vec![]).as_attrs().is_err());
+        assert!(Value::list(vec![]).as_attrs().is_err());
     }
 
     #[test]
@@ -1634,7 +1651,7 @@ mod tests {
         assert_ne!(Value::Int(1), Value::string("1"));
         assert_ne!(Value::Bool(true), Value::Int(1));
         assert_ne!(Value::Null, Value::Bool(false));
-        assert_ne!(Value::List(vec![]), Value::Attrs(NixAttrs::new()));
+        assert_ne!(Value::list(vec![]), Value::Attrs(NixAttrs::new()));
     }
 
     // ── Display for all variants ─────────────────────────
@@ -1677,7 +1694,7 @@ mod tests {
 
     #[test]
     fn display_list() {
-        let v = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let v = Value::list(vec![Value::Int(1), Value::Int(2)]);
         assert_eq!(format!("{v}"), "[ 1 2 ]");
     }
 
@@ -2079,7 +2096,7 @@ mod tests {
 
         let mut new_env = Env::new();
         new_env.bind("x".to_string(), Value::Int(99));
-        thunk.update_env(new_env);
+        thunk.update_env(&new_env);
 
         let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
         assert_eq!(result.unwrap(), Value::Int(99));
@@ -2090,7 +2107,7 @@ mod tests {
         let thunk = Thunk::new_evaluated(Value::Int(1));
         let mut new_env = Env::new();
         new_env.bind("x".to_string(), Value::Int(99));
-        thunk.update_env(new_env);
+        thunk.update_env(&new_env);
         assert_eq!(
             thunk.force(&|_, _| panic!("should not be called")).unwrap(),
             Value::Int(1),
@@ -2284,8 +2301,8 @@ mod tests {
 
     #[test]
     fn value_partial_eq_lists_deep() {
-        let a = Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
-        let b = Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        let a = Value::list(vec![Value::Int(1), Value::list(vec![Value::Int(2)])]);
+        let b = Value::list(vec![Value::Int(1), Value::list(vec![Value::Int(2)])]);
         assert_eq!(a, b);
     }
 
@@ -2621,7 +2638,7 @@ mod tests {
     #[test]
     fn value_from_vec() {
         let v: Value = vec![Value::Int(1), Value::Int(2)].into();
-        assert_eq!(v, Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(v, Value::list(vec![Value::Int(1), Value::Int(2)]));
     }
 
     #[test]
@@ -2735,7 +2752,7 @@ mod tests {
         ]);
         assert_eq!(
             Value::from(&t),
-            Value::List(vec![Value::Int(1), Value::Int(2)]),
+            Value::list(vec![Value::Int(1), Value::Int(2)]),
         );
     }
 
