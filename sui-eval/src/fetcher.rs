@@ -151,43 +151,23 @@ impl InputFetcher {
             let _ = std::fs::remove_dir_all(&dest);
         }
 
-        // Clone using gix (pure Rust, no CLI). Wrapped in catch_unwind
-        // because our gix edition-2024 fork can panic on certain refspec
-        // patterns. On panic, fall back to git CLI as last resort.
-        let clone_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::git::clone(url, &dest, None, true, false)
-        }));
-
-        match clone_result {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => {
-                let _ = std::fs::remove_dir_all(&dest);
-                // Fall back to git CLI
-                let status = std::process::Command::new("git")
-                    .args(["clone", "--depth", "1", url])
-                    .arg(&dest)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if !status.map(|s| s.success()).unwrap_or(false) {
-                    return Err(FetchError::Download(format!("git clone failed: {e}")));
-                }
-            }
-            Err(_panic) => {
-                let _ = std::fs::remove_dir_all(&dest);
-                // gix panicked — fall back to git CLI
-                let status = std::process::Command::new("git")
-                    .args(["clone", "--depth", "1", url])
-                    .arg(&dest)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if !status.map(|s| s.success()).unwrap_or(false) {
-                    return Err(FetchError::Download(
-                        "git clone failed (gix panic + git CLI fallback failed)".into(),
-                    ));
-                }
-            }
+        // Use git CLI directly for clone operations. Our gix edition-2024
+        // fork panics on certain refspec patterns during fetch, and the
+        // panic occurs on a background thread that catch_unwind can't catch.
+        // git CLI is reliable and the clone only happens on cache miss.
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", url])
+            .arg(&dest)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| FetchError::Download(format!("git clone: {e}")))?;
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(FetchError::Download(format!(
+                "git clone failed for {url} (exit code: {})",
+                status.code().unwrap_or(-1)
+            )));
         }
 
         // Checkout the exact revision.
