@@ -44,6 +44,9 @@ enum Commands {
         /// Maximum thunk force depth (0 = unlimited)
         #[arg(long, default_value = "0")]
         max_force_depth: usize,
+        /// Disable the evaluation cache
+        #[arg(long)]
+        no_eval_cache: bool,
     },
     /// Build derivations
     Build {
@@ -288,7 +291,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json, max_force_depth } => {
+        Commands::Eval { expression, json, max_force_depth, no_eval_cache: _ } => {
             let expr = expression
                 .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
             if max_force_depth > 0 {

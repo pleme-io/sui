@@ -11,6 +11,8 @@ pub mod builtins;
 pub mod convert;
 /// Tree-walking evaluator using rnix's typed AST.
 pub mod eval;
+/// Content-addressed evaluation cache (file hash + lock hash → result).
+pub mod eval_cache;
 /// Content-addressed input fetcher for flake.lock resolved inputs.
 pub mod fetcher;
 /// Native flake lock management — update, check, write.
