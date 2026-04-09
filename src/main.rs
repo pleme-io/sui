@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use clap::{Parser, Subcommand};
 use sui::{CliError, NIX_DB_PATH};
+use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};
 
 #[derive(Parser)]
@@ -67,6 +70,11 @@ enum Commands {
     Fleet {
         #[command(subcommand)]
         command: FleetCommands,
+    },
+    /// Binary cache operations
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommands,
     },
 }
 
@@ -140,6 +148,51 @@ enum FleetCommands {
     },
     /// Show fleet status
     Status,
+}
+
+#[derive(Subcommand)]
+enum CacheCommands {
+    /// Start the binary cache server
+    Serve {
+        /// Listen address
+        #[arg(long, default_value = "0.0.0.0:5000")]
+        listen: String,
+        /// Local storage path
+        #[arg(long, default_value = "/var/cache/sui")]
+        store_path: String,
+        /// Cache priority (lower = preferred)
+        #[arg(long, default_value = "40")]
+        priority: u32,
+    },
+    /// Push store paths to the cache
+    Push {
+        /// Store paths to push
+        paths: Vec<String>,
+        /// Cache URL (for remote push)
+        #[arg(long)]
+        cache_url: Option<String>,
+        /// Local storage path (for local push)
+        #[arg(long, default_value = "/var/cache/sui")]
+        store_path: String,
+        /// Path to signing secret key
+        #[arg(long)]
+        signing_key: Option<String>,
+    },
+    /// Garbage collect the cache
+    Gc {
+        /// Local storage path
+        #[arg(long, default_value = "/var/cache/sui")]
+        store_path: String,
+        /// Hashes to keep (roots)
+        #[arg(long)]
+        keep: Vec<String>,
+    },
+    /// Show cache info
+    Info {
+        /// Local storage path
+        #[arg(long, default_value = "/var/cache/sui")]
+        store_path: String,
+    },
 }
 
 #[tokio::main]
@@ -516,6 +569,100 @@ async fn main() -> Result<(), CliError> {
                     println!("failed:    {}", counts.failed);
                     println!("offline:   {}", counts.offline);
                 }
+            }
+        },
+
+        Commands::Cache { command } => match command {
+            CacheCommands::Serve { listen, store_path, priority } => {
+                let config = sui_cache::CacheConfig {
+                    listen,
+                    backend: sui_cache::BackendConfig::Local {
+                        path: std::path::PathBuf::from(&store_path),
+                    },
+                    priority,
+                    ..sui_cache::CacheConfig::default()
+                };
+                let storage: Arc<dyn sui_cache::StorageBackend> =
+                    Arc::new(sui_cache::LocalStorage::new(&store_path));
+                sui_cache::serve(config, storage).await.map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache serve",
+                        message: e.to_string(),
+                    }
+                })?;
+            }
+            CacheCommands::Push { paths, cache_url: _, store_path, signing_key } => {
+                let storage: Arc<dyn sui_cache::StorageBackend> =
+                    Arc::new(sui_cache::LocalStorage::new(&store_path));
+                let signer = if let Some(key_path) = signing_key {
+                    let key_str = std::fs::read_to_string(&key_path).map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "cache push",
+                            message: format!("read signing key: {e}"),
+                        }
+                    })?;
+                    sui_cache::CacheSigner::from_secret_key_string(key_str.trim()).map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "cache push",
+                            message: format!("parse signing key: {e}"),
+                        }
+                    })?
+                } else {
+                    sui_cache::CacheSigner::generate("sui-cache".to_string())
+                };
+
+                for path in &paths {
+                    let hash = path
+                        .strip_prefix("/nix/store/")
+                        .unwrap_or(path)
+                        .split('-')
+                        .next()
+                        .unwrap_or(path);
+                    match sui_cache::push::push_path(
+                        storage.as_ref(),
+                        &signer,
+                        path,
+                        hash,
+                        &[],
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            println!(
+                                "pushed {} (nar={}, compressed={})",
+                                path, result.nar_size, result.compressed_size
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("error pushing {path}: {e}");
+                        }
+                    }
+                }
+            }
+            CacheCommands::Gc { store_path, keep } => {
+                let storage = sui_cache::LocalStorage::new(&store_path);
+                let result = sui_cache::gc::collect_garbage(&storage, &keep).await.map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache gc",
+                        message: e.to_string(),
+                    }
+                })?;
+                println!(
+                    "GC: deleted {} paths, freed {} bytes",
+                    result.paths_deleted, result.bytes_freed
+                );
+            }
+            CacheCommands::Info { store_path } => {
+                let storage = sui_cache::LocalStorage::new(&store_path);
+                let hashes = storage.list_narinfos().await.map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache info",
+                        message: e.to_string(),
+                    }
+                })?;
+                println!("Cache dir:   {store_path}");
+                println!("Paths:       {}", hashes.len());
             }
         },
     }

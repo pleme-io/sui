@@ -1,0 +1,33 @@
+[package]
+name = "sui-cache"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Built-in binary cache server and push pipeline for sui"
+
+[dependencies]
+sui-compat = { path = "../sui-compat" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+xz2 = "0.1"
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+reqwest = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"
+
+[lints.clippy]
+pedantic = "warn"

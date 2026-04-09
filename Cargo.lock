@@ -1276,6 +1276,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",
@@ -5540,6 +5541,7 @@ dependencies = [
  "serde_json",
  "sui-build",
  "sui-bytecode",
+ "sui-cache",
  "sui-compat",
  "sui-daemon",
  "sui-eval",
@@ -5585,6 +5587,29 @@ dependencies = [
  "sui-eval",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sui-cache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum 0.8.8",
+ "base64",
+ "ed25519-dalek",
+ "http-body-util",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sui-compat",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "xz2",
 ]
 
 [[package]]
