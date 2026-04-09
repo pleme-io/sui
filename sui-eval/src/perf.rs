@@ -145,6 +145,8 @@ pub fn report() {
             "env_lookups:    {} (avg depth {avg_lookup:.1})",
             c.env_lookups
         );
+        // Thunk stats from trace module.
+        crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
     });
 }

@@ -21,6 +21,8 @@ pub mod git;
 pub mod path;
 /// Lightweight evaluation profiling counters.
 pub mod perf;
+/// Infinite recursion debugging tools (force chain, trace, depth limit, stats).
+pub mod trace;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
 

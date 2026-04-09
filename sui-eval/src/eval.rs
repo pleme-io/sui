@@ -166,6 +166,7 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     if nesting == 0 {
         crate::perf::init();
         crate::perf::start();
+        crate::trace::init_trace();
     }
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {

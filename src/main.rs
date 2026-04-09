@@ -38,6 +38,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum thunk force depth (0 = unlimited)
+        #[arg(long, default_value = "0")]
+        max_force_depth: usize,
     },
     /// Build derivations
     Build {
@@ -232,9 +235,12 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json } => {
+        Commands::Eval { expression, json, max_force_depth } => {
             let expr = expression
                 .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
+            if max_force_depth > 0 {
+                sui_eval::trace::set_max_force_depth(max_force_depth);
+            }
             if cli.no_vm {
                 // Tree-walker evaluation path (legacy fallback).
                 let value = sui_eval::eval(&expr)?;
