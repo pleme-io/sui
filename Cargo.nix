@@ -73,6 +73,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "sui-cache" = rec {
+      packageId = "sui-cache";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "sui-cache";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "sui-compat" = rec {
       packageId = "sui-compat";
       build = internal.buildRustCrateWithFeatures {
@@ -4008,6 +4018,12 @@ rec {
             usesDefaultFeatures = false;
           }
           {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
             name = "serde";
             packageId = "serde";
             optional = true;
@@ -4038,6 +4054,11 @@ rec {
             features = [ "digest" "rand_core" ];
           }
           {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            usesDefaultFeatures = false;
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -4060,7 +4081,7 @@ rec {
           "std" = [ "alloc" "ed25519/std" "serde?/std" "sha2/std" ];
           "zeroize" = [ "dep:zeroize" "curve25519-dalek/zeroize" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "default" "fast" "std" "zeroize" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "fast" "rand_core" "std" "zeroize" ];
       };
       "either" = rec {
         crateName = "either";
@@ -19152,6 +19173,14 @@ rec {
             packageId = "sui-build";
           }
           {
+            name = "sui-bytecode";
+            packageId = "sui-bytecode";
+          }
+          {
+            name = "sui-cache";
+            packageId = "sui-cache";
+          }
+          {
             name = "sui-compat";
             packageId = "sui-compat";
           }
@@ -19338,11 +19367,27 @@ rec {
             packageId = "rowan";
           }
           {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+          }
+          {
+            name = "sui-compat";
+            packageId = "sui-compat";
+          }
+          {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
         ];
         devDependencies = [
+          {
+            name = "criterion";
+            packageId = "criterion";
+          }
           {
             name = "pretty_assertions";
             packageId = "pretty_assertions";
@@ -19350,6 +19395,101 @@ rec {
           {
             name = "sui-eval";
             packageId = "sui-eval";
+          }
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+        ];
+
+      };
+      "sui-cache" = rec {
+        crateName = "sui-cache";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache; };
+        libName = "sui_cache";
+        dependencies = [
+          {
+            name = "async-trait";
+            packageId = "async-trait";
+          }
+          {
+            name = "axum";
+            packageId = "axum 0.8.8";
+            features = [ "macros" ];
+          }
+          {
+            name = "base64";
+            packageId = "base64";
+          }
+          {
+            name = "ed25519-dalek";
+            packageId = "ed25519-dalek";
+            features = [ "std" "rand_core" "rand_core" ];
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            features = [ "getrandom" ];
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+          }
+          {
+            name = "sui-compat";
+            packageId = "sui-compat";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "full" ];
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+          {
+            name = "xz2";
+            packageId = "xz2";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "http-body-util";
+            packageId = "http-body-util";
+          }
+          {
+            name = "reqwest";
+            packageId = "reqwest 0.12.28";
+            features = [ "rustls-tls" "json" "stream" ];
+          }
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "full" "test-util" "macros" ];
+          }
+          {
+            name = "tower";
+            packageId = "tower 0.5.3";
           }
         ];
 
@@ -19368,7 +19508,7 @@ rec {
           {
             name = "ed25519-dalek";
             packageId = "ed25519-dalek";
-            features = [ "std" ];
+            features = [ "std" "rand_core" ];
           }
           {
             name = "nix-nar";
@@ -19545,6 +19685,10 @@ rec {
             packageId = "stacker";
           }
           {
+            name = "sui-bytecode";
+            packageId = "sui-bytecode";
+          }
+          {
             name = "sui-compat";
             packageId = "sui-compat";
           }
@@ -19692,7 +19836,7 @@ rec {
           {
             name = "ed25519-dalek";
             packageId = "ed25519-dalek";
-            features = [ "std" ];
+            features = [ "std" "rand_core" ];
           }
           {
             name = "reqwest";
