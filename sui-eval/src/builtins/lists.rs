@@ -58,9 +58,28 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }))
     });
 
-    // Higher-order list operations (critical for nixpkgs)
+    // ── Higher-order list operations (critical for nixpkgs) ─────
+    //
+    // Clone cost analysis: all `.clone()` calls on `func`, `pred`, and
+    // list element `v` in these loops are Rc reference-count bumps, NOT
+    // deep copies.  The Value enum's heap variants are:
+    //
+    //   Lambda(Closure { env: Env(Rc<EnvInner>), .. })  → Rc bump
+    //   Builtin(BuiltinFn { func: Rc<BuiltinFunc>, .. }) → Rc bump
+    //   Attrs(NixAttrs)  → BTreeMap clone (but inner Values are Rc'd)
+    //   List(Vec<Value>) → Vec clone (but inner Values are Rc'd)
+    //   String(NixString) → String clone (typically interned/small)
+    //   Thunk(Thunk(Rc<RefCell<ThunkRepr>>))  → Rc bump
+    //
+    // For the common case in nixpkgs — `map`, `filter`, `foldl'` over
+    // lists of attrsets or lambdas — every clone is O(1).  The `apply`
+    // function consumes its `arg: Value` by value, so we must clone once
+    // per predicate/function call; matched elements are cloned a second
+    // time to push into the result Vec.  This is inherent to the
+    // ownership model and already minimal.
+
     register_builtin(builtins, "map", |args| {
-        let func = args[0].clone();
+        let func = args[0].clone(); // Rc bump (captured closure/builtin)
         Ok(Value::Builtin(BuiltinFn {
             name: "map<partial>",
             func: Rc::new(move |args2| {
@@ -73,7 +92,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }))
     });
     register_builtin(builtins, "filter", |args| {
-        let pred = args[0].clone();
+        let pred = args[0].clone(); // Rc bump
         Ok(Value::Builtin(BuiltinFn {
             name: "filter<partial>",
             func: Rc::new(move |args2| {
@@ -89,7 +108,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }))
     });
     register_builtin(builtins, "foldl'", |args| {
-        let func = args[0].clone();
+        let func = args[0].clone(); // Rc bump
         Ok(Value::Builtin(BuiltinFn {
             name: "foldl'<p1>",
             func: Rc::new(move |args2| {

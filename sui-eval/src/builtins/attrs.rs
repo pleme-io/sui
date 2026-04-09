@@ -4,10 +4,14 @@
 use super::*;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
+    // attrNames: iterates BTreeMap keys (sorted). String clone per key
+    // (typically small interned identifiers).
     register_builtin(builtins, "attrNames", |args| {
         let attrs = args[0].to_attrs()?;
         Ok(Value::List(attrs.keys().map(|k| Value::string(k.clone())).collect()))
     });
+    // attrValues: iterates BTreeMap values. Each `.cloned()` is an Rc
+    // bump for heap-backed Value variants (no deep copy).
     register_builtin(builtins, "attrValues", |args| {
         let attrs = args[0].to_attrs()?;
         Ok(Value::List(attrs.values().cloned().collect()))
