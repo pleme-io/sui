@@ -17,6 +17,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::builtins::BuiltinRegistry;
@@ -63,6 +64,10 @@ pub struct VM<'a> {
     builtins: BuiltinRegistry,
     /// Import cache: canonical path -> evaluated result.
     import_cache: Rc<RefCell<HashMap<String, VMValue>>>,
+    /// Compile cache: canonical path -> compiled bytecode.
+    /// Avoids re-parsing and re-compiling files that are imported
+    /// multiple times (e.g. via scopedImport or recursive imports).
+    compile_cache: HashMap<PathBuf, Rc<Chunk>>,
 }
 
 impl<'a> VM<'a> {
@@ -75,6 +80,7 @@ impl<'a> VM<'a> {
             with_stack: Vec::new(),
             builtins: BuiltinRegistry::new(),
             import_cache: Rc::new(RefCell::new(HashMap::new())),
+            compile_cache: HashMap::new(),
         };
 
         vm.frames.push(CallFrame {
@@ -2325,23 +2331,32 @@ impl<'a> VM<'a> {
             return Ok(NanBox::from_vmvalue(cached));
         }
 
-        // Read and compile, passing the file's directory for relative path resolution.
-        let source = std::fs::read_to_string(&canonical)
-            .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+        // Check compile cache — skip parse + compile if we've seen this file.
+        let chunk = if let Some(cached_chunk) = self.compile_cache.get(&resolved) {
+            cached_chunk.clone()
+        } else {
+            // Read and compile, passing the file's directory for relative path resolution.
+            let source = std::fs::read_to_string(&canonical)
+                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
 
-        let file_dir = resolved
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
+            let file_dir = resolved
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
 
-        // Share the VM's interner with the compiler so that symbol IDs
-        // are consistent — no need to clear key_symbols afterwards.
-        let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
-        let chunk = Compiler::compile_with_shared_interner(&source, file_dir, shared_interner.clone())
-            .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
-        *self.interner = match Rc::try_unwrap(shared_interner) {
-            Ok(cell) => cell.into_inner(),
-            Err(rc) => rc.borrow().clone(),
+            // Share the VM's interner with the compiler so that symbol IDs
+            // are consistent — no need to clear key_symbols afterwards.
+            let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
+            let compiled = Compiler::compile_with_shared_interner(&source, file_dir, shared_interner.clone())
+                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+            *self.interner = match Rc::try_unwrap(shared_interner) {
+                Ok(cell) => cell.into_inner(),
+                Err(rc) => rc.borrow().clone(),
+            };
+
+            let chunk = Rc::new(compiled);
+            self.compile_cache.insert(resolved.clone(), chunk.clone());
+            chunk
         };
 
         if self.frames.len() >= MAX_CALL_DEPTH {
@@ -2351,7 +2366,7 @@ impl<'a> VM<'a> {
         let return_depth = self.frames.len();
         let stack_base = self.stack.len();
         self.frames.push(CallFrame {
-            chunk: Rc::new(chunk),
+            chunk,
             ip: 0,
             stack_base,
             upvalues: Vec::new(),
