@@ -21,55 +21,52 @@ pub fn clone(
     shallow: bool,
     submodules: bool,
 ) -> Result<gix::Repository, String> {
-    let do_clone = |use_shallow: bool| -> Result<gix::Repository, String> {
-        // Wrap in catch_unwind because gix's edition-2024 fork can panic
-        // on certain refspec patterns (known issue in our gitoxide fork).
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut prepare = gix::prepare_clone(url, dest)
-                .map_err(|e| format!("prepare clone {url} -> {}: {e}", dest.display()))?;
+    // Use git CLI for clone operations. gix's edition-2024 fork panics
+    // on background threads during fetch for certain refspec patterns.
+    // git CLI is reliable and clone only happens on cache miss.
+    let mut args = vec!["clone".to_string()];
+    if shallow {
+        args.extend(["--depth".into(), "1".into()]);
+    }
+    if let Some(br) = branch {
+        args.extend(["--branch".into(), br.to_string()]);
+    }
+    args.push(url.to_string());
+    args.push(dest.to_string_lossy().into_owned());
 
-            if use_shallow {
-                prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
-                    1.try_into().expect("1 is non-zero"),
-                ));
-            }
+    let status = std::process::Command::new("git")
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("git clone {url}: {e}"))?;
 
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(dest);
+        if shallow {
+            // Retry without shallow (some transports don't support it)
+            let mut retry_args = vec!["clone".to_string()];
             if let Some(br) = branch {
-                prepare = prepare
-                    .with_ref_name(Some(br))
-                    .map_err(|e| format!("set branch {br}: {e}"))?;
+                retry_args.extend(["--branch".into(), br.to_string()]);
             }
-
-            let (mut checkout, _outcome) = prepare
-                .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
-                .map_err(|e| format!("fetch {url}: {e}"))?;
-
-            let (repo, _outcome) = checkout
-                .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
-                .map_err(|e| format!("checkout worktree {url}: {e}"))?;
-
-            Ok(repo)
-        }));
-        match result {
-            Ok(inner) => inner,
-            Err(_) => Err(format!("git clone panicked for {url} (gix internal error)")),
-        }
-    };
-
-    // Try shallow first if requested; fall back to full clone if the
-    // transport does not support shallow fetches (e.g. local file://).
-    let repo = if shallow {
-        match do_clone(true) {
-            Ok(r) => r,
-            Err(_) => {
-                // Clean up partial clone before retrying.
-                let _ = std::fs::remove_dir_all(dest);
-                do_clone(false)?
+            retry_args.push(url.to_string());
+            retry_args.push(dest.to_string_lossy().into_owned());
+            let retry = std::process::Command::new("git")
+                .args(&retry_args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map_err(|e| format!("git clone retry: {e}"))?;
+            if !retry.success() {
+                return Err(format!("git clone {url} failed"));
             }
+        } else {
+            return Err(format!("git clone {url} failed"));
         }
-    } else {
-        do_clone(false)?
-    };
+    }
+
+    let repo = gix::open(dest)
+        .map_err(|e| format!("open cloned repo: {e}"))?;
 
     if submodules {
         init_submodules_recursive(&repo)?;
