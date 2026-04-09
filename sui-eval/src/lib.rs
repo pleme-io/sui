@@ -109,6 +109,14 @@ impl BytecodeEvaluator {
 ///
 /// Used by the flake resolver bridge to convert tree-walker results
 /// into a format the bytecode VM can consume.
+///
+/// **Lazy thunk handling:** Tree-walker thunks are NOT eagerly forced.
+/// Instead, they are wrapped in `StringKeyedValue::Thunk` with a callback
+/// that forces the underlying tree-walker thunk on demand. This is critical
+/// for `getFlake` performance: a typical flake has 100+ transitive input
+/// thunks, and forcing them all would trigger git clones, recursive flake
+/// resolution, and full evaluation of every dependency (10s+). By wrapping
+/// lazily, only the inputs actually accessed by the expression are evaluated.
 pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
     match val {
         Value::Null => sui_bytecode::StringKeyedValue::Null,
@@ -131,17 +139,25 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
         }
         Value::Lambda(_) | Value::Builtin(_) => sui_bytecode::StringKeyedValue::Lambda,
         Value::Thunk(t) => {
-            // Skip native thunks — they are used for lazy flake input
-            // evaluation (e.g., nixpkgs) and can be extremely expensive
-            // to force. Already-evaluated thunks are converted normally.
-            // Suspended AST thunks (cheap) are forced during conversion.
-            if t.is_native() {
-                sui_bytecode::StringKeyedValue::Null
-            } else {
+            // Fast path: if already evaluated, convert the memoized value
+            // without creating a thunk wrapper.
+            if t.is_evaluated() {
                 match t.force(&|e, env| eval::eval_expr(e, env)) {
                     Ok(v) => eval_to_string_keyed(&v),
                     Err(_) => sui_bytecode::StringKeyedValue::Null,
                 }
+            } else {
+                // LAZY: Wrap the tree-walker thunk in a callback that
+                // forces it on demand. The Rc clone is cheap and keeps
+                // the thunk's memoization cell shared, so forcing once
+                // caches the result for all subsequent accesses.
+                let thunk_clone = t.clone();
+                sui_bytecode::StringKeyedValue::Thunk(std::rc::Rc::new(move || {
+                    let forced = thunk_clone
+                        .force(&|e, env| eval::eval_expr(e, env))
+                        .map_err(|e| e.to_string())?;
+                    Ok(eval_to_string_keyed(&forced))
+                }))
             }
         }
     }

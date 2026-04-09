@@ -15,7 +15,7 @@
 //! to `NanBox` when pushed onto the stack and converted back only at the
 //! external API boundary (`execute` returns `VMValue`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ use crate::error::VMError;
 use crate::intern::{Interner, Symbol};
 use crate::nanbox::NanBox;
 use crate::opcode::OpCode;
-use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMValue};
+use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMThunk, VMValue};
 
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
@@ -1227,6 +1227,33 @@ impl<'a> VM<'a> {
                             }
                         }
                     }
+                    Some(ThunkState::NativeCallback(cb)) => {
+                        thunk.state.set(Some(ThunkState::Evaluating));
+
+                        match cb() {
+                            Ok(sk_val) => {
+                                // Convert the StringKeyedValue result to a NanBox.
+                                // This may itself contain Thunk values which will
+                                // be lazily wrapped as VMThunks.
+                                let nb = self.string_keyed_to_nanbox(&sk_val);
+                                let forced = if nb.is_thunk() {
+                                    self.force_value(nb)?
+                                } else {
+                                    nb
+                                };
+                                let forced_vmval = forced.to_vmvalue();
+                                thunk
+                                    .state
+                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
+                                Ok(forced)
+                            }
+                            Err(e) => {
+                                // On error, restore the callback for retry.
+                                thunk.state.set(Some(ThunkState::NativeCallback(cb)));
+                                Err(VMError::Throw(format!("native thunk: {e}")))
+                            }
+                        }
+                    }
                     None => Err(VMError::Internal("thunk state is None".to_string())),
                 }
             }
@@ -1999,6 +2026,11 @@ impl<'a> VM<'a> {
     }
 
     /// Convert a `StringKeyedValue` to a `NanBox` for the VM stack.
+    ///
+    /// `StringKeyedValue::Thunk` variants are wrapped in `VMThunk`s with
+    /// `NativeCallback` state so they are only evaluated when the VM
+    /// actually forces the value. This keeps `getFlake` fast by deferring
+    /// transitive input evaluation.
     fn string_keyed_to_nanbox(&mut self, sk: &crate::value::StringKeyedValue) -> NanBox {
         match sk {
             crate::value::StringKeyedValue::Null => NanBox::null(),
@@ -2020,6 +2052,15 @@ impl<'a> VM<'a> {
                 NanBox::attrs(nb_map)
             }
             crate::value::StringKeyedValue::Lambda => NanBox::null(),
+            crate::value::StringKeyedValue::Thunk(cb) => {
+                // Wrap the callback in a VMThunk with NativeCallback state.
+                // The VM's force_value will call the callback on demand and
+                // convert the resulting StringKeyedValue to a NanBox.
+                let thunk = VMThunk {
+                    state: Rc::new(Cell::new(Some(ThunkState::NativeCallback(Rc::clone(cb))))),
+                };
+                NanBox::thunk(thunk)
+            }
         }
     }
 

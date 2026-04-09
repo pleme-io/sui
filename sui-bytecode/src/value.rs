@@ -163,6 +163,13 @@ pub enum ThunkState {
         /// Captured upvalues (resolved at thunk creation time).
         upvalues: Vec<VMValue>,
     },
+    /// A native Rust callback that produces a value on demand.
+    ///
+    /// Used by the tree-walker bridge to wrap lazy flake input thunks:
+    /// instead of eagerly forcing all inputs during `eval_to_string_keyed`,
+    /// the tree-walker thunk is wrapped in a callback and only evaluated
+    /// when the VM actually accesses the value.
+    NativeCallback(Rc<dyn Fn() -> Result<StringKeyedValue, String>>),
     /// Currently being evaluated -- detects infinite recursion (blackhole).
     Evaluating,
     /// Already evaluated and memoized.
@@ -279,7 +286,22 @@ impl VMValue {
             VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
                 StringKeyedValue::Lambda
             }
-            VMValue::Thunk(_) => StringKeyedValue::Lambda, // thunks should be forced before conversion
+            VMValue::Thunk(t) => {
+                // If the thunk is already forced, convert the memoized value.
+                // Otherwise fall back to Lambda (the VM should have forced it).
+                let state = t.state.take();
+                match &state {
+                    Some(ThunkState::Done(v)) => {
+                        let result = v.to_string_keyed(interner);
+                        t.state.set(state);
+                        result
+                    }
+                    _ => {
+                        t.state.set(state);
+                        StringKeyedValue::Lambda
+                    }
+                }
+            }
         }
     }
 
@@ -362,7 +384,12 @@ impl VMValue {
 ///
 /// Produced by [`VMValue::to_string_keyed`]. Uses `BTreeMap<String, _>`
 /// for attrsets so callers don't need access to the interner.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// The `Thunk` variant carries a deferred computation from the tree-walker
+/// bridge. When the VM encounters it during `string_keyed_to_nanbox`, it
+/// wraps the callback in a `VMThunk` so the value is only evaluated when
+/// actually accessed. This keeps `getFlake` fast by not eagerly resolving
+/// all transitive flake inputs.
 pub enum StringKeyedValue {
     Null,
     Bool(bool),
@@ -373,9 +400,69 @@ pub enum StringKeyedValue {
     List(Vec<StringKeyedValue>),
     Attrs(BTreeMap<String, StringKeyedValue>),
     Lambda,
+    /// A deferred value — evaluated on demand when the VM forces it.
+    ///
+    /// The callback returns a `StringKeyedValue` which is then converted
+    /// to a `NanBox` by the VM. Uses `Rc<dyn Fn()>` for cheap cloning
+    /// and shared memoization.
+    Thunk(Rc<dyn Fn() -> Result<StringKeyedValue, String>>),
+}
+
+impl Clone for StringKeyedValue {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Null => Self::Null,
+            Self::Bool(b) => Self::Bool(*b),
+            Self::Int(n) => Self::Int(*n),
+            Self::Float(f) => Self::Float(*f),
+            Self::String(s) => Self::String(s.clone()),
+            Self::Path(p) => Self::Path(p.clone()),
+            Self::List(items) => Self::List(items.clone()),
+            Self::Attrs(map) => Self::Attrs(map.clone()),
+            Self::Lambda => Self::Lambda,
+            Self::Thunk(cb) => Self::Thunk(Rc::clone(cb)),
+        }
+    }
+}
+
+impl PartialEq for StringKeyedValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Null, Self::Null) => true,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Path(a), Self::Path(b)) => a == b,
+            (Self::List(a), Self::List(b)) => a == b,
+            (Self::Attrs(a), Self::Attrs(b)) => a == b,
+            (Self::Lambda, Self::Lambda) => true,
+            // Thunks are never structurally equal (identity comparison
+            // would be misleading since they are lazy).
+            (Self::Thunk(_), _) | (_, Self::Thunk(_)) => false,
+            _ => false,
+        }
+    }
 }
 
 impl Eq for StringKeyedValue {}
+
+impl fmt::Debug for StringKeyedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Null => write!(f, "Null"),
+            Self::Bool(b) => write!(f, "Bool({b})"),
+            Self::Int(n) => write!(f, "Int({n})"),
+            Self::Float(v) => write!(f, "Float({v})"),
+            Self::String(s) => write!(f, "String({s:?})"),
+            Self::Path(p) => write!(f, "Path({p:?})"),
+            Self::List(items) => f.debug_tuple("List").field(items).finish(),
+            Self::Attrs(map) => f.debug_tuple("Attrs").field(map).finish(),
+            Self::Lambda => write!(f, "Lambda"),
+            Self::Thunk(_) => write!(f, "Thunk(<deferred>)"),
+        }
+    }
+}
 
 impl fmt::Display for StringKeyedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -407,6 +494,7 @@ impl fmt::Display for StringKeyedValue {
                 write!(f, "}}")
             }
             StringKeyedValue::Lambda => write!(f, "<<lambda>>"),
+            StringKeyedValue::Thunk(_) => write!(f, "<<thunk>>"),
         }
     }
 }

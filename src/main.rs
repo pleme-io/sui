@@ -1029,6 +1029,9 @@ fn string_keyed_to_json(sk: &sui_bytecode::StringKeyedValue) -> serde_json::Valu
         sui_bytecode::StringKeyedValue::Lambda => {
             serde_json::Value::String("<lambda>".to_string())
         }
+        sui_bytecode::StringKeyedValue::Thunk(_) => {
+            serde_json::Value::String("<thunk>".to_string())
+        }
     }
 }
 
