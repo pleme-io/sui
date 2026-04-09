@@ -79,6 +79,26 @@ enum Commands {
         #[command(subcommand)]
         command: CacheCommands,
     },
+    /// Enter a development shell
+    Develop {
+        /// Flake reference (default: current directory)
+        #[arg(default_value = ".")]
+        flake_ref: String,
+        /// Shell attribute (default: "default")
+        #[arg(short = 'A', long, default_value = "default")]
+        attr: String,
+        /// Command to run instead of interactive shell
+        #[arg(short, long)]
+        command: Option<String>,
+    },
+    /// Run a flake app
+    Run {
+        /// Installable (e.g., .#app-name)
+        installable: String,
+        /// Arguments to pass to the app
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -98,9 +118,21 @@ enum StoreCommands {
         limit: usize,
     },
     /// Garbage collection
-    Gc,
+    Gc {
+        #[arg(long)]
+        max_age_days: Option<u32>,
+        #[arg(long)]
+        print_roots: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Verify store integrity
     Verify,
+    /// Optimise the store by hard-linking identical files
+    Optimise {
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show store info
     Info,
 }
@@ -252,19 +284,28 @@ async fn main() -> Result<(), CliError> {
                         eprintln!("... and {} more (use --limit to show more)", paths.len() - limit);
                     }
                 }
-                StoreCommands::Gc => {
-                    let rw_store = LocalStore::open_rw(NIX_DB_PATH)
-                        .await
-                        .map_err(|e| CliError::StoreOpen {
-                            path: NIX_DB_PATH,
-                            source: e,
-                        })?;
-                    let options = sui_store::GcOptions::default();
+                StoreCommands::Gc { max_age_days, print_roots, dry_run } => {
+                    if print_roots {
+                        let roots = sui_store::find_gc_roots("/nix/store");
+                        for root in &roots { println!("{root}"); }
+                        return Ok(());
+                    }
+                    let rw_store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+                    if dry_run {
+                        let roots = sui_store::find_gc_roots("/nix/store");
+                        let root_paths: Vec<_> = roots.iter().filter_map(|r| sui_compat::store_path::StorePath::from_absolute_path(r).ok()).collect();
+                        let reachable = rw_store.compute_closure(&root_paths).await?;
+                        let reachable_set: std::collections::HashSet<String> = reachable.iter().map(|p| p.to_absolute_path()).collect();
+                        let all = rw_store.query_all_valid_paths().await?;
+                        let garbage: Vec<_> = all.iter().filter(|p| !reachable_set.contains(&p.to_absolute_path())).collect();
+                        println!("{} paths would be collected", garbage.len());
+                        for p in &garbage { println!("{}", p.to_absolute_path()); }
+                        return Ok(());
+                    }
+                    let mut options = sui_store::GcOptions::default();
+                    if let Some(days) = max_age_days { options = options.with_delete_older_than(u64::from(days) * 86400); }
                     let result = rw_store.collect_garbage(&options).await?;
-                    println!(
-                        "deleted {} paths, freed {} bytes",
-                        result.paths_deleted, result.bytes_freed
-                    );
+                    println!("deleted {} paths, freed {} bytes", result.paths_deleted, result.bytes_freed);
                 }
                 StoreCommands::Verify => {
                     let result = store.verify_store().await?;
@@ -281,6 +322,12 @@ async fn main() -> Result<(), CliError> {
                     if !result.corrupt.is_empty() {
                         std::process::exit(1);
                     }
+                }
+                StoreCommands::Optimise { dry_run } => {
+                    let rw_store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+                    let result = rw_store.optimise_store(dry_run).await?;
+                    if dry_run { println!("{} files would be linked, {} bytes would be saved", result.files_linked, result.bytes_saved); }
+                    else { println!("{} files linked, {} bytes saved", result.files_linked, result.bytes_saved); }
                 }
                 StoreCommands::Info => {
                     let paths = store.query_all_valid_paths().await?;
@@ -681,9 +728,76 @@ async fn main() -> Result<(), CliError> {
                 println!("Paths:       {}", hashes.len());
             }
         },
+
+        Commands::Develop { flake_ref, attr, command } => {
+            let (flake_dir, override_attr) = if let Some((dir_part, attr_part)) = flake_ref.split_once('#') {
+                let dir = if dir_part == "." || dir_part.is_empty() { std::env::current_dir()? } else { std::path::PathBuf::from(dir_part) };
+                (dir, Some(attr_part.to_string()))
+            } else {
+                let dir = if flake_ref == "." || flake_ref.is_empty() { std::env::current_dir()? } else { std::path::PathBuf::from(&flake_ref) };
+                (dir, None)
+            };
+            let shell_attr = override_attr.as_deref().unwrap_or(&attr);
+            let system = current_system();
+            let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "develop", message: format!("eval: {e}") })?;
+            let shell_drv = sui_eval::builtins::navigate_attrs(&result, &["devShells", &system, shell_attr]).map_err(|e| CliError::Orchestrate { operation: "develop", message: format!("navigate devShells.{system}.{shell_attr}: {e}") })?;
+            let env_vars = extract_shell_env(&shell_drv);
+            let shell_bin = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let mut cmd = std::process::Command::new(&shell_bin);
+            for (key, value) in &env_vars { cmd.env(key, value); }
+            if let Some(drv_path) = env_vars.get("PATH") { let existing = std::env::var("PATH").unwrap_or_default(); cmd.env("PATH", format!("{drv_path}:{existing}")); }
+            cmd.env("IN_SUI_SHELL", "1"); cmd.env("SUI_SHELL_NAME", shell_attr);
+            if let Some(run_cmd) = command { cmd.args(["-c", &run_cmd]); }
+            let status = cmd.status()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        Commands::Run { installable, args } => {
+            let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&installable).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("flake ref parse: {e}") })?;
+            let result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
+            let system = current_system();
+            let attr_name = &flake_ref.attribute;
+            let program = try_navigate_program(&result, &system, attr_name).or_else(|| try_navigate_drv_path(&result, &system, attr_name)).ok_or_else(|| CliError::Orchestrate { operation: "run", message: format!("could not find apps.{system}.{attr_name}.program or packages.{system}.{attr_name}") })?;
+            let status = std::process::Command::new(&program).args(&args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
     }
 
     Ok(())
+}
+
+fn current_system() -> String {
+    if cfg!(target_os = "macos") { if cfg!(target_arch = "aarch64") { "aarch64-darwin" } else { "x86_64-darwin" } }
+    else if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" }.to_string()
+}
+
+fn extract_shell_env(value: &sui_eval::Value) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
+    if let sui_eval::Value::Attrs(attrs) = value {
+        for key in attrs.keys() {
+            if let Some(v) = attrs.get(key) {
+                if let Ok(s) = v.as_string() {
+                    match key.as_str() {
+                        "type" | "drvPath" | "outPath" | "drvAttrs" | "outputHash" | "outputHashAlgo" | "outputHashMode" | "all" | "outputs" | "args" | "builder" | "system" | "name" | "pname" | "version" | "__structuredAttrs" | "__ignoreNulls" => {}
+                        _ => { env.insert(key.clone(), s.to_string()); }
+                    }
+                }
+            }
+        }
+    }
+    env
+}
+
+fn try_navigate_program(result: &sui_eval::Value, system: &str, attr: &str) -> Option<String> {
+    sui_eval::builtins::navigate_attrs(result, &["apps", system, attr, "program"]).ok().and_then(|v| v.as_string().ok().map(|s| s.to_string()))
+}
+
+fn try_navigate_drv_path(result: &sui_eval::Value, system: &str, attr: &str) -> Option<String> {
+    let pkg = sui_eval::builtins::navigate_attrs(result, &["packages", system, attr]).ok()?;
+    if let sui_eval::Value::Attrs(attrs) = &pkg {
+        if let Some(out) = attrs.get("outPath") { if let Ok(s) = out.as_string() { return Some(format!("{}/bin/{attr}", s)); } }
+    }
+    None
 }
 
 async fn open_store() -> Result<LocalStore, CliError> {

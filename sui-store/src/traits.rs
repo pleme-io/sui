@@ -172,6 +172,26 @@ impl std::fmt::Display for GcResult {
     }
 }
 
+/// Result of store optimisation (hard-link deduplication).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[must_use]
+pub struct OptimiseResult {
+    /// Number of files that were hard-linked to deduplicate.
+    pub files_linked: u64,
+    /// Total bytes saved by deduplication.
+    pub bytes_saved: u64,
+}
+
+impl std::fmt::Display for OptimiseResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Optimise: {} files linked, {} bytes saved",
+            self.files_linked, self.bytes_saved
+        )
+    }
+}
+
 /// Information about a corrupt store path detected during verification.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[must_use]
@@ -338,6 +358,17 @@ pub trait Store: Send + Sync {
     async fn delete_path(&self, _path: &StorePath) -> StoreResult<u64> {
         Err(StoreError::NotSupported(
             "delete_path not implemented for this backend".to_string(),
+        ))
+    }
+
+    /// Optimise the store by hard-linking identical files.
+    ///
+    /// Walks all files under `/nix/store`, hashing each unique file.
+    /// When two files share the same content hash and are not already
+    /// hard-linked, replaces duplicates with hard links to save disk space.
+    async fn optimise_store(&self, _dry_run: bool) -> StoreResult<OptimiseResult> {
+        Err(StoreError::NotSupported(
+            "optimise_store not implemented for this backend".to_string(),
         ))
     }
 }
@@ -1604,6 +1635,96 @@ mod tests {
         match result.unwrap_err() {
             StoreError::NotSupported(msg) => {
                 assert!(msg.contains("delete_path"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    // ── OptimiseResult tests ────────────────────────────────────
+
+    #[test]
+    fn optimise_result_default() {
+        let result = OptimiseResult::default();
+        assert_eq!(result.files_linked, 0);
+        assert_eq!(result.bytes_saved, 0);
+    }
+
+    #[test]
+    fn optimise_result_display() {
+        let result = OptimiseResult {
+            files_linked: 42,
+            bytes_saved: 1_048_576,
+        };
+        assert_eq!(
+            result.to_string(),
+            "Optimise: 42 files linked, 1048576 bytes saved"
+        );
+    }
+
+    #[test]
+    fn optimise_result_display_zero() {
+        let result = OptimiseResult::default();
+        assert_eq!(
+            result.to_string(),
+            "Optimise: 0 files linked, 0 bytes saved"
+        );
+    }
+
+    #[test]
+    fn optimise_result_clone_eq() {
+        let a = OptimiseResult {
+            files_linked: 10,
+            bytes_saved: 5000,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn optimise_result_ne() {
+        let a = OptimiseResult {
+            files_linked: 10,
+            bytes_saved: 5000,
+        };
+        let b = OptimiseResult {
+            files_linked: 11,
+            bytes_saved: 5000,
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn optimise_result_debug() {
+        let result = OptimiseResult {
+            files_linked: 3,
+            bytes_saved: 100,
+        };
+        let debug = format!("{result:?}");
+        assert!(debug.contains("files_linked"));
+        assert!(debug.contains("bytes_saved"));
+    }
+
+    #[tokio::test]
+    async fn optimise_store_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.optimise_store(false).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("optimise_store"));
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn optimise_store_dry_run_returns_not_supported() {
+        let store = TestStore::new();
+        let result = store.optimise_store(true).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StoreError::NotSupported(msg) => {
+                assert!(msg.contains("optimise_store"));
             }
             other => panic!("expected NotSupported, got {other:?}"),
         }

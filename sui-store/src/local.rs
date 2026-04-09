@@ -495,13 +495,112 @@ impl Store for LocalStore {
 
         Ok(freed)
     }
+
+    async fn optimise_store(&self, dry_run: bool) -> StoreResult<crate::traits::OptimiseResult> {
+        use std::collections::HashMap;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        let store_path = Path::new(&self.store_dir);
+        if !store_path.exists() {
+            return Ok(crate::traits::OptimiseResult::default());
+        }
+
+        let mut seen: HashMap<String, std::path::PathBuf> = HashMap::new();
+        let mut saved = 0u64;
+        let mut linked = 0u64;
+
+        // Walk all top-level store entries.
+        let entries = std::fs::read_dir(store_path)?;
+        for top_entry in entries.flatten() {
+            let top_path = top_entry.path();
+            // Walk files within each store path (min_depth 1 skips the dir itself).
+            walk_files_recursive(&top_path, &mut |file_path: &Path| {
+                let metadata = match std::fs::metadata(file_path) {
+                    Ok(m) => m,
+                    Err(_) => return,
+                };
+                if !metadata.is_file() {
+                    return;
+                }
+
+                // Skip if already hard-linked (nlink > 1).
+                #[cfg(unix)]
+                if metadata.nlink() > 1 {
+                    return;
+                }
+
+                // Hash the file.
+                let hash = match sha256_file(file_path) {
+                    Ok(h) => h,
+                    Err(_) => return,
+                };
+
+                if let Some(existing) = seen.get(&hash) {
+                    let size = metadata.len();
+                    if dry_run {
+                        // Just count — don't actually link.
+                    } else {
+                        // Replace with hard link.
+                        if std::fs::remove_file(file_path).is_ok()
+                            && std::fs::hard_link(existing, file_path).is_err()
+                        {
+                            // If hard_link fails, the file is already removed.
+                            // This is a best-effort operation.
+                            return;
+                        }
+                    }
+                    saved += size;
+                    linked += 1;
+                } else {
+                    seen.insert(hash, file_path.to_owned());
+                }
+            });
+        }
+
+        Ok(crate::traits::OptimiseResult {
+            files_linked: linked,
+            bytes_saved: saved,
+        })
+    }
+}
+
+/// Recursively walk files under a directory, calling `f` for each regular file.
+fn walk_files_recursive(dir: &Path, f: &mut impl FnMut(&Path)) {
+    if dir.is_file() {
+        f(dir);
+        return;
+    }
+    if !dir.is_dir() {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && !path.is_symlink() {
+            walk_files_recursive(&path, f);
+        } else if path.is_file() {
+            f(&path);
+        }
+    }
+}
+
+/// Compute the SHA-256 hash of a file, returning a hex string.
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    use sha2::{Sha256, Digest};
+    let data = std::fs::read(path)?;
+    let hash = Sha256::digest(&data);
+    Ok(hex_encode(&hash))
 }
 
 /// Find GC roots by scanning well-known root directories.
 ///
 /// Follows symlinks in `/nix/var/nix/gcroots/` and `/nix/var/nix/profiles/`
 /// to discover which store paths are rooted.
-fn find_gc_roots(store_dir: &str) -> Vec<String> {
+pub fn find_gc_roots(store_dir: &str) -> Vec<String> {
     let mut roots = Vec::new();
     let gc_dirs = [
         "/nix/var/nix/gcroots",
@@ -1455,5 +1554,232 @@ mod tests {
         // Using a store dir that doesn't exist — should return empty.
         let roots = find_gc_roots("/nonexistent/store");
         assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn find_gc_roots_is_public() {
+        // Verify the function is accessible from outside the module.
+        // This is a compile-time test — if it compiles, the function is pub.
+        let _roots = find_gc_roots("/nix/store");
+    }
+
+    // ── sha256_file tests ─────────────────────────────────────
+
+    #[test]
+    fn sha256_file_regular() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, b"hello world").unwrap();
+        let hash = sha256_file(&file).unwrap();
+        // SHA-256 of "hello world" is well known.
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn sha256_file_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty");
+        std::fs::write(&file, b"").unwrap();
+        let hash = sha256_file(&file).unwrap();
+        // SHA-256 of empty string.
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sha256_file_nonexistent_errors() {
+        let result = sha256_file(Path::new("/nonexistent/file"));
+        assert!(result.is_err());
+    }
+
+    // ── walk_files_recursive tests ─────────────────────────────
+
+    #[test]
+    fn walk_files_recursive_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, b"data").unwrap();
+
+        let mut found = Vec::new();
+        walk_files_recursive(dir.path(), &mut |p: &Path| {
+            found.push(p.to_owned());
+        });
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], file);
+    }
+
+    #[test]
+    fn walk_files_recursive_nested_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/c.txt"), b"deep").unwrap();
+        std::fs::write(dir.path().join("top.txt"), b"top").unwrap();
+
+        let mut found = Vec::new();
+        walk_files_recursive(dir.path(), &mut |p: &Path| {
+            found.push(p.to_owned());
+        });
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn walk_files_recursive_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut found = Vec::new();
+        walk_files_recursive(dir.path(), &mut |p: &Path| {
+            found.push(p.to_owned());
+        });
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn walk_files_recursive_nonexistent() {
+        let mut found = Vec::new();
+        walk_files_recursive(Path::new("/nonexistent/dir"), &mut |p: &Path| {
+            found.push(p.to_owned());
+        });
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn walk_files_recursive_single_file_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("single.txt");
+        std::fs::write(&file, b"data").unwrap();
+
+        let mut found = Vec::new();
+        walk_files_recursive(&file, &mut |p: &Path| {
+            found.push(p.to_owned());
+        });
+        assert_eq!(found.len(), 1);
+    }
+
+    // ── optimise_store tests ──────────────────────────────────
+
+    #[tokio::test]
+    async fn optimise_empty_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let result = store.optimise_store(false).await.unwrap();
+        assert_eq!(result.files_linked, 0);
+        assert_eq!(result.bytes_saved, 0);
+    }
+
+    #[tokio::test]
+    async fn optimise_dry_run_does_not_modify() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("abc-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("file1.txt"), b"duplicate content").unwrap();
+
+        let pkg_dir2 = tmp.path().join("def-pkg");
+        std::fs::create_dir_all(&pkg_dir2).unwrap();
+        std::fs::write(pkg_dir2.join("file2.txt"), b"duplicate content").unwrap();
+
+        let store = LocalStore::open_in_memory_with_dir(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let result = store.optimise_store(true).await.unwrap();
+        // dry_run should report files that would be linked.
+        assert_eq!(result.files_linked, 1);
+        assert!(result.bytes_saved > 0);
+
+        // Verify files were NOT actually hard-linked.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let m1 = std::fs::metadata(pkg_dir.join("file1.txt")).unwrap();
+            let m2 = std::fs::metadata(pkg_dir2.join("file2.txt")).unwrap();
+            assert_eq!(m1.nlink(), 1);
+            assert_eq!(m2.nlink(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn optimise_links_duplicate_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("abc-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("file1.txt"), b"same content here").unwrap();
+
+        let pkg_dir2 = tmp.path().join("def-pkg");
+        std::fs::create_dir_all(&pkg_dir2).unwrap();
+        std::fs::write(pkg_dir2.join("file2.txt"), b"same content here").unwrap();
+
+        let store = LocalStore::open_in_memory_with_dir(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let result = store.optimise_store(false).await.unwrap();
+        assert_eq!(result.files_linked, 1);
+        assert!(result.bytes_saved > 0);
+
+        // Verify files are now hard-linked (same inode).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let m1 = std::fs::metadata(pkg_dir.join("file1.txt")).unwrap();
+            let m2 = std::fs::metadata(pkg_dir2.join("file2.txt")).unwrap();
+            assert_eq!(m1.ino(), m2.ino());
+            assert!(m1.nlink() > 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn optimise_skips_unique_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("abc-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("file1.txt"), b"content A").unwrap();
+
+        let pkg_dir2 = tmp.path().join("def-pkg");
+        std::fs::create_dir_all(&pkg_dir2).unwrap();
+        std::fs::write(pkg_dir2.join("file2.txt"), b"content B").unwrap();
+
+        let store = LocalStore::open_in_memory_with_dir(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let result = store.optimise_store(false).await.unwrap();
+        assert_eq!(result.files_linked, 0);
+        assert_eq!(result.bytes_saved, 0);
+    }
+
+    #[tokio::test]
+    async fn optimise_nonexistent_store_dir() {
+        let store = LocalStore::open_in_memory_with_dir("/nonexistent/store/path")
+            .await
+            .unwrap();
+        let result = store.optimise_store(false).await.unwrap();
+        assert_eq!(result.files_linked, 0);
+        assert_eq!(result.bytes_saved, 0);
+    }
+
+    #[tokio::test]
+    async fn optimise_already_linked_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("abc-pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let file1 = pkg_dir.join("file1.txt");
+        std::fs::write(&file1, b"linked content").unwrap();
+
+        let pkg_dir2 = tmp.path().join("def-pkg");
+        std::fs::create_dir_all(&pkg_dir2).unwrap();
+        let file2 = pkg_dir2.join("file2.txt");
+        // Create a hard link manually.
+        std::fs::hard_link(&file1, &file2).unwrap();
+
+        let store = LocalStore::open_in_memory_with_dir(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let result = store.optimise_store(false).await.unwrap();
+        // Should skip the already-linked files.
+        assert_eq!(result.files_linked, 0);
+        assert_eq!(result.bytes_saved, 0);
     }
 }

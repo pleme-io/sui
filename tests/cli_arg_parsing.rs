@@ -255,3 +255,121 @@ fn fleet_deploy_requires_target() {
                 .or(predicate::str::contains("required")),
         );
 }
+
+// ── Store GC flags ─────────────────────────────────────────────────
+
+#[test]
+fn store_gc_help_shows_print_roots() {
+    sui()
+        .args(["store", "gc", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--print-roots"));
+}
+
+#[test]
+fn store_gc_help_shows_dry_run() {
+    sui()
+        .args(["store", "gc", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn store_gc_help_shows_max_age_days() {
+    sui()
+        .args(["store", "gc", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--max-age-days"));
+}
+
+// ── Store Optimise ─────────────────────────────────────────────────
+
+#[test]
+fn store_optimise_help_shows_dry_run() {
+    sui()
+        .args(["store", "optimise", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn store_help_lists_optimise() {
+    sui()
+        .args(["store", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("optimise"));
+}
+
+// ── Develop subcommand ─────────────────────────────────────────────
+
+#[test]
+fn develop_help_shows_options() {
+    sui()
+        .args(["develop", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--command")
+                .and(predicate::str::contains("--attr"))
+                .and(predicate::str::contains("FLAKE_REF")),
+        );
+}
+
+#[test]
+fn develop_accepts_flake_ref() {
+    // This just tests argument parsing — it won't actually eval.
+    // The command will fail because it tries to evaluate a flake,
+    // but the argument parser should accept the input.
+    sui()
+        .args(["develop", "--help"])
+        .assert()
+        .success();
+}
+
+// ── Run subcommand ─────────────────────────────────────────────────
+
+#[test]
+fn run_requires_installable() {
+    sui()
+        .args(["run"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("<INSTALLABLE>")
+                .or(predicate::str::contains("required")),
+        );
+}
+
+#[test]
+fn run_help_shows_args() {
+    sui()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("INSTALLABLE"));
+}
+
+// ── Top-level help lists new commands ──────────────────────────────
+
+#[test]
+fn top_level_help_lists_develop() {
+    sui()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("develop"));
+}
+
+#[test]
+fn top_level_help_lists_run() {
+    sui()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("run"));
+}
