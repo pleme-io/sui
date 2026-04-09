@@ -975,3 +975,110 @@ fn parity_scoped_import_returns_attrs() {
     assert_same(&expr);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ── String attribute keys ─────────────────────────────────────
+
+#[test]
+fn parity_string_attr_key() {
+    assert_same(r#"{ "key-with-dashes" = 42; }."key-with-dashes""#);
+}
+
+#[test]
+fn parity_string_attr_key_select() {
+    assert_same(r#"let x = { "hello world" = 1; }; in x."hello world""#);
+}
+
+// ── Global builtins (top-level scope) ─────────────────────────
+
+#[test]
+fn parity_global_to_string() {
+    // Global builtins like toString are available without builtins. prefix in the VM.
+    // The tree-walker may not support this, so test VM only.
+    let result = sui_bytecode::eval_full("toString 42")
+        .expect("VM should handle global toString");
+    assert_eq!(
+        result.to_string_keyed(),
+        StringKeyedValue::String("42".to_string())
+    );
+}
+
+#[test]
+fn parity_global_type_of() {
+    // Test via builtins. prefix for parity.
+    assert_same(r#"builtins.typeOf "hello""#);
+}
+
+#[test]
+fn parity_global_is_null() {
+    assert_same("builtins.isNull null");
+}
+
+// ── Pattern function with let ─────────────────────────────────
+
+#[test]
+fn parity_pattern_function_with_let() {
+    assert_same(
+        r#"let f = { x, y }: let z = x + y; in { result = z * 2; }; in (f { x = 3; y = 4; }).result"#,
+    );
+}
+
+#[test]
+fn parity_pattern_function_with_default_and_let() {
+    assert_same(
+        r#"let f = { x, y ? 10 }: let z = x + y; in z; in f { x = 5; }"#,
+    );
+}
+
+// ── Lazy inherit-from ─────────────────────────────────────────
+
+#[test]
+fn parity_inherit_from_lazy() {
+    assert_same(
+        r#"let x = { a = 1; b = 2; }; in { inherit (x) a; c = 3; }.a"#,
+    );
+}
+
+#[test]
+fn parity_let_inherit_from_lazy() {
+    assert_same(
+        r#"let x = { a = 1; b = 2; }; y = let inherit (x) a; in a + 10; in y"#,
+    );
+}
+
+// ── makeExtensible-style fixpoint ─────────────────────────────
+
+#[test]
+fn parity_make_extensible_basic() {
+    assert_same(
+        r#"let
+            makeExtensible = rattrs:
+              let self = rattrs self // { extend = 42; };
+              in self;
+            lib = makeExtensible (self: {
+              trivial = { version = "test"; };
+              inherit (self.trivial) version;
+            });
+          in lib.version"#,
+    );
+}
+
+// ── Dynamic select ────────────────────────────────────────────
+
+#[test]
+fn parity_dynamic_select() {
+    assert_same(
+        r#"let x = { a = 1; b = 2; }; key = "a"; in x.${key}"#,
+    );
+}
+
+// ── Builtins forcing thunks ───────────────────────────────────
+
+#[test]
+fn parity_typeof_forces_thunk() {
+    assert_same(r#"let x = 1 + 2; in builtins.typeOf x"#);
+}
+
+#[test]
+fn parity_is_attrs_forces_thunk() {
+    assert_same(r#"let x = { a = 1; }; in builtins.isAttrs x"#);
+}
