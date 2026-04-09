@@ -1953,11 +1953,14 @@ impl<'a> VM<'a> {
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
 
-        let (mut chunk, _file_interner) =
-            Compiler::compile_with_base_dir(&wrapped, file_dir)
-                .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
-
-        Self::clear_key_symbol_cache(&mut chunk);
+        // Share the VM's interner so symbol IDs stay consistent.
+        let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
+        let chunk = Compiler::compile_with_shared_interner(&wrapped, file_dir, shared_interner.clone())
+            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+        *self.interner = match Rc::try_unwrap(shared_interner) {
+            Ok(cell) => cell.into_inner(),
+            Err(rc) => rc.borrow().clone(),
+        };
 
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
@@ -2331,14 +2334,15 @@ impl<'a> VM<'a> {
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
 
-        let (mut chunk, _file_interner) =
-            Compiler::compile_with_base_dir(&source, file_dir)
-                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
-
-        // Clear key_symbols cache: the file was compiled with a separate
-        // interner, so cached symbol IDs don't match the VM's interner.
-        // The VM's resolve_key_constant will re-intern from strings at runtime.
-        Self::clear_key_symbol_cache(&mut chunk);
+        // Share the VM's interner with the compiler so that symbol IDs
+        // are consistent — no need to clear key_symbols afterwards.
+        let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
+        let chunk = Compiler::compile_with_shared_interner(&source, file_dir, shared_interner.clone())
+            .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+        *self.interner = match Rc::try_unwrap(shared_interner) {
+            Ok(cell) => cell.into_inner(),
+            Err(rc) => rc.borrow().clone(),
+        };
 
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
