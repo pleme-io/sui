@@ -1024,12 +1024,22 @@ impl Compiler {
             self.add_local(name.clone())?;
         }
 
-        // Phase 2: Compile each binding's value.
+        // Phase 2: Compile each binding's value (lazy: use deferred thunks
+        // so rec attrset values are only evaluated when accessed).
+        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
+
         for (name, binding) in &bindings {
             let slot = self.find_local_slot(name);
             match binding {
                 RecAttrBinding::Value(expr) => {
-                    self.compile_expr(expr)?;
+                    if Self::is_trivial_value(expr) {
+                        self.compile_expr(expr)?;
+                    } else {
+                        let uv_descs = self.compile_thunk_deferred(expr)?;
+                        if !uv_descs.is_empty() {
+                            thunk_slots.push((slot, uv_descs));
+                        }
+                    }
                 }
                 RecAttrBinding::Inherit => {
                     // Temporarily hide this local so lookup finds the outer one.
@@ -1039,10 +1049,11 @@ impl Compiler {
                     self.locals[slot as usize].depth = saved_depth;
                 }
                 RecAttrBinding::InheritFrom(source_expr, attr_name) => {
-                    self.compile_expr(source_expr)?;
-                    let key_idx = self.add_attr_key(attr_name.clone())?;
-                    self.emit(OpCode::GetAttr);
-                    self.emit_u16(key_idx);
+                    // Wrap inherit-from in deferred thunks for laziness.
+                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
+                    if !uv_descs.is_empty() {
+                        thunk_slots.push((slot, uv_descs));
+                    }
                 }
                 RecAttrBinding::Dotted(sub_bindings) => {
                     self.compile_nested_attrset(sub_bindings)?;
@@ -1051,6 +1062,17 @@ impl Compiler {
             self.emit(OpCode::SetLocal);
             self.emit_u16(slot);
             self.emit(OpCode::Pop);
+        }
+
+        // Phase 2b: Patch thunk upvalues now that all siblings exist.
+        for (slot, uv_descs) in &thunk_slots {
+            self.emit(OpCode::PatchThunkUpvalues);
+            self.emit_u16(*slot);
+            self.emit_u16(uv_descs.len() as u16);
+            for uv in uv_descs {
+                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+                self.emit_u16(uv.index);
+            }
         }
 
         // Build the attrset from the local variables.
