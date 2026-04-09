@@ -3,6 +3,22 @@
 
 use super::*;
 
+/// Register a curried string predicate builtin (first arg is a pattern, second is the subject).
+macro_rules! register_string_predicate {
+    ($builtins:expr, $name:expr, $partial_name:expr, $check:expr) => {
+        register_builtin($builtins, $name, |args| {
+            let pattern = args[0].as_string()?.to_string();
+            Ok(Value::Builtin(BuiltinFn {
+                name: $partial_name,
+                func: Rc::new(move |args2| {
+                    let s = args2[0].as_string()?;
+                    Ok(Value::Bool($check(&pattern, s)))
+                }),
+            }))
+        });
+    };
+}
+
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toString", |args| {
         let val = &args[0];
@@ -86,26 +102,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             }),
         }))
     });
-    register_builtin(builtins, "hasPrefix", |args| {
-        let prefix = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
-            name: "hasPrefix<partial>",
-            func: Rc::new(move |args2| {
-                let s = args2[0].as_string()?;
-                Ok(Value::Bool(s.starts_with(&prefix)))
-            }),
-        }))
-    });
-    register_builtin(builtins, "hasSuffix", |args| {
-        let suffix = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
-            name: "hasSuffix<partial>",
-            func: Rc::new(move |args2| {
-                let s = args2[0].as_string()?;
-                Ok(Value::Bool(s.ends_with(&suffix)))
-            }),
-        }))
-    });
+    register_string_predicate!(builtins, "hasPrefix", "hasPrefix<partial>",
+        |prefix: &str, s: &str| s.starts_with(prefix));
+    register_string_predicate!(builtins, "hasSuffix", "hasSuffix<partial>",
+        |suffix: &str, s: &str| s.ends_with(suffix));
 
     // concatStrings — concat without separator
     register_builtin(builtins, "concatStrings", |args| {

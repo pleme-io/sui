@@ -2,16 +2,36 @@
 
 use super::*;
 
+/// Register a curried arithmetic builtin that handles Int+Float coercion.
+macro_rules! register_numeric_binop {
+    ($builtins:expr, $name:expr, $int_op:expr, $float_op:expr) => {
+        register_curried($builtins, $name, |a, b| {
+            match (a, b) {
+                (Value::Int(x), Value::Int(y)) => Ok(Value::Int($int_op(*x, *y))),
+                (Value::Float(x), Value::Float(y)) => Ok(Value::Float($float_op(*x, *y))),
+                (Value::Int(x), Value::Float(y)) => Ok(Value::Float($float_op(*x as f64, *y))),
+                (Value::Float(x), Value::Int(y)) => Ok(Value::Float($float_op(*x, *y as f64))),
+                _ => Err(EvalError::TypeError(format!(
+                    "{}: expected numbers", $name
+                ))),
+            }
+        });
+    };
+}
+
+/// Register a curried bitwise builtin operating on integers.
+macro_rules! register_bitwise {
+    ($builtins:expr, $name:expr, $op:expr) => {
+        register_curried($builtins, $name, |a, b| {
+            Ok(Value::Int($op(a.as_int()?, b.as_int()?)))
+        });
+    };
+}
+
 pub(crate) fn register(builtins: &mut NixAttrs) {
-    register_curried(builtins, "add", |a, b| {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
-            (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
-            (Value::Int(x), Value::Float(y)) => Ok(Value::Float(*x as f64 + y)),
-            (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x + *y as f64)),
-            _ => Err(EvalError::TypeError("add: expected numbers".to_string())),
-        }
-    });
+    register_numeric_binop!(builtins, "add", |a: i64, b: i64| a + b, |a: f64, b: f64| a + b);
+
+    // sub/mul/div only support Int in the current implementation.
     register_curried(builtins, "sub", |a, b| {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
@@ -56,13 +76,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     // bitAnd, bitOr, bitXor (curried)
-    register_curried(builtins, "bitAnd", |a, b| {
-        Ok(Value::Int(a.as_int()? & b.as_int()?))
-    });
-    register_curried(builtins, "bitOr", |a, b| {
-        Ok(Value::Int(a.as_int()? | b.as_int()?))
-    });
-    register_curried(builtins, "bitXor", |a, b| {
-        Ok(Value::Int(a.as_int()? ^ b.as_int()?))
-    });
+    register_bitwise!(builtins, "bitAnd", |a: i64, b: i64| a & b);
+    register_bitwise!(builtins, "bitOr",  |a: i64, b: i64| a | b);
+    register_bitwise!(builtins, "bitXor", |a: i64, b: i64| a ^ b);
 }
