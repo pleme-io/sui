@@ -1394,10 +1394,11 @@ impl Compiler {
                         func_compiler.emit(OpCode::GetAttr);
                         func_compiler.emit_u16(key_idx);
                     }
-                    // Store into the field's local slot.
+                    // Store into the field's local slot and pop the value from the stack.
                     let field_slot = func_compiler.find_local_slot(fname);
                     func_compiler.emit(OpCode::SetLocal);
                     func_compiler.emit_u16(field_slot);
+                    func_compiler.emit(OpCode::Pop);
                     let _ = i; // suppress unused
                 }
 

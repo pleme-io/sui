@@ -432,6 +432,39 @@ impl<'a> VM<'a> {
                     }
                 }
 
+                OpCode::DynGetAttr => {
+                    // Dynamic attribute access: key is on the stack (as string).
+                    let key_val = self.pop_forced()?;
+                    let attrset = self.pop_forced()?;
+                    let key_str = key_val
+                        .as_string()
+                        .ok_or_else(|| VMError::TypeError {
+                            expected: "string",
+                            got: key_val.type_name(),
+                            context: "dynamic attribute key".to_string(),
+                        })?
+                        .to_string();
+                    let key_sym = self.interner.intern(&key_str);
+                    if let Some(attrs) = attrset.as_attrs() {
+                        if let Some(val) = attrs.get(&key_sym) {
+                            let forced = if val.is_thunk() {
+                                self.force_value(val.clone())?
+                            } else {
+                                val.clone()
+                            };
+                            self.push(forced);
+                        } else {
+                            return Err(VMError::AttrNotFound(key_str));
+                        }
+                    } else {
+                        return Err(VMError::TypeError {
+                            expected: "set",
+                            got: attrset.type_name(),
+                            context: format!("dynamic select .${{{key_str}}}"),
+                        });
+                    }
+                }
+
                 // -- Lists ----------------------------------------------
                 OpCode::MakeList => {
                     let count = self.read_u16()? as usize;
@@ -525,14 +558,18 @@ impl<'a> VM<'a> {
                         }
                     } else if func.is_higher_order_builtin() {
                         let hob = func.as_higher_order_builtin().unwrap().clone();
-                        let result = self.call_higher_order_builtin(&hob, arg)?;
+                        // Force arg for higher-order builtins.
+                        let forced_arg = self.force_value(arg)?;
+                        let result = self.call_higher_order_builtin(&hob, forced_arg)?;
                         self.push(result);
                     } else if let Some(builtin) = func.as_builtin() {
+                        // Force arg before passing to builtins.
+                        let forced_arg = self.force_value(arg)?;
                         // Check for builtins that need VM-level dispatch (interner access).
-                        if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
+                        if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
                             self.push(result);
                         } else {
-                            let arg_vmval = arg.to_vmvalue();
+                            let arg_vmval = forced_arg.to_vmvalue();
                             let builtin_func = builtin.func.clone();
                             let result = self.call_builtin_with_scoped_import_dispatch(
                                 builtin_func, arg_vmval,
@@ -669,8 +706,13 @@ impl<'a> VM<'a> {
                     let builtin_idx = self.read_u16()?;
                     let arg_count = self.read_u16()? as usize;
                     let start = self.stack.len() - arg_count;
-                    let args: Vec<VMValue> =
-                        self.stack.drain(start..).map(|nb| nb.to_vmvalue()).collect();
+                    let raw_args: Vec<NanBox> = self.stack.drain(start..).collect();
+                    // Force all thunk arguments before passing to builtins.
+                    let mut args = Vec::with_capacity(raw_args.len());
+                    for raw in raw_args {
+                        let forced = self.force_value(raw)?;
+                        args.push(forced.to_vmvalue());
+                    }
                     let result = self.builtins.call(builtin_idx, args)?;
                     self.push(NanBox::from_vmvalue(&result));
                 }
@@ -1054,6 +1096,23 @@ impl<'a> VM<'a> {
             "derivation" | "derivationStrict" => {
                 let forced = self.force_value(arg.clone())?;
                 let result = self.vm_build_derivation(forced)?;
+                Ok(Some(result))
+            }
+            "import" => {
+                // `import` used as a function value (not the special Apply form).
+                let forced = self.force_value(arg.clone())?;
+                let path = if let Some(p) = forced.as_path() {
+                    p.to_string()
+                } else if let Some(s) = forced.as_string() {
+                    s.to_string()
+                } else {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: forced.type_name(),
+                        context: "import".to_string(),
+                    });
+                };
+                let result = self.import_file(&path)?;
                 Ok(Some(result))
             }
             "attrNames" => {
@@ -1889,8 +1948,16 @@ impl<'a> VM<'a> {
         // Wrap the source in `with <scope>; <source>` to inject the scope.
         let wrapped = format!("with {scope_nix}; {source}");
 
-        let (chunk, _file_interner) = Compiler::compile(&wrapped)
-            .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+        let file_dir = std::path::Path::new(&resolved)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+
+        let (mut chunk, _file_interner) =
+            Compiler::compile_with_base_dir(&wrapped, file_dir)
+                .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
+
+        Self::clear_key_symbol_cache(&mut chunk);
 
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
@@ -2214,6 +2281,23 @@ impl<'a> VM<'a> {
         }
     }
 
+    /// Recursively clear key_symbols caches in a chunk and all nested chunks
+    /// (closures/thunks in the constant pool). This forces the VM to re-intern
+    /// all attribute key strings using the VM's interner at runtime.
+    fn clear_key_symbol_cache(chunk: &mut Chunk) {
+        for sym in &mut chunk.key_symbols {
+            *sym = None;
+        }
+        // Also clear caches in nested chunks (closures/thunks in constants).
+        for constant in &mut chunk.constants {
+            if let VMValue::Closure(closure) = constant {
+                if let Some(inner_chunk) = Rc::get_mut(&mut closure.chunk) {
+                    Self::clear_key_symbol_cache(inner_chunk);
+                }
+            }
+        }
+    }
+
     // -- Import ---------------------------------------------------------
 
     /// Import a Nix file: compile it, execute it, cache the result.
@@ -2238,16 +2322,28 @@ impl<'a> VM<'a> {
             return Ok(NanBox::from_vmvalue(cached));
         }
 
-        // Read and compile.
+        // Read and compile, passing the file's directory for relative path resolution.
         let source = std::fs::read_to_string(&canonical)
             .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
 
-        let (chunk, _file_interner) = Compiler::compile(&source)
-            .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+        let file_dir = resolved
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+
+        let (mut chunk, _file_interner) =
+            Compiler::compile_with_base_dir(&source, file_dir)
+                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+
+        // Clear key_symbols cache: the file was compiled with a separate
+        // interner, so cached symbol IDs don't match the VM's interner.
+        // The VM's resolve_key_constant will re-intern from strings at runtime.
+        Self::clear_key_symbol_cache(&mut chunk);
 
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
         }
+
         let return_depth = self.frames.len();
         let stack_base = self.stack.len();
         self.frames.push(CallFrame {

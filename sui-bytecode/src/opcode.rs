@@ -103,6 +103,9 @@ pub enum OpCode {
     /// Stack order (top to bottom): default, attrset.
     /// Operand: u16 constant index for the key name.
     SelectOrDefault = 64,
+    /// Dynamic attribute access: pop string key, pop attrset, push `attrset.key`.
+    /// No inline operand — key comes from the stack at runtime.
+    DynGetAttr = 65,
 
     // ── Lists ──────────────────────────────────────────────────
     /// Pop N values, construct a list.
@@ -209,6 +212,7 @@ impl OpCode {
             62 => Some(OpCode::HasAttr),
             63 => Some(OpCode::UpdateAttrs),
             64 => Some(OpCode::SelectOrDefault),
+            65 => Some(OpCode::DynGetAttr),
             70 => Some(OpCode::MakeList),
             71 => Some(OpCode::Concat),
             80 => Some(OpCode::MakeClosure),
@@ -247,7 +251,7 @@ mod tests {
             OpCode::GetLocal, OpCode::SetLocal, OpCode::GetUpvalue, OpCode::SetUpvalue,
             OpCode::PushWith, OpCode::PopWith, OpCode::LookupWith,
             OpCode::MakeAttrs, OpCode::GetAttr, OpCode::HasAttr,
-            OpCode::UpdateAttrs, OpCode::SelectOrDefault,
+            OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr,
             OpCode::MakeList, OpCode::Concat,
             OpCode::MakeClosure, OpCode::Call, OpCode::Return,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,

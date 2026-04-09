@@ -101,6 +101,18 @@ impl BuiltinRegistry {
         let null_sym = interner.intern("null");
         attrs.insert(null_sym, VMValue::Null);
 
+        // Add builtins.storeDir
+        let store_sym = interner.intern("storeDir");
+        attrs.insert(store_sym, VMValue::String("/nix/store".to_string()));
+
+        // Add builtins.nixPath (empty list in pure eval mode)
+        let nixpath_sym = interner.intern("nixPath");
+        attrs.insert(nixpath_sym, VMValue::List(Vec::new()));
+
+        // Add builtins.currentTime (0 in pure eval mode)
+        let time_sym = interner.intern("currentTime");
+        attrs.insert(time_sym, VMValue::Int(0));
+
         VMValue::Attrs(attrs)
     }
 
@@ -813,6 +825,379 @@ impl BuiltinRegistry {
         self.register("scopedImport", 1, |_args| {
             Err(VMError::Throw(
                 "scopedImport: requires VM-level dispatch".to_string(),
+            ))
+        });
+
+        // ── Missing builtins needed for nixpkgs lib ─────────────────
+
+        // addErrorContext: in eval mode just returns the value (no-op wrapper)
+        self.register("addErrorContext", 1, |args| {
+            // Curried: addErrorContext context value → value
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "addErrorContext<partial>",
+                func: Rc::new(move |inner_args: Vec<VMValue>| Ok(inner_args[0].clone())),
+                arity: 1,
+            }))
+        });
+
+        // unsafeGetAttrPos: returns null (position info not tracked in VM)
+        self.register("unsafeGetAttrPos", 1, |_args| {
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "unsafeGetAttrPos<partial>",
+                func: Rc::new(|_args: Vec<VMValue>| Ok(VMValue::Null)),
+                arity: 1,
+            }))
+        });
+
+        // pathExists: check if a path exists on the filesystem
+        self.register("pathExists", 1, |args| {
+            let path = match &args[0] {
+                VMValue::Path(p) => p.clone(),
+                VMValue::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: other.type_name(),
+                        context: "pathExists".to_string(),
+                    })
+                }
+            };
+            Ok(VMValue::Bool(std::path::Path::new(&path).exists()))
+        });
+
+        // readFile: read contents of a file
+        self.register("readFile", 1, |args| {
+            let path = match &args[0] {
+                VMValue::Path(p) => p.clone(),
+                VMValue::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: other.type_name(),
+                        context: "readFile".to_string(),
+                    })
+                }
+            };
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| VMError::Throw(format!("readFile {path}: {e}")))?;
+            Ok(VMValue::String(content))
+        });
+
+        // readDir: list directory entries
+        self.register("readDir", 1, |args| {
+            let path = match &args[0] {
+                VMValue::Path(p) => p.clone(),
+                VMValue::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: other.type_name(),
+                        context: "readDir".to_string(),
+                    })
+                }
+            };
+            // Return empty attrs for now (VM doesn't have interner access here)
+            Err(VMError::Throw(
+                "readDir: requires VM-level dispatch for interner access".to_string(),
+            ))
+        });
+
+        // baseNameOf: extract filename from a path
+        self.register("baseNameOf", 1, |args| {
+            let path = match &args[0] {
+                VMValue::Path(p) => p.clone(),
+                VMValue::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: other.type_name(),
+                        context: "baseNameOf".to_string(),
+                    })
+                }
+            };
+            let base = std::path::Path::new(&path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            Ok(VMValue::String(base))
+        });
+
+        // dirOf: extract directory from a path
+        self.register("dirOf", 1, |args| {
+            let path = match &args[0] {
+                VMValue::Path(p) => p.clone(),
+                VMValue::String(s) => s.clone(),
+                other => {
+                    return Err(VMError::TypeError {
+                        expected: "path or string",
+                        got: other.type_name(),
+                        context: "dirOf".to_string(),
+                    })
+                }
+            };
+            let dir = std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            Ok(VMValue::String(dir))
+        });
+
+        // genericClosure: transitive closure computation
+        self.register("genericClosure", 1, |_args| {
+            Err(VMError::Throw(
+                "genericClosure: requires VM-level dispatch".to_string(),
+            ))
+        });
+
+        // placeholder: returns placeholder string for derivation outputs
+        self.register("placeholder", 1, |args| {
+            let output = match &args[0] {
+                VMValue::String(s) => s.clone(),
+                _ => "out".to_string(),
+            };
+            Ok(VMValue::String(format!("/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9/{output}")))
+        });
+
+        // split: regex split (requires VM-level dispatch for interner)
+        self.register("split", 1, |args| {
+            let _pattern = as_string(&args[0])?;
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "split<partial>",
+                func: Rc::new(|_inner_args: Vec<VMValue>| {
+                    Err(VMError::Throw("split: requires VM-level dispatch".to_string()))
+                }),
+                arity: 1,
+            }))
+        });
+
+        // match: regex match (requires VM-level dispatch for interner)
+        self.register("match", 1, |args| {
+            let _pattern = as_string(&args[0])?;
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "match<partial>",
+                func: Rc::new(|_inner_args: Vec<VMValue>| {
+                    Err(VMError::Throw("match: requires VM-level dispatch".to_string()))
+                }),
+                arity: 1,
+            }))
+        });
+
+        // fromTOML: parse a TOML string
+        self.register("fromTOML", 1, |args| {
+            let s = as_string(&args[0])?;
+            // Simple stub - would need full TOML parser
+            Err(VMError::Throw(format!("fromTOML: not yet implemented")))
+        });
+
+        // concatStrings: concatenate a list of strings (used by nixpkgs lib)
+        // Note: This isn't strictly a Nix builtin but is sometimes needed
+        // In Nix it's actually builtins.concatStringsSep "" (already registered)
+
+        // storeDir: the Nix store directory
+        // This is a constant, added in make_builtins_attrset
+
+        // fetchurl, fetchTarball, fetchGit, fetchTree stubs
+        self.register("fetchurl", 1, |_args| {
+            Err(VMError::Throw("fetchurl: not supported in eval mode".to_string()))
+        });
+        self.register("fetchTarball", 1, |_args| {
+            Err(VMError::Throw("fetchTarball: not supported in eval mode".to_string()))
+        });
+        self.register("fetchGit", 1, |_args| {
+            Err(VMError::Throw("fetchGit: not supported in eval mode".to_string()))
+        });
+        self.register("fetchTree", 1, |_args| {
+            Err(VMError::Throw("fetchTree: not supported in eval mode".to_string()))
+        });
+        self.register("fetchMercurial", 1, |_args| {
+            Err(VMError::Throw("fetchMercurial: not supported in eval mode".to_string()))
+        });
+
+        // toFile: write a file to the Nix store (stub)
+        self.register("toFile", 1, |_args| {
+            Err(VMError::Throw("toFile: not supported in eval mode".to_string()))
+        });
+
+        // toPath: convert string to path (deprecated in Nix, but used)
+        self.register("toPath", 1, |args| {
+            let s = as_string(&args[0])?;
+            Ok(VMValue::Path(s.to_string()))
+        });
+
+        // import: as a builtin value (not a special form)
+        // Already handled at the compiler level via OpCode::Import
+
+        // parseDrvName: parse a derivation name-version string
+        self.register("parseDrvName", 1, |args| {
+            let name = as_string(&args[0])?;
+            // Split at last hyphen followed by a digit
+            let mut split_pos = None;
+            let bytes = name.as_bytes();
+            for i in (0..bytes.len()).rev() {
+                if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                    split_pos = Some(i);
+                    break;
+                }
+            }
+            match split_pos {
+                Some(pos) => {
+                    Err(VMError::Throw(
+                        "parseDrvName: requires VM-level dispatch for interner access".to_string(),
+                    ))
+                }
+                None => {
+                    Err(VMError::Throw(
+                        "parseDrvName: requires VM-level dispatch for interner access".to_string(),
+                    ))
+                }
+            }
+        });
+
+        // compareVersions: compare two version strings
+        self.register("compareVersions", 1, |args| {
+            let a = as_string(&args[0])?.to_string();
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "compareVersions<partial>",
+                func: Rc::new(move |inner_args: Vec<VMValue>| {
+                    let b = as_string(&inner_args[0])?;
+                    // Simple version comparison
+                    let parts_a: Vec<&str> = a.split('.').collect();
+                    let parts_b: Vec<&str> = b.split('.').collect();
+                    let max_len = parts_a.len().max(parts_b.len());
+                    for i in 0..max_len {
+                        let pa = parts_a.get(i).unwrap_or(&"0");
+                        let pb = parts_b.get(i).unwrap_or(&"0");
+                        let na = pa.parse::<i64>().unwrap_or(0);
+                        let nb = pb.parse::<i64>().unwrap_or(0);
+                        if na < nb {
+                            return Ok(VMValue::Int(-1));
+                        }
+                        if na > nb {
+                            return Ok(VMValue::Int(1));
+                        }
+                    }
+                    Ok(VMValue::Int(0))
+                }),
+                arity: 1,
+            }))
+        });
+
+        // splitVersion: split a version string into components
+        self.register("splitVersion", 1, |args| {
+            let version = as_string(&args[0])?;
+            let parts: Vec<VMValue> = version
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .map(|s| VMValue::String(s.to_string()))
+                .collect();
+            Ok(VMValue::List(parts))
+        });
+
+        // concatStrings is used internally
+        self.register("concatStrings", 1, |args| {
+            let list = as_list(&args[0])?;
+            let mut result = String::new();
+            for item in list {
+                match item {
+                    VMValue::String(s) => result.push_str(s),
+                    _ => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: item.type_name(),
+                            context: "concatStrings element".to_string(),
+                        })
+                    }
+                }
+            }
+            Ok(VMValue::String(result))
+        });
+
+        // ── String context builtins (no-ops in eval mode) ────────────
+        // Nix string contexts track derivation dependencies. In eval-only
+        // mode, strings have no context, so these are identity/no-ops.
+        self.register("unsafeDiscardStringContext", 1, |args| {
+            // Just return the string as-is (no context to discard).
+            Ok(args[0].clone())
+        });
+        self.register("getContext", 1, |_args| {
+            // No context in eval mode — return empty attrset.
+            // Need VM dispatch for interner.
+            Err(VMError::Throw(
+                "getContext: requires VM-level dispatch for interner access".to_string(),
+            ))
+        });
+        self.register("appendContext", 1, |args| {
+            // No context to append — return string as-is.
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "appendContext<partial>",
+                func: Rc::new(move |inner_args: Vec<VMValue>| Ok(inner_args[0].clone())),
+                arity: 1,
+            }))
+        });
+        self.register("hasContext", 1, |_args| {
+            Ok(VMValue::Bool(false))
+        });
+        self.register("unsafeDiscardOutputDependency", 1, |args| {
+            Ok(args[0].clone())
+        });
+        self.register("addDrvOutputDependencies", 1, |args| {
+            Ok(args[0].clone())
+        });
+
+        // ── Path/string conversion builtins ──────────────────────────
+        self.register("storePath", 1, |args| {
+            Ok(args[0].clone())
+        });
+        self.register("isStorePath", 1, |args| {
+            let s = match &args[0] {
+                VMValue::String(s) => s.as_str(),
+                VMValue::Path(p) => p.as_str(),
+                _ => return Ok(VMValue::Bool(false)),
+            };
+            Ok(VMValue::Bool(s.starts_with("/nix/store/")))
+        });
+        self.register("hashString", 1, |args| {
+            let algo = as_string(&args[0])?.to_string();
+            Ok(VMValue::Builtin(VMBuiltin {
+                name: "hashString<partial>",
+                func: Rc::new(move |inner_args: Vec<VMValue>| {
+                    let s = as_string(&inner_args[0])?;
+                    match algo.as_str() {
+                        "sha256" => {
+                            use sha2::{Sha256, Digest};
+                            let mut hasher = Sha256::new();
+                            hasher.update(s.as_bytes());
+                            let result = hasher.finalize();
+                            let hex: String = result
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect();
+                            Ok(VMValue::String(hex))
+                        }
+                        _ => Err(VMError::Throw(format!("hashString: unsupported algorithm: {algo}")))
+                    }
+                }),
+                arity: 1,
+            }))
+        });
+        self.register("hashFile", 1, |_args| {
+            Err(VMError::Throw("hashFile: not supported in eval mode".to_string()))
+        });
+
+        // import as a value (not the special form in Apply).
+        // When used as `import path`, the compiler handles it via OpCode::Import.
+        // But when `import` is passed as a function value (e.g., `map import paths`),
+        // it needs to be callable. The VM dispatches this specially.
+        self.register("import", 1, |_args| {
+            Err(VMError::Throw(
+                "import: requires VM-level dispatch".to_string(),
+            ))
+        });
+
+        // ── Misc builtins needed by nixpkgs lib ─────────────────────
+        self.register("zipAttrsWith", 1, |_args| {
+            Err(VMError::Throw(
+                "zipAttrsWith: requires VM-level dispatch".to_string(),
             ))
         });
     }
