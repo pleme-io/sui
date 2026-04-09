@@ -25,6 +25,11 @@ struct Local {
     depth: u32,
     /// Whether this local has been captured as an upvalue by a nested function.
     is_captured: bool,
+    /// The actual stack slot (relative to frame base) where this local lives.
+    /// This may differ from the locals vector index when anonymous values
+    /// are on the stack between locals (e.g., partial application results
+    /// between a function parameter and let-binding locals).
+    slot: u16,
 }
 
 /// An upvalue descriptor: tells a closure how to capture a variable.
@@ -86,6 +91,12 @@ pub struct Compiler {
     with_depth: u32,
     /// Base directory for resolving relative paths (set when compiling imported files).
     base_dir: Option<std::path::PathBuf>,
+    /// Tracks the current stack depth relative to frame base.
+    /// Incremented on push/emit operations, decremented on pop.
+    /// Used to assign correct stack slots to local variables when
+    /// anonymous values (partial application results, etc.) sit on the
+    /// stack between named locals.
+    stack_depth: u16,
 }
 
 impl Compiler {
@@ -101,6 +112,7 @@ impl Compiler {
             enclosing: None,
             with_depth: 0,
             base_dir: None,
+            stack_depth: 0,
         }
     }
 
@@ -116,6 +128,7 @@ impl Compiler {
             enclosing: None,
             with_depth: 0,
             base_dir: None,
+            stack_depth: 0,
         }
     }
 
@@ -467,6 +480,8 @@ impl Compiler {
         } else {
             self.emit(OpCode::Interpolate);
             self.emit_u16(count);
+            // Interpolate pops count parts, pushes 1 string.
+            self.stack_depth = self.stack_depth.saturating_sub(count) + 1;
             Ok(())
         }
     }
@@ -492,7 +507,7 @@ impl Compiler {
                 // 1. Look up in locals.
                 if let Some(idx) = self.resolve_local(&name) {
                     self.emit(OpCode::GetLocal);
-                    self.emit_u16(idx);
+                    self.emit_u16(self.local_stack_slot(idx));
                     return Ok(());
                 }
                 // 2. Look up in upvalues (captures from enclosing scopes).
@@ -595,7 +610,7 @@ impl Compiler {
 
         // Phase 1: Push Null placeholders and register local slots.
         for (name, _) in &bindings {
-            self.emit(OpCode::Null);
+            self.emit(OpCode::Null); // emit() tracks stack_depth
             self.add_local(name.clone())?;
         }
 
@@ -606,7 +621,8 @@ impl Compiler {
         let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
 
         for (name, binding) in &bindings {
-            let slot = self.find_local_slot(name);
+            let local_idx = self.resolve_local(name).unwrap();
+            let slot = self.locals[local_idx as usize].slot;
             match binding {
                 LetBinding::Value(expr) => {
                     if Self::is_trivial_value(expr) {
@@ -623,11 +639,11 @@ impl Compiler {
                 }
                 LetBinding::Inherit => {
                     // Temporarily hide this local so lookup finds the outer one.
-                    let saved_depth = self.locals[slot as usize].depth;
-                    self.locals[slot as usize].depth = u32::MAX;
-                    if let Some(outer_slot) = self.resolve_local(name) {
+                    let saved_depth = self.locals[local_idx as usize].depth;
+                    self.locals[local_idx as usize].depth = u32::MAX;
+                    if let Some(outer_idx) = self.resolve_local(name) {
                         self.emit(OpCode::GetLocal);
-                        self.emit_u16(outer_slot);
+                        self.emit_u16(self.local_stack_slot(outer_idx));
                     } else if let Some(uv_idx) = self.resolve_upvalue(name) {
                         self.emit(OpCode::GetUpvalue);
                         self.emit_u16(uv_idx as u16);
@@ -636,12 +652,12 @@ impl Compiler {
                         self.emit(OpCode::LookupWith);
                         self.emit_u16(name_idx);
                     } else {
-                        self.locals[slot as usize].depth = saved_depth;
+                        self.locals[local_idx as usize].depth = saved_depth;
                         return Err(CompileError::Unsupported(format!(
                             "inherit: cannot resolve '{name}' in enclosing scope"
                         )));
                     }
-                    self.locals[slot as usize].depth = saved_depth;
+                    self.locals[local_idx as usize].depth = saved_depth;
                     self.emit(OpCode::SetLocal);
                     self.emit_u16(slot);
                     self.emit(OpCode::Pop);
@@ -723,6 +739,7 @@ impl Compiler {
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
+        self.stack_depth += 1; // MakeThunk pushes one thunk
         self.emit_u16(idx);
         self.emit_u16(0); // 0 upvalues, patched later
         Ok(uv_descs)
@@ -754,6 +771,7 @@ impl Compiler {
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
+        self.stack_depth += 1; // MakeThunk pushes one thunk
         self.emit_u16(idx);
         self.emit_u16(0); // 0 upvalues, patched later
         Ok(uv_descs)
@@ -773,6 +791,7 @@ impl Compiler {
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
+        self.stack_depth += 1; // MakeThunk pushes one thunk
         self.emit_u16(idx);
         self.emit_u16(uv_descs.len() as u16);
         for uv in &uv_descs {
@@ -933,6 +952,8 @@ impl Compiler {
 
         self.emit(OpCode::MakeAttrs);
         self.emit_u16(count);
+        // MakeAttrs pops 2*count (value+key pairs) and pushes 1 attrset.
+        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
 
         // If there were both flat/dotted and we need to merge, the MakeAttrs
         // handles it by creating one set. Dotted entries that share top-level
@@ -1020,7 +1041,7 @@ impl Compiler {
 
         // Phase 1: Allocate local slots with null placeholders.
         for (name, _) in &bindings {
-            self.emit(OpCode::Null);
+            self.emit(OpCode::Null); // emit() tracks stack_depth
             self.add_local(name.clone())?;
         }
 
@@ -1029,7 +1050,8 @@ impl Compiler {
         let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
 
         for (name, binding) in &bindings {
-            let slot = self.find_local_slot(name);
+            let local_idx = self.resolve_local(name).unwrap();
+            let slot = self.locals[local_idx as usize].slot;
             match binding {
                 RecAttrBinding::Value(expr) => {
                     if Self::is_trivial_value(expr) {
@@ -1043,10 +1065,10 @@ impl Compiler {
                 }
                 RecAttrBinding::Inherit => {
                     // Temporarily hide this local so lookup finds the outer one.
-                    let saved_depth = self.locals[slot as usize].depth;
-                    self.locals[slot as usize].depth = u32::MAX;
-                    self.emit_variable_load_restore(name, slot, saved_depth)?;
-                    self.locals[slot as usize].depth = saved_depth;
+                    let saved_depth = self.locals[local_idx as usize].depth;
+                    self.locals[local_idx as usize].depth = u32::MAX;
+                    self.emit_variable_load_restore(name, local_idx, saved_depth)?;
+                    self.locals[local_idx as usize].depth = saved_depth;
                 }
                 RecAttrBinding::InheritFrom(source_expr, attr_name) => {
                     // Wrap inherit-from in deferred thunks for laziness.
@@ -1084,6 +1106,8 @@ impl Compiler {
         }
         self.emit(OpCode::MakeAttrs);
         self.emit_u16(binding_count);
+        // MakeAttrs pops 2*count and pushes 1.
+        self.stack_depth = self.stack_depth.saturating_sub(2 * binding_count) + 1;
 
         // Clean up scope: move the attrset result down past the locals.
         self.end_scope(binding_count);
@@ -1132,14 +1156,15 @@ impl Compiler {
 
         self.emit(OpCode::MakeAttrs);
         self.emit_u16(count);
+        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
         Ok(())
     }
 
     /// Emit a variable load for a name (local, upvalue, or with-scope).
     fn emit_variable_load(&mut self, name: &str) -> Result<(), CompileError> {
-        if let Some(slot) = self.resolve_local(name) {
+        if let Some(idx) = self.resolve_local(name) {
             self.emit(OpCode::GetLocal);
-            self.emit_u16(slot);
+            self.emit_u16(self.local_stack_slot(idx));
         } else if let Some(uv_idx) = self.resolve_upvalue(name) {
             self.emit(OpCode::GetUpvalue);
             self.emit_u16(uv_idx as u16);
@@ -1156,15 +1181,16 @@ impl Compiler {
     }
 
     /// Emit variable load, restoring local depth on error.
+    /// `local_idx` is the index into `self.locals` (for error recovery).
     fn emit_variable_load_restore(
         &mut self,
         name: &str,
-        slot: u16,
+        local_idx: u16,
         saved_depth: u32,
     ) -> Result<(), CompileError> {
-        if let Some(outer_slot) = self.resolve_local(name) {
+        if let Some(outer_idx) = self.resolve_local(name) {
             self.emit(OpCode::GetLocal);
-            self.emit_u16(outer_slot);
+            self.emit_u16(self.local_stack_slot(outer_idx));
         } else if let Some(uv_idx) = self.resolve_upvalue(name) {
             self.emit(OpCode::GetUpvalue);
             self.emit_u16(uv_idx as u16);
@@ -1173,7 +1199,7 @@ impl Compiler {
             self.emit(OpCode::LookupWith);
             self.emit_u16(name_idx);
         } else {
-            self.locals[slot as usize].depth = saved_depth;
+            self.locals[local_idx as usize].depth = saved_depth;
             return Err(CompileError::Unsupported(format!(
                 "inherit: cannot resolve '{name}' in enclosing scope"
             )));
@@ -1187,7 +1213,8 @@ impl Compiler {
     fn try_resolve_as_local(&self, expr: &ast::Expr) -> Option<u16> {
         if let ast::Expr::Ident(id) = expr {
             let name = ident_text(id);
-            self.resolve_local(&name)
+            let idx = self.resolve_local(&name)?;
+            Some(self.local_stack_slot(idx))
         } else {
             None
         }
@@ -1355,6 +1382,8 @@ impl Compiler {
         func_compiler.scope_depth = 1; // function body is its own scope
         // Link to enclosing compiler for upvalue resolution.
         func_compiler.enclosing = Some(self as *mut Compiler);
+        // The function argument will be at slot 0 (pushed by VM Call handler).
+        func_compiler.stack_depth = 1;
 
         let (arity, name) = match &param {
             ast::Param::IdentParam(ip) => {
@@ -1395,7 +1424,7 @@ impl Compiler {
 
                 // Push local slots for each pattern field.
                 for (fname, _) in &field_names {
-                    func_compiler.emit(OpCode::Null);
+                    func_compiler.emit(OpCode::Null); // emit() tracks stack_depth
                     func_compiler.add_local(fname.clone())?;
                 }
 
@@ -1451,6 +1480,7 @@ impl Compiler {
             // Emit MakeClosure with upvalue descriptors.
             let idx = self.chunk.add_constant(closure)?;
             self.emit(OpCode::MakeClosure);
+            self.stack_depth += 1; // MakeClosure pushes the closure
             self.emit_u16(idx);
             // Emit upvalue count as u16.
             self.emit_u16(upvalue_count as u16);
@@ -1640,6 +1670,8 @@ impl Compiler {
         }
         self.emit(OpCode::MakeList);
         self.emit_u16(count);
+        // MakeList pops count elements, pushes 1 list.
+        self.stack_depth = self.stack_depth.saturating_sub(count) + 1;
         Ok(())
     }
 
@@ -1647,7 +1679,71 @@ impl Compiler {
 
     fn emit(&mut self, op: OpCode) {
         self.chunk.write_op(op, self.current_line);
+        // Track stack depth for correct local-variable slot assignment.
+        match op {
+            // Push one value
+            OpCode::Null | OpCode::True | OpCode::False
+            | OpCode::GetLocal | OpCode::GetUpvalue
+            | OpCode::PushBuiltins | OpCode::LookupWith
+            | OpCode::Import => {
+                self.stack_depth += 1;
+            }
+            // Pop one value
+            OpCode::Pop | OpCode::PushWith
+            | OpCode::Assert | OpCode::Return => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // Pop 2, push 1 (net -1)
+            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
+            | OpCode::Equal | OpCode::NotEqual | OpCode::Less
+            | OpCode::Greater | OpCode::LessEqual | OpCode::GreaterEqual
+            | OpCode::And | OpCode::Or | OpCode::Implication
+            | OpCode::Concat | OpCode::UpdateAttrs
+            | OpCode::Call | OpCode::DynGetAttr => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // Pop 1, push 1 (net 0)
+            OpCode::Negate | OpCode::Not | OpCode::Force
+            | OpCode::GetAttr | OpCode::HasAttr => {}
+            // SetLocal: no stack change (writes to slot)
+            OpCode::SetLocal | OpCode::SetUpvalue => {}
+            // PopWith: removes from with-scope stack, not value stack
+            OpCode::PopWith => {}
+            // Jump: no stack change
+            OpCode::Jump => {}
+            // JumpIfFalse/JumpIfTrue: pop condition
+            OpCode::JumpIfFalse | OpCode::JumpIfTrue => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // SelectOrDefault: pop 2 (default + attrset), push 1 (net -1)
+            OpCode::SelectOrDefault => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // GetLocalAttr: push 1 (fused GetLocal+GetAttr: push local, get attr = net +1)
+            OpCode::GetLocalAttr => {
+                self.stack_depth += 1;
+            }
+            // GetLocalCall: pop 1 arg, get local, call (push local then pop 2 push 1 = net -1 from the arg)
+            OpCode::GetLocalCall => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // CallBuiltin: handled in emit_u16 for arg count
+            OpCode::CallBuiltin => {
+                self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // Complex opcodes with inline operands: handled by callers
+            // MakeAttrs: pops 2*count, pushes 1 (handled by caller)
+            // MakeList: pops count, pushes 1 (handled by caller)
+            // MakeClosure: pushes 1 (handled by caller)
+            // MakeThunk: pushes 1 (handled by caller)
+            // Interpolate: pops count, pushes 1 (handled by caller)
+            // PatchThunkUpvalues: no stack change
+            OpCode::Constant | OpCode::MakeAttrs | OpCode::MakeList
+            | OpCode::MakeClosure | OpCode::MakeThunk
+            | OpCode::Interpolate | OpCode::PatchThunkUpvalues => {}
+        }
     }
+
 
     fn emit_u16(&mut self, value: u16) {
         self.chunk.write_u16(value, self.current_line);
@@ -1656,6 +1752,7 @@ impl Compiler {
     fn emit_constant(&mut self, value: VMValue) -> Result<(), CompileError> {
         let idx = self.chunk.add_constant(value)?;
         self.emit(OpCode::Constant);
+        self.stack_depth += 1; // Constant pushes one value
         self.emit_u16(idx);
         Ok(())
     }
@@ -1764,12 +1861,19 @@ impl Compiler {
         // Perfect.
 
         if binding_count > 0 {
-            let base_slot = self.locals.len() as u16 - binding_count;
+            // Use the first local's actual stack slot (not locals vector index)
+            // to correctly handle cases where anonymous values sit on the
+            // stack between the frame base and the scope's locals.
+            let first_local_idx = self.locals.len() - binding_count as usize;
+            let base_slot = self.locals[first_local_idx].slot;
             self.emit(OpCode::SetLocal);
             self.emit_u16(base_slot);
             for _ in 0..binding_count {
                 self.emit(OpCode::Pop);
             }
+            // Update stack_depth: we removed binding_count stack entries
+            // but the body result now sits at base_slot.
+            self.stack_depth = base_slot + 1;
         }
 
         // Remove locals from the compiler's tracking.
@@ -1787,11 +1891,15 @@ impl Compiler {
         if self.locals.len() >= u16::MAX as usize {
             return Err(CompileError::TooManyLocals);
         }
-        let slot = self.locals.len() as u16;
+        // The local's stack slot is the current stack_depth minus 1,
+        // because the value (e.g. Null placeholder) was already pushed
+        // onto the stack before add_local is called.
+        let slot = self.stack_depth - 1;
         self.locals.push(Local {
             name,
             depth: self.scope_depth,
             is_captured: false,
+            slot,
         });
         Ok(slot)
     }
@@ -1807,10 +1915,18 @@ impl Compiler {
         None
     }
 
-    /// Find the slot of a local by name (must exist).
+    /// Get the actual VM stack slot for a local at the given locals-vector index.
+    fn local_stack_slot(&self, locals_idx: u16) -> u16 {
+        self.locals[locals_idx as usize].slot
+    }
+
+    /// Find the VM stack slot of a local by name (must exist).
+    /// Returns the actual stack position (relative to frame base),
+    /// which may differ from the locals-vector index.
     fn find_local_slot(&self, name: &str) -> u16 {
-        self.resolve_local(name)
-            .unwrap_or_else(|| panic!("local '{name}' not found"))
+        let idx = self.resolve_local(name)
+            .unwrap_or_else(|| panic!("local '{name}' not found"));
+        self.locals[idx as usize].slot
     }
 
     /// Add an upvalue to this compiler's upvalue list.
@@ -1845,7 +1961,9 @@ impl Compiler {
         // Try to find as a local in the enclosing scope.
         if let Some(local_idx) = enclosing.resolve_local(name) {
             enclosing.locals[local_idx as usize].is_captured = true;
-            return Some(self.add_upvalue(true, local_idx).ok()?);
+            // Store the actual stack slot (not locals index) for the VM.
+            let stack_slot = enclosing.locals[local_idx as usize].slot;
+            return Some(self.add_upvalue(true, stack_slot).ok()?);
         }
 
         // Try to find as an upvalue in the enclosing scope (recursive).
