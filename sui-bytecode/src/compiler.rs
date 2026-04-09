@@ -84,6 +84,8 @@ pub struct Compiler {
     enclosing: Option<*mut Compiler>,
     /// Whether this compiler has any `with` scopes active (used for variable resolution).
     with_depth: u32,
+    /// Base directory for resolving relative paths (set when compiling imported files).
+    base_dir: Option<std::path::PathBuf>,
 }
 
 impl Compiler {
@@ -98,6 +100,7 @@ impl Compiler {
             interner: Rc::new(RefCell::new(Interner::new())),
             enclosing: None,
             with_depth: 0,
+            base_dir: None,
         }
     }
 
@@ -112,7 +115,58 @@ impl Compiler {
             interner,
             enclosing: None,
             with_depth: 0,
+            base_dir: None,
         }
+    }
+
+    /// Compile a Nix expression string into bytecode and an interner,
+    /// resolving relative paths against the given base directory.
+    pub fn compile_with_base_dir(
+        input: &str,
+        base_dir: std::path::PathBuf,
+    ) -> Result<(Chunk, Interner), CompileError> {
+        let parse = rnix::Root::parse(input);
+        if !parse.errors().is_empty() {
+            let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
+            return Err(CompileError::ParseError(msgs.join("; ")));
+        }
+        let root = parse.tree();
+        let expr = root
+            .expr()
+            .ok_or_else(|| CompileError::ParseError("empty expression".to_string()))?;
+        let mut compiler = Self::new();
+        compiler.base_dir = Some(base_dir);
+        compiler.compile_expr(&expr)?;
+        compiler.emit(OpCode::Return);
+        let interner = match Rc::try_unwrap(compiler.interner) {
+            Ok(cell) => cell.into_inner(),
+            Err(rc) => (*rc).borrow().clone(),
+        };
+        Ok((compiler.chunk, interner))
+    }
+
+    /// Compile using a shared interner and base directory.
+    /// Used when importing files from within the VM so that symbol IDs
+    /// are consistent with the VM's interner.
+    pub fn compile_with_shared_interner(
+        input: &str,
+        base_dir: std::path::PathBuf,
+        interner: Rc<RefCell<Interner>>,
+    ) -> Result<Chunk, CompileError> {
+        let parse = rnix::Root::parse(input);
+        if !parse.errors().is_empty() {
+            let msgs: Vec<String> = parse.errors().iter().map(|e| e.to_string()).collect();
+            return Err(CompileError::ParseError(msgs.join("; ")));
+        }
+        let root = parse.tree();
+        let expr = root
+            .expr()
+            .ok_or_else(|| CompileError::ParseError("empty expression".to_string()))?;
+        let mut compiler = Self::with_interner(interner);
+        compiler.base_dir = Some(base_dir);
+        compiler.compile_expr(&expr)?;
+        compiler.emit(OpCode::Return);
+        Ok(compiler.chunk)
     }
 
     /// Compile a Nix expression string into bytecode and an interner.
@@ -338,7 +392,10 @@ impl Compiler {
             }
             ast::Expr::PathRel(p) => {
                 let text = p.syntax().text().to_string();
-                self.emit_constant(VMValue::Path(text))
+                // Resolve relative paths against base_dir when available,
+                // or propagate from enclosing compiler.
+                let resolved = self.resolve_relative_path(&text);
+                self.emit_constant(VMValue::Path(resolved))
             }
             ast::Expr::PathHome(p) => {
                 let text = p.syntax().text().to_string();
@@ -449,9 +506,15 @@ impl Compiler {
                     self.emit(OpCode::PushBuiltins);
                     return Ok(());
                 }
-                // 4. `import` is a global — treated as a special form
-                //    in compile_apply, but if referenced as a bare value,
-                //    it's an error for now.
+                // 4. Global builtins available without `builtins.` prefix.
+                //    In Nix, these are automatically in scope.
+                if is_global_builtin(&name) {
+                    self.emit(OpCode::PushBuiltins);
+                    let key_idx = self.add_attr_key(name)?;
+                    self.emit(OpCode::GetAttr);
+                    self.emit_u16(key_idx);
+                    return Ok(());
+                }
                 // 5. Look up in with-scope (dynamic scope).
                 if self.has_with_scope() {
                     let name_idx = self.chunk.add_constant(VMValue::String(name))?;
@@ -513,6 +576,20 @@ impl Compiler {
             }
         }
 
+        // Static cycle detection: check for `name = name;` patterns.
+        {
+            let pairs: Vec<(String, &ast::Expr)> = bindings
+                .iter()
+                .filter_map(|(name, binding)| match binding {
+                    LetBinding::Value(expr) => Some((name.clone(), expr as &ast::Expr)),
+                    _ => None,
+                })
+                .collect();
+            for warning in detect_trivial_cycles(&pairs) {
+                eprintln!("{warning}");
+            }
+        }
+
         let binding_count = u16::try_from(bindings.len())
             .map_err(|_| CompileError::TooManyLocals)?;
 
@@ -570,11 +647,13 @@ impl Compiler {
                     self.emit(OpCode::Pop);
                 }
                 LetBinding::InheritFrom(source_expr, attr_name) => {
-                    // Compile source, then GetAttr.
-                    self.compile_expr(source_expr)?;
-                    let key_idx = self.add_attr_key(attr_name.clone())?;
-                    self.emit(OpCode::GetAttr);
-                    self.emit_u16(key_idx);
+                    // Wrap inherit-from in a thunk to avoid forcing the
+                    // source expression at let-binding time (critical for
+                    // fixpoint patterns like nixpkgs lib's inherit (lib.trivial)).
+                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
+                    if !uv_descs.is_empty() {
+                        thunk_slots.push((slot, uv_descs));
+                    }
                     self.emit(OpCode::SetLocal);
                     self.emit_u16(slot);
                     self.emit(OpCode::Pop);
@@ -649,6 +728,37 @@ impl Compiler {
         Ok(uv_descs)
     }
 
+    /// Compile a deferred thunk for `inherit (source) name;` in let bindings.
+    /// Like `compile_thunk_deferred`, but emits source + GetAttr(name) + Return.
+    fn compile_inherit_from_thunk_deferred(
+        &mut self,
+        source_expr: &ast::Expr,
+        attr_name: &str,
+    ) -> Result<Vec<UpvalueDesc>, CompileError> {
+        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+        tc.scope_depth = 1;
+        tc.enclosing = Some(self as *mut Compiler);
+        tc.with_depth = self.with_depth;
+        tc.base_dir = self.base_dir.clone();
+        tc.compile_expr(source_expr)?;
+        let key_idx = tc.add_attr_key(attr_name.to_string())?;
+        tc.emit(OpCode::GetAttr);
+        tc.emit_u16(key_idx);
+        tc.emit(OpCode::Return);
+        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
+        let closure = VMValue::Closure(VMClosure {
+            chunk: Rc::new(tc.chunk),
+            upvalues: Vec::new(),
+            arity: 0,
+            name: None,
+        });
+        let idx = self.chunk.add_constant(closure)?;
+        self.emit(OpCode::MakeThunk);
+        self.emit_u16(idx);
+        self.emit_u16(0); // 0 upvalues, patched later
+        Ok(uv_descs)
+    }
+
     /// Compile a thunk with upvalues captured immediately (for non-rec attrsets).
     fn compile_thunk_immediate(&mut self, expr: &ast::Expr) -> Result<(), CompileError> {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
@@ -667,6 +777,42 @@ impl Compiler {
         self.emit_u16(uv_descs.len() as u16);
         for uv in &uv_descs {
             self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+            self.emit_u16(uv.index);
+        }
+        Ok(())
+    }
+
+    /// Compile `inherit (source) name;` as a lazy thunk.
+    /// The thunk evaluates `source` and then does `GetAttr(name)` when forced.
+    fn compile_inherit_from_thunk(
+        &mut self,
+        source_expr: &ast::Expr,
+        attr_name: &str,
+    ) -> Result<(), CompileError> {
+        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+        tc.scope_depth = 1;
+        tc.enclosing = Some(self as *mut Compiler);
+        tc.with_depth = self.with_depth;
+        // Emit: compile source expr, GetAttr(name), Return
+        tc.compile_expr(source_expr)?;
+        let key_idx = tc.add_attr_key(attr_name.to_string())?;
+        tc.emit(OpCode::GetAttr);
+        tc.emit_u16(key_idx);
+        tc.emit(OpCode::Return);
+        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
+        let closure = VMValue::Closure(VMClosure {
+            chunk: Rc::new(tc.chunk),
+            upvalues: Vec::new(),
+            arity: 0,
+            name: None,
+        });
+        let idx = self.chunk.add_constant(closure)?;
+        self.emit(OpCode::MakeThunk);
+        self.emit_u16(idx);
+        self.emit_u16(uv_descs.len() as u16);
+        for uv in &uv_descs {
+            self.chunk
+                .write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
             self.emit_u16(uv.index);
         }
         Ok(())
@@ -762,14 +908,14 @@ impl Compiler {
             count += 1;
         }
 
-        // Emit inherit entries.
+        // Emit inherit entries (lazy: wrap inherit-from in thunks to avoid
+        // forcing the source expression at attrset construction time).
         for (name, source_expr) in &inherit_entries {
             if let Some(src) = source_expr {
-                // inherit (source) name; — compile source, then GetAttr.
-                self.compile_expr(src)?;
-                let key_idx = self.add_attr_key(name.clone())?;
-                self.emit(OpCode::GetAttr);
-                self.emit_u16(key_idx);
+                // inherit (source) name; — wrap in a thunk that evaluates
+                // source.name lazily (critical for fixpoint patterns like
+                // makeExtensible where the source references `self`).
+                self.compile_inherit_from_thunk(src, name)?;
             } else {
                 // inherit name; — look up in current scope.
                 self.emit_variable_load(name)?;
@@ -853,6 +999,20 @@ impl Compiler {
         // Add dotted entries as bindings.
         for (top_key, sub) in &dotted_entries {
             bindings.push((top_key.clone(), RecAttrBinding::Dotted(sub.clone())));
+        }
+
+        // Static cycle detection: check for `name = name;` patterns in rec bindings.
+        {
+            let pairs: Vec<(String, &ast::Expr)> = bindings
+                .iter()
+                .filter_map(|(name, binding)| match binding {
+                    RecAttrBinding::Value(expr) => Some((name.clone(), expr as &ast::Expr)),
+                    _ => None,
+                })
+                .collect();
+            for warning in detect_trivial_cycles(&pairs) {
+                eprintln!("{warning}");
+            }
         }
 
         let binding_count = u16::try_from(bindings.len())
@@ -1022,18 +1182,23 @@ impl Compiler {
         let segments: Vec<_> = attrpath.attrs().collect();
 
         if let Some(default_expr) = sel.default_expr() {
-            // `expr.key or default` — use SelectOrDefault for the last segment.
+            // `expr.key or default` — use SelectOrDefault for the last (static) segment.
             self.compile_expr(&base)?;
             for (i, attr) in segments.iter().enumerate() {
-                let key = static_attr_name(attr)?;
-                let key_idx = self.add_attr_key(key)?;
-                if i == segments.len() - 1 {
-                    self.compile_expr(&default_expr)?;
-                    self.emit(OpCode::SelectOrDefault);
-                    self.emit_u16(key_idx);
+                if let Ok(key) = static_attr_name(attr) {
+                    let key_idx = self.add_attr_key(key)?;
+                    if i == segments.len() - 1 {
+                        self.compile_expr(&default_expr)?;
+                        self.emit(OpCode::SelectOrDefault);
+                        self.emit_u16(key_idx);
+                    } else {
+                        self.emit(OpCode::GetAttr);
+                        self.emit_u16(key_idx);
+                    }
                 } else {
-                    self.emit(OpCode::GetAttr);
-                    self.emit_u16(key_idx);
+                    // Dynamic segment: compile key expression, use DynGetAttr.
+                    self.compile_dynamic_attr_key(attr)?;
+                    self.emit(OpCode::DynGetAttr);
                 }
             }
         } else {
@@ -1042,28 +1207,55 @@ impl Compiler {
             let local_slot = self.try_resolve_as_local(&base);
 
             for (i, attr) in segments.iter().enumerate() {
-                let key = static_attr_name(attr)?;
-                let key_idx = self.add_attr_key(key)?;
+                if let Ok(key) = static_attr_name(attr) {
+                    let key_idx = self.add_attr_key(key)?;
 
-                if i == 0 {
-                    if let Some(slot) = local_slot {
-                        // Fused GetLocal + GetAttr.
-                        self.emit(OpCode::GetLocalAttr);
-                        self.emit_u16(slot);
-                        self.emit_u16(key_idx);
+                    if i == 0 {
+                        if let Some(slot) = local_slot {
+                            // Fused GetLocal + GetAttr.
+                            self.emit(OpCode::GetLocalAttr);
+                            self.emit_u16(slot);
+                            self.emit_u16(key_idx);
+                        } else {
+                            self.compile_expr(&base)?;
+                            self.emit(OpCode::GetAttr);
+                            self.emit_u16(key_idx);
+                        }
                     } else {
-                        self.compile_expr(&base)?;
                         self.emit(OpCode::GetAttr);
                         self.emit_u16(key_idx);
                     }
                 } else {
-                    self.emit(OpCode::GetAttr);
-                    self.emit_u16(key_idx);
+                    // Dynamic segment: compile base if needed, then key, then DynGetAttr.
+                    if i == 0 {
+                        self.compile_expr(&base)?;
+                    }
+                    self.compile_dynamic_attr_key(attr)?;
+                    self.emit(OpCode::DynGetAttr);
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Compile a dynamic attribute key (interpolated string or dynamic expr).
+    fn compile_dynamic_attr_key(&mut self, attr: &ast::Attr) -> Result<(), CompileError> {
+        match attr {
+            ast::Attr::Dynamic(d) => {
+                let expr = d.expr().ok_or_else(|| {
+                    CompileError::MissingNode("dynamic attr key expr".to_string())
+                })?;
+                self.compile_expr(&expr)
+            }
+            ast::Attr::Str(s) => {
+                let key_expr = ast::Expr::Str(s.clone());
+                self.compile_expr(&key_expr)
+            }
+            ast::Attr::Ident(ident) => {
+                self.emit_constant(VMValue::String(ident_text(ident)))
+            }
+        }
     }
 
     // ── HasAttr (expr ? key) ───────────────────────────────────
@@ -1659,6 +1851,19 @@ impl Compiler {
         }
         false
     }
+
+    /// Resolve a relative path against the base directory.
+    /// Walks the enclosing compiler chain to find a base_dir.
+    fn resolve_relative_path(&self, rel_path: &str) -> String {
+        if let Some(ref base) = self.base_dir {
+            return base.join(rel_path).to_string_lossy().to_string();
+        }
+        if let Some(enclosing_ptr) = self.enclosing {
+            let enclosing = unsafe { &*enclosing_ptr };
+            return enclosing.resolve_relative_path(rel_path);
+        }
+        rel_path.to_string()
+    }
 }
 
 // ── Helper functions ───────────────────────────────────────────
@@ -1671,14 +1876,83 @@ fn ident_text(ident: &ast::Ident) -> String {
         .unwrap_or_default()
 }
 
-/// Extract a static attribute name (identifier, not dynamic/interpolated).
+/// Extract a static attribute name (identifier or plain string literal).
+/// Rejects dynamic/interpolated keys.
 fn static_attr_name(attr: &ast::Attr) -> Result<String, CompileError> {
     match attr {
         ast::Attr::Ident(ident) => Ok(ident_text(ident)),
-        ast::Attr::Dynamic(_) | ast::Attr::Str(_) => Err(CompileError::Unsupported(
-            "dynamic or string attribute keys".to_string(),
+        ast::Attr::Str(s) => {
+            // Handle plain string keys like { "key-with-dashes" = value; }
+            let parts: Vec<_> = s.normalized_parts().into_iter().collect();
+            if parts.len() == 1 {
+                if let InterpolPart::Literal(text) = &parts[0] {
+                    return Ok(text.to_string());
+                }
+            }
+            Err(CompileError::Unsupported(
+                "interpolated string attribute keys".to_string(),
+            ))
+        }
+        ast::Attr::Dynamic(_) => Err(CompileError::Unsupported(
+            "dynamic attribute keys".to_string(),
         )),
     }
+}
+
+/// Check if a name is a Nix global builtin (available without `builtins.` prefix).
+fn is_global_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "abort"
+            | "baseNameOf"
+            | "break"
+            | "derivation"
+            | "derivationStrict"
+            | "dirOf"
+            | "fetchGit"
+            | "fetchMercurial"
+            | "fetchTarball"
+            | "fetchTree"
+            | "fromTOML"
+            | "import"
+            | "isNull"
+            | "map"
+            | "placeholder"
+            | "removeAttrs"
+            | "scopedImport"
+            | "throw"
+            | "toString"
+            | "trace"
+            | "typeOf"
+            | "seq"
+            | "deepSeq"
+            | "tryEval"
+            | "genericClosure"
+            | "addErrorContext"
+            | "unsafeGetAttrPos"
+            | "isPath"
+            | "isFloat"
+            | "isInt"
+            | "isBool"
+            | "isString"
+            | "isList"
+            | "isAttrs"
+            | "isFunction"
+            | "functionArgs"
+            | "pathExists"
+            | "readFile"
+            | "readDir"
+            | "toFile"
+            | "toPath"
+            | "fromJSON"
+            | "toJSON"
+            | "storeDir"
+            | "nixVersion"
+            | "nixPath"
+            | "currentSystem"
+            | "currentTime"
+            | "langVersion"
+    )
 }
 
 /// Get the source line number for an expression (approximate).
@@ -1688,6 +1962,30 @@ fn line_of(expr: &ast::Expr) -> u32 {
     let offset = AstNode::syntax(expr).text_range().start();
     // Use offset as a rough line proxy.
     u32::from(offset)
+}
+
+/// Detect trivial self-referential cycles in let/rec bindings.
+///
+/// Checks whether any binding `name = name;` directly references itself
+/// via a bare identifier. This is always an infinite recursion in `rec`
+/// blocks and usually one in `let` blocks (since the binding shadows
+/// any outer definition of the same name).
+///
+/// Returns a list of warning messages for each detected cycle.
+fn detect_trivial_cycles(bindings: &[(String, &ast::Expr)]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (name, expr) in bindings {
+        if let ast::Expr::Ident(id) = expr {
+            if id
+                .ident_token()
+                .map(|t| t.text() == name.as_str())
+                .unwrap_or(false)
+            {
+                warnings.push(format!("warning: `{name}` directly references itself"));
+            }
+        }
+    }
+    warnings
 }
 
 #[cfg(test)]
@@ -1914,5 +2212,52 @@ mod tests {
         let chunk = compile(r#"let x = "world"; in "hello ${x}""#);
         // Should contain Interpolate opcode.
         assert!(chunk.code.contains(&(OpCode::Interpolate as u8)));
+    }
+
+    // ── Static cycle detection ──────────────────────────────
+
+    #[test]
+    fn detect_trivial_self_reference() {
+        let root = rnix::Root::parse("x");
+        let expr = root.tree().expr().unwrap();
+        let bindings = vec![("x".to_string(), &expr)];
+        let warnings = detect_trivial_cycles(&bindings);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("directly references itself"));
+    }
+
+    #[test]
+    fn detect_no_false_positive() {
+        let root = rnix::Root::parse("y");
+        let expr = root.tree().expr().unwrap();
+        let bindings = vec![("x".to_string(), &expr)];
+        let warnings = detect_trivial_cycles(&bindings);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn detect_non_ident_no_warning() {
+        let root = rnix::Root::parse("1 + 2");
+        let expr = root.tree().expr().unwrap();
+        let bindings = vec![("x".to_string(), &expr)];
+        let warnings = detect_trivial_cycles(&bindings);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn detect_trivial_cycles_multiple() {
+        let root_x = rnix::Root::parse("x");
+        let expr_x = root_x.tree().expr().unwrap();
+        let root_y = rnix::Root::parse("y");
+        let expr_y = root_y.tree().expr().unwrap();
+        let root_z = rnix::Root::parse("1");
+        let expr_z = root_z.tree().expr().unwrap();
+        let bindings = vec![
+            ("x".to_string(), &expr_x),
+            ("y".to_string(), &expr_y),
+            ("z".to_string(), &expr_z),
+        ];
+        let warnings = detect_trivial_cycles(&bindings);
+        assert_eq!(warnings.len(), 2);
     }
 }
