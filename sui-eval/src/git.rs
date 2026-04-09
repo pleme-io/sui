@@ -259,71 +259,37 @@ pub fn ls_remote(url: &str, ref_name: &str) -> Result<String, String> {
         return ls_remote_local(Path::new(path), ref_name);
     }
 
-    // For network URLs, use the remote API
-    let tmp = std::env::temp_dir().join(format!(
-        "sui_ls_remote_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp)
-        .map_err(|e| format!("create temp dir: {e}"))?;
+    // For network URLs, use git CLI (gix's remote connect panics on
+    // background threads in our edition-2024 fork).
+    let output = std::process::Command::new("git")
+        .args(["ls-remote", url])
+        .output()
+        .map_err(|e| format!("git ls-remote {url}: {e}"))?;
 
-    let repo = gix::init(&tmp)
-        .map_err(|e| format!("init temp repo: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git ls-remote failed for {url}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
 
-    let remote = repo
-        .remote_at(url)
-        .map_err(|e| format!("create remote for {url}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let connection = remote
-        .connect(gix::remote::Direction::Fetch)
-        .map_err(|e| format!("connect to {url}: {e}"))?;
-
-    // Use a wildcard refspec so ref_map returns all remote refs
-    let refspec = gix::refspec::parse("refs/*:refs/*".into(), gix::refspec::parse::Operation::Fetch)
-        .map_err(|e| format!("internal error: invalid refspec: {e}"))?
-        .to_owned();
-    let options = gix::remote::ref_map::Options {
-        extra_refspecs: vec![refspec],
-        ..Default::default()
-    };
-    let (ref_map, _handshake) = connection
-        .ref_map(gix::progress::Discard, options)
-        .map_err(|e| format!("list refs from {url}: {e}"))?;
-
-    let _ = std::fs::remove_dir_all(&tmp);
-
-    // Search patterns in priority order
+    // Parse git ls-remote output: "<sha>\t<refname>\n"
     let candidates = [
         format!("refs/heads/{ref_name}"),
         format!("refs/tags/{ref_name}"),
         ref_name.to_string(),
     ];
 
-    // Check mappings (the resolved mapping of remote refs to refspecs)
-    for mapping in &ref_map.mappings {
-        if let gix::remote::fetch::refmap::Source::Ref(r) = &mapping.remote {
-            let (name, oid) = ref_to_name_oid(r);
-            if let Some(oid) = oid {
-                for pattern in &candidates {
-                    if name == *pattern {
-                        return Ok(oid);
-                    }
-                }
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let Some(sha) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
+        for candidate in &candidates {
+            if name == candidate {
+                return Ok(sha.to_string());
             }
-        }
-    }
-
-    // Also search remote_refs directly
-    for pattern in &candidates {
-        for r in &ref_map.remote_refs {
-            let (name, oid) = ref_to_name_oid(r);
-            if let Some(oid) = oid
-                && name == *pattern {
-                    return Ok(oid);
-                }
         }
     }
 
