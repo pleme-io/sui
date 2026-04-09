@@ -22,30 +22,38 @@ pub fn clone(
     submodules: bool,
 ) -> Result<gix::Repository, String> {
     let do_clone = |use_shallow: bool| -> Result<gix::Repository, String> {
-        let mut prepare = gix::prepare_clone(url, dest)
-            .map_err(|e| format!("prepare clone {url} -> {}: {e}", dest.display()))?;
+        // Wrap in catch_unwind because gix's edition-2024 fork can panic
+        // on certain refspec patterns (known issue in our gitoxide fork).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut prepare = gix::prepare_clone(url, dest)
+                .map_err(|e| format!("prepare clone {url} -> {}: {e}", dest.display()))?;
 
-        if use_shallow {
-            prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
-                1.try_into().expect("1 is non-zero"),
-            ));
+            if use_shallow {
+                prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
+                    1.try_into().expect("1 is non-zero"),
+                ));
+            }
+
+            if let Some(br) = branch {
+                prepare = prepare
+                    .with_ref_name(Some(br))
+                    .map_err(|e| format!("set branch {br}: {e}"))?;
+            }
+
+            let (mut checkout, _outcome) = prepare
+                .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+                .map_err(|e| format!("fetch {url}: {e}"))?;
+
+            let (repo, _outcome) = checkout
+                .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
+                .map_err(|e| format!("checkout worktree {url}: {e}"))?;
+
+            Ok(repo)
+        }));
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(format!("git clone panicked for {url} (gix internal error)")),
         }
-
-        if let Some(br) = branch {
-            prepare = prepare
-                .with_ref_name(Some(br))
-                .map_err(|e| format!("set branch {br}: {e}"))?;
-        }
-
-        let (mut checkout, _outcome) = prepare
-            .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
-            .map_err(|e| format!("fetch {url}: {e}"))?;
-
-        let (repo, _outcome) = checkout
-            .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
-            .map_err(|e| format!("checkout worktree {url}: {e}"))?;
-
-        Ok(repo)
     };
 
     // Try shallow first if requested; fall back to full clone if the
