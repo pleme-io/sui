@@ -1121,18 +1121,35 @@ pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> 
 
 pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
     use std::collections::BTreeMap;
-    use sui_compat::derivation::{Derivation, DerivationOutput};
+    use sui_compat::derivation::Derivation;
 
     let forced = crate::eval::force_value(arg)?;
     let input_owned = forced.to_attrs()?;
     let input = &input_owned;
 
-    // Required attributes — present and must be coercible to string.
+    // 1. Validate and extract derivation inputs.
+    let (name, drv) = construct_derivation(input)?;
+
+    // 2. Compute output paths and .drv path.
+    let (drv_path, out_paths, mut drv) = compute_derivation_outputs(input, &name, drv)?;
+
+    // 3. Write the .drv file to the store.
+    write_derivation_to_store(&drv_path, &out_paths, &mut drv)?;
+
+    // 4. Assemble the result attrset.
+    build_derivation_result(input, &name, &drv_path, &out_paths)
+}
+
+/// Extract required/optional attributes and construct the Derivation skeleton.
+fn construct_derivation(
+    input: &NixAttrs,
+) -> Result<(String, sui_compat::derivation::Derivation), EvalError> {
+    use std::collections::BTreeMap;
+
     let name = force_attr_string(input, "name")?;
     let system = force_attr_string(input, "system")?;
     let builder = force_attr_string(input, "builder")?;
 
-    // Optional `args` list of strings.
     let args_list: Vec<String> = if let Some(a) = input.get("args") {
         let forced_args = crate::eval::force_value(a)?;
         let list = forced_args.as_list()?;
@@ -1145,44 +1162,12 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
         Vec::new()
     };
 
-    // Optional `outputs` list — defaults to ["out"].
-    let outputs: Vec<String> = if let Some(o) = input.get("outputs") {
-        let forced_o = crate::eval::force_value(o)?;
-        let list = forced_o.as_list()?;
-        let mut out = Vec::with_capacity(list.len());
-        for item in list {
-            let s = crate::eval::force_value(item)?
-                .as_string()
-                .map_err(|_| EvalError::TypeError(
-                    "derivation: outputs entries must be strings".into(),
-                ))?
-                .to_string();
-            out.push(s);
-        }
-        if out.is_empty() {
-            return Err(EvalError::TypeError(
-                "derivation: outputs list must not be empty".into(),
-            ));
-        }
-        out
-    } else {
-        vec!["out".to_string()]
-    };
-
-    // Build env vars from non-special attributes.
-    // Special attrs are skipped; everything else is coerced to string.
     let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
     for (k, v) in input.iter() {
         if matches!(
             k.as_str(),
-            "name"
-                | "system"
-                | "builder"
-                | "args"
-                | "outputs"
-                | "__impure"
-                | "__contentAddressed"
-                | "__structuredAttrs"
+            "name" | "system" | "builder" | "args" | "outputs"
+                | "__impure" | "__contentAddressed" | "__structuredAttrs"
         ) {
             continue;
         }
@@ -1194,16 +1179,11 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
             env_vars.insert(k.clone(), s);
         }
     }
-    // Always include the canonical attrs as env entries (matches CppNix).
     env_vars.insert("name".to_string(), name.clone());
     env_vars.insert("system".to_string(), system.clone());
     env_vars.insert("builder".to_string(), builder.clone());
 
-    // Detect fixed-output derivation.
-    let is_fod = input.contains_key("outputHash");
-
-    // Build the Derivation skeleton (outputs map populated below).
-    let mut drv = Derivation {
+    let drv = sui_compat::derivation::Derivation {
         outputs: BTreeMap::new(),
         input_derivations: BTreeMap::new(),
         input_sources: Vec::new(),
@@ -1213,114 +1193,111 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
         env: env_vars,
     };
 
-    let (drv_path, out_paths) = if is_fod {
-        // Fixed-output: hash is determined by the declared outputHash, not by
-        // the build instructions. CppNix uses the `fixed:out:` fingerprint.
+    Ok((name, drv))
+}
+
+/// Compute .drv path and output paths (handles both FOD and input-addressed).
+fn compute_derivation_outputs(
+    input: &NixAttrs,
+    name: &str,
+    mut drv: sui_compat::derivation::Derivation,
+) -> Result<(String, std::collections::BTreeMap<String, String>, sui_compat::derivation::Derivation), EvalError> {
+    use std::collections::BTreeMap;
+    use sui_compat::derivation::DerivationOutput;
+
+    let is_fod = input.contains_key("outputHash");
+
+    if is_fod {
         let output_hash = force_attr_string(input, "outputHash")?;
         let output_hash_algo = optional_attr_string(input, "outputHashAlgo")?
             .unwrap_or_else(|| "sha256".to_string());
         let output_hash_mode = optional_attr_string(input, "outputHashMode")?
             .unwrap_or_else(|| "flat".to_string());
-        let is_recursive =
-            output_hash_mode == "recursive" || output_hash_mode == "nar";
+        let is_recursive = output_hash_mode == "recursive" || output_hash_mode == "nar";
 
         let out_path = sui_compat::store_path::compute_fixed_output_hash(
-            &output_hash_algo,
-            &output_hash,
-            is_recursive,
-            &name,
+            &output_hash_algo, &output_hash, is_recursive, name,
         );
 
-        // Populate the single `out` output with the FOD metadata so the
-        // serialized drv carries the declared hash.
-        drv.outputs.insert(
-            "out".to_string(),
-            DerivationOutput {
-                path: out_path.clone(),
-                hash_algo: if is_recursive {
-                    format!("r:{output_hash_algo}")
-                } else {
-                    output_hash_algo.clone()
-                },
-                hash: output_hash,
-            },
-        );
+        drv.outputs.insert("out".to_string(), DerivationOutput {
+            path: out_path.clone(),
+            hash_algo: if is_recursive { format!("r:{output_hash_algo}") } else { output_hash_algo.clone() },
+            hash: output_hash,
+        });
 
         let drv_content = drv.serialize();
-        let drv_path = sui_compat::store_path::compute_drv_path(
-            drv_content.as_bytes(),
-            &name,
-        );
-
+        let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
         let mut out_paths = BTreeMap::new();
         out_paths.insert("out".to_string(), out_path);
-        (drv_path, out_paths)
+        Ok((drv_path, out_paths, drv))
     } else {
-        // Input-addressed: outputs are placeholders during ATerm hashing
-        // (CppNix replaces them with empty strings to break the chicken-and-
-        // egg cycle). After hashing, the output paths are derived from the
-        // resulting inner hash.
+        let outputs = parse_outputs_list(input)?;
         for o in &outputs {
-            drv.outputs.insert(
-                o.clone(),
-                DerivationOutput {
-                    path: String::new(),
-                    hash_algo: String::new(),
-                    hash: String::new(),
-                },
-            );
+            drv.outputs.insert(o.clone(), DerivationOutput {
+                path: String::new(), hash_algo: String::new(), hash: String::new(),
+            });
         }
 
         let drv_content = drv.serialize();
-        let drv_path = sui_compat::store_path::compute_drv_path(
-            drv_content.as_bytes(),
-            &name,
-        );
+        let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
 
-        // Compute each output path from the inner SHA-256 of the drv content.
         use sha2::{Digest, Sha256};
         let inner = Sha256::digest(drv_content.as_bytes());
-        let inner_hex: String =
-            inner.iter().map(|b| format!("{b:02x}")).collect();
+        let inner_hex: String = inner.iter().map(|b| format!("{b:02x}")).collect();
         let mut out_paths = BTreeMap::new();
         for o in &outputs {
-            let p = sui_compat::store_path::compute_output_path(
-                &inner_hex, o, &name,
-            );
+            let p = sui_compat::store_path::compute_output_path(&inner_hex, o, name);
             out_paths.insert(o.clone(), p);
         }
-        (drv_path, out_paths)
-    };
+        Ok((drv_path, out_paths, drv))
+    }
+}
 
-    // ── Write the .drv file to the store ──────────────────────
-    //
-    // Update the derivation struct with final output paths (for input-addressed
-    // derivations the paths were empty during hashing to break the circular
-    // dependency). Then re-serialize and write the final ATerm content to disk.
-    // CppNix also puts output paths into the env map.
-    for (output_name, output_path) in &out_paths {
+/// Parse the optional `outputs` attribute (defaults to `["out"]`).
+fn parse_outputs_list(input: &NixAttrs) -> Result<Vec<String>, EvalError> {
+    if let Some(o) = input.get("outputs") {
+        let forced_o = crate::eval::force_value(o)?;
+        let list = forced_o.as_list()?;
+        let mut out = Vec::with_capacity(list.len());
+        for item in list {
+            let s = crate::eval::force_value(item)?
+                .as_string()
+                .map_err(|_| EvalError::TypeError("derivation: outputs entries must be strings".into()))?
+                .to_string();
+            out.push(s);
+        }
+        if out.is_empty() {
+            return Err(EvalError::TypeError("derivation: outputs list must not be empty".into()));
+        }
+        Ok(out)
+    } else {
+        Ok(vec!["out".to_string()])
+    }
+}
+
+/// Write the final .drv file to the store (with fallback for permission errors).
+fn write_derivation_to_store(
+    drv_path: &str,
+    out_paths: &std::collections::BTreeMap<String, String>,
+    drv: &mut sui_compat::derivation::Derivation,
+) -> Result<(), EvalError> {
+    // Update outputs with final paths and populate env.
+    for (output_name, output_path) in out_paths {
         if let Some(output) = drv.outputs.get_mut(output_name)
             && output.path.is_empty() {
                 output.path.clone_from(output_path);
             }
-        // CppNix sets an env var for each output (e.g. `out=/nix/store/...`).
         drv.env.insert(output_name.clone(), output_path.clone());
     }
 
-    // Serialize the final derivation with populated output paths.
     let drv_content_final = drv.serialize();
 
-    // Determine the store directory — honour SUI_STORE_DIR for testing and
-    // non-standard store locations.  Default to /nix/store.
     let store_dir = std::env::var("SUI_STORE_DIR")
         .unwrap_or_else(|_| "/nix/store".to_string());
-
-    // The canonical drv_path uses /nix/store.  When a custom store dir is
-    // set, rewrite the on-disk path accordingly.
     let disk_path = if store_dir != "/nix/store" {
         drv_path.replacen("/nix/store", &store_dir, 1)
     } else {
-        drv_path.clone()
+        drv_path.to_string()
     };
 
     let drv_file = std::path::Path::new(&disk_path);
@@ -1331,25 +1308,13 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
         match std::fs::write(drv_file, drv_content_final.as_bytes()) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                // Best-effort: when writing to /nix/store without root
-                // privileges, try a fallback temp directory so the .drv
-                // content is preserved for debugging / cache lookups.
                 let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
                 std::fs::create_dir_all(&fallback_dir).ok();
-                let fallback_path = fallback_dir.join(
-                    drv_file.file_name().unwrap_or_default(),
-                );
+                let fallback_path = fallback_dir.join(drv_file.file_name().unwrap_or_default());
                 if let Err(e2) = std::fs::write(&fallback_path, drv_content_final.as_bytes()) {
-                    tracing::warn!(
-                        "failed to write .drv to both {} and {}: {e}, {e2}",
-                        drv_path,
-                        fallback_path.display(),
-                    );
+                    tracing::warn!("failed to write .drv to both {} and {}: {e}, {e2}", drv_path, fallback_path.display());
                 } else {
-                    tracing::debug!(
-                        "wrote .drv to fallback: {}",
-                        fallback_path.display(),
-                    );
+                    tracing::debug!("wrote .drv to fallback: {}", fallback_path.display());
                 }
             }
             Err(e) => {
@@ -1360,35 +1325,34 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
             }
         }
     }
+    Ok(())
+}
 
-    // Assemble the result attrset (input + derivation metadata).
+/// Assemble the result attrset from computed derivation paths.
+fn build_derivation_result(
+    input: &NixAttrs,
+    name: &str,
+    drv_path: &str,
+    out_paths: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
     let mut result = input.clone();
     result.insert("type".to_string(), Value::string("derivation"));
-    result.insert("drvPath".to_string(), Value::string(drv_path.clone()));
+    result.insert("drvPath".to_string(), Value::string(drv_path));
 
-    // The `outPath` exposed at the top-level is the `out` output (or the only
-    // output if there isn't one named `out` — fall back to the first).
     let primary_out = out_paths
         .get("out")
         .cloned()
         .or_else(|| out_paths.values().next().cloned())
         .unwrap_or_default();
-    result.insert("outPath".to_string(), Value::string(primary_out.clone()));
+    result.insert("outPath".to_string(), Value::string(primary_out));
 
-    // Per-output sub-attrsets so `mydrv.dev`, `mydrv.lib`, etc. work.
-    for (output_name, output_path) in &out_paths {
+    for (output_name, output_path) in out_paths {
         let mut out_attrs = NixAttrs::new();
-        out_attrs.insert(
-            "outPath".to_string(),
-            Value::string(output_path.clone()),
-        );
-        out_attrs.insert("drvPath".to_string(), Value::string(drv_path.clone()));
+        out_attrs.insert("outPath".to_string(), Value::string(output_path.clone()));
+        out_attrs.insert("drvPath".to_string(), Value::string(drv_path));
         out_attrs.insert("type".to_string(), Value::string("derivation"));
-        out_attrs.insert(
-            "outputName".to_string(),
-            Value::string(output_name.clone()),
-        );
-        out_attrs.insert("name".to_string(), Value::string(name.clone()));
+        out_attrs.insert("outputName".to_string(), Value::string(output_name.clone()));
+        out_attrs.insert("name".to_string(), Value::string(name));
         result.insert(output_name.clone(), Value::Attrs(out_attrs));
     }
 
