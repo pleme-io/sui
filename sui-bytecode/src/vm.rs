@@ -32,6 +32,49 @@ use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMValue};
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
 
+// ── Flake resolver callback ─────────────────────────────────
+
+/// Signature for an external flake resolver.
+///
+/// When set, the VM delegates `builtins.getFlake` to this callback
+/// instead of using its own limited input resolution.  The callback
+/// receives the raw flake reference string (e.g. `"path:/foo/bar"`)
+/// and returns a `StringKeyedValue` attrset representing the fully
+/// resolved flake outputs.
+///
+/// `sui-eval` sets this to the tree-walker's `evaluate_flake` which
+/// handles all input types (GitHub, path, indirect) and produces
+/// correct results for `(getFlake ref).inputs.nixpkgs`.
+pub type FlakeResolverFn = dyn Fn(&str) -> Result<crate::value::StringKeyedValue, String>;
+
+thread_local! {
+    static FLAKE_RESOLVER: RefCell<Option<Box<FlakeResolverFn>>> = const { RefCell::new(None) };
+}
+
+/// Install a flake resolver callback for the current thread.
+///
+/// Returns an RAII guard that restores the previous resolver on drop.
+/// This ensures the resolver is always properly cleaned up even when
+/// evaluation errors occur.
+pub fn set_flake_resolver(
+    resolver: Box<FlakeResolverFn>,
+) -> FlakeResolverGuard {
+    let prev = FLAKE_RESOLVER.with(|r| r.borrow_mut().replace(resolver));
+    FlakeResolverGuard { _prev: prev }
+}
+
+/// RAII guard that restores the previous flake resolver on drop.
+pub struct FlakeResolverGuard {
+    _prev: Option<Box<FlakeResolverFn>>,
+}
+
+impl Drop for FlakeResolverGuard {
+    fn drop(&mut self) {
+        let prev = self._prev.take();
+        FLAKE_RESOLVER.with(|r| *r.borrow_mut() = prev);
+    }
+}
+
 /// A call frame on the VM's call stack.
 #[derive(Clone)]
 struct CallFrame {
@@ -1929,7 +1972,59 @@ impl<'a> VM<'a> {
     }
 
     /// Evaluate `builtins.getFlake` for a path-based flake reference.
+    ///
+    /// If a thread-local flake resolver has been installed (via
+    /// [`set_flake_resolver`]), delegates to it — this lets `sui-eval`
+    /// inject the tree-walker's full `evaluate_flake` implementation
+    /// which handles all input types correctly.  Falls back to the VM's
+    /// own limited resolver otherwise.
     fn vm_get_flake(&mut self, flake_ref: &str) -> Result<NanBox, VMError> {
+        // Check for an external resolver first.
+        let resolved = FLAKE_RESOLVER.with(|r| {
+            let borrow = r.borrow();
+            if let Some(ref resolver) = *borrow {
+                Some(resolver(flake_ref))
+            } else {
+                None
+            }
+        });
+
+        if let Some(result) = resolved {
+            let sk = result.map_err(|e| VMError::Throw(format!("getFlake: {e}")))?;
+            return Ok(self.string_keyed_to_nanbox(&sk));
+        }
+
+        // Fallback: VM-native resolution (path-based only).
+        self.vm_get_flake_native(flake_ref)
+    }
+
+    /// Convert a `StringKeyedValue` to a `NanBox` for the VM stack.
+    fn string_keyed_to_nanbox(&mut self, sk: &crate::value::StringKeyedValue) -> NanBox {
+        match sk {
+            crate::value::StringKeyedValue::Null => NanBox::null(),
+            crate::value::StringKeyedValue::Bool(b) => NanBox::bool(*b),
+            crate::value::StringKeyedValue::Int(n) => NanBox::int(*n),
+            crate::value::StringKeyedValue::Float(f) => NanBox::float(*f),
+            crate::value::StringKeyedValue::String(s) => NanBox::string(s.clone()),
+            crate::value::StringKeyedValue::Path(p) => NanBox::from_vmvalue(&VMValue::Path(p.clone())),
+            crate::value::StringKeyedValue::List(items) => {
+                let nb_items: Vec<NanBox> = items.iter().map(|v| self.string_keyed_to_nanbox(v)).collect();
+                NanBox::list(nb_items)
+            }
+            crate::value::StringKeyedValue::Attrs(map) => {
+                let mut nb_map: BTreeMap<Symbol, NanBox> = BTreeMap::new();
+                for (k, v) in map {
+                    let sym = self.interner.intern(k);
+                    nb_map.insert(sym, self.string_keyed_to_nanbox(v));
+                }
+                NanBox::attrs(nb_map)
+            }
+            crate::value::StringKeyedValue::Lambda => NanBox::null(),
+        }
+    }
+
+    /// VM-native flake resolution (path-based inputs only).
+    fn vm_get_flake_native(&mut self, flake_ref: &str) -> Result<NanBox, VMError> {
         let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
             std::path::PathBuf::from(flake_ref)
         } else if let Some(path) = flake_ref.strip_prefix("path:") {

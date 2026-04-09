@@ -271,6 +271,15 @@ impl Thunk {
         matches!(*self.0.borrow(), ThunkRepr::Evaluated(_))
     }
 
+    /// Check whether this thunk is a native (Rust closure) thunk.
+    ///
+    /// Native thunks are used for lazy flake input evaluation and can
+    /// be very expensive to force (e.g., evaluating all of nixpkgs).
+    /// This lets callers skip them in eager conversion paths.
+    pub fn is_native(&self) -> bool {
+        matches!(*self.0.borrow(), ThunkRepr::Native(_))
+    }
+
     /// Replace the environment captured in a suspended or inherit-select thunk.
     /// No-op if the thunk is already evaluated or a blackhole.
     pub fn update_env(&self, new_env: Env) {

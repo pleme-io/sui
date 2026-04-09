@@ -307,6 +307,19 @@ async fn main() -> Result<(), CliError> {
                 }
             } else {
                 // Bytecode VM evaluation path (default).
+                // Install flake resolver so VM getFlake delegates to tree-walker.
+                let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
+                    let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
+                        std::path::PathBuf::from(flake_ref)
+                    } else if let Some(path) = flake_ref.strip_prefix("path:") {
+                        std::path::PathBuf::from(path)
+                    } else {
+                        return Err(format!("unsupported flake reference: {flake_ref}"));
+                    };
+                    let result = sui_eval::builtins::evaluate_flake(&flake_dir)
+                        .map_err(|e| e.to_string())?;
+                    Ok(sui_eval::eval_to_string_keyed(&result))
+                }));
                 let result = sui_bytecode::eval_full(&expr).map_err(|e| {
                     CliError::Orchestrate {
                         operation: "eval",

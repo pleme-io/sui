@@ -71,15 +71,85 @@ impl Evaluator for TreeWalkEvaluator {
 }
 
 /// Bytecode VM evaluator — compiles to bytecode and executes on the stack VM.
+///
+/// Installs a flake resolver that delegates `builtins.getFlake` to the
+/// tree-walker's [`builtins::evaluate_flake`], so the VM gets correct
+/// flake input resolution for all input types (GitHub, path, indirect).
 pub struct BytecodeEvaluator;
 
-impl Evaluator for BytecodeEvaluator {
-    fn eval_expr(&self, input: &str) -> Result<Value, EvalError> {
+impl BytecodeEvaluator {
+    /// Run a bytecode evaluation with the tree-walker flake resolver installed.
+    fn eval_with_flake_resolver(input: &str) -> Result<Value, EvalError> {
+        // Install flake resolver: tree-walker evaluate_flake → StringKeyedValue
+        let _guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
+            let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
+                std::path::PathBuf::from(flake_ref)
+            } else if let Some(path) = flake_ref.strip_prefix("path:") {
+                std::path::PathBuf::from(path)
+            } else {
+                return Err(format!("unsupported flake reference: {flake_ref}"));
+            };
+
+            let result = builtins::evaluate_flake(&flake_dir)
+                .map_err(|e| e.to_string())?;
+
+            // Convert tree-walker Value → StringKeyedValue for the VM.
+            Ok(eval_to_string_keyed(&result))
+        }));
+
         let result = sui_bytecode::eval_full(input).map_err(|e| match e {
             sui_bytecode::EvalError::Compile(c) => EvalError::ParseError(c.to_string()),
             sui_bytecode::EvalError::Runtime(r) => EvalError::TypeError(r.to_string()),
         })?;
         Ok(convert::string_keyed_to_eval(&result.to_string_keyed()))
+    }
+}
+
+/// Convert a tree-walker `Value` to a `StringKeyedValue` (no interner needed).
+///
+/// Used by the flake resolver bridge to convert tree-walker results
+/// into a format the bytecode VM can consume.
+pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
+    match val {
+        Value::Null => sui_bytecode::StringKeyedValue::Null,
+        Value::Bool(b) => sui_bytecode::StringKeyedValue::Bool(*b),
+        Value::Int(n) => sui_bytecode::StringKeyedValue::Int(*n),
+        Value::Float(f) => sui_bytecode::StringKeyedValue::Float(*f),
+        Value::String(s) => sui_bytecode::StringKeyedValue::String(s.chars.clone()),
+        Value::Path(p) => sui_bytecode::StringKeyedValue::Path(p.clone()),
+        Value::List(items) => {
+            sui_bytecode::StringKeyedValue::List(
+                items.iter().map(eval_to_string_keyed).collect(),
+            )
+        }
+        Value::Attrs(attrs) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, v) in attrs.iter() {
+                map.insert(k.clone(), eval_to_string_keyed(v));
+            }
+            sui_bytecode::StringKeyedValue::Attrs(map)
+        }
+        Value::Lambda(_) | Value::Builtin(_) => sui_bytecode::StringKeyedValue::Lambda,
+        Value::Thunk(t) => {
+            // Skip native thunks — they are used for lazy flake input
+            // evaluation (e.g., nixpkgs) and can be extremely expensive
+            // to force. Already-evaluated thunks are converted normally.
+            // Suspended AST thunks (cheap) are forced during conversion.
+            if t.is_native() {
+                sui_bytecode::StringKeyedValue::Null
+            } else {
+                match t.force(&|e, env| eval::eval_expr(e, env)) {
+                    Ok(v) => eval_to_string_keyed(&v),
+                    Err(_) => sui_bytecode::StringKeyedValue::Null,
+                }
+            }
+        }
+    }
+}
+
+impl Evaluator for BytecodeEvaluator {
+    fn eval_expr(&self, input: &str) -> Result<Value, EvalError> {
+        Self::eval_with_flake_resolver(input)
     }
 
     fn eval_file(&self, path: &std::path::Path) -> Result<Value, EvalError> {
