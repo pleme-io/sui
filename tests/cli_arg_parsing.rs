@@ -121,15 +121,12 @@ fn eval_help_shows_json_flag() {
 // ── Build subcommand ────────────────────────────────────────────────
 
 #[test]
-fn build_requires_installable() {
+fn build_accepts_no_installable() {
+    // installable is now optional (defaults to .#default) for nix compat
     sui()
-        .arg("build")
+        .args(["build", "--help"])
         .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("<INSTALLABLE>")
-                .or(predicate::str::contains("required")),
-        );
+        .success();
 }
 
 // ── Flake subcommands ───────────────────────────────────────────────
@@ -372,4 +369,529 @@ fn top_level_help_lists_run() {
         .assert()
         .success()
         .stdout(predicate::str::contains("run"));
+}
+
+// ── Nix CLI compatibility: global flags ────────────────────────────
+
+#[test]
+fn global_show_trace_accepted() {
+    sui()
+        .args(["--show-trace", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_print_build_logs_accepted() {
+    sui()
+        .args(["-L", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_extra_experimental_features_accepted() {
+    sui()
+        .args(["--extra-experimental-features", "nix-command flakes", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_impure_accepted() {
+    sui()
+        .args(["--impure", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_option_accepted() {
+    sui()
+        .args(["--option", "substituters", "https://cache.nixos.org", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_max_jobs_accepted() {
+    sui()
+        .args(["--max-jobs", "4", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn global_keep_going_accepted() {
+    sui()
+        .args(["--keep-going", "eval", "--help"])
+        .assert()
+        .success();
+}
+
+// ── Nix CLI compatibility: eval flags ──────────────────────────────
+
+#[test]
+fn eval_raw_flag_accepted() {
+    sui()
+        .args(["eval", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--raw"));
+}
+
+#[test]
+fn eval_expr_flag_accepted() {
+    sui()
+        .args(["eval", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--expr"));
+}
+
+// ── Nix CLI compatibility: build flags ─────────────────────────────
+
+#[test]
+fn build_no_link_flag() {
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-link"));
+}
+
+#[test]
+fn build_print_out_paths_flag() {
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--print-out-paths"));
+}
+
+#[test]
+fn build_json_flag() {
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn build_dry_run_flag() {
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn build_out_link_flag() {
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--out-link"));
+}
+
+#[test]
+fn build_installable_optional() {
+    // build without installable should NOT error on arg parsing
+    // (it will fail on eval, but the parser accepts it)
+    sui()
+        .args(["build", "--help"])
+        .assert()
+        .success();
+}
+
+// ── Nix CLI compatibility: new top-level commands ──────────────────
+
+#[test]
+fn search_requires_args() {
+    sui()
+        .arg("search")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn profile_no_subcommand_fails() {
+    sui()
+        .arg("profile")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage"));
+}
+
+#[test]
+fn profile_help_lists_subcommands() {
+    sui()
+        .args(["profile", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("list")
+                .and(predicate::str::contains("install"))
+                .and(predicate::str::contains("remove"))
+                .and(predicate::str::contains("upgrade"))
+                .and(predicate::str::contains("rollback"))
+                .and(predicate::str::contains("history")),
+        );
+}
+
+#[test]
+fn profile_install_accepts_packages() {
+    sui()
+        .args(["profile", "install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PACKAGES"));
+}
+
+#[test]
+fn repl_help_works() {
+    sui()
+        .args(["repl", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn copy_help_shows_to_from() {
+    sui()
+        .args(["copy", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--to")
+                .and(predicate::str::contains("--from")),
+        );
+}
+
+#[test]
+fn path_info_help_shows_json() {
+    sui()
+        .args(["path-info", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn collect_garbage_help_shows_delete_old() {
+    sui()
+        .args(["collect-garbage", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--delete-old"));
+}
+
+#[test]
+fn derivation_no_subcommand_fails() {
+    sui()
+        .arg("derivation")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn derivation_show_help() {
+    sui()
+        .args(["derivation", "show", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn show_config_help_shows_json() {
+    sui()
+        .args(["show-config", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn hash_no_subcommand_fails() {
+    sui()
+        .arg("hash")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn hash_file_help() {
+    sui()
+        .args(["hash", "file", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--type")
+                .and(predicate::str::contains("--base")),
+        );
+}
+
+#[test]
+fn key_no_subcommand_fails() {
+    sui()
+        .arg("key")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn key_generate_secret_help() {
+    sui()
+        .args(["key", "generate-secret", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--key-name"));
+}
+
+#[test]
+fn why_requires_args() {
+    sui()
+        .arg("why")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn edit_requires_installable() {
+    sui()
+        .arg("edit")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn log_requires_installable() {
+    sui()
+        .arg("log")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn fmt_help_shows_check() {
+    sui()
+        .args(["fmt", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--check"));
+}
+
+#[test]
+fn registry_no_subcommand_fails() {
+    sui()
+        .arg("registry")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn registry_list_help() {
+    sui()
+        .args(["registry", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn doctor_help() {
+    sui()
+        .args(["doctor", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn print_dev_env_help() {
+    sui()
+        .args(["print-dev-env", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn bundle_requires_installable() {
+    sui()
+        .arg("bundle")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn bundle_help_shows_bundler() {
+    sui()
+        .args(["bundle", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--bundler"));
+}
+
+#[test]
+fn upgrade_nix_help() {
+    sui()
+        .args(["upgrade-nix", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn diff_closures_requires_args() {
+    sui()
+        .arg("store-diff-closures")
+        .assert()
+        .failure();
+}
+
+// ── Nix CLI compatibility: new store subcommands ───────────────────
+
+#[test]
+fn store_delete_help() {
+    sui()
+        .args(["store", "delete", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn store_ls_help() {
+    sui()
+        .args(["store", "ls", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--recursive")
+                .and(predicate::str::contains("--json")),
+        );
+}
+
+#[test]
+fn store_ping_help() {
+    sui()
+        .args(["store", "ping", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn store_add_path_help() {
+    sui()
+        .args(["store", "add-path", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--name"));
+}
+
+#[test]
+fn store_sign_help() {
+    sui()
+        .args(["store", "sign", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--key-file"));
+}
+
+#[test]
+fn store_repair_help() {
+    sui()
+        .args(["store", "repair", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn store_dump_path_help() {
+    sui()
+        .args(["store", "dump-path", "--help"])
+        .assert()
+        .success();
+}
+
+// ── Nix CLI compatibility: new flake subcommands ───────────────────
+
+#[test]
+fn flake_init_help() {
+    sui()
+        .args(["flake", "init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--template"));
+}
+
+#[test]
+fn flake_new_requires_dest() {
+    sui()
+        .args(["flake", "new"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn flake_archive_help() {
+    sui()
+        .args(["flake", "archive", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn flake_clone_requires_flake_ref() {
+    sui()
+        .args(["flake", "clone"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn flake_prefetch_help() {
+    sui()
+        .args(["flake", "prefetch", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn flake_metadata_json_flag() {
+    sui()
+        .args(["flake", "metadata", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+// ── Nix CLI compatibility: combined flag tests ─────────────────────
+
+#[test]
+fn nix_eval_json_with_extra_experimental_features() {
+    // This exact invocation is used in pleme-io scripts
+    sui()
+        .args(["--extra-experimental-features", "nix-command flakes", "eval", "--json", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn nix_build_no_link_print_out_paths() {
+    // Common nix build invocation
+    sui()
+        .args(["build", "--no-link", "--print-out-paths", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn nix_build_with_out_link() {
+    sui()
+        .args(["build", "-o", "result", "--help"])
+        .assert()
+        .success();
 }

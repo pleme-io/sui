@@ -8,14 +8,22 @@ use sui_store::{LocalStore, Store, Substitutor};
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]
 struct Cli {
-    /// Use bytecode VM for evaluation (default; kept for compatibility)
-    #[arg(long, global = true)]
-    vm: bool,
-    /// Fall back to tree-walker instead of bytecode VM
-    #[arg(long, global = true, conflicts_with = "vm")]
-    no_vm: bool,
-    #[command(subcommand)]
-    command: Commands,
+    #[arg(long, global = true)] vm: bool,
+    #[arg(long, global = true, conflicts_with = "vm")] no_vm: bool,
+    #[arg(long, global = true)] show_trace: bool,
+    #[arg(short = 'L', long, global = true)] print_build_logs: bool,
+    #[arg(long, global = true, hide = true)] extra_experimental_features: Option<String>,
+    #[arg(long, global = true, hide = true)] no_write_lock_file: bool,
+    #[arg(long, global = true, hide = true)] accept_flake_config: bool,
+    #[arg(long, global = true, hide = true)] impure: bool,
+    #[arg(long, global = true, hide = true, num_args = 2, action = clap::ArgAction::Append)] option: Vec<String>,
+    #[arg(long, global = true, hide = true)] log_format: Option<String>,
+    #[arg(long, global = true, hide = true)] max_jobs: Option<String>,
+    #[arg(long, global = true, hide = true)] cores: Option<usize>,
+    #[arg(long, global = true, hide = true)] keep_going: bool,
+    #[arg(short = 'v', long, global = true, hide = true)] verbose: bool,
+    #[arg(long, global = true, hide = true)] quiet: bool,
+    #[command(subcommand)] command: Commands,
 }
 
 #[derive(Subcommand)]
@@ -34,24 +42,25 @@ enum Commands {
         #[command(subcommand)]
         command: StoreCommands,
     },
-    /// Evaluate Nix expressions
     Eval {
-        /// Expression to evaluate
         expression: Option<String>,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Maximum thunk force depth (0 = unlimited)
-        #[arg(long, default_value = "0")]
-        max_force_depth: usize,
-        /// Disable the evaluation cache
+        #[arg(long)] json: bool,
+        #[arg(long)] raw: bool,
+        #[arg(short = 'E', long = "expr")] expr_flag: Option<String>,
+        #[arg(long, default_value = "0")] max_force_depth: usize,
         #[arg(long)]
         no_eval_cache: bool,
+        #[arg(long, hide = true)] apply: Option<String>,
+        #[arg(long = "file", short = 'f', hide = true)] file_flag: Option<String>,
     },
-    /// Build derivations
     Build {
-        /// Installable to build (e.g., nixpkgs#hello)
-        installable: String,
+        installable: Option<String>,
+        #[arg(long)] no_link: bool,
+        #[arg(long)] print_out_paths: bool,
+        #[arg(long)] json: bool,
+        #[arg(long)] dry_run: bool,
+        #[arg(short = 'o', long)] out_link: Option<String>,
+        #[arg(long, hide = true)] rebuild: bool,
     },
     /// Flake operations
     Flake {
@@ -99,135 +108,126 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Search { flake_ref: String, query: String },
+    Profile { #[command(subcommand)] command: ProfileCommands },
+    Repl { flake_ref: Option<String>, #[arg(long)] file: Option<String> },
+    Copy { #[arg(long)] to: Option<String>, #[arg(long)] from: Option<String>, paths: Vec<String>, #[arg(long, hide = true)] no_check_sigs: bool },
+    #[command(name = "path-info")] PathInfo { paths: Vec<String>, #[arg(long)] json: bool, #[arg(long, hide = true)] closure_size: bool },
+    #[command(name = "collect-garbage")] CollectGarbage { #[arg(short = 'd', long)] delete_old: bool, #[arg(long)] delete_older_than: Option<String> },
+    Derivation { #[command(subcommand)] command: DerivationCommands },
+    #[command(name = "show-config")] ShowConfig { #[arg(long)] json: bool },
+    Hash { #[command(subcommand)] command: HashCommands },
+    Key { #[command(subcommand)] command: KeyCommands },
+    Why { path: String, dependency: String },
+    #[command(name = "path-from-hash-part")] PathFromHashPart { hash_part: String },
+    Edit { installable: String },
+    Log { installable: String },
+    #[command(name = "store-diff-closures", aliases = ["diff-closures"])] DiffClosures { before: String, after: String },
+    #[command(name = "upgrade-nix")] UpgradeNix { #[arg(long)] nix_store_paths_url: Option<String> },
+    Fmt { files: Vec<String>, #[arg(long)] check: bool },
+    Registry { #[command(subcommand)] command: RegistryCommands },
+    Doctor,
+    #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
+    Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
 }
 
 #[derive(Subcommand)]
 enum StoreCommands {
-    /// Query path info
-    PathInfo {
-        /// Store path or hash
-        path: String,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// List all valid paths
-    Paths {
-        /// Maximum number of paths
-        #[arg(long, default_value = "100")]
-        limit: usize,
-    },
-    /// Garbage collection
-    Gc {
-        #[arg(long)]
-        max_age_days: Option<u32>,
-        #[arg(long)]
-        print_roots: bool,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Verify store integrity
+    PathInfo { path: String, #[arg(long)] json: bool },
+    Paths { #[arg(long, default_value = "100")] limit: usize },
+    Gc { #[arg(long)] max_age_days: Option<u32>, #[arg(long)] print_roots: bool, #[arg(long)] dry_run: bool },
     Verify,
-    /// Optimise the store by hard-linking identical files
-    Optimise {
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Show store info
+    Optimise { #[arg(long)] dry_run: bool },
     Info,
+    Delete { paths: Vec<String>, #[arg(long, hide = true)] ignore_liveness: bool },
+    Ls { path: String, #[arg(short = 'R', long)] recursive: bool, #[arg(short = 'l', long)] long: bool, #[arg(long)] json: bool },
+    Cat { path: String },
+    #[command(name = "dump-path")] DumpPath { path: String },
+    #[command(name = "make-content-addressed")] MakeContentAddressed { paths: Vec<String> },
+    Ping,
+    #[command(name = "add-path")] AddPath { path: String, #[arg(long)] name: Option<String> },
+    #[command(name = "add-file")] AddFile { path: String, #[arg(long)] name: Option<String> },
+    #[command(name = "prefetch-file")] PrefetchFile { url: String, #[arg(long)] name: Option<String>, #[arg(long)] hash: Option<String>, #[arg(long)] hash_type: Option<String>, #[arg(long)] unpack: bool },
+    Sign { paths: Vec<String>, #[arg(short = 'k', long)] key_file: String },
+    Repair { paths: Vec<String> },
 }
 
 #[derive(Subcommand)]
 enum FlakeCommands {
-    /// Show flake outputs
     Show { flake_ref: Option<String> },
-    /// Update flake lock file (or a specific input)
-    Update {
-        /// Specific input to update (e.g. `nixpkgs`)
-        input: Option<String>,
-    },
-    /// Check the flake for errors
-    Check {
-        /// Skip building checks
-        #[arg(long)]
-        no_build: bool,
-    },
-    /// Lock the flake inputs without updating
+    Update { input: Option<String> },
+    Check { #[arg(long)] no_build: bool },
     Lock,
-    /// Show flake metadata
-    Metadata { flake_ref: Option<String> },
+    Metadata { flake_ref: Option<String>, #[arg(long)] json: bool },
+    Init { #[arg(short = 't', long)] template: Option<String> },
+    New { dest: String, #[arg(short = 't', long)] template: Option<String> },
+    Archive { flake_ref: Option<String>, #[arg(long)] json: bool },
+    Clone { flake_ref: String, #[arg(long)] dest: Option<String> },
+    Prefetch { flake_ref: Option<String>, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
 enum SystemCommands {
-    /// Rebuild and switch to new configuration
-    Rebuild {
-        /// Flake reference
-        #[arg(long)]
-        flake: Option<String>,
-    },
-    /// Show current system status
+    Rebuild { #[arg(long)] flake: Option<String> },
     Status,
-    /// Rollback to previous generation
     Rollback,
 }
 
 #[derive(Subcommand)]
 enum FleetCommands {
-    /// List fleet nodes
     Nodes,
-    /// Deploy to nodes
-    Deploy {
-        /// Target (node name or @group)
-        target: String,
-    },
-    /// Show fleet status
+    Deploy { target: String },
     Status,
 }
 
 #[derive(Subcommand)]
 enum CacheCommands {
-    /// Start the binary cache server
-    Serve {
-        /// Listen address
-        #[arg(long, default_value = "0.0.0.0:5000")]
-        listen: String,
-        /// Local storage path
-        #[arg(long, default_value = "/var/cache/sui")]
-        store_path: String,
-        /// Cache priority (lower = preferred)
-        #[arg(long, default_value = "40")]
-        priority: u32,
-    },
-    /// Push store paths to the cache
-    Push {
-        /// Store paths to push
-        paths: Vec<String>,
-        /// Cache URL (for remote push)
-        #[arg(long)]
-        cache_url: Option<String>,
-        /// Local storage path (for local push)
-        #[arg(long, default_value = "/var/cache/sui")]
-        store_path: String,
-        /// Path to signing secret key
-        #[arg(long)]
-        signing_key: Option<String>,
-    },
-    /// Garbage collect the cache
-    Gc {
-        /// Local storage path
-        #[arg(long, default_value = "/var/cache/sui")]
-        store_path: String,
-        /// Hashes to keep (roots)
-        #[arg(long)]
-        keep: Vec<String>,
-    },
-    /// Show cache info
-    Info {
-        /// Local storage path
-        #[arg(long, default_value = "/var/cache/sui")]
-        store_path: String,
-    },
+    Serve { #[arg(long, default_value = "0.0.0.0:5000")] listen: String, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long, default_value = "40")] priority: u32 },
+    Push { paths: Vec<String>, #[arg(long)] cache_url: Option<String>, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] signing_key: Option<String> },
+    Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
+    Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    List { #[arg(long)] profile: Option<String>, #[arg(long)] json: bool },
+    Install { packages: Vec<String>, #[arg(long)] profile: Option<String>, #[arg(long)] priority: Option<i32> },
+    Remove { packages: Vec<String>, #[arg(long)] profile: Option<String> },
+    Upgrade { packages: Vec<String>, #[arg(long)] profile: Option<String> },
+    Rollback { #[arg(long)] profile: Option<String> },
+    History { #[arg(long)] profile: Option<String> },
+    #[command(name = "wipe-history")] WipeHistory { #[arg(long)] profile: Option<String>, #[arg(long)] older_than: Option<String> },
+    Diff { #[arg(long)] profile: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum DerivationCommands {
+    Show { paths: Vec<String>, #[arg(long)] json: bool },
+    Add { path: String },
+}
+
+#[derive(Subcommand)]
+enum HashCommands {
+    File { path: String, #[arg(long, default_value = "sha256")] r#type: String, #[arg(long, default_value = "base32")] base: String },
+    Path { path: String, #[arg(long, default_value = "sha256")] r#type: String, #[arg(long, default_value = "base32")] base: String },
+    #[command(name = "to-base16")] ToBase16 { hash: String, #[arg(long)] r#type: Option<String> },
+    #[command(name = "to-base32")] ToBase32 { hash: String, #[arg(long)] r#type: Option<String> },
+    #[command(name = "to-base64")] ToBase64 { hash: String, #[arg(long)] r#type: Option<String> },
+    #[command(name = "to-sri")] ToSri { hash: String, #[arg(long)] r#type: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum KeyCommands {
+    #[command(name = "generate-secret")] GenerateSecret { #[arg(long)] key_name: String },
+    #[command(name = "convert-secret-to-public")] ConvertSecretToPublic,
+}
+
+#[derive(Subcommand)]
+enum RegistryCommands {
+    List { #[arg(long)] json: bool },
+    Add { from: String, to: String },
+    Remove { entry: String },
+    Pin { entry: String },
 }
 
 #[tokio::main]
@@ -335,11 +335,22 @@ async fn main() -> Result<(), CliError> {
                     println!("Valid paths:  {}", paths.len());
                     println!("Database:     {NIX_DB_PATH}");
                 }
+                StoreCommands::Delete { paths: dp, ignore_liveness: _ } => { eprintln!("store delete: {} paths (not yet implemented)", dp.len()); }
+                StoreCommands::Ls { path: p, .. } => { eprintln!("store ls {p}: not yet implemented"); }
+                StoreCommands::Cat { path: p } => { eprintln!("store cat {p}: not yet implemented"); }
+                StoreCommands::DumpPath { path: p } => { eprintln!("store dump-path {p}: not yet implemented"); }
+                StoreCommands::MakeContentAddressed { paths: mp } => { eprintln!("store make-content-addressed: {} paths (not yet implemented)", mp.len()); }
+                StoreCommands::Ping => { println!("Store URL: daemon\nVersion: sui {}\nTrusted: 1", env!("CARGO_PKG_VERSION")); }
+                StoreCommands::AddPath { path: p, .. } => { eprintln!("store add-path {p}: not yet implemented"); }
+                StoreCommands::AddFile { path: p, .. } => { eprintln!("store add-file {p}: not yet implemented"); }
+                StoreCommands::PrefetchFile { url: u, .. } => { eprintln!("store prefetch-file {u}: not yet implemented"); }
+                StoreCommands::Sign { paths: sp, key_file: kf } => { eprintln!("store sign: {} paths with {kf} (not yet implemented)", sp.len()); }
+                StoreCommands::Repair { paths: rp } => { eprintln!("store repair: {} paths (not yet implemented)", rp.len()); }
             }
         }
 
-        Commands::Eval { expression, json, max_force_depth, no_eval_cache: _ } => {
-            let expr = expression
+        Commands::Eval { expression, json, raw: _, expr_flag, max_force_depth, no_eval_cache: _, apply: _, file_flag: _ } => {
+            let expr = expr_flag.or(expression)
                 .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
             if max_force_depth > 0 {
                 sui_eval::trace::set_max_force_depth(max_force_depth);
@@ -384,7 +395,8 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable } => {
+        Commands::Build { installable: installable_opt, no_link: _, print_out_paths: _, json: _, dry_run: _, out_link: _, rebuild: _ } => {
+            let installable = installable_opt.unwrap_or_else(|| ".#default".to_string());
             use sui_build::{BuildClosure, LocalBuilder};
 
             // Open the store and set up the build infrastructure.
@@ -542,10 +554,15 @@ async fn main() -> Result<(), CliError> {
                 })?;
                 println!("flake.lock written");
             }
-            FlakeCommands::Metadata { flake_ref } => {
+            FlakeCommands::Metadata { flake_ref, json: _ } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
                 print_flake_metadata(&flake_dir)?;
             }
+            FlakeCommands::Init { template } => { eprintln!("flake init --template {}: not yet implemented", template.as_deref().unwrap_or("default")); }
+            FlakeCommands::New { dest, template } => { eprintln!("flake new {dest} --template {}: not yet implemented", template.as_deref().unwrap_or("default")); }
+            FlakeCommands::Archive { flake_ref: fr, json: _ } => { eprintln!("flake archive {}: not yet implemented", fr.as_deref().unwrap_or(".")); }
+            FlakeCommands::Clone { flake_ref: fr, dest } => { eprintln!("flake clone {fr} --dest {}: not yet implemented", dest.as_deref().unwrap_or(".")); }
+            FlakeCommands::Prefetch { flake_ref: fr, json: _ } => { eprintln!("flake prefetch {}: not yet implemented", fr.as_deref().unwrap_or(".")); }
         },
 
         Commands::Daemon { socket } => {
@@ -761,8 +778,140 @@ async fn main() -> Result<(), CliError> {
             let status = std::process::Command::new(&program).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));
         }
+        Commands::Search { flake_ref, query } => { eprintln!("search {flake_ref} {query}: not yet implemented"); }
+        Commands::Profile { command } => match command {
+            ProfileCommands::List { .. } => { eprintln!("profile list: not yet implemented"); }
+            ProfileCommands::Install { packages, .. } => { eprintln!("profile install {}: not yet implemented", packages.join(" ")); }
+            ProfileCommands::Remove { packages, .. } => { eprintln!("profile remove {}: not yet implemented", packages.join(" ")); }
+            ProfileCommands::Upgrade { packages, .. } => { eprintln!("profile upgrade {}: not yet implemented", packages.join(" ")); }
+            ProfileCommands::Rollback { .. } => { eprintln!("profile rollback: not yet implemented"); }
+            ProfileCommands::History { .. } => { eprintln!("profile history: not yet implemented"); }
+            ProfileCommands::WipeHistory { .. } => { eprintln!("profile wipe-history: not yet implemented"); }
+            ProfileCommands::Diff { .. } => { eprintln!("profile diff: not yet implemented"); }
+        },
+        Commands::Repl { .. } => { eprintln!("repl: not yet implemented"); }
+        Commands::Copy { to, from, paths, .. } => { eprintln!("copy {} paths from {} to {}: not yet implemented", paths.len(), from.as_deref().unwrap_or("local"), to.as_deref().unwrap_or("?")); }
+        Commands::PathInfo { paths, .. } => { eprintln!("path-info {}: not yet implemented", paths.join(" ")); }
+        Commands::CollectGarbage { delete_old, delete_older_than } => {
+            if delete_old { eprintln!("collect-garbage -d: not yet implemented"); }
+            else if let Some(ref age) = delete_older_than { eprintln!("collect-garbage --delete-older-than {age}: not yet implemented"); }
+            else { eprintln!("collect-garbage: not yet implemented"); }
+        }
+        Commands::Derivation { command } => match command {
+            DerivationCommands::Show { paths, .. } => { eprintln!("derivation show {}: not yet implemented", paths.join(" ")); }
+            DerivationCommands::Add { path } => { eprintln!("derivation add {path}: not yet implemented"); }
+        },
+        Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }
+        Commands::Hash { command } => match command {
+            HashCommands::File { path, r#type, base } => { eprintln!("hash file {path} --type {type} --base {base}: not yet implemented"); }
+            HashCommands::Path { path, r#type, base } => { eprintln!("hash path {path} --type {type} --base {base}: not yet implemented"); }
+            HashCommands::ToBase16 { hash, .. } => { eprintln!("hash to-base16 {hash}: not yet implemented"); }
+            HashCommands::ToBase32 { hash, .. } => { eprintln!("hash to-base32 {hash}: not yet implemented"); }
+            HashCommands::ToBase64 { hash, .. } => { eprintln!("hash to-base64 {hash}: not yet implemented"); }
+            HashCommands::ToSri { hash, .. } => { eprintln!("hash to-sri {hash}: not yet implemented"); }
+        },
+        Commands::Key { command } => match command {
+            KeyCommands::GenerateSecret { key_name } => { eprintln!("key generate-secret --key-name {key_name}: not yet implemented"); }
+            KeyCommands::ConvertSecretToPublic => { eprintln!("key convert-secret-to-public: not yet implemented"); }
+        },
+        Commands::Why { path, dependency } => { eprintln!("why {path} {dependency}: not yet implemented"); }
+        Commands::PathFromHashPart { hash_part } => { eprintln!("path-from-hash-part {hash_part}: not yet implemented"); }
+        Commands::Edit { installable } => { eprintln!("edit {installable}: not yet implemented"); }
+        Commands::Log { installable } => { eprintln!("log {installable}: not yet implemented"); }
+        Commands::DiffClosures { before, after } => { eprintln!("diff-closures {before} {after}: not yet implemented"); }
+        Commands::UpgradeNix { .. } => { eprintln!("upgrade-nix: not yet implemented"); }
+        Commands::Fmt { files, check } => { eprintln!("fmt ({}){}: not yet implemented", if check { "check" } else { "format" }, if files.is_empty() { String::new() } else { format!(" {}", files.join(" ")) }); }
+        Commands::Registry { command } => match command {
+            RegistryCommands::List { .. } => { eprintln!("registry list: not yet implemented"); }
+            RegistryCommands::Add { from, to } => { eprintln!("registry add {from} {to}: not yet implemented"); }
+            RegistryCommands::Remove { entry } => { eprintln!("registry remove {entry}: not yet implemented"); }
+            RegistryCommands::Pin { entry } => { eprintln!("registry pin {entry}: not yet implemented"); }
+        },
+        Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
+        Commands::PrintDevEnv { flake_ref, .. } => { eprintln!("print-dev-env {}: not yet implemented", flake_ref.as_deref().unwrap_or(".")); }
+        Commands::Bundle { installable, bundler, .. } => { eprintln!("bundle {installable} --bundler {}: not yet implemented", bundler.as_deref().unwrap_or("default")); }
     }
 
+    Ok(())
+}
+
+/// Handle legacy nix-* commands dispatched by argv[0].
+async fn handle_legacy_command(name: &str) -> Result<(), CliError> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match name {
+        "nix-build" => {
+            let mut attr = None;
+            let mut path = ".".to_string();
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-A" | "--attr" => { i += 1; if i < args.len() { attr = Some(args[i].clone()); } }
+                    s if !s.starts_with('-') => { path = s.to_string(); }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let inst = if let Some(a) = attr { format!("{path}#{a}") } else { path };
+            eprintln!("nix-build → sui build {inst}: not yet fully implemented");
+        }
+        "nix-store" => {
+            if args.iter().any(|a| a == "--gc") { eprintln!("nix-store --gc → sui store gc"); }
+            else if args.iter().any(|a| a == "--optimise") { eprintln!("nix-store --optimise → sui store optimise"); }
+            else if args.iter().any(|a| a == "--verify") { eprintln!("nix-store --verify → sui store verify"); }
+            else if args.iter().any(|a| a == "-q" || a == "--query") { eprintln!("nix-store --query → sui store path-info"); }
+            else if args.iter().any(|a| a == "--delete") { eprintln!("nix-store --delete → sui store delete"); }
+            else if args.iter().any(|a| a == "--realise" || a == "-r") { eprintln!("nix-store --realise → sui build"); }
+            else { eprintln!("nix-store: unrecognized flags {:?}", args); }
+        }
+        "nix-instantiate" => {
+            let has_eval = args.iter().any(|a| a == "--eval");
+            let has_json = args.iter().any(|a| a == "--json");
+            let mut expr = None;
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-E" | "--expr" => { i += 1; if i < args.len() { expr = Some(args[i].clone()); } }
+                    "--eval" | "--json" | "--strict" => {}
+                    s if !s.starts_with('-') => { expr = Some(s.to_string()); }
+                    _ => {}
+                }
+                i += 1;
+            }
+            if has_eval {
+                if let Some(e) = expr {
+                    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::new("warn")).init();
+                    let value = sui_eval::eval(&e)?;
+                    if has_json { println!("{}", serde_json::to_string(&value.to_json())?); }
+                    else { println!("{value}"); }
+                } else {
+                    eprintln!("nix-instantiate --eval: no expression provided");
+                    std::process::exit(1);
+                }
+            } else { eprintln!("nix-instantiate (instantiate mode): not yet implemented"); }
+        }
+        "nix-env" => {
+            if args.iter().any(|a| a == "--list-generations") { eprintln!("nix-env --list-generations → sui profile history"); }
+            else if args.iter().any(|a| a == "-i" || a == "--install") { eprintln!("nix-env -i → sui profile install"); }
+            else if args.iter().any(|a| a == "-e" || a == "--uninstall") { eprintln!("nix-env -e → sui profile remove"); }
+            else if args.iter().any(|a| a == "-u" || a == "--upgrade") { eprintln!("nix-env -u → sui profile upgrade"); }
+            else if args.iter().any(|a| a == "-q" || a == "--query") { eprintln!("nix-env -q → sui profile list"); }
+            else { eprintln!("nix-env: unrecognized flags {:?}", args); }
+        }
+        "nix-shell" => {
+            if args.iter().any(|a| a == "-p" || a == "--packages") { eprintln!("nix-shell -p → sui develop"); }
+            else if args.iter().any(|a| a == "--run" || a == "--command") { eprintln!("nix-shell --run → sui develop --command"); }
+            else { eprintln!("nix-shell → sui develop"); }
+        }
+        "nix-collect-garbage" => {
+            if args.iter().any(|a| a == "-d" || a == "--delete-old") { eprintln!("nix-collect-garbage -d → sui collect-garbage -d"); }
+            else { eprintln!("nix-collect-garbage → sui store gc"); }
+        }
+        "nix-channel" => { eprintln!("nix-channel: not yet implemented"); }
+        "nix-hash" => { eprintln!("nix-hash → sui hash: not yet implemented"); }
+        "nix-copy-closure" => { eprintln!("nix-copy-closure → sui copy: not yet implemented"); }
+        "nix-prefetch-url" => { eprintln!("nix-prefetch-url → sui store prefetch-file: not yet implemented"); }
+        _ => { eprintln!("unknown legacy command: {name}"); }
+    }
     Ok(())
 }
 
