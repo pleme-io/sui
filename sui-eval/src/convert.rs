@@ -76,7 +76,7 @@ pub fn eval_to_vm(val: &Value, interner: &mut Interner) -> VMValue {
         Value::Attrs(attrs) => {
             let mut map = std::collections::BTreeMap::new();
             for (k, v) in attrs.iter() {
-                let sym = interner.intern(k);
+                let sym = interner.intern(&k);
                 map.insert(sym, eval_to_vm(v, interner));
             }
             VMValue::Attrs(map)

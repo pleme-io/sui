@@ -443,6 +443,20 @@ impl Compiler {
                 let text = p.syntax().text().to_string();
                 self.emit_constant(VMValue::Path(text))
             }
+            ast::Expr::PathSearch(p) => {
+                let text = p.syntax().text().to_string();
+                let inner = text
+                    .strip_prefix('<')
+                    .and_then(|s| s.strip_suffix('>'))
+                    .unwrap_or(&text);
+                if let Some(resolved) = resolve_search_path(inner) {
+                    self.emit_constant(VMValue::Path(resolved))
+                } else {
+                    Err(CompileError::ParseError(format!(
+                        "search path '{text}' not in NIX_PATH"
+                    )))
+                }
+            }
             other => Err(CompileError::Unsupported(format!("{other:?}"))),
         }
     }
@@ -2189,6 +2203,55 @@ fn detect_trivial_cycles(bindings: &[(String, &ast::Expr)]) -> Vec<String> {
         }
     }
     warnings
+}
+
+/// Parse a `NIX_PATH` env var value into `(prefix, path)` pairs.
+///
+/// The format is `prefix1=path1:prefix2=path2:...`. An entry with
+/// no `=` is treated as having an empty prefix (CppNix-compatible).
+/// Empty entries are skipped.
+fn parse_nix_path(s: &str) -> Vec<(String, String)> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(':')
+        .filter(|e| !e.is_empty())
+        .map(|entry| match entry.split_once('=') {
+            Some((prefix, path)) => (prefix.to_string(), path.to_string()),
+            None => (String::new(), entry.to_string()),
+        })
+        .collect()
+}
+
+/// Resolve a `<name>` search-path token to an absolute filesystem
+/// path by walking the entries parsed from `NIX_PATH`.
+fn resolve_search_path(name: &str) -> Option<String> {
+    let nix_path = std::env::var("NIX_PATH").ok()?;
+    for (prefix, path) in parse_nix_path(&nix_path) {
+        if !prefix.is_empty() && name == prefix {
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+            continue;
+        }
+        if !prefix.is_empty() {
+            let needle = format!("{prefix}/");
+            if let Some(rest) = name.strip_prefix(&needle) {
+                let full = format!("{path}/{rest}");
+                if std::path::Path::new(&full).exists() {
+                    return Some(full);
+                }
+                continue;
+            }
+        }
+        if prefix.is_empty() {
+            let full = format!("{path}/{name}");
+            if std::path::Path::new(&full).exists() {
+                return Some(full);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

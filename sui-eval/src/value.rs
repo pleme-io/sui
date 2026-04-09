@@ -14,6 +14,25 @@ pub use smol_str::SmolStr;
 
 use rowan::ast::AstNode;
 
+use sui_bytecode::intern::{Interner, Symbol};
+
+// -- Thread-local string interner --
+
+thread_local! {
+    static INTERNER: RefCell<Interner> = RefCell::new(Interner::new());
+}
+
+/// Intern a string key, returning a Symbol handle.
+/// Used for NixAttrs keys and Env binding names.
+pub fn intern(s: &str) -> Symbol {
+    INTERNER.with(|i| i.borrow_mut().intern(s))
+}
+
+/// Resolve a Symbol back to its string content.
+pub fn resolve(sym: Symbol) -> String {
+    INTERNER.with(|i| i.borrow().resolve(sym).to_string())
+}
+
 // ── Nix string context ─────────────────────────────────────────
 
 /// An element of a Nix string's context set.
@@ -559,7 +578,7 @@ impl fmt::Debug for Thunk {
 /// evaluation). Sorted iteration (needed by `attrNames`, `attrValues`,
 /// Display, equality) collects and sorts.
 #[derive(Debug, Clone, Default)]
-pub struct NixAttrs(pub im_rc::HashMap<String, Value>);
+pub struct NixAttrs(pub im_rc::HashMap<Symbol, Value>);
 
 impl NixAttrs {
     /// Create an empty attribute set.
@@ -576,50 +595,60 @@ impl NixAttrs {
     /// Look up an attribute by name.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.get(key)
+        self.0.get(&intern(key))
     }
 
     /// Insert or overwrite an attribute.
     pub fn insert(&mut self, key: String, value: Value) {
-        self.0.insert(key, value);
+        self.0.insert(intern(&key), value);
     }
 
     /// Check whether an attribute exists.
     #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
-        self.0.contains_key(key)
+        self.0.contains_key(&intern(key))
     }
 
     /// Iterate over attribute names in sorted order.
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        let mut keys: Vec<&String> = self.0.keys().collect();
+    ///
+    /// Returns resolved `String` keys (not references) because the
+    /// internal storage uses `Symbol` handles.
+    pub fn keys(&self) -> impl Iterator<Item = String> {
+        let mut keys: Vec<String> = self.0.keys().map(|sym| resolve(*sym)).collect();
         keys.sort();
         keys.into_iter()
     }
 
     /// Iterate over (name, value) pairs in sorted key order.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
-        let mut pairs: Vec<(&String, &Value)> = self.0.iter().collect();
-        pairs.sort_by_key(|(k, _)| *k);
+    ///
+    /// Returns resolved `String` keys because the internal storage
+    /// uses `Symbol` handles.
+    pub fn iter(&self) -> impl Iterator<Item = (String, &Value)> {
+        let mut pairs: Vec<(String, &Value)> = self.0.iter()
+            .map(|(sym, v)| (resolve(*sym), v))
+            .collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
         pairs.into_iter()
     }
 
     /// Iterate over (name, value) pairs in arbitrary order (fast path).
     /// Use this when sorted order is NOT required.
-    pub fn iter_unsorted(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.0.iter()
+    pub fn iter_unsorted(&self) -> impl Iterator<Item = (String, &Value)> {
+        self.0.iter().map(|(sym, v)| (resolve(*sym), v))
     }
 
     /// Iterate over values in sorted key order.
     pub fn values(&self) -> impl Iterator<Item = &Value> {
-        let mut pairs: Vec<(&String, &Value)> = self.0.iter().collect();
-        pairs.sort_by_key(|(k, _)| *k);
+        let mut pairs: Vec<(String, &Value)> = self.0.iter()
+            .map(|(sym, v)| (resolve(*sym), v))
+            .collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
         pairs.into_iter().map(|(_, v)| v)
     }
 
     /// Remove an attribute, returning its value if present.
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.0.remove(key)
+        self.0.remove(&intern(key))
     }
 
     /// Return the number of attributes.
@@ -642,7 +671,7 @@ impl NixAttrs {
     pub fn update(&self, other: &NixAttrs) -> NixAttrs {
         let mut result = self.0.clone(); // O(1) structural sharing
         for (k, v) in other.0.iter() {
-            result.insert(k.clone(), v.clone());
+            result.insert(*k, v.clone());
         }
         NixAttrs(result)
     }
@@ -650,16 +679,16 @@ impl NixAttrs {
 
 impl FromIterator<(String, Value)> for NixAttrs {
     fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
-        NixAttrs(iter.into_iter().collect())
+        NixAttrs(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect())
     }
 }
 
 impl IntoIterator for NixAttrs {
     type Item = (String, Value);
-    type IntoIter = im_rc::hashmap::ConsumingIter<(String, Value)>;
+    type IntoIter = Box<dyn Iterator<Item = (String, Value)>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        Box::new(self.0.into_iter().map(|(sym, v)| (resolve(sym), v)))
     }
 }
 
@@ -698,6 +727,32 @@ impl fmt::Debug for BuiltinFn {
     }
 }
 
+/// A `with` scope with optional cached forced attrset.
+///
+/// On first lookup, the scope value is forced and the resulting attrset
+/// is cached.  Subsequent lookups skip forcing entirely.
+///
+/// The cache is wrapped in `Rc<RefCell<…>>` so that child environments
+/// (which clone the `Vec<WithScope>`) share the same cache cell —
+/// once any environment forces a scope, every related environment
+/// benefits.
+#[derive(Clone)]
+struct WithScope {
+    value: Value,
+    /// Cached forced attrset.  Shared via Rc so child environments
+    /// benefit from a parent having already forced the scope.
+    cached: Rc<RefCell<Option<NixAttrs>>>,
+}
+
+impl fmt::Debug for WithScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WithScope")
+            .field("value", &self.value)
+            .field("cached", &self.cached.borrow().is_some())
+            .finish()
+    }
+}
+
 /// Inner data for an evaluation environment.
 ///
 /// Wrapped in `Rc` by [`Env`] so that cloning an `Env` is always a
@@ -709,9 +764,9 @@ impl fmt::Debug for BuiltinFn {
 /// instead of walking a chain.
 #[derive(Debug, Clone, Default)]
 struct EnvInner {
-    bindings: im_rc::HashMap<String, Value>,
+    bindings: im_rc::HashMap<Symbol, Value>,
     /// Dynamic `with` scopes, innermost last.
-    with_scopes: Vec<Value>,
+    with_scopes: Vec<WithScope>,
     /// Source file currently being evaluated, for relative path
     /// literals (`./foo.nix`) inside function defaults that get
     /// evaluated *after* control has left the file scope.
@@ -769,7 +824,10 @@ impl Env {
     /// Scopes are pushed to the end of the vec (innermost last).
     #[must_use]
     pub fn with_scope(mut self, value: Value) -> Self {
-        Rc::make_mut(&mut self.0).with_scopes.push(value);
+        Rc::make_mut(&mut self.0).with_scopes.push(WithScope {
+            value,
+            cached: Rc::new(RefCell::new(None)),
+        });
         self
     }
 
@@ -778,7 +836,7 @@ impl Env {
     /// Uses copy-on-write: if the inner `Rc` is shared, clones the
     /// inner data before mutating.
     pub fn bind(&mut self, name: String, value: Value) {
-        Rc::make_mut(&mut self.0).bindings.insert(name, value);
+        Rc::make_mut(&mut self.0).bindings.insert(intern(&name), value);
     }
 
     /// Get the eval_file for this environment.
@@ -803,19 +861,30 @@ impl Env {
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
         crate::perf::inc("env_lookup");
-        // 1. Flat lexical lookup — single O(log32 n) probe, no chain walk.
-        if let Some(v) = self.0.bindings.get(name) {
+        // 1. Flat lexical lookup — single O(1) hash + O(log32 n) probe.
+        let sym = intern(name);
+        if let Some(v) = self.0.bindings.get(&sym) {
             return Some(v.clone());
         }
         // 2. With-scope lookup — iterate innermost-first (reverse order).
-        for scope_val in self.0.with_scopes.iter().rev() {
-            // Force the with-scope lazily — only when a name lookup
-            // actually needs it.  This matches CppNix semantics and
-            // allows `fix (self: with self; { … })` to work.
-            if let Ok(forced) = crate::eval::force_value(scope_val) {
-                if let Value::Attrs(ref attrs) = forced {
+        for scope in self.0.with_scopes.iter().rev() {
+            // Fast path: use cached forced attrset
+            {
+                let cache = scope.cached.borrow();
+                if let Some(ref attrs) = *cache {
                     if let Some(v) = attrs.get(name) {
                         return Some(v.clone());
+                    }
+                    continue;
+                }
+            }
+            // Slow path: force, cache, then check
+            if let Ok(forced) = crate::eval::force_value(&scope.value) {
+                if let Value::Attrs(ref attrs) = forced {
+                    let result = attrs.get(name).cloned();
+                    *scope.cached.borrow_mut() = Some(attrs.clone());
+                    if result.is_some() {
+                        return result;
                     }
                 }
             }
@@ -1911,7 +1980,7 @@ mod tests {
         attrs.insert("x".to_string(), Value::Int(42));
         let env = Env::new().with_scope(Value::Attrs(attrs));
         // The binding map itself should not contain "x"
-        assert!(env.0.bindings.get("x").is_none());
+        assert!(env.0.bindings.get(&intern("x")).is_none());
         // But lookup should find it via with-scope
         assert_eq!(env.lookup("x"), Some(Value::Int(42)));
     }
@@ -2128,7 +2197,7 @@ mod tests {
         a.insert("c".to_string(), Value::Int(3));
         a.insert("a".to_string(), Value::Int(1));
         a.insert("b".to_string(), Value::Int(2));
-        let keys: Vec<&String> = a.keys().collect();
+        let keys: Vec<String> = a.keys().collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
     }
 
@@ -2479,7 +2548,7 @@ mod tests {
         a.insert("zeta".into(), Value::Int(3));
         a.insert("alpha".into(), Value::Int(1));
         a.insert("mu".into(), Value::Int(2));
-        let pairs: Vec<(&String, &Value)> = a.iter().collect();
+        let pairs: Vec<(String, &Value)> = a.iter().collect();
         assert_eq!(pairs[0].0, "alpha");
         assert_eq!(pairs[1].0, "mu");
         assert_eq!(pairs[2].0, "zeta");

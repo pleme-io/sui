@@ -44,7 +44,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let b = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
                 for (k, v) in b.iter() {
-                    if a.contains_key(k) {
+                    if a.contains_key(&k) {
                         result.insert(k.clone(), v.clone());
                     }
                 }

@@ -164,7 +164,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                             if let Ok(flake_result) = evaluate_flake(&dir) {
                                 if let Value::Attrs(ref flake_out_attrs) = flake_result {
                                     for (k, v) in flake_out_attrs.iter() {
-                                        if !merged.contains_key(k) {
+                                        if !merged.contains_key(&k) {
                                             merged.insert(k.clone(), v.clone());
                                         }
                                     }
@@ -186,7 +186,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
         && let Ok(inputs_forced) = crate::eval::force_value(inputs_value)
             && let Value::Attrs(declared_inputs) = inputs_forced {
                 for key in declared_inputs.keys() {
-                    if !resolved_inputs.contains_key(key) {
+                    if !resolved_inputs.contains_key(&key) {
                         let mut stub = NixAttrs::new();
                         stub.insert(
                             "outPath".to_string(),
@@ -226,7 +226,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     final_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs));
 
     for (k, v) in flake_attrs.iter() {
-        if k != "outputs" && !final_attrs.contains_key(k) {
+        if k != "outputs" && !final_attrs.contains_key(&k) {
             final_attrs.insert(k.clone(), v.clone());
         }
     }

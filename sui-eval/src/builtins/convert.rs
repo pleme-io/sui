@@ -156,7 +156,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 Value::Attrs(attrs) => {
                     let mut out = format!("{pad}<attrs>\n");
                     for (k, v) in attrs.iter() {
-                        out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(k)));
+                        out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(&k)));
                         out.push_str(&value_to_xml(v, indent + 4)); out.push('\n');
                         out.push_str(&format!("{pad}  </attr>\n"));
                     }

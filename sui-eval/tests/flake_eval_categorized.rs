@@ -24,7 +24,7 @@ use std::path::Path;
 fn eval_flake_keys(dir: &Path) -> Result<Vec<String>, String> {
     match sui_eval::builtins::evaluate_flake(dir) {
         Ok(v) => match v {
-            sui_eval::Value::Attrs(ref attrs) => Ok(attrs.keys().cloned().collect()),
+            sui_eval::Value::Attrs(ref attrs) => Ok(attrs.keys().collect()),
             _ => Ok(vec![]), // non-attrs result
         },
         Err(e) => Err(format!("{e}")),
@@ -303,7 +303,7 @@ fn tier_e_system_configs() {
     match sui_eval::builtins::evaluate_flake(&nix_dir) {
         Ok(v) => {
             if let sui_eval::Value::Attrs(ref attrs) = v {
-                let keys: Vec<&String> = attrs.keys().collect();
+                let keys: Vec<String> = attrs.keys().collect();
                 println!(
                     "  PASS: nix flake evaluated ({} top-level keys: {})",
                     keys.len(),

@@ -31,7 +31,7 @@ fn nix_repo_eval_no_crash() {
             println!("SUCCESS: nix repo evaluated");
             // Report what top-level keys exist
             if let sui_eval::value::Value::Attrs(ref attrs) = v {
-                let keys: Vec<&String> = attrs.keys().collect();
+                let keys: Vec<String> = attrs.keys().collect();
                 println!("top-level keys: {:?}", keys);
             }
         }
@@ -73,7 +73,7 @@ fn nix_repo_has_darwin_configurations() {
             let forced = sui_eval::eval::force_value(dc);
             match forced {
                 Ok(sui_eval::value::Value::Attrs(ref dc_attrs)) => {
-                    let hosts: Vec<&String> = dc_attrs.keys().collect();
+                    let hosts: Vec<String> = dc_attrs.keys().collect();
                     println!("hosts: {:?}", hosts);
                 }
                 Ok(other) => println!("darwinConfigurations is {}", other.type_name()),

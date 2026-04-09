@@ -927,7 +927,7 @@ fn extract_shell_env(value: &sui_eval::Value) -> std::collections::BTreeMap<Stri
     let mut env = std::collections::BTreeMap::new();
     if let sui_eval::Value::Attrs(attrs) = value {
         for key in attrs.keys() {
-            if let Some(v) = attrs.get(key) {
+            if let Some(v) = attrs.get(&key) {
                 if let Ok(s) = v.as_string() {
                     match key.as_str() {
                         "type" | "drvPath" | "outPath" | "drvAttrs" | "outputHash" | "outputHashAlgo" | "outputHashMode" | "all" | "outputs" | "args" | "builder" | "system" | "name" | "pname" | "version" | "__structuredAttrs" | "__ignoreNulls" => {}
@@ -995,14 +995,14 @@ fn print_flake_tree(outputs: &sui_eval::Value) {
         return;
     };
 
-    let keys: Vec<&String> = attrs.keys().collect();
+    let keys: Vec<String> = attrs.keys().collect();
     let total = keys.len();
     for (i, key) in keys.iter().enumerate() {
         let is_last = i + 1 == total;
         let connector = if is_last { "\u{2514}\u{2500}\u{2500}\u{2500}" } else { "\u{251c}\u{2500}\u{2500}\u{2500}" };
         let child_prefix = if is_last { "    " } else { "\u{2502}   " };
 
-        if let Some(child) = attrs.get(key) {
+        if let Some(child) = attrs.get(&key) {
             let child = sui_eval::eval::force_value(child).unwrap_or_else(|_| child.clone());
             let desc = classify_output(key, &child);
             if let Some(d) = desc {
@@ -1020,7 +1020,7 @@ fn print_flake_tree(outputs: &sui_eval::Value) {
 
 /// Recursively print a tree of attributes.
 fn print_tree_inner(attrs: &sui_eval::value::NixAttrs, prefix: &str) {
-    let keys: Vec<&String> = attrs.keys().collect();
+    let keys: Vec<String> = attrs.keys().collect();
     let total = keys.len();
     for (i, key) in keys.iter().enumerate() {
         let is_last = i + 1 == total;
@@ -1031,7 +1031,7 @@ fn print_tree_inner(attrs: &sui_eval::value::NixAttrs, prefix: &str) {
             format!("{prefix}\u{2502}   ")
         };
 
-        if let Some(child) = attrs.get(key) {
+        if let Some(child) = attrs.get(&key) {
             let child = sui_eval::eval::force_value(child).unwrap_or_else(|_| child.clone());
             let desc = classify_output(key, &child);
             if let Some(d) = desc {
