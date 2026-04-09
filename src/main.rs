@@ -335,17 +335,17 @@ async fn main() -> Result<(), CliError> {
                     println!("Valid paths:  {}", paths.len());
                     println!("Database:     {NIX_DB_PATH}");
                 }
-                StoreCommands::Delete { paths: dp, ignore_liveness: _ } => { eprintln!("store delete: {} paths (not yet implemented)", dp.len()); }
-                StoreCommands::Ls { path: p, .. } => { eprintln!("store ls {p}: not yet implemented"); }
-                StoreCommands::Cat { path: p } => { eprintln!("store cat {p}: not yet implemented"); }
-                StoreCommands::DumpPath { path: p } => { eprintln!("store dump-path {p}: not yet implemented"); }
-                StoreCommands::MakeContentAddressed { paths: mp } => { eprintln!("store make-content-addressed: {} paths (not yet implemented)", mp.len()); }
+                StoreCommands::Delete { paths: dp, ignore_liveness: _ } => { return Err(CliError::NotImplemented(format!("store delete: {} paths", dp.len()))); }
+                StoreCommands::Ls { path: p, .. } => { return Err(CliError::NotImplemented(format!("store ls {p}"))); }
+                StoreCommands::Cat { path: p } => { return Err(CliError::NotImplemented(format!("store cat {p}"))); }
+                StoreCommands::DumpPath { path: p } => { return Err(CliError::NotImplemented(format!("store dump-path {p}"))); }
+                StoreCommands::MakeContentAddressed { paths: mp } => { return Err(CliError::NotImplemented(format!("store make-content-addressed: {} paths", mp.len()))); }
                 StoreCommands::Ping => { println!("Store URL: daemon\nVersion: sui {}\nTrusted: 1", env!("CARGO_PKG_VERSION")); }
-                StoreCommands::AddPath { path: p, .. } => { eprintln!("store add-path {p}: not yet implemented"); }
-                StoreCommands::AddFile { path: p, .. } => { eprintln!("store add-file {p}: not yet implemented"); }
-                StoreCommands::PrefetchFile { url: u, .. } => { eprintln!("store prefetch-file {u}: not yet implemented"); }
-                StoreCommands::Sign { paths: sp, key_file: kf } => { eprintln!("store sign: {} paths with {kf} (not yet implemented)", sp.len()); }
-                StoreCommands::Repair { paths: rp } => { eprintln!("store repair: {} paths (not yet implemented)", rp.len()); }
+                StoreCommands::AddPath { path: p, .. } => { return Err(CliError::NotImplemented(format!("store add-path {p}"))); }
+                StoreCommands::AddFile { path: p, .. } => { return Err(CliError::NotImplemented(format!("store add-file {p}"))); }
+                StoreCommands::PrefetchFile { url: u, .. } => { return Err(CliError::NotImplemented(format!("store prefetch-file {u}"))); }
+                StoreCommands::Sign { paths: sp, key_file: kf } => { return Err(CliError::NotImplemented(format!("store sign: {} paths with {kf}", sp.len()))); }
+                StoreCommands::Repair { paths: rp } => { return Err(CliError::NotImplemented(format!("store repair: {} paths", rp.len()))); }
             }
         }
 
@@ -558,11 +558,11 @@ async fn main() -> Result<(), CliError> {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
                 print_flake_metadata(&flake_dir)?;
             }
-            FlakeCommands::Init { template } => { eprintln!("flake init --template {}: not yet implemented", template.as_deref().unwrap_or("default")); }
-            FlakeCommands::New { dest, template } => { eprintln!("flake new {dest} --template {}: not yet implemented", template.as_deref().unwrap_or("default")); }
-            FlakeCommands::Archive { flake_ref: fr, json: _ } => { eprintln!("flake archive {}: not yet implemented", fr.as_deref().unwrap_or(".")); }
-            FlakeCommands::Clone { flake_ref: fr, dest } => { eprintln!("flake clone {fr} --dest {}: not yet implemented", dest.as_deref().unwrap_or(".")); }
-            FlakeCommands::Prefetch { flake_ref: fr, json: _ } => { eprintln!("flake prefetch {}: not yet implemented", fr.as_deref().unwrap_or(".")); }
+            FlakeCommands::Init { template } => { return Err(CliError::NotImplemented(format!("flake init --template {}", template.as_deref().unwrap_or("default")))); }
+            FlakeCommands::New { dest, template } => { return Err(CliError::NotImplemented(format!("flake new {dest} --template {}", template.as_deref().unwrap_or("default")))); }
+            FlakeCommands::Archive { flake_ref: fr, json: _ } => { return Err(CliError::NotImplemented(format!("flake archive {}", fr.as_deref().unwrap_or(".")))); }
+            FlakeCommands::Clone { flake_ref: fr, dest } => { return Err(CliError::NotImplemented(format!("flake clone {fr} --dest {}", dest.as_deref().unwrap_or(".")))); }
+            FlakeCommands::Prefetch { flake_ref: fr, json: _ } => { return Err(CliError::NotImplemented(format!("flake prefetch {}", fr.as_deref().unwrap_or(".")))); }
         },
 
         Commands::Daemon { socket } => {
@@ -778,58 +778,58 @@ async fn main() -> Result<(), CliError> {
             let status = std::process::Command::new(&program).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));
         }
-        Commands::Search { flake_ref, query } => { eprintln!("search {flake_ref} {query}: not yet implemented"); }
+        Commands::Search { flake_ref, query } => { return Err(CliError::NotImplemented(format!("search {flake_ref} {query}"))); }
         Commands::Profile { command } => match command {
-            ProfileCommands::List { .. } => { eprintln!("profile list: not yet implemented"); }
-            ProfileCommands::Install { packages, .. } => { eprintln!("profile install {}: not yet implemented", packages.join(" ")); }
-            ProfileCommands::Remove { packages, .. } => { eprintln!("profile remove {}: not yet implemented", packages.join(" ")); }
-            ProfileCommands::Upgrade { packages, .. } => { eprintln!("profile upgrade {}: not yet implemented", packages.join(" ")); }
-            ProfileCommands::Rollback { .. } => { eprintln!("profile rollback: not yet implemented"); }
-            ProfileCommands::History { .. } => { eprintln!("profile history: not yet implemented"); }
-            ProfileCommands::WipeHistory { .. } => { eprintln!("profile wipe-history: not yet implemented"); }
-            ProfileCommands::Diff { .. } => { eprintln!("profile diff: not yet implemented"); }
+            ProfileCommands::List { .. } => { return Err(CliError::NotImplemented("profile list".into())); }
+            ProfileCommands::Install { packages, .. } => { return Err(CliError::NotImplemented(format!("profile install {}", packages.join(" ")))); }
+            ProfileCommands::Remove { packages, .. } => { return Err(CliError::NotImplemented(format!("profile remove {}", packages.join(" ")))); }
+            ProfileCommands::Upgrade { packages, .. } => { return Err(CliError::NotImplemented(format!("profile upgrade {}", packages.join(" ")))); }
+            ProfileCommands::Rollback { .. } => { return Err(CliError::NotImplemented("profile rollback".into())); }
+            ProfileCommands::History { .. } => { return Err(CliError::NotImplemented("profile history".into())); }
+            ProfileCommands::WipeHistory { .. } => { return Err(CliError::NotImplemented("profile wipe-history".into())); }
+            ProfileCommands::Diff { .. } => { return Err(CliError::NotImplemented("profile diff".into())); }
         },
-        Commands::Repl { .. } => { eprintln!("repl: not yet implemented"); }
-        Commands::Copy { to, from, paths, .. } => { eprintln!("copy {} paths from {} to {}: not yet implemented", paths.len(), from.as_deref().unwrap_or("local"), to.as_deref().unwrap_or("?")); }
-        Commands::PathInfo { paths, .. } => { eprintln!("path-info {}: not yet implemented", paths.join(" ")); }
+        Commands::Repl { .. } => { return Err(CliError::NotImplemented("repl".into())); }
+        Commands::Copy { to, from, paths, .. } => { return Err(CliError::NotImplemented(format!("copy {} paths from {} to {}", paths.len(), from.as_deref().unwrap_or("local"), to.as_deref().unwrap_or("?")))); }
+        Commands::PathInfo { paths, .. } => { return Err(CliError::NotImplemented(format!("path-info {}", paths.join(" ")))); }
         Commands::CollectGarbage { delete_old, delete_older_than } => {
-            if delete_old { eprintln!("collect-garbage -d: not yet implemented"); }
-            else if let Some(ref age) = delete_older_than { eprintln!("collect-garbage --delete-older-than {age}: not yet implemented"); }
-            else { eprintln!("collect-garbage: not yet implemented"); }
+            if delete_old { return Err(CliError::NotImplemented("collect-garbage -d".into())); }
+            else if let Some(ref age) = delete_older_than { return Err(CliError::NotImplemented(format!("collect-garbage --delete-older-than {age}"))); }
+            else { return Err(CliError::NotImplemented("collect-garbage".into())); }
         }
         Commands::Derivation { command } => match command {
-            DerivationCommands::Show { paths, .. } => { eprintln!("derivation show {}: not yet implemented", paths.join(" ")); }
-            DerivationCommands::Add { path } => { eprintln!("derivation add {path}: not yet implemented"); }
+            DerivationCommands::Show { paths, .. } => { return Err(CliError::NotImplemented(format!("derivation show {}", paths.join(" ")))); }
+            DerivationCommands::Add { path } => { return Err(CliError::NotImplemented(format!("derivation add {path}"))); }
         },
         Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }
         Commands::Hash { command } => match command {
-            HashCommands::File { path, r#type, base } => { eprintln!("hash file {path} --type {type} --base {base}: not yet implemented"); }
-            HashCommands::Path { path, r#type, base } => { eprintln!("hash path {path} --type {type} --base {base}: not yet implemented"); }
-            HashCommands::ToBase16 { hash, .. } => { eprintln!("hash to-base16 {hash}: not yet implemented"); }
-            HashCommands::ToBase32 { hash, .. } => { eprintln!("hash to-base32 {hash}: not yet implemented"); }
-            HashCommands::ToBase64 { hash, .. } => { eprintln!("hash to-base64 {hash}: not yet implemented"); }
-            HashCommands::ToSri { hash, .. } => { eprintln!("hash to-sri {hash}: not yet implemented"); }
+            HashCommands::File { path, r#type, base } => { return Err(CliError::NotImplemented(format!("hash file {path} --type {type} --base {base}"))); }
+            HashCommands::Path { path, r#type, base } => { return Err(CliError::NotImplemented(format!("hash path {path} --type {type} --base {base}"))); }
+            HashCommands::ToBase16 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base16 {hash}"))); }
+            HashCommands::ToBase32 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base32 {hash}"))); }
+            HashCommands::ToBase64 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base64 {hash}"))); }
+            HashCommands::ToSri { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-sri {hash}"))); }
         },
         Commands::Key { command } => match command {
-            KeyCommands::GenerateSecret { key_name } => { eprintln!("key generate-secret --key-name {key_name}: not yet implemented"); }
-            KeyCommands::ConvertSecretToPublic => { eprintln!("key convert-secret-to-public: not yet implemented"); }
+            KeyCommands::GenerateSecret { key_name } => { return Err(CliError::NotImplemented(format!("key generate-secret --key-name {key_name}"))); }
+            KeyCommands::ConvertSecretToPublic => { return Err(CliError::NotImplemented("key convert-secret-to-public".into())); }
         },
-        Commands::Why { path, dependency } => { eprintln!("why {path} {dependency}: not yet implemented"); }
-        Commands::PathFromHashPart { hash_part } => { eprintln!("path-from-hash-part {hash_part}: not yet implemented"); }
-        Commands::Edit { installable } => { eprintln!("edit {installable}: not yet implemented"); }
-        Commands::Log { installable } => { eprintln!("log {installable}: not yet implemented"); }
-        Commands::DiffClosures { before, after } => { eprintln!("diff-closures {before} {after}: not yet implemented"); }
-        Commands::UpgradeNix { .. } => { eprintln!("upgrade-nix: not yet implemented"); }
-        Commands::Fmt { files, check } => { eprintln!("fmt ({}){}: not yet implemented", if check { "check" } else { "format" }, if files.is_empty() { String::new() } else { format!(" {}", files.join(" ")) }); }
+        Commands::Why { path, dependency } => { return Err(CliError::NotImplemented(format!("why {path} {dependency}"))); }
+        Commands::PathFromHashPart { hash_part } => { return Err(CliError::NotImplemented(format!("path-from-hash-part {hash_part}"))); }
+        Commands::Edit { installable } => { return Err(CliError::NotImplemented(format!("edit {installable}"))); }
+        Commands::Log { installable } => { return Err(CliError::NotImplemented(format!("log {installable}"))); }
+        Commands::DiffClosures { before, after } => { return Err(CliError::NotImplemented(format!("diff-closures {before} {after}"))); }
+        Commands::UpgradeNix { .. } => { return Err(CliError::NotImplemented("upgrade-nix".into())); }
+        Commands::Fmt { files, check } => { return Err(CliError::NotImplemented(format!("fmt ({}){}", if check { "check" } else { "format" }, if files.is_empty() { String::new() } else { format!(" {}", files.join(" ")) }))); }
         Commands::Registry { command } => match command {
-            RegistryCommands::List { .. } => { eprintln!("registry list: not yet implemented"); }
-            RegistryCommands::Add { from, to } => { eprintln!("registry add {from} {to}: not yet implemented"); }
-            RegistryCommands::Remove { entry } => { eprintln!("registry remove {entry}: not yet implemented"); }
-            RegistryCommands::Pin { entry } => { eprintln!("registry pin {entry}: not yet implemented"); }
+            RegistryCommands::List { .. } => { return Err(CliError::NotImplemented("registry list".into())); }
+            RegistryCommands::Add { from, to } => { return Err(CliError::NotImplemented(format!("registry add {from} {to}"))); }
+            RegistryCommands::Remove { entry } => { return Err(CliError::NotImplemented(format!("registry remove {entry}"))); }
+            RegistryCommands::Pin { entry } => { return Err(CliError::NotImplemented(format!("registry pin {entry}"))); }
         },
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
-        Commands::PrintDevEnv { flake_ref, .. } => { eprintln!("print-dev-env {}: not yet implemented", flake_ref.as_deref().unwrap_or(".")); }
-        Commands::Bundle { installable, bundler, .. } => { eprintln!("bundle {installable} --bundler {}: not yet implemented", bundler.as_deref().unwrap_or("default")); }
+        Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
+        Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
     }
 
     Ok(())
@@ -887,7 +887,7 @@ async fn handle_legacy_command(name: &str) -> Result<(), CliError> {
                     eprintln!("nix-instantiate --eval: no expression provided");
                     std::process::exit(1);
                 }
-            } else { eprintln!("nix-instantiate (instantiate mode): not yet implemented"); }
+            } else { return Err(CliError::NotImplemented("nix-instantiate (instantiate mode)".into())); }
         }
         "nix-env" => {
             if args.iter().any(|a| a == "--list-generations") { eprintln!("nix-env --list-generations → sui profile history"); }
@@ -906,10 +906,10 @@ async fn handle_legacy_command(name: &str) -> Result<(), CliError> {
             if args.iter().any(|a| a == "-d" || a == "--delete-old") { eprintln!("nix-collect-garbage -d → sui collect-garbage -d"); }
             else { eprintln!("nix-collect-garbage → sui store gc"); }
         }
-        "nix-channel" => { eprintln!("nix-channel: not yet implemented"); }
-        "nix-hash" => { eprintln!("nix-hash → sui hash: not yet implemented"); }
-        "nix-copy-closure" => { eprintln!("nix-copy-closure → sui copy: not yet implemented"); }
-        "nix-prefetch-url" => { eprintln!("nix-prefetch-url → sui store prefetch-file: not yet implemented"); }
+        "nix-channel" => { return Err(CliError::NotImplemented("nix-channel".into())); }
+        "nix-hash" => { return Err(CliError::NotImplemented("nix-hash → sui hash".into())); }
+        "nix-copy-closure" => { return Err(CliError::NotImplemented("nix-copy-closure → sui copy".into())); }
+        "nix-prefetch-url" => { return Err(CliError::NotImplemented("nix-prefetch-url → sui store prefetch-file".into())); }
         _ => { eprintln!("unknown legacy command: {name}"); }
     }
     Ok(())

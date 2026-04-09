@@ -61,6 +61,10 @@ pub enum CliError {
     #[error("{operation} failed: {message}")]
     Orchestrate { operation: &'static str, message: String },
 
+    /// A subcommand is not yet implemented.
+    #[error("{0}: not yet implemented")]
+    NotImplemented(String),
+
     /// Fleet deployment failed.
     #[error("deploy failed: {0}")]
     Deploy(String),
