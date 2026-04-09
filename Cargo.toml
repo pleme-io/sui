@@ -102,7 +102,13 @@ nix-nar = "0.3"
 # Stack growth (prevents stack overflow on deep nixpkgs fixpoints)
 stacker = "0.1"
 
+# Persistent data structures
+im-rc = "15"
+smallvec = { version = "1", features = ["union"] }
+smol_str = "0.3"
+
 # Performance
+mimalloc = { version = "0.1", default-features = false }
 aho-corasick = "1"
 base64 = "0.22"
 data-encoding = "2"
@@ -158,6 +164,7 @@ figment.workspace = true
 thiserror.workspace = true
 tokio-stream.workspace = true
 futures-core.workspace = true
+mimalloc.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -20,11 +20,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let mut deep: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for elem in ns.context.iter() {
             match elem {
-                ContextElement::Plain(p) => { plains.insert(p.clone()); }
+                ContextElement::Plain(p) => { plains.insert(p.to_string()); }
                 ContextElement::Output { drv, output } => {
-                    om.entry(drv.clone()).or_default().push(output.clone());
+                    om.entry(drv.to_string()).or_default().push(output.to_string());
                 }
-                ContextElement::DrvDeep(d) => { deep.insert(d.clone()); }
+                ContextElement::DrvDeep(d) => { deep.insert(d.to_string()); }
             }
         }
         let mut result = NixAttrs::new();

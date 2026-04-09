@@ -265,7 +265,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
         ast::Expr::PathAbs(p) => {
             let text = p.syntax().text().to_string();
-            return Ok(Value::Path(text));
+            return Ok(Value::Path(SmolStr::from(text.as_str())));
         }
         ast::Expr::PathRel(p) => {
             // Real Nix resolves `./foo.nix` against the directory
@@ -285,11 +285,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             } else {
                 text
             };
-            return Ok(Value::Path(resolved));
+            return Ok(Value::Path(SmolStr::from(resolved.as_str())));
         }
         ast::Expr::PathHome(p) => {
             let text = p.syntax().text().to_string();
-            return Ok(Value::Path(text));
+            return Ok(Value::Path(SmolStr::from(text.as_str())));
         }
         ast::Expr::PathSearch(p) => {
             // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
@@ -302,7 +302,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .and_then(|s| s.strip_suffix('>'))
                 .unwrap_or(&text);
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
-                return Ok(Value::Path(resolved));
+                return Ok(Value::Path(SmolStr::from(resolved.as_str())));
             }
             return Err(EvalError::TypeError(format!(
                 "search path '{text}' not in NIX_PATH"
@@ -1060,8 +1060,8 @@ fn eval_binop(
                     ctx,
                 )))
             }
-            (Value::Path(a), Value::String(b)) => Ok(Value::Path(format!("{a}{}", b.chars))),
-            (Value::Path(a), Value::Path(b)) => Ok(Value::Path(format!("{a}/{b}"))),
+            (Value::Path(a), Value::String(b)) => Ok(Value::Path(SmolStr::from(format!("{a}{}", b.chars).as_str()))),
+            (Value::Path(a), Value::Path(b)) => Ok(Value::Path(SmolStr::from(format!("{a}/{b}").as_str()))),
             // CppNix coerces attrsets with outPath when used with +
             (Value::Attrs(_), _) | (_, Value::Attrs(_)) => {
                 let (ls, lctx) = l.coerce_to_string()?;
@@ -1791,11 +1791,11 @@ mod tests {
     #[test]
     fn literal_paths() {
         // Relative path
-        assert_eq!(ev("./foo"), Value::Path("./foo".to_string()));
+        assert_eq!(ev("./foo"), Value::Path(SmolStr::from("./foo")));
         // Absolute path
-        assert_eq!(ev("/nix/store/abc"), Value::Path("/nix/store/abc".to_string()));
+        assert_eq!(ev("/nix/store/abc"), Value::Path(SmolStr::from("/nix/store/abc")));
         // Home path
-        assert_eq!(ev("~/myfile"), Value::Path("~/myfile".to_string()));
+        assert_eq!(ev("~/myfile"), Value::Path(SmolStr::from("~/myfile")));
     }
 
     #[test]
@@ -1846,9 +1846,9 @@ mod tests {
     #[test]
     fn op_path_concat() {
         // path + string
-        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path("./foo/bar".to_string()));
+        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path(SmolStr::from("./foo/bar")));
         // path + path (should join with /)
-        assert_eq!(ev("./a + ./b"), Value::Path("./a/./b".to_string()));
+        assert_eq!(ev("./a + ./b"), Value::Path(SmolStr::from("./a/./b")));
     }
 
     #[test]
@@ -4105,7 +4105,7 @@ mod tests {
     fn path_concat_with_string() {
         assert_eq!(
             ev(r#"/foo + "bar""#),
-            Value::Path("/foobar".to_string()),
+            Value::Path(SmolStr::from("/foobar")),
         );
     }
 
@@ -4113,7 +4113,7 @@ mod tests {
     fn path_concat_with_path() {
         assert_eq!(
             ev("/foo + /bar"),
-            Value::Path("/foo//bar".to_string()),
+            Value::Path(SmolStr::from("/foo//bar")),
         );
     }
 

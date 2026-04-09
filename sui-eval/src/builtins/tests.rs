@@ -1,5 +1,5 @@
 use crate::eval::eval;
-use crate::value::{NixString, StringContext, Value};
+use crate::value::{NixString, SmolStr, StringContext, Value};
 use super::{evaluate_flake, FLAKE_EVAL_DEPTH, MAX_FLAKE_EVAL_DEPTH};
 
 fn ev(input: &str) -> Value {
@@ -540,7 +540,7 @@ fn builtins_dir_of_string() {
 fn builtins_dir_of_path() {
     assert_eq!(
         ev("builtins.dirOf /nix/store/abc"),
-        Value::Path("/nix/store".to_string()),
+        Value::Path(SmolStr::from("/nix/store")),
     );
 }
 
@@ -1966,7 +1966,7 @@ fn pure_mode_toggle() {
 #[test]
 fn builtins_to_path() {
     let v = ev(r#"builtins.toPath "/foo/bar""#);
-    assert_eq!(v, Value::Path("/foo/bar".to_string()));
+    assert_eq!(v, Value::Path(SmolStr::from("/foo/bar")));
 }
 
 #[test]
@@ -1978,7 +1978,7 @@ fn builtins_to_path_rejects_relative() {
 #[test]
 fn builtins_store_path() {
     let v = ev(r#"builtins.storePath "/nix/store/abc-hello""#);
-    assert_eq!(v, Value::Path("/nix/store/abc-hello".to_string()));
+    assert_eq!(v, Value::Path(SmolStr::from("/nix/store/abc-hello")));
 }
 
 #[test]
@@ -3004,7 +3004,7 @@ fn builtins_fetch_tree_path_type() {
     );
     let v = eval(&expr).unwrap();
     if let Value::Path(p) = v {
-        assert_eq!(p, dir.to_string_lossy());
+        assert_eq!(p.as_str(), dir.to_string_lossy().as_ref());
     } else {
         panic!("expected path, got {v}");
     }
@@ -3343,7 +3343,7 @@ fn sui_ext_from_yaml_simple() {
     if let Value::Attrs(a) = v {
         assert_eq!(a.get("x"), Some(&Value::Int(1)));
         assert_eq!(
-            a.get("y").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+            a.get("y").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.to_string()) } else { None }),
             Some("hello".to_string()),
         );
     } else { panic!(); }
@@ -3370,7 +3370,7 @@ fn sui_ext_from_csv_with_header() {
         assert_eq!(rows.len(), 2);
         if let Value::Attrs(a) = &rows[0] {
             assert_eq!(
-                a.get("name").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                a.get("name").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.to_string()) } else { None }),
                 Some("alice".to_string()),
             );
         } else { panic!(); }
@@ -3391,7 +3391,7 @@ fn sui_ext_from_csv_custom_delimiter() {
         assert_eq!(rows.len(), 1);
         if let Value::Attrs(a) = &rows[0] {
             assert_eq!(
-                a.get("x").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+                a.get("x").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.to_string()) } else { None }),
                 Some("1".to_string()),
             );
         } else { panic!(); }
@@ -3404,11 +3404,11 @@ fn sui_ext_regex_named_captures_match() {
     let v = ev(r#"builtins.sui.regexNamedCaptures "(?P<word>[a-z]+) (?P<num>[0-9]+)" "abc 123""#);
     if let Value::Attrs(a) = v {
         assert_eq!(
-            a.get("word").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+            a.get("word").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.to_string()) } else { None }),
             Some("abc".to_string()),
         );
         assert_eq!(
-            a.get("num").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.clone()) } else { None }),
+            a.get("num").and_then(|v| if let Value::String(ns) = v { Some(ns.chars.to_string()) } else { None }),
             Some("123".to_string()),
         );
     } else { panic!(); }

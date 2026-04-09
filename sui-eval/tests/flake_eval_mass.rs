@@ -121,11 +121,11 @@ fn mass_flake_eval_description_parity() {
 fn extract_description(v: &sui_eval::Value) -> String {
     match v {
         sui_eval::Value::Attrs(attrs) => match attrs.get("description") {
-            Some(sui_eval::Value::String(s)) => s.chars.clone(),
+            Some(sui_eval::Value::String(s)) => s.chars.to_string(),
             Some(sui_eval::Value::Thunk(thunk)) => {
                 match thunk.force(&|e, env| sui_eval::eval::eval_expr(e, env)) {
                     Ok(forced) => match &forced {
-                        sui_eval::Value::String(s) => s.chars.clone(),
+                        sui_eval::Value::String(s) => s.chars.to_string(),
                         _ => "<non-string>".to_string(),
                     },
                     Err(_) => "<thunk-error>".to_string(),

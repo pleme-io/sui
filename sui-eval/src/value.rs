@@ -5,10 +5,12 @@
 //! (not `Arc`) because the values are never sent across threads.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use std::fmt;
 use std::rc::Rc;
+
+use smallvec::SmallVec;
+pub use smol_str::SmolStr;
 
 use rowan::ast::AstNode;
 
@@ -18,11 +20,11 @@ use rowan::ast::AstNode;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContextElement {
     /// Store path reference (e.g., "/nix/store/abc-hello").
-    Plain(String),
+    Plain(SmolStr),
     /// Derivation output reference.
-    Output { drv: String, output: String },
+    Output { drv: SmolStr, output: SmolStr },
     /// Entire derivation closure.
-    DrvDeep(String),
+    DrvDeep(SmolStr),
 }
 
 impl fmt::Display for ContextElement {
@@ -43,12 +45,12 @@ impl fmt::Display for ContextElement {
 /// and `Vec` has the same size as `BTreeSet` (3 words) without per-node heap
 /// allocations for small sets.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct StringContext(Vec<ContextElement>);
+pub struct StringContext(SmallVec<[ContextElement; 2]>);
 
 impl StringContext {
     /// Create an empty context.
     pub fn new() -> Self {
-        Self(Vec::new())
+        Self(SmallVec::new())
     }
 
     /// Merge another context into this one.
@@ -61,24 +63,24 @@ impl StringContext {
     }
 
     /// Add a plain store-path reference.
-    pub fn add_plain(&mut self, path: String) {
-        let elem = ContextElement::Plain(path);
+    pub fn add_plain(&mut self, path: impl Into<SmolStr>) {
+        let elem = ContextElement::Plain(path.into());
         if !self.0.contains(&elem) {
             self.0.push(elem);
         }
     }
 
     /// Add a derivation output reference.
-    pub fn add_output(&mut self, drv: String, output: String) {
-        let elem = ContextElement::Output { drv, output };
+    pub fn add_output(&mut self, drv: impl Into<SmolStr>, output: impl Into<SmolStr>) {
+        let elem = ContextElement::Output { drv: drv.into(), output: output.into() };
         if !self.0.contains(&elem) {
             self.0.push(elem);
         }
     }
 
     /// Add a derivation-deep reference.
-    pub fn add_drv_deep(&mut self, drv: String) {
-        let elem = ContextElement::DrvDeep(drv);
+    pub fn add_drv_deep(&mut self, drv: impl Into<SmolStr>) {
+        let elem = ContextElement::DrvDeep(drv.into());
         if !self.0.contains(&elem) {
             self.0.push(elem);
         }
@@ -118,14 +120,14 @@ impl StringContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NixString {
     /// The character data.
-    pub chars: String,
+    pub chars: SmolStr,
     /// The context set (empty for plain string literals).
     pub context: StringContext,
 }
 
 impl NixString {
     /// Create a context-free string.
-    pub fn plain(s: impl Into<String>) -> Self {
+    pub fn plain(s: impl Into<SmolStr>) -> Self {
         Self {
             chars: s.into(),
             context: StringContext::default(),
@@ -133,7 +135,7 @@ impl NixString {
     }
 
     /// Create a string with an explicit context.
-    pub fn with_context(s: impl Into<String>, ctx: StringContext) -> Self {
+    pub fn with_context(s: impl Into<SmolStr>, ctx: StringContext) -> Self {
         Self {
             chars: s.into(),
             context: ctx,
@@ -185,7 +187,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(NixString),
-    Path(String),
+    Path(SmolStr),
     List(Vec<Value>),
     Attrs(NixAttrs),
     Lambda(Closure),
@@ -214,7 +216,7 @@ pub enum ThunkRepr {
     /// constructed `lib.trivial`.
     InheritSelect {
         source: rnix::ast::Expr,
-        name: String,
+        name: SmolStr,
         env: Env,
     },
     /// A lazy value backed by a Rust closure.  Used for flake input
@@ -243,11 +245,11 @@ impl Thunk {
     /// `env` and pulls out the attribute named `name`. Used for
     /// `inherit (source) name` so the source is not eagerly
     /// forced and self-referential patterns don't blackhole.
-    pub fn new_inherit_select(source: rnix::ast::Expr, name: String, env: Env) -> Self {
+    pub fn new_inherit_select(source: rnix::ast::Expr, name: impl Into<SmolStr>, env: Env) -> Self {
         crate::trace::inc_thunks_created();
         Self(Rc::new(RefCell::new(ThunkRepr::InheritSelect {
             source,
-            name,
+            name: name.into(),
             env,
         })))
     }
@@ -459,7 +461,7 @@ impl Thunk {
                     attrs
                         .get(&name)
                         .cloned()
-                        .ok_or_else(|| EvalError::AttrNotFound(name.clone()))
+                        .ok_or_else(|| EvalError::AttrNotFound(name.to_string()))
                 })();
                 match attempt {
                     Ok(mut value) => {
@@ -552,21 +554,23 @@ impl fmt::Debug for Thunk {
 
 /// A Nix attribute set.
 ///
-/// Uses `HashMap` internally for O(1) lookups (the hot path during
-/// overlay fixpoint evaluation). Sorted iteration (needed by
-/// `attrNames`, `attrValues`, Display, equality) uses `sorted_keys()`.
+/// Uses `im_rc::HashMap` internally for O(log32 n) lookups with O(1)
+/// structural-sharing clones (the hot path during overlay fixpoint
+/// evaluation). Sorted iteration (needed by `attrNames`, `attrValues`,
+/// Display, equality) collects and sorts.
 #[derive(Debug, Clone, Default)]
-pub struct NixAttrs(pub HashMap<String, Value>);
+pub struct NixAttrs(pub im_rc::HashMap<String, Value>);
 
 impl NixAttrs {
     /// Create an empty attribute set.
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self(im_rc::HashMap::new())
     }
 
-    /// Create an attribute set with pre-allocated capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self(HashMap::with_capacity(capacity))
+    /// Create an attribute set (capacity hint ignored — `im_rc::HashMap`
+    /// uses structural sharing instead of pre-allocation).
+    pub fn with_capacity(_capacity: usize) -> Self {
+        Self(im_rc::HashMap::new())
     }
 
     /// Look up an attribute by name.
@@ -631,10 +635,13 @@ impl NixAttrs {
     }
 
     /// Merge two attrsets (right overrides left, like `//`).
+    ///
+    /// O(m log n) where m = `other.len()` thanks to `im_rc::HashMap`'s
+    /// structural sharing — the left side is cloned in O(1).
     #[must_use]
     pub fn update(&self, other: &NixAttrs) -> NixAttrs {
-        let mut result = self.0.clone();
-        for (k, v) in &other.0 {
+        let mut result = self.0.clone(); // O(1) structural sharing
+        for (k, v) in other.0.iter() {
             result.insert(k.clone(), v.clone());
         }
         NixAttrs(result)
@@ -649,7 +656,7 @@ impl FromIterator<(String, Value)> for NixAttrs {
 
 impl IntoIterator for NixAttrs {
     type Item = (String, Value);
-    type IntoIter = std::collections::hash_map::IntoIter<String, Value>;
+    type IntoIter = im_rc::hashmap::ConsumingIter<(String, Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -695,24 +702,29 @@ impl fmt::Debug for BuiltinFn {
 ///
 /// Wrapped in `Rc` by [`Env`] so that cloning an `Env` is always a
 /// refcount bump — never a deep copy of the binding map.
+///
+/// Uses a flattened `im_rc::HashMap` for bindings: `child()` clones
+/// the parent's map with O(1) structural sharing instead of building
+/// a linked parent chain. Lookups are a single O(log32 n) probe
+/// instead of walking a chain.
 #[derive(Debug, Clone, Default)]
 struct EnvInner {
-    bindings: HashMap<String, Value>,
-    parent: Option<Env>,
-    /// Dynamic scope from `with` expressions.
-    with_scope: Option<Box<Value>>,
+    bindings: im_rc::HashMap<String, Value>,
+    /// Dynamic `with` scopes, innermost last.
+    with_scopes: Vec<Value>,
     /// Source file currently being evaluated, for relative path
     /// literals (`./foo.nix`) inside function defaults that get
     /// evaluated *after* control has left the file scope.
     eval_file: Option<std::path::PathBuf>,
 }
 
-/// Evaluation environment — lexical scope chain.
+/// Evaluation environment — flattened binding map with structural sharing.
 ///
 /// Internally an `Rc<EnvInner>`, so cloning is always O(1) (refcount
-/// bump).  `child()` stores `parent: Some(self.clone())` which is also
-/// just a refcount bump.  `bind()` uses `Rc::make_mut` for copy-on-write:
-/// if the Rc is shared, only then does it clone the inner data.
+/// bump).  `child()` clones the `im_rc::HashMap` (O(1) structural
+/// sharing) instead of building a parent chain.  `bind()` uses
+/// `Rc::make_mut` for copy-on-write: if the Rc is shared, only then
+/// does it clone the inner data.
 #[derive(Clone, Default)]
 pub struct Env(Rc<EnvInner>);
 
@@ -727,23 +739,22 @@ impl Env {
     #[must_use]
     pub fn new() -> Self {
         Self(Rc::new(EnvInner {
-            bindings: HashMap::new(),
-            parent: None,
-            with_scope: None,
+            bindings: im_rc::HashMap::new(),
+            with_scopes: Vec::new(),
             eval_file: None,
         }))
     }
 
     /// Create a child environment that inherits from this one.
     ///
-    /// O(1) — `self.clone()` is just a refcount bump on the inner `Rc`.
+    /// O(1) — the `im_rc::HashMap` clone is structural sharing (refcount
+    /// bump on internal tree nodes), not a deep copy.
     #[must_use]
     pub fn child(&self) -> Self {
         crate::perf::inc("env_clone");
         Self(Rc::new(EnvInner {
-            bindings: HashMap::new(),
-            parent: Some(self.clone()),
-            with_scope: None,
+            bindings: self.0.bindings.clone(), // O(1) structural sharing
+            with_scopes: self.0.with_scopes.clone(),
             // Children inherit the parent's eval file so that
             // path literals nested deep in let-chains still
             // resolve against the right directory.
@@ -755,9 +766,10 @@ impl Env {
     ///
     /// The value is stored lazily and only forced when a name lookup
     /// actually needs it, matching CppNix's lazy `with` semantics.
+    /// Scopes are pushed to the end of the vec (innermost last).
     #[must_use]
     pub fn with_scope(mut self, value: Value) -> Self {
-        Rc::make_mut(&mut self.0).with_scope = Some(Box::new(value));
+        Rc::make_mut(&mut self.0).with_scopes.push(value);
         self
     }
 
@@ -780,37 +792,23 @@ impl Env {
         Rc::make_mut(&mut self.0).eval_file = file;
     }
 
-    /// Two-pass lookup matching Nix semantics:
+    /// Lookup matching Nix semantics:
     ///
-    /// 1. Walk the entire lexical-binding chain (own bindings → parent's
-    ///    bindings → … → root's bindings). Any explicit `let`/`rec`/
-    ///    function-arg binding wins over every `with` scope.
-    /// 2. If no lexical binding matched, walk the chain again looking only
-    ///    at `with_scope`s, **innermost first**. So `with X; with Y; x`
+    /// 1. Probe the flattened binding map (single O(log32 n) lookup).
+    ///    Any explicit `let`/`rec`/function-arg binding wins over every
+    ///    `with` scope.
+    /// 2. If no lexical binding matched, iterate `with_scopes` in
+    ///    reverse order (innermost first). So `with X; with Y; x`
     ///    finds `x` in Y if Y has it, otherwise in X.
-    ///
-    /// The previous single-pass implementation reached the *outer*
-    /// `with_scope` before the inner one (because the parent recursion
-    /// returned the parent's full lookup result, including its `with_scope`,
-    /// before the child's own `with_scope` got checked).
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
         crate::perf::inc("env_lookup");
-        if let Some(v) = self.lookup_lexical(name) {
-            return Some(v);
-        }
-        self.lookup_with(name)
-    }
-
-    fn lookup_lexical(&self, name: &str) -> Option<Value> {
+        // 1. Flat lexical lookup — single O(log32 n) probe, no chain walk.
         if let Some(v) = self.0.bindings.get(name) {
             return Some(v.clone());
         }
-        self.0.parent.as_ref().and_then(|p| p.lookup_lexical(name))
-    }
-
-    fn lookup_with(&self, name: &str) -> Option<Value> {
-        if let Some(ref scope_val) = self.0.with_scope {
+        // 2. With-scope lookup — iterate innermost-first (reverse order).
+        for scope_val in self.0.with_scopes.iter().rev() {
             // Force the with-scope lazily — only when a name lookup
             // actually needs it.  This matches CppNix semantics and
             // allows `fix (self: with self; { … })` to work.
@@ -821,9 +819,9 @@ impl Env {
                     }
                 }
             }
-            // If forcing fails or it's not an attrset, fall through to parent
+            // If forcing fails or it's not an attrset, try next scope
         }
-        self.0.parent.as_ref().and_then(|p| p.lookup_with(name))
+        None
     }
 }
 
@@ -901,7 +899,7 @@ impl EvalError {
 impl Value {
     /// Convenience constructor for a context-free string.
     #[must_use]
-    pub fn string(s: impl Into<String>) -> Self {
+    pub fn string(s: impl Into<SmolStr>) -> Self {
         Value::String(NixString::plain(s))
     }
 
@@ -913,8 +911,8 @@ impl Value {
             Value::Bool(b) => serde_json::Value::Bool(*b),
             Value::Int(n) => serde_json::json!(n),
             Value::Float(f) => serde_json::json!(f),
-            Value::String(s) => serde_json::Value::String(s.chars.clone()),
-            Value::Path(p) => serde_json::Value::String(p.clone()),
+            Value::String(s) => serde_json::Value::String(s.chars.to_string()),
+            Value::Path(p) => serde_json::Value::String(p.to_string()),
             Value::List(items) => {
                 serde_json::Value::Array(items.iter().map(|v| v.to_json()).collect())
             }
@@ -1031,7 +1029,7 @@ impl Value {
     /// be operating on thunked attrset values.
     pub fn to_str(&self) -> Result<String, EvalError> {
         match self {
-            Value::String(s) => Ok(s.chars.clone()),
+            Value::String(s) => Ok(s.chars.to_string()),
             Value::Thunk(thunk) => {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_str()
@@ -1113,8 +1111,8 @@ impl Value {
     /// that coercion so every call-site doesn't repeat the same match.
     pub fn coerce_to_path(&self, context: &str) -> Result<String, EvalError> {
         match self {
-            Value::Path(p) => Ok(p.clone()),
-            Value::String(ns) => Ok(ns.chars.clone()),
+            Value::Path(p) => Ok(p.to_string()),
+            Value::String(ns) => Ok(ns.chars.to_string()),
             Value::Attrs(attrs) => {
                 if let Some(out_path) = attrs.get("outPath") {
                     let forced = crate::eval::force_value(out_path)?;
@@ -1166,11 +1164,11 @@ impl Value {
         let s = match self {
             Value::String(ns) => {
                 ctx.merge(&ns.context);
-                ns.chars.clone()
+                ns.chars.to_string()
             }
             Value::Path(p) => {
                 ctx.add_plain(p.clone());
-                p.clone()
+                p.to_string()
             }
             Value::Int(n) => n.to_string(),
             Value::Float(f) => format!("{f}"),
@@ -1410,7 +1408,7 @@ mod tests {
     #[test]
     fn to_json_path() {
         assert_eq!(
-            Value::Path("/nix/store".to_string()).to_json(),
+            Value::Path(SmolStr::from("/nix/store")).to_json(),
             serde_json::Value::String("/nix/store".to_string()),
         );
     }
@@ -1479,7 +1477,7 @@ mod tests {
     fn type_name_string() { assert_eq!(Value::string("").type_name(), "string"); }
 
     #[test]
-    fn type_name_path() { assert_eq!(Value::Path("".to_string()).type_name(), "path"); }
+    fn type_name_path() { assert_eq!(Value::Path(SmolStr::from("")).type_name(), "path"); }
 
     #[test]
     fn type_name_list() { assert_eq!(Value::List(vec![]).type_name(), "list"); }
@@ -1605,7 +1603,7 @@ mod tests {
 
     #[test]
     fn display_path() {
-        assert_eq!(format!("{}", Value::Path("/foo".to_string())), "/foo");
+        assert_eq!(format!("{}", Value::Path(SmolStr::from("/foo"))), "/foo");
     }
 
     #[test]
@@ -1715,8 +1713,8 @@ mod tests {
         ctx_b.add_plain("/nix/store/bbb".to_string());
         ctx_a.merge(&ctx_b);
         assert_eq!(ctx_a.len(), 2);
-        assert!(ctx_a.elements().contains(&ContextElement::Plain("/nix/store/aaa".to_string())));
-        assert!(ctx_a.elements().contains(&ContextElement::Plain("/nix/store/bbb".to_string())));
+        assert!(ctx_a.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/aaa"))));
+        assert!(ctx_a.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/bbb"))));
     }
 
     #[test]
@@ -1759,7 +1757,7 @@ mod tests {
         other.add_plain("/nix/store/only".to_string());
         ctx.merge(&other);
         assert_eq!(ctx.len(), 1);
-        assert!(ctx.elements().contains(&ContextElement::Plain("/nix/store/only".to_string())));
+        assert!(ctx.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/only"))));
     }
 
     #[test]
@@ -1780,17 +1778,17 @@ mod tests {
         }
         assert_eq!(ctx.len(), 5);
         for i in 0..5 {
-            assert!(ctx.elements().contains(&ContextElement::Plain(format!("/nix/store/path-{i}"))));
+            assert!(ctx.elements().contains(&ContextElement::Plain(SmolStr::from(format!("/nix/store/path-{i}").as_str()))));
         }
     }
 
     #[test]
     fn string_context_insert_deduplicates() {
         let mut ctx = StringContext::new();
-        ctx.insert(ContextElement::Plain("/nix/store/dup".to_string()));
-        ctx.insert(ContextElement::Plain("/nix/store/dup".to_string()));
-        ctx.insert(ContextElement::Output { drv: "/nix/store/x.drv".to_string(), output: "out".to_string() });
-        ctx.insert(ContextElement::Output { drv: "/nix/store/x.drv".to_string(), output: "out".to_string() });
+        ctx.insert(ContextElement::Plain(SmolStr::from("/nix/store/dup")));
+        ctx.insert(ContextElement::Plain(SmolStr::from("/nix/store/dup")));
+        ctx.insert(ContextElement::Output { drv: SmolStr::from("/nix/store/x.drv"), output: SmolStr::from("out") });
+        ctx.insert(ContextElement::Output { drv: SmolStr::from("/nix/store/x.drv"), output: SmolStr::from("out") });
         assert_eq!(ctx.len(), 2);
     }
 
@@ -1906,18 +1904,27 @@ mod tests {
     }
 
     #[test]
-    fn env_lookup_lexical_only_skips_with_scope() {
+    fn env_with_scope_does_not_pollute_bindings() {
+        // With-scope values should not appear in the flat binding map.
+        // They should only be found via the with-scope lookup path.
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
         let env = Env::new().with_scope(Value::Attrs(attrs));
-        assert_eq!(env.lookup_lexical("x"), None);
+        // The binding map itself should not contain "x"
+        assert!(env.0.bindings.get("x").is_none());
+        // But lookup should find it via with-scope
+        assert_eq!(env.lookup("x"), Some(Value::Int(42)));
     }
 
     #[test]
-    fn env_lookup_with_only_skips_bindings() {
+    fn env_lexical_binding_not_in_with_scopes() {
+        // Lexical bindings are in the flat binding map, not in with_scopes.
         let mut env = Env::new();
         env.bind("x".to_string(), Value::Int(42));
-        assert_eq!(env.lookup_with("x"), None);
+        // with_scopes should be empty
+        assert!(env.0.with_scopes.is_empty());
+        // But lookup finds it via the binding map
+        assert_eq!(env.lookup("x"), Some(Value::Int(42)));
     }
 
     #[test]
@@ -2394,8 +2401,8 @@ mod tests {
     #[test]
     fn string_context_iter_yields_all() {
         let mut ctx = StringContext::new();
-        ctx.add_plain("/nix/store/aaa".into());
-        ctx.add_plain("/nix/store/bbb".into());
+        ctx.add_plain("/nix/store/aaa");
+        ctx.add_plain("/nix/store/bbb");
         let count = ctx.iter().count();
         assert_eq!(count, 2);
     }
@@ -2404,9 +2411,9 @@ mod tests {
     fn string_context_len_matches_set_size() {
         let mut ctx = StringContext::new();
         assert_eq!(ctx.len(), 0);
-        ctx.add_plain("/nix/store/x".into());
+        ctx.add_plain("/nix/store/x");
         assert_eq!(ctx.len(), 1);
-        ctx.add_output("/nix/store/y.drv".into(), "out".into());
+        ctx.add_output("/nix/store/y.drv", "out");
         assert_eq!(ctx.len(), 2);
     }
 
@@ -2857,7 +2864,7 @@ mod tests {
     fn thunk_inherit_select_debug_format() {
         let root = rnix::Root::parse("{ x = 1; }");
         let expr = root.tree().expr().unwrap();
-        let thunk = Thunk::new_inherit_select(expr, "x".into(), Env::new());
+        let thunk = Thunk::new_inherit_select(expr, "x", Env::new());
         let s = format!("{thunk:?}");
         assert!(s.contains("inherit-select"));
         assert!(s.contains("x"));

@@ -123,8 +123,8 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
         Value::Bool(b) => sui_bytecode::StringKeyedValue::Bool(*b),
         Value::Int(n) => sui_bytecode::StringKeyedValue::Int(*n),
         Value::Float(f) => sui_bytecode::StringKeyedValue::Float(*f),
-        Value::String(s) => sui_bytecode::StringKeyedValue::String(s.chars.clone()),
-        Value::Path(p) => sui_bytecode::StringKeyedValue::Path(p.clone()),
+        Value::String(s) => sui_bytecode::StringKeyedValue::String(s.chars.to_string()),
+        Value::Path(p) => sui_bytecode::StringKeyedValue::Path(p.to_string()),
         Value::List(items) => {
             sui_bytecode::StringKeyedValue::List(
                 items.iter().map(eval_to_string_keyed).collect(),

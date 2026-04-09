@@ -7,8 +7,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // baseNameOf — extract filename from path
     register_builtin(builtins, "baseNameOf", |args| {
         let s = match &args[0] {
-            Value::String(ns) => ns.chars.clone(),
-            Value::Path(p) => p.clone(),
+            Value::String(ns) => ns.chars.to_string(),
+            Value::Path(p) => p.to_string(),
             _ => return Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
         };
         let base = s.rsplit('/').next().unwrap_or(&s);
@@ -18,8 +18,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // dirOf — extract directory from path
     register_builtin(builtins, "dirOf", |args| {
         let (s, is_path) = match &args[0] {
-            Value::String(ns) => (ns.chars.clone(), false),
-            Value::Path(p) => (p.clone(), true),
+            Value::String(ns) => (ns.chars.to_string(), false),
+            Value::Path(p) => (p.to_string(), true),
             _ => return Err(EvalError::TypeError("dirOf: expected string or path".to_string())),
         };
         let dir = match s.rfind('/') {
@@ -28,7 +28,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             None => ".".to_string(),
         };
         if is_path {
-            Ok(Value::Path(dir))
+            Ok(Value::Path(SmolStr::from(dir.as_str())))
         } else {
             Ok(Value::string(dir))
         }
@@ -87,7 +87,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         if !s.starts_with('/') {
             return Err(EvalError::TypeError(format!("toPath: path must be absolute: {s}")));
         }
-        Ok(Value::Path(s.to_string()))
+        Ok(Value::Path(SmolStr::from(s)))
     });
 
     register_builtin(builtins, "storePath", |args| {
@@ -95,7 +95,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         if !s.starts_with("/nix/store/") {
             return Err(EvalError::TypeError(format!("storePath: not a store path: {s}")));
         }
-        Ok(Value::Path(s.to_string()))
+        Ok(Value::Path(SmolStr::from(s)))
     });
 
     // pathExists
@@ -147,7 +147,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
         let hash = format!("{:x}", hasher.finalize());
         let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
-        Ok(Value::Path(store_path))
+        Ok(Value::Path(SmolStr::from(store_path.as_str())))
     });
 
     // filterSource
@@ -248,6 +248,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
             }
         }
-        Ok(Value::Path(target.to_string_lossy().into_owned()))
+        Ok(Value::Path(SmolStr::from(target.to_string_lossy().as_ref())))
     });
 }

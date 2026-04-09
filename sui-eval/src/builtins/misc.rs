@@ -189,7 +189,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 };
                 let full_path = format!("{path}{suffix}");
                 if std::path::Path::new(&full_path).exists() {
-                    return Ok(Value::Path(full_path));
+                    return Ok(Value::Path(SmolStr::from(full_path.as_str())));
                 }
             }
         }
@@ -203,6 +203,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         use sha2::{Sha256, Digest};
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
-        Ok(Value::Path(store_path))
+        Ok(Value::Path(SmolStr::from(store_path.as_str())))
     });
 }

@@ -18,8 +18,8 @@ fn tree_to_skv(val: &sui_eval::Value) -> StringKeyedValue {
         sui_eval::Value::Bool(b) => StringKeyedValue::Bool(*b),
         sui_eval::Value::Int(n) => StringKeyedValue::Int(*n),
         sui_eval::Value::Float(f) => StringKeyedValue::Float(*f),
-        sui_eval::Value::String(s) => StringKeyedValue::String(s.chars.clone()),
-        sui_eval::Value::Path(p) => StringKeyedValue::Path(p.clone()),
+        sui_eval::Value::String(s) => StringKeyedValue::String(s.chars.to_string()),
+        sui_eval::Value::Path(p) => StringKeyedValue::Path(p.to_string()),
         sui_eval::Value::List(items) => {
             StringKeyedValue::List(items.iter().map(|v| tree_to_skv(v)).collect())
         }
