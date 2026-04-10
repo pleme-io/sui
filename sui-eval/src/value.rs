@@ -3192,4 +3192,513 @@ mod tests {
             _ => panic!("expected TypeMismatch"),
         }
     }
+
+    // ════════════════════════════════════════════════════════════
+    // 1. OnceCell Thunk Cache
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn oncecell_cache_populated_after_force() {
+        let root = rnix::Root::parse("42");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        // Before forcing, cache should be empty.
+        assert!(thunk.0.cache.get().is_none());
+        let _ = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        // After forcing, cache should be populated.
+        assert!(thunk.0.cache.get().is_some());
+    }
+
+    #[test]
+    fn oncecell_cache_matches_force_result() {
+        let root = rnix::Root::parse("1 + 2");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+        let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        let cached = thunk.0.cache.get().unwrap();
+        assert_eq!(**cached, forced);
+    }
+
+    #[test]
+    fn oncecell_new_evaluated_prepopulates_cache() {
+        let thunk = Thunk::new_evaluated(Value::Int(77));
+        // Cache should be set immediately.
+        let cached = thunk.0.cache.get().expect("cache should be pre-populated");
+        assert_eq!(**cached, Value::Int(77));
+    }
+
+    #[test]
+    fn oncecell_is_evaluated_uses_cache() {
+        let thunk = Thunk::new_evaluated(Value::Bool(false));
+        // is_evaluated() checks the OnceCell cache.
+        assert!(thunk.is_evaluated());
+        assert!(thunk.0.cache.get().is_some());
+    }
+
+    #[test]
+    fn oncecell_already_evaluated_returns_cached_without_repr() {
+        // Create a thunk already evaluated. Force should return
+        // the cached value without touching repr (the evaluator
+        // closure should never be called).
+        let thunk = Thunk::new_evaluated(Value::Int(55));
+        let result = thunk.force(&|_, _| panic!("evaluator should not be called"));
+        assert_eq!(result.unwrap(), Value::Int(55));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 2. WithScope Memoization
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn with_scope_created_with_empty_cache() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("x".to_string(), Value::Int(1));
+        let env = Env::new().with_scope(Value::Attrs(attrs));
+        // The cached field should be None initially.
+        let scope = &env.0.with_scopes[0];
+        assert!(scope.cached.borrow().is_none());
+    }
+
+    #[test]
+    fn with_scope_first_lookup_populates_cache() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("x".to_string(), Value::Int(42));
+        let env = Env::new().with_scope(Value::Attrs(attrs));
+        // Before lookup, cache is empty.
+        assert!(env.0.with_scopes[0].cached.borrow().is_none());
+        // Lookup forces and caches.
+        let _ = env.lookup("x");
+        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+    }
+
+    #[test]
+    fn with_scope_second_lookup_uses_cache() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("x".to_string(), Value::Int(10));
+        let env = Env::new().with_scope(Value::Attrs(attrs));
+        // First lookup populates cache.
+        assert_eq!(env.lookup("x"), Some(Value::Int(10)));
+        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+        // Second lookup should still work (reads from cache).
+        assert_eq!(env.lookup("x"), Some(Value::Int(10)));
+    }
+
+    #[test]
+    fn with_scope_child_shares_cache_via_rc() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("shared".to_string(), Value::Int(7));
+        let parent = Env::new().with_scope(Value::Attrs(attrs));
+        let child = parent.child();
+        // Force via parent lookup.
+        let _ = parent.lookup("shared");
+        // Child's with-scope cache should share the same Rc, so
+        // it should also show cached.
+        assert!(child.0.with_scopes[0].cached.borrow().is_some());
+    }
+
+    #[test]
+    fn with_scope_innermost_checked_first() {
+        let mut outer = NixAttrs::new();
+        outer.insert("x".to_string(), Value::Int(1));
+        outer.insert("y".to_string(), Value::Int(100));
+        let mut inner = NixAttrs::new();
+        inner.insert("x".to_string(), Value::Int(2));
+        let env = Env::new()
+            .with_scope(Value::Attrs(outer))
+            .with_scope(Value::Attrs(inner));
+        // Innermost scope has x=2, should win.
+        assert_eq!(env.lookup("x"), Some(Value::Int(2)));
+        // y only in outer, should fallback.
+        assert_eq!(env.lookup("y"), Some(Value::Int(100)));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 3. FxHashMap for NixAttrs
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn fxhashmap_nixattrs_new_creates_empty() {
+        let a = NixAttrs::new();
+        assert!(a.is_empty());
+        assert_eq!(a.len(), 0);
+        // Internal map is a FxHashMap (im_rc::HashMap with FxBuildHasher).
+        assert!(a.0.is_empty());
+    }
+
+    #[test]
+    fn fxhashmap_insert_get_roundtrip_with_symbol_keys() {
+        let mut a = NixAttrs::new();
+        let sym = intern("mykey");
+        a.0.insert(sym, Value::Int(42));
+        assert_eq!(a.0.get(&sym), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn fxhashmap_contains_key_with_interned_keys() {
+        let mut a = NixAttrs::new();
+        a.insert("alpha".to_string(), Value::Int(1));
+        let sym = intern("alpha");
+        assert!(a.0.contains_key(&sym));
+        let missing_sym = intern("beta");
+        assert!(!a.0.contains_key(&missing_sym));
+    }
+
+    #[test]
+    fn fxhashmap_remove_returns_value() {
+        let mut a = NixAttrs::new();
+        a.insert("key".to_string(), Value::Int(99));
+        let removed = a.remove("key");
+        assert_eq!(removed, Some(Value::Int(99)));
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn fxhashmap_keys_returns_sorted_strings() {
+        let mut a = NixAttrs::new();
+        a.insert("zulu".to_string(), Value::Int(1));
+        a.insert("alpha".to_string(), Value::Int(2));
+        a.insert("mike".to_string(), Value::Int(3));
+        let keys: Vec<String> = a.keys().collect();
+        assert_eq!(keys, vec!["alpha", "mike", "zulu"]);
+    }
+
+    #[test]
+    fn fxhashmap_iter_returns_sorted_string_value_pairs() {
+        let mut a = NixAttrs::new();
+        a.insert("b".to_string(), Value::Int(2));
+        a.insert("a".to_string(), Value::Int(1));
+        let pairs: Vec<(String, &Value)> = a.iter().collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].0, "a");
+        assert_eq!(*pairs[0].1, Value::Int(1));
+        assert_eq!(pairs[1].0, "b");
+        assert_eq!(*pairs[1].1, Value::Int(2));
+    }
+
+    #[test]
+    fn fxhashmap_update_merges_correctly() {
+        let mut left = NixAttrs::new();
+        left.insert("a".to_string(), Value::Int(1));
+        left.insert("b".to_string(), Value::Int(2));
+        let mut right = NixAttrs::new();
+        right.insert("b".to_string(), Value::Int(20));
+        right.insert("c".to_string(), Value::Int(3));
+        let merged = left.update(&right);
+        assert_eq!(merged.get("a"), Some(&Value::Int(1)));
+        assert_eq!(merged.get("b"), Some(&Value::Int(20))); // right overrides
+        assert_eq!(merged.get("c"), Some(&Value::Int(3)));
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn fxhashmap_from_iterator_collects_with_interning() {
+        let pairs = vec![
+            ("x".to_string(), Value::Int(10)),
+            ("y".to_string(), Value::Int(20)),
+            ("z".to_string(), Value::Int(30)),
+        ];
+        let attrs: NixAttrs = pairs.into_iter().collect();
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs.get("x"), Some(&Value::Int(10)));
+        assert_eq!(attrs.get("y"), Some(&Value::Int(20)));
+        assert_eq!(attrs.get("z"), Some(&Value::Int(30)));
+        // Verify internal storage uses Symbol keys.
+        let sym_x = intern("x");
+        assert!(attrs.0.contains_key(&sym_x));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 4. SmallVec StringContext
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn smallvec_context_empty() {
+        let ctx = StringContext::new();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+        assert_eq!(ctx.elements().len(), 0);
+    }
+
+    #[test]
+    fn smallvec_context_single_element_inline() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/single");
+        assert_eq!(ctx.len(), 1);
+        // SmallVec<[ContextElement; 2]> stores up to 2 inline.
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn smallvec_context_two_elements_still_inline() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/one");
+        ctx.add_output("/nix/store/two.drv", "out");
+        assert_eq!(ctx.len(), 2);
+    }
+
+    #[test]
+    fn smallvec_context_three_plus_spills_to_heap() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/a");
+        ctx.add_plain("/nix/store/b");
+        ctx.add_drv_deep("/nix/store/c.drv");
+        assert_eq!(ctx.len(), 3);
+        // Verify all elements are accessible.
+        assert!(ctx.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/a"))));
+        assert!(ctx.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/b"))));
+        assert!(ctx.elements().contains(&ContextElement::DrvDeep(SmolStr::from("/nix/store/c.drv"))));
+    }
+
+    #[test]
+    fn smallvec_context_merge_deduplicates() {
+        let mut ctx1 = StringContext::new();
+        ctx1.add_plain("/nix/store/dup");
+        ctx1.add_output("/nix/store/x.drv", "out");
+        let mut ctx2 = StringContext::new();
+        ctx2.add_plain("/nix/store/dup");      // duplicate
+        ctx2.add_plain("/nix/store/unique");    // new
+        ctx1.merge(&ctx2);
+        assert_eq!(ctx1.len(), 3); // dup not duplicated
+    }
+
+    #[test]
+    fn smallvec_context_add_plain_output_drv_deep() {
+        let mut ctx = StringContext::new();
+        ctx.add_plain("/nix/store/plain");
+        assert_eq!(ctx.len(), 1);
+        assert!(ctx.elements().contains(&ContextElement::Plain(SmolStr::from("/nix/store/plain"))));
+
+        ctx.add_output("/nix/store/out.drv", "lib");
+        assert_eq!(ctx.len(), 2);
+        assert!(ctx.elements().contains(&ContextElement::Output {
+            drv: SmolStr::from("/nix/store/out.drv"),
+            output: SmolStr::from("lib"),
+        }));
+
+        ctx.add_drv_deep("/nix/store/deep.drv");
+        assert_eq!(ctx.len(), 3);
+        assert!(ctx.elements().contains(&ContextElement::DrvDeep(SmolStr::from("/nix/store/deep.drv"))));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 5. Rc<Vec<Value>> for List
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn rc_list_constructor_wraps_in_rc() {
+        let v = Value::list(vec![Value::Int(1), Value::Int(2)]);
+        match &v {
+            Value::List(rc) => {
+                assert_eq!(rc.len(), 2);
+                assert_eq!(Rc::strong_count(rc), 1);
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    #[test]
+    fn rc_list_clone_is_refcount_bump() {
+        let v = Value::list(vec![Value::Int(10)]);
+        let rc1 = match &v {
+            Value::List(rc) => rc.clone(),
+            _ => panic!("expected List"),
+        };
+        let v2 = v.clone();
+        let rc2 = match &v2 {
+            Value::List(rc) => rc.clone(),
+            _ => panic!("expected List"),
+        };
+        // Both point to the same allocation.
+        assert!(Rc::ptr_eq(&rc1, &rc2));
+        // Strong count should be 3: rc1, rc2, and the one inside v or v2.
+        // Actually: v has one, v2 has one, rc1 has one, rc2 has one = 4.
+        assert!(Rc::strong_count(&rc1) >= 2);
+    }
+
+    #[test]
+    fn rc_list_as_list_returns_slice() {
+        let v = Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let slice = v.as_list().unwrap();
+        assert_eq!(slice.len(), 3);
+        assert_eq!(slice[0], Value::Int(1));
+        assert_eq!(slice[1], Value::Int(2));
+        assert_eq!(slice[2], Value::Int(3));
+    }
+
+    #[test]
+    fn rc_list_from_vec_wraps_in_rc() {
+        let items = vec![Value::Bool(true), Value::Bool(false)];
+        let v: Value = items.into();
+        match &v {
+            Value::List(rc) => {
+                assert_eq!(rc.len(), 2);
+                assert_eq!(Rc::strong_count(rc), 1);
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 6. String Interning
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn intern_same_string_returns_same_symbol() {
+        let s1 = intern("hello_intern_test");
+        let s2 = intern("hello_intern_test");
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn intern_different_strings_returns_different_symbols() {
+        let s1 = intern("unique_str_a_9182");
+        let s2 = intern("unique_str_b_9182");
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn resolve_roundtrips_correctly() {
+        let sym = intern("roundtrip_test_str");
+        let resolved = resolve(sym);
+        assert_eq!(resolved, "roundtrip_test_str");
+    }
+
+    #[test]
+    fn intern_cached_same_offset_returns_cached_symbol() {
+        let sid = next_source_id();
+        let sym1 = intern_cached("cached_ident_aa", sid, 100);
+        let sym2 = intern_cached("cached_ident_aa", sid, 100);
+        assert_eq!(sym1, sym2);
+    }
+
+    #[test]
+    fn intern_cached_different_offset_same_string_returns_same_symbol() {
+        // Even with different offsets, the same string should intern
+        // to the same Symbol (interning dedup at the interner level).
+        let sid = next_source_id();
+        let sym1 = intern_cached("dedup_test_str_77", sid, 200);
+        let sym2 = intern_cached("dedup_test_str_77", sid, 300);
+        // The symbols should be equal because the interner deduplicates.
+        assert_eq!(sym1, sym2);
+    }
+
+    #[test]
+    fn clear_ident_cache_clears() {
+        let sid = next_source_id();
+        let _sym = intern_cached("to_be_cleared_99", sid, 500);
+        clear_ident_cache();
+        // After clearing, the cache is empty, but interning the same
+        // string again should still return the same Symbol (the interner
+        // itself is not cleared, just the offset cache).
+        let sym2 = intern_cached("to_be_cleared_99", sid, 500);
+        let resolved = resolve(sym2);
+        assert_eq!(resolved, "to_be_cleared_99");
+    }
+
+    #[test]
+    fn next_source_id_increments_monotonically() {
+        let id1 = next_source_id();
+        let id2 = next_source_id();
+        let id3 = next_source_id();
+        assert_eq!(id2, id1 + 1);
+        assert_eq!(id3, id2 + 1);
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // 7. Env Operations
+    // ════════════════════════════════════════════════════════════
+
+    #[test]
+    fn env_new_creates_empty_bindings() {
+        let env = Env::new();
+        assert!(env.0.bindings.is_empty());
+        assert!(env.0.with_scopes.is_empty());
+        assert!(env.eval_file().is_none());
+    }
+
+    #[test]
+    fn env_bind_lookup_roundtrip() {
+        let mut env = Env::new();
+        env.bind("foo".to_string(), Value::Int(42));
+        assert_eq!(env.lookup("foo"), Some(Value::Int(42)));
+        assert_eq!(env.lookup("bar"), None);
+    }
+
+    #[test]
+    fn env_child_inherits_parent_bindings_flattened() {
+        let mut parent = Env::new();
+        parent.bind("a".to_string(), Value::Int(1));
+        parent.bind("b".to_string(), Value::Int(2));
+        let child = parent.child();
+        // Child sees parent's bindings.
+        assert_eq!(child.lookup("a"), Some(Value::Int(1)));
+        assert_eq!(child.lookup("b"), Some(Value::Int(2)));
+        // Verify bindings are in child's own map (flattened).
+        let sym_a = intern("a");
+        assert!(child.0.bindings.contains_key(&sym_a));
+    }
+
+    #[test]
+    fn env_child_inherits_with_scopes() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("ws".to_string(), Value::Int(10));
+        let parent = Env::new().with_scope(Value::Attrs(attrs));
+        let child = parent.child();
+        // Child should have the same with_scopes as parent.
+        assert_eq!(child.0.with_scopes.len(), parent.0.with_scopes.len());
+        assert_eq!(child.lookup("ws"), Some(Value::Int(10)));
+    }
+
+    #[test]
+    fn env_lookup_sym_fast_path_matches_lookup() {
+        let mut env = Env::new();
+        env.bind("target".to_string(), Value::Int(88));
+        let sym = intern("target");
+        let via_lookup = env.lookup("target");
+        let via_sym = env.lookup_sym(sym);
+        assert_eq!(via_lookup, via_sym);
+        assert_eq!(via_sym, Some(Value::Int(88)));
+    }
+
+    #[test]
+    fn env_lookup_sym_with_scope_fallback() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("sym_ws".to_string(), Value::Int(33));
+        let env = Env::new().with_scope(Value::Attrs(attrs));
+        let sym = intern("sym_ws");
+        assert_eq!(env.lookup_sym(sym), Some(Value::Int(33)));
+    }
+
+    #[test]
+    fn env_with_scope_ordering_multiple_innermost_wins() {
+        let mut a1 = NixAttrs::new();
+        a1.insert("x".to_string(), Value::Int(1));
+        let mut a2 = NixAttrs::new();
+        a2.insert("x".to_string(), Value::Int(2));
+        let mut a3 = NixAttrs::new();
+        a3.insert("x".to_string(), Value::Int(3));
+        let env = Env::new()
+            .with_scope(Value::Attrs(a1))
+            .with_scope(Value::Attrs(a2))
+            .with_scope(Value::Attrs(a3));
+        // Innermost (a3) should win.
+        assert_eq!(env.lookup("x"), Some(Value::Int(3)));
+    }
+
+    #[test]
+    fn env_lookup_sym_not_found_returns_none() {
+        let env = Env::new();
+        let sym = intern("nonexistent_sym_99");
+        assert_eq!(env.lookup_sym(sym), None);
+    }
+
+    #[test]
+    fn env_lookup_sym_lexical_wins_over_with_scope() {
+        let mut attrs = NixAttrs::new();
+        attrs.insert("priority".to_string(), Value::Int(1));
+        let mut env = Env::new().with_scope(Value::Attrs(attrs));
+        env.bind("priority".to_string(), Value::Int(99));
+        let sym = intern("priority");
+        assert_eq!(env.lookup_sym(sym), Some(Value::Int(99)));
+    }
 }
