@@ -421,6 +421,14 @@ impl Thunk {
         &self,
         evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
     ) -> Result<Value, EvalError> {
+        // Ultra-fast path: if already evaluated, return cached value
+        // WITHOUT entering stacker::maybe_grow. This avoids the stack
+        // check overhead on ~150M cache hits during nixpkgs evaluation.
+        if let Some(cached) = self.0.cache.get() {
+            crate::perf::inc(crate::perf::Counter::ThunkHit);
+            return Ok((**cached).clone());
+        }
+        // Cold path: evaluation may recurse deeply, so use stacker.
         stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
             self.force_inner(evaluator)
         })

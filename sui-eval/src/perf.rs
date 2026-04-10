@@ -45,9 +45,22 @@ pub enum Counter {
     EnvClone = 9,
     EnvLookup = 10,
     EnvLookupDepth = 11,
+    // Expression type breakdown
+    ExprIdent = 12,
+    ExprLiteral = 13,
+    ExprStr = 14,
+    ExprList = 15,
+    ExprAttrs = 16,
+    ExprSelect = 17,
+    ExprApply = 18,
+    ExprLetIn = 19,
+    ExprIfElse = 20,
+    ExprWith = 21,
+    ExprLambda = 22,
+    ExprOther = 23,
 }
 
-const NUM_COUNTERS: usize = 12;
+const NUM_COUNTERS: usize = 24;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -63,6 +76,18 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "env_clones",
     "env_lookups",
     "env_lookup_depth",
+    "expr_ident",
+    "expr_literal",
+    "expr_str",
+    "expr_list",
+    "expr_attrs",
+    "expr_select",
+    "expr_apply",
+    "expr_letin",
+    "expr_ifelse",
+    "expr_with",
+    "expr_lambda",
+    "expr_other",
 ];
 
 struct PerfCounters {
@@ -192,6 +217,31 @@ pub fn report() {
             "env_lookups:    {} (avg depth {avg_lookup:.1})",
             lookups
         );
+        // Expression type breakdown
+        let total = c.get(Counter::EvalExpr);
+        if total > 0 {
+            eprintln!("--- expression breakdown ---");
+            for (counter, name) in [
+                (Counter::ExprIdent, "ident"),
+                (Counter::ExprApply, "apply"),
+                (Counter::ExprLetIn, "let-in"),
+                (Counter::ExprIfElse, "if-else"),
+                (Counter::ExprSelect, "select"),
+                (Counter::ExprAttrs, "attrset"),
+                (Counter::ExprWith, "with"),
+                (Counter::ExprLambda, "lambda"),
+                (Counter::ExprLiteral, "literal"),
+                (Counter::ExprStr, "string"),
+                (Counter::ExprList, "list"),
+                (Counter::ExprOther, "other"),
+            ] {
+                let n = c.get(counter);
+                if n > 0 {
+                    let pct = (n as f64 / total as f64) * 100.0;
+                    eprintln!("  {name:<12} {n:>12} ({pct:.1}%)");
+                }
+            }
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");

@@ -285,6 +285,25 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
     loop {
     crate::perf::inc(crate::perf::Counter::EvalExpr);
+    // Track expression type distribution when profiling
+    if crate::perf::enabled() {
+        use crate::perf::Counter;
+        let c = match &cur_expr {
+            ast::Expr::Ident(_) => Counter::ExprIdent,
+            ast::Expr::Literal(_) => Counter::ExprLiteral,
+            ast::Expr::Str(_) => Counter::ExprStr,
+            ast::Expr::List(_) => Counter::ExprList,
+            ast::Expr::AttrSet(_) => Counter::ExprAttrs,
+            ast::Expr::Select(_) => Counter::ExprSelect,
+            ast::Expr::Apply(_) => Counter::ExprApply,
+            ast::Expr::LetIn(_) => Counter::ExprLetIn,
+            ast::Expr::IfElse(_) => Counter::ExprIfElse,
+            ast::Expr::With(_) => Counter::ExprWith,
+            ast::Expr::Lambda(_) => Counter::ExprLambda,
+            _ => Counter::ExprOther,
+        };
+        crate::perf::inc(c);
+    }
     let _guard = DepthGuard::enter()?;
     let env = &cur_env;
     match &cur_expr {
