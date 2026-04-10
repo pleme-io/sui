@@ -21,6 +21,10 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = { workspace = true }
 async-trait = { workspace = true }
+object_store = { version = "0.12", features = ["aws"] }
+redb = "2"
+bytes = "1"
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = { workspace = true }

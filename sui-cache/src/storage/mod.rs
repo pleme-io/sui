@@ -1,15 +1,19 @@
 //! Storage backend trait and implementations.
 //!
 //! The `StorageBackend` trait abstracts over where narinfo metadata and
-//! compressed NAR blobs are persisted. Two implementations are provided:
+//! compressed NAR blobs are persisted. Three implementations are provided:
 //!
 //! - [`LocalStorage`] — local filesystem (default)
-//! - S3-compatible object storage (stub for now)
+//! - [`S3Storage`] — S3-compatible object storage (AWS, MinIO, R2, RustFS)
+//! - [`StorageIndex`] — redb ephemeral metadata index (accelerates S3 lookups)
 
+pub mod index;
 pub mod local;
 pub mod s3;
 
+pub use index::StorageIndex;
 pub use local::LocalStorage;
+pub use s3::S3Storage;
 
 use async_trait::async_trait;
 
