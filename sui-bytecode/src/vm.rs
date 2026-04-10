@@ -190,7 +190,7 @@ impl<'a> VM<'a> {
                 }
                 // Attrsets
                 OpCode::MakeAttrs | OpCode::GetAttr | OpCode::HasAttr | OpCode::UpdateAttrs |
-                OpCode::SelectOrDefault | OpCode::DynGetAttr => {
+                OpCode::SelectOrDefault | OpCode::DynGetAttr | OpCode::DynHasAttr => {
                     self.dispatch_attrset(op)?;
                 }
                 // Lists
@@ -606,6 +606,21 @@ impl<'a> VM<'a> {
                         context: format!("dynamic select .${{{key_str}}}"),
                     });
                 }
+            }
+            OpCode::DynHasAttr => {
+                let key_val = self.pop_forced()?;
+                let attrset = self.pop_forced()?;
+                let key_str = key_val
+                    .as_string()
+                    .ok_or_else(|| VMError::TypeError {
+                        expected: "string",
+                        got: key_val.type_name(),
+                        context: "dynamic hasattr key".to_string(),
+                    })?
+                    .to_string();
+                let key_sym = self.interner.intern(&key_str);
+                let result = attrset.as_attrs().map_or(false, |attrs| attrs.contains_key(&key_sym));
+                self.push(NanBox::bool(result));
             }
             _ => unreachable!(),
         }
@@ -2356,6 +2371,24 @@ impl<'a> VM<'a> {
                 NanBox::attrs(nb_map)
             }
             crate::value::StringKeyedValue::Lambda => NanBox::null(),
+            crate::value::StringKeyedValue::Callable(cb) => {
+                let cb_clone = Rc::clone(cb);
+                let builtin = crate::value::VMBuiltin {
+                    name: "<bridge-fn>",
+                    arity: 1,
+                    func: Rc::new(move |args: Vec<VMValue>| {
+                        let interner = crate::intern::Interner::new();
+                        let sk_arg = args.into_iter().next()
+                            .unwrap_or(VMValue::Null)
+                            .to_string_keyed(&interner);
+                        let sk_result = cb_clone(sk_arg)
+                            .map_err(|e| crate::error::VMError::Throw(e))?;
+                        let mut tmp_interner = crate::intern::Interner::new();
+                        Ok(crate::builtins::string_keyed_to_vmvalue(&sk_result, &mut tmp_interner))
+                    }),
+                };
+                NanBox::builtin(builtin)
+            }
             crate::value::StringKeyedValue::Thunk(cb) => {
                 // Wrap the callback in a VMThunk with NativeCallback state.
                 // The VM's force_value will call the callback on demand and
@@ -3067,7 +3100,7 @@ impl<'a> VM<'a> {
                 | OpCode::Call | OpCode::TailCall | OpCode::Return
                 | OpCode::Assert | OpCode::Pop | OpCode::PushWith | OpCode::PopWith
                 | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
-                | OpCode::DynGetAttr => 1,
+                | OpCode::DynGetAttr | OpCode::DynHasAttr => 1,
 
                 // 1 u16 operand (3 bytes):
                 OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal

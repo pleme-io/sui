@@ -1418,6 +1418,23 @@ pub fn string_keyed_to_vmvalue(
             VMValue::Attrs(attrs)
         }
         StringKeyedValue::Lambda => VMValue::Null,
+        StringKeyedValue::Callable(cb) => {
+            let cb_clone = Rc::clone(cb);
+            VMValue::Builtin(crate::value::VMBuiltin {
+                name: "<bridge-fn>",
+                arity: 1,
+                func: Rc::new(move |args: Vec<VMValue>| {
+                    let interner = crate::intern::Interner::new();
+                    let sk_arg = args.into_iter().next()
+                        .unwrap_or(VMValue::Null)
+                        .to_string_keyed(&interner);
+                    let sk_result = cb_clone(sk_arg)
+                        .map_err(|e| VMError::Throw(e))?;
+                    let mut tmp_interner = crate::intern::Interner::new();
+                    Ok(string_keyed_to_vmvalue(&sk_result, &mut tmp_interner))
+                }),
+            })
+        }
         StringKeyedValue::Thunk(cb) => {
             // Wrap the StringKeyedValue thunk as a VMThunk.
             let cb_clone = Rc::clone(cb);

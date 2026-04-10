@@ -106,6 +106,9 @@ pub enum OpCode {
     /// Dynamic attribute access: pop string key, pop attrset, push `attrset.key`.
     /// No inline operand — key comes from the stack at runtime.
     DynGetAttr = 65,
+    /// Dynamic hasattr: pop string key, pop attrset, push bool.
+    /// No inline operand — key comes from the stack at runtime.
+    DynHasAttr = 66,
 
     // ── Lists ──────────────────────────────────────────────────
     /// Pop N values, construct a list.
@@ -221,6 +224,7 @@ impl OpCode {
             63 => Some(OpCode::UpdateAttrs),
             64 => Some(OpCode::SelectOrDefault),
             65 => Some(OpCode::DynGetAttr),
+            66 => Some(OpCode::DynHasAttr),
             70 => Some(OpCode::MakeList),
             71 => Some(OpCode::Concat),
             80 => Some(OpCode::MakeClosure),
@@ -261,7 +265,7 @@ mod tests {
             OpCode::GetLocal, OpCode::SetLocal, OpCode::GetUpvalue, OpCode::SetUpvalue,
             OpCode::PushWith, OpCode::PopWith, OpCode::LookupWith,
             OpCode::MakeAttrs, OpCode::GetAttr, OpCode::HasAttr,
-            OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr,
+            OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr, OpCode::DynHasAttr,
             OpCode::MakeList, OpCode::Concat,
             OpCode::MakeClosure, OpCode::Call, OpCode::Return, OpCode::TailCall,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,

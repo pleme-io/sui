@@ -428,6 +428,12 @@ pub enum StringKeyedValue {
     /// to a `NanBox` by the VM. Uses `Rc<dyn Fn()>` for cheap cloning
     /// and shared memoization.
     Thunk(Rc<dyn Fn() -> Result<StringKeyedValue, String>>),
+    /// A callable tree-walker function wrapped as a bridge callback.
+    ///
+    /// When the VM needs to call this, it converts args through the
+    /// bridge and delegates to the tree-walker. Created when a Lambda
+    /// or Builtin value crosses the tree-walker → VM boundary.
+    Callable(Rc<dyn Fn(StringKeyedValue) -> Result<StringKeyedValue, String>>),
 }
 
 impl Clone for StringKeyedValue {
@@ -443,6 +449,7 @@ impl Clone for StringKeyedValue {
             Self::Attrs(map) => Self::Attrs(map.clone()),
             Self::Lambda => Self::Lambda,
             Self::Thunk(cb) => Self::Thunk(Rc::clone(cb)),
+            Self::Callable(cb) => Self::Callable(Rc::clone(cb)),
         }
     }
 }
@@ -462,6 +469,8 @@ impl PartialEq for StringKeyedValue {
             // Thunks are never structurally equal (identity comparison
             // would be misleading since they are lazy).
             (Self::Thunk(_), _) | (_, Self::Thunk(_)) => false,
+            // Callables are function values — identity comparison is misleading.
+            (Self::Callable(_), _) | (_, Self::Callable(_)) => false,
             _ => false,
         }
     }
@@ -482,6 +491,7 @@ impl fmt::Debug for StringKeyedValue {
             Self::Attrs(map) => f.debug_tuple("Attrs").field(map).finish(),
             Self::Lambda => write!(f, "Lambda"),
             Self::Thunk(_) => write!(f, "Thunk(<deferred>)"),
+            Self::Callable(_) => write!(f, "Callable(<bridge-fn>)"),
         }
     }
 }
@@ -517,6 +527,7 @@ impl fmt::Display for StringKeyedValue {
             }
             StringKeyedValue::Lambda => write!(f, "<<lambda>>"),
             StringKeyedValue::Thunk(_) => write!(f, "<<thunk>>"),
+            StringKeyedValue::Callable(_) => write!(f, "<<lambda>>"),
         }
     }
 }

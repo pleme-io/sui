@@ -170,7 +170,30 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
             }
             sui_bytecode::StringKeyedValue::Attrs(map)
         }
-        Value::Lambda(_) | Value::Builtin(_) => sui_bytecode::StringKeyedValue::Lambda,
+        Value::Lambda(closure) => {
+            let closure_clone = (**closure).clone();
+            sui_bytecode::StringKeyedValue::Callable(std::rc::Rc::new(move |arg| {
+                let eval_arg = convert::string_keyed_to_eval(&arg);
+                let func = Value::Lambda(Box::new(closure_clone.clone()));
+                let result = eval::apply(func, eval_arg)
+                    .map_err(|e| e.to_string())?;
+                let forced = eval::force_value(&result)
+                    .map_err(|e| e.to_string())?;
+                Ok(eval_to_string_keyed(&forced))
+            }))
+        }
+        Value::Builtin(bf) => {
+            let bf_clone = (**bf).clone();
+            sui_bytecode::StringKeyedValue::Callable(std::rc::Rc::new(move |arg| {
+                let eval_arg = convert::string_keyed_to_eval(&arg);
+                let func = Value::Builtin(Box::new(bf_clone.clone()));
+                let result = eval::apply(func, eval_arg)
+                    .map_err(|e| e.to_string())?;
+                let forced = eval::force_value(&result)
+                    .map_err(|e| e.to_string())?;
+                Ok(eval_to_string_keyed(&forced))
+            }))
+        }
         Value::Thunk(t) => {
             // Fast path: if already evaluated, convert the memoized value
             // without creating a thunk wrapper.

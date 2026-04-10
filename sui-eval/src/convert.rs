@@ -33,7 +33,21 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
             }
             Value::Attrs(Box::new(attrs))
         }
-        StringKeyedValue::Lambda => Value::Null, // lambdas cannot cross the boundary
+        StringKeyedValue::Lambda => Value::Null, // bare lambdas cannot cross the boundary
+        StringKeyedValue::Callable(cb) => {
+            // Wrap the bridge callback as a tree-walker BuiltinFn.
+            let cb_clone = std::rc::Rc::clone(cb);
+            Value::Builtin(Box::new(crate::value::BuiltinFn {
+                name: "<bridge-fn>",
+                func: std::rc::Rc::new(move |args: &[Value]| {
+                    let arg = args.first().cloned().unwrap_or(Value::Null);
+                    let sk_arg = crate::eval_to_string_keyed(&arg);
+                    let sk_result = cb_clone(sk_arg)
+                        .map_err(|e| crate::value::EvalError::TypeError(e))?;
+                    Ok(string_keyed_to_eval(&sk_result))
+                }),
+            }))
+        }
         StringKeyedValue::Thunk(cb) => {
             // Wrap the StringKeyedValue thunk as a tree-walker native thunk.
             let cb_clone = std::rc::Rc::clone(cb);
@@ -81,8 +95,11 @@ pub fn eval_to_vm(val: &Value, interner: &mut Interner) -> VMValue {
             }
             VMValue::Attrs(map)
         }
-        // Closures and builtins cannot cross the boundary.
-        Value::Lambda(_) | Value::Builtin(_) => VMValue::Null,
+        // Closures and builtins cross the boundary via bridge callbacks.
+        Value::Lambda(_) | Value::Builtin(_) => {
+            let sk = crate::eval_to_string_keyed(val);
+            sui_bytecode::builtins::string_keyed_to_vmvalue(&sk, interner)
+        }
         Value::Thunk(t) => {
             if t.is_evaluated() {
                 match t.force(&|e, env| crate::eval::eval_expr(e, env)) {

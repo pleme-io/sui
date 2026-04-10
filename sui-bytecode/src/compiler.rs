@@ -966,6 +966,7 @@ impl Compiler {
             std::collections::BTreeMap::new();
         let mut inherit_entries: Vec<(String, Option<ast::Expr>)> = Vec::new();
         let mut dynamic_entries: Vec<(ast::Expr, ast::Expr)> = Vec::new();
+        let mut dynamic_dotted_entries: Vec<(ast::Attr, Vec<String>, ast::Expr)> = Vec::new();
 
         for entry in set.entries() {
             match entry {
@@ -999,15 +1000,34 @@ impl Compiler {
                         }
                     } else {
                         // Dotted binding: group by top-level key.
-                        let top_key = static_attr_name(&keys[0])?;
-                        let rest_keys: Vec<String> = keys[1..]
-                            .iter()
-                            .map(static_attr_name)
-                            .collect::<Result<_, _>>()?;
-                        dotted_entries
-                            .entry(top_key)
-                            .or_default()
-                            .push((rest_keys, value_expr));
+                        match static_attr_name(&keys[0]) {
+                            Ok(top_key) => {
+                                let rest_keys: Vec<String> = keys[1..]
+                                    .iter()
+                                    .map(static_attr_name)
+                                    .collect::<Result<_, _>>()?;
+                                dotted_entries
+                                    .entry(top_key)
+                                    .or_default()
+                                    .push((rest_keys, value_expr));
+                            }
+                            Err(_) => {
+                                // Dynamic top-level key in dotted path.
+                                // Collect rest keys as static names for the
+                                // nested attrset; push as a dynamic entry.
+                                let rest_keys: Vec<String> = keys[1..]
+                                    .iter()
+                                    .map(static_attr_name)
+                                    .collect::<Result<_, _>>()?;
+                                // Store for later compilation as dynamic
+                                // dotted entry (key_attr, rest_keys, value).
+                                dynamic_dotted_entries.push((
+                                    keys[0].clone(),
+                                    rest_keys,
+                                    value_expr,
+                                ));
+                            }
+                        }
                     }
                 }
                 ast::Entry::Inherit(ref inherit) => {
@@ -1062,6 +1082,17 @@ impl Compiler {
         for (key_expr, value_expr) in &dynamic_entries {
             self.compile_expr(value_expr)?;
             self.compile_expr(key_expr)?;
+            count += 1;
+        }
+
+        // Emit dynamic dotted entries: dynamic top-level key with static
+        // nested path. Build the nested attrset from rest_keys, then emit
+        // the dynamic key expression.
+        for (key_attr, rest_keys, value_expr) in &dynamic_dotted_entries {
+            // Build nested attrset: { rest_key1.rest_key2... = value; }
+            self.compile_nested_attrset(&[(rest_keys.clone(), value_expr.clone())])?;
+            // Compile the dynamic key expression.
+            self.compile_dynamic_attr_key(key_attr)?;
             count += 1;
         }
 
@@ -1571,12 +1602,16 @@ impl Compiler {
         let segments: Vec<_> = attrpath.attrs().collect();
 
         if segments.len() == 1 {
-            // Single-segment: compile base, then HasAttr.
+            // Single-segment: compile base, then HasAttr or DynHasAttr.
             self.compile_expr(&base)?;
-            let key = static_attr_name(&segments[0])?;
-            let key_idx = self.add_attr_key(key)?;
-            self.emit(OpCode::HasAttr);
-            self.emit_u16(key_idx);
+            if let Ok(key) = static_attr_name(&segments[0]) {
+                let key_idx = self.add_attr_key(key)?;
+                self.emit(OpCode::HasAttr);
+                self.emit_u16(key_idx);
+            } else {
+                self.compile_dynamic_attr_key(&segments[0])?;
+                self.emit(OpCode::DynHasAttr);
+            }
             return Ok(());
         }
 
@@ -1597,15 +1632,23 @@ impl Compiler {
             // Build the prefix path: base.seg0.seg1...seg(i-1)
             self.compile_expr(&base)?;
             for prev_seg in &segments[..i] {
-                let prev_key = static_attr_name(prev_seg)?;
-                let prev_idx = self.add_attr_key(prev_key)?;
-                self.emit(OpCode::GetAttr);
-                self.emit_u16(prev_idx);
+                if let Ok(prev_key) = static_attr_name(prev_seg) {
+                    let prev_idx = self.add_attr_key(prev_key)?;
+                    self.emit(OpCode::GetAttr);
+                    self.emit_u16(prev_idx);
+                } else {
+                    self.compile_dynamic_attr_key(prev_seg)?;
+                    self.emit(OpCode::DynGetAttr);
+                }
             }
-            let key = static_attr_name(seg)?;
-            let key_idx = self.add_attr_key(key)?;
-            self.emit(OpCode::HasAttr);
-            self.emit_u16(key_idx);
+            if let Ok(key) = static_attr_name(seg) {
+                let key_idx = self.add_attr_key(key)?;
+                self.emit(OpCode::HasAttr);
+                self.emit_u16(key_idx);
+            } else {
+                self.compile_dynamic_attr_key(seg)?;
+                self.emit(OpCode::DynHasAttr);
+            }
 
             // For all segments except the last, short-circuit on false.
             if i < segments.len() - 1 {
@@ -2040,7 +2083,7 @@ impl Compiler {
             | OpCode::Greater | OpCode::LessEqual | OpCode::GreaterEqual
             | OpCode::And | OpCode::Or | OpCode::Implication
             | OpCode::Concat | OpCode::UpdateAttrs
-            | OpCode::Call | OpCode::TailCall | OpCode::DynGetAttr => {
+            | OpCode::Call | OpCode::TailCall | OpCode::DynGetAttr | OpCode::DynHasAttr => {
                 self.stack_depth = self.stack_depth.saturating_sub(1);
             }
             // Pop 1, push 1 (net 0)
