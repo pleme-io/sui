@@ -10,13 +10,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut result = NixAttrs::new();
                 result.insert("success".to_string(), Value::Bool(true));
                 result.insert("value".to_string(), v);
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }
             Err(_) => {
                 let mut result = NixAttrs::new();
                 result.insert("success".to_string(), Value::Bool(false));
                 result.insert("value".to_string(), Value::Bool(false));
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }
         }
     });

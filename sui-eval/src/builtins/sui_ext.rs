@@ -61,7 +61,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
             .get("delimiter")
             .and_then(|v| crate::eval::force_value(v).ok())
             .and_then(|v| match v {
-                Value::String(ns) => Some(ns.chars),
+                Value::String(ns) => Some(ns.chars.clone()),
                 _ => None,
             })
             .map(|s| s.chars().next().unwrap_or(','))
@@ -83,7 +83,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                     let v = cells.get(i).copied().unwrap_or("");
                     a.insert((*h).to_string(), Value::string(v));
                 }
-                rows.push(Value::Attrs(Box::new(a)));
+                rows.push(Value::Attrs(Rc::new(a)));
             }
             Ok(Value::List(Rc::new(rows)))
         } else {
@@ -117,7 +117,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                 out.insert(name.to_string(), Value::string(m.as_str()));
             }
         }
-        Ok(Value::Attrs(Box::new(out)))
+        Ok(Value::Attrs(Rc::new(out)))
     });
 
     // ISO-8601 timestamp

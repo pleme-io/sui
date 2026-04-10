@@ -47,7 +47,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toString", |args| {
         let val = &args[0];
         let (s, ctx) = val.coerce_to_string()?;
-        Ok(Value::String(Box::new(NixString::with_context(s, ctx))))
+        Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
     });
     register_builtin(builtins, "stringLength", |args| {
         Ok(Value::Int(args[0].as_string()?.len() as i64))
@@ -74,14 +74,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // Case conversion (context-preserving)
     register_builtin(builtins, "toLower", |args| {
         let ns = args[0].as_nix_string()?;
-        Ok(Value::String(Box::new(NixString::with_context(
+        Ok(Value::String(Rc::new(NixString::with_context(
             ns.chars.to_lowercase(),
             ns.context.clone(),
         ))))
     });
     register_builtin(builtins, "toUpper", |args| {
         let ns = args[0].as_nix_string()?;
-        Ok(Value::String(Box::new(NixString::with_context(
+        Ok(Value::String(Rc::new(NixString::with_context(
             ns.chars.to_uppercase(),
             ns.context.clone(),
         ))))

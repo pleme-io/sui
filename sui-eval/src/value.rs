@@ -7,7 +7,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use std::fmt;
-use std::rc::Rc;
+pub use std::rc::Rc;
 
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
@@ -266,10 +266,10 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    String(Box<NixString>),
+    String(Rc<NixString>),
     Path(Box<SmolStr>),
     List(Rc<Vec<Value>>),
-    Attrs(Box<NixAttrs>),
+    Attrs(Rc<NixAttrs>),
     Lambda(Box<Closure>),
     Builtin(Box<BuiltinFn>),
     /// A lazy value (thunk) with memoization and blackhole detection.
@@ -1126,7 +1126,7 @@ impl Value {
     /// Convenience constructor for a context-free string.
     #[must_use]
     pub fn string(s: impl Into<SmolStr>) -> Self {
-        Value::String(Box::new(NixString::plain(s)))
+        Value::String(Rc::new(NixString::plain(s)))
     }
 
     /// Convenience constructor that wraps a `Vec<Value>` in `Rc` for the
@@ -1471,7 +1471,7 @@ impl From<&serde_json::Value> for Value {
                 for (k, v) in obj {
                     attrs.insert(k.clone(), Value::from(v));
                 }
-                Value::Attrs(Box::new(attrs))
+                Value::Attrs(Rc::new(attrs))
             }
         }
     }
@@ -1492,7 +1492,7 @@ impl From<&toml::Value> for Value {
                 for (k, val) in t {
                     attrs.insert(k.clone(), Value::from(val));
                 }
-                Value::Attrs(Box::new(attrs))
+                Value::Attrs(Rc::new(attrs))
             }
             toml::Value::Datetime(dt) => Value::string(dt.to_string()),
         }
@@ -1522,13 +1522,13 @@ impl From<f64> for Value {
 
 impl From<NixString> for Value {
     fn from(s: NixString) -> Self {
-        Value::String(Box::new(s))
+        Value::String(Rc::new(s))
     }
 }
 
 impl From<NixAttrs> for Value {
     fn from(attrs: NixAttrs) -> Self {
-        Value::Attrs(Box::new(attrs))
+        Value::Attrs(Rc::new(attrs))
     }
 }
 
@@ -1663,7 +1663,7 @@ mod tests {
     fn to_json_attrs() {
         let mut attrs = NixAttrs::new();
         attrs.insert("a".to_string(), Value::Int(1));
-        let v = Value::Attrs(Box::new(attrs));
+        let v = Value::Attrs(Rc::new(attrs));
         assert_eq!(v.to_json(), serde_json::json!({"a": 1}));
     }
 
@@ -1723,7 +1723,7 @@ mod tests {
     fn type_name_list() { assert_eq!(Value::list(vec![]).type_name(), "list"); }
 
     #[test]
-    fn type_name_set() { assert_eq!(Value::Attrs(Box::new(NixAttrs::new())).type_name(), "set"); }
+    fn type_name_set() { assert_eq!(Value::Attrs(Rc::new(NixAttrs::new())).type_name(), "set"); }
 
     #[test]
     fn type_name_lambda() {
@@ -1779,7 +1779,7 @@ mod tests {
     #[test]
     fn as_list_error_on_non_list() {
         assert!(Value::Int(1).as_list().is_err());
-        assert!(Value::Attrs(Box::new(NixAttrs::new())).as_list().is_err());
+        assert!(Value::Attrs(Rc::new(NixAttrs::new())).as_list().is_err());
     }
 
     // ── as_float int->float coercion ─────────────────────
@@ -1805,7 +1805,7 @@ mod tests {
         assert_ne!(Value::Int(1), Value::string("1"));
         assert_ne!(Value::Bool(true), Value::Int(1));
         assert_ne!(Value::Null, Value::Bool(false));
-        assert_ne!(Value::list(vec![]), Value::Attrs(Box::new(NixAttrs::new())));
+        assert_ne!(Value::list(vec![]), Value::Attrs(Rc::new(NixAttrs::new())));
     }
 
     // ── Display for all variants ─────────────────────────
@@ -1856,7 +1856,7 @@ mod tests {
     fn display_attrs() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
-        let v = Value::Attrs(Box::new(attrs));
+        let v = Value::Attrs(Rc::new(attrs));
         assert_eq!(format!("{v}"), "{ x = 1; }");
     }
 
@@ -1929,7 +1929,7 @@ mod tests {
     fn env_with_scope_lookup() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         assert_eq!(env.lookup("x"), Some(Value::Int(42)));
         assert_eq!(env.lookup("y"), None);
     }
@@ -1938,7 +1938,7 @@ mod tests {
     fn env_local_shadows_with_scope() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
-        let mut env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let mut env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         env.bind("x".to_string(), Value::Int(99));
         assert_eq!(env.lookup("x"), Some(Value::Int(99)));
     }
@@ -2068,10 +2068,10 @@ mod tests {
 
     #[test]
     fn value_string_eq_ignores_context() {
-        let plain = Value::String(Box::new(NixString::plain("hello")));
+        let plain = Value::String(Rc::new(NixString::plain("hello")));
         let mut ctx = StringContext::new();
         ctx.add_plain("/nix/store/xxx".to_string());
-        let with_ctx = Value::String(Box::new(NixString::with_context("hello", ctx)));
+        let with_ctx = Value::String(Rc::new(NixString::with_context("hello", ctx)));
         // Value::PartialEq only compares .chars, ignoring context
         assert_eq!(plain, with_ctx);
     }
@@ -2082,10 +2082,10 @@ mod tests {
     fn env_nested_with_inner_wins() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(Value::Attrs(Box::new(outer_attrs)));
+        let outer = Env::new().with_scope(Value::Attrs(Rc::new(outer_attrs)));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("x".to_string(), Value::Int(2));
-        let inner = outer.child().with_scope(Value::Attrs(Box::new(inner_attrs)));
+        let inner = outer.child().with_scope(Value::Attrs(Rc::new(inner_attrs)));
         assert_eq!(inner.lookup("x"), Some(Value::Int(2)));
     }
 
@@ -2093,10 +2093,10 @@ mod tests {
     fn env_nested_with_fallback_to_outer() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(Value::Attrs(Box::new(outer_attrs)));
+        let outer = Env::new().with_scope(Value::Attrs(Rc::new(outer_attrs)));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("y".to_string(), Value::Int(2));
-        let inner = outer.child().with_scope(Value::Attrs(Box::new(inner_attrs)));
+        let inner = outer.child().with_scope(Value::Attrs(Rc::new(inner_attrs)));
         assert_eq!(inner.lookup("x"), Some(Value::Int(1)));
         assert_eq!(inner.lookup("y"), Some(Value::Int(2)));
     }
@@ -2105,10 +2105,10 @@ mod tests {
     fn env_lexical_binding_wins_over_all_with_scopes() {
         let mut outer_attrs = NixAttrs::new();
         outer_attrs.insert("x".to_string(), Value::Int(1));
-        let outer = Env::new().with_scope(Value::Attrs(Box::new(outer_attrs)));
+        let outer = Env::new().with_scope(Value::Attrs(Rc::new(outer_attrs)));
         let mut inner_attrs = NixAttrs::new();
         inner_attrs.insert("x".to_string(), Value::Int(2));
-        let mut inner = outer.child().with_scope(Value::Attrs(Box::new(inner_attrs)));
+        let mut inner = outer.child().with_scope(Value::Attrs(Rc::new(inner_attrs)));
         inner.bind("x".to_string(), Value::Int(99));
         assert_eq!(inner.lookup("x"), Some(Value::Int(99)));
     }
@@ -2119,7 +2119,7 @@ mod tests {
         root.bind("x".to_string(), Value::Int(10));
         let mut child_attrs = NixAttrs::new();
         child_attrs.insert("x".to_string(), Value::Int(20));
-        let child = root.child().with_scope(Value::Attrs(Box::new(child_attrs)));
+        let child = root.child().with_scope(Value::Attrs(Rc::new(child_attrs)));
         assert_eq!(child.lookup("x"), Some(Value::Int(10)));
     }
 
@@ -2127,15 +2127,15 @@ mod tests {
     fn env_deeply_nested_with_scopes_three_levels() {
         let mut a = NixAttrs::new();
         a.insert("x".to_string(), Value::Int(1));
-        let env1 = Env::new().with_scope(Value::Attrs(Box::new(a)));
+        let env1 = Env::new().with_scope(Value::Attrs(Rc::new(a)));
 
         let mut b = NixAttrs::new();
         b.insert("y".to_string(), Value::Int(2));
-        let env2 = env1.child().with_scope(Value::Attrs(Box::new(b)));
+        let env2 = env1.child().with_scope(Value::Attrs(Rc::new(b)));
 
         let mut c = NixAttrs::new();
         c.insert("z".to_string(), Value::Int(3));
-        let env3 = env2.child().with_scope(Value::Attrs(Box::new(c)));
+        let env3 = env2.child().with_scope(Value::Attrs(Rc::new(c)));
 
         assert_eq!(env3.lookup("x"), Some(Value::Int(1)));
         assert_eq!(env3.lookup("y"), Some(Value::Int(2)));
@@ -2149,7 +2149,7 @@ mod tests {
         // They should only be found via the with-scope lookup path.
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // The binding map itself should not contain "x"
         assert!(env.0.bindings.get(&intern("x")).is_none());
         // But lookup should find it via with-scope
@@ -2445,7 +2445,7 @@ mod tests {
     #[test]
     fn value_string_constructor() {
         let v = Value::string("test");
-        assert_eq!(v, Value::String(Box::new(NixString::plain("test"))));
+        assert_eq!(v, Value::String(Rc::new(NixString::plain("test"))));
     }
 
     #[test]
@@ -2466,7 +2466,7 @@ mod tests {
         a.insert("x".to_string(), Value::Int(1));
         let mut b = NixAttrs::new();
         b.insert("x".to_string(), Value::Int(1));
-        assert_eq!(Value::Attrs(Box::new(a)), Value::Attrs(Box::new(b)));
+        assert_eq!(Value::Attrs(Rc::new(a)), Value::Attrs(Rc::new(b)));
     }
 
     // ── EvalError variants & convenience constructors ────
@@ -2972,14 +2972,14 @@ mod tests {
     fn coerce_to_path_attrs_with_outpath() {
         let mut attrs = NixAttrs::new();
         attrs.insert("outPath".to_string(), Value::string("/nix/store/test"));
-        let val = Value::Attrs(Box::new(attrs));
+        let val = Value::Attrs(Rc::new(attrs));
         assert_eq!(val.coerce_to_path("test").unwrap(), "/nix/store/test");
     }
 
     #[test]
     fn coerce_to_path_attrs_without_outpath_fails() {
         let attrs = NixAttrs::new();
-        let val = Value::Attrs(Box::new(attrs));
+        let val = Value::Attrs(Rc::new(attrs));
         assert!(val.coerce_to_path("test").is_err());
     }
 
@@ -3036,7 +3036,7 @@ mod tests {
     fn coerce_to_string_attrs_with_outpath() {
         let mut attrs = NixAttrs::new();
         attrs.insert("outPath".to_string(), Value::string("/nix/store/abc"));
-        let val = Value::Attrs(Box::new(attrs));
+        let val = Value::Attrs(Rc::new(attrs));
         let (s, _ctx) = val.coerce_to_string().unwrap();
         assert_eq!(s, "/nix/store/abc");
     }
@@ -3044,7 +3044,7 @@ mod tests {
     #[test]
     fn coerce_to_string_attrs_without_outpath_or_tostring_fails() {
         let attrs = NixAttrs::new();
-        let val = Value::Attrs(Box::new(attrs));
+        let val = Value::Attrs(Rc::new(attrs));
         assert!(val.coerce_to_string().is_err());
     }
 
@@ -3271,7 +3271,7 @@ mod tests {
     fn with_scope_created_with_empty_cache() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // The cached field should be None initially.
         let scope = &env.0.with_scopes[0];
         assert!(scope.cached.borrow().is_none());
@@ -3281,7 +3281,7 @@ mod tests {
     fn with_scope_first_lookup_populates_cache() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // Before lookup, cache is empty.
         assert!(env.0.with_scopes[0].cached.borrow().is_none());
         // Lookup forces and caches.
@@ -3293,7 +3293,7 @@ mod tests {
     fn with_scope_second_lookup_uses_cache() {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(10));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // First lookup populates cache.
         assert_eq!(env.lookup("x"), Some(Value::Int(10)));
         assert!(env.0.with_scopes[0].cached.borrow().is_some());
@@ -3305,7 +3305,7 @@ mod tests {
     fn with_scope_child_shares_cache_via_rc() {
         let mut attrs = NixAttrs::new();
         attrs.insert("shared".to_string(), Value::Int(7));
-        let parent = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let parent = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         let child = parent.child();
         // Force via parent lookup.
         let _ = parent.lookup("shared");
@@ -3322,8 +3322,8 @@ mod tests {
         let mut inner = NixAttrs::new();
         inner.insert("x".to_string(), Value::Int(2));
         let env = Env::new()
-            .with_scope(Value::Attrs(Box::new(outer)))
-            .with_scope(Value::Attrs(Box::new(inner)));
+            .with_scope(Value::Attrs(Rc::new(outer)))
+            .with_scope(Value::Attrs(Rc::new(inner)));
         // Innermost scope has x=2, should win.
         assert_eq!(env.lookup("x"), Some(Value::Int(2)));
         // y only in outer, should fallback.
@@ -3660,7 +3660,7 @@ mod tests {
     fn env_child_inherits_with_scopes() {
         let mut attrs = NixAttrs::new();
         attrs.insert("ws".to_string(), Value::Int(10));
-        let parent = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let parent = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         let child = parent.child();
         // Child should have the same with_scopes as parent.
         assert_eq!(child.0.with_scopes.len(), parent.0.with_scopes.len());
@@ -3682,7 +3682,7 @@ mod tests {
     fn env_lookup_sym_with_scope_fallback() {
         let mut attrs = NixAttrs::new();
         attrs.insert("sym_ws".to_string(), Value::Int(33));
-        let env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         let sym = intern("sym_ws");
         assert_eq!(env.lookup_sym(sym), Some(Value::Int(33)));
     }
@@ -3696,9 +3696,9 @@ mod tests {
         let mut a3 = NixAttrs::new();
         a3.insert("x".to_string(), Value::Int(3));
         let env = Env::new()
-            .with_scope(Value::Attrs(Box::new(a1)))
-            .with_scope(Value::Attrs(Box::new(a2)))
-            .with_scope(Value::Attrs(Box::new(a3)));
+            .with_scope(Value::Attrs(Rc::new(a1)))
+            .with_scope(Value::Attrs(Rc::new(a2)))
+            .with_scope(Value::Attrs(Rc::new(a3)));
         // Innermost (a3) should win.
         assert_eq!(env.lookup("x"), Some(Value::Int(3)));
     }
@@ -3714,7 +3714,7 @@ mod tests {
     fn env_lookup_sym_lexical_wins_over_with_scope() {
         let mut attrs = NixAttrs::new();
         attrs.insert("priority".to_string(), Value::Int(1));
-        let mut env = Env::new().with_scope(Value::Attrs(Box::new(attrs)));
+        let mut env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         env.bind("priority".to_string(), Value::Int(99));
         let sym = intern("priority");
         assert_eq!(env.lookup_sym(sym), Some(Value::Int(99)));

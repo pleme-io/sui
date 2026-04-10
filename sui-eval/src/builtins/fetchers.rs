@@ -181,7 +181,7 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
         Value::string(format!("sha256-{}", base64_encode(&hex_to_bytes(&narhash_hex)))),
     );
     result.insert("submodules".into(), Value::Bool(submodules));
-    Ok(Value::Attrs(Box::new(result)))
+    Ok(Value::Attrs(Rc::new(result)))
 }
 
 /// Implement `builtins.fetchMercurial`.
@@ -251,7 +251,7 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
         "branch".into(),
         Value::string("default".to_string()),
     );
-    Ok(Value::Attrs(Box::new(result)))
+    Ok(Value::Attrs(Rc::new(result)))
 }
 
 /// Implement `builtins.fetchTree`. Dispatches on the `type` attr.
@@ -292,7 +292,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
             let mut g = NixAttrs::new();
             g.insert("url".into(), Value::string(url));
             g.insert("ref".into(), Value::string(reff));
-            fetch_git(&Value::Attrs(Box::new(g)))
+            fetch_git(&Value::Attrs(Rc::new(g)))
         }
         "git" => {
             let mut g = NixAttrs::new();
@@ -301,7 +301,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                     g.insert(k.clone(), v.clone());
                 }
             }
-            fetch_git(&Value::Attrs(Box::new(g)))
+            fetch_git(&Value::Attrs(Rc::new(g)))
         }
         "tarball" => {
             let url_v = attrs
@@ -341,7 +341,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                 "narHash".into(),
                 Value::string(format!("sha256-{hash}")),
             );
-            Ok(Value::Attrs(Box::new(result)))
+            Ok(Value::Attrs(Rc::new(result)))
         }
         "path" => {
             let p = attrs
@@ -350,7 +350,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                 .to_str()?;
             let mut result = NixAttrs::new();
             result.insert("outPath".into(), Value::Path(Box::new(SmolStr::from(p.as_str()))));
-            Ok(Value::Attrs(Box::new(result)))
+            Ok(Value::Attrs(Rc::new(result)))
         }
         other => Err(EvalError::NotImplemented(format!(
             "fetchTree: unsupported type '{other}'"

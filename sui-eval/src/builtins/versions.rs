@@ -23,7 +23,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let mut result = NixAttrs::new();
         result.insert("name".to_string(), Value::string(name));
         result.insert("version".to_string(), Value::string(version));
-        Ok(Value::Attrs(Box::new(result)))
+        Ok(Value::Attrs(Rc::new(result)))
     });
 
     // splitVersion

@@ -31,19 +31,19 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         for p in &plains {
             let mut a = NixAttrs::new();
             a.insert("path".to_string(), Value::Bool(true));
-            result.insert(p.clone(), Value::Attrs(Box::new(a)));
+            result.insert(p.clone(), Value::Attrs(Rc::new(a)));
         }
         for (d, os) in &om {
             let mut a = NixAttrs::new();
             a.insert("outputs".to_string(), Value::List(Rc::new(os.iter().map(|o| Value::string(o.clone())).collect())));
-            result.insert(d.clone(), Value::Attrs(Box::new(a)));
+            result.insert(d.clone(), Value::Attrs(Rc::new(a)));
         }
         for d in &deep {
             let mut a = NixAttrs::new();
             a.insert("allOutputs".to_string(), Value::Bool(true));
-            result.insert(d.clone(), Value::Attrs(Box::new(a)));
+            result.insert(d.clone(), Value::Attrs(Rc::new(a)));
         }
-        Ok(Value::Attrs(Box::new(result)))
+        Ok(Value::Attrs(Rc::new(result)))
     });
     register_builtin(builtins, "unsafeDiscardStringContext", |args| {
         match &args[0] {
@@ -63,7 +63,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         other => { nc.insert(other.clone()); }
                     }
                 }
-                Ok(Value::String(Box::new(NixString::with_context(ns.chars.clone(), nc))))
+                Ok(Value::String(Rc::new(NixString::with_context(ns.chars.clone(), nc))))
             }
             _ => Err(EvalError::TypeError("unsafeDiscardOutputDependency: expected string".into())),
         }
@@ -83,7 +83,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         other => { nc.insert(other.clone()); }
                     }
                 }
-                Ok(Value::String(Box::new(NixString::with_context(ns.chars.clone(), nc))))
+                Ok(Value::String(Rc::new(NixString::with_context(ns.chars.clone(), nc))))
             }
             _ => Err(EvalError::TypeError("addDrvOutputDependencies: expected string".into())),
         }
@@ -110,6 +110,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 nc.add_drv_deep(key.clone());
             }
         }
-        Ok(Value::String(Box::new(NixString::with_context(ns.chars, nc))))
+        Ok(Value::String(Rc::new(NixString::with_context(ns.chars, nc))))
     });
 }

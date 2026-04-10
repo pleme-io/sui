@@ -79,7 +79,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             };
             attrs.insert(name, Value::string(type_str));
         }
-        Ok(Value::Attrs(Box::new(attrs)))
+        Ok(Value::Attrs(Rc::new(attrs)))
     });
 
     register_builtin(builtins, "toPath", |args| {

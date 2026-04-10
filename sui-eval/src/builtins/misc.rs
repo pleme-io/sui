@@ -16,9 +16,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         }
                     }
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }
-            Value::Builtin(_) => Ok(Value::Attrs(Box::new(NixAttrs::new()))),
+            Value::Builtin(_) => Ok(Value::Attrs(Rc::new(NixAttrs::new()))),
             _ => Err(EvalError::TypeError("functionArgs: expected function".to_string())),
         }
     });

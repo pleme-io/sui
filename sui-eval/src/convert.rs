@@ -5,7 +5,7 @@
 //! bridges the two representations so that the VM can be wired as an
 //! alternative evaluation backend.
 
-use crate::value::{NixAttrs, SmolStr, Value};
+use crate::value::{NixAttrs, SmolStr, Value, Rc};
 use sui_bytecode::value::{StringKeyedValue, VMValue};
 use sui_bytecode::intern::Interner;
 
@@ -31,7 +31,7 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
             for (k, v) in map {
                 attrs.insert(k.clone(), string_keyed_to_eval(v));
             }
-            Value::Attrs(Box::new(attrs))
+            Value::Attrs(Rc::new(attrs))
         }
         StringKeyedValue::Lambda => Value::Null, // bare lambdas cannot cross the boundary
         StringKeyedValue::Callable(cb) => {
@@ -236,7 +236,7 @@ mod tests {
         let mut interner = Interner::new();
         let mut attrs = NixAttrs::new();
         attrs.insert("key".to_string(), Value::Int(99));
-        let val = Value::Attrs(Box::new(attrs));
+        let val = Value::Attrs(Rc::new(attrs));
         let vm = eval_to_vm(&val, &mut interner);
         let sk = vm.to_string_keyed(&interner);
         match sk {

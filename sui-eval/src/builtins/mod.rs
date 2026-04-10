@@ -183,7 +183,7 @@ pub fn register(env: &mut Env) {
                 let mut a = NixAttrs::new();
                 a.insert("prefix".to_string(), Value::string(prefix));
                 a.insert("path".to_string(), Value::string(path));
-                Value::Attrs(Box::new(a))
+                Value::Attrs(Rc::new(a))
             })
             .collect();
         Value::list(list)
@@ -201,13 +201,13 @@ pub fn register(env: &mut Env) {
     // ── builtins.sui.* — sui-specific extensions ─────────
     let mut sui_ext_set = NixAttrs::new();
     sui_ext::register(&mut sui_ext_set);
-    builtins_set.insert("sui".to_string(), Value::Attrs(Box::new(sui_ext_set)));
+    builtins_set.insert("sui".to_string(), Value::Attrs(Rc::new(sui_ext_set)));
 
     // ── builtins.builtins (self-reference) ───────────────
-    let builtins_snapshot = Value::Attrs(Box::new(builtins_set.clone()));
+    let builtins_snapshot = Value::Attrs(Rc::new(builtins_set.clone()));
     builtins_set.insert("builtins".to_string(), builtins_snapshot);
 
-    env.bind("builtins".to_string(), Value::Attrs(Box::new(builtins_set.clone())));
+    env.bind("builtins".to_string(), Value::Attrs(Rc::new(builtins_set.clone())));
 
     const DEFAULT_SCOPE: &[&str] = &[
         "abort",

@@ -751,7 +751,7 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
             }
         }
     }
-    Ok(Value::String(Box::new(NixString::with_context(result, ctx))))
+    Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
 }
 
 fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
@@ -875,7 +875,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         }
     }
 
-    Ok(Value::Attrs(Box::new(attrs)))
+    Ok(Value::Attrs(Rc::new(attrs)))
 }
 
 fn eval_inherit(
@@ -950,7 +950,7 @@ fn build_nested_attr(
     let inner = build_nested_attr(&path[1..], expr, env)?;
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
-    Ok(Value::Attrs(Box::new(attrs)))
+    Ok(Value::Attrs(Rc::new(attrs)))
 }
 
 /// Like [`build_nested_attr`] but wraps the leaf in a [`Thunk`] instead of
@@ -976,7 +976,7 @@ fn build_nested_attr_thunk(
     let inner = build_nested_attr_thunk(&path[1..], expr, env, thunks);
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
-    Value::Attrs(Box::new(attrs))
+    Value::Attrs(Rc::new(attrs))
 }
 
 /// Insert `value` at `key` in `target`. If `target` already has a
@@ -996,17 +996,17 @@ fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
     // existing entry, then walk the new attrs and recursively
     // merge each child onto it.
     let mut existing_attrs = match target.get(&key).cloned() {
-        Some(Value::Attrs(a)) => *a,
+        Some(Value::Attrs(a)) => (*a).clone(),
         _ => unreachable!(),
     };
     let new_attrs = match value {
-        Value::Attrs(a) => a,
+        Value::Attrs(ref a) => a,
         _ => unreachable!(),
     };
     for (k, v) in new_attrs.iter() {
         merge_nested_insert(&mut existing_attrs, k.clone(), v.clone());
     }
-    target.insert(key, Value::Attrs(Box::new(existing_attrs)));
+    target.insert(key, Value::Attrs(Rc::new(existing_attrs)));
 }
 
 /// Evaluate entries from any HasEntry node (LegacyLet).
@@ -1105,7 +1105,7 @@ fn eval_binop(
             (Value::String(a), Value::String(b)) => {
                 let mut ctx = a.context.clone();
                 ctx.merge(&b.context);
-                Ok(Value::String(Box::new(NixString::with_context(
+                Ok(Value::String(Rc::new(NixString::with_context(
                     format!("{}{}", a.chars, b.chars),
                     ctx,
                 ))))
@@ -1118,7 +1118,7 @@ fn eval_binop(
                 let (rs, rctx) = r.coerce_to_string()?;
                 let mut ctx = lctx;
                 ctx.merge(&rctx);
-                Ok(Value::String(Box::new(NixString::with_context(
+                Ok(Value::String(Rc::new(NixString::with_context(
                     format!("{ls}{rs}"),
                     ctx,
                 ))))
@@ -1147,7 +1147,7 @@ fn eval_binop(
             // thunk wrapping the attrs.
             let la = l.to_attrs()?;
             let ra = r.to_attrs()?;
-            Ok(Value::Attrs(Box::new(la.update(&ra))))
+            Ok(Value::Attrs(Rc::new(la.update(&ra))))
         }
         ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();
@@ -1720,7 +1720,7 @@ mod tests {
             {
                 let mut attrs = NixAttrs::new();
                 attrs.insert("a".to_string(), Value::Int(1));
-                Value::Attrs(Box::new(attrs))
+                Value::Attrs(Rc::new(attrs))
             },
         );
         assert_eq!(ev(r#"builtins.fromJSON "null""#), Value::Null);
@@ -2116,7 +2116,7 @@ mod tests {
         assert!(result.is_ok(), "nixpkgs-style lib pattern: {:?}", result);
         assert_eq!(
             result.unwrap(),
-            Value::String(Box::new(NixString::plain("hello 1.0"))),
+            Value::String(Rc::new(NixString::plain("hello 1.0"))),
         );
     }
 
@@ -2967,7 +2967,7 @@ mod tests {
             {
                 let mut attrs = NixAttrs::new();
                 attrs.insert("result".to_string(), Value::Int(42));
-                Value::Attrs(Box::new(attrs))
+                Value::Attrs(Rc::new(attrs))
             },
         );
     }
@@ -4116,7 +4116,7 @@ mod tests {
         // directly, so the default must never be forced.
         assert_eq!(
             ev("({ cpu, vendor ? assert false; null, kernel } @ args: if args ? vendor then vendor else \"inferred\") { cpu = \"x86_64\"; kernel = \"linux\"; }"),
-            Value::String(Box::new(NixString::plain("inferred"))),
+            Value::String(Rc::new(NixString::plain("inferred"))),
         );
     }
 
@@ -5190,8 +5190,8 @@ mod tests {
     fn force_value_attrs_returns_same() {
         let mut a = NixAttrs::new();
         a.insert("x".to_string(), Value::Int(1));
-        let v = Value::Attrs(Box::new(a.clone()));
-        assert_eq!(force_value(&v).unwrap(), Value::Attrs(Box::new(a)));
+        let v = Value::Attrs(Rc::new(a.clone()));
+        assert_eq!(force_value(&v).unwrap(), Value::Attrs(Rc::new(a)));
     }
 
     #[test]

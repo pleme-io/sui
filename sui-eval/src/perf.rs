@@ -259,9 +259,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counter_enum_has_12_variants() {
-        // Each variant maps to an index 0..11, and NUM_COUNTERS == 12.
-        assert_eq!(NUM_COUNTERS, 12);
+    fn counter_enum_has_24_variants() {
+        // Each variant maps to an index 0..23, and NUM_COUNTERS == 24.
+        assert_eq!(NUM_COUNTERS, 24);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

@@ -48,7 +48,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         result.insert(k.clone(), v.clone());
                     }
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }),
         })))
     });
@@ -67,7 +67,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         result.insert(k.clone(), v.clone());
                     }
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }),
         })))
     });
@@ -90,7 +90,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     });
                     result.insert(k.clone(), Value::Thunk(thunk));
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }),
         })))
     });
@@ -107,7 +107,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 .clone();
             attrs.insert(name, value);
         }
-        Ok(Value::Attrs(Box::new(attrs)))
+        Ok(Value::Attrs(Rc::new(attrs)))
     });
     register_builtin(builtins, "catAttrs", |args| {
         let name = args[0].as_string()?.to_string();
@@ -139,7 +139,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 for name in &remove {
                     result.remove(name);
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }),
         })))
     });
@@ -169,7 +169,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     let val = crate::eval::apply(partial, Value::List(Rc::new(vs)))?;
                     result.insert(k, val);
                 }
-                Ok(Value::Attrs(Box::new(result)))
+                Ok(Value::Attrs(Rc::new(result)))
             }),
         })))
     });
