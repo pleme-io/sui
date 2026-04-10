@@ -120,11 +120,21 @@ impl BytecodeEvaluator {
             },
         ));
 
-        let result = sui_bytecode::eval_full(input).map_err(|e| match e {
-            sui_bytecode::EvalError::Compile(c) => EvalError::ParseError(c.to_string()),
-            sui_bytecode::EvalError::Runtime(r) => EvalError::TypeError(r.to_string()),
-        })?;
-        Ok(convert::string_keyed_to_eval(&result.to_string_keyed()))
+        match sui_bytecode::eval_full(input) {
+            Ok(result) => Ok(convert::string_keyed_to_eval(&result.to_string_keyed())),
+            Err(sui_bytecode::EvalError::Compile(c)) => {
+                // Compilation failed — fall back to tree-walker entirely.
+                eprintln!("[sui-vm] top-level compile fallback: {c}");
+                eval::eval(input)
+            }
+            Err(sui_bytecode::EvalError::Runtime(r)) => {
+                // Runtime error — fall back to tree-walker entirely.
+                // This handles VM bugs (GetLocal slot mismatch, etc.)
+                // that don't affect correctness of the tree-walker.
+                eprintln!("[sui-vm] top-level runtime fallback: {r}");
+                eval::eval(input)
+            }
+        }
     }
 }
 

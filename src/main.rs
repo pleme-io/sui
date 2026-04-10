@@ -437,18 +437,24 @@ async fn main() -> Result<(), CliError> {
                         Ok(sui_eval::eval_to_string_keyed(&result))
                     },
                 ));
-                let result = sui_bytecode::eval_full(&expr).map_err(|e| {
-                    CliError::Orchestrate {
-                        operation: "eval",
-                        message: e.to_string(),
+                let sk = match sui_bytecode::eval_full(&expr) {
+                    Ok(r) => r.to_string_keyed(),
+                    Err(e) => {
+                        // VM failed — fall back to tree-walker.
+                        eprintln!("[sui-vm] CLI fallback to tree-walker: {e}");
+                        let tw_result = sui_eval::eval::eval(&expr).map_err(|e| {
+                            CliError::Orchestrate {
+                                operation: "eval",
+                                message: e.to_string(),
+                            }
+                        })?;
+                        sui_eval::eval_to_string_keyed(&tw_result)
                     }
-                })?;
+                };
                 if json {
-                    let sk = result.to_string_keyed();
                     let json_val = string_keyed_to_json(&sk);
                     println!("{}", serde_json::to_string_pretty(&json_val)?);
                 } else {
-                    let sk = result.to_string_keyed();
                     println!("{sk}");
                 }
             }
