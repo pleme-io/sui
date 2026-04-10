@@ -49,6 +49,8 @@
 //!
 //! - String interpolation contexts
 
+/// Builtin bridge: tree-walker builtins callable from the VM.
+pub mod bridge;
 /// Built-in function registry for the VM.
 pub mod builtins;
 /// Bytecode container (instructions + constant pool).
@@ -69,6 +71,7 @@ pub mod value;
 pub mod vm;
 
 // Re-exports for ergonomic use.
+pub use bridge::{BuiltinBridgeFn, BuiltinBridgeGuard, call_builtin_bridge, set_builtin_bridge};
 pub use builtins::BuiltinRegistry;
 pub use chunk::Chunk;
 pub use compiler::Compiler;

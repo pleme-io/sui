@@ -193,7 +193,7 @@ impl<'a> VM<'a> {
                     self.dispatch_control(op)?;
                 }
                 // Functions
-                OpCode::MakeClosure | OpCode::Call => {
+                OpCode::MakeClosure | OpCode::Call | OpCode::TailCall => {
                     self.dispatch_function(op)?;
                 }
                 OpCode::Return => {
@@ -690,6 +690,60 @@ impl<'a> VM<'a> {
                         frame.ip = 0;
                         frame.upvalues = upvalues;
                     } else {
+                        if self.frames.len() >= MAX_CALL_DEPTH {
+                            return Err(VMError::StackOverflow);
+                        }
+                        let stack_base = self.stack.len();
+                        self.push(arg);
+                        self.frames.push(CallFrame {
+                            chunk,
+                            ip: 0,
+                            stack_base,
+                            upvalues,
+                        });
+                    }
+                } else if func.is_higher_order_builtin() {
+                    let hob = func.as_higher_order_builtin().unwrap().clone();
+                    let forced_arg = self.force_value(arg)?;
+                    let result = self.call_higher_order_builtin(&hob, forced_arg)?;
+                    self.push(result);
+                } else if let Some(builtin) = func.as_builtin() {
+                    let forced_arg = self.force_value(arg)?;
+                    if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
+                        self.push(result);
+                    } else {
+                        let arg_vmval = forced_arg.to_vmvalue();
+                        let builtin_func = builtin.func.clone();
+                        let result = self.call_builtin_with_scoped_import_dispatch(
+                            builtin_func, arg_vmval,
+                        )?;
+                        self.push(result);
+                    }
+                } else {
+                    return Err(VMError::NotCallable(func.type_name().to_string()));
+                }
+            }
+            OpCode::TailCall => {
+                // Compiler-determined tail call: always reuse the current frame
+                // for closures (no runtime peek needed). For builtins, fall back
+                // to a regular call since they don't use bytecode frames.
+                let arg = self.pop()?;
+                let func = self.pop_forced()?;
+                if let Some(closure) = func.as_closure() {
+                    let chunk = closure.chunk.clone();
+                    let upvalues: Vec<NanBox> =
+                        closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+                    if self.frames.len() > 1 {
+                        // Tail-call optimization: reuse current frame.
+                        let base = self.current_frame().stack_base;
+                        self.stack.truncate(base);
+                        self.push(arg);
+                        let frame = self.current_frame_mut();
+                        frame.chunk = chunk;
+                        frame.ip = 0;
+                        frame.upvalues = upvalues;
+                    } else {
+                        // Top-level frame: cannot reuse, push new frame.
                         if self.frames.len() >= MAX_CALL_DEPTH {
                             return Err(VMError::StackOverflow);
                         }
@@ -1768,6 +1822,88 @@ impl<'a> VM<'a> {
                                 }
                             }
                             Ok(VMValue::List(result))
+                        }),
+                        arity: 1,
+                    },
+                ))))
+            }
+            // ── Bridge-dispatched builtins ─────────────────────────
+            //
+            // These builtins need tree-walker state (regex cache, TOML
+            // parser, genericClosure closure-calling, tryEval catch, etc.)
+            // and are delegated to the builtin bridge.
+            "readDir" | "parseDrvName" | "fromTOML" | "genericClosure"
+            | "tryEval" | "zipAttrsWith" | "getContext" | "toXML"
+            | "convertHash" | "path" | "filterSource" | "parseFlakeRef"
+            | "flakeRefToString" | "toFile" | "currentTime" | "hashFile"
+            | "findFile" => {
+                let forced = self.force_value(arg.clone())?;
+                let vmval = forced.to_vmvalue();
+                let sk = vmval.to_string_keyed(self.interner);
+                match crate::bridge::call_builtin_bridge(name, vec![sk]) {
+                    Ok(Some(result)) => {
+                        let vm_result = crate::builtins::string_keyed_to_vmvalue(
+                            &result,
+                            self.interner,
+                        );
+                        Ok(Some(NanBox::from_vmvalue(&vm_result)))
+                    }
+                    Ok(None) => {
+                        // No bridge set — fall through to registry stub
+                        // which will produce the appropriate error.
+                        Ok(None)
+                    }
+                    Err(e) => Err(VMError::Throw(e)),
+                }
+            }
+            // match and split are curried: first call takes pattern,
+            // returns partial that takes the string.
+            "match" | "split" => {
+                let forced = self.force_value(arg.clone())?;
+                let pattern = match forced.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: other.type_name(),
+                            context: name.to_string(),
+                        });
+                    }
+                };
+                let builtin_name = name.to_string();
+                Ok(Some(NanBox::from_vmvalue(&VMValue::Builtin(
+                    crate::value::VMBuiltin {
+                        name: if name == "match" {
+                            "match<partial>"
+                        } else {
+                            "split<partial>"
+                        },
+                        func: Rc::new(move |args2| {
+                            let input = match &args2[0] {
+                                VMValue::String(s) => s.clone(),
+                                other => {
+                                    return Err(VMError::TypeError {
+                                        expected: "string",
+                                        got: other.type_name(),
+                                        context: builtin_name.clone(),
+                                    });
+                                }
+                            };
+                            // Delegate to bridge with both args
+                            let sk_args = vec![
+                                crate::value::StringKeyedValue::String(pattern.clone()),
+                                crate::value::StringKeyedValue::String(input),
+                            ];
+                            match crate::bridge::call_builtin_bridge(&builtin_name, sk_args) {
+                                Ok(Some(result)) => {
+                                    let mut tmp = crate::intern::Interner::new();
+                                    Ok(crate::builtins::string_keyed_to_vmvalue(&result, &mut tmp))
+                                }
+                                Ok(None) => Err(VMError::Throw(format!(
+                                    "{builtin_name}: requires bridge but no bridge is set"
+                                ))),
+                                Err(e) => Err(VMError::Throw(e)),
+                            }
                         }),
                         arity: 1,
                     },

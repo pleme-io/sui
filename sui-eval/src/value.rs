@@ -4,7 +4,7 @@
 //! `Rc<RefCell<ThunkRepr>>` thunks.  All shared pointers use `Rc`
 //! (not `Arc`) because the values are never sent across threads.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 
 use std::fmt;
 use std::rc::Rc;
@@ -257,15 +257,32 @@ pub enum ThunkRepr {
     Evaluated(Box<Value>),
 }
 
+/// Inner storage for a thunk: a fast-path `OnceCell` cache plus the
+/// full `RefCell` state machine.  Reads of already-evaluated thunks
+/// hit the `OnceCell` and never touch the `RefCell`, eliminating
+/// runtime borrow-checking overhead on the hot path (~20M cache hits
+/// per nixpkgs eval).
+struct ThunkInner {
+    /// Fast-path cache for already-evaluated thunks.
+    /// Set once when `Evaluated` is stored, never cleared.
+    /// Reads bypass the `RefCell` entirely.
+    cache: OnceCell<Box<Value>>,
+    /// Full state machine for the thunk lifecycle.
+    repr: RefCell<ThunkRepr>,
+}
+
 /// A lazy value with memoization and blackhole detection.
 #[derive(Clone)]
-pub struct Thunk(pub(crate) Rc<RefCell<ThunkRepr>>);
+pub struct Thunk(pub(crate) Rc<ThunkInner>);
 
 impl Thunk {
     /// Create a thunk that will evaluate `expr` in `env` when forced.
     pub fn new_suspended(expr: rnix::ast::Expr, env: Env) -> Self {
         crate::trace::inc_thunks_created();
-        Self(Rc::new(RefCell::new(ThunkRepr::Suspended { expr, env })))
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: RefCell::new(ThunkRepr::Suspended { expr, env }),
+        }))
     }
 
     /// Create a thunk that, when forced, evaluates `source` in
@@ -274,11 +291,14 @@ impl Thunk {
     /// forced and self-referential patterns don't blackhole.
     pub fn new_inherit_select(source: rnix::ast::Expr, name: impl Into<SmolStr>, env: Env) -> Self {
         crate::trace::inc_thunks_created();
-        Self(Rc::new(RefCell::new(ThunkRepr::InheritSelect {
-            source,
-            name: name.into(),
-            env,
-        })))
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: RefCell::new(ThunkRepr::InheritSelect {
+                source,
+                name: name.into(),
+                env,
+            }),
+        }))
     }
 
     /// Create a thunk backed by a Rust closure.  When forced, the
@@ -286,18 +306,29 @@ impl Thunk {
     /// This is used for lazy flake input evaluation.
     pub fn new_native(f: impl FnOnce() -> Result<Value, EvalError> + 'static) -> Self {
         crate::trace::inc_thunks_created();
-        Self(Rc::new(RefCell::new(ThunkRepr::Native(Box::new(f)))))
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: RefCell::new(ThunkRepr::Native(Box::new(f))),
+        }))
     }
 
     /// Create a thunk that is already evaluated (an optimization).
+    /// Pre-populates the `OnceCell` cache so the fast path is
+    /// immediately available.
     pub fn new_evaluated(value: Value) -> Self {
         crate::trace::inc_thunks_created();
-        Self(Rc::new(RefCell::new(ThunkRepr::Evaluated(Box::new(value)))))
+        let cache = OnceCell::new();
+        let _ = cache.set(Box::new(value.clone()));
+        Self(Rc::new(ThunkInner {
+            cache,
+            repr: RefCell::new(ThunkRepr::Evaluated(Box::new(value))),
+        }))
     }
 
     /// Check whether this thunk has already been forced.
+    /// Uses the `OnceCell` cache for a fast, borrow-free check.
     pub fn is_evaluated(&self) -> bool {
-        matches!(*self.0.borrow(), ThunkRepr::Evaluated(_))
+        self.0.cache.get().is_some()
     }
 
     /// Check whether this thunk is a native (Rust closure) thunk.
@@ -306,14 +337,14 @@ impl Thunk {
     /// be very expensive to force (e.g., evaluating all of nixpkgs).
     /// This lets callers skip them in eager conversion paths.
     pub fn is_native(&self) -> bool {
-        matches!(*self.0.borrow(), ThunkRepr::Native(_))
+        matches!(*self.0.repr.borrow(), ThunkRepr::Native(_))
     }
 
     /// Replace the environment captured in a suspended or inherit-select thunk.
     /// No-op if the thunk is already evaluated or a blackhole (avoids an Rc
     /// clone in that case).
     pub fn update_env(&self, new_env: &Env) {
-        let mut borrow = self.0.borrow_mut();
+        let mut borrow = self.0.repr.borrow_mut();
         match &mut *borrow {
             ThunkRepr::Suspended { env, .. } | ThunkRepr::InheritSelect { env, .. } => {
                 *env = new_env.clone();
@@ -345,20 +376,16 @@ impl Thunk {
         &self,
         evaluator: &dyn Fn(&rnix::ast::Expr, &Env) -> Result<Value, EvalError>,
     ) -> Result<Value, EvalError> {
-        // Fast path: if already evaluated, just borrow and clone.
-        // Avoids the take-clone-put-back overhead on cache hits.
-        {
-            let borrowed = self.0.borrow();
-            if let ThunkRepr::Evaluated(ref v) = *borrowed {
-                crate::perf::inc(crate::perf::Counter::ThunkHit);
-                return Ok((**v).clone());
-            }
+        // Ultra-fast path: check OnceCell cache (no RefCell borrow).
+        if let Some(cached) = self.0.cache.get() {
+            crate::perf::inc(crate::perf::Counter::ThunkHit);
+            return Ok((**cached).clone());
         }
 
         let thunk_id = Rc::as_ptr(&self.0) as usize;
 
         // Take the current repr, replacing with Blackhole.
-        let repr = std::mem::replace(&mut *self.0.borrow_mut(), ThunkRepr::Blackhole);
+        let repr = std::mem::replace(&mut *self.0.repr.borrow_mut(), ThunkRepr::Blackhole);
 
         match repr {
             ThunkRepr::Suspended { expr, env } => {
@@ -387,7 +414,7 @@ impl Thunk {
                     crate::trace::dump_trace_on_error();
                     crate::trace::pop_force();
                     crate::trace::trace_force_exit();
-                    *self.0.borrow_mut() = ThunkRepr::Suspended {
+                    *self.0.repr.borrow_mut() = ThunkRepr::Suspended {
                         expr,
                         env,
                     };
@@ -407,14 +434,17 @@ impl Thunk {
                         // during inner-thunk forcing will find Evaluated
                         // (not Blackhole), enabling self-referential fixpoints
                         // like nixpkgs `let self = f self; in self`.
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        // Do NOT set the OnceCell cache here — the value may
+                        // still be a thunk-in-thunk that needs unwrapping below.
+                        // The cache is set after full unwrapping completes.
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
                         let mut depth = 0u32;
                         while let Value::Thunk(ref inner) = value {
                             depth += 1;
                             if depth > 2000 {
-                                *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
+                                *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
                                 crate::trace::dump_trace_on_error();
                                 crate::trace::pop_force();
                                 crate::trace::trace_force_exit();
@@ -425,7 +455,8 @@ impl Thunk {
                             value = inner.force(evaluator)?;
                         }
                         // Update with the fully-unwrapped value.
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        let _ = self.0.cache.set(Box::new(value.clone()));
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
                         Ok(value)
@@ -433,7 +464,7 @@ impl Thunk {
                     Err(e) => {
                         // Restore suspended state so the thunk can be retried or
                         // at least not left as a permanent blackhole.
-                        *self.0.borrow_mut() = ThunkRepr::Suspended { expr, env };
+                        *self.0.repr.borrow_mut() = ThunkRepr::Suspended { expr, env };
                         crate::trace::dump_trace_on_error();
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
@@ -459,7 +490,7 @@ impl Thunk {
                     crate::trace::dump_trace_on_error();
                     crate::trace::pop_force();
                     crate::trace::trace_force_exit();
-                    *self.0.borrow_mut() = ThunkRepr::InheritSelect {
+                    *self.0.repr.borrow_mut() = ThunkRepr::InheritSelect {
                         source,
                         name,
                         env,
@@ -495,17 +526,18 @@ impl Thunk {
                     Ok(mut value) => {
                         // Store first, then transitively force (same pattern
                         // as Suspended — enables fixpoint re-entry).
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        let _ = self.0.cache.set(Box::new(value.clone()));
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
                         Ok(value)
                     }
                     Err(e) => {
-                        *self.0.borrow_mut() = ThunkRepr::InheritSelect { source, name, env };
+                        *self.0.repr.borrow_mut() = ThunkRepr::InheritSelect { source, name, env };
                         crate::trace::dump_trace_on_error();
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
@@ -531,7 +563,8 @@ impl Thunk {
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(value.clone()));
+                        let _ = self.0.cache.set(Box::new(value.clone()));
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
                         Ok(value)
@@ -541,7 +574,8 @@ impl Thunk {
                         // evaluated Null so subsequent forces don't
                         // hit Blackhole and confuse the user with an
                         // "infinite recursion" message.
-                        *self.0.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
+                        *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(Box::new(Value::Null));
+                        let _ = self.0.cache.set(Box::new(Value::Null));
                         crate::trace::dump_trace_on_error();
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
@@ -556,12 +590,13 @@ impl Thunk {
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
             }
             ThunkRepr::Evaluated(v) => {
-                // Reached if somehow the fast-path borrow above missed
-                // (should not happen in single-threaded code). Put back
-                // and return the clone.
+                // Reached if somehow the fast-path OnceCell check above
+                // missed (should not happen in single-threaded code).
+                // Put back, populate cache, and return the clone.
                 crate::perf::inc(crate::perf::Counter::ThunkHit);
                 let cloned = (*v).clone();
-                *self.0.borrow_mut() = ThunkRepr::Evaluated(v);
+                let _ = self.0.cache.set(Box::new(cloned.clone()));
+                *self.0.repr.borrow_mut() = ThunkRepr::Evaluated(v);
                 Ok(cloned)
             }
         }
@@ -570,7 +605,7 @@ impl Thunk {
 
 impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.0.borrow() {
+        match &*self.0.repr.borrow() {
             ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
             ThunkRepr::InheritSelect { name, .. } => write!(f, "<inherit-select {name}>"),
             ThunkRepr::Native(_) => write!(f, "<native-thunk>"),
@@ -2080,7 +2115,7 @@ mod tests {
         let thunk = Thunk::new_suspended(expr, Env::new());
 
         // Manually set to blackhole to simulate re-entrance
-        *thunk.0.borrow_mut() = ThunkRepr::Blackhole;
+        *thunk.0.repr.borrow_mut() = ThunkRepr::Blackhole;
 
         let result = thunk.force(&|_, _| Ok(Value::Null));
         assert!(result.is_err());
@@ -2961,7 +2996,7 @@ mod tests {
         let root = rnix::Root::parse("1");
         let expr = root.tree().expr().unwrap();
         let thunk = Thunk::new_suspended(expr, Env::new());
-        *thunk.0.borrow_mut() = ThunkRepr::Blackhole;
+        *thunk.0.repr.borrow_mut() = ThunkRepr::Blackhole;
         assert_eq!(format!("{thunk:?}"), "<blackhole>");
     }
 

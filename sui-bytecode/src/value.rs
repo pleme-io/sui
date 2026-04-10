@@ -196,6 +196,28 @@ impl VMThunk {
             state: Rc::new(Cell::new(Some(ThunkState::Done(Box::new(value))))),
         }
     }
+
+    /// Create a native callback thunk from a Rust closure.
+    ///
+    /// The callback is invoked lazily the first time the thunk is forced,
+    /// and the result is memoized. Used by the builtin bridge to wrap
+    /// tree-walker computations that should be deferred.
+    pub fn new_native<F>(callback: F) -> Self
+    where
+        F: Fn() -> Result<VMValue, crate::error::VMError> + 'static,
+    {
+        // Wrap the VMValue-returning callback into a StringKeyedValue callback
+        // that the NativeCallback variant expects.
+        let wrapped: Rc<dyn Fn() -> Result<StringKeyedValue, String>> =
+            Rc::new(move || {
+                let val = callback().map_err(|e| e.to_string())?;
+                let interner = crate::intern::Interner::new();
+                Ok(val.to_string_keyed(&interner))
+            });
+        Self {
+            state: Rc::new(Cell::new(Some(ThunkState::NativeCallback(wrapped)))),
+        }
+    }
 }
 
 impl fmt::Debug for VMThunk {

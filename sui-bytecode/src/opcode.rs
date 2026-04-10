@@ -124,6 +124,9 @@ pub enum OpCode {
     Call = 81,
     /// Return from the current call frame.
     Return = 82,
+    /// Pop function and argument, tail-call: reuse the current frame.
+    /// Semantically identical to Call but does not grow the call stack.
+    TailCall = 83,
 
     // ── Control flow ───────────────────────────────────────────
     /// Unconditional jump.
@@ -223,6 +226,7 @@ impl OpCode {
             80 => Some(OpCode::MakeClosure),
             81 => Some(OpCode::Call),
             82 => Some(OpCode::Return),
+            83 => Some(OpCode::TailCall),
             90 => Some(OpCode::Jump),
             91 => Some(OpCode::JumpIfFalse),
             92 => Some(OpCode::JumpIfTrue),
@@ -259,7 +263,7 @@ mod tests {
             OpCode::MakeAttrs, OpCode::GetAttr, OpCode::HasAttr,
             OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr,
             OpCode::MakeList, OpCode::Concat,
-            OpCode::MakeClosure, OpCode::Call, OpCode::Return,
+            OpCode::MakeClosure, OpCode::Call, OpCode::Return, OpCode::TailCall,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,
             OpCode::Assert, OpCode::Pop,
             OpCode::GetLocalAttr, OpCode::GetLocalCall,

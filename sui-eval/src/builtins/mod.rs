@@ -68,6 +68,88 @@ pub use import_cache::clear_import_cache;
 pub(crate) use import_cache::IMPORT_CACHE;
 pub use nav::{navigate_attrs, parse_nix_path, resolve_search_path};
 
+/// Look up a tree-walker builtin by name and call it with the given args.
+///
+/// This is the core dispatch for the builtin bridge: the bytecode VM calls
+/// this (via the bridge callback) when it encounters a builtin it doesn't
+/// implement natively.
+///
+/// The builtins registry is cached in a thread-local to avoid rebuilding
+/// it on every bridge call.
+pub fn call_builtin_by_name(name: &str, args: &[Value]) -> Result<Value, EvalError> {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BUILTIN_REGISTRY: RefCell<Option<NixAttrs>> = const { RefCell::new(None) };
+    }
+
+    BUILTIN_REGISTRY.with(|reg| {
+        let mut borrow = reg.borrow_mut();
+        if borrow.is_none() {
+            let mut attrs = NixAttrs::new();
+            types::register(&mut attrs);
+            arithmetic::register(&mut attrs);
+            lists::register(&mut attrs);
+            attrs::register(&mut attrs);
+            strings::register(&mut attrs);
+            convert::register(&mut attrs);
+            control::register(&mut attrs);
+            context::register(&mut attrs);
+            paths::register(&mut attrs);
+            fetchers::register(&mut attrs);
+            flake::register(&mut attrs);
+            derivation::register(&mut attrs);
+            versions::register(&mut attrs);
+            misc::register(&mut attrs);
+            *borrow = Some(attrs);
+        }
+
+        let attrs = borrow.as_ref().unwrap();
+        let builtin_val = attrs.get(name).ok_or_else(|| {
+            EvalError::TypeError(format!("bridge: unknown builtin '{name}'"))
+        })?;
+
+        match builtin_val {
+            Value::Builtin(bf) => {
+                // For curried builtins (arity 2+), we need to handle
+                // partial application. The first call returns a partial,
+                // and if we have 2 args, we apply the partial to the second.
+                if args.len() == 1 {
+                    (bf.func)(args)
+                } else if args.len() == 2 {
+                    // Apply first arg, get partial, apply second arg
+                    let partial = (bf.func)(&args[..1])?;
+                    match partial {
+                        Value::Builtin(ref pf) => (pf.func)(&args[1..]),
+                        // If first application returned a non-function,
+                        // the builtin is single-arg and we have extra args
+                        _ => Ok(partial),
+                    }
+                } else if args.is_empty() {
+                    Err(EvalError::TypeError(format!(
+                        "bridge: builtin '{name}' called with no arguments"
+                    )))
+                } else {
+                    // 3+ args: chain partial applications
+                    let mut result = (bf.func)(&args[..1])?;
+                    for arg in &args[1..] {
+                        match result {
+                            Value::Builtin(ref pf) => {
+                                result = (pf.func)(&[arg.clone()])?;
+                            }
+                            _ => break,
+                        }
+                    }
+                    Ok(result)
+                }
+            }
+            _ => Err(EvalError::TypeError(format!(
+                "bridge: '{name}' is not a builtin function"
+            ))),
+        }
+    })
+}
+
 /// Register all builtins into the environment.
 pub fn register(env: &mut Env) {
     let mut builtins_set = NixAttrs::new();

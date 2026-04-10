@@ -100,6 +100,11 @@ pub struct Compiler {
     /// Shared source text for lazy thunk compilation.
     /// When set, thunks can store source spans instead of eagerly compiling.
     source_text: Option<Rc<String>>,
+    /// Whether the current expression is in tail position (eligible for
+    /// tail-call optimization). Set to `true` in lambda bodies, if-else
+    /// branches, and assert bodies. `compile_apply` checks this to emit
+    /// `TailCall` instead of `Call`.
+    tail_position: bool,
 }
 
 impl Compiler {
@@ -117,6 +122,7 @@ impl Compiler {
             base_dir: None,
             stack_depth: 0,
             source_text: None,
+            tail_position: false,
         }
     }
 
@@ -134,6 +140,7 @@ impl Compiler {
             base_dir: None,
             stack_depth: 0,
             source_text: None,
+            tail_position: false,
         }
     }
 
@@ -400,6 +407,13 @@ impl Compiler {
             return self.emit_constant(folded);
         }
 
+        // Save and clear tail_position. Specific branches that propagate
+        // tail position (IfElse, Assert, Paren, Root, Apply) will restore
+        // it themselves. All other branches compile subexpressions with
+        // tail_position = false, which is the correct default.
+        let tail = self.tail_position;
+        self.tail_position = false;
+
         match expr {
             ast::Expr::Literal(lit) => self.compile_literal(lit),
             ast::Expr::Str(s) => self.compile_str(s),
@@ -408,21 +422,32 @@ impl Compiler {
             ast::Expr::AttrSet(set) => self.compile_attrset(set),
             ast::Expr::Select(sel) => self.compile_select(sel),
             ast::Expr::HasAttr(ha) => self.compile_has_attr(ha),
-            ast::Expr::IfElse(ie) => self.compile_if(ie),
+            ast::Expr::IfElse(ie) => {
+                self.tail_position = tail;
+                self.compile_if(ie)
+            }
             ast::Expr::Lambda(lam) => self.compile_lambda(lam),
-            ast::Expr::Apply(app) => self.compile_apply(app),
+            ast::Expr::Apply(app) => {
+                self.tail_position = tail;
+                self.compile_apply(app)
+            }
             ast::Expr::BinOp(op) => self.compile_binop(op),
             ast::Expr::UnaryOp(op) => self.compile_unary(op),
             ast::Expr::With(w) => self.compile_with(w),
-            ast::Expr::Assert(a) => self.compile_assert(a),
+            ast::Expr::Assert(a) => {
+                self.tail_position = tail;
+                self.compile_assert(a)
+            }
             ast::Expr::List(l) => self.compile_list(l),
             ast::Expr::Paren(p) => {
+                self.tail_position = tail;
                 let inner = p
                     .expr()
                     .ok_or_else(|| CompileError::MissingNode("paren expr".to_string()))?;
                 self.compile_expr(&inner)
             }
             ast::Expr::Root(r) => {
+                self.tail_position = tail;
                 let inner = r
                     .expr()
                     .ok_or_else(|| CompileError::MissingNode("root expr".to_string()))?;
@@ -1426,17 +1451,23 @@ impl Compiler {
             .else_body()
             .ok_or_else(|| CompileError::MissingNode("if else".to_string()))?;
 
-        // Compile condition.
+        // Save tail position — both branches inherit it.
+        let tail = self.tail_position;
+
+        // Compile condition (not in tail position).
+        self.tail_position = false;
         self.compile_expr(&cond)?;
         // Jump to else if false.
         let else_jump = self.emit_jump(OpCode::JumpIfFalse);
-        // Compile then branch.
+        // Compile then branch (tail position propagated).
+        self.tail_position = tail;
         self.compile_expr(&then_body)?;
         // Jump past else.
         let end_jump = self.emit_jump(OpCode::Jump);
         // Patch else jump.
         self.patch_jump(else_jump)?;
-        // Compile else branch.
+        // Compile else branch (tail position propagated).
+        self.tail_position = tail;
         self.compile_expr(&else_body)?;
         // Patch end jump.
         self.patch_jump(end_jump)?;
@@ -1534,6 +1565,8 @@ impl Compiler {
         };
 
         // Compile the body inside the function compiler.
+        // The lambda body is in tail position — any direct call can be a tail call.
+        func_compiler.tail_position = true;
         func_compiler.compile_expr(&body)?;
         func_compiler.emit(OpCode::Return);
 
@@ -1579,6 +1612,10 @@ impl Compiler {
             .argument()
             .ok_or_else(|| CompileError::MissingNode("apply argument".to_string()))?;
 
+        // Save tail position — arguments and function are NOT in tail position.
+        let tail = self.tail_position;
+        self.tail_position = false;
+
         // Special form: `import <path>` compiles to path + Import opcode.
         if let ast::Expr::Ident(ref id) = func {
             let name = ident_text(id);
@@ -1589,19 +1626,26 @@ impl Compiler {
             }
         }
 
+        // Choose Call vs TailCall based on whether this apply is in tail position.
+        let call_op = if tail { OpCode::TailCall } else { OpCode::Call };
+
         // Superinstruction: if the function is a local variable, use
-        // GetLocalCall to save one dispatch cycle.
-        if let Some(slot) = self.try_resolve_as_local(&func) {
-            // Compile the argument first, then fused GetLocal+Call.
-            self.compile_expr(&arg)?;
-            self.emit(OpCode::GetLocalCall);
-            self.emit_u16(slot);
-        } else {
-            // Normal: push function, then argument, then Call.
-            self.compile_expr(&func)?;
-            self.compile_expr(&arg)?;
-            self.emit(OpCode::Call);
+        // GetLocalCall to save one dispatch cycle (only for non-tail calls;
+        // tail calls use the standard TailCall opcode which handles frame reuse).
+        if !tail {
+            if let Some(slot) = self.try_resolve_as_local(&func) {
+                // Compile the argument first, then fused GetLocal+Call.
+                self.compile_expr(&arg)?;
+                self.emit(OpCode::GetLocalCall);
+                self.emit_u16(slot);
+                return Ok(());
+            }
         }
+
+        // Normal: push function, then argument, then Call/TailCall.
+        self.compile_expr(&func)?;
+        self.compile_expr(&arg)?;
+        self.emit(call_op);
         Ok(())
     }
 
@@ -1729,8 +1773,13 @@ impl Compiler {
         let body = assert
             .body()
             .ok_or_else(|| CompileError::MissingNode("assert body".to_string()))?;
+        // Save tail position — the body inherits it, the condition does not.
+        let tail = self.tail_position;
+        self.tail_position = false;
         self.compile_expr(&cond)?;
         self.emit(OpCode::Assert);
+        // The assert body is in tail position if the assert itself is.
+        self.tail_position = tail;
         self.compile_expr(&body)?;
         Ok(())
     }
@@ -1775,7 +1824,7 @@ impl Compiler {
             | OpCode::Greater | OpCode::LessEqual | OpCode::GreaterEqual
             | OpCode::And | OpCode::Or | OpCode::Implication
             | OpCode::Concat | OpCode::UpdateAttrs
-            | OpCode::Call | OpCode::DynGetAttr => {
+            | OpCode::Call | OpCode::TailCall | OpCode::DynGetAttr => {
                 self.stack_depth = self.stack_depth.saturating_sub(1);
             }
             // Pop 1, push 1 (net 0)

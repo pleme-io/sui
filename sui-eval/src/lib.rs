@@ -78,10 +78,15 @@ impl Evaluator for TreeWalkEvaluator {
 pub struct BytecodeEvaluator;
 
 impl BytecodeEvaluator {
-    /// Run a bytecode evaluation with the tree-walker flake resolver installed.
+    /// Run a bytecode evaluation with tree-walker bridges installed.
+    ///
+    /// Installs two bridges before running the VM:
+    /// 1. **Flake resolver** — delegates `builtins.getFlake` to the tree-walker
+    /// 2. **Builtin bridge** — delegates missing builtins (getEnv, match, split,
+    ///    fromTOML, genericClosure, etc.) to tree-walker implementations
     fn eval_with_flake_resolver(input: &str) -> Result<Value, EvalError> {
         // Install flake resolver: tree-walker evaluate_flake → StringKeyedValue
-        let _guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
+        let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
             let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
                 std::path::PathBuf::from(flake_ref)
             } else if let Some(path) = flake_ref.strip_prefix("path:") {
@@ -96,6 +101,24 @@ impl BytecodeEvaluator {
             // Convert tree-walker Value → StringKeyedValue for the VM.
             Ok(eval_to_string_keyed(&result))
         }));
+
+        // Install builtin bridge: VM builtins → tree-walker builtins
+        let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
+            |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
+                // Convert StringKeyedValue args → tree-walker Value
+                let eval_args: Vec<Value> = args
+                    .iter()
+                    .map(|a| convert::string_keyed_to_eval(a))
+                    .collect();
+
+                // Call the tree-walker builtin
+                let result = builtins::call_builtin_by_name(name, &eval_args)
+                    .map_err(|e| e.to_string())?;
+
+                // Convert tree-walker Value → StringKeyedValue
+                Ok(eval_to_string_keyed(&result))
+            },
+        ));
 
         let result = sui_bytecode::eval_full(input).map_err(|e| match e {
             sui_bytecode::EvalError::Compile(c) => EvalError::ParseError(c.to_string()),
