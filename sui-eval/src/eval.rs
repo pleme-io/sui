@@ -345,13 +345,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "false" => Ok(Value::Bool(false)),
                 "null" => Ok(Value::Null),
                 _ => {
-                    // Cache the interned symbol by (source_id, text_offset)
-                    // to avoid re-hashing the identifier string on every
-                    // evaluation of the same expression node.
-                    let src_id = CURRENT_SOURCE_ID.with(Cell::get);
-                    let offset: u32 = ident.syntax().text_range().start().into();
-                    let sym = intern_cached(&name, src_id, offset);
-                    env.lookup_sym(sym)
+                    env.lookup(&name)
                         .ok_or(EvalError::UndefinedVar(name))
                 }
             };
