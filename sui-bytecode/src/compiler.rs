@@ -2610,4 +2610,181 @@ mod tests {
         let warnings = detect_trivial_cycles(&bindings);
         assert_eq!(warnings.len(), 2);
     }
+
+    // -- PathSearch tests -----------------------------------------------
+
+    #[test]
+    fn path_search_compiles_with_matching_nix_path() {
+        // Set NIX_PATH to a directory containing a target, then compile
+        // a search-path expression.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("mypkg");
+        std::fs::create_dir(&target).unwrap();
+        // Set NIX_PATH with prefix=path format.
+        let nix_path_val = format!("mypkg={}", target.display());
+        // SAFETY: test runs single-threaded; no concurrent env access.
+        unsafe { std::env::set_var("NIX_PATH", &nix_path_val) };
+        let result = Compiler::compile("<mypkg>");
+        unsafe { std::env::remove_var("NIX_PATH") };
+        assert!(result.is_ok(), "expected compile success, got: {result:?}");
+        let (chunk, _) = result.unwrap();
+        // The resolved path should be in the constant pool.
+        assert!(
+            chunk.constants.iter().any(|c| matches!(c, VMValue::Path(p) if p == &target.display().to_string())),
+            "expected path constant for {:?}, got: {:?}",
+            target.display(),
+            chunk.constants,
+        );
+    }
+
+    #[test]
+    fn path_search_fails_when_nix_path_no_match() {
+        // Set NIX_PATH to something that doesn't match.
+        // SAFETY: test runs single-threaded; no concurrent env access.
+        unsafe { std::env::set_var("NIX_PATH", "other=/nonexistent") };
+        let result = Compiler::compile("<nosuchpkg>");
+        unsafe { std::env::remove_var("NIX_PATH") };
+        assert!(result.is_err(), "expected compile error for missing search path");
+    }
+
+    #[test]
+    fn path_search_with_sub_path() {
+        // Test `<nixpkgs/lib>` style — prefix match with sub-path.
+        let dir = tempfile::tempdir().unwrap();
+        let nixpkgs = dir.path().join("nixpkgs-src");
+        let lib_dir = nixpkgs.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let nix_path_val = format!("nixpkgs={}", nixpkgs.display());
+        // SAFETY: test runs single-threaded; no concurrent env access.
+        unsafe { std::env::set_var("NIX_PATH", &nix_path_val) };
+        let result = Compiler::compile("<nixpkgs/lib>");
+        unsafe { std::env::remove_var("NIX_PATH") };
+        assert!(result.is_ok(), "expected compile success for sub-path, got: {result:?}");
+        let (chunk, _) = result.unwrap();
+        let expected_path = lib_dir.display().to_string();
+        assert!(
+            chunk.constants.iter().any(|c| matches!(c, VMValue::Path(p) if p == &expected_path)),
+            "expected path constant for {expected_path}, got: {:?}",
+            chunk.constants,
+        );
+    }
+
+    // -- TailCall detection tests ---------------------------------------
+
+    #[test]
+    fn lambda_body_apply_emits_tail_call() {
+        // A call in the body of a lambda should emit TailCall.
+        let chunk = compile("x: x 1");
+        // The outer chunk contains a closure constant; the closure chunk
+        // should contain TailCall.
+        let closure_chunk = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                VMValue::Closure(cl) => Some(&cl.chunk),
+                _ => None,
+            })
+            .expect("expected a closure constant");
+        assert!(
+            closure_chunk.code.contains(&(OpCode::TailCall as u8)),
+            "lambda body call should emit TailCall, bytecode: {:?}",
+            closure_chunk.code,
+        );
+    }
+
+    #[test]
+    fn if_then_apply_emits_tail_call() {
+        // A call in the then-branch of an if in a lambda body should be TailCall.
+        let chunk = compile("x: if true then x 1 else 0");
+        let closure_chunk = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                VMValue::Closure(cl) => Some(&cl.chunk),
+                _ => None,
+            })
+            .expect("expected a closure constant");
+        assert!(
+            closure_chunk.code.contains(&(OpCode::TailCall as u8)),
+            "if-then call should emit TailCall, bytecode: {:?}",
+            closure_chunk.code,
+        );
+    }
+
+    #[test]
+    fn if_else_apply_emits_tail_call() {
+        // A call in the else-branch of an if in a lambda body should be TailCall.
+        let chunk = compile("x: if false then 0 else x 1");
+        let closure_chunk = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                VMValue::Closure(cl) => Some(&cl.chunk),
+                _ => None,
+            })
+            .expect("expected a closure constant");
+        assert!(
+            closure_chunk.code.contains(&(OpCode::TailCall as u8)),
+            "if-else call should emit TailCall, bytecode: {:?}",
+            closure_chunk.code,
+        );
+    }
+
+    #[test]
+    fn non_tail_apply_emits_regular_call() {
+        // A call that is NOT in tail position (e.g. argument to another
+        // function) should emit Call, not TailCall.
+        let chunk = compile("let f = x: x; in f (f 1)");
+        // The top-level chunk should contain Call (for `f (f 1)`).
+        // The inner `f 1` is an argument, not tail position.
+        assert!(
+            chunk.code.contains(&(OpCode::Call as u8))
+                || chunk.code.contains(&(OpCode::GetLocalCall as u8)),
+            "non-tail call should emit Call or GetLocalCall, bytecode: {:?}",
+            chunk.code,
+        );
+    }
+
+    #[test]
+    fn assert_body_apply_emits_tail_call() {
+        // A call in the body of an assert inside a lambda should be TailCall.
+        let chunk = compile("f: assert true; f 1");
+        let closure_chunk = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                VMValue::Closure(cl) => Some(&cl.chunk),
+                _ => None,
+            })
+            .expect("expected a closure constant");
+        assert!(
+            closure_chunk.code.contains(&(OpCode::TailCall as u8)),
+            "assert body call should emit TailCall, bytecode: {:?}",
+            closure_chunk.code,
+        );
+    }
+
+    // -- Multi-segment HasAttr tests ------------------------------------
+
+    #[test]
+    fn multi_segment_hasattr_compiles() {
+        // `{ a.b = 1; } ? a` should compile and use HasAttr.
+        let chunk = compile("{ a = { b = 1; }; } ? a");
+        assert!(chunk.code.contains(&(OpCode::HasAttr as u8)));
+    }
+
+    #[test]
+    fn single_segment_hasattr_still_works() {
+        // Single-segment ? should still work.
+        let chunk = compile("{ x = 1; } ? x");
+        assert!(chunk.code.contains(&(OpCode::HasAttr as u8)));
+    }
+
+    #[test]
+    fn multi_segment_hasattr_deep_path() {
+        // `{ a = { b = 1; }; } ? a.b` — multi-segment hasattr should compile.
+        let chunk = compile("{ a = { b = 1; }; } ? a.b");
+        // Should contain HasAttr (used for each segment).
+        assert!(chunk.code.contains(&(OpCode::HasAttr as u8)));
+    }
 }

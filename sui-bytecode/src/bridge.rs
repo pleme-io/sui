@@ -143,4 +143,119 @@ mod tests {
         // After guard drops, bridge should be cleared
         assert!(matches!(call_builtin_bridge("x", vec![]), Ok(None)));
     }
+
+    // -- set_builtin_bridge installs callback --------------------------
+
+    #[test]
+    fn set_builtin_bridge_installs_callback() {
+        let _guard = set_builtin_bridge(Box::new(|name, _| {
+            Ok(StringKeyedValue::String(format!("handled:{name}")))
+        }));
+        let result = call_builtin_bridge("myBuiltin", vec![]);
+        assert_eq!(
+            result.unwrap().unwrap(),
+            StringKeyedValue::String("handled:myBuiltin".into())
+        );
+    }
+
+    // -- RAII guard clears callback on drop -----------------------------
+
+    #[test]
+    fn raii_guard_restores_previous_bridge() {
+        // Install first bridge.
+        let _outer = set_builtin_bridge(Box::new(|_, _| {
+            Ok(StringKeyedValue::String("outer".into()))
+        }));
+        {
+            // Install inner bridge (replaces outer temporarily).
+            let _inner = set_builtin_bridge(Box::new(|_, _| {
+                Ok(StringKeyedValue::String("inner".into()))
+            }));
+            let result = call_builtin_bridge("x", vec![]);
+            assert_eq!(
+                result.unwrap().unwrap(),
+                StringKeyedValue::String("inner".into())
+            );
+        }
+        // Inner guard dropped — outer bridge should be restored.
+        let result = call_builtin_bridge("x", vec![]);
+        assert_eq!(
+            result.unwrap().unwrap(),
+            StringKeyedValue::String("outer".into())
+        );
+    }
+
+    // -- call_builtin_bridge returns None when no bridge ----------------
+
+    #[test]
+    fn call_builtin_bridge_returns_none_when_no_bridge() {
+        // Ensure no bridge is installed (clean state after guard drop).
+        {
+            let _guard = set_builtin_bridge(Box::new(|_, _| Ok(StringKeyedValue::Null)));
+        }
+        let result = call_builtin_bridge("nonexistent", vec![]);
+        assert!(matches!(result, Ok(None)));
+    }
+
+    // -- call_builtin_bridge returns Some when bridge set ---------------
+
+    #[test]
+    fn call_builtin_bridge_returns_some_when_bridge_set() {
+        let _guard = set_builtin_bridge(Box::new(|_, _| {
+            Ok(StringKeyedValue::Int(42))
+        }));
+        let result = call_builtin_bridge("anything", vec![]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    // -- bridge with simple string argument and return -----------------
+
+    #[test]
+    fn bridge_with_string_argument_and_return() {
+        let _guard = set_builtin_bridge(Box::new(|name, args| {
+            assert_eq!(name, "echo");
+            match &args[0] {
+                StringKeyedValue::String(s) => {
+                    Ok(StringKeyedValue::String(format!("echo:{s}")))
+                }
+                _ => Err("expected string arg".into()),
+            }
+        }));
+        let result = call_builtin_bridge(
+            "echo",
+            vec![StringKeyedValue::String("hello".into())],
+        );
+        assert_eq!(
+            result.unwrap().unwrap(),
+            StringKeyedValue::String("echo:hello".into())
+        );
+    }
+
+    // -- bridge with attrset argument ----------------------------------
+
+    #[test]
+    fn bridge_with_attrset_argument() {
+        let _guard = set_builtin_bridge(Box::new(|name, args| {
+            assert_eq!(name, "inspect");
+            match &args[0] {
+                StringKeyedValue::Attrs(map) => {
+                    let keys: Vec<&String> = map.keys().collect();
+                    Ok(StringKeyedValue::Int(keys.len() as i64))
+                }
+                _ => Err("expected attrset".into()),
+            }
+        }));
+
+        let mut attrs = std::collections::BTreeMap::new();
+        attrs.insert("a".to_string(), StringKeyedValue::Int(1));
+        attrs.insert("b".to_string(), StringKeyedValue::Int(2));
+        attrs.insert("c".to_string(), StringKeyedValue::Int(3));
+
+        let result = call_builtin_bridge(
+            "inspect",
+            vec![StringKeyedValue::Attrs(attrs)],
+        );
+        assert_eq!(result.unwrap().unwrap(), StringKeyedValue::Int(3));
+    }
 }
