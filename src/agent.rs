@@ -1,14 +1,17 @@
-//! NATS build agent — consumes build requests, evaluates, substitutes, caches.
+//! NATS build agent — consumes build requests, resolves from lockfile, caches.
 //!
-//! Pure Rust pipeline — no nix binary dependency:
+//! Lockfile-based pipeline — no full nixpkgs evaluation:
 //!
 //!   1. Receive BUILD.request from NATS
-//!   2. Evaluate flake ref → derivation (sui-eval, pure Rust)
-//!   3. Extract output store paths (hash computation only)
-//!   4. Check upstream binary caches (cache.nixos.org via sui-store)
-//!   5. Download NAR + narinfo for cached outputs
+//!   2. Fetch flake source (small tarball via GitHub archive)
+//!   3. Parse flake.lock → enumerate all locked inputs with narHashes
+//!   4. For each input, check upstream caches (cache.nixos.org)
+//!   5. Download narinfo + NAR for available inputs
 //!   6. Push to local cache (sui-cache, S3-backed)
 //!   7. Publish BUILD.complete
+//!
+//! This avoids evaluating nixpkgs (which needs 16+ GiB RAM) by working
+//! directly with the lockfile's content-addressed hashes.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,6 +22,8 @@ use tracing::{error, info, warn};
 
 use crate::CliError;
 use sui_cache::StorageBackend;
+use sui_compat::flake::FlakeLock;
+use sui_eval::fetcher::InputFetcher;
 use sui_store::BinaryCacheStore;
 
 /// Default upstream binary caches to check for substitutes.
@@ -33,11 +38,11 @@ const NIXOS_CACHE_KEY: &str =
 /// Errors that can occur during build request processing.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    #[error("flake evaluation failed: {0}")]
-    Eval(#[from] sui_eval::EvalError),
+    #[error("flake source fetch failed: {0}")]
+    Fetch(String),
 
-    #[error("invalid store path: {0}")]
-    StorePath(#[from] sui_compat::store_path::StorePathError),
+    #[error("flake.lock parse failed: {0}")]
+    LockParse(String),
 
     #[error("upstream cache error: {0}")]
     BinaryCache(#[from] sui_store::StoreError),
@@ -45,14 +50,8 @@ pub enum AgentError {
     #[error("local cache error: {0}")]
     LocalCache(#[from] sui_cache::CacheError),
 
-    #[error("eval thread panicked: {0}")]
-    EvalPanic(String),
-
-    #[error("result has no outPath or drvPath attribute")]
-    NoOutputPath,
-
-    #[error("not substitutable: {path} not found in any upstream cache")]
-    NotSubstitutable { path: String },
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 // ── Wire types ───────────────────────────────────────────────
@@ -72,7 +71,10 @@ struct BuildRequest {
 struct BuildComplete {
     build_id: String,
     status: String,
-    store_path: Option<String>,
+    /// Number of inputs mirrored to local cache.
+    cached_inputs: u32,
+    /// Number of inputs not found in any upstream cache.
+    missed_inputs: u32,
     error: Option<String>,
 }
 
@@ -85,7 +87,7 @@ pub async fn run_agent(
     _cache_url: &str,
     _cache_name: &str,
 ) -> Result<(), CliError> {
-    info!("Starting sui build agent (native pipeline — no nix dependency)");
+    info!("Starting sui build agent (lockfile pipeline — no nixpkgs eval)");
     info!(nats = %nats_url, stream = %stream_name, consumer = %consumer_name);
 
     // Shared storage backend for both cache server and build pipeline
@@ -186,26 +188,28 @@ pub async fn run_agent(
 
         let started = Instant::now();
         let result =
-            execute_build_native(&request, &upstream_caches, storage.as_ref()).await;
+            resolve_from_lockfile(&request, &upstream_caches, storage.as_ref()).await;
         let elapsed = started.elapsed();
 
         // Build completion message
         let complete = match &result {
-            Ok(store_path) => BuildComplete {
+            Ok((cached, missed)) => BuildComplete {
                 build_id: request.build_id.clone(),
                 status: "Complete".to_string(),
-                store_path: Some(store_path.clone()),
+                cached_inputs: *cached,
+                missed_inputs: *missed,
                 error: None,
             },
             Err(e) => BuildComplete {
                 build_id: request.build_id.clone(),
                 status: "Failed".to_string(),
-                store_path: None,
+                cached_inputs: 0,
+                missed_inputs: 0,
                 error: Some(e.to_string()),
             },
         };
 
-        // Publish completion (log but don't fail on serialization or publish errors)
+        // Publish completion
         match serde_json::to_vec(&complete) {
             Ok(payload) => {
                 let subject = format!("{stream_name}.complete.{}", request.build_id);
@@ -223,17 +227,18 @@ pub async fn run_agent(
         }
 
         match &result {
-            Ok(path) => info!(
+            Ok((cached, missed)) => info!(
                 build_id = %request.build_id,
-                store_path = %path,
+                cached_inputs = cached,
+                missed_inputs = missed,
                 elapsed_ms = elapsed.as_millis() as u64,
-                "Build complete"
+                "Lockfile resolved"
             ),
             Err(e) => warn!(
                 build_id = %request.build_id,
                 error = %e,
                 elapsed_ms = elapsed.as_millis() as u64,
-                "Build failed"
+                "Resolution failed"
             ),
         }
     }
@@ -242,7 +247,6 @@ pub async fn run_agent(
 // ── Message polling ──────────────────────────────────────────
 
 /// Poll the NATS consumer for the next message with a 30s timeout.
-/// Returns `None` on timeout or transient errors (caller should loop).
 async fn poll_next_message(
     consumer: &async_nats::jetstream::consumer::Consumer<jetstream::consumer::pull::Config>,
 ) -> Option<async_nats::jetstream::Message> {
@@ -270,166 +274,256 @@ async fn poll_next_message(
     }
 }
 
-// ── Build pipeline ───────────────────────────────────────────
+// ── Lockfile-based resolution ────────────────────────────────
 
-/// Execute a build request using the native sui pipeline.
+/// Resolve a flake's inputs from its lockfile and mirror them to the local cache.
 ///
-/// Flow: eval → extract store paths → check upstream caches → download → cache locally.
-async fn execute_build_native(
+/// Returns `(cached_count, missed_count)`.
+async fn resolve_from_lockfile(
     request: &BuildRequest,
     upstream_caches: &[BinaryCacheStore],
     local_storage: &dyn StorageBackend,
-) -> Result<String, AgentError> {
-    let (flake_url, attr_path) = parse_flake_ref(&request.flake_ref, &request.system);
+) -> Result<(u32, u32), AgentError> {
+    let (flake_url, _attr_path) = parse_flake_ref(&request.flake_ref);
 
-    info!(flake_url = %flake_url, attr_path = %attr_path, "Evaluating flake");
-
-    // Step 1: Evaluate the flake expression (blocking — sui-eval is synchronous)
-    let eval_started = Instant::now();
-    let eval_expr = format!("(builtins.getFlake \"{flake_url}\").{attr_path}");
-    let out_path = tokio::task::spawn_blocking(move || -> Result<String, AgentError> {
-        let value = sui_eval::eval(&eval_expr)?;
-        extract_out_path(&value)
-    })
-    .await
-    .map_err(|e| AgentError::EvalPanic(e.to_string()))??;
-
+    // Step 1: Fetch the flake source (small tarball, not nixpkgs)
+    info!(flake_url = %flake_url, "Fetching flake source");
+    let fetch_started = Instant::now();
+    let repo_dir = tokio::task::spawn_blocking(move || fetch_flake_source(&flake_url))
+        .await
+        .map_err(|e| AgentError::Fetch(format!("task panicked: {e}")))?
+        .map_err(|e| AgentError::Fetch(e.to_string()))?;
     info!(
-        out_path = %out_path,
-        eval_ms = eval_started.elapsed().as_millis() as u64,
-        "Derivation output resolved"
+        fetch_ms = fetch_started.elapsed().as_millis() as u64,
+        "Flake source fetched"
     );
 
-    // Step 2: Extract hash from store path
-    let store_path = sui_compat::store_path::StorePath::from_absolute_path(&out_path)?;
-    let hash = store_path.hash();
-
-    // Step 3: Check local cache first
-    if local_storage.get_narinfo(&hash).await.ok().flatten().is_some() {
-        info!(out_path = %out_path, "Already in local cache");
-        return Ok(out_path);
+    // Step 2: Parse flake.lock
+    let lock_path = repo_dir.join("flake.lock");
+    if !lock_path.exists() {
+        return Err(AgentError::LockParse("no flake.lock found".to_string()));
     }
+    let lock_json = std::fs::read_to_string(&lock_path)?;
+    let lock = FlakeLock::parse(&lock_json)
+        .map_err(|e| AgentError::LockParse(e.to_string()))?;
 
-    // Step 4: Try upstream binary caches
-    for cache in upstream_caches {
-        match substitute_from_cache(cache, &hash, &out_path, local_storage).await {
-            Ok(true) => {
-                info!(
-                    out_path = %out_path,
-                    cache = %cache.base_url(),
-                    "Substituted from upstream cache"
-                );
-                return Ok(out_path);
-            }
-            Ok(false) => continue,
-            Err(e) => {
-                warn!(
-                    cache = %cache.base_url(),
-                    error = %e,
-                    "Upstream cache error (trying next)"
-                );
+    // Step 3: Enumerate locked inputs with narHashes
+    let locked_inputs: Vec<_> = lock
+        .nodes
+        .iter()
+        .filter(|(name, _)| name.as_str() != lock.root)
+        .filter_map(|(name, node)| {
+            node.locked.as_ref().map(|locked| (name.clone(), locked.clone()))
+        })
+        .collect();
+
+    info!(
+        input_count = locked_inputs.len(),
+        "Parsed flake.lock, resolving inputs"
+    );
+
+    // Step 4: For each input, check upstream caches and mirror
+    let mut cached = 0u32;
+    let mut missed = 0u32;
+
+    for (input_name, locked) in &locked_inputs {
+        let nar_hash = match &locked.nar_hash {
+            Some(h) => h,
+            None => {
+                warn!(input = %input_name, "No narHash, skipping");
+                missed += 1;
                 continue;
             }
+        };
+
+        // Convert narHash (e.g. "sha256-xxxxx") to the 32-char nix base32 hash
+        // that cache.nixos.org uses for narinfo lookups.
+        // The narHash in flake.lock is the hash of the SOURCE, not of a built output.
+        // We construct the expected store path and check if it exists in any cache.
+        let source_desc = describe_input(locked);
+        let store_hash = nar_hash_to_store_hash(nar_hash);
+        let store_hash = match store_hash {
+            Some(h) => h,
+            None => {
+                warn!(
+                    input = %input_name,
+                    nar_hash = %nar_hash,
+                    "Could not derive store hash from narHash"
+                );
+                missed += 1;
+                continue;
+            }
+        };
+
+        // Check local cache first
+        if local_storage.get_narinfo(&store_hash).await.ok().flatten().is_some() {
+            info!(input = %input_name, source = %source_desc, "Already in local cache");
+            cached += 1;
+            continue;
+        }
+
+        // Try upstream caches
+        let mut found = false;
+        for cache in upstream_caches {
+            match cache.fetch_narinfo(&store_hash).await {
+                Ok(Some(narinfo)) => {
+                    info!(
+                        input = %input_name,
+                        source = %source_desc,
+                        nar_size = narinfo.nar_size,
+                        "Found in upstream, downloading"
+                    );
+
+                    match cache.fetch_nar(&narinfo.url).await {
+                        Ok(nar_data) => {
+                            // Mirror to local cache
+                            if let Err(e) = local_storage
+                                .put_nar(&narinfo.url, &nar_data)
+                                .await
+                            {
+                                warn!(input = %input_name, error = %e, "Failed to cache NAR");
+                                continue;
+                            }
+                            if let Err(e) = local_storage
+                                .put_narinfo(&store_hash, &narinfo.serialize())
+                                .await
+                            {
+                                warn!(input = %input_name, error = %e, "Failed to cache narinfo");
+                                continue;
+                            }
+                            info!(
+                                input = %input_name,
+                                compressed_bytes = nar_data.len(),
+                                "Mirrored to local cache"
+                            );
+                            cached += 1;
+                            found = true;
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(
+                                input = %input_name,
+                                cache = %cache.base_url(),
+                                error = %e,
+                                "NAR download failed"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        input = %input_name,
+                        cache = %cache.base_url(),
+                        error = %e,
+                        "Upstream cache error"
+                    );
+                }
+            }
+        }
+
+        if !found {
+            info!(
+                input = %input_name,
+                source = %source_desc,
+                "Not in any upstream cache"
+            );
+            missed += 1;
         }
     }
 
-    Err(AgentError::NotSubstitutable {
-        path: out_path,
-    })
+    Ok((cached, missed))
 }
+
+// ── Helpers ──────────────────────────────────────────────────
 
 /// Parse a flake reference into (flake_url, attribute_path).
-///
-/// `github:pleme-io/burst-forge#packages.x86_64-linux.default`
-/// → `("github:pleme-io/burst-forge", "packages.x86_64-linux.default")`
-fn parse_flake_ref(flake_ref: &str, system: &str) -> (String, String) {
+fn parse_flake_ref(flake_ref: &str) -> (String, String) {
     match flake_ref.split_once('#') {
         Some((url, attr)) => (url.to_string(), attr.to_string()),
-        None => (
-            flake_ref.to_string(),
-            format!("packages.{system}.default"),
-        ),
+        None => (flake_ref.to_string(), String::new()),
     }
 }
 
-/// Extract `outPath` from a derivation Value.
-fn extract_out_path(value: &sui_eval::Value) -> Result<String, AgentError> {
-    let attrs = value.as_attrs().map_err(|e| {
-        AgentError::Eval(sui_eval::EvalError::TypeError(format!(
-            "expected derivation attrs: {e}"
-        )))
+/// Fetch a flake's source directory (clone via tarball).
+fn fetch_flake_source(flake_url: &str) -> Result<std::path::PathBuf, sui_eval::fetcher::FetchError> {
+    // Parse github:owner/repo or github:owner/repo/ref
+    let stripped = flake_url.strip_prefix("github:").ok_or_else(|| {
+        sui_eval::fetcher::FetchError::UnsupportedType(format!(
+            "only github: flake refs supported, got: {flake_url}"
+        ))
     })?;
 
-    if let Some(v) = attrs.get("outPath") {
-        return v
-            .as_string()
-            .map(String::from)
-            .map_err(|e| {
-                AgentError::Eval(sui_eval::EvalError::TypeError(format!(
-                    "outPath not a string: {e}"
-                )))
-            });
+    let parts: Vec<&str> = stripped.splitn(3, '/').collect();
+    if parts.len() < 2 {
+        return Err(sui_eval::fetcher::FetchError::MissingField("owner/repo"));
     }
+    let owner = parts[0];
+    let repo = parts[1];
+    let git_ref = parts.get(2).copied().unwrap_or("HEAD");
 
-    if let Some(v) = attrs.get("drvPath") {
-        return v
-            .as_string()
-            .map(String::from)
-            .map_err(|e| {
-                AgentError::Eval(sui_eval::EvalError::TypeError(format!(
-                    "drvPath not a string: {e}"
-                )))
-            });
-    }
-
-    Err(AgentError::NoOutputPath)
+    let fetcher = InputFetcher::new();
+    let locked = sui_compat::flake::LockedInput {
+        source_type: "github".to_string(),
+        owner: Some(owner.to_string()),
+        repo: Some(repo.to_string()),
+        rev: Some(git_ref.to_string()),
+        nar_hash: None,
+        last_modified: None,
+        path: None,
+        url: None,
+        git_ref: None,
+        dir: None,
+        extra: std::collections::BTreeMap::new(),
+    };
+    fetcher.fetch(&locked)
 }
 
-// ── Substitution ─────────────────────────────────────────────
-
-/// Try to substitute a store path from an upstream binary cache.
+/// Convert a flake.lock narHash (e.g. "sha256-ABCdef...==") to the 32-char
+/// nix base32 hash used for cache.nixos.org narinfo lookups.
 ///
-/// Returns `Ok(true)` if the path was found and cached locally,
-/// `Ok(false)` if not found in this cache.
-async fn substitute_from_cache(
-    upstream: &BinaryCacheStore,
-    hash: &str,
-    out_path: &str,
-    local_storage: &dyn StorageBackend,
-) -> Result<bool, AgentError> {
-    let narinfo = match upstream.fetch_narinfo(hash).await {
-        Ok(Some(ni)) => ni,
-        Ok(None) => return Ok(false),
-        Err(e) => return Err(AgentError::BinaryCache(sui_store::StoreError::Http(e.to_string()))),
-    };
+/// Returns `None` if the hash format is unrecognized.
+fn nar_hash_to_store_hash(nar_hash: &str) -> Option<String> {
+    // flake.lock uses SRI format: "sha256-<base64>"
+    let b64 = nar_hash.strip_prefix("sha256-")?;
+    let bytes = base64_decode(b64)?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    // Convert to nix base32 (the 32-char hash in /nix/store/HASH-name)
+    Some(sui_compat::store_path::nix_base32_encode(&bytes))
+}
 
-    info!(
-        out_path = %out_path,
-        nar_size = narinfo.nar_size,
-        compression = %narinfo.compression,
-        "Found in upstream, downloading NAR"
-    );
+/// Decode base64 (standard, with or without padding).
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .ok()
+        .or_else(|| {
+            base64::engine::general_purpose::STANDARD_NO_PAD
+                .decode(input)
+                .ok()
+        })
+}
 
-    let download_started = Instant::now();
-    let compressed_nar = upstream
-        .fetch_nar(&narinfo.url)
-        .await
-        .map_err(|e| AgentError::BinaryCache(sui_store::StoreError::Http(e.to_string())))?;
-
-    info!(
-        out_path = %out_path,
-        compressed_bytes = compressed_nar.len(),
-        download_ms = download_started.elapsed().as_millis() as u64,
-        "Downloaded NAR, pushing to local cache"
-    );
-
-    // Store narinfo + NAR blob in local cache
-    local_storage
-        .put_nar(&narinfo.url, &compressed_nar)
-        .await?;
-    local_storage
-        .put_narinfo(hash, &narinfo.serialize())
-        .await?;
-
-    Ok(true)
+/// Human-readable description of a locked input.
+fn describe_input(locked: &sui_compat::flake::LockedInput) -> String {
+    match locked.source_type.as_str() {
+        "github" => {
+            let owner = locked.owner.as_deref().unwrap_or("?");
+            let repo = locked.repo.as_deref().unwrap_or("?");
+            let rev = locked
+                .rev
+                .as_deref()
+                .map(|r| &r[..r.len().min(12)])
+                .unwrap_or("?");
+            format!("github:{owner}/{repo}@{rev}")
+        }
+        "git" => {
+            let url = locked.url.as_deref().unwrap_or("?");
+            format!("git:{url}")
+        }
+        other => format!("{other}:?"),
+    }
 }

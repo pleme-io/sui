@@ -170,6 +170,7 @@ async-nats.workspace = true
 tokio-stream.workspace = true
 futures-core.workspace = true
 mimalloc.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
