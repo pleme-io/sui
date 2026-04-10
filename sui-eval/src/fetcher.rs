@@ -151,17 +151,37 @@ impl InputFetcher {
             let _ = std::fs::remove_dir_all(&dest);
         }
 
-        // Use git CLI directly for clone operations. Our gix edition-2024
-        // fork panics on certain refspec patterns during fetch, and the
-        // panic occurs on a background thread that catch_unwind can't catch.
-        // git CLI is reliable and the clone only happens on cache miss.
+        // Try GitHub tarball first (avoids git CLI dependency in containers).
+        // Most git-type inputs in flake.lock are GitHub repos that support
+        // archive downloads via /archive/{rev}.tar.gz.
+        if let Some(tarball_url) = github_tarball_from_git_url(url, rev) {
+            std::fs::create_dir_all(&dest)?;
+            match download_bytes(&tarball_url) {
+                Ok(bytes) => {
+                    if let Err(e) = extract_tar_gz(&bytes, &dest) {
+                        let _ = std::fs::remove_dir_all(&dest);
+                        return Err(e);
+                    }
+                    return Ok(find_single_subdir_or_self(&dest));
+                }
+                Err(e) => {
+                    // Tarball fallback failed — try git CLI below.
+                    let _ = std::fs::remove_dir_all(&dest);
+                    tracing::debug!(url = %tarball_url, error = %e, "Tarball fallback failed, trying git CLI");
+                }
+            }
+        }
+
+        // Fall back to git CLI for non-GitHub repos or when tarball fails.
         let status = std::process::Command::new("git")
             .args(["clone", "--depth", "1", url])
             .arg(&dest)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map_err(|e| FetchError::Download(format!("git clone: {e}")))?;
+            .map_err(|e| FetchError::Download(format!(
+                "git clone failed (git not in PATH?): {e}"
+            )))?;
         if !status.success() {
             let _ = std::fs::remove_dir_all(&dest);
             return Err(FetchError::Download(format!(
@@ -221,6 +241,28 @@ impl InputFetcher {
 }
 
 // ── Helpers ───────────────────────────────────────────────────
+
+/// Try to convert a git URL to a GitHub tarball URL.
+///
+/// `https://github.com/NixOS/nixpkgs.git` + rev → `https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz`
+/// Returns `None` for non-GitHub URLs.
+fn github_tarball_from_git_url(url: &str, rev: &str) -> Option<String> {
+    let stripped = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git+https://github.com/"))
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let stripped = stripped.strip_suffix(".git").unwrap_or(stripped);
+    // Validate it looks like owner/repo (no extra path segments)
+    let parts: Vec<&str> = stripped.split('/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some(format!(
+            "https://github.com/{}/{}/archive/{rev}.tar.gz",
+            parts[0], parts[1]
+        ))
+    } else {
+        None
+    }
+}
 
 /// Turn a narHash like `sha256-AAAA...=` into a filesystem-safe name.
 fn sanitize_hash(hash: &str) -> String {
@@ -643,5 +685,43 @@ mod tests {
         assert!(result.is_err(), "should not return stale empty cache");
         // The empty directory should have been cleaned up.
         assert!(!cached_dir.exists(), "stale cache dir should be removed");
+    }
+
+    // ── github_tarball_from_git_url ──────────────────────
+
+    #[test]
+    fn tarball_from_https_github() {
+        let url = github_tarball_from_git_url(
+            "https://github.com/NixOS/nixpkgs.git",
+            "abc123",
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/NixOS/nixpkgs/archive/abc123.tar.gz")
+        );
+    }
+
+    #[test]
+    fn tarball_from_git_plus_https() {
+        let url = github_tarball_from_git_url(
+            "git+https://github.com/NixOS/nixpkgs",
+            "def456",
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://github.com/NixOS/nixpkgs/archive/def456.tar.gz")
+        );
+    }
+
+    #[test]
+    fn tarball_from_non_github_returns_none() {
+        assert!(github_tarball_from_git_url("https://gitlab.com/foo/bar.git", "abc").is_none());
+        assert!(github_tarball_from_git_url("ssh://git@github.com/foo/bar", "abc").is_none());
+    }
+
+    #[test]
+    fn tarball_from_malformed_path_returns_none() {
+        assert!(github_tarball_from_git_url("https://github.com/", "abc").is_none());
+        assert!(github_tarball_from_git_url("https://github.com/only-owner", "abc").is_none());
     }
 }
