@@ -374,16 +374,22 @@ impl<'a> VM<'a> {
                 let slot = self.read_u16()? as usize;
                 let abs_slot = self.current_frame().stack_base + slot;
                 if abs_slot >= self.stack.len() {
+                    let frame = self.current_frame();
+                    let chunk = &frame.chunk;
+                    let failing_ip = frame.ip.saturating_sub(3);
                     let frame_info: Vec<String> = self.frames.iter().enumerate()
                         .map(|(i, f)| format!("frame[{i}]: base={}, ip={}", f.stack_base, f.ip))
                         .collect();
+                    let bytecode_context = Self::disassemble_around(chunk, failing_ip, 10);
                     return Err(VMError::Internal(format!(
                         "GetLocal: slot {slot} (abs {abs_slot}) out of bounds \
-                         (stack len {}, base {}, depth {})\n  {}",
+                         (stack len {}, base {}, depth {})\n  \
+                         {}\n  bytecode around ip={failing_ip}:\n{}",
                         self.stack.len(),
                         self.current_frame().stack_base,
                         self.frames.len(),
                         frame_info.join("\n  "),
+                        bytecode_context,
                     )));
                 }
                 let value = self.stack[abs_slot].clone();
@@ -3010,6 +3016,159 @@ impl<'a> VM<'a> {
             ))),
         }
     }
+
+    /// Disassemble instructions around a given offset for error diagnostics.
+    /// Returns a human-readable string showing `window` instructions before
+    /// and after `center_ip`, with an arrow marking the center.
+    fn disassemble_around(chunk: &Chunk, center_ip: usize, window: usize) -> String {
+        let code = &chunk.code;
+        let mut lines: Vec<String> = Vec::new();
+
+        // Collect instruction boundaries by scanning from the start.
+        let mut boundaries: Vec<usize> = Vec::new();
+        let mut pos = 0;
+        while pos < code.len() {
+            boundaries.push(pos);
+            pos += Self::instruction_width(code, pos);
+        }
+
+        // Find the boundary closest to center_ip.
+        let center_idx = boundaries.iter().position(|&b| b >= center_ip).unwrap_or(0);
+        let start_idx = center_idx.saturating_sub(window);
+        let end_idx = (center_idx + window + 1).min(boundaries.len());
+
+        for idx in start_idx..end_idx {
+            let ip = boundaries[idx];
+            let marker = if ip == center_ip { ">>>" } else { "   " };
+            let line = chunk.lines.get(ip).copied().unwrap_or(0);
+            if let Some(op) = OpCode::from_byte(code[ip]) {
+                let operands = Self::format_operands(code, ip, op);
+                lines.push(format!("    {marker} {ip:4}: {op:?}{operands}  (line {line})"));
+            } else {
+                lines.push(format!("    {marker} {ip:4}: <unknown {}>  (line {line})", code[ip]));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// Determine the total byte width of an instruction at `pos`.
+    fn instruction_width(code: &[u8], pos: usize) -> usize {
+        let byte = code[pos];
+        match OpCode::from_byte(byte) {
+            Some(op) => match op {
+                // No operands (1 byte):
+                OpCode::Null | OpCode::True | OpCode::False
+                | OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Negate
+                | OpCode::Not | OpCode::And | OpCode::Or | OpCode::Implication
+                | OpCode::Equal | OpCode::NotEqual | OpCode::Less | OpCode::Greater
+                | OpCode::LessEqual | OpCode::GreaterEqual
+                | OpCode::UpdateAttrs | OpCode::Concat
+                | OpCode::Call | OpCode::TailCall | OpCode::Return
+                | OpCode::Assert | OpCode::Pop | OpCode::PushWith | OpCode::PopWith
+                | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
+                | OpCode::DynGetAttr => 1,
+
+                // 1 u16 operand (3 bytes):
+                OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal
+                | OpCode::GetUpvalue | OpCode::SetUpvalue | OpCode::LookupWith
+                | OpCode::GetAttr | OpCode::HasAttr | OpCode::MakeAttrs
+                | OpCode::SelectOrDefault | OpCode::MakeList
+                | OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue
+                | OpCode::Interpolate => 3,
+
+                // 2 u16 operands (5 bytes):
+                OpCode::GetLocalAttr | OpCode::GetLocalCall | OpCode::CallBuiltin => 5,
+
+                // MakeClosure: u16 const_idx, u16 uv_count, then uv_count * 3 bytes
+                OpCode::MakeClosure => {
+                    if pos + 5 <= code.len() {
+                        let uv_count = u16::from_le_bytes([code[pos + 3], code[pos + 4]]) as usize;
+                        5 + uv_count * 3
+                    } else {
+                        3 // truncated
+                    }
+                }
+
+                // MakeThunk: u16 const_idx, u16 uv_count, then uv_count * 3 bytes
+                OpCode::MakeThunk => {
+                    if pos + 5 <= code.len() {
+                        let uv_count = u16::from_le_bytes([code[pos + 3], code[pos + 4]]) as usize;
+                        5 + uv_count * 3
+                    } else {
+                        3
+                    }
+                }
+
+                // PatchThunkUpvalues: u16 slot, u16 uv_count, then uv_count * 3 bytes
+                OpCode::PatchThunkUpvalues => {
+                    if pos + 5 <= code.len() {
+                        let uv_count = u16::from_le_bytes([code[pos + 3], code[pos + 4]]) as usize;
+                        5 + uv_count * 3
+                    } else {
+                        3
+                    }
+                }
+
+                // MakeLazyThunk: u16 src, u32 offset, u32 length, u16 dir, u16 uv_count, then uv_count * 3
+                OpCode::MakeLazyThunk => {
+                    if pos + 15 <= code.len() {
+                        let uv_count = u16::from_le_bytes([code[pos + 13], code[pos + 14]]) as usize;
+                        15 + uv_count * 3
+                    } else {
+                        3
+                    }
+                }
+            },
+            None => 1, // unknown opcode, skip 1
+        }
+    }
+
+    /// Format inline operands for a single instruction (for disassembly).
+    fn format_operands(code: &[u8], pos: usize, op: OpCode) -> String {
+        let read_u16_at = |p: usize| -> Option<u16> {
+            if p + 2 <= code.len() {
+                Some(u16::from_le_bytes([code[p], code[p + 1]]))
+            } else {
+                None
+            }
+        };
+
+        match op {
+            OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal
+            | OpCode::GetUpvalue | OpCode::SetUpvalue | OpCode::LookupWith
+            | OpCode::GetAttr | OpCode::HasAttr | OpCode::MakeAttrs
+            | OpCode::SelectOrDefault | OpCode::MakeList
+            | OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue
+            | OpCode::Interpolate => {
+                read_u16_at(pos + 1).map_or(String::new(), |v| format!(" {v}"))
+            }
+            OpCode::GetLocalAttr => {
+                let s = read_u16_at(pos + 1).unwrap_or(0);
+                let k = read_u16_at(pos + 3).unwrap_or(0);
+                format!(" slot={s} key={k}")
+            }
+            OpCode::GetLocalCall => {
+                read_u16_at(pos + 1).map_or(String::new(), |v| format!(" slot={v}"))
+            }
+            OpCode::CallBuiltin => {
+                let idx = read_u16_at(pos + 1).unwrap_or(0);
+                let argc = read_u16_at(pos + 3).unwrap_or(0);
+                format!(" idx={idx} argc={argc}")
+            }
+            OpCode::MakeThunk | OpCode::MakeClosure => {
+                let ci = read_u16_at(pos + 1).unwrap_or(0);
+                let uv = read_u16_at(pos + 3).unwrap_or(0);
+                format!(" const={ci} upvals={uv}")
+            }
+            OpCode::PatchThunkUpvalues => {
+                let s = read_u16_at(pos + 1).unwrap_or(0);
+                let uv = read_u16_at(pos + 3).unwrap_or(0);
+                format!(" slot={s} upvals={uv}")
+            }
+            _ => String::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4068,5 +4227,194 @@ mod tests {
             "let bad = builtins.throw \"oops\"; in builtins.tryEval bad"
         );
         assert!(result.is_err(), "throw propagates through tryEval (current limitation)");
+    }
+
+    // -- Regression: stack_depth tracking for branches -------------------
+
+    #[test]
+    fn if_else_in_let_body_stack_depth() {
+        // If/else inside a let body should not corrupt stack_depth for
+        // subsequent let bindings in an outer scope.
+        assert_eq!(
+            eval("let a = 1; in if a == 1 then 10 else 20"),
+            VMValue::Int(10),
+        );
+    }
+
+    #[test]
+    fn nested_let_with_if_else() {
+        // Inner let after an if/else: the if/else must not drift stack_depth.
+        assert_eq!(
+            eval(r#"
+                let
+                  a = 1;
+                  b = if a == 1 then 2 else 3;
+                in
+                  let c = b + 10; in c
+            "#),
+            VMValue::Int(12),
+        );
+    }
+
+    #[test]
+    fn short_circuit_and_in_let_body() {
+        // Short-circuit && inside a let body must track stack_depth correctly.
+        assert_eq!(
+            eval("let x = true; in x && false"),
+            VMValue::Bool(false),
+        );
+    }
+
+    #[test]
+    fn short_circuit_or_in_let_body() {
+        assert_eq!(
+            eval("let x = false; in x || true"),
+            VMValue::Bool(true),
+        );
+    }
+
+    #[test]
+    fn short_circuit_implication_in_let_body() {
+        // a -> b is !a || b. false -> anything is true.
+        assert_eq!(
+            eval("let x = false; in x -> 42"),
+            VMValue::Bool(true),
+        );
+    }
+
+    #[test]
+    fn inherit_from_in_attrset_stack_depth() {
+        // inherit (source) in non-rec attrset must track stack_depth for
+        // MakeThunk. This was the missing `stack_depth += 1` bug.
+        assert_eq!(
+            eval(r#"
+                let
+                  src = { a = 1; b = 2; };
+                  result = { inherit (src) a b; c = 3; };
+                in result.a + result.b + result.c
+            "#),
+            VMValue::Int(6),
+        );
+    }
+
+    #[test]
+    fn inherit_from_many_fields_stack_depth() {
+        // Multiple inherit-from fields: each one was missing +1,
+        // so stack_depth would drift further with each field.
+        assert_eq!(
+            eval(r#"
+                let
+                  s = { w = 1; x = 2; y = 3; z = 4; };
+                  r = { inherit (s) w x y z; extra = 10; };
+                in r.w + r.x + r.y + r.z + r.extra
+            "#),
+            VMValue::Int(20),
+        );
+    }
+
+    #[test]
+    fn if_else_followed_by_let_binding() {
+        // The if/else result is used in a subsequent let binding.
+        // Before the fix, the stack_depth drift from if/else would cause
+        // the next binding's slot to be off.
+        assert_eq!(
+            eval(r#"
+                let
+                  a = 1;
+                  b = 2;
+                  c = 3;
+                in
+                  let
+                    x = if a == 1 then b else c;
+                    y = x + 100;
+                  in y
+            "#),
+            VMValue::Int(102),
+        );
+    }
+
+    #[test]
+    fn multi_segment_hasattr_stack_depth() {
+        // Multi-segment hasattr with short-circuit jumps must track
+        // stack_depth correctly at branch merge points.
+        assert_eq!(
+            eval(r#"
+                let
+                  s = { a = { b = 1; }; };
+                  has = s ? a.b;
+                  val = if has then 42 else 0;
+                in val
+            "#),
+            VMValue::Int(42),
+        );
+    }
+
+    #[test]
+    fn many_let_bindings_with_if_else() {
+        // Stress test: many let bindings where some RHS contain if/else.
+        // Before the stack_depth fix, the drift would accumulate and
+        // eventually cause a GetLocal slot mismatch.
+        assert_eq!(
+            eval(r#"
+                let
+                  a = 1;
+                  b = 2;
+                  c = 3;
+                  d = 4;
+                  e = 5;
+                  f = 6;
+                  g = 7;
+                  h = 8;
+                  i = 9;
+                  j = 10;
+                in
+                  let
+                    x = if a == 1 then b else c;
+                    y = if d == 4 then e else f;
+                    z = if g == 7 then h else i;
+                    w = j;
+                  in x + y + z + w
+            "#),
+            VMValue::Int(25),
+        );
+    }
+
+    #[test]
+    fn import_in_pattern_default_stack_depth() {
+        // The Import opcode is net 0 on the stack (pop path, push result).
+        // Before the fix, it was tracked as +1, causing stack_depth drift
+        // in pattern default expressions like `{ stdenvStages ? import ../stdenv, ... }`.
+        // This test uses a pattern lambda with a default that involves a
+        // function call (which compiles similarly to import + call).
+        assert_eq!(
+            eval(r#"
+                let
+                  f = { a ? 1, b ? 2, c ? 3 }:
+                    a + b + c;
+                in f {}
+            "#),
+            VMValue::Int(6),
+        );
+    }
+
+    #[test]
+    fn pattern_lambda_many_defaults_then_let() {
+        // Pattern lambda with many defaults followed by let bindings.
+        // This is the pattern that triggered the original nixpkgs bug:
+        // { a, b ? x, c ? y, ... }: let ... in expr
+        // The import stack_depth bug caused slots to drift by 1 for each
+        // default expression that used import.
+        assert_eq!(
+            eval(r#"
+                let
+                  mk = { a, b ? 10, c ? 20, d ? 30, e ? 40 }:
+                    let
+                      sum = a + b + c + d + e;
+                      doubled = sum + sum;
+                    in doubled;
+                in mk { a = 1; }
+            "#),
+            VMValue::Int(202),
+        );
     }
 }

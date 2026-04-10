@@ -941,6 +941,7 @@ impl Compiler {
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
+        self.stack_depth += 1; // MakeThunk pushes one thunk
         self.emit_u16(idx);
         self.emit_u16(uv_descs.len() as u16);
         for uv in &uv_descs {
@@ -1588,6 +1589,9 @@ impl Compiler {
         // which is correct because Nix is pure and the compiler wraps
         // non-trivial expressions in thunks.
         let mut false_jumps: Vec<usize> = Vec::new();
+        // Save stack depth before first segment — all short-circuit
+        // targets must converge to (depth_before + 1).
+        let depth_before = self.stack_depth;
 
         for (i, seg) in segments.iter().enumerate() {
             // Build the prefix path: base.seg0.seg1...seg(i-1)
@@ -1606,6 +1610,11 @@ impl Compiler {
             // For all segments except the last, short-circuit on false.
             if i < segments.len() - 1 {
                 false_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+                // Reset depth for next iteration — each JumpIfFalse pops
+                // the condition, and at the false target the stack is at
+                // depth_before (no result pushed yet). The next segment
+                // starts fresh from depth_before.
+                self.stack_depth = depth_before;
             }
         }
 
@@ -1613,10 +1622,13 @@ impl Compiler {
         let done_jump = self.emit_jump(OpCode::Jump);
 
         // False path: push false for any short-circuit jump.
+        // All false_jumps target here, where stack is at depth_before.
+        self.stack_depth = depth_before;
         for fj in false_jumps {
             self.patch_jump(fj)?;
         }
         self.emit(OpCode::False);
+        // Now stack_depth = depth_before + 1 (same as the true path).
 
         self.patch_jump(done_jump)?;
         Ok(())
@@ -1643,16 +1655,23 @@ impl Compiler {
         self.compile_expr(&cond)?;
         // Jump to else if false.
         let else_jump = self.emit_jump(OpCode::JumpIfFalse);
+        // After JumpIfFalse, the condition is popped. Save the depth here —
+        // this is the stack depth at which both branches start.
+        let depth_at_branch = self.stack_depth;
         // Compile then branch (tail position propagated).
         self.tail_position = tail;
         self.compile_expr(&then_body)?;
         // Jump past else.
         let end_jump = self.emit_jump(OpCode::Jump);
-        // Patch else jump.
+        // Patch else jump. Reset stack_depth to the branch start —
+        // the else branch starts with the same stack as the then branch.
+        self.stack_depth = depth_at_branch;
         self.patch_jump(else_jump)?;
         // Compile else branch (tail position propagated).
         self.tail_position = tail;
         self.compile_expr(&else_body)?;
+        // Both branches push exactly one result value, so stack_depth
+        // is now depth_at_branch + 1 (correct for the merge point).
         // Patch end jump.
         self.patch_jump(end_jump)?;
         Ok(())
@@ -1853,8 +1872,12 @@ impl Compiler {
             ast::BinOpKind::And => {
                 self.compile_expr(&lhs)?;
                 let false_jump = self.emit_jump(OpCode::JumpIfFalse);
+                // After JumpIfFalse pops lhs, save depth at branch start.
+                let depth_at_branch = self.stack_depth;
                 self.compile_expr(&rhs)?;
                 let end_jump = self.emit_jump(OpCode::Jump);
+                // Reset to branch-start depth for the false path.
+                self.stack_depth = depth_at_branch;
                 self.patch_jump(false_jump)?;
                 self.emit(OpCode::False);
                 self.patch_jump(end_jump)?;
@@ -1863,8 +1886,12 @@ impl Compiler {
             ast::BinOpKind::Or => {
                 self.compile_expr(&lhs)?;
                 let true_jump = self.emit_jump(OpCode::JumpIfTrue);
+                // After JumpIfTrue pops lhs, save depth at branch start.
+                let depth_at_branch = self.stack_depth;
                 self.compile_expr(&rhs)?;
                 let end_jump = self.emit_jump(OpCode::Jump);
+                // Reset to branch-start depth for the true path.
+                self.stack_depth = depth_at_branch;
                 self.patch_jump(true_jump)?;
                 self.emit(OpCode::True);
                 self.patch_jump(end_jump)?;
@@ -1873,8 +1900,12 @@ impl Compiler {
             ast::BinOpKind::Implication => {
                 self.compile_expr(&lhs)?;
                 let false_jump = self.emit_jump(OpCode::JumpIfFalse);
+                // After JumpIfFalse pops lhs, save depth at branch start.
+                let depth_at_branch = self.stack_depth;
                 self.compile_expr(&rhs)?;
                 let end_jump = self.emit_jump(OpCode::Jump);
+                // Reset to branch-start depth for the false path.
+                self.stack_depth = depth_at_branch;
                 self.patch_jump(false_jump)?;
                 self.emit(OpCode::True);
                 self.patch_jump(end_jump)?;
@@ -1995,8 +2026,7 @@ impl Compiler {
             // Push one value
             OpCode::Null | OpCode::True | OpCode::False
             | OpCode::GetLocal | OpCode::GetUpvalue
-            | OpCode::PushBuiltins | OpCode::LookupWith
-            | OpCode::Import => {
+            | OpCode::PushBuiltins | OpCode::LookupWith => {
                 self.stack_depth += 1;
             }
             // Pop one value
@@ -2015,7 +2045,8 @@ impl Compiler {
             }
             // Pop 1, push 1 (net 0)
             OpCode::Negate | OpCode::Not | OpCode::Force
-            | OpCode::GetAttr | OpCode::HasAttr => {}
+            | OpCode::GetAttr | OpCode::HasAttr
+            | OpCode::Import => {}
             // SetLocal: no stack change (writes to slot)
             OpCode::SetLocal | OpCode::SetUpvalue => {}
             // PopWith: removes from with-scope stack, not value stack
