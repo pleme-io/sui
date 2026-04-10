@@ -257,6 +257,66 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
     })
 }
 
+/// Decide whether to thunk an expression or evaluate it directly.
+///
+/// Trivial expressions (literals, paths) are evaluated immediately --
+/// no thunk allocation. For non-recursive scopes, variable lookups
+/// (Ident) and lambdas are also evaluated eagerly. This matches
+/// CppNix's `maybeThunk` optimization which avoids a large fraction
+/// of thunk creations on nixpkgs.
+///
+/// For recursive scopes (let-in, rec attrsets), set `is_rec = true` to
+/// prevent eager evaluation of `Ident` and `Lambda` expressions:
+/// - Ident: sibling bindings may not be defined yet (forward refs).
+/// - Lambda: the closure must capture the *final* env (set in Phase 2)
+///   so that the lambda body can reference sibling bindings.
+fn maybe_thunk(expr: &ast::Expr, env: &Env, is_rec: bool) -> Value {
+    match expr {
+        // Literals: evaluate directly (no allocation needed).
+        ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
+            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+        }),
+        // Identifiers: look up directly (unless in rec scope where
+        // forward references to sibling bindings are possible).
+        ast::Expr::Ident(ident) if !is_rec => {
+            let name = ident_text(ident);
+            match name.as_str() {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                "null" => Value::Null,
+                _ => env.lookup(&name).unwrap_or_else(|| {
+                    Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+                }),
+            }
+        }
+        // Absolute and home paths: trivial text extraction.
+        ast::Expr::PathAbs(p) => {
+            let text = p.syntax().text().to_string();
+            Value::Path(Box::new(SmolStr::from(text.as_str())))
+        }
+        ast::Expr::PathHome(p) => {
+            let text = p.syntax().text().to_string();
+            Value::Path(Box::new(SmolStr::from(text.as_str())))
+        }
+        // Lambda: capture env directly (no computation needed).
+        // But NOT in recursive scopes -- the closure must capture the
+        // final env with all sibling bindings (set in Phase 2).
+        ast::Expr::Lambda(lam) if !is_rec => {
+            if let (Some(param), Some(body)) = (lam.param(), lam.body()) {
+                Value::Lambda(Box::new(Closure {
+                    param,
+                    body,
+                    env: env.clone(),
+                }))
+            } else {
+                Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+            }
+        }
+        // Everything else: wrap in a thunk for lazy evaluation.
+        _ => Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone())),
+    }
+}
+
 /// Evaluate an rnix expression in an environment.
 ///
 /// Uses `stacker::maybe_grow` to dynamically extend the call stack when
@@ -477,9 +537,14 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             .collect::<Result<_, _>>()?;
                         if path_keys.len() == 1 {
                             let key = path_keys.pop().unwrap();
-                            let thunk = Thunk::new_suspended(value_expr, env.clone());
-                            new_env.bind(key.clone(), Value::Thunk(thunk.clone()));
-                            thunks.push((key, thunk));
+                            // maybeThunk: skip thunk for trivial exprs.
+                            // is_rec=true because let-in is mutually
+                            // recursive — forward refs possible.
+                            let value = maybe_thunk(&value_expr, env, true);
+                            new_env.bind(key.clone(), value.clone());
+                            if let Value::Thunk(t) = &value {
+                                thunks.push((key, t.clone()));
+                            }
                         } else if path_keys.len() > 1 {
                             // Multi-segment dotted path: build a nested
                             // attrset with thunks at the leaves so the
@@ -816,10 +881,15 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         .collect::<Result<_, _>>()?;
                     if path_keys.len() == 1 {
                         let key = path_keys.pop().unwrap();
-                        let thunk = Thunk::new_suspended(value_expr, env.clone());
-                        rec_env.bind(key.clone(), Value::Thunk(thunk.clone()));
-                        attrs.insert(key.clone(), Value::Thunk(thunk.clone()));
-                        thunks.push((key, thunk));
+                        // maybeThunk: skip thunk for trivial exprs.
+                        // is_rec=true because rec attrset bindings
+                        // can reference each other.
+                        let value = maybe_thunk(&value_expr, env, true);
+                        rec_env.bind(key.clone(), value.clone());
+                        attrs.insert(key.clone(), value.clone());
+                        if let Value::Thunk(t) = &value {
+                            thunks.push((key, t.clone()));
+                        }
                     } else {
                         // Multi-segment dotted path: build a nested attrset
                         // with a thunk at the leaf so the value expression
@@ -866,8 +936,10 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         .collect::<Result<_, _>>()?;
                     if path_keys.len() == 1 {
                         let key = path_keys.pop().unwrap();
-                        let thunk = Thunk::new_suspended(value_expr, env.clone());
-                        attrs.insert(key, Value::Thunk(thunk));
+                        // maybeThunk: skip thunk for trivial exprs.
+                        // is_rec=false — Ident lookups are safe.
+                        let value = maybe_thunk(&value_expr, env, false);
+                        attrs.insert(key, value);
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
