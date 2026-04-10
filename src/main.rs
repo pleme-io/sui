@@ -148,6 +148,12 @@ enum Commands {
         /// Cache name
         #[arg(long, default_value = "main")]
         cache_name: String,
+        /// Resolution strategy:
+        ///   lockfile — parse flake.lock, mirror inputs (~50MB RAM, default)
+        ///   eval     — full sui-eval derivation resolution (~16GiB RAM)
+        ///   nix      — shell out to nix build (requires nix in container)
+        #[arg(long, default_value = "lockfile")]
+        strategy: String,
     },
     Doctor,
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
@@ -892,8 +898,8 @@ async fn main() -> Result<(), CliError> {
             RegistryCommands::Remove { entry } => { return Err(CliError::NotImplemented(format!("registry remove {entry}"))); }
             RegistryCommands::Pin { entry } => { return Err(CliError::NotImplemented(format!("registry pin {entry}"))); }
         },
-        Commands::Agent { nats_url, stream, consumer, cache_url, cache_name } => {
-            agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name).await?;
+        Commands::Agent { nats_url, stream, consumer, cache_url, cache_name, strategy } => {
+            agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name, &strategy).await?;
         }
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }

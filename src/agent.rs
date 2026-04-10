@@ -38,6 +38,9 @@ const NIXOS_CACHE_KEY: &str =
 /// Errors that can occur during build request processing.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
+    #[error("flake evaluation failed: {0}")]
+    Eval(#[from] sui_eval::EvalError),
+
     #[error("flake source fetch failed: {0}")]
     Fetch(String),
 
@@ -80,14 +83,40 @@ struct BuildComplete {
 
 // ── Agent entry point ────────────────────────────────────────
 
+/// Resolution strategy for the build agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// Parse flake.lock, mirror inputs (~50MB RAM). Default.
+    Lockfile,
+    /// Full sui-eval derivation resolution (~16GiB RAM).
+    Eval,
+    /// Shell out to `nix build` (requires nix in container).
+    Nix,
+}
+
+impl Strategy {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "eval" => Self::Eval,
+            "nix" => Self::Nix,
+            _ => Self::Lockfile,
+        }
+    }
+}
+
 pub async fn run_agent(
     nats_url: &str,
     stream_name: &str,
     consumer_name: &str,
     _cache_url: &str,
     _cache_name: &str,
+    strategy_str: &str,
 ) -> Result<(), CliError> {
-    info!("Starting sui build agent (lockfile pipeline — no nixpkgs eval)");
+    let strategy = Strategy::from_str(strategy_str);
+    info!(
+        strategy = ?strategy,
+        "Starting sui build agent"
+    );
     info!(nats = %nats_url, stream = %stream_name, consumer = %consumer_name);
 
     // Shared storage backend for both cache server and build pipeline
@@ -187,8 +216,17 @@ pub async fn run_agent(
         );
 
         let started = Instant::now();
-        let result =
-            resolve_from_lockfile(&request, &upstream_caches, storage.as_ref()).await;
+        let result = match strategy {
+            Strategy::Lockfile => {
+                resolve_from_lockfile(&request, &upstream_caches, storage.as_ref()).await
+            }
+            Strategy::Eval => {
+                resolve_with_eval(&request, &upstream_caches, storage.as_ref()).await
+            }
+            Strategy::Nix => {
+                resolve_with_nix(&request).await
+            }
+        };
         let elapsed = started.elapsed();
 
         // Build completion message
@@ -506,6 +544,103 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
                 .ok()
         })
 }
+
+// ── Strategy: eval (full sui-eval derivation resolution) ─────
+
+/// Full Nix evaluation strategy. Evaluates the flake expression to get
+/// exact derivation output paths, then substitutes from upstream caches.
+/// Requires ~16 GiB RAM for nixpkgs-dependent flakes.
+async fn resolve_with_eval(
+    request: &BuildRequest,
+    upstream_caches: &[BinaryCacheStore],
+    local_storage: &dyn StorageBackend,
+) -> Result<(u32, u32), AgentError> {
+    let (flake_url, attr_path) = parse_flake_ref(&request.flake_ref);
+    let attr_path = if attr_path.is_empty() {
+        format!("packages.{}.default", request.system)
+    } else {
+        attr_path
+    };
+
+    info!(flake_url = %flake_url, attr_path = %attr_path, "Evaluating flake (full eval)");
+
+    let eval_expr = format!("(builtins.getFlake \"{flake_url}\").{attr_path}");
+    let out_path = tokio::task::spawn_blocking(move || -> Result<String, AgentError> {
+        let value = sui_eval::eval(&eval_expr)
+            .map_err(AgentError::Eval)?;
+        extract_out_path(&value)
+    })
+    .await
+    .map_err(|e| AgentError::Fetch(format!("eval panicked: {e}")))?
+    .map_err(|e| AgentError::Fetch(e.to_string()))?;
+
+    let store_path = sui_compat::store_path::StorePath::from_absolute_path(&out_path)
+        .map_err(|e| AgentError::Fetch(e.to_string()))?;
+    let hash = store_path.hash();
+
+    if local_storage.get_narinfo(&hash).await.ok().flatten().is_some() {
+        return Ok((1, 0));
+    }
+
+    for cache in upstream_caches {
+        if let Ok(Some(narinfo)) = cache.fetch_narinfo(&hash).await {
+            if let Ok(nar) = cache.fetch_nar(&narinfo.url).await {
+                local_storage.put_nar(&narinfo.url, &nar).await?;
+                local_storage.put_narinfo(&hash, &narinfo.serialize()).await?;
+                return Ok((1, 0));
+            }
+        }
+    }
+
+    Ok((0, 1))
+}
+
+/// Extract `outPath` from a derivation Value.
+fn extract_out_path(value: &sui_eval::Value) -> Result<String, AgentError> {
+    let attrs = value.as_attrs().map_err(|e| {
+        AgentError::Eval(sui_eval::EvalError::TypeError(format!(
+            "expected derivation attrs: {e}"
+        )))
+    })?;
+    if let Some(v) = attrs.get("outPath") {
+        return v.as_string().map(String::from).map_err(|e| {
+            AgentError::Eval(sui_eval::EvalError::TypeError(format!("outPath: {e}")))
+        });
+    }
+    if let Some(v) = attrs.get("drvPath") {
+        return v.as_string().map(String::from).map_err(|e| {
+            AgentError::Eval(sui_eval::EvalError::TypeError(format!("drvPath: {e}")))
+        });
+    }
+    Err(AgentError::Fetch("no outPath or drvPath".to_string()))
+}
+
+// ── Strategy: nix (legacy shell-out) ─────────────────────────
+
+/// Legacy strategy: shell out to `nix build`. Requires nix binary in container.
+async fn resolve_with_nix(request: &BuildRequest) -> Result<(u32, u32), AgentError> {
+    let output = tokio::process::Command::new("nix")
+        .args(["build", &request.flake_ref, "--no-link", "--print-out-paths"])
+        .args(&request.extra_args)
+        .output()
+        .await
+        .map_err(|e| AgentError::Fetch(format!("nix build spawn: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AgentError::Fetch(format!("nix build: {stderr}")));
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err(AgentError::Fetch("nix build: no output paths".to_string()));
+    }
+
+    info!(store_path = %path, "nix build complete");
+    Ok((1, 0))
+}
+
+// ── Helpers ──────────────────────────────────────────────────
 
 /// Human-readable description of a locked input.
 fn describe_input(locked: &sui_compat::flake::LockedInput) -> String {

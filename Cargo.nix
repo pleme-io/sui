@@ -20099,6 +20099,10 @@ rec {
             features = [ "macros" ];
           }
           {
+            name = "base64";
+            packageId = "base64";
+          }
+          {
             name = "clap";
             packageId = "clap";
             features = [ "derive" ];
