@@ -4055,3 +4055,56 @@ fn import_cache_attrs_cached() {
     assert_eq!(v1, Value::Int(1));
     assert_eq!(v2, Value::Int(2));
 }
+
+// ── Builtin bridge (call_builtin_by_name) tests ─────────
+
+#[test]
+fn bridge_typeof_int() {
+    let result = super::call_builtin_by_name("typeOf", &[Value::Int(1)]).unwrap();
+    assert_eq!(result, Value::string("int"));
+}
+
+#[test]
+fn bridge_typeof_bool() {
+    let result = super::call_builtin_by_name("typeOf", &[Value::Bool(true)]).unwrap();
+    assert_eq!(result, Value::string("bool"));
+}
+
+#[test]
+fn bridge_length() {
+    let result = super::call_builtin_by_name(
+        "length",
+        &[Value::list(vec![Value::Int(1), Value::Int(2)])],
+    )
+    .unwrap();
+    assert_eq!(result, Value::Int(2));
+}
+
+#[test]
+fn bridge_head() {
+    let result =
+        super::call_builtin_by_name("head", &[Value::list(vec![Value::Int(1)])]).unwrap();
+    assert_eq!(result, Value::Int(1));
+}
+
+#[test]
+fn bridge_add() {
+    let result =
+        super::call_builtin_by_name("add", &[Value::Int(1), Value::Int(2)]).unwrap();
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn bridge_string_length() {
+    let result =
+        super::call_builtin_by_name("stringLength", &[Value::string("hello")]).unwrap();
+    assert_eq!(result, Value::Int(5));
+}
+
+#[test]
+fn bridge_unknown_builtin_returns_error() {
+    let result = super::call_builtin_by_name("unknown_builtin_xyz", &[Value::Null]);
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("unknown builtin"));
+}

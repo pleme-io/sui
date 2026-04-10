@@ -203,3 +203,62 @@ pub fn report() {
 pub fn counter_name(counter: Counter) -> &'static str {
     COUNTER_NAMES[counter as usize]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counter_enum_has_12_variants() {
+        // Each variant maps to an index 0..11, and NUM_COUNTERS == 12.
+        assert_eq!(NUM_COUNTERS, 12);
+        assert_eq!(Counter::EvalExpr as usize, 0);
+        assert_eq!(Counter::ForceValue as usize, 1);
+        assert_eq!(Counter::ThunkForce as usize, 2);
+        assert_eq!(Counter::ThunkHit as usize, 3);
+        assert_eq!(Counter::Import as usize, 4);
+        assert_eq!(Counter::ImportHit as usize, 5);
+        assert_eq!(Counter::Apply as usize, 6);
+        assert_eq!(Counter::Select as usize, 7);
+        assert_eq!(Counter::Attrset as usize, 8);
+        assert_eq!(Counter::EnvClone as usize, 9);
+        assert_eq!(Counter::EnvLookup as usize, 10);
+        assert_eq!(Counter::EnvLookupDepth as usize, 11);
+    }
+
+    #[test]
+    fn inc_does_not_panic_when_disabled() {
+        // Ensure ENABLED is false (default for tests).
+        ENABLED.store(false, Ordering::Relaxed);
+        // Should be a no-op, not panic.
+        inc(Counter::EvalExpr);
+        inc(Counter::ForceValue);
+        inc(Counter::ThunkForce);
+    }
+
+    #[test]
+    fn counter_variant_maps_to_correct_index() {
+        assert_eq!(counter_name(Counter::EvalExpr), "eval_expr");
+        assert_eq!(counter_name(Counter::ForceValue), "force_value");
+        assert_eq!(counter_name(Counter::ThunkForce), "thunk_forces");
+        assert_eq!(counter_name(Counter::ThunkHit), "thunk_hits");
+        assert_eq!(counter_name(Counter::Import), "imports");
+        assert_eq!(counter_name(Counter::ImportHit), "import_hits");
+        assert_eq!(counter_name(Counter::Apply), "apply");
+        assert_eq!(counter_name(Counter::Select), "select");
+        assert_eq!(counter_name(Counter::Attrset), "attrsets");
+        assert_eq!(counter_name(Counter::EnvClone), "env_clones");
+        assert_eq!(counter_name(Counter::EnvLookup), "env_lookups");
+        assert_eq!(counter_name(Counter::EnvLookupDepth), "env_lookup_depth");
+    }
+
+    #[test]
+    fn add_increments_by_given_amount() {
+        let mut counters = PerfCounters::default();
+        assert_eq!(counters.get(Counter::EvalExpr), 0);
+        counters.add(Counter::EvalExpr, 5);
+        assert_eq!(counters.get(Counter::EvalExpr), 5);
+        counters.add(Counter::EvalExpr, 3);
+        assert_eq!(counters.get(Counter::EvalExpr), 8);
+    }
+}

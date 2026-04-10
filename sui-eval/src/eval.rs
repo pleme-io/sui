@@ -5152,4 +5152,323 @@ mod tests {
         let result = eval(r#""${x: x}""#);
         assert!(result.is_err());
     }
+
+    // ── force_value tests ────────────────────────────────────
+
+    #[test]
+    fn force_value_int_returns_same() {
+        let v = Value::Int(42);
+        assert_eq!(force_value(&v).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn force_value_bool_returns_same() {
+        let v = Value::Bool(true);
+        assert_eq!(force_value(&v).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn force_value_string_returns_same() {
+        let v = Value::string("hello");
+        assert_eq!(force_value(&v).unwrap(), Value::string("hello"));
+    }
+
+    #[test]
+    fn force_value_attrs_returns_same() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let v = Value::Attrs(a.clone());
+        assert_eq!(force_value(&v).unwrap(), Value::Attrs(a));
+    }
+
+    #[test]
+    fn force_value_list_returns_same() {
+        let v = Value::list(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(
+            force_value(&v).unwrap(),
+            Value::list(vec![Value::Int(1), Value::Int(2)]),
+        );
+    }
+
+    #[test]
+    fn force_value_null_returns_null() {
+        let v = Value::Null;
+        assert_eq!(force_value(&v).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn force_value_evaluated_thunk_returns_cached() {
+        // Thunk wrapping a simple expression should evaluate and cache
+        let v = ev("let x = 1 + 2; in x");
+        assert_eq!(v, Value::Int(3));
+        // Force again — should return the cached value
+        assert_eq!(force_value(&v).unwrap(), Value::Int(3));
+    }
+
+    // ── Tail-call loop tests ─────────────────────────────────
+
+    #[test]
+    fn tco_if_true_condition() {
+        assert_eq!(ev("if true then 42 else 0"), Value::Int(42));
+    }
+
+    #[test]
+    fn tco_if_false_condition() {
+        assert_eq!(ev("if false then 42 else 0"), Value::Int(0));
+    }
+
+    #[test]
+    fn tco_deeply_nested_if_else_chain() {
+        // Build a chain: if false then 1 else if false then 2 else ... else 150
+        // All conditions are false except the final else, which produces 150.
+        let mut expr = String::from("150");
+        for i in (1..150).rev() {
+            expr = format!("if false then {} else {}", i, expr);
+        }
+        let v = ev(&expr);
+        assert_eq!(v, Value::Int(150));
+    }
+
+    #[test]
+    fn tco_assert_true_passes_through() {
+        assert_eq!(ev("assert true; 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn tco_assert_false_throws_assertion_failed() {
+        let result = eval("assert false; 42");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, EvalError::AssertionFailed),
+            "expected AssertionFailed, got: {err}",
+        );
+    }
+
+    #[test]
+    fn tco_with_makes_scope_available() {
+        assert_eq!(ev("with { x = 10; y = 20; }; x + y"), Value::Int(30));
+    }
+
+    #[test]
+    fn tco_let_in_creates_bindings() {
+        assert_eq!(ev("let a = 5; in a"), Value::Int(5));
+    }
+
+    #[test]
+    fn tco_let_in_multiple_bindings() {
+        assert_eq!(ev("let a = 1; b = 2; c = 3; in a + b + c"), Value::Int(6));
+    }
+
+    // ── eval_attrset tests ───────────────────────────────────
+
+    #[test]
+    fn eval_attrset_empty() {
+        let v = ev("{}");
+        if let Value::Attrs(attrs) = v {
+            assert!(attrs.is_empty(), "expected empty attrset");
+        } else {
+            panic!("expected attrset, got {v:?}");
+        }
+    }
+
+    #[test]
+    fn eval_attrset_simple_kv() {
+        let v = ev("{ a = 1; b = 2; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected attrset, got {v:?}");
+        }
+    }
+
+    #[test]
+    fn eval_attrset_recursive() {
+        assert_eq!(ev("(rec { a = 1; b = a + 1; }).b"), Value::Int(2));
+        assert_eq!(ev("(rec { a = 1; b = a + 1; }).a"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_attrset_inherit_from_scope() {
+        assert_eq!(ev("let x = 1; in { inherit x; }.x"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_attrset_inherit_from_expr() {
+        assert_eq!(
+            ev("{ inherit (builtins) true; }.true"),
+            Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn eval_attrset_dotted_path() {
+        assert_eq!(ev("{ a.b.c = 1; }.a.b.c"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_attrset_update_merge() {
+        let v = ev("{ a = 1; } // { b = 2; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected attrset, got {v:?}");
+        }
+    }
+
+    // ── eval_apply tests ─────────────────────────────────────
+
+    #[test]
+    fn eval_apply_simple_function() {
+        assert_eq!(ev("(x: x + 1) 2"), Value::Int(3));
+    }
+
+    #[test]
+    fn eval_apply_pattern_destructuring() {
+        assert_eq!(ev("({a, b}: a + b) { a = 1; b = 2; }"), Value::Int(3));
+    }
+
+    #[test]
+    fn eval_apply_default_arguments() {
+        assert_eq!(ev("({a, b ? 0}: a + b) { a = 1; }"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_apply_ellipsis() {
+        assert_eq!(ev("({a, ...}: a) { a = 1; b = 2; }"), Value::Int(1));
+    }
+
+    // ── eval_select tests ────────────────────────────────────
+
+    #[test]
+    fn eval_select_single_key() {
+        assert_eq!(ev("{ a = 1; }.a"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_select_multi_level() {
+        assert_eq!(ev("{ a.b = 1; }.a.b"), Value::Int(1));
+    }
+
+    #[test]
+    fn eval_select_with_or_default() {
+        assert_eq!(ev("{}.a or 42"), Value::Int(42));
+    }
+
+    #[test]
+    fn eval_select_missing_key_without_default_throws() {
+        let result = eval("{}.a");
+        assert!(result.is_err());
+    }
+
+    // ── BinOp tests ──────────────────────────────────────────
+
+    #[test]
+    fn binop_add_ints() {
+        assert_eq!(ev("1 + 2"), Value::Int(3));
+    }
+
+    #[test]
+    fn binop_sub_ints() {
+        assert_eq!(ev("3 - 1"), Value::Int(2));
+    }
+
+    #[test]
+    fn binop_mul_ints() {
+        assert_eq!(ev("2 * 3"), Value::Int(6));
+    }
+
+    #[test]
+    fn binop_div_ints() {
+        assert_eq!(ev("6 / 2"), Value::Int(3));
+    }
+
+    #[test]
+    fn binop_float_arithmetic() {
+        assert_eq!(ev("1.5 + 2.5"), Value::Float(4.0));
+    }
+
+    #[test]
+    fn binop_string_concat() {
+        assert_eq!(
+            ev(r#""hello" + " " + "world""#),
+            Value::string("hello world"),
+        );
+    }
+
+    #[test]
+    fn binop_list_concat() {
+        assert_eq!(
+            ev("[1 2] ++ [3 4]"),
+            Value::list(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+            ]),
+        );
+    }
+
+    #[test]
+    fn binop_attrset_update() {
+        let v = ev("{ a = 1; } // { b = 2; }");
+        if let Value::Attrs(attrs) = v {
+            assert_eq!(attrs.get("a"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected attrset, got {v:?}");
+        }
+    }
+
+    #[test]
+    fn binop_less_than() {
+        assert_eq!(ev("1 < 2"), Value::Bool(true));
+        assert_eq!(ev("2 < 1"), Value::Bool(false));
+    }
+
+    #[test]
+    fn binop_greater_than() {
+        assert_eq!(ev("2 > 1"), Value::Bool(true));
+        assert_eq!(ev("1 > 2"), Value::Bool(false));
+    }
+
+    #[test]
+    fn binop_equal() {
+        assert_eq!(ev("1 == 1"), Value::Bool(true));
+        assert_eq!(ev("1 == 2"), Value::Bool(false));
+    }
+
+    #[test]
+    fn binop_not_equal() {
+        assert_eq!(ev("1 != 2"), Value::Bool(true));
+        assert_eq!(ev("1 != 1"), Value::Bool(false));
+    }
+
+    #[test]
+    fn binop_logical_and() {
+        assert_eq!(ev("true && false"), Value::Bool(false));
+        assert_eq!(ev("true && true"), Value::Bool(true));
+    }
+
+    #[test]
+    fn binop_logical_or() {
+        assert_eq!(ev("true || false"), Value::Bool(true));
+        assert_eq!(ev("false || false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn binop_logical_not() {
+        assert_eq!(ev("!true"), Value::Bool(false));
+        assert_eq!(ev("!false"), Value::Bool(true));
+    }
+
+    #[test]
+    fn binop_implication() {
+        assert_eq!(ev("false -> true"), Value::Bool(true));
+        assert_eq!(ev("false -> false"), Value::Bool(true));
+        assert_eq!(ev("true -> true"), Value::Bool(true));
+        assert_eq!(ev("true -> false"), Value::Bool(false));
+    }
 }
