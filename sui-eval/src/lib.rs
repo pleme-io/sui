@@ -102,9 +102,28 @@ impl BytecodeEvaluator {
             Ok(eval_to_string_keyed(&result))
         }));
 
-        // Install builtin bridge: VM builtins → tree-walker builtins
+        // Install builtin bridge: VM builtins → tree-walker builtins.
+        // Also handles __import for compilation fallback.
         let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
             |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
+                // Special case: __import — the VM compiler couldn't handle
+                // this file, so we fall back to the tree-walker evaluator.
+                if name == "__import" {
+                    let path_str = match &args[0] {
+                        sui_bytecode::StringKeyedValue::Path(p)
+                        | sui_bytecode::StringKeyedValue::String(p) => p.clone(),
+                        _ => return Err("__import: expected path or string argument".to_string()),
+                    };
+                    let path = std::path::Path::new(&path_str);
+                    let source = std::fs::read_to_string(path)
+                        .map_err(|e| format!("__import: {}: {e}", path.display()))?;
+                    let path_buf = path.to_path_buf();
+                    let _guard = eval::push_eval_file(path_buf.clone());
+                    let result = eval::eval_with_file(&source, Some(path_buf))
+                        .map_err(|e| e.to_string())?;
+                    return Ok(eval_to_string_keyed(&result));
+                }
+
                 // Convert StringKeyedValue args → tree-walker Value
                 let eval_args: Vec<Value> = args
                     .iter()

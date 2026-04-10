@@ -63,7 +63,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         other => { nc.insert(other.clone()); }
                     }
                 }
-                Ok(Value::String(NixString::with_context(ns.chars.clone(), nc)))
+                Ok(Value::String(Box::new(NixString::with_context(ns.chars.clone(), nc))))
             }
             _ => Err(EvalError::TypeError("unsafeDiscardOutputDependency: expected string".into())),
         }
@@ -83,14 +83,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         other => { nc.insert(other.clone()); }
                     }
                 }
-                Ok(Value::String(NixString::with_context(ns.chars.clone(), nc)))
+                Ok(Value::String(Box::new(NixString::with_context(ns.chars.clone(), nc))))
             }
             _ => Err(EvalError::TypeError("addDrvOutputDependencies: expected string".into())),
         }
     });
     register_curried(builtins, "appendContext", |sv, cv| {
         let ns = match sv {
-            Value::String(ns) => ns.clone(),
+            Value::String(ns) => (**ns).clone(),
             _ => return Err(EvalError::TypeError("appendContext: expected string".into())),
         };
         let ca = cv.to_attrs()?;
@@ -110,6 +110,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 nc.add_drv_deep(key.clone());
             }
         }
-        Ok(Value::String(NixString::with_context(ns.chars, nc)))
+        Ok(Value::String(Box::new(NixString::with_context(ns.chars, nc))))
     });
 }

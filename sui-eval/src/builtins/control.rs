@@ -23,18 +23,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "trace", |args| {
         let msg = args[0].clone();
         tracing::debug!("trace: {msg}");
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "trace<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
     register_builtin(builtins, "warn", |args| {
         let msg = args[0].as_string()?.to_string();
         eprintln!("evaluation warning: {msg}");
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "warn<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
     register_builtin(builtins, "traceVerbose", |args| {
         let msg = args[0].clone();
@@ -42,10 +42,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             eprintln!("trace: {msg}");
         }
         tracing::trace!("traceVerbose: {msg}");
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "traceVerbose<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
     register_builtin(builtins, "break", |args| {
         tracing::debug!("break: {}", args[0]);
@@ -61,25 +61,25 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
     register_builtin(builtins, "seq", |args| {
         let _forced = args[0].clone(); // force first arg
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "seq<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
     register_builtin(builtins, "deepSeq", |args| {
         let _forced = args[0].clone(); // force first arg (deep in real impl)
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "deepSeq<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
 
     // addErrorContext — wraps an expression with error context (passthrough in our impl)
     register_builtin(builtins, "addErrorContext", |args| {
         let _ctx = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "addErrorContext<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
-        }))
+        })))
     });
 }

@@ -26,10 +26,10 @@ pub(crate) fn register_builtin(
 ) {
     attrs.insert(
         name.to_string(),
-        Value::Builtin(BuiltinFn {
+        Value::Builtin(Box::new(BuiltinFn {
             name,
             func: Rc::new(func),
-        }),
+        })),
     );
 }
 
@@ -41,16 +41,16 @@ pub(crate) fn register_curried(
     let f = func.clone();
     attrs.insert(
         name.to_string(),
-        Value::Builtin(BuiltinFn {
+        Value::Builtin(Box::new(BuiltinFn {
             name,
             func: Rc::new(move |args| {
                 let a = args[0].clone();
                 let f2 = f.clone();
-                Ok(Value::Builtin(BuiltinFn {
+                Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "curried<partial>",
                     func: Rc::new(move |args2| f2(&a, &args2[0])),
-                }))
+                })))
             }),
-        }),
+        })),
     );
 }
