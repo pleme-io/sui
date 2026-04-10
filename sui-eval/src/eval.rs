@@ -701,36 +701,62 @@ fn eval_literal(lit: &ast::Literal) -> Result<Value, EvalError> {
     }
 }
 
+/// Result of walking an attrpath on a base value.
+enum TraverseResult {
+    /// All keys found; contains the leaf value.
+    Found(Value),
+    /// A key was missing; contains the missing key name.
+    Missing(String),
+    /// A non-attrset value was encountered during traversal.
+    NotAttrs(Value),
+}
+
+/// Walk an attrpath on a base value, forcing at each level.
+///
+/// Returns `Found(leaf)` when every key exists, `Missing(key)` when
+/// a key is absent, or `NotAttrs(v)` when a non-attrset is encountered.
+fn traverse_attrpath(
+    base: Value,
+    attrpath: &rnix::ast::Attrpath,
+    env: &Env,
+) -> Result<TraverseResult, EvalError> {
+    let mut value = base;
+    for attr in attrpath.attrs() {
+        let key = eval_attr(&attr, env)?;
+        match value {
+            Value::Attrs(ref attrs) => match attrs.get(&key) {
+                Some(v) => value = force_value(v)?,
+                None => return Ok(TraverseResult::Missing(key)),
+            },
+            _ => return Ok(TraverseResult::NotAttrs(value)),
+        }
+    }
+    Ok(TraverseResult::Found(value))
+}
+
 fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Select);
     let base_expr = sel.expr().ok_or_else(|| {
         EvalError::ParseError("select missing expression".to_string())
     })?;
-    let mut value = force_value(&eval_expr(&base_expr, env)?)?;
+    let base = force_value(&eval_expr(&base_expr, env)?)?;
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
-    for attr in attrpath.attrs() {
-        let key = eval_attr(&attr, env)?;
-        match value {
-            Value::Attrs(ref attrs) => {
-                if let Some(v) = attrs.get(&key) {
-                    value = force_value(v)?;
-                } else if let Some(def) = sel.default_expr() {
-                    return eval_expr(&def, env);
-                } else {
-                    return Err(EvalError::AttrNotFound(key));
-                }
-            }
-            _ => {
-                return Err(EvalError::TypeError(format!(
-                    "cannot select from {}",
-                    value.type_name()
-                )));
+    match traverse_attrpath(base, &attrpath, env)? {
+        TraverseResult::Found(v) => Ok(v),
+        TraverseResult::Missing(key) => {
+            if let Some(def) = sel.default_expr() {
+                eval_expr(&def, env)
+            } else {
+                Err(EvalError::AttrNotFound(key))
             }
         }
+        TraverseResult::NotAttrs(v) => Err(EvalError::TypeError(format!(
+            "cannot select from {}",
+            v.type_name()
+        ))),
     }
-    Ok(value)
 }
 
 /// Evaluate `expr ? a.b.c` — check key presence without forcing value thunks.
@@ -738,29 +764,14 @@ fn eval_has_attr(ha: &ast::HasAttr, env: &Env) -> Result<Value, EvalError> {
     let base_expr = ha.expr().ok_or_else(|| {
         EvalError::ParseError("hasattr missing expression".to_string())
     })?;
-    let mut value = force_value(&eval_expr(&base_expr, env)?)?;
+    let base = force_value(&eval_expr(&base_expr, env)?)?;
     let attrpath = ha.attrpath().ok_or_else(|| {
         EvalError::ParseError("hasattr missing attrpath".to_string())
     })?;
-    let segments: Vec<_> = attrpath.attrs().collect();
-    for (i, attr) in segments.iter().enumerate() {
-        let key = eval_attr(attr, env)?;
-        let is_last = i == segments.len() - 1;
-        match value {
-            Value::Attrs(ref attrs) => {
-                if let Some(v) = attrs.get(&key) {
-                    if is_last {
-                        return Ok(Value::Bool(true));
-                    }
-                    value = force_value(v)?;
-                } else {
-                    return Ok(Value::Bool(false));
-                }
-            }
-            _ => return Ok(Value::Bool(false)),
-        }
+    match traverse_attrpath(base, &attrpath, env)? {
+        TraverseResult::Found(_) => Ok(Value::Bool(true)),
+        TraverseResult::Missing(_) | TraverseResult::NotAttrs(_) => Ok(Value::Bool(false)),
     }
-    Ok(Value::Bool(true))
 }
 
 fn eval_unary_op(op: &ast::UnaryOp, env: &Env) -> Result<Value, EvalError> {
@@ -1414,12 +1425,12 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
             }
 
             if !has_ellipsis {
+                let entry_names: std::collections::HashSet<String> = entries
+                    .iter()
+                    .filter_map(|e| e.ident().map(|i| ident_text(&i)))
+                    .collect();
                 for key in attrs.keys() {
-                    if !entries.iter().any(|e| {
-                        e.ident()
-                            .map(|i| ident_text(&i) == *key)
-                            .unwrap_or(false)
-                    }) {
+                    if !entry_names.contains(key.as_str()) {
                         return Err(EvalError::TypeError(format!(
                             "unexpected argument '{key}'"
                         )));
