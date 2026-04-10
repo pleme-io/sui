@@ -713,7 +713,7 @@ impl fmt::Debug for Thunk {
 /// keys — a single multiply-shift instead of SipHash. Sorted iteration
 /// (needed by `attrNames`, `attrValues`, Display, equality) collects and sorts.
 #[derive(Debug, Clone, Default)]
-pub struct NixAttrs(pub FxHashMap<Symbol, Value>);
+pub struct NixAttrs(FxHashMap<Symbol, Value>);
 
 impl NixAttrs {
     /// Create an empty attribute set.
@@ -725,6 +725,21 @@ impl NixAttrs {
     /// uses structural sharing instead of pre-allocation).
     pub fn with_capacity(_capacity: usize) -> Self {
         Self(FxHashMap::default())
+    }
+
+    /// Borrow the underlying map (read-only).
+    #[must_use]
+    pub fn inner(&self) -> &FxHashMap<Symbol, Value> {
+        &self.0
+    }
+
+    /// Collect and sort entries by resolved key name.
+    fn sorted_entries(&self) -> Vec<(String, &Value)> {
+        let mut pairs: Vec<(String, &Value)> = self.0.iter()
+            .map(|(sym, v)| (resolve(*sym), v))
+            .collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        pairs
     }
 
     /// Look up an attribute by name.
@@ -758,9 +773,7 @@ impl NixAttrs {
     /// Returns resolved `String` keys (not references) because the
     /// internal storage uses `Symbol` handles.
     pub fn keys(&self) -> impl Iterator<Item = String> {
-        let mut keys: Vec<String> = self.0.keys().map(|sym| resolve(*sym)).collect();
-        keys.sort();
-        keys.into_iter()
+        self.sorted_entries().into_iter().map(|(k, _)| k)
     }
 
     /// Iterate over (name, value) pairs in sorted key order.
@@ -768,11 +781,7 @@ impl NixAttrs {
     /// Returns resolved `String` keys because the internal storage
     /// uses `Symbol` handles.
     pub fn iter(&self) -> impl Iterator<Item = (String, &Value)> {
-        let mut pairs: Vec<(String, &Value)> = self.0.iter()
-            .map(|(sym, v)| (resolve(*sym), v))
-            .collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        pairs.into_iter()
+        self.sorted_entries().into_iter()
     }
 
     /// Iterate over (name, value) pairs in arbitrary order (fast path).
@@ -783,11 +792,7 @@ impl NixAttrs {
 
     /// Iterate over values in sorted key order.
     pub fn values(&self) -> impl Iterator<Item = &Value> {
-        let mut pairs: Vec<(String, &Value)> = self.0.iter()
-            .map(|(sym, v)| (resolve(*sym), v))
-            .collect();
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        pairs.into_iter().map(|(_, v)| v)
+        self.sorted_entries().into_iter().map(|(_, v)| v)
     }
 
     /// Remove an attribute, returning its value if present.
@@ -1223,15 +1228,16 @@ impl Value {
     // Naming conventions:
     //
     // • `as_*(&self)` — borrow. Returns a reference or Copy type.
-    //   Primitives (`as_bool`, `as_int`, `as_float`) force thunks
-    //   transparently because they return owned Copy values. Reference
-    //   accessors (`as_string`, `as_nix_string`, `as_attrs`, `as_list`)
-    //   CANNOT force thunks (the forced value is transient and we can't
+    //   Primitives (`as_bool`, `as_int`) force thunks transparently
+    //   because they return owned Copy values. Reference accessors
+    //   (`as_string`, `as_nix_string`, `as_attrs`, `as_list`) CANNOT
+    //   force thunks (the forced value is transient and we can't
     //   return a borrow into it), so they error on Thunk inputs.
     //
-    // • `to_*(&self)` — clone. Returns an owned value by cloning, and
+    // • `to_*(&self)` — clone / force. Returns an owned value and
     //   DOES force thunks. Use when the value may be a thunk and you
-    //   need an owned result.
+    //   need an owned result. Examples: `to_float`, `to_string`,
+    //   `to_attrs`, `to_list`.
     //
     // • `coerce_to_path` — a Nix-specific coercion that accepts both
     //   Path and String values (many builtins accept either).
@@ -1390,12 +1396,12 @@ impl Value {
     }
 
     /// Coerce a numeric value to float.
-    pub fn as_float(&self) -> Result<f64, EvalError> {
+    pub fn to_float(&self) -> Result<f64, EvalError> {
         match self {
             Value::Float(f) => Ok(*f),
             Value::Int(n) => Ok(*n as f64),
             Value::Thunk(thunk) => {
-                thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_float()
+                thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.to_float()
             }
             _ => Err(EvalError::TypeMismatch { expected: "number", got: self.type_name() }),
         }
@@ -1587,7 +1593,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a.chars == b.chars,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
-            (Value::Attrs(a), Value::Attrs(b)) => a.0 == b.0,
+            (Value::Attrs(a), Value::Attrs(b)) => a.inner() == b.inner(),
             _ => false,
         }
     }
@@ -1808,13 +1814,13 @@ mod tests {
         assert!(Value::Attrs(Rc::new(NixAttrs::new())).as_list().is_err());
     }
 
-    // ── as_float int->float coercion ─────────────────────
+    // ── to_float int->float coercion ─────────────────────
 
     #[test]
-    fn as_float_coerces_int() {
-        assert_eq!(Value::Int(5).as_float().unwrap(), 5.0);
-        assert_eq!(Value::Float(2.5).as_float().unwrap(), 2.5);
-        assert!(Value::string("x").as_float().is_err());
+    fn to_float_coerces_int() {
+        assert_eq!(Value::Int(5).to_float().unwrap(), 5.0);
+        assert_eq!(Value::Float(2.5).to_float().unwrap(), 2.5);
+        assert!(Value::string("x").to_float().is_err());
     }
 
     // ── PartialEq ────────────────────────────────────────
@@ -2464,12 +2470,12 @@ mod tests {
     }
 
     #[test]
-    fn value_as_float_on_thunk() {
+    fn value_to_float_on_thunk() {
         let root = rnix::Root::parse("3.14");
         let expr = root.tree().expr().unwrap();
         let thunk = Thunk::new_suspended(expr, Env::new());
         let val = Value::Thunk(thunk);
-        let f = val.as_float().unwrap();
+        let f = val.to_float().unwrap();
         assert!((f - 3.14).abs() < f64::EPSILON);
     }
 
@@ -3391,15 +3397,14 @@ mod tests {
         assert!(a.is_empty());
         assert_eq!(a.len(), 0);
         // Internal map is a FxHashMap (im_rc::HashMap with FxBuildHasher).
-        assert!(a.0.is_empty());
+        assert!(a.inner().is_empty());
     }
 
     #[test]
     fn fxhashmap_insert_get_roundtrip_with_symbol_keys() {
         let mut a = NixAttrs::new();
-        let sym = intern("mykey");
-        a.0.insert(sym, Value::Int(42));
-        assert_eq!(a.0.get(&sym), Some(&Value::Int(42)));
+        a.insert("mykey".to_string(), Value::Int(42));
+        assert_eq!(a.get("mykey"), Some(&Value::Int(42)));
     }
 
     #[test]
@@ -3407,9 +3412,9 @@ mod tests {
         let mut a = NixAttrs::new();
         a.insert("alpha".to_string(), Value::Int(1));
         let sym = intern("alpha");
-        assert!(a.0.contains_key(&sym));
+        assert!(a.inner().contains_key(&sym));
         let missing_sym = intern("beta");
-        assert!(!a.0.contains_key(&missing_sym));
+        assert!(!a.inner().contains_key(&missing_sym));
     }
 
     #[test]
@@ -3473,7 +3478,7 @@ mod tests {
         assert_eq!(attrs.get("z"), Some(&Value::Int(30)));
         // Verify internal storage uses Symbol keys.
         let sym_x = intern("x");
-        assert!(attrs.0.contains_key(&sym_x));
+        assert!(attrs.inner().contains_key(&sym_x));
     }
 
     // ════════════════════════════════════════════════════════════

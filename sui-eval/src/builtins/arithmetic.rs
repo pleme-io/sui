@@ -56,8 +56,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     // Numeric — simple single-arg builtins
     const NUMERIC_BUILTINS: &[BuiltinSpec] = &[
-        BuiltinSpec { name: "ceil",  func: |args| Ok(Value::Int(args[0].as_float()?.ceil() as i64)) },
-        BuiltinSpec { name: "floor", func: |args| Ok(Value::Int(args[0].as_float()?.floor() as i64)) },
+        BuiltinSpec { name: "ceil",  func: |args| Ok(Value::Int(args[0].to_float()?.ceil() as i64)) },
+        BuiltinSpec { name: "floor", func: |args| Ok(Value::Int(args[0].to_float()?.floor() as i64)) },
     ];
     for spec in NUMERIC_BUILTINS {
         register_builtin(builtins, spec.name, spec.func);

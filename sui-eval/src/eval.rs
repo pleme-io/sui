@@ -2877,7 +2877,7 @@ mod tests {
         assert_eq!(ev("builtins.ceil 2.0"), Value::Int(2));
         assert_eq!(ev("builtins.floor 2.9"), Value::Int(2));
         assert_eq!(ev("builtins.floor 2.0"), Value::Int(2));
-        // Int coercion: ceil/floor on int should work via as_float()
+        // Int coercion: ceil/floor on int should work via to_float()
         assert_eq!(ev("builtins.ceil 5"), Value::Int(5));
         assert_eq!(ev("builtins.floor 5"), Value::Int(5));
     }
