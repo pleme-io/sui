@@ -90,6 +90,9 @@ tar = "0.4"
 # Config
 figment = { version = "0.10", features = ["yaml", "toml", "env"] }
 
+# NATS (build agent mode)
+async-nats = "0.38"
+
 # Streaming
 tokio-stream = "0.1"
 futures-core = "0.3"
@@ -163,6 +166,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 figment.workspace = true
 thiserror.workspace = true
+async-nats.workspace = true
 tokio-stream.workspace = true
 futures-core.workspace = true
 mimalloc.workspace = true

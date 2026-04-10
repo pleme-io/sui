@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use sui::{CliError, NIX_DB_PATH};
+
+mod agent;
 use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};
 
@@ -129,6 +131,24 @@ enum Commands {
     #[command(name = "upgrade-nix")] UpgradeNix { #[arg(long)] nix_store_paths_url: Option<String> },
     Fmt { files: Vec<String>, #[arg(long)] check: bool },
     Registry { #[command(subcommand)] command: RegistryCommands },
+    /// Run as a NATS build agent (ro platform builder)
+    Agent {
+        /// NATS server URL
+        #[arg(long, default_value = "nats://nats.nats.svc:4222")]
+        nats_url: String,
+        /// NATS JetStream stream name
+        #[arg(long, default_value = "BUILD")]
+        stream: String,
+        /// Consumer name
+        #[arg(long, default_value = "sui-agent")]
+        consumer: String,
+        /// Cache endpoint for pushing built artifacts
+        #[arg(long, default_value = "http://attic.nix-cache.svc:80")]
+        cache_url: String,
+        /// Cache name
+        #[arg(long, default_value = "main")]
+        cache_name: String,
+    },
     Doctor,
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
@@ -866,6 +886,9 @@ async fn main() -> Result<(), CliError> {
             RegistryCommands::Remove { entry } => { return Err(CliError::NotImplemented(format!("registry remove {entry}"))); }
             RegistryCommands::Pin { entry } => { return Err(CliError::NotImplemented(format!("registry pin {entry}"))); }
         },
+        Commands::Agent { nats_url, stream, consumer, cache_url, cache_name } => {
+            agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name).await?;
+        }
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
