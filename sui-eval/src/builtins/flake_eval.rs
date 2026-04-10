@@ -161,12 +161,11 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                         let dir = input_dir.to_path_buf();
                         let thunk = Thunk::new_native(move || {
                             let mut merged = immediate;
-                            if let Ok(flake_result) = evaluate_flake(&dir) {
-                                if let Value::Attrs(ref flake_out_attrs) = flake_result {
-                                    for (k, v) in flake_out_attrs.iter() {
-                                        if !merged.contains_key(&k) {
-                                            merged.insert(k.clone(), v.clone());
-                                        }
+                            let flake_result = evaluate_flake(&dir)?;
+                            if let Value::Attrs(ref flake_out_attrs) = flake_result {
+                                for (k, v) in flake_out_attrs.iter() {
+                                    if !merged.contains_key(&k) {
+                                        merged.insert(k.clone(), v.clone());
                                     }
                                 }
                             }
