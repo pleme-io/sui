@@ -4,7 +4,7 @@
 //! `Rc<RefCell<ThunkRepr>>` thunks.  All shared pointers use `Rc`
 //! (not `Arc`) because the values are never sent across threads.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use std::fmt;
 use std::rc::Rc;
@@ -39,6 +39,59 @@ pub fn intern(s: &str) -> Symbol {
 /// Resolve a Symbol back to its string content.
 pub fn resolve(sym: Symbol) -> String {
     INTERNER.with(|i| i.borrow().resolve(sym).to_string())
+}
+
+// -- Identifier symbol cache --
+//
+// Caches the interned Symbol for each AST identifier by (source_id, text_offset).
+// Avoids re-hashing identifier strings on repeated evaluations of the
+// same expression (common in loops, recursion, overlay fixpoints).
+//
+// The source_id discriminates different parse trees (main file vs imports)
+// so that identifiers at the same byte offset in different files don't
+// collide in the cache.
+
+thread_local! {
+    /// Monotonically increasing counter — bumped on each `rnix::Root::parse`.
+    static SOURCE_GEN: Cell<u32> = const { Cell::new(0) };
+
+    /// Maps `(source_id, text_offset)` → interned `Symbol`.
+    static IDENT_CACHE: RefCell<rustc_hash::FxHashMap<u64, Symbol>> =
+        RefCell::new(rustc_hash::FxHashMap::default());
+}
+
+/// Allocate a new source ID for a freshly parsed AST tree.
+///
+/// Call once per `rnix::Root::parse` invocation. The returned ID is
+/// used as the high 32 bits of the `IDENT_CACHE` key, ensuring that
+/// identifiers from different source texts never collide.
+pub fn next_source_id() -> u32 {
+    SOURCE_GEN.with(|g| {
+        let id = g.get();
+        g.set(id.wrapping_add(1));
+        id
+    })
+}
+
+/// Intern a string with caching by source ID and AST text offset.
+///
+/// First call for a given `(source_id, text_offset)`: hash + intern
+/// (same cost as [`intern`]).
+/// Subsequent calls: `FxHashMap` u64 lookup (~5 ns) — no string hashing.
+pub fn intern_cached(name: &str, source_id: u32, text_offset: u32) -> Symbol {
+    let key = (u64::from(source_id) << 32) | u64::from(text_offset);
+    IDENT_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        *cache.entry(key).or_insert_with(|| intern(name))
+    })
+}
+
+/// Clear the identifier symbol cache.
+///
+/// Call between independent top-level evaluations to reclaim memory.
+/// The cache grows unboundedly during a single evaluation pass.
+pub fn clear_ident_cache() {
+    IDENT_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 // ── Nix string context ─────────────────────────────────────────
@@ -643,6 +696,15 @@ impl NixAttrs {
         self.0.get(&intern(key))
     }
 
+    /// Look up an attribute by pre-interned [`Symbol`].
+    ///
+    /// Skips the `intern()` call — use when the caller already has
+    /// a cached symbol (e.g. from [`intern_cached`]).
+    #[must_use]
+    pub fn get_sym(&self, sym: &Symbol) -> Option<&Value> {
+        self.0.get(sym)
+    }
+
     /// Insert or overwrite an attribute.
     pub fn insert(&mut self, key: String, value: Value) {
         self.0.insert(intern(&key), value);
@@ -927,6 +989,45 @@ impl Env {
             if let Ok(forced) = crate::eval::force_value(&scope.value) {
                 if let Value::Attrs(ref attrs) = forced {
                     let result = attrs.get(name).cloned();
+                    *scope.cached.borrow_mut() = Some(attrs.clone());
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+            }
+            // If forcing fails or it's not an attrset, try next scope
+        }
+        None
+    }
+
+    /// Look up a binding by pre-interned [`Symbol`].
+    ///
+    /// Same semantics as [`lookup`](Self::lookup) but skips the
+    /// `intern()` call — for use when the caller has already cached
+    /// the symbol (e.g. via [`intern_cached`]).
+    #[must_use]
+    pub fn lookup_sym(&self, sym: Symbol) -> Option<Value> {
+        crate::perf::inc(crate::perf::Counter::EnvLookup);
+        // 1. Flat lexical lookup — single O(1) hash + O(log32 n) probe.
+        if let Some(v) = self.0.bindings.get(&sym) {
+            return Some(v.clone());
+        }
+        // 2. With-scope lookup — iterate innermost-first (reverse order).
+        for scope in self.0.with_scopes.iter().rev() {
+            // Fast path: use cached forced attrset
+            {
+                let cache = scope.cached.borrow();
+                if let Some(ref attrs) = *cache {
+                    if let Some(v) = attrs.get_sym(&sym) {
+                        return Some(v.clone());
+                    }
+                    continue;
+                }
+            }
+            // Slow path: force, cache, then check
+            if let Ok(forced) = crate::eval::force_value(&scope.value) {
+                if let Value::Attrs(ref attrs) = forced {
+                    let result = attrs.get_sym(&sym).cloned();
                     *scope.cached.borrow_mut() = Some(attrs.clone());
                     if result.is_some() {
                         return result;

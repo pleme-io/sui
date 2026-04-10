@@ -15,6 +15,18 @@ use crate::value::*;
 
 thread_local! { static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) }; }
 
+// ── Source ID for identifier symbol cache ─────────────────────
+//
+// Each call to `rnix::Root::parse` produces a distinct AST tree.
+// Identifiers from different trees may share the same byte offset,
+// so we pair offset with a source ID to form a unique cache key.
+// The ID is stored in a thread-local so `eval_expr` can access it
+// without an extra parameter threaded through every call.
+
+thread_local! {
+    static CURRENT_SOURCE_ID: Cell<u32> = const { Cell::new(0) };
+}
+
 // ── Currently-evaluating-file stack ────────────────────────────
 //
 // Real Nix resolves relative path literals (`./foo.nix`) against the
@@ -167,6 +179,9 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         crate::perf::init();
         crate::perf::start();
         crate::trace::init_trace();
+        // Clear the identifier symbol cache so that offsets from
+        // previous top-level evaluations don't persist.
+        clear_ident_cache();
     }
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {
@@ -174,10 +189,22 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
         return Err(EvalError::ParseError(msgs.join("; ")));
     }
+
+    // Each parse tree gets a unique source ID so that identifiers
+    // at the same byte offset in different files don't collide in
+    // the symbol cache.
+    let src_id = next_source_id();
+    let prev_src_id = CURRENT_SOURCE_ID.with(|s| {
+        let old = s.get();
+        s.set(src_id);
+        old
+    });
+
     let root = parse.tree();
     let expr = match root.expr() {
         Some(e) => e,
         None => {
+            CURRENT_SOURCE_ID.with(|s| s.set(prev_src_id));
             EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
             return Err(EvalError::ParseError("empty expression".to_string()));
         }
@@ -188,6 +215,8 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     let result = eval_expr(&expr, &env)?;
     // Force the top-level result so callers always see a concrete value.
     let final_result = force_value(&result);
+    // Restore the previous source ID (matters for nested imports).
+    CURRENT_SOURCE_ID.with(|s| s.set(prev_src_id));
     EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
     if nesting == 0 {
         crate::perf::report();
@@ -315,9 +344,16 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "true" => Ok(Value::Bool(true)),
                 "false" => Ok(Value::Bool(false)),
                 "null" => Ok(Value::Null),
-                _ => env
-                    .lookup(&name)
-                    .ok_or(EvalError::UndefinedVar(name)),
+                _ => {
+                    // Cache the interned symbol by (source_id, text_offset)
+                    // to avoid re-hashing the identifier string on every
+                    // evaluation of the same expression node.
+                    let src_id = CURRENT_SOURCE_ID.with(Cell::get);
+                    let offset: u32 = ident.syntax().text_range().start().into();
+                    let sym = intern_cached(&name, src_id, offset);
+                    env.lookup_sym(sym)
+                        .ok_or(EvalError::UndefinedVar(name))
+                }
             };
         }
 

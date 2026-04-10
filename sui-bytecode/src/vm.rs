@@ -364,12 +364,33 @@ impl<'a> VM<'a> {
             OpCode::GetLocal => {
                 let slot = self.read_u16()? as usize;
                 let abs_slot = self.current_frame().stack_base + slot;
+                if abs_slot >= self.stack.len() {
+                    let frame_info: Vec<String> = self.frames.iter().enumerate()
+                        .map(|(i, f)| format!("frame[{i}]: base={}, ip={}", f.stack_base, f.ip))
+                        .collect();
+                    return Err(VMError::Internal(format!(
+                        "GetLocal: slot {slot} (abs {abs_slot}) out of bounds \
+                         (stack len {}, base {}, depth {})\n  {}",
+                        self.stack.len(),
+                        self.current_frame().stack_base,
+                        self.frames.len(),
+                        frame_info.join("\n  "),
+                    )));
+                }
                 let value = self.stack[abs_slot].clone();
                 self.push(value);
             }
             OpCode::SetLocal => {
                 let slot = self.read_u16()? as usize;
                 let abs_slot = self.current_frame().stack_base + slot;
+                if abs_slot >= self.stack.len() {
+                    return Err(VMError::Internal(format!(
+                        "SetLocal: slot {slot} (abs {abs_slot}) out of bounds \
+                         (stack len {}, base {})",
+                        self.stack.len(),
+                        self.current_frame().stack_base,
+                    )));
+                }
                 let value = self.peek()?.clone();
                 self.stack[abs_slot] = value;
             }
@@ -826,19 +847,30 @@ impl<'a> VM<'a> {
                     let ui = self.read_u16()? as usize;
                     if il {
                         let a = self.current_frame().stack_base + ui;
+                        if a >= self.stack.len() {
+                            // Slot not yet allocated — skip this upvalue patch.
+                            patch_uvs.push(VMValue::Null);
+                            continue;
+                        }
                         patch_uvs.push(self.stack[a].to_vmvalue());
                     } else {
+                        if ui >= self.current_frame().upvalues.len() {
+                            patch_uvs.push(VMValue::Null);
+                            continue;
+                        }
                         patch_uvs.push(self.current_frame().upvalues[ui].to_vmvalue());
                     }
                 }
-                let patch_nb = self.stack[patch_abs].clone();
-                let patch_vm = patch_nb.to_vmvalue();
-                if let VMValue::Thunk(ref t) = patch_vm {
-                    let s = t.state.take();
-                    if let Some(ThunkState::Pending { chunk: c, .. }) = s {
-                        t.state.set(Some(ThunkState::Pending { chunk: c, upvalues: patch_uvs }));
-                    } else {
-                        t.state.set(s);
+                if patch_abs < self.stack.len() {
+                    let patch_nb = self.stack[patch_abs].clone();
+                    let patch_vm = patch_nb.to_vmvalue();
+                    if let VMValue::Thunk(ref t) = patch_vm {
+                        let s = t.state.take();
+                        if let Some(ThunkState::Pending { chunk: c, .. }) = s {
+                            t.state.set(Some(ThunkState::Pending { chunk: c, upvalues: patch_uvs }));
+                        } else {
+                            t.state.set(s);
+                        }
                     }
                 }
             }
@@ -893,6 +925,7 @@ impl<'a> VM<'a> {
         match op {
             OpCode::Import => {
                 let path_val = self.pop()?;
+                let path_val = self.force_value(path_val)?; // Force thunks before type check
                 let path = if let Some(p) = path_val.as_path() {
                     p.to_string()
                 } else if let Some(s) = path_val.as_string() {
@@ -1455,6 +1488,27 @@ impl<'a> VM<'a> {
         arg: &NanBox,
     ) -> Result<Option<NanBox>, VMError> {
         match name {
+            "tryEval" => {
+                // tryEval forces its argument and catches throws/errors.
+                // Success: { success = true; value = <forced>; }
+                // Failure: { success = false; value = false; }
+                let success_sym = self.interner.intern("success");
+                let value_sym = self.interner.intern("value");
+                match self.force_value(arg.clone()) {
+                    Ok(forced) => {
+                        let mut attrs = BTreeMap::new();
+                        attrs.insert(success_sym, NanBox::bool(true));
+                        attrs.insert(value_sym, forced);
+                        Ok(Some(NanBox::attrs(attrs)))
+                    }
+                    Err(_) => {
+                        let mut attrs = BTreeMap::new();
+                        attrs.insert(success_sym, NanBox::bool(false));
+                        attrs.insert(value_sym, NanBox::bool(false));
+                        Ok(Some(NanBox::attrs(attrs)))
+                    }
+                }
+            }
             "derivation" | "derivationStrict" => {
                 let forced = self.force_value(arg.clone())?;
                 let result = self.vm_build_derivation(forced)?;
@@ -1830,10 +1884,10 @@ impl<'a> VM<'a> {
             // ── Bridge-dispatched builtins ─────────────────────────
             //
             // These builtins need tree-walker state (regex cache, TOML
-            // parser, genericClosure closure-calling, tryEval catch, etc.)
+            // parser, genericClosure closure-calling, etc.)
             // and are delegated to the builtin bridge.
             "readDir" | "parseDrvName" | "fromTOML" | "genericClosure"
-            | "tryEval" | "zipAttrsWith" | "getContext" | "toXML"
+            | "zipAttrsWith" | "getContext" | "toXML"
             | "convertHash" | "path" | "filterSource" | "parseFlakeRef"
             | "flakeRefToString" | "toFile" | "currentTime" | "hashFile"
             | "findFile" => {
@@ -2859,7 +2913,13 @@ impl<'a> VM<'a> {
             upvalues: Vec::new(),
         });
 
-        let result = self.run_until(return_depth)?;
+        let result = self.run_until(return_depth).map_err(|e| {
+            VMError::ImportError(format!("{canonical}: {e}"))
+        })?;
+
+        // Clean up the imported frame's stack slots.
+        // Return at stop_depth skips truncation, so we must do it here.
+        self.stack.truncate(stack_base);
 
         // Cache as VMValue and return as NanBox.
         let result_vmval = result.to_vmvalue();

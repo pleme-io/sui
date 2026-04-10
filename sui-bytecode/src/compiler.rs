@@ -1420,21 +1420,56 @@ impl Compiler {
 
         let segments: Vec<_> = attrpath.attrs().collect();
 
-        // For single-segment: compile base, then HasAttr.
-        // For multi-segment: we need to check each segment in sequence,
-        // short-circuiting to false if any intermediate value is not an attrset
-        // or doesn't contain the key. For Phase 1, support single-segment only.
-        if segments.len() != 1 {
-            return Err(CompileError::Unsupported(
-                "multi-segment hasattr".to_string(),
-            ));
+        if segments.len() == 1 {
+            // Single-segment: compile base, then HasAttr.
+            self.compile_expr(&base)?;
+            let key = static_attr_name(&segments[0])?;
+            let key_idx = self.add_attr_key(key)?;
+            self.emit(OpCode::HasAttr);
+            self.emit_u16(key_idx);
+            return Ok(());
         }
 
-        self.compile_expr(&base)?;
-        let key = static_attr_name(&segments[0])?;
-        let key_idx = self.add_attr_key(key)?;
-        self.emit(OpCode::HasAttr);
-        self.emit_u16(key_idx);
+        // Multi-segment hasattr: `a ? x.y.z`
+        // Compiled as a chain of HasAttr checks with short-circuit jumps.
+        // For each segment except the last, we check HasAttr and GetAttr
+        // to drill into the nested attrset.
+        //
+        // The base expression is re-evaluated for each intermediate step,
+        // which is correct because Nix is pure and the compiler wraps
+        // non-trivial expressions in thunks.
+        let mut false_jumps: Vec<usize> = Vec::new();
+
+        for (i, seg) in segments.iter().enumerate() {
+            // Build the prefix path: base.seg0.seg1...seg(i-1)
+            self.compile_expr(&base)?;
+            for prev_seg in &segments[..i] {
+                let prev_key = static_attr_name(prev_seg)?;
+                let prev_idx = self.add_attr_key(prev_key)?;
+                self.emit(OpCode::GetAttr);
+                self.emit_u16(prev_idx);
+            }
+            let key = static_attr_name(seg)?;
+            let key_idx = self.add_attr_key(key)?;
+            self.emit(OpCode::HasAttr);
+            self.emit_u16(key_idx);
+
+            // For all segments except the last, short-circuit on false.
+            if i < segments.len() - 1 {
+                false_jumps.push(self.emit_jump(OpCode::JumpIfFalse));
+            }
+        }
+
+        // Jump over the false path.
+        let done_jump = self.emit_jump(OpCode::Jump);
+
+        // False path: push false for any short-circuit jump.
+        for fj in false_jumps {
+            self.patch_jump(fj)?;
+        }
+        self.emit(OpCode::False);
+
+        self.patch_jump(done_jump)?;
         Ok(())
     }
 
