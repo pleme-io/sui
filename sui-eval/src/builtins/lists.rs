@@ -245,7 +245,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut result = NixAttrs::new();
                 result.insert("right".to_string(), Value::List(Rc::new(right)));
                 result.insert("wrong".to_string(), Value::List(Rc::new(wrong)));
-                Ok(Value::Attrs(result))
+                Ok(Value::Attrs(Box::new(result)))
             }),
         })))
     });
@@ -268,7 +268,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 for (k, vs) in groups {
                     result.insert(k, Value::List(Rc::new(vs)));
                 }
-                Ok(Value::Attrs(result))
+                Ok(Value::Attrs(Box::new(result)))
             }),
         })))
     });

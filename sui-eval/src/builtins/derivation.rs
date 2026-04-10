@@ -254,8 +254,8 @@ fn build_derivation_result(
         out_attrs.insert("type".to_string(), Value::string("derivation"));
         out_attrs.insert("outputName".to_string(), Value::string(output_name.clone()));
         out_attrs.insert("name".to_string(), Value::string(name));
-        result.insert(output_name.clone(), Value::Attrs(out_attrs));
+        result.insert(output_name.clone(), Value::Attrs(Box::new(out_attrs)));
     }
 
-    Ok(Value::Attrs(result))
+    Ok(Value::Attrs(Box::new(result)))
 }

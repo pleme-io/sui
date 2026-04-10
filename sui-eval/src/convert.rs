@@ -22,7 +22,7 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
         StringKeyedValue::Int(n) => Value::Int(*n),
         StringKeyedValue::Float(f) => Value::Float(*f),
         StringKeyedValue::String(s) => Value::string(s.clone()),
-        StringKeyedValue::Path(p) => Value::Path(SmolStr::from(p.as_str())),
+        StringKeyedValue::Path(p) => Value::Path(Box::new(SmolStr::from(p.as_str()))),
         StringKeyedValue::List(items) => {
             Value::list(items.iter().map(string_keyed_to_eval).collect())
         }
@@ -31,7 +31,7 @@ pub fn string_keyed_to_eval(sk: &StringKeyedValue) -> Value {
             for (k, v) in map {
                 attrs.insert(k.clone(), string_keyed_to_eval(v));
             }
-            Value::Attrs(attrs)
+            Value::Attrs(Box::new(attrs))
         }
         StringKeyedValue::Lambda => Value::Null, // lambdas cannot cross the boundary
         StringKeyedValue::Thunk(cb) => {
@@ -147,7 +147,7 @@ mod tests {
     fn roundtrip_path() {
         let sk = StringKeyedValue::Path("/tmp/x".to_string());
         let val = string_keyed_to_eval(&sk);
-        assert_eq!(val, Value::Path(SmolStr::from("/tmp/x")));
+        assert_eq!(val, Value::Path(Box::new(SmolStr::from("/tmp/x"))));
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
         let mut interner = Interner::new();
         let mut attrs = NixAttrs::new();
         attrs.insert("key".to_string(), Value::Int(99));
-        let val = Value::Attrs(attrs);
+        let val = Value::Attrs(Box::new(attrs));
         let vm = eval_to_vm(&val, &mut interner);
         let sk = vm.to_string_keyed(&interner);
         match sk {

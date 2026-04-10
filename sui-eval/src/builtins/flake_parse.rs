@@ -75,7 +75,7 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
             for (k, v) in params {
                 attrs.insert(k, Value::string(v));
             }
-            return Ok(Value::Attrs(attrs));
+            return Ok(Value::Attrs(Box::new(attrs)));
         }
     }
 
@@ -87,7 +87,7 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
         for (k, v) in params {
             attrs.insert(k, Value::string(v));
         }
-        return Ok(Value::Attrs(attrs));
+        return Ok(Value::Attrs(Box::new(attrs)));
     }
 
     // ── tarball+<scheme> ─────────────────────────────────
@@ -98,19 +98,19 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
         for (k, v) in params {
             attrs.insert(k, Value::string(v));
         }
-        return Ok(Value::Attrs(attrs));
+        return Ok(Value::Attrs(Box::new(attrs)));
     }
 
     // ── path:<path> or absolute path ─────────────────────
     if let Some(p) = s.strip_prefix("path:") {
         attrs.insert("type".into(), Value::string("path"));
         attrs.insert("path".into(), Value::string(p.to_string()));
-        return Ok(Value::Attrs(attrs));
+        return Ok(Value::Attrs(Box::new(attrs)));
     }
     if s.starts_with('/') {
         attrs.insert("type".into(), Value::string("path"));
         attrs.insert("path".into(), Value::string(s.to_string()));
-        return Ok(Value::Attrs(attrs));
+        return Ok(Value::Attrs(Box::new(attrs)));
     }
 
     Err(EvalError::TypeError(format!(

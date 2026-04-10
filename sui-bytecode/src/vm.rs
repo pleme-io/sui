@@ -19,6 +19,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Counts how many files fell back to the tree-walker during VM import.
+static VM_FALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Return the number of files that fell back to tree-walker evaluation.
+pub fn vm_fallback_count() -> u64 {
+    VM_FALLBACK_COUNT.load(Ordering::Relaxed)
+}
 
 use crate::builtins::BuiltinRegistry;
 use crate::chunk::Chunk;
@@ -2951,9 +2960,11 @@ impl<'a> VM<'a> {
                     .insert(resolved.to_path_buf(), chunk.clone());
                 Ok(Some(chunk))
             }
-            Err(_compile_error) => {
+            Err(compile_error) => {
                 // Compilation failed (unsupported expression, etc.) —
                 // signal caller to fall back to tree-walker.
+                VM_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[sui-vm] fallback to tree-walker for {canonical}: {compile_error}");
                 Ok(None)
             }
         }

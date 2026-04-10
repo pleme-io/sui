@@ -540,7 +540,7 @@ fn builtins_dir_of_string() {
 fn builtins_dir_of_path() {
     assert_eq!(
         ev("builtins.dirOf /nix/store/abc"),
-        Value::Path(SmolStr::from("/nix/store")),
+        Value::Path(Box::new(SmolStr::from("/nix/store"))),
     );
 }
 
@@ -1088,7 +1088,7 @@ fn builtins_fetchurl_exists_as_builtin() {
     let expr = format!(r#"builtins.fetchurl "{}""#, file_url);
     let v = eval(&expr).unwrap();
     if let Value::Path(p) = v {
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(p.as_str()).unwrap();
         assert_eq!(content, "fetchurl-test-content");
     } else {
         panic!("expected path, got {v}");
@@ -1966,7 +1966,7 @@ fn pure_mode_toggle() {
 #[test]
 fn builtins_to_path() {
     let v = ev(r#"builtins.toPath "/foo/bar""#);
-    assert_eq!(v, Value::Path(SmolStr::from("/foo/bar")));
+    assert_eq!(v, Value::Path(Box::new(SmolStr::from("/foo/bar"))));
 }
 
 #[test]
@@ -1978,7 +1978,7 @@ fn builtins_to_path_rejects_relative() {
 #[test]
 fn builtins_store_path() {
     let v = ev(r#"builtins.storePath "/nix/store/abc-hello""#);
-    assert_eq!(v, Value::Path(SmolStr::from("/nix/store/abc-hello")));
+    assert_eq!(v, Value::Path(Box::new(SmolStr::from("/nix/store/abc-hello"))));
 }
 
 #[test]
@@ -2015,7 +2015,7 @@ fn builtins_fetch_tarball_from_file() {
     if let Value::Path(p) = v {
         // The extracted directory should exist
         assert!(
-            std::path::Path::new(&p).exists(),
+            std::path::Path::new(p.as_str()).exists(),
             "extracted dir should exist: {p}",
         );
     } else {
@@ -3050,10 +3050,10 @@ fn builtins_filter_source_keeps_all_returns_path() {
     );
     let v = eval(&expr).unwrap();
     if let Value::Path(p) = v {
-        assert!(std::path::Path::new(&p).exists(), "target {p} should exist");
+        assert!(std::path::Path::new(p.as_str()).exists(), "target {p} should exist");
         // Both kept files should be present.
-        assert!(std::path::Path::new(&p).join("a.txt").exists());
-        assert!(std::path::Path::new(&p).join("b.txt").exists());
+        assert!(std::path::Path::new(p.as_str()).join("a.txt").exists());
+        assert!(std::path::Path::new(p.as_str()).join("b.txt").exists());
     } else {
         panic!("expected path");
     }
@@ -3073,8 +3073,8 @@ fn builtins_filter_source_filters_by_predicate() {
     );
     let v = eval(&expr).unwrap();
     if let Value::Path(p) = v {
-        assert!(std::path::Path::new(&p).join("keep.txt").exists());
-        assert!(!std::path::Path::new(&p).join("drop.txt").exists());
+        assert!(std::path::Path::new(p.as_str()).join("keep.txt").exists());
+        assert!(!std::path::Path::new(p.as_str()).join("drop.txt").exists());
     } else {
         panic!("expected path");
     }

@@ -150,7 +150,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                             Value::Int(last_modified as i64),
                         );
                     }
-                    input_val.insert("sourceInfo".to_string(), Value::Attrs(source_info));
+                    input_val.insert("sourceInfo".to_string(), Value::Attrs(Box::new(source_info)));
                 }
 
                 let is_flake = node.flake.unwrap_or(true);
@@ -170,14 +170,14 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                                     }
                                 }
                             }
-                            Ok(Value::Attrs(merged))
+                            Ok(Value::Attrs(Box::new(merged)))
                         });
                         resolved_inputs.insert(input_name, Value::Thunk(thunk));
                         continue;
                     }
                 }
 
-                resolved_inputs.insert(input_name, Value::Attrs(input_val));
+                resolved_inputs.insert(input_name, Value::Attrs(Box::new(input_val)));
             }
         }
 
@@ -192,7 +192,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                             "outPath".to_string(),
                             Value::string(format!("/nix/store/flake-input-{key}")),
                         );
-                        resolved_inputs.insert(key.clone(), Value::Attrs(stub));
+                        resolved_inputs.insert(key.clone(), Value::Attrs(Box::new(stub)));
                     }
                 }
             }
@@ -200,8 +200,8 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     // 5. Build `self`.
     let mut self_attrs = NixAttrs::new();
     self_attrs.insert("outPath".to_string(), Value::string(self_path.clone()));
-    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
-    self_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs.clone()));
+    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(Box::new(NixAttrs::new())));
+    self_attrs.insert("inputs".to_string(), Value::Attrs(Box::new(resolved_inputs.clone())));
     for (k, v) in flake_attrs.iter() {
         if k != "outputs" && k != "inputs" {
             self_attrs.insert(k.clone(), v.clone());
@@ -210,20 +210,20 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
 
     // 6. Build arguments for `outputs`.
     let mut outputs_args = NixAttrs::new();
-    outputs_args.insert("self".to_string(), Value::Attrs(self_attrs));
+    outputs_args.insert("self".to_string(), Value::Attrs(Box::new(self_attrs)));
     for (k, v) in resolved_inputs.iter() {
         outputs_args.insert(k.clone(), v.clone());
     }
 
     // 7. Call outputs(args).
-    let result = crate::eval::apply(outputs_fn, Value::Attrs(outputs_args))?;
+    let result = crate::eval::apply(outputs_fn, Value::Attrs(Box::new(outputs_args)))?;
     let result = crate::eval::force_value(&result)?;
 
     // 8. Build the final flake value.
     let mut final_attrs = NixAttrs::new();
     final_attrs.insert("outPath".to_string(), Value::string(self_path));
-    final_attrs.insert("sourceInfo".to_string(), Value::Attrs(NixAttrs::new()));
-    final_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs));
+    final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Box::new(NixAttrs::new())));
+    final_attrs.insert("inputs".to_string(), Value::Attrs(Box::new(resolved_inputs)));
 
     for (k, v) in flake_attrs.iter() {
         if k != "outputs" && !final_attrs.contains_key(&k) {
@@ -237,5 +237,5 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
         }
     }
 
-    Ok(Value::Attrs(final_attrs))
+    Ok(Value::Attrs(Box::new(final_attrs)))
 }

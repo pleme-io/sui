@@ -46,7 +46,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let path = dir.join(&hash);
         std::fs::write(&path, &bytes)
             .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
-        Ok(Value::Path(SmolStr::from(path.to_string_lossy().as_ref())))
+        Ok(Value::Path(Box::new(SmolStr::from(path.to_string_lossy().as_ref()))))
     });
 
     // fetchTarball
@@ -91,7 +91,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 .unpack(&extract_dir)
                 .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
         }
-        Ok(Value::Path(SmolStr::from(extract_dir.to_string_lossy().as_ref())))
+        Ok(Value::Path(Box::new(SmolStr::from(extract_dir.to_string_lossy().as_ref()))))
     });
 }
 
@@ -170,7 +170,7 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
     let narhash_hex = format!("{:x}", Sha256::digest(rev.as_bytes()));
 
     let mut result = NixAttrs::new();
-    result.insert("outPath".into(), Value::Path(SmolStr::from(target_str.as_str())));
+    result.insert("outPath".into(), Value::Path(Box::new(SmolStr::from(target_str.as_str()))));
     result.insert("rev".into(), Value::string(rev));
     result.insert("shortRev".into(), Value::string(short_rev));
     result.insert("revCount".into(), Value::Int(rev_count));
@@ -181,7 +181,7 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
         Value::string(format!("sha256-{}", base64_encode(&hex_to_bytes(&narhash_hex)))),
     );
     result.insert("submodules".into(), Value::Bool(submodules));
-    Ok(Value::Attrs(result))
+    Ok(Value::Attrs(Box::new(result)))
 }
 
 /// Implement `builtins.fetchMercurial`.
@@ -242,7 +242,7 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
     let mut result = NixAttrs::new();
     result.insert(
         "outPath".into(),
-        Value::Path(SmolStr::from(target.to_string_lossy().as_ref())),
+        Value::Path(Box::new(SmolStr::from(target.to_string_lossy().as_ref()))),
     );
     let rev = rev_opt.unwrap_or_else(|| "tip".into());
     result.insert("rev".into(), Value::string(rev.clone()));
@@ -251,7 +251,7 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
         "branch".into(),
         Value::string("default".to_string()),
     );
-    Ok(Value::Attrs(result))
+    Ok(Value::Attrs(Box::new(result)))
 }
 
 /// Implement `builtins.fetchTree`. Dispatches on the `type` attr.
@@ -292,7 +292,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
             let mut g = NixAttrs::new();
             g.insert("url".into(), Value::string(url));
             g.insert("ref".into(), Value::string(reff));
-            fetch_git(&Value::Attrs(g))
+            fetch_git(&Value::Attrs(Box::new(g)))
         }
         "git" => {
             let mut g = NixAttrs::new();
@@ -301,7 +301,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                     g.insert(k.clone(), v.clone());
                 }
             }
-            fetch_git(&Value::Attrs(g))
+            fetch_git(&Value::Attrs(Box::new(g)))
         }
         "tarball" => {
             let url_v = attrs
@@ -335,13 +335,13 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
             let mut result = NixAttrs::new();
             result.insert(
                 "outPath".into(),
-                Value::Path(SmolStr::from(extract_dir.to_string_lossy().as_ref())),
+                Value::Path(Box::new(SmolStr::from(extract_dir.to_string_lossy().as_ref()))),
             );
             result.insert(
                 "narHash".into(),
                 Value::string(format!("sha256-{hash}")),
             );
-            Ok(Value::Attrs(result))
+            Ok(Value::Attrs(Box::new(result)))
         }
         "path" => {
             let p = attrs
@@ -349,8 +349,8 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                 .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
                 .to_str()?;
             let mut result = NixAttrs::new();
-            result.insert("outPath".into(), Value::Path(SmolStr::from(p.as_str())));
-            Ok(Value::Attrs(result))
+            result.insert("outPath".into(), Value::Path(Box::new(SmolStr::from(p.as_str()))));
+            Ok(Value::Attrs(Box::new(result)))
         }
         other => Err(EvalError::NotImplemented(format!(
             "fetchTree: unsupported type '{other}'"

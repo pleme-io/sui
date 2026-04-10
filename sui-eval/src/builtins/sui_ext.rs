@@ -83,7 +83,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                     let v = cells.get(i).copied().unwrap_or("");
                     a.insert((*h).to_string(), Value::string(v));
                 }
-                rows.push(Value::Attrs(a));
+                rows.push(Value::Attrs(Box::new(a)));
             }
             Ok(Value::List(Rc::new(rows)))
         } else {
@@ -117,7 +117,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
                 out.insert(name.to_string(), Value::string(m.as_str()));
             }
         }
-        Ok(Value::Attrs(out))
+        Ok(Value::Attrs(Box::new(out)))
     });
 
     // ISO-8601 timestamp

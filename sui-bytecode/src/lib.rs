@@ -79,7 +79,7 @@ pub use error::{CompileError, VMError};
 pub use intern::{Interner, Symbol};
 pub use opcode::OpCode;
 pub use value::{StringKeyedValue, VMBuiltin, VMThunk, VMValue};
-pub use vm::{FlakeResolverGuard, set_flake_resolver, VM};
+pub use vm::{FlakeResolverGuard, set_flake_resolver, vm_fallback_count, VM};
 
 use std::cell::RefCell;
 use std::collections::HashMap;

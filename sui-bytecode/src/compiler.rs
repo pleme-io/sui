@@ -482,6 +482,16 @@ impl Compiler {
                     )))
                 }
             }
+            ast::Expr::LegacyLet(ll) => {
+                // Legacy let is like: let { x = 1; body = x; }
+                // which is equivalent to: rec { x = 1; body = x; }.body
+                // Compile as a recursive attrset, then select "body"
+                self.compile_legacy_let(&ll)
+            }
+            ast::Expr::CurPos(_) => {
+                // __curPos is a debug feature; emit null to avoid CompileError.
+                self.emit_constant(VMValue::Null)
+            }
             other => Err(CompileError::Unsupported(format!("{other:?}"))),
         }
     }
@@ -1214,6 +1224,142 @@ impl Compiler {
         self.stack_depth = self.stack_depth.saturating_sub(2 * binding_count) + 1;
 
         // Clean up scope: move the attrset result down past the locals.
+        self.end_scope(binding_count);
+
+        Ok(())
+    }
+
+    /// Compile a legacy let expression (`let { x = 1; body = x; }`).
+    ///
+    /// This is equivalent to `(rec { x = 1; body = x; }).body`.
+    /// The entries are recursive (like `rec { ... }`), and the result
+    /// is the `body` attribute.
+    fn compile_legacy_let(&mut self, ll: &ast::LegacyLet) -> Result<(), CompileError> {
+        self.begin_scope();
+
+        // Collect bindings — same logic as compile_rec_attrset but
+        // operating on a LegacyLet node (which also implements HasEntry).
+        let mut bindings: Vec<(String, RecAttrBinding)> = Vec::new();
+        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
+            std::collections::BTreeMap::new();
+
+        for entry in ll.entries() {
+            match entry {
+                ast::Entry::AttrpathValue(ref apv) => {
+                    let attrpath = apv.attrpath().ok_or_else(|| {
+                        CompileError::MissingNode("legacy let attrpath".to_string())
+                    })?;
+                    let keys: Vec<_> = attrpath.attrs().collect();
+                    let value_expr = apv.value().ok_or_else(|| {
+                        CompileError::MissingNode("legacy let value".to_string())
+                    })?;
+                    if keys.len() == 1 {
+                        let key = static_attr_name(&keys[0])?;
+                        bindings.push((key, RecAttrBinding::Value(value_expr)));
+                    } else {
+                        let top_key = static_attr_name(&keys[0])?;
+                        let rest_keys: Vec<String> = keys[1..]
+                            .iter()
+                            .map(static_attr_name)
+                            .collect::<Result<_, _>>()?;
+                        dotted_entries
+                            .entry(top_key)
+                            .or_default()
+                            .push((rest_keys, value_expr));
+                    }
+                }
+                ast::Entry::Inherit(ref inherit) => {
+                    if let Some(from) = inherit.from() {
+                        let source_expr = from.expr().ok_or_else(|| {
+                            CompileError::MissingNode("inherit from expr".to_string())
+                        })?;
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name.clone(), RecAttrBinding::InheritFrom(source_expr.clone(), name)));
+                        }
+                    } else {
+                        for attr in inherit.attrs() {
+                            let name = static_attr_name(&attr)?;
+                            bindings.push((name, RecAttrBinding::Inherit));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add dotted entries as bindings.
+        for (top_key, sub) in &dotted_entries {
+            bindings.push((top_key.clone(), RecAttrBinding::Dotted(sub.clone())));
+        }
+
+        let binding_count = u16::try_from(bindings.len())
+            .map_err(|_| CompileError::TooManyLocals)?;
+
+        // Phase 1: Allocate local slots with null placeholders.
+        for (name, _) in &bindings {
+            self.emit(OpCode::Null);
+            self.add_local(name.clone())?;
+        }
+
+        // Phase 2: Compile each binding's value (lazy thunks for non-trivial).
+        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
+
+        for (name, binding) in &bindings {
+            let local_idx = self.resolve_local(name).unwrap();
+            let slot = self.locals[local_idx as usize].slot;
+            match binding {
+                RecAttrBinding::Value(expr) => {
+                    if Self::is_trivial_value(expr) {
+                        self.compile_expr(expr)?;
+                    } else {
+                        let uv_descs = self.compile_thunk_deferred(expr)?;
+                        if !uv_descs.is_empty() {
+                            thunk_slots.push((slot, uv_descs));
+                        }
+                    }
+                }
+                RecAttrBinding::Inherit => {
+                    let saved_depth = self.locals[local_idx as usize].depth;
+                    self.locals[local_idx as usize].depth = u32::MAX;
+                    self.emit_variable_load_restore(name, local_idx, saved_depth)?;
+                    self.locals[local_idx as usize].depth = saved_depth;
+                }
+                RecAttrBinding::InheritFrom(source_expr, attr_name) => {
+                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
+                    if !uv_descs.is_empty() {
+                        thunk_slots.push((slot, uv_descs));
+                    }
+                }
+                RecAttrBinding::Dotted(sub_bindings) => {
+                    self.compile_nested_attrset(sub_bindings)?;
+                }
+            }
+            self.emit(OpCode::SetLocal);
+            self.emit_u16(slot);
+            self.emit(OpCode::Pop);
+        }
+
+        // Phase 2b: Patch thunk upvalues now that all siblings exist.
+        for (slot, uv_descs) in &thunk_slots {
+            self.emit(OpCode::PatchThunkUpvalues);
+            self.emit_u16(*slot);
+            self.emit_u16(uv_descs.len() as u16);
+            for uv in uv_descs {
+                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
+                self.emit_u16(uv.index);
+            }
+        }
+
+        // Instead of building an attrset and selecting "body", directly
+        // load the local named "body" — this avoids constructing the
+        // intermediate attrset entirely.
+        let body_slot = self.find_local_slot_opt("body").ok_or_else(|| {
+            CompileError::MissingNode("legacy let missing 'body' binding".to_string())
+        })?;
+        self.emit(OpCode::GetLocal);
+        self.emit_u16(body_slot);
+
+        // Clean up scope: move the body value down past the locals.
         self.end_scope(binding_count);
 
         Ok(())
@@ -2092,6 +2238,12 @@ impl Compiler {
         let idx = self.resolve_local(name)
             .unwrap_or_else(|| panic!("local '{name}' not found"));
         self.locals[idx as usize].slot
+    }
+
+    /// Find the VM stack slot of a local by name, returning `None` if not found.
+    fn find_local_slot_opt(&self, name: &str) -> Option<u16> {
+        self.resolve_local(name)
+            .map(|idx| self.locals[idx as usize].slot)
     }
 
     /// Add an upvalue to this compiler's upvalue list.

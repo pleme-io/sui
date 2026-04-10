@@ -294,7 +294,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
 
         ast::Expr::PathAbs(p) => {
             let text = p.syntax().text().to_string();
-            return Ok(Value::Path(SmolStr::from(text.as_str())));
+            return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
         }
         ast::Expr::PathRel(p) => {
             // Real Nix resolves `./foo.nix` against the directory
@@ -314,11 +314,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             } else {
                 text
             };
-            return Ok(Value::Path(SmolStr::from(resolved.as_str())));
+            return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
         }
         ast::Expr::PathHome(p) => {
             let text = p.syntax().text().to_string();
-            return Ok(Value::Path(SmolStr::from(text.as_str())));
+            return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
         }
         ast::Expr::PathSearch(p) => {
             // `<name>` or `<name/sub/path>` — resolve via NIX_PATH
@@ -331,7 +331,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .and_then(|s| s.strip_suffix('>'))
                 .unwrap_or(&text);
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
-                return Ok(Value::Path(SmolStr::from(resolved.as_str())));
+                return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
             }
             return Err(EvalError::TypeError(format!(
                 "search path '{text}' not in NIX_PATH"
@@ -856,7 +856,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         }
     }
 
-    Ok(Value::Attrs(attrs))
+    Ok(Value::Attrs(Box::new(attrs)))
 }
 
 fn eval_inherit(
@@ -931,7 +931,7 @@ fn build_nested_attr(
     let inner = build_nested_attr(&path[1..], expr, env)?;
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
-    Ok(Value::Attrs(attrs))
+    Ok(Value::Attrs(Box::new(attrs)))
 }
 
 /// Like [`build_nested_attr`] but wraps the leaf in a [`Thunk`] instead of
@@ -957,7 +957,7 @@ fn build_nested_attr_thunk(
     let inner = build_nested_attr_thunk(&path[1..], expr, env, thunks);
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
-    Value::Attrs(attrs)
+    Value::Attrs(Box::new(attrs))
 }
 
 /// Insert `value` at `key` in `target`. If `target` already has a
@@ -977,7 +977,7 @@ fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
     // existing entry, then walk the new attrs and recursively
     // merge each child onto it.
     let mut existing_attrs = match target.get(&key).cloned() {
-        Some(Value::Attrs(a)) => a,
+        Some(Value::Attrs(a)) => *a,
         _ => unreachable!(),
     };
     let new_attrs = match value {
@@ -987,7 +987,7 @@ fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
     for (k, v) in new_attrs.iter() {
         merge_nested_insert(&mut existing_attrs, k.clone(), v.clone());
     }
-    target.insert(key, Value::Attrs(existing_attrs));
+    target.insert(key, Value::Attrs(Box::new(existing_attrs)));
 }
 
 /// Evaluate entries from any HasEntry node (LegacyLet).
@@ -1091,8 +1091,8 @@ fn eval_binop(
                     ctx,
                 ))))
             }
-            (Value::Path(a), Value::String(b)) => Ok(Value::Path(SmolStr::from(format!("{a}{}", b.chars).as_str()))),
-            (Value::Path(a), Value::Path(b)) => Ok(Value::Path(SmolStr::from(format!("{a}/{b}").as_str()))),
+            (Value::Path(a), Value::String(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}{}", b.chars).as_str())))),
+            (Value::Path(a), Value::Path(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}/{b}").as_str())))),
             // CppNix coerces attrsets with outPath when used with +
             (Value::Attrs(_), _) | (_, Value::Attrs(_)) => {
                 let (ls, lctx) = l.coerce_to_string()?;
@@ -1128,7 +1128,7 @@ fn eval_binop(
             // thunk wrapping the attrs.
             let la = l.to_attrs()?;
             let ra = r.to_attrs()?;
-            Ok(Value::Attrs(la.update(&ra)))
+            Ok(Value::Attrs(Box::new(la.update(&ra))))
         }
         ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();
@@ -1701,7 +1701,7 @@ mod tests {
             {
                 let mut attrs = NixAttrs::new();
                 attrs.insert("a".to_string(), Value::Int(1));
-                Value::Attrs(attrs)
+                Value::Attrs(Box::new(attrs))
             },
         );
         assert_eq!(ev(r#"builtins.fromJSON "null""#), Value::Null);
@@ -1822,11 +1822,11 @@ mod tests {
     #[test]
     fn literal_paths() {
         // Relative path
-        assert_eq!(ev("./foo"), Value::Path(SmolStr::from("./foo")));
+        assert_eq!(ev("./foo"), Value::Path(Box::new(SmolStr::from("./foo"))));
         // Absolute path
-        assert_eq!(ev("/nix/store/abc"), Value::Path(SmolStr::from("/nix/store/abc")));
+        assert_eq!(ev("/nix/store/abc"), Value::Path(Box::new(SmolStr::from("/nix/store/abc"))));
         // Home path
-        assert_eq!(ev("~/myfile"), Value::Path(SmolStr::from("~/myfile")));
+        assert_eq!(ev("~/myfile"), Value::Path(Box::new(SmolStr::from("~/myfile"))));
     }
 
     #[test]
@@ -1877,9 +1877,9 @@ mod tests {
     #[test]
     fn op_path_concat() {
         // path + string
-        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path(SmolStr::from("./foo/bar")));
+        assert_eq!(ev(r#"./foo + "/bar""#), Value::Path(Box::new(SmolStr::from("./foo/bar"))));
         // path + path (should join with /)
-        assert_eq!(ev("./a + ./b"), Value::Path(SmolStr::from("./a/./b")));
+        assert_eq!(ev("./a + ./b"), Value::Path(Box::new(SmolStr::from("./a/./b"))));
     }
 
     #[test]
@@ -2948,7 +2948,7 @@ mod tests {
             {
                 let mut attrs = NixAttrs::new();
                 attrs.insert("result".to_string(), Value::Int(42));
-                Value::Attrs(attrs)
+                Value::Attrs(Box::new(attrs))
             },
         );
     }
@@ -4136,7 +4136,7 @@ mod tests {
     fn path_concat_with_string() {
         assert_eq!(
             ev(r#"/foo + "bar""#),
-            Value::Path(SmolStr::from("/foobar")),
+            Value::Path(Box::new(SmolStr::from("/foobar"))),
         );
     }
 
@@ -4144,7 +4144,7 @@ mod tests {
     fn path_concat_with_path() {
         assert_eq!(
             ev("/foo + /bar"),
-            Value::Path(SmolStr::from("/foo//bar")),
+            Value::Path(Box::new(SmolStr::from("/foo//bar"))),
         );
     }
 
@@ -5004,7 +5004,7 @@ mod tests {
     fn path_plus_string_yields_path() {
         let v = ev(r#"/foo + "/bar""#);
         match v {
-            Value::Path(p) => assert_eq!(p, "/foo/bar"),
+            Value::Path(p) => assert_eq!(&*p, "/foo/bar"),
             _ => panic!("expected path"),
         }
     }
@@ -5171,8 +5171,8 @@ mod tests {
     fn force_value_attrs_returns_same() {
         let mut a = NixAttrs::new();
         a.insert("x".to_string(), Value::Int(1));
-        let v = Value::Attrs(a.clone());
-        assert_eq!(force_value(&v).unwrap(), Value::Attrs(a));
+        let v = Value::Attrs(Box::new(a.clone()));
+        assert_eq!(force_value(&v).unwrap(), Value::Attrs(Box::new(a)));
     }
 
     #[test]

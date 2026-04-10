@@ -16,9 +16,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         }
                     }
                 }
-                Ok(Value::Attrs(result))
+                Ok(Value::Attrs(Box::new(result)))
             }
-            Value::Builtin(_) => Ok(Value::Attrs(NixAttrs::new())),
+            Value::Builtin(_) => Ok(Value::Attrs(Box::new(NixAttrs::new()))),
             _ => Err(EvalError::TypeError("functionArgs: expected function".to_string())),
         }
     });
@@ -189,7 +189,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 };
                 let full_path = format!("{path}{suffix}");
                 if std::path::Path::new(&full_path).exists() {
-                    return Ok(Value::Path(SmolStr::from(full_path.as_str())));
+                    return Ok(Value::Path(Box::new(SmolStr::from(full_path.as_str()))));
                 }
             }
         }
@@ -203,6 +203,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         use sha2::{Sha256, Digest};
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
-        Ok(Value::Path(SmolStr::from(store_path.as_str())))
+        Ok(Value::Path(Box::new(SmolStr::from(store_path.as_str()))))
     });
 }
