@@ -105,6 +105,29 @@ impl BytecodeEvaluator {
         // Install builtin bridge: VM builtins → tree-walker builtins
         let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
             |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
+                // Special case: __import — the VM compiler couldn't handle
+                // this file, so fall back to the tree-walker evaluator.
+                if name == "__import" {
+                    let path_str = match &args[0] {
+                        sui_bytecode::StringKeyedValue::Path(p)
+                        | sui_bytecode::StringKeyedValue::String(p) => p.clone(),
+                        _ => return Err("__import: expected path or string argument".to_string()),
+                    };
+                    let path = std::path::Path::new(&path_str);
+                    let source = std::fs::read_to_string(path)
+                        .map_err(|e| format!("__import: {}: {e}", path.display()))?;
+                    let path_buf = path.to_path_buf();
+                    let _guard = eval::push_eval_file(path_buf.clone());
+                    let result = eval::eval_with_file(&source, Some(path_buf))
+                        .map_err(|e| e.to_string())?;
+                    // Force the top-level result before converting — if the
+                    // tree-walker returned a thunk, the VM would see
+                    // "expected set, got thunk" when accessing attrs.
+                    let forced = eval::force_value(&result)
+                        .map_err(|e| e.to_string())?;
+                    return Ok(eval_to_string_keyed(&forced));
+                }
+
                 // Convert StringKeyedValue args → tree-walker Value
                 let eval_args: Vec<Value> = args
                     .iter()
@@ -115,8 +138,13 @@ impl BytecodeEvaluator {
                 let result = builtins::call_builtin_by_name(name, &eval_args)
                     .map_err(|e| e.to_string())?;
 
+                // Force the result before converting — builtins may return
+                // thunks that the VM cannot handle directly.
+                let forced = eval::force_value(&result)
+                    .map_err(|e| e.to_string())?;
+
                 // Convert tree-walker Value → StringKeyedValue
-                Ok(eval_to_string_keyed(&result))
+                Ok(eval_to_string_keyed(&forced))
             },
         ));
 

@@ -5,6 +5,7 @@
 //! when their value is actually needed (call-by-need with memoization).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use rnix::ast::{self, AstToken, HasEntry, InterpolPart};
@@ -270,7 +271,17 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// - Ident: sibling bindings may not be defined yet (forward refs).
 /// - Lambda: the closure must capture the *final* env (set in Phase 2)
 ///   so that the lambda body can reference sibling bindings.
-fn maybe_thunk(expr: &ast::Expr, env: &Env, is_rec: bool) -> Value {
+///
+/// `defined_so_far`: In recursive scopes, names that have already been
+/// bound in this scope (i.e. earlier bindings). Idents referencing these
+/// are backward references and can be resolved directly without thunking.
+/// Forward references (names not yet defined) must still be thunked.
+fn maybe_thunk(
+    expr: &ast::Expr,
+    env: &Env,
+    is_rec: bool,
+    defined_so_far: Option<&HashSet<String>>,
+) -> Value {
     match expr {
         // Literals: evaluate directly (no allocation needed).
         ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
@@ -287,6 +298,29 @@ fn maybe_thunk(expr: &ast::Expr, env: &Env, is_rec: bool) -> Value {
                 _ => env.lookup(&name).unwrap_or_else(|| {
                     Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                 }),
+            }
+        }
+        // Identifiers in rec scope: check if it's a backward reference
+        // (name already defined earlier in the same scope). If so, we
+        // can resolve it directly instead of creating a wasteful thunk.
+        ast::Expr::Ident(ident) if is_rec => {
+            let name = ident_text(ident);
+            match name.as_str() {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                "null" => Value::Null,
+                _ => {
+                    // If this name was already defined earlier in the
+                    // scope, it's a backward reference — resolve directly.
+                    if defined_so_far.map_or(false, |d| d.contains(&name)) {
+                        env.lookup(&name).unwrap_or_else(|| {
+                            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+                        })
+                    } else {
+                        // Forward reference — must thunk
+                        Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+                    }
+                }
             }
         }
         // Absolute and home paths: trivial text extraction.
@@ -323,8 +357,50 @@ fn maybe_thunk(expr: &ast::Expr, env: &Env, is_rec: bool) -> Value {
 /// it is close to exhaustion.  This prevents stack overflow on deeply
 /// nested nixpkgs fixpoints (50+ overlay applications each creating
 /// multiple recursive `eval_expr` / `force_value` frames).
+///
+/// **Fast path:** Ident (~32% of all evals), Literal, Paren, and Root
+/// expressions don't recurse and are handled directly, skipping the
+/// `stacker::maybe_grow` overhead for ~40% of all `eval_expr` calls.
 #[inline(always)]
 pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
+    // Fast path: trivial expressions that don't recurse.
+    // Skip stacker overhead for ~40% of all eval_expr calls.
+    match expr {
+        ast::Expr::Ident(ident) => {
+            crate::perf::inc(crate::perf::Counter::EvalExpr);
+            if crate::perf::enabled() {
+                crate::perf::inc(crate::perf::Counter::ExprIdent);
+            }
+            let name = ident_text(ident);
+            return match name.as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                "null" => Ok(Value::Null),
+                _ => env
+                    .lookup(&name)
+                    .ok_or(EvalError::UndefinedVar(name)),
+            };
+        }
+        ast::Expr::Literal(lit) => {
+            crate::perf::inc(crate::perf::Counter::EvalExpr);
+            if crate::perf::enabled() {
+                crate::perf::inc(crate::perf::Counter::ExprLiteral);
+            }
+            return eval_literal(lit);
+        }
+        ast::Expr::Paren(p) => {
+            if let Some(inner) = p.expr() {
+                return eval_expr(&inner, env);
+            }
+        }
+        ast::Expr::Root(r) => {
+            if let Some(inner) = r.expr() {
+                return eval_expr(&inner, env);
+            }
+        }
+        _ => {}
+    }
+    // Complex expressions: need stacker for recursion safety
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
         eval_expr_inner(expr, env)
     })
@@ -517,6 +593,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // Collect (key, thunk) pairs so we can update envs later.
             let mut thunks: Vec<(String, Thunk)> = Vec::new();
 
+            // Track which names have been defined so far in this scope.
+            // Used by maybe_thunk to resolve backward references directly
+            // instead of creating wasteful thunks.
+            let mut defined_so_far: HashSet<String> = HashSet::new();
+
             // Accumulator for dotted-path bindings (`let a.b = 1; a.c = 2; ...`).
             // Leaf values are wrapped in thunks so they can reference
             // sibling let-bindings (the let scope is recursive in Nix).
@@ -540,11 +621,13 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // maybeThunk: skip thunk for trivial exprs.
                             // is_rec=true because let-in is mutually
                             // recursive — forward refs possible.
-                            let value = maybe_thunk(&value_expr, env, true);
+                            // Pass defined_so_far so backward refs resolve directly.
+                            let value = maybe_thunk(&value_expr, env, true, Some(&defined_so_far));
                             new_env.bind(key.clone(), value.clone());
                             if let Value::Thunk(t) = &value {
-                                thunks.push((key, t.clone()));
+                                thunks.push((key.clone(), t.clone()));
                             }
+                            defined_so_far.insert(key);
                         } else if path_keys.len() > 1 {
                             // Multi-segment dotted path: build a nested
                             // attrset with thunks at the leaves so the
@@ -869,6 +952,11 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         let mut rec_env = env.child();
         let mut thunks: Vec<(String, Thunk)> = Vec::new();
 
+        // Track which names have been defined so far in this scope.
+        // Used by maybe_thunk to resolve backward references directly
+        // instead of creating wasteful thunks.
+        let mut defined_so_far: HashSet<String> = HashSet::new();
+
         // Accumulator for dotted-path bindings (`rec { a.b = 1; a.c = 2; ... }`).
         // Leaf values are wrapped in thunks so they participate in the
         // recursive env fixpoint, matching CppNix semantics where
@@ -895,12 +983,14 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         // maybeThunk: skip thunk for trivial exprs.
                         // is_rec=true because rec attrset bindings
                         // can reference each other.
-                        let value = maybe_thunk(&value_expr, env, true);
+                        // Pass defined_so_far so backward refs resolve directly.
+                        let value = maybe_thunk(&value_expr, env, true, Some(&defined_so_far));
                         rec_env.bind(key.clone(), value.clone());
                         attrs.insert(key.clone(), value.clone());
                         if let Value::Thunk(t) = &value {
-                            thunks.push((key, t.clone()));
+                            thunks.push((key.clone(), t.clone()));
                         }
+                        defined_so_far.insert(key);
                     } else {
                         // Multi-segment dotted path: build a nested attrset
                         // with a thunk at the leaf so the value expression
@@ -949,7 +1039,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         let key = path_keys.pop().unwrap();
                         // maybeThunk: skip thunk for trivial exprs.
                         // is_rec=false — Ident lookups are safe.
-                        let value = maybe_thunk(&value_expr, env, false);
+                        let value = maybe_thunk(&value_expr, env, false, None);
                         attrs.insert(key, value);
                     } else {
                         let key = path_keys[0].clone();

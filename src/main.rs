@@ -426,7 +426,12 @@ async fn main() -> Result<(), CliError> {
                             let _guard = sui_eval::eval::push_eval_file(path_buf.clone());
                             let result = sui_eval::eval::eval_with_file(&source, Some(path_buf))
                                 .map_err(|e| e.to_string())?;
-                            return Ok(sui_eval::eval_to_string_keyed(&result));
+                            // Force the top-level result before converting — if the
+                            // tree-walker returned a thunk, the VM would see
+                            // "expected set, got thunk" when accessing attrs.
+                            let forced = sui_eval::eval::force_value(&result)
+                                .map_err(|e| e.to_string())?;
+                            return Ok(sui_eval::eval_to_string_keyed(&forced));
                         }
 
                         // Convert StringKeyedValue args → tree-walker Value
@@ -439,8 +444,13 @@ async fn main() -> Result<(), CliError> {
                         let result = sui_eval::builtins::call_builtin_by_name(name, &eval_args)
                             .map_err(|e| e.to_string())?;
 
+                        // Force the result before converting — builtins may return
+                        // thunks that the VM cannot handle directly.
+                        let forced = sui_eval::eval::force_value(&result)
+                            .map_err(|e| e.to_string())?;
+
                         // Convert tree-walker Value → StringKeyedValue
-                        Ok(sui_eval::eval_to_string_keyed(&result))
+                        Ok(sui_eval::eval_to_string_keyed(&forced))
                     },
                 ));
                 let sk = match sui_bytecode::eval_full(&expr) {
