@@ -188,7 +188,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             let path_arg = Value::string(current.to_string_lossy().to_string());
             let kind_arg = Value::string(kind);
             let partial = crate::eval::apply(pred.clone(), path_arg)?;
-            let keep = crate::eval::apply(partial, kind_arg)?.as_bool()?;
+            let keep = crate::eval::apply_and_force(partial, kind_arg)?.as_bool()?;
             if !keep {
                 return Ok(());
             }

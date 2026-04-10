@@ -63,7 +63,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut result = NixAttrs::new();
                 for (k, v) in attrs.iter() {
                     let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
-                    if crate::eval::apply(partial, v.clone())?.as_bool()? {
+                    if crate::eval::apply_and_force(partial, v.clone())?.as_bool()? {
                         result.insert(k.clone(), v.clone());
                     }
                 }

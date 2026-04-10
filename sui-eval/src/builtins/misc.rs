@@ -74,7 +74,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             }
             seen.insert(key_str);
             result.push(item.clone());
-            let new_items = crate::eval::apply(operator.clone(), item)?;
+            let new_items = crate::eval::apply_and_force(operator.clone(), item)?;
             let new_list = new_items.to_list()?;
             work_list.extend(new_list);
         }
@@ -172,6 +172,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let entries = search_path.as_list()?;
         let name = name_val.as_string()?;
         for entry in entries {
+            let entry = crate::eval::force_value(entry)?;
             let attrs = entry.to_attrs()?;
             let prefix = attrs
                 .get("prefix")

@@ -1401,6 +1401,15 @@ fn compare(
 /// For lambda with a simple ident parameter, the argument is NOT forced
 /// before binding -- this enables fixpoint combinators (`lib.fix`) where
 /// the argument is a self-referential thunk.
+/// Apply a function and force the result.
+///
+/// Builtins that inspect the return value (via `as_list`, `as_bool`, etc.)
+/// must use this instead of bare `apply` — otherwise a thunk-wrapped result
+/// will cause "thunk in as_list: force first" errors.
+pub fn apply_and_force(func: Value, arg: Value) -> Result<Value, EvalError> {
+    force_value(&apply(func, arg)?)
+}
+
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Apply);
     let func = force_value(&func)?;

@@ -99,7 +99,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for v in list {
-                    if crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
+                    if crate::eval::apply_and_force(pred.clone(), v.clone())?.as_bool()? {
                         result.push(v.clone());
                     }
                 }
@@ -137,7 +137,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let list = args2[0].as_list()?;
                 let mut result = Vec::new();
                 for v in list {
-                    let mapped = crate::eval::apply(func.clone(), v.clone())?;
+                    let mapped = crate::eval::apply_and_force(func.clone(), v.clone())?;
                     result.extend_from_slice(mapped.as_list()?);
                 }
                 Ok(Value::List(Rc::new(result)))
@@ -148,12 +148,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let lists = args[0].as_list()?;
         // Pre-compute total length to allocate once.
         let total_len: usize = lists.iter()
-            .filter_map(|v| v.as_list().ok())
-            .map(|l| l.len())
+            .filter_map(|v| crate::eval::force_value(v).ok()
+                .and_then(|fv| fv.as_list().ok().map(|l| l.len())))
             .sum();
         let mut result = Vec::with_capacity(total_len);
         for v in lists {
-            let inner = v.as_list()?;
+            let forced = crate::eval::force_value(v)?;
+            let inner = forced.as_list()?;
             result.extend(inner.iter().cloned());
         }
         Ok(Value::List(Rc::new(result)))
@@ -176,6 +177,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     }
                     match crate::eval::apply(cmp.clone(), a.clone())
                         .and_then(|partial| crate::eval::apply(partial, b.clone()))
+                        .and_then(|v| crate::eval::force_value(&v))
                         .and_then(|v| v.as_bool().map_err(|_| {
                             EvalError::TypeError("sort comparator must return bool".into())
                         }))
@@ -202,7 +204,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 for v in list {
-                    if !crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
+                    if !crate::eval::apply_and_force(pred.clone(), v.clone())?.as_bool()? {
                         return Ok(Value::Bool(false));
                     }
                 }
@@ -217,7 +219,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
                 for v in list {
-                    if crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
+                    if crate::eval::apply_and_force(pred.clone(), v.clone())?.as_bool()? {
                         return Ok(Value::Bool(true));
                     }
                 }
@@ -236,7 +238,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut right = Vec::new();
                 let mut wrong = Vec::new();
                 for v in list {
-                    if crate::eval::apply(pred.clone(), v.clone())?.as_bool()? {
+                    if crate::eval::apply_and_force(pred.clone(), v.clone())?.as_bool()? {
                         right.push(v.clone());
                     } else {
                         wrong.push(v.clone());
@@ -260,7 +262,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut groups: std::collections::BTreeMap<String, Vec<Value>> =
                     std::collections::BTreeMap::new();
                 for v in list {
-                    let key = crate::eval::apply(func.clone(), v.clone())?;
+                    let key = crate::eval::apply_and_force(func.clone(), v.clone())?;
                     let key_str = key.as_string()?.to_string();
                     groups.entry(key_str).or_default().push(v.clone());
                 }
