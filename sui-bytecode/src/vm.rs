@@ -1041,13 +1041,19 @@ impl<'a> VM<'a> {
                     });
                 } else if func.is_higher_order_builtin() {
                     let hob = func.as_higher_order_builtin().unwrap().clone();
-                    let result = self.call_higher_order_builtin(&hob, arg)?;
+                    // Force the arg before passing to HOBs — matches
+                    // the regular OpCode::Call handler's behavior.
+                    let forced_arg = self.force_value(arg)?;
+                    let result = self.call_higher_order_builtin(&hob, forced_arg)?;
                     self.push(result);
                 } else if let Some(builtin) = func.as_builtin() {
-                    if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
+                    // Force the arg before passing to builtins — matches
+                    // the regular OpCode::Call handler's behavior.
+                    let forced_arg = self.force_value(arg)?;
+                    if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
                         self.push(result);
                     } else {
-                        let arg_vmval = arg.to_vmvalue();
+                        let arg_vmval = forced_arg.to_vmvalue();
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -3034,6 +3040,14 @@ impl<'a> VM<'a> {
         ) {
             Ok(Some(result)) => {
                 let nanbox = self.string_keyed_to_nanbox(&result);
+                // Force the top-level result so callers get a concrete
+                // value (not a thunk). Bridge results may be thunked
+                // when the tree-walker wraps unevaluated expressions.
+                let nanbox = if nanbox.is_thunk() {
+                    self.force_value(nanbox)?
+                } else {
+                    nanbox
+                };
                 // Cache as VMValue so subsequent imports hit the cache.
                 let result_vmval = nanbox.to_vmvalue();
                 self.import_cache
