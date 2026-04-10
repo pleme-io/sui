@@ -165,6 +165,29 @@ pub fn inc(counter: Counter) {
                 c.get(Counter::EnvClone),
                 c.get(Counter::EnvLookup),
             );
+            // Expression type breakdown
+            eprintln!(
+                "  [id:{} ap:{} if:{} let:{} sel:{} at:{} w:{} lam:{} lit:{} str:{} list:{} ot:{}]",
+                c.get(Counter::ExprIdent),
+                c.get(Counter::ExprApply),
+                c.get(Counter::ExprIfElse),
+                c.get(Counter::ExprLetIn),
+                c.get(Counter::ExprSelect),
+                c.get(Counter::ExprAttrs),
+                c.get(Counter::ExprWith),
+                c.get(Counter::ExprLambda),
+                c.get(Counter::ExprLiteral),
+                c.get(Counter::ExprStr),
+                c.get(Counter::ExprList),
+                c.get(Counter::ExprOther),
+            );
+            // Thunk creation stats
+            let created = crate::trace::get_thunks_created();
+            let forced = crate::trace::get_thunks_forced();
+            if created > 0 {
+                let waste = (1.0 - forced as f64 / created as f64) * 100.0;
+                eprintln!("  [thunks created:{created} forced:{forced} waste:{waste:.0}%]");
+            }
         }
     });
 }

@@ -246,6 +246,16 @@ pub fn inc_thunks_forced_unique() {
     }
 }
 
+/// Get thunks created count (for progress snapshots).
+pub fn get_thunks_created() -> u64 {
+    THUNKS_CREATED.with(Cell::get)
+}
+
+/// Get thunks forced count (for progress snapshots).
+pub fn get_thunks_forced() -> u64 {
+    THUNKS_FORCED_UNIQUE.with(Cell::get)
+}
+
 /// Report thunk stats to stderr (called from `perf::report`).
 pub fn report_thunk_stats() {
     if !crate::perf::enabled() {
