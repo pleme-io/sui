@@ -409,16 +409,20 @@ impl Thunk {
         matches!(unsafe { &*self.0.repr.get() }, ThunkRepr::Native(_))
     }
 
-    /// Replace the environment captured in a suspended or inherit-select thunk.
-    /// No-op if the thunk is already evaluated or a blackhole (avoids an Rc
-    /// clone in that case).
+    /// Replace the environment captured in a suspended thunk.
+    /// For `InheritSelect`, delegates to the shared source thunk's
+    /// `update_env` (which updates the source's captured env).
+    /// No-op if the thunk is already evaluated or a blackhole.
     pub fn update_env(&self, new_env: &Env) {
         // SAFETY: Single-threaded evaluator. No other reference to repr
         // exists during env replacement.
         let repr = unsafe { &mut *self.0.repr.get() };
         match repr {
-            ThunkRepr::Suspended { env, .. } | ThunkRepr::InheritSelect { env, .. } => {
+            ThunkRepr::Suspended { env, .. } => {
                 *env = new_env.clone();
+            }
+            ThunkRepr::InheritSelect { source_thunk, .. } => {
+                source_thunk.update_env(new_env);
             }
             _ => {}
         }
@@ -560,39 +564,33 @@ impl Thunk {
                     }
                 }
             }
-            ThunkRepr::InheritSelect { source, name, env } => {
+            ThunkRepr::InheritSelect { source_thunk, name } => {
                 // Push force frame for inherit-select thunks.
                 let desc = format!("inherit (..) {name}");
                 crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: env.eval_file().cloned(),
+                    defined_in: None,
                     description: desc.clone(),
                     thunk_id,
                 });
-                crate::trace::trace_force_enter(
-                    env.eval_file().map(|p| p.as_path()),
-                    &desc,
-                );
+                crate::trace::trace_force_enter(None, &desc);
                 crate::trace::inc_thunks_forced_unique();
                 // Check max force depth limit.
                 if let Err(msg) = crate::trace::check_force_depth() {
                     crate::trace::dump_trace_on_error();
                     crate::trace::pop_force();
                     crate::trace::trace_force_exit();
+                    // SAFETY: Single-threaded evaluator (Rc, not Arc).
                     *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect {
-                        source,
+                        source_thunk,
                         name,
-                        env,
                     };
                     return Err(EvalError::InfiniteRecursion(msg));
                 }
-                // Evaluate source, force, then select `name`. The
-                // restore-on-error semantics mirror the Suspended
-                // branch so a transient error doesn't permanently
-                // blackhole this thunk.
-                let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
+                // Force the shared source thunk (cache hit after first
+                // force — all sibling inherit names share this thunk).
+                // Then select the requested attribute.
                 let attempt = (|| -> Result<Value, EvalError> {
-                    let raw = evaluator(&source, &env)?;
-                    let mut forced = raw;
+                    let mut forced = source_thunk.force(evaluator)?;
                     while let Value::Thunk(inner) = forced {
                         forced = inner.force(evaluator)?;
                     }
@@ -614,10 +612,12 @@ impl Thunk {
                     Ok(mut value) => {
                         // Store first, then transitively force (same pattern
                         // as Suspended — enables fixpoint re-entry).
+                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
+                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         let _ = self.0.cache.set(Box::new(value.clone()));
                         crate::trace::pop_force();
@@ -625,7 +625,8 @@ impl Thunk {
                         Ok(value)
                     }
                     Err(e) => {
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect { source, name, env };
+                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
+                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect { source_thunk, name };
                         crate::trace::dump_trace_on_error();
                         crate::trace::pop_force();
                         crate::trace::trace_force_exit();
@@ -2327,7 +2328,8 @@ mod tests {
     fn thunk_inherit_select_forces_and_selects() {
         let root = rnix::Root::parse(r#"{ x = 42; }"#);
         let expr = root.tree().expr().unwrap();
-        let thunk = Thunk::new_inherit_select(expr, "x".to_string(), Env::new());
+        let source = Thunk::new_suspended(expr, Env::new());
+        let thunk = Thunk::new_inherit_select(source, "x".to_string());
         let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
         assert_eq!(result.unwrap(), Value::Int(42));
         assert!(thunk.is_evaluated());
@@ -2337,7 +2339,8 @@ mod tests {
     fn thunk_inherit_select_missing_attr_errors() {
         let root = rnix::Root::parse(r#"{ x = 42; }"#);
         let expr = root.tree().expr().unwrap();
-        let thunk = Thunk::new_inherit_select(expr, "y".to_string(), Env::new());
+        let source = Thunk::new_suspended(expr, Env::new());
+        let thunk = Thunk::new_inherit_select(source, "y".to_string());
         let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
         assert!(result.is_err());
         // Thunk should restore to InheritSelect, not be stuck as Blackhole
@@ -2348,11 +2351,31 @@ mod tests {
     fn thunk_inherit_select_non_attrs_source_errors() {
         let root = rnix::Root::parse("42");
         let expr = root.tree().expr().unwrap();
-        let thunk = Thunk::new_inherit_select(expr, "x".to_string(), Env::new());
+        let source = Thunk::new_suspended(expr, Env::new());
+        let thunk = Thunk::new_inherit_select(source, "x".to_string());
         let result = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("not a set"));
+    }
+
+    #[test]
+    fn thunk_inherit_select_shares_source_thunk() {
+        // Two InheritSelect thunks share the same source thunk.
+        // Forcing one should evaluate the source; the second should
+        // get a cache hit on the shared source thunk.
+        let root = rnix::Root::parse(r#"{ a = 1; b = 2; }"#);
+        let expr = root.tree().expr().unwrap();
+        let source = Thunk::new_suspended(expr, Env::new());
+        let thunk_a = Thunk::new_inherit_select(source.clone(), "a".to_string());
+        let thunk_b = Thunk::new_inherit_select(source.clone(), "b".to_string());
+        let result_a = thunk_a.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert_eq!(result_a.unwrap(), Value::Int(1));
+        // Source thunk should now be evaluated (memoized).
+        assert!(source.is_evaluated());
+        // Second force should hit the source thunk's cache.
+        let result_b = thunk_b.force(&|e, env| crate::eval::eval_expr(e, env));
+        assert_eq!(result_b.unwrap(), Value::Int(2));
     }
 
     // ── NixAttrs additional tests ─────────────────────────
@@ -3130,7 +3153,8 @@ mod tests {
     fn thunk_inherit_select_debug_format() {
         let root = rnix::Root::parse("{ x = 1; }");
         let expr = root.tree().expr().unwrap();
-        let thunk = Thunk::new_inherit_select(expr, "x", Env::new());
+        let source = Thunk::new_suspended(expr, Env::new());
+        let thunk = Thunk::new_inherit_select(source, "x");
         let s = format!("{thunk:?}");
         assert!(s.contains("inherit-select"));
         assert!(s.contains("x"));

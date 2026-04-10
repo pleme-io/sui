@@ -517,12 +517,18 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     "inherit from missing expr".to_string(),
                                 )
                             })?;
+                            // Create ONE shared source thunk per
+                            // `inherit (source)` clause. All inherited
+                            // names share it via Rc clone — the source
+                            // is evaluated at most once.
+                            let source_thunk = Thunk::new_suspended(
+                                source_expr, env.clone(),
+                            );
                             for attr in inherit.attrs() {
                                 let name = eval_attr(&attr, env)?;
                                 let thunk = Thunk::new_inherit_select(
-                                    source_expr.clone(),
+                                    source_thunk.clone(),
                                     name.clone(),
-                                    env.clone(),
                                 );
                                 new_env.bind(name.clone(), Value::Thunk(thunk.clone()));
                                 thunks.push((name, thunk));
@@ -908,10 +914,14 @@ fn eval_inherit(
         let source_expr = from
             .expr()
             .ok_or_else(|| EvalError::ParseError("inherit from missing expr".to_string()))?;
+        // Shared source thunk — all inherited names share one source
+        // evaluation (the source thunk's own memoization ensures at
+        // most one evaluation).
+        let source_thunk = Thunk::new_suspended(source_expr, env.clone());
         let mut be = bind_env;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
-            let thunk = Thunk::new_inherit_select(source_expr.clone(), name.clone(), env.clone());
+            let thunk = Thunk::new_inherit_select(source_thunk.clone(), name.clone());
             let value = Value::Thunk(thunk.clone());
             attrs.insert(name.clone(), value.clone());
             if let Some(ref mut e) = be {
