@@ -44,6 +44,26 @@ pub async fn run_agent(
     info!(nats = %nats_url, stream = %stream_name, consumer = %consumer_name);
     info!(cache = %cache_url, cache_name = %cache_name);
 
+    // Start the cache server in background (serves /nix-cache-info for health checks)
+    tokio::spawn(async move {
+        let config = sui_cache::CacheConfig {
+            listen: "0.0.0.0:5000".to_string(),
+            backend: sui_cache::BackendConfig::Local {
+                path: std::path::PathBuf::from("/var/lib/sui/cache"),
+            },
+            signing_key: None,
+            priority: 40,
+            want_mass_query: true,
+            store_dir: "/nix/store".to_string(),
+        };
+        let storage: std::sync::Arc<dyn sui_cache::StorageBackend> = std::sync::Arc::new(sui_cache::LocalStorage::new(std::path::PathBuf::from("/var/lib/sui/cache")));
+        if let Err(e) = sui_cache::serve(config, storage).await {
+            tracing::error!(error = %e, "Cache server failed");
+        }
+    });
+
+    info!("Cache server started on :5000");
+
     // Connect to NATS
     let nats_client = async_nats::connect(nats_url)
         .await
