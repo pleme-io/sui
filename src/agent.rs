@@ -1,27 +1,44 @@
-//! NATS build agent — consumes build requests, builds, pushes to cache.
+//! NATS build agent — consumes build requests, evaluates, substitutes, caches.
 //!
-//! This replaces the SSH-based nix-builder with a pure Rust NATS consumer.
-//! The agent subscribes to the BUILD JetStream stream and processes requests:
+//! Pure Rust pipeline — no nix binary dependency:
 //!
 //!   1. Receive BUILD.request from NATS
-//!   2. Evaluate flake ref → derivation (sui-eval)
-//!   3. Build in sandbox (sui-build)
-//!   4. Push outputs to cache (sui-cache)
-//!   5. Publish BUILD.complete
+//!   2. Evaluate flake ref → derivation (sui-eval, pure Rust)
+//!   3. Extract output store paths (hash computation only)
+//!   4. Check upstream binary caches (cache.nixos.org via sui-store)
+//!   5. Download NAR + narinfo for cached outputs
+//!   6. Push to local cache (sui-cache, S3-backed)
+//!   7. Publish BUILD.complete
+
+use std::sync::Arc;
 
 use async_nats::jetstream;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::CliError;
+use sui_cache::StorageBackend;
+use sui_store::BinaryCacheStore;
+
+/// Default upstream binary caches to check for substitutes.
+const DEFAULT_UPSTREAM_CACHES: &[&str] = &[
+    "https://cache.nixos.org",
+];
+
+/// Trusted public keys for signature verification.
+const NIXOS_CACHE_KEY: &str =
+    "cache.nixos.org-1:6NCHdD59X431o0gWypbMuDG1OvMckZu32um1TadOR8=";
 
 #[derive(Debug, Deserialize)]
 struct BuildRequest {
     build_id: String,
     flake_ref: String,
     system: String,
+    #[allow(dead_code)]
     attic_cache: Option<String>,
+    #[allow(dead_code)]
     extra_args: Vec<String>,
+    #[allow(dead_code)]
     priority: i32,
 }
 
@@ -37,14 +54,19 @@ pub async fn run_agent(
     nats_url: &str,
     stream_name: &str,
     consumer_name: &str,
-    cache_url: &str,
-    cache_name: &str,
+    _cache_url: &str,
+    _cache_name: &str,
 ) -> Result<(), CliError> {
-    info!("Starting sui build agent");
+    info!("Starting sui build agent (native pipeline — no nix dependency)");
     info!(nats = %nats_url, stream = %stream_name, consumer = %consumer_name);
-    info!(cache = %cache_url, cache_name = %cache_name);
+
+    // Create shared storage backend for both cache server and build pipeline
+    let storage: Arc<dyn StorageBackend> = Arc::new(
+        sui_cache::LocalStorage::new(std::path::PathBuf::from("/var/lib/sui/cache")),
+    );
 
     // Start the cache server in background (serves /nix-cache-info for health checks)
+    let cache_storage = Arc::clone(&storage);
     tokio::spawn(async move {
         let config = sui_cache::CacheConfig {
             listen: "0.0.0.0:5000".to_string(),
@@ -56,13 +78,27 @@ pub async fn run_agent(
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
         };
-        let storage: std::sync::Arc<dyn sui_cache::StorageBackend> = std::sync::Arc::new(sui_cache::LocalStorage::new(std::path::PathBuf::from("/var/lib/sui/cache")));
-        if let Err(e) = sui_cache::serve(config, storage).await {
+        if let Err(e) = sui_cache::serve(config, cache_storage).await {
             tracing::error!(error = %e, "Cache server failed");
         }
     });
 
     info!("Cache server started on :5000");
+
+    // Initialize upstream binary caches for substitution
+    let upstream_caches: Vec<BinaryCacheStore> = DEFAULT_UPSTREAM_CACHES
+        .iter()
+        .map(|url| {
+            BinaryCacheStore::builder(url)
+                .trusted_keys(vec![NIXOS_CACHE_KEY.to_string()])
+                .build()
+        })
+        .collect();
+
+    info!(
+        count = upstream_caches.len(),
+        "Initialized upstream binary caches"
+    );
 
     // Connect to NATS
     let nats_client = async_nats::connect(nats_url)
@@ -110,18 +146,11 @@ pub async fn run_agent(
             .await
             .map_err(|e| CliError::NotImplemented(format!("Fetch failed: {e}")))?;
 
-        use futures_core::Stream;
-        use std::pin::Pin;
-        use std::task::{Context, Poll};
-
         // Poll for next message with timeout
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            async {
-                use tokio_stream::StreamExt;
-                messages.next().await
-            },
-        )
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            use tokio_stream::StreamExt;
+            messages.next().await
+        })
         .await;
 
         let msg = match msg {
@@ -130,10 +159,7 @@ pub async fn run_agent(
                 warn!(error = %e, "Error receiving message");
                 continue;
             }
-            Ok(None) | Err(_) => {
-                // Timeout or no messages — loop back
-                continue;
-            }
+            Ok(None) | Err(_) => continue,
         };
 
         // Parse the build request
@@ -153,8 +179,9 @@ pub async fn run_agent(
             "Processing build request"
         );
 
-        // Execute the build
-        let result = execute_build(&request, cache_url, cache_name).await;
+        // Execute the build using native pipeline
+        let result =
+            execute_build_native(&request, &upstream_caches, storage.as_ref()).await;
 
         // Publish completion
         let complete = match &result {
@@ -188,79 +215,179 @@ pub async fn run_agent(
         }
 
         match &result {
-            Ok(path) => info!(build_id = %request.build_id, store_path = %path, "Build complete"),
-            Err(e) => warn!(build_id = %request.build_id, error = %e, "Build failed"),
+            Ok(path) => {
+                info!(build_id = %request.build_id, store_path = %path, "Build complete")
+            }
+            Err(e) => {
+                warn!(build_id = %request.build_id, error = %e, "Build failed")
+            }
         }
     }
 }
 
-/// Execute a single build request.
+/// Parse a flake reference into (flake_url, attribute_path).
 ///
-/// For now, this shells out to `nix build` as a subprocess. In the future,
-/// this will use sui-eval → sui-build → sui-cache directly, giving us
-/// full Rust-native builds with no nix dependency.
-async fn execute_build(
+/// Input: `github:pleme-io/burst-forge#packages.x86_64-linux.default`
+/// Output: (`github:pleme-io/burst-forge`, `packages.x86_64-linux.default`)
+fn parse_flake_ref(flake_ref: &str) -> Result<(String, String), String> {
+    if let Some((url, attr)) = flake_ref.split_once('#') {
+        Ok((url.to_string(), attr.to_string()))
+    } else {
+        // No attribute path — default to packages.<system>.default
+        Ok((flake_ref.to_string(), String::new()))
+    }
+}
+
+/// Execute a build request using the native sui pipeline.
+///
+/// Flow: eval → extract store paths → check upstream caches → download → cache locally
+async fn execute_build_native(
     request: &BuildRequest,
-    _cache_url: &str,
-    _cache_name: &str,
+    upstream_caches: &[BinaryCacheStore],
+    local_storage: &dyn StorageBackend,
 ) -> Result<String, String> {
-    // Phase 1: Shell out to nix build (works now, uses system nix)
-    // Phase 2: Replace with sui-eval → sui-build → sui-cache (full Rust)
-    let mut cmd = tokio::process::Command::new("nix");
-    cmd.arg("build")
-        .arg(&request.flake_ref)
-        .arg("--no-link")
-        .arg("--print-out-paths");
+    let (flake_url, attr_path) = parse_flake_ref(&request.flake_ref)?;
 
-    for arg in &request.extra_args {
-        cmd.arg(arg);
+    // Default attribute path if none specified
+    let attr_path = if attr_path.is_empty() {
+        format!("packages.{}.default", request.system)
+    } else {
+        attr_path
+    };
+
+    info!(flake_url = %flake_url, attr_path = %attr_path, "Evaluating flake");
+
+    // 1. Evaluate the flake expression and extract outPath
+    //    (synchronous eval — run on blocking thread, return only the String)
+    let eval_expr = format!(
+        "(builtins.getFlake \"{flake_url}\").{attr_path}"
+    );
+    let out_path = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let value = sui_eval::eval(&eval_expr)
+            .map_err(|e| format!("Eval failed: {e}"))?;
+        extract_out_path(&value)
+    })
+    .await
+    .map_err(|e| format!("Eval task panicked: {e}"))??;
+
+    info!(out_path = %out_path, "Derivation output resolved");
+
+    // 3. Extract hash from store path
+    let store_path = sui_compat::store_path::StorePath::from_absolute_path(&out_path)
+        .map_err(|e| format!("Invalid store path {out_path}: {e}"))?;
+    let hash = store_path.hash();
+
+    // 4. Check if already in our local cache
+    if let Ok(Some(_)) = local_storage.get_narinfo(&hash).await {
+        info!(out_path = %out_path, "Already in local cache");
+        return Ok(out_path);
     }
 
-    info!(flake_ref = %request.flake_ref, "Running nix build");
+    // 5. Try upstream binary caches
+    for cache in upstream_caches {
+        match substitute_from_cache(cache, &hash, &out_path, local_storage).await {
+            Ok(true) => {
+                info!(
+                    out_path = %out_path,
+                    cache = %cache.base_url(),
+                    "Substituted from upstream cache"
+                );
+                return Ok(out_path);
+            }
+            Ok(false) => continue,
+            Err(e) => {
+                warn!(
+                    cache = %cache.base_url(),
+                    error = %e,
+                    "Error checking upstream cache"
+                );
+                continue;
+            }
+        }
+    }
 
-    let output = cmd
-        .output()
+    // 6. Not in any cache — future: use sui-build for local builds
+    Err(format!(
+        "Output {out_path} not in any upstream cache; \
+         local builds via sui-build not yet wired"
+    ))
+}
+
+/// Extract `outPath` from a derivation Value.
+fn extract_out_path(value: &sui_eval::Value) -> Result<String, String> {
+    let attrs = value
+        .as_attrs()
+        .map_err(|e| format!("Expected derivation attrs, got: {e}"))?;
+
+    // Try outPath first (standard derivation output)
+    if let Some(out_path_val) = attrs.get("outPath") {
+        return out_path_val
+            .as_string()
+            .map(String::from)
+            .map_err(|e| format!("outPath not a string: {e}"));
+    }
+
+    // Try drvPath as fallback
+    if let Some(drv_path_val) = attrs.get("drvPath") {
+        return drv_path_val
+            .as_string()
+            .map(String::from)
+            .map_err(|e| format!("drvPath not a string: {e}"));
+    }
+
+    Err("No outPath or drvPath in evaluation result".to_string())
+}
+
+/// Try to substitute a store path from an upstream binary cache.
+///
+/// Returns `Ok(true)` if the path was found and cached locally,
+/// `Ok(false)` if not found, or `Err` on network/storage errors.
+async fn substitute_from_cache(
+    upstream: &BinaryCacheStore,
+    hash: &str,
+    out_path: &str,
+    local_storage: &dyn StorageBackend,
+) -> Result<bool, String> {
+    // Check if upstream has the narinfo
+    let narinfo = upstream
+        .fetch_narinfo(hash)
         .await
-        .map_err(|e| format!("Failed to spawn nix build: {e}"))?;
+        .map_err(|e| format!("narinfo fetch: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("nix build failed: {stderr}"));
-    }
+    let narinfo = match narinfo {
+        Some(ni) => ni,
+        None => return Ok(false),
+    };
 
-    let store_path = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    info!(
+        out_path = %out_path,
+        nar_size = narinfo.nar_size,
+        compression = %narinfo.compression,
+        "Found in upstream cache, downloading"
+    );
 
-    if store_path.is_empty() {
-        return Err("nix build produced no output paths".to_string());
-    }
+    // Download the compressed NAR
+    let compressed_nar = upstream
+        .fetch_nar(&narinfo.url)
+        .await
+        .map_err(|e| format!("NAR download: {e}"))?;
 
-    // Push to cache (phase 1: shell out to attic push)
-    // Phase 2: use sui-cache::push_path directly
-    info!(store_path = %store_path, "Pushing to cache");
+    info!(
+        out_path = %out_path,
+        compressed_bytes = compressed_nar.len(),
+        "Downloaded NAR, pushing to local cache"
+    );
 
-    let push_result = tokio::process::Command::new("attic")
-        .arg("push")
-        .arg(_cache_name)
-        .arg(&store_path)
-        .arg("--server")
-        .arg(_cache_url)
-        .output()
-        .await;
+    // Store in local cache: narinfo + NAR blob
+    local_storage
+        .put_nar(&narinfo.url, &compressed_nar)
+        .await
+        .map_err(|e| format!("put_nar: {e}"))?;
 
-    match push_result {
-        Ok(output) if output.status.success() => {
-            info!(store_path = %store_path, "Pushed to cache");
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(error = %stderr, "Cache push failed (build still succeeded)");
-        }
-        Err(e) => {
-            warn!(error = %e, "Cache push command failed (build still succeeded)");
-        }
-    }
+    local_storage
+        .put_narinfo(hash, &narinfo.serialize())
+        .await
+        .map_err(|e| format!("put_narinfo: {e}"))?;
 
-    Ok(store_path)
+    Ok(true)
 }
