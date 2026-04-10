@@ -6,14 +6,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // compareVersions — compare version strings
     register_builtin(builtins, "compareVersions", |args| {
         let a = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "compareVersions<partial>",
             func: Rc::new(move |args2| {
                 let b = args2[0].as_string()?;
                 let result = compare_versions(&a, b);
                 Ok(Value::Int(result))
             }),
-        }))
+        })))
     });
 
     // parseDrvName — parse "name-version" from package name

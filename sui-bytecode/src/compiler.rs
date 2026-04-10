@@ -799,6 +799,7 @@ impl Compiler {
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
         tc.with_depth = self.with_depth;
+        tc.base_dir = self.base_dir.clone();
         tc.compile_expr(expr)?;
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -884,6 +885,7 @@ impl Compiler {
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
         tc.with_depth = self.with_depth;
+        tc.base_dir = self.base_dir.clone();
         tc.compile_expr(expr)?;
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -913,6 +915,7 @@ impl Compiler {
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
         tc.with_depth = self.with_depth;
+        tc.base_dir = self.base_dir.clone();
         // Emit: compile source expr, GetAttr(name), Return
         tc.compile_expr(source_expr)?;
         let key_idx = tc.add_attr_key(attr_name.to_string())?;
@@ -1524,6 +1527,8 @@ impl Compiler {
         func_compiler.scope_depth = 1; // function body is its own scope
         // Link to enclosing compiler for upvalue resolution.
         func_compiler.enclosing = Some(self as *mut Compiler);
+        // Propagate base directory for relative path resolution.
+        func_compiler.base_dir = self.base_dir.clone();
         // The function argument will be at slot 0 (pushed by VM Call handler).
         func_compiler.stack_depth = 1;
 

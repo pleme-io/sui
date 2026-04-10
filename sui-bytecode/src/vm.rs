@@ -2872,32 +2872,15 @@ impl<'a> VM<'a> {
             return Ok(NanBox::from_vmvalue(cached));
         }
 
-        // Check compile cache — skip parse + compile if we've seen this file.
-        let chunk = if let Some(cached_chunk) = self.compile_cache.get(&resolved) {
-            cached_chunk.clone()
-        } else {
-            // Read and compile, passing the file's directory for relative path resolution.
-            let source = std::fs::read_to_string(&canonical)
-                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+        // Try VM compilation, falling back to tree-walker on CompileError.
+        let chunk = self.try_compile_import(&resolved, &canonical)?;
 
-            let file_dir = resolved
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-
-            // Share the VM's interner with the compiler so that symbol IDs
-            // are consistent — no need to clear key_symbols afterwards.
-            let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
-            let compiled = Compiler::compile_with_shared_interner(&source, file_dir, shared_interner.clone())
-                .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
-            *self.interner = match Rc::try_unwrap(shared_interner) {
-                Ok(cell) => cell.into_inner(),
-                Err(rc) => rc.borrow().clone(),
-            };
-
-            let chunk = Rc::new(compiled);
-            self.compile_cache.insert(resolved.clone(), chunk.clone());
-            chunk
+        let chunk = match chunk {
+            Some(c) => c,
+            None => {
+                // Compilation failed — fall back to tree-walker via bridge.
+                return self.import_via_bridge(&canonical);
+            }
         };
 
         if self.frames.len() >= MAX_CALL_DEPTH {
@@ -2927,6 +2910,79 @@ impl<'a> VM<'a> {
             .borrow_mut()
             .insert(canonical, result_vmval);
         Ok(result)
+    }
+
+    /// Try to compile an imported file. Returns `Ok(Some(chunk))` on success,
+    /// `Ok(None)` on `CompileError` (caller should fall back to tree-walker),
+    /// or `Err` on I/O errors.
+    fn try_compile_import(
+        &mut self,
+        resolved: &std::path::Path,
+        canonical: &str,
+    ) -> Result<Option<Rc<Chunk>>, VMError> {
+        // Check compile cache — skip parse + compile if we've seen this file.
+        if let Some(cached_chunk) = self.compile_cache.get(resolved) {
+            return Ok(Some(cached_chunk.clone()));
+        }
+
+        // Read the file.
+        let source = std::fs::read_to_string(canonical)
+            .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
+
+        let file_dir = resolved
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+
+        // Share the VM's interner with the compiler so that symbol IDs
+        // are consistent — no need to clear key_symbols afterwards.
+        let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
+        let compile_result =
+            Compiler::compile_with_shared_interner(&source, file_dir, shared_interner.clone());
+        *self.interner = match Rc::try_unwrap(shared_interner) {
+            Ok(cell) => cell.into_inner(),
+            Err(rc) => rc.borrow().clone(),
+        };
+
+        match compile_result {
+            Ok(compiled) => {
+                let chunk = Rc::new(compiled);
+                self.compile_cache
+                    .insert(resolved.to_path_buf(), chunk.clone());
+                Ok(Some(chunk))
+            }
+            Err(_compile_error) => {
+                // Compilation failed (unsupported expression, etc.) —
+                // signal caller to fall back to tree-walker.
+                Ok(None)
+            }
+        }
+    }
+
+    /// Fall back to tree-walker evaluation for an imported file via the
+    /// builtin bridge. Called when the bytecode compiler cannot handle
+    /// the file (e.g. unsupported AST constructs).
+    fn import_via_bridge(&mut self, canonical: &str) -> Result<NanBox, VMError> {
+        match crate::bridge::call_builtin_bridge(
+            "__import",
+            vec![crate::value::StringKeyedValue::Path(canonical.to_string())],
+        ) {
+            Ok(Some(result)) => {
+                let nanbox = self.string_keyed_to_nanbox(&result);
+                // Cache as VMValue so subsequent imports hit the cache.
+                let result_vmval = nanbox.to_vmvalue();
+                self.import_cache
+                    .borrow_mut()
+                    .insert(canonical.to_string(), result_vmval);
+                Ok(nanbox)
+            }
+            Ok(None) => Err(VMError::ImportError(format!(
+                "compilation failed and no bridge installed for '{canonical}'"
+            ))),
+            Err(e) => Err(VMError::ImportError(format!(
+                "bridge fallback error for '{canonical}': {e}"
+            ))),
+        }
     }
 }
 

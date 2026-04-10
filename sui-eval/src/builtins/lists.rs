@@ -23,7 +23,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "elemAt", |args| {
         // Curried: builtins.elemAt list index
         let list = args[0].as_list()?.to_vec();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "elemAt<partial>",
             func: Rc::new(move |args2| {
                 let idx = args2[0].as_int()? as usize;
@@ -31,21 +31,21 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     .cloned()
                     .ok_or_else(|| EvalError::TypeError(format!("elemAt: index {idx} out of bounds")))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "elem", |args| {
         let needle = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "elem<partial>",
             func: Rc::new(move |args2| {
                 let haystack = args2[0].as_list()?;
                 Ok(Value::Bool(haystack.contains(&needle)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "genList", |args| {
         let func = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "genList<partial>",
             func: Rc::new(move |args2| {
                 let n = args2[0].as_int()?;
@@ -55,7 +55,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::List(Rc::new(result)))
             }),
-        }))
+        })))
     });
 
     // ── Higher-order list operations (critical for nixpkgs) ─────
@@ -80,7 +80,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     register_builtin(builtins, "map", |args| {
         let func = args[0].clone(); // Rc bump (captured closure/builtin)
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "map<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -89,11 +89,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     .collect();
                 Ok(Value::List(Rc::new(result?)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "filter", |args| {
         let pred = args[0].clone(); // Rc bump
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "filter<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -105,16 +105,16 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::List(Rc::new(result)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "foldl'", |args| {
         let func = args[0].clone(); // Rc bump
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "foldl'<p1>",
             func: Rc::new(move |args2| {
                 let init = args2[0].clone();
                 let func2 = func.clone();
-                Ok(Value::Builtin(BuiltinFn {
+                Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "foldl'<p2>",
                     func: Rc::new(move |args3| {
                         let list = args3[0].as_list()?;
@@ -125,13 +125,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         }
                         Ok(acc)
                     }),
-                }))
+                })))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "concatMap", |args| {
         let func = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "concatMap<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -142,7 +142,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::List(Rc::new(result)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "concatLists", |args| {
         let lists = args[0].as_list()?;
@@ -160,7 +160,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
     register_builtin(builtins, "sort", |args| {
         let cmp = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "sort<partial>",
             func: Rc::new(move |args2| {
                 let mut list = args2[0].as_list()?.to_vec();
@@ -193,11 +193,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::List(Rc::new(list)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "all", |args| {
         let pred = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "all<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -208,11 +208,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Bool(true))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "any", |args| {
         let pred = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "any<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -223,13 +223,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Bool(false))
             }),
-        }))
+        })))
     });
 
     // partition — split list by predicate into { right, wrong }
     register_builtin(builtins, "partition", |args| {
         let pred = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "partition<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -247,13 +247,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 result.insert("wrong".to_string(), Value::List(Rc::new(wrong)));
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 
     // groupBy — group list elements by key function
     register_builtin(builtins, "groupBy", |args| {
         let func = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "groupBy<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -270,6 +270,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 }

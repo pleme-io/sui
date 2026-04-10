@@ -266,15 +266,18 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    String(NixString),
+    String(Box<NixString>),
     Path(SmolStr),
     List(Rc<Vec<Value>>),
     Attrs(NixAttrs),
-    Lambda(Closure),
-    Builtin(BuiltinFn),
+    Lambda(Box<Closure>),
+    Builtin(Box<BuiltinFn>),
     /// A lazy value (thunk) with memoization and blackhole detection.
     Thunk(Thunk),
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Value>() <= 32);
 
 /// Internal representation of a thunk's state machine.
 ///
@@ -1115,7 +1118,7 @@ impl Value {
     /// Convenience constructor for a context-free string.
     #[must_use]
     pub fn string(s: impl Into<SmolStr>) -> Self {
-        Value::String(NixString::plain(s))
+        Value::String(Box::new(NixString::plain(s)))
     }
 
     /// Convenience constructor that wraps a `Vec<Value>` in `Rc` for the
@@ -1264,7 +1267,7 @@ impl Value {
     /// (with context) by forcing thunks if needed.
     pub fn to_nix_string(&self) -> Result<NixString, EvalError> {
         match self {
-            Value::String(s) => Ok(s.clone()),
+            Value::String(s) => Ok((**s).clone()),
             Value::Thunk(thunk) => {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_nix_string()
@@ -1511,7 +1514,7 @@ impl From<f64> for Value {
 
 impl From<NixString> for Value {
     fn from(s: NixString) -> Self {
-        Value::String(s)
+        Value::String(Box::new(s))
     }
 }
 
@@ -1664,7 +1667,7 @@ mod tests {
             env: Env::new(),
         };
         assert_eq!(
-            Value::Lambda(closure).to_json(),
+            Value::Lambda(Box::new(closure)).to_json(),
             serde_json::Value::String("<lambda>".to_string()),
         );
     }
@@ -1676,7 +1679,7 @@ mod tests {
             func: Rc::new(|_| Ok(Value::Null)),
         };
         assert_eq!(
-            Value::Builtin(b).to_json(),
+            Value::Builtin(Box::new(b)).to_json(),
             serde_json::Value::String("<builtin test>".to_string()),
         );
     }
@@ -1720,7 +1723,7 @@ mod tests {
             body: lambda.body().unwrap(),
             env: Env::new(),
         };
-        assert_eq!(Value::Lambda(closure).type_name(), "lambda");
+        assert_eq!(Value::Lambda(Box::new(closure)).type_name(), "lambda");
     }
 
     #[test]
@@ -1729,7 +1732,7 @@ mod tests {
             name: "t",
             func: Rc::new(|_| Ok(Value::Null)),
         };
-        assert_eq!(Value::Builtin(b).type_name(), "lambda");
+        assert_eq!(Value::Builtin(Box::new(b)).type_name(), "lambda");
     }
 
     // ── as_* error on wrong type ─────────────────────────
@@ -1855,7 +1858,7 @@ mod tests {
             body: lambda.body().unwrap(),
             env: Env::new(),
         };
-        assert_eq!(format!("{}", Value::Lambda(closure)), "<<lambda>>");
+        assert_eq!(format!("{}", Value::Lambda(Box::new(closure))), "<<lambda>>");
     }
 
     #[test]
@@ -1864,7 +1867,7 @@ mod tests {
             name: "add",
             func: Rc::new(|_| Ok(Value::Null)),
         };
-        assert_eq!(format!("{}", Value::Builtin(b)), "<<builtin add>>");
+        assert_eq!(format!("{}", Value::Builtin(Box::new(b))), "<<builtin add>>");
     }
 
     // ── NixAttrs ─────────────────────────────────────────
@@ -2050,10 +2053,10 @@ mod tests {
 
     #[test]
     fn value_string_eq_ignores_context() {
-        let plain = Value::String(NixString::plain("hello"));
+        let plain = Value::String(Box::new(NixString::plain("hello")));
         let mut ctx = StringContext::new();
         ctx.add_plain("/nix/store/xxx".to_string());
-        let with_ctx = Value::String(NixString::with_context("hello", ctx));
+        let with_ctx = Value::String(Box::new(NixString::with_context("hello", ctx)));
         // Value::PartialEq only compares .chars, ignoring context
         assert_eq!(plain, with_ctx);
     }
@@ -2427,7 +2430,7 @@ mod tests {
     #[test]
     fn value_string_constructor() {
         let v = Value::string("test");
-        assert_eq!(v, Value::String(NixString::plain("test")));
+        assert_eq!(v, Value::String(Box::new(NixString::plain("test"))));
     }
 
     #[test]
@@ -3045,7 +3048,7 @@ mod tests {
             },
             env: Env::new(),
         };
-        let val = Value::Lambda(closure);
+        let val = Value::Lambda(Box::new(closure));
         assert!(val.coerce_to_string().is_err());
     }
 

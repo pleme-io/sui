@@ -18,27 +18,27 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
     register_builtin(builtins, "hasAttr", |args| {
         let name = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "hasAttr<partial>",
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 Ok(Value::Bool(attrs.contains_key(&name)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "getAttr", |args| {
         let name = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "getAttr<partial>",
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 attrs.get(&name).cloned().ok_or_else(|| EvalError::AttrNotFound(name.clone()))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "intersectAttrs", |args| {
         let a = args[0].to_attrs()?.clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "intersectAttrs<partial>",
             func: Rc::new(move |args2| {
                 let b = args2[0].to_attrs()?;
@@ -50,13 +50,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 
     // filterAttrs
     register_builtin(builtins, "filterAttrs", |args| {
         let pred = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "filterAttrs<partial>",
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
@@ -69,13 +69,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 
     // Attrset higher-order operations
     register_builtin(builtins, "mapAttrs", |args| {
         let func = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "mapAttrs<partial>",
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
@@ -92,7 +92,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "listToAttrs", |args| {
         let list = args[0].as_list()?;
@@ -111,7 +111,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
     register_builtin(builtins, "catAttrs", |args| {
         let name = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "catAttrs<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -124,11 +124,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::List(Rc::new(result)))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "removeAttrs", |args| {
         let set = args[0].to_attrs()?.clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "removeAttrs<partial>",
             func: Rc::new(move |args2| {
                 let names = args2[0].as_list()?;
@@ -141,13 +141,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 
     // zipAttrsWith — zip attrsets with a combining function
     register_builtin(builtins, "zipAttrsWith", |args| {
         let func = args[0].clone();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "zipAttrsWith<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -171,6 +171,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 Ok(Value::Attrs(result))
             }),
-        }))
+        })))
     });
 }

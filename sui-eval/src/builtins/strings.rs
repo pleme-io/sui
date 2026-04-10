@@ -32,13 +32,13 @@ macro_rules! register_string_predicate {
     ($builtins:expr, $name:expr, $partial_name:expr, $check:expr) => {
         register_builtin($builtins, $name, |args| {
             let pattern = args[0].as_string()?.to_string();
-            Ok(Value::Builtin(BuiltinFn {
+            Ok(Value::Builtin(Box::new(BuiltinFn {
                 name: $partial_name,
                 func: Rc::new(move |args2| {
                     let s = args2[0].as_string()?;
                     Ok(Value::Bool($check(&pattern, s)))
                 }),
-            }))
+            })))
         });
     };
 }
@@ -47,18 +47,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toString", |args| {
         let val = &args[0];
         let (s, ctx) = val.coerce_to_string()?;
-        Ok(Value::String(NixString::with_context(s, ctx)))
+        Ok(Value::String(Box::new(NixString::with_context(s, ctx))))
     });
     register_builtin(builtins, "stringLength", |args| {
         Ok(Value::Int(args[0].as_string()?.len() as i64))
     });
     register_builtin(builtins, "substring", |args| {
         let start = args[0].as_int()? as usize;
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "substring<p1>",
             func: Rc::new(move |args2| {
                 let len = args2[0].as_int()? as usize;
-                Ok(Value::Builtin(BuiltinFn {
+                Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "substring<p2>",
                     func: Rc::new(move |args3| {
                         let s = args3[0].as_string()?;
@@ -66,39 +66,39 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         let start = start.min(s.len());
                         Ok(Value::string(&s[start..end]))
                     }),
-                }))
+                })))
             }),
-        }))
+        })))
     });
 
     // Case conversion (context-preserving)
     register_builtin(builtins, "toLower", |args| {
         let ns = args[0].as_nix_string()?;
-        Ok(Value::String(NixString::with_context(
+        Ok(Value::String(Box::new(NixString::with_context(
             ns.chars.to_lowercase(),
             ns.context.clone(),
-        )))
+        ))))
     });
     register_builtin(builtins, "toUpper", |args| {
         let ns = args[0].as_nix_string()?;
-        Ok(Value::String(NixString::with_context(
+        Ok(Value::String(Box::new(NixString::with_context(
             ns.chars.to_uppercase(),
             ns.context.clone(),
-        )))
+        ))))
     });
 
     register_builtin(builtins, "replaceStrings", |args| {
         let from = args[0].as_list()?.iter()
             .map(|v| v.as_string().map(|s| s.to_string()))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "replaceStrings<p1>",
             func: Rc::new(move |args2| {
                 let to = args2[0].as_list()?.iter()
                     .map(|v| v.as_string().map(|s| s.to_string()))
                     .collect::<Result<Vec<_>, _>>()?;
                 let from2 = from.clone();
-                Ok(Value::Builtin(BuiltinFn {
+                Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "replaceStrings<p2>",
                     func: Rc::new(move |args3| {
                         let mut s = args3[0].as_string()?.to_string();
@@ -109,13 +109,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         }
                         Ok(Value::string(s))
                     }),
-                }))
+                })))
             }),
-        }))
+        })))
     });
     register_builtin(builtins, "concatStringsSep", |args| {
         let sep = args[0].as_string()?.to_string();
-        Ok(Value::Builtin(BuiltinFn {
+        Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "concatStringsSep<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
@@ -124,7 +124,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     .collect();
                 Ok(Value::string(strings?.join(&sep)))
             }),
-        }))
+        })))
     });
     register_string_predicate!(builtins, "hasPrefix", "hasPrefix<partial>",
         |prefix: &str, s: &str| s.starts_with(prefix));

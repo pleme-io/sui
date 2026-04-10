@@ -560,11 +560,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = lam
                 .body()
                 .ok_or_else(|| EvalError::ParseError("lambda missing body".to_string()))?;
-            return Ok(Value::Lambda(Closure {
+            return Ok(Value::Lambda(Box::new(Closure {
                 param,
                 body,
                 env: env.clone(),
-            }));
+            })));
         }
 
         ast::Expr::Paren(p) => {
@@ -738,7 +738,7 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
             }
         }
     }
-    Ok(Value::String(NixString::with_context(result, ctx)))
+    Ok(Value::String(Box::new(NixString::with_context(result, ctx))))
 }
 
 fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
@@ -1092,10 +1092,10 @@ fn eval_binop(
             (Value::String(a), Value::String(b)) => {
                 let mut ctx = a.context.clone();
                 ctx.merge(&b.context);
-                Ok(Value::String(NixString::with_context(
+                Ok(Value::String(Box::new(NixString::with_context(
                     format!("{}{}", a.chars, b.chars),
                     ctx,
-                )))
+                ))))
             }
             (Value::Path(a), Value::String(b)) => Ok(Value::Path(SmolStr::from(format!("{a}{}", b.chars).as_str()))),
             (Value::Path(a), Value::Path(b)) => Ok(Value::Path(SmolStr::from(format!("{a}/{b}").as_str()))),
@@ -1105,10 +1105,10 @@ fn eval_binop(
                 let (rs, rctx) = r.coerce_to_string()?;
                 let mut ctx = lctx;
                 ctx.merge(&rctx);
-                Ok(Value::String(NixString::with_context(
+                Ok(Value::String(Box::new(NixString::with_context(
                     format!("{ls}{rs}"),
                     ctx,
-                )))
+                ))))
             }
             _ => Err(EvalError::TypeError(format!(
                 "cannot add {} and {}",
@@ -2103,7 +2103,7 @@ mod tests {
         assert!(result.is_ok(), "nixpkgs-style lib pattern: {:?}", result);
         assert_eq!(
             result.unwrap(),
-            Value::String(NixString::plain("hello 1.0")),
+            Value::String(Box::new(NixString::plain("hello 1.0"))),
         );
     }
 
@@ -4103,7 +4103,7 @@ mod tests {
         // directly, so the default must never be forced.
         assert_eq!(
             ev("({ cpu, vendor ? assert false; null, kernel } @ args: if args ? vendor then vendor else \"inferred\") { cpu = \"x86_64\"; kernel = \"linux\"; }"),
-            Value::String(NixString::plain("inferred")),
+            Value::String(Box::new(NixString::plain("inferred"))),
         );
     }
 

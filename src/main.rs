@@ -381,6 +381,42 @@ async fn main() -> Result<(), CliError> {
                         .map_err(|e| e.to_string())?;
                     Ok(sui_eval::eval_to_string_keyed(&result))
                 }));
+                // Install builtin bridge so VM can delegate missing builtins
+                // and compilation fallback (__import) to the tree-walker.
+                let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
+                    |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
+                        // Special case: __import — the VM compiler couldn't handle
+                        // this file, so fall back to the tree-walker evaluator.
+                        if name == "__import" {
+                            let path_str = match &args[0] {
+                                sui_bytecode::StringKeyedValue::Path(p)
+                                | sui_bytecode::StringKeyedValue::String(p) => p.clone(),
+                                _ => return Err("__import: expected path or string argument".to_string()),
+                            };
+                            let path = std::path::Path::new(&path_str);
+                            let source = std::fs::read_to_string(path)
+                                .map_err(|e| format!("__import: {}: {e}", path.display()))?;
+                            let path_buf = path.to_path_buf();
+                            let _guard = sui_eval::eval::push_eval_file(path_buf.clone());
+                            let result = sui_eval::eval::eval_with_file(&source, Some(path_buf))
+                                .map_err(|e| e.to_string())?;
+                            return Ok(sui_eval::eval_to_string_keyed(&result));
+                        }
+
+                        // Convert StringKeyedValue args → tree-walker Value
+                        let eval_args: Vec<sui_eval::Value> = args
+                            .iter()
+                            .map(|a| sui_eval::convert::string_keyed_to_eval(a))
+                            .collect();
+
+                        // Call the tree-walker builtin
+                        let result = sui_eval::builtins::call_builtin_by_name(name, &eval_args)
+                            .map_err(|e| e.to_string())?;
+
+                        // Convert tree-walker Value → StringKeyedValue
+                        Ok(sui_eval::eval_to_string_keyed(&result))
+                    },
+                ));
                 let result = sui_bytecode::eval_full(&expr).map_err(|e| {
                     CliError::Orchestrate {
                         operation: "eval",
