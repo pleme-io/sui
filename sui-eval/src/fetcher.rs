@@ -255,8 +255,10 @@ fn find_single_subdir_or_self(dir: &Path) -> PathBuf {
 ///
 /// Uses `ureq` (synchronous, no tokio runtime) so this function is safe to
 /// call from inside a running tokio context — no nested-runtime panic.
+///
+/// Body limit raised to 512 MiB to accommodate large inputs like nixpkgs tarballs.
 fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
-    let response = ureq::get(url)
+    let mut response = ureq::get(url)
         .call()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))?;
 
@@ -268,7 +270,9 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
     }
 
     response
-        .into_body()
+        .body_mut()
+        .with_config()
+        .limit(512 * 1024 * 1024)
         .read_to_vec()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))
 }
