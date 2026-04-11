@@ -18541,7 +18541,7 @@ rec {
         crateName = "shikumi";
         version = "0.1.0";
         edition = "2024";
-        sha256 = "1ipr6sbf9inxciqy7xbv2s3sm3139hrm0n5pwdgf4m8ahk3nkwvc";
+        sha256 = "1ac9fx48rfg4f6l7jgj8wlzj4yc52z1g8cs6nbc6cckl7cbrn1ls";
         dependencies = [
           {
             name = "arc-swap";
@@ -24980,7 +24980,7 @@ rec {
         dependencies = [
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.48.0";
+            packageId = "windows-sys 0.52.0";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Storage_FileSystem" "Win32_System_Console" "Win32_System_SystemInformation" ];
           }
@@ -25743,7 +25743,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_SystemInformation" "Win32_UI" "Win32_UI_Shell" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_UI" "Win32_UI_Shell" "default" ];
       };
       "windows-sys 0.52.0" = rec {
         crateName = "windows-sys";
@@ -25991,7 +25991,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Security_Cryptography" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_Threading" "Win32_System_Time" "Win32_System_WindowsProgramming" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Security_Cryptography" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_SystemInformation" "Win32_System_Threading" "Win32_System_Time" "Win32_System_WindowsProgramming" "default" ];
       };
       "windows-sys 0.59.0" = rec {
         crateName = "windows-sys";
