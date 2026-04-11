@@ -540,7 +540,7 @@ mod tests {
     fn tree_walk_eval_assert_failure() {
         let e: &dyn Evaluator = &TreeWalkEvaluator;
         let result = e.eval_expr("assert false; 42");
-        assert!(matches!(result, Err(EvalError::AssertionFailed)));
+        assert!(matches!(result, Err(EvalError::AssertionFailed(_))));
     }
 
     #[test]

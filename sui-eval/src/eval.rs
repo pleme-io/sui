@@ -54,6 +54,21 @@ pub fn push_eval_file(file: PathBuf) -> EvalFileGuard {
     EvalFileGuard
 }
 
+/// Return the file currently being evaluated, if any.
+/// Used by error sites to attach source location context.
+#[must_use]
+pub fn current_eval_file() -> Option<PathBuf> {
+    EVAL_FILE_STACK.with(|s| s.borrow().last().cloned())
+}
+
+/// Format the current eval file for error context strings.
+/// Returns e.g. `", in '/nix/store/.../default.nix'"` or empty string.
+fn eval_file_ctx() -> String {
+    current_eval_file()
+        .map(|p| format!(", in '{}'", p.display()))
+        .unwrap_or_default()
+}
+
 /// RAII guard that pops the top of the eval-file stack on drop.
 pub struct EvalFileGuard;
 
@@ -378,7 +393,9 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "null" => Ok(Value::Null),
                 _ => env
                     .lookup(&name)
-                    .ok_or(EvalError::UndefinedVar(name)),
+                    .ok_or_else(|| EvalError::UndefinedVar(
+                        format!("'{name}'{}", eval_file_ctx()),
+                    )),
             };
         }
         ast::Expr::Literal(lit) => {
@@ -501,7 +518,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "null" => Ok(Value::Null),
                 _ => {
                     env.lookup(&name)
-                        .ok_or(EvalError::UndefinedVar(name))
+                        .ok_or_else(|| EvalError::UndefinedVar(
+                            format!("'{name}'{}", eval_file_ctx()),
+                        ))
                 }
             };
         }
@@ -561,7 +580,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 .body()
                 .ok_or_else(|| EvalError::ParseError("assert missing body".to_string()))?;
             if !force_value(&eval_expr(&cond, env)?)?.as_bool()? {
-                return Err(EvalError::AssertionFailed);
+                return Err(EvalError::AssertionFailed(eval_file_ctx()));
             }
             cur_expr = body;
             continue;
@@ -689,7 +708,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             for attr in inherit.attrs() {
                                 let name = eval_attr(&attr, env)?;
                                 let value = env.lookup(&name).ok_or_else(|| {
-                                    EvalError::UndefinedVar(name.clone())
+                                    EvalError::UndefinedVar(
+                                        format!("'{name}'{}", eval_file_ctx()),
+                                    )
                                 })?;
                                 new_env.bind(name, value);
                             }
@@ -756,7 +777,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // legacy let returns the `body` attr from its bindings
             return new_env
                 .lookup("body")
-                .ok_or_else(|| EvalError::AttrNotFound("body".to_string()));
+                .ok_or_else(|| EvalError::AttrNotFound(
+                    format!("'body' in legacy let{}", eval_file_ctx()),
+                ));
         }
 
         ast::Expr::CurPos(_) => return Err(EvalError::NotImplemented("__curPos".to_string())),
@@ -832,7 +855,9 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
             } else {
-                Err(EvalError::AttrNotFound(key))
+                Err(EvalError::AttrNotFound(
+                    format!("'{key}'{}", eval_file_ctx()),
+                ))
             }
         }
         TraverseResult::NotAttrs(v) => Err(EvalError::type_error(
@@ -1109,7 +1134,9 @@ fn eval_inherit(
             let name = eval_attr(&attr, env)?;
             let value = env
                 .lookup(&name)
-                .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?;
+                .ok_or_else(|| EvalError::UndefinedVar(
+                    format!("'{name}'{}", eval_file_ctx()),
+                ))?;
             attrs.insert(name.clone(), value.clone());
             if let Some(ref mut e) = be {
                 e.bind(name, value);
@@ -1224,7 +1251,9 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                         let value = source_attrs
                             .get(&name)
                             .cloned()
-                            .ok_or_else(|| EvalError::AttrNotFound(name.clone()))?;
+                            .ok_or_else(|| EvalError::AttrNotFound(
+                                format!("'{name}' in inherit{}", eval_file_ctx()),
+                            ))?;
                         env.bind(name, value);
                     }
                 } else {
@@ -1232,7 +1261,9 @@ fn eval_entries<N: HasEntry + AstNode>(node: &N, env: &mut Env) -> Result<(), Ev
                         let name = eval_attr(&attr, env)?;
                         let value = env
                             .lookup(&name)
-                            .ok_or_else(|| EvalError::UndefinedVar(name.clone()))?;
+                            .ok_or_else(|| EvalError::UndefinedVar(
+                                format!("'{name}'{}", eval_file_ctx()),
+                            ))?;
                         env.bind(name, value);
                     }
                 }
@@ -1449,12 +1480,12 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
                 apply(partial, arg)
             } else {
                 Err(EvalError::type_error(
-                    format!("cannot call {} (missing __functor)", func.type_name()),
+                    format!("cannot call {} (missing __functor){}", func.type_name(), eval_file_ctx()),
                 ))
             }
         }
         _ => Err(EvalError::type_error(
-            format!("cannot call {}", func.type_name()),
+            format!("cannot call {}{}", func.type_name(), eval_file_ctx()),
         )),
     }
 }
@@ -1501,7 +1532,7 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                     ))
                 } else {
                     return Err(EvalError::type_error(
-                        format!("missing argument '{name}'"),
+                        format!("missing argument '{name}'{}", eval_file_ctx()),
                     ));
                 };
                 env.bind(name, value);
@@ -1515,7 +1546,7 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                 for key in attrs.keys() {
                     if !entry_names.contains(key.as_str()) {
                         return Err(EvalError::type_error(
-                            format!("unexpected argument '{key}'"),
+                            format!("unexpected argument '{key}'{}", eval_file_ctx()),
                         ));
                     }
                 }
@@ -4383,6 +4414,69 @@ mod tests {
         }
     }
 
+    // ── Source-mapped error context ────────────────────────
+
+    #[test]
+    fn error_undefined_var_includes_file_context() {
+        let p = std::path::PathBuf::from("/nix/store/abc-default.nix");
+        let _g = push_eval_file(p);
+        let result = eval("nonexistent_xyz");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("undefined variable"), "msg: {msg}");
+        assert!(msg.contains("nonexistent_xyz"), "msg: {msg}");
+        assert!(msg.contains("abc-default.nix"), "msg: {msg}");
+    }
+
+    #[test]
+    fn error_attr_not_found_includes_file_context() {
+        let p = std::path::PathBuf::from("/nix/store/xyz-module.nix");
+        let _g = push_eval_file(p);
+        let result = eval("{}.missing_key");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("not found") || msg.contains("missing_key"), "msg: {msg}");
+        assert!(msg.contains("xyz-module.nix"), "msg: {msg}");
+    }
+
+    #[test]
+    fn error_assertion_failed_includes_file_context() {
+        let p = std::path::PathBuf::from("/nix/store/test-assert.nix");
+        let _g = push_eval_file(p);
+        let result = eval("assert false; 1");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("assertion failed"), "msg: {msg}");
+        assert!(msg.contains("test-assert.nix"), "msg: {msg}");
+    }
+
+    #[test]
+    fn error_missing_argument_includes_file_context() {
+        let p = std::path::PathBuf::from("/nix/store/func.nix");
+        let _g = push_eval_file(p);
+        let result = eval("({ a, b }: a) { a = 1; }");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("missing argument"), "msg: {msg}");
+        assert!(msg.contains("func.nix"), "msg: {msg}");
+    }
+
+    #[test]
+    fn error_cannot_call_includes_file_context() {
+        let p = std::path::PathBuf::from("/nix/store/call.nix");
+        let _g = push_eval_file(p);
+        let result = eval("42 99");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("cannot call"), "msg: {msg}");
+        assert!(msg.contains("call.nix"), "msg: {msg}");
+    }
+
+    #[test]
+    fn error_without_file_has_no_in_prefix() {
+        // When no file is on the eval stack, error messages should
+        // not contain ", in" context.
+        let result = eval("nonexistent_xyz");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("undefined variable"), "msg: {msg}");
+        assert!(!msg.contains(", in"), "msg should not contain file context: {msg}");
+    }
+
     // ── pure mode getter/setter independence ───────────────
 
     #[test]
@@ -4962,7 +5056,7 @@ mod tests {
     fn assert_failed_propagates_as_error() {
         let result = eval("assert false; 1");
         match result {
-            Err(EvalError::AssertionFailed) => {}
+            Err(EvalError::AssertionFailed(_)) => {}
             other => panic!("expected AssertionFailed, got {other:?}"),
         }
     }
@@ -5429,7 +5523,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, EvalError::AssertionFailed),
+            matches!(err, EvalError::AssertionFailed(_)),
             "expected AssertionFailed, got: {err}",
         );
     }

@@ -1108,8 +1108,8 @@ pub enum EvalError {
         got: &'static str,
     },
     /// An `assert` expression's condition evaluated to false.
-    #[error("assertion failed")]
-    AssertionFailed,
+    #[error("assertion failed{0}")]
+    AssertionFailed(String),
     /// Integer division by zero.
     #[error("division by zero")]
     DivisionByZero,
@@ -2566,7 +2566,7 @@ mod tests {
     fn eval_error_is_throw_yes_no() {
         assert!(EvalError::Throw("oops".into()).is_throw());
         assert!(!EvalError::TypeError("oops".into()).is_throw());
-        assert!(!EvalError::AssertionFailed.is_throw());
+        assert!(!EvalError::AssertionFailed(String::new()).is_throw());
     }
 
     #[test]
@@ -2609,7 +2609,7 @@ mod tests {
 
     #[test]
     fn eval_error_display_assertion_failed() {
-        let s = format!("{}", EvalError::AssertionFailed);
+        let s = format!("{}", EvalError::AssertionFailed(String::new()));
         assert!(s.contains("assertion"));
     }
 
