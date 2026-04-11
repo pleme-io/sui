@@ -9,6 +9,7 @@ members = [
     "sui-build",
     "sui-daemon",
     "sui-orchestrate",
+    "sui-cache-eval",
 ]
 resolver = "3"
 
@@ -29,6 +30,7 @@ sui-eval = { path = "sui-eval" }
 sui-build = { path = "sui-build" }
 sui-daemon = { path = "sui-daemon" }
 sui-orchestrate = { path = "sui-orchestrate" }
+sui-cache-eval = { path = "sui-cache-eval" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -60,6 +62,9 @@ ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
 sha2 = "0.10"
 sha3 = "0.10"
 blake3 = "1"
+
+# Directories
+dirs-next = "2"
 
 # Error handling
 thiserror = "2"
