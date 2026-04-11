@@ -20635,6 +20635,10 @@ rec {
             packageId = "im-rc";
           }
           {
+            name = "redb";
+            packageId = "redb";
+          }
+          {
             name = "regex";
             packageId = "regex";
           }
