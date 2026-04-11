@@ -336,12 +336,14 @@ impl<'a> VM<'a> {
             OpCode::Equal => {
                 let b = self.pop_forced()?;
                 let a = self.pop_forced()?;
-                self.push(NanBox::bool(a == b));
+                let eq = self.deep_eq(&a, &b)?;
+                self.push(NanBox::bool(eq));
             }
             OpCode::NotEqual => {
                 let b = self.pop_forced()?;
                 let a = self.pop_forced()?;
-                self.push(NanBox::bool(a != b));
+                let eq = self.deep_eq(&a, &b)?;
+                self.push(NanBox::bool(!eq));
             }
             OpCode::Less => {
                 let b = self.pop_forced()?;
@@ -1126,6 +1128,68 @@ impl<'a> VM<'a> {
             _ => unreachable!(),
         }
         Ok(())
+    }
+
+    // -- Deep equality (forces thunks during comparison) ----------------
+
+    /// Deep equality comparison that forces thunks in both operands.
+    ///
+    /// Nix `==` semantics require that values are forced before comparison.
+    /// This includes values nested inside attrsets and lists. Without this,
+    /// attrsets whose values are still thunked would compare as unequal
+    /// even if their forced values are identical.
+    fn deep_eq(&mut self, a: &NanBox, b: &NanBox) -> Result<bool, VMError> {
+        // Force both values if they are thunks.
+        let a = if a.is_thunk() { self.force_value(a.clone())? } else { a.clone() };
+        let b = if b.is_thunk() { self.force_value(b.clone())? } else { b.clone() };
+
+        // Scalars and strings: use NanBox::PartialEq (no thunks possible inside).
+        if a.is_null() || a.is_bool() || a.is_int() || a.is_float() {
+            return Ok(a == b);
+        }
+        if a.is_string() || a.is_path() {
+            return Ok(a == b);
+        }
+
+        // List comparison: force each element pair.
+        if let (Some(a_items), Some(b_items)) = (a.as_list(), b.as_list()) {
+            if a_items.len() != b_items.len() {
+                return Ok(false);
+            }
+            for (ai, bi) in a_items.iter().zip(b_items.iter()) {
+                if !self.deep_eq(ai, bi)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+
+        // Attrs comparison: force each value pair.
+        if let (Some(a_attrs), Some(b_attrs)) = (a.as_attrs(), b.as_attrs()) {
+            if a_attrs.len() != b_attrs.len() {
+                return Ok(false);
+            }
+            // Check that keys match and values are deeply equal.
+            let a_entries: Vec<_> = a_attrs.iter().collect();
+            let b_entries: Vec<_> = b_attrs.iter().collect();
+            for ((ak, av), (bk, bv)) in a_entries.iter().zip(b_entries.iter()) {
+                if ak != bk {
+                    return Ok(false);
+                }
+                if !self.deep_eq(av, bv)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+
+        // Functions are never equal.
+        if a.is_closure() || a.is_builtin() || a.is_higher_order_builtin() {
+            return Ok(false);
+        }
+
+        // Fallback: use NanBox::PartialEq.
+        Ok(a == b)
     }
 
     // -- Stack helpers --------------------------------------------------
@@ -2918,6 +2982,37 @@ impl<'a> VM<'a> {
                 }
                 Ok(NanBox::attrs(result))
             }
+            Elem => {
+                // builtins.elem needle list — check if needle is in list.
+                // Needs VM-level handling because list elements may be thunks
+                // that must be forced before equality comparison.
+                // Uses deep_eq which recursively forces nested values.
+                let needle = NanBox::from_vmvalue(&hob.func);
+                let forced_needle = self.force_value(needle)?;
+
+                let list = if let Some(items) = arg.as_list() {
+                    items.to_vec()
+                } else {
+                    let forced = self.force_value(arg)?;
+                    if let Some(items) = forced.as_list() {
+                        items.to_vec()
+                    } else {
+                        return Err(VMError::TypeError {
+                            expected: "list",
+                            got: forced.type_name(),
+                            context: "builtins.elem".to_string(),
+                        });
+                    }
+                };
+
+                for item in &list {
+                    let forced_item = self.force_value(item.clone())?;
+                    if self.deep_eq(&forced_needle, &forced_item)? {
+                        return Ok(NanBox::bool(true));
+                    }
+                }
+                Ok(NanBox::bool(false))
+            }
         }
     }
 
@@ -3033,7 +3128,8 @@ impl<'a> VM<'a> {
         };
 
         match compile_result {
-            Ok(compiled) => {
+            Ok(mut compiled) => {
+                Self::set_source_file_recursive(&mut compiled, canonical);
                 let chunk = Rc::new(compiled);
                 self.compile_cache
                     .insert(resolved.to_path_buf(), chunk.clone());
@@ -3080,6 +3176,18 @@ impl<'a> VM<'a> {
             Err(e) => Err(VMError::ImportError(format!(
                 "bridge fallback error for '{canonical}': {e}"
             ))),
+        }
+    }
+
+    /// Recursively set `source_file` on a chunk and all nested closure chunks.
+    fn set_source_file_recursive(chunk: &mut Chunk, file: &str) {
+        chunk.source_file = Some(file.to_string());
+        for constant in &mut chunk.constants {
+            if let VMValue::Closure(closure) = constant {
+                if let Some(inner_chunk) = Rc::get_mut(&mut closure.chunk) {
+                    Self::set_source_file_recursive(inner_chunk, file);
+                }
+            }
         }
     }
 
@@ -3654,6 +3762,85 @@ mod tests {
     #[test]
     fn eval_assert_fail() {
         assert!(matches!(eval_err("assert false; 42"), VMError::AssertionFailed));
+    }
+
+    // -- Deep equality (thunk forcing) ----------------------------------
+
+    #[test]
+    fn deep_eq_attrs_with_thunked_values() {
+        // Attrsets from let bindings have thunked values;
+        // == must force them before comparison.
+        assert_eq!(
+            eval("let a = { x = 1; }; b = { x = 1; }; in a == b"),
+            VMValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn deep_eq_attrs_different_values() {
+        assert_eq!(
+            eval("let a = { x = 1; }; b = { x = 2; }; in a == b"),
+            VMValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn deep_eq_nested_attrs() {
+        assert_eq!(
+            eval("let a = { x = { y = 1; }; }; b = { x = { y = 1; }; }; in a == b"),
+            VMValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn deep_eq_list_with_thunked_elements() {
+        assert_eq!(
+            eval("let a = [ 1 2 ]; b = [ 1 2 ]; in a == b"),
+            VMValue::Bool(true)
+        );
+    }
+
+    // -- builtins.elem (thunk forcing) ----------------------------------
+
+    #[test]
+    fn eval_elem_thunked_attrsets() {
+        // elem must force list elements before comparison.
+        assert_eq!(
+            eval("let a = { x = 1; }; b = { x = 1; }; in builtins.elem a [ b ]"),
+            VMValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_elem_basic_int() {
+        assert_eq!(
+            eval("builtins.elem 2 [ 1 2 3 ]"),
+            VMValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_elem_missing() {
+        assert_eq!(
+            eval("builtins.elem 4 [ 1 2 3 ]"),
+            VMValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn eval_elem_string() {
+        assert_eq!(
+            eval(r#"builtins.elem "b" [ "a" "b" "c" ]"#),
+            VMValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_elem_thunked_list_elements() {
+        assert_eq!(
+            eval("let x = 1; in builtins.elem 1 [ x ]"),
+            VMValue::Bool(true)
+        );
     }
 
     // -- String interpolation -------------------------------------------

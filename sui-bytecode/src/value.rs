@@ -88,6 +88,8 @@ pub enum HigherOrderOp {
     MapAttrs,
     /// `filterAttrs pred attrs` -- keep attrs where pred name value is true
     FilterAttrs,
+    /// `elem needle list` -- check if needle is in list (needs VM to force elements)
+    Elem,
 }
 
 /// A partially-applied higher-order builtin that needs VM access to

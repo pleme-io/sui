@@ -194,7 +194,7 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
     builtins_set.insert("null".to_string(), Value::Null);
-    builtins_set.insert("nixVersion".to_string(), Value::string("sui-0.1.0"));
+    builtins_set.insert("nixVersion".to_string(), Value::string("2.24.0"));
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
 

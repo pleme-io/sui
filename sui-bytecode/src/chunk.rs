@@ -29,6 +29,9 @@ pub struct Chunk {
     /// so the VM can skip the `intern()` call on every `GetAttr`/`HasAttr`
     /// dispatch. Only entries used as attrset keys are populated.
     pub key_symbols: Vec<Option<Symbol>>,
+    /// The source file this chunk was compiled from (if known).
+    /// Used for error diagnostics — not set for inline expressions.
+    pub source_file: Option<String>,
 }
 
 impl Chunk {
@@ -40,6 +43,7 @@ impl Chunk {
             constants: Vec::new(),
             lines: Vec::new(),
             key_symbols: Vec::new(),
+            source_file: None,
         }
     }
 

@@ -258,13 +258,10 @@ impl BuiltinRegistry {
 
         self.register("elem", 1, |args| {
             let needle = args[0].clone();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "elem<partial>",
-                func: Rc::new(move |args2| {
-                    let haystack = as_list(&args2[0])?;
-                    Ok(VMValue::Bool(haystack.contains(&needle)))
-                }),
-                arity: 1,
+            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
+                op: HigherOrderOp::Elem,
+                func: Box::new(needle),
+                extra_args: Vec::new(),
             }))
         });
 
