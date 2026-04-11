@@ -42,6 +42,7 @@ mod misc;
 mod nav;
 mod paths;
 mod strings;
+mod convergence;
 mod sui_ext;
 mod types;
 mod versions;
@@ -101,6 +102,7 @@ pub fn call_builtin_by_name(name: &str, args: &[Value]) -> Result<Value, EvalErr
             derivation::register(&mut attrs);
             versions::register(&mut attrs);
             misc::register(&mut attrs);
+            convergence::register(&mut attrs);
             *borrow = Some(attrs);
         }
 
@@ -201,6 +203,7 @@ pub fn register(env: &mut Env) {
     // ── builtins.sui.* — sui-specific extensions ─────────
     let mut sui_ext_set = NixAttrs::new();
     sui_ext::register(&mut sui_ext_set);
+    convergence::register(&mut sui_ext_set);
     builtins_set.insert("sui".to_string(), Value::Attrs(Rc::new(sui_ext_set)));
 
     // ── builtins.builtins (self-reference) ───────────────

@@ -18,6 +18,7 @@
 //! into [`StoreError`] via `From` impls.
 
 pub mod binary_cache;
+pub mod convergence;
 pub mod entity;
 pub mod http;
 pub mod local;
@@ -33,4 +34,5 @@ pub use nar::decompress_nar;
 pub use profile::{Generation, ProfileError, ProfileManager};
 pub use substitute::{SubstituteResult, Substitutor};
 pub use local::find_gc_roots;
+pub use convergence::{ConvergenceStore, DefaultConvergenceStore, GenerationalPath, ImpactReport};
 pub use traits::{CorruptPath, GcOptions, GcResult, OptimiseResult, PathInfo, Store, StoreError, StoreResult, VerifyResult};

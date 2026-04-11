@@ -12,11 +12,13 @@
 //! - [`local_builder`] — concrete builder executing derivations locally
 
 pub mod closure;
+pub mod convergence_builder;
 pub mod local_builder;
 pub mod reference_scan;
 pub mod sandbox;
 pub mod traits;
 
 pub use closure::BuildClosure;
+pub use convergence_builder::{ConvergenceBuilder, ConvergenceMetadata};
 pub use local_builder::LocalBuilder;
 pub use traits::{BuildError, BuildLog, BuildOutcome, BuildResult, BuildState, Builder};
