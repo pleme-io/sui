@@ -4734,4 +4734,78 @@ mod tests {
             VMValue::Int(202),
         );
     }
+
+    // -- Blocker #13: dotted attrs + lambda closure in rec ------------------
+
+    #[test]
+    fn rec_dotted_lambda_captures_sibling() {
+        // Lambdas in rec attrsets must not be compiled as trivial values,
+        // because MakeClosure captures upvalues eagerly.  Dotted entries
+        // are appended after non-dotted bindings, so a lambda's upvalue
+        // for a dotted sibling would see the null placeholder.
+        let result = eval_full_helper(
+            r#"rec { types.a = 1; types.b = 2; f = _: types; }.f 0"#,
+        );
+        match result {
+            StringKeyedValue::Attrs(ref m) => {
+                assert_eq!(m.get("a"), Some(&StringKeyedValue::Int(1)));
+                assert_eq!(m.get("b"), Some(&StringKeyedValue::Int(2)));
+            }
+            other => panic!("expected attrset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rec_dotted_lambda_attr_select() {
+        // Lambda body selects an attribute from a dotted sibling.
+        assert_eq!(
+            eval(r#"rec { types.a = 1; types.b = 2; f = x: types.b; result = f 0; }.result"#),
+            VMValue::Int(2),
+        );
+    }
+
+    #[test]
+    fn rec_dotted_lambda_assert_check() {
+        // Pattern from nixpkgs parse.nix: `mkSystem` uses
+        //   assert types.parsedPlatform.check components; ...
+        // which requires `types` to be resolved inside a lambda body.
+        assert_eq!(
+            eval(r#"
+                rec {
+                    types.parsedPlatform = { check = _: true; };
+                    mkSystem = components:
+                        assert types.parsedPlatform.check components;
+                        components;
+                    result = mkSystem 42;
+                }.result
+            "#),
+            VMValue::Int(42),
+        );
+    }
+
+    #[test]
+    fn let_lambda_captures_rec_sibling() {
+        // Let bindings are recursive — lambdas capturing siblings must
+        // also use deferred thunks.
+        assert_eq!(
+            eval(r#"let a = 1 + 1; f = _: a; in f 0"#),
+            VMValue::Int(2),
+        );
+    }
+
+    #[test]
+    fn rec_dotted_multiple_lambdas() {
+        // Multiple lambdas capturing different dotted siblings.
+        assert_eq!(
+            eval(r#"
+                rec {
+                    a.x = 10;
+                    b.y = 20;
+                    f = _: a.x + b.y;
+                    result = f 0;
+                }.result
+            "#),
+            VMValue::Int(30),
+        );
+    }
 }

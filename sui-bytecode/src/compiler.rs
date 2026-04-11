@@ -703,7 +703,11 @@ impl Compiler {
             let slot = self.locals[local_idx as usize].slot;
             match binding {
                 LetBinding::Value(expr) => {
-                    if Self::is_trivial_value(expr) {
+                    // In let bindings (which are recursive in Nix), lambdas
+                    // must not be inlined as trivial — same issue as rec
+                    // attrsets: MakeClosure captures upvalues eagerly, but
+                    // sibling bindings (especially dotted) may not yet exist.
+                    if Self::is_trivial_value_for_rec(expr) {
                         self.compile_expr(expr)?;
                     } else {
                         let uv_descs = self.compile_thunk_deferred(expr)?;
@@ -800,6 +804,23 @@ impl Compiler {
             ast::Expr::List(list) => list.items().next().is_none(),
             ast::Expr::AttrSet(set) => set.rec_token().is_none() && set.entries().next().is_none(),
             _ => false,
+        }
+    }
+
+    /// Like `is_trivial_value`, but for use in rec attrsets.
+    /// Lambdas are NOT trivial in rec context because `MakeClosure` captures
+    /// upvalues at emission time.  If a lambda captures a sibling binding
+    /// (especially a dotted entry appended after non-dotted bindings), the
+    /// sibling's slot may still hold the null placeholder, producing a silent
+    /// wrong result.  Wrapping the lambda in a deferred thunk postpones
+    /// `MakeClosure` until the value is accessed, by which time all siblings
+    /// have been populated via `PatchThunkUpvalues`.
+    fn is_trivial_value_for_rec(expr: &ast::Expr) -> bool {
+        match expr {
+            // Lambdas can capture rec-scoped variables — never inline in rec.
+            ast::Expr::Lambda(_) => false,
+            ast::Expr::Paren(p) => p.expr().map_or(false, |inner| Self::is_trivial_value_for_rec(&inner)),
+            _ => Self::is_trivial_value(expr),
         }
     }
 
@@ -1244,7 +1265,14 @@ impl Compiler {
             let slot = self.locals[local_idx as usize].slot;
             match binding {
                 RecAttrBinding::Value(expr) => {
-                    if Self::is_trivial_value(expr) {
+                    // In rec attrsets, lambdas must NOT be treated as trivial
+                    // because MakeClosure captures upvalues at emission time.
+                    // If a lambda captures a sibling binding (especially a
+                    // dotted entry, which is appended last), that slot may still
+                    // be null.  Wrapping in a deferred thunk delays MakeClosure
+                    // until the lambda is actually accessed, when all siblings
+                    // are populated.
+                    if Self::is_trivial_value_for_rec(expr) {
                         self.compile_expr(expr)?;
                     } else {
                         let uv_descs = self.compile_thunk_deferred(expr)?;
@@ -1394,7 +1422,9 @@ impl Compiler {
             let slot = self.locals[local_idx as usize].slot;
             match binding {
                 RecAttrBinding::Value(expr) => {
-                    if Self::is_trivial_value(expr) {
+                    // Same rec-aware trivial check as compile_rec_attrset:
+                    // lambdas must be deferred to avoid capturing null slots.
+                    if Self::is_trivial_value_for_rec(expr) {
                         self.compile_expr(expr)?;
                     } else {
                         let uv_descs = self.compile_thunk_deferred(expr)?;
