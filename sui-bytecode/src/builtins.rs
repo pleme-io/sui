@@ -609,31 +609,7 @@ impl BuiltinRegistry {
 
     fn register_conversion_ops(&mut self) {
         self.register("toString", 1, |args| {
-            let s = match &args[0] {
-                VMValue::String(s) => s.clone(),
-                VMValue::Int(n) => n.to_string(),
-                VMValue::Float(f) => format!("{f}"),
-                VMValue::Bool(true) => "1".to_string(),
-                VMValue::Bool(false) => String::new(),
-                VMValue::Null => String::new(),
-                VMValue::Path(p) => p.clone(),
-                VMValue::List(_) | VMValue::Attrs(_) => {
-                    return Err(VMError::Throw(
-                        "toString: cannot convert set or list".to_string(),
-                    ));
-                }
-                VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
-                    return Err(VMError::Throw(
-                        "toString: cannot convert function".to_string(),
-                    ));
-                }
-                VMValue::Thunk(_) => {
-                    return Err(VMError::Throw(
-                        "toString: thunk should be forced first".to_string(),
-                    ));
-                }
-            };
-            Ok(VMValue::String(s))
+            vm_coerce_to_string(&args[0])
         });
 
         self.register("toJSON", 1, |args| {
@@ -1506,6 +1482,65 @@ fn as_float(v: &VMValue) -> Result<f64, VMError> {
             got: other.type_name(),
             context: "builtin argument".to_string(),
         }),
+    }
+}
+
+/// Coerce a VMValue to string, matching CppNix's `builtins.toString` semantics:
+/// - Strings, ints, floats, bools, null, paths: straightforward conversion
+/// - Attrsets with `__toString`: call the function with the attrset as argument
+///   (handled by VM fallback — here we just check `outPath`)
+/// - Attrsets with `outPath`: coerce the outPath value
+/// - Lists: space-join coerced elements
+fn vm_coerce_to_string(v: &VMValue) -> Result<VMValue, VMError> {
+    match v {
+        VMValue::String(s) => Ok(VMValue::String(s.clone())),
+        VMValue::Int(n) => Ok(VMValue::String(n.to_string())),
+        VMValue::Float(f) => Ok(VMValue::String(format!("{f}"))),
+        VMValue::Bool(true) => Ok(VMValue::String("1".to_string())),
+        VMValue::Bool(false) => Ok(VMValue::String(String::new())),
+        VMValue::Null => Ok(VMValue::String(String::new())),
+        VMValue::Path(p) => Ok(VMValue::String(p.clone())),
+        VMValue::Attrs(attrs) => {
+            // Check __toString first (requires calling a function — if present,
+            // we fall back to the VM bridge for now)
+            let to_str_sym = crate::intern::intern("__toString");
+            if attrs.contains_key(&to_str_sym) {
+                // __toString requires calling a closure with the attrset.
+                // This can't be done from a pure builtin — the VM will handle
+                // this via the bridge fallback.
+                return Err(VMError::Throw(
+                    "toString: __toString requires VM bridge".to_string(),
+                ));
+            }
+            let out_path_sym = crate::intern::intern("outPath");
+            if let Some(out_path) = attrs.get(&out_path_sym) {
+                vm_coerce_to_string(out_path)
+            } else {
+                Err(VMError::Throw(
+                    "cannot coerce a set to a string, but it has no __toString or outPath".to_string(),
+                ))
+            }
+        }
+        VMValue::List(items) => {
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items {
+                match vm_coerce_to_string(item)? {
+                    VMValue::String(s) => parts.push(s),
+                    _ => unreachable!("vm_coerce_to_string always returns String"),
+                }
+            }
+            Ok(VMValue::String(parts.join(" ")))
+        }
+        VMValue::Closure(_) | VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
+            Err(VMError::Throw(
+                "cannot coerce a function to a string".to_string(),
+            ))
+        }
+        VMValue::Thunk(_) => {
+            Err(VMError::Throw(
+                "toString: thunk should be forced first".to_string(),
+            ))
+        }
     }
 }
 

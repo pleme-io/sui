@@ -1149,15 +1149,15 @@ impl<'a> VM<'a> {
             OpCode::Interpolate => {
                 let count = self.read_u16()? as usize;
                 let start = self.stack.len() - count;
-                for i in start..self.stack.len() {
-                    let v = self.stack[i].clone();
-                    if v.is_thunk() {
-                        self.stack[i] = self.force_value(v)?;
+                // Drain interpolation parts off the stack, force thunks.
+                let mut parts: Vec<NanBox> = self.stack.drain(start..).collect();
+                for part in &mut parts {
+                    if part.is_thunk() {
+                        *part = self.force_value(part.clone())?;
                     }
                 }
                 let mut result = String::new();
-                for i in start..self.stack.len() {
-                    let v = &self.stack[i];
+                for v in &parts {
                     if let Some(s) = v.as_string() {
                         result.push_str(s);
                     } else if let Some(n) = v.as_int() {
@@ -1166,6 +1166,45 @@ impl<'a> VM<'a> {
                         result.push_str(&format!("{f}"));
                     } else if let Some(p) = v.as_path() {
                         result.push_str(p);
+                    } else if let Some(attrs) = v.as_attrs() {
+                        // Attrset interpolation: check __toString then outPath.
+                        let to_str_sym = sui_intern::intern("__toString");
+                        if let Some(to_str_fn) = attrs.get(&to_str_sym) {
+                            let func_nb = self.force_value(to_str_fn.clone())?;
+                            let call_result = self.call_callable(&func_nb, v.clone())?;
+                            let forced = self.force_value(call_result)?;
+                            if let Some(s) = forced.as_string() {
+                                result.push_str(s);
+                            } else {
+                                return Err(VMError::TypeError {
+                                    expected: "string",
+                                    got: forced.type_name(),
+                                    context: "__toString result in string interpolation".to_string(),
+                                });
+                            }
+                        } else {
+                            let out_path_sym = sui_intern::intern("outPath");
+                            if let Some(out_path) = attrs.get(&out_path_sym) {
+                                let forced = self.force_value(out_path.clone())?;
+                                if let Some(s) = forced.as_string() {
+                                    result.push_str(s);
+                                } else if let Some(p) = forced.as_path() {
+                                    result.push_str(p);
+                                } else {
+                                    return Err(VMError::TypeError {
+                                        expected: "string or path",
+                                        got: forced.type_name(),
+                                        context: "outPath in string interpolation".to_string(),
+                                    });
+                                }
+                            } else {
+                                return Err(VMError::TypeError {
+                                    expected: "string, int, float, or path",
+                                    got: "set (no __toString or outPath)",
+                                    context: "string interpolation".to_string(),
+                                });
+                            }
+                        }
                     } else if v.is_bool() {
                         let b = v.as_bool().unwrap();
                         return Err(VMError::TypeError {
@@ -1181,7 +1220,7 @@ impl<'a> VM<'a> {
                         });
                     }
                 }
-                self.stack.truncate(start);
+                // Stack was drained above; push the result.
                 self.push(NanBox::string(result));
             }
             _ => unreachable!(),
@@ -1284,6 +1323,13 @@ impl<'a> VM<'a> {
 
     fn current_chunk(&self) -> &Chunk {
         &self.current_frame().chunk
+    }
+
+    fn current_chunk_name(&self) -> String {
+        self.current_chunk()
+            .source_file
+            .clone()
+            .unwrap_or_else(|| "<inline>".to_string())
     }
 
     fn read_byte(&mut self) -> Result<u8, VMError> {
@@ -2439,6 +2485,13 @@ impl<'a> VM<'a> {
         func: Rc<dyn Fn(Vec<VMValue>) -> Result<VMValue, VMError>>,
         arg: VMValue,
     ) -> Result<NanBox, VMError> {
+        // Defensive: force VMValue::Thunk args that leaked through.
+        let arg = if let VMValue::Thunk(ref thunk) = arg {
+            let nb = NanBox::from_vmvalue(&arg);
+            self.force_value(nb)?.to_vmvalue()
+        } else {
+            arg
+        };
         match func(vec![arg]) {
             Ok(result) => Ok(NanBox::from_vmvalue(&result)),
             Err(VMError::Throw(ref msg))
@@ -2761,6 +2814,8 @@ impl<'a> VM<'a> {
             let hob = func.as_higher_order_builtin().unwrap().clone();
             self.call_higher_order_builtin(&hob, arg)
         } else if let Some(builtin) = func.as_builtin() {
+            // Force the arg for builtins — they expect concrete values.
+            let arg = self.force_value(arg)?;
             if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
                 Ok(result)
             } else {
@@ -2783,6 +2838,8 @@ impl<'a> VM<'a> {
         arg: NanBox,
     ) -> Result<NanBox, VMError> {
         use HigherOrderOp::*;
+        // Force the argument — higher-order builtins need concrete values.
+        let arg = self.force_value(arg)?;
         match hob.op {
             Map => {
                 let list_val = arg.to_vmvalue();

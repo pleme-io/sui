@@ -1623,84 +1623,63 @@ impl Compiler {
         let segments: Vec<_> = attrpath.attrs().collect();
 
         if let Some(default_expr) = sel.default_expr() {
-            // `expr.key or default` — jump-based: only evaluate default when key missing.
-            // This avoids eager evaluation of `throw` in the default expression.
+            // `expr.a.b.c or default` — if ANY segment is missing (or the
+            // intermediate value is not an attrset), evaluate the default.
+            //
+            // Strategy: for each segment (including non-last), check with
+            // HasAttr before accessing.  On miss, jump to a shared default
+            // path.  HasAttr returns false for non-attrset values, so this
+            // also handles the "not an attrset" case.
+            //
+            // Stack invariant: at each segment, exactly one value (the
+            // current attrset being traversed) sits on top.
+            //
+            //   compile_expr(&base)        ; [val]
+            //   for each segment:
+            //     Dup                       ; [val, val]
+            //     HasAttr key               ; [val, bool]
+            //     JumpIfFalse miss          ; [val]
+            //     GetAttr key               ; [next_val]
+            //   (last segment's GetAttr produces the result)
+            //   Jump end
+            //   miss:
+            //   Pop                         ; []  (discard partial val)
+            //   <compile default>           ; [default_val]
+            //   end:
             self.compile_expr(&base)?;
-            for (i, attr) in segments.iter().enumerate() {
-                if i < segments.len() - 1 {
-                    // Non-last segment: just navigate.
-                    if let Ok(key) = static_attr_name(attr) {
-                        let key_idx = self.add_attr_key(key)?;
-                        self.emit(OpCode::GetAttr);
-                        self.emit_u16(key_idx);
-                    } else {
-                        self.compile_dynamic_attr_key(attr)?;
-                        self.emit(OpCode::DynGetAttr);
-                    }
-                } else if let Ok(key) = static_attr_name(attr) {
-                    // Last segment, static key:
-                    //   Dup              ; [attrset, attrset]
-                    //   HasAttr key      ; [attrset, bool]
-                    //   JumpIfTrue hit   ; [attrset]
-                    //   Pop              ; []
-                    //   <compile default> ; [default_val]
-                    //   Jump end
-                    //   hit:
-                    //   GetAttr key      ; [value]
-                    //   end:
+            let depth_before = self.stack_depth; // D (one extra value: base)
+            let mut miss_jumps: Vec<usize> = Vec::new();
+            for (_i, attr) in segments.iter().enumerate() {
+                if let Ok(key) = static_attr_name(attr) {
                     let key_idx = self.add_attr_key(key)?;
-                    self.emit(OpCode::Dup);
-                    self.emit(OpCode::HasAttr);
+                    self.emit(OpCode::Dup);             // [val, val]
+                    self.emit(OpCode::HasAttr);         // [val, bool]
                     self.emit_u16(key_idx);
-                    // After HasAttr: stack_depth is back to same (Dup +1, HasAttr 0 net = +1 total, but HasAttr pops attrset pushes bool...
-                    // Let me track manually: before Dup, depth = D (attrset on top)
-                    // After Dup: D+1 (attrset, copy)
-                    // After HasAttr: D+1 (attrset, bool) -- HasAttr is net 0 (pop 1 push 1)
-                    // After JumpIfTrue: D (attrset) -- JumpIfTrue pops bool
-                    let hit_jump = self.emit_jump(OpCode::JumpIfTrue);
-                    // miss path: stack has [attrset], need to discard and compile default
-                    self.emit(OpCode::Pop); // D-1
-                    self.compile_expr(&default_expr)?; // D (default_val)
-                    let end_jump = self.emit_jump(OpCode::Jump);
-                    // hit path: stack has [attrset]
-                    self.patch_jump(hit_jump)?;
-                    // Reset depth to D (attrset on stack)
-                    // Note: after the miss path, depth is D (from compile_expr).
-                    // At the hit label, depth should also be D (attrset still on stack).
-                    // The emit(Pop) + compile_expr changed depth. We need to set it
-                    // back to D for the hit path. This is analogous to if-then-else handling.
-                    let depth_after_miss = self.stack_depth;
-                    self.stack_depth = depth_after_miss; // same, because Pop(-1) + compile_expr(+1) = net 0
-                    self.emit(OpCode::GetAttr); // D (pops attrset, pushes value = net 0)
+                    miss_jumps.push(self.emit_jump(OpCode::JumpIfFalse)); // [val]
+                    self.emit(OpCode::GetAttr);         // [next_val]
                     self.emit_u16(key_idx);
-                    self.patch_jump(end_jump)?;
-                    // Both paths leave exactly one value on the stack: depth = D
                 } else {
-                    // Last segment, dynamic key:
-                    //   Dup              ; [attrset, copy]
-                    //   <compile key>    ; [attrset, copy, key]
-                    //   DynHasAttr       ; [attrset, bool]
-                    //   JumpIfTrue hit   ; [attrset]
-                    //   Pop              ; []
-                    //   <compile default> ; [default_val]
-                    //   Jump end
-                    //   hit:
-                    //   <compile key>    ; [attrset, key]  (re-compile, pure)
-                    //   DynGetAttr       ; [value]
-                    //   end:
-                    self.emit(OpCode::Dup);
-                    self.compile_dynamic_attr_key(attr)?;
-                    self.emit(OpCode::DynHasAttr);
-                    let hit_jump = self.emit_jump(OpCode::JumpIfTrue);
-                    self.emit(OpCode::Pop);
-                    self.compile_expr(&default_expr)?;
-                    let end_jump = self.emit_jump(OpCode::Jump);
-                    self.patch_jump(hit_jump)?;
-                    self.compile_dynamic_attr_key(attr)?;
-                    self.emit(OpCode::DynGetAttr);
-                    self.patch_jump(end_jump)?;
+                    self.emit(OpCode::Dup);             // [val, val]
+                    self.compile_dynamic_attr_key(attr)?; // [val, val, key]
+                    self.emit(OpCode::DynHasAttr);      // [val, bool]
+                    miss_jumps.push(self.emit_jump(OpCode::JumpIfFalse)); // [val]
+                    self.compile_dynamic_attr_key(attr)?; // [val, key]
+                    self.emit(OpCode::DynGetAttr);      // [next_val]
                 }
             }
+            // All segments succeeded — result is on stack.
+            // Stack depth here = depth_before (each Dup+HasAttr+JumpIfFalse+GetAttr is net 0).
+            let end_jump = self.emit_jump(OpCode::Jump);
+            // miss path: one value on stack (the partial traversal value)
+            for mj in miss_jumps {
+                self.patch_jump(mj)?;
+            }
+            // Reset stack depth to depth_before (we have the partial value on stack)
+            self.stack_depth = depth_before;
+            self.emit(OpCode::Pop);                    // depth_before - 1
+            self.compile_expr(&default_expr)?;         // depth_before (default_val)
+            self.patch_jump(end_jump)?;
+            // Both paths leave exactly one result on stack: depth = depth_before
         } else {
             // Superinstruction: if base is a local and first segment is static,
             // use GetLocalAttr for the first access (saves one dispatch).
@@ -2986,24 +2965,33 @@ mod tests {
     #[test]
     fn compile_select_or_default() {
         // `or default` now uses jump-based control flow:
-        // Dup + HasAttr + JumpIfTrue + Pop + default + Jump + GetAttr
+        // Dup + HasAttr + JumpIfFalse(miss) + GetAttr + Jump(end) + Pop + default
         let chunk = compile("{ a = 1; }.b or 0");
         assert!(chunk.code.contains(&(OpCode::Dup as u8)));
         assert!(chunk.code.contains(&(OpCode::HasAttr as u8)));
-        assert!(chunk.code.contains(&(OpCode::JumpIfTrue as u8)));
+        assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
         assert!(chunk.code.contains(&(OpCode::GetAttr as u8)));
     }
 
     #[test]
     fn compile_dyn_select_or_default() {
         // Dynamic `or default` now uses jump-based control flow:
-        // Dup + DynHasAttr + JumpIfTrue + Pop + default + Jump + DynGetAttr
+        // Dup + DynHasAttr + JumpIfFalse(miss) + DynGetAttr + Jump(end) + Pop + default
         let chunk = compile(r#"let x = "a"; in { a = 1; }.${ x } or 0"#);
         assert!(chunk.code.contains(&(OpCode::Dup as u8)));
         assert!(chunk.code.contains(&(OpCode::DynHasAttr as u8)));
-        assert!(chunk.code.contains(&(OpCode::JumpIfTrue as u8)));
+        assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
         // The hit path uses DynGetAttr to actually select the value.
         assert!(chunk.code.contains(&(OpCode::DynGetAttr as u8)));
+    }
+
+    #[test]
+    fn compile_multi_segment_select_or_default() {
+        // `a.b.c or default` — all segments should use HasAttr+JumpIfFalse
+        let chunk = compile("{ a = { b = 1; }; }.a.b.c or 0");
+        // Each segment emits Dup + HasAttr + JumpIfFalse + GetAttr
+        let has_attr_count = chunk.code.iter().filter(|&&b| b == OpCode::HasAttr as u8).count();
+        assert!(has_attr_count >= 3, "expected >= 3 HasAttr ops for 3 segments, got {has_attr_count}");
     }
 
     #[test]
