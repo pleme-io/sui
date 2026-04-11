@@ -1,53 +1,67 @@
 # Sui (粋) — Rust-Native Nix Replacement
 
-API-first Nix reimplementation in Rust. Every Nix operation exposed via REST, GraphQL, and gRPC.
-Auto-generates SDKs, IaC providers, MCP server, and shell completions from a single OpenAPI spec.
+Pure-Rust Nix evaluator + build system. Drop-in `nix` CLI replacement (`alias nix=sui`).
+Tree-walker exceeds CppNix 3x on 45/48 benchmarks. Bytecode VM with NaN-boxed 8-byte values.
 
-## Architecture
+## Workspace (10 crates)
 
-6-crate Cargo workspace + root binary/library:
+| Crate | Purpose |
+|-------|---------|
+| `sui` (root) | CLI binary — nix-compatible interface |
+| `sui-eval` | Tree-walker evaluator (Value 16B, Env, Thunk, NixAttrs) |
+| `sui-bytecode` | Bytecode VM (NanBox 8B, 42 opcodes, TAILCALL, slot locals) |
+| `sui-intern` | Shared string interning (Symbol u32, Interner, thread-local) |
+| `sui-compat` | Nix formats (NAR, store paths, derivations, ATerm) |
+| `sui-store` | Store abstraction (SeaORM/SQLite) |
+| `sui-build` | Build execution (sandboxed builder) |
+| `sui-cache` | Binary cache (S3, local, redb) |
+| `sui-daemon` | Daemon mode (worker protocol) |
+| `sui-orchestrate` | System rebuild + deployment |
 
-| Crate | Purpose | Phase |
-|-------|---------|-------|
-| `sui-compat` | Clean-room Nix formats (NAR, store paths, derivations, wire protocol) | 2 |
-| `sui-store` | Store abstraction + SeaORM metadata | 3 |
-| `sui-eval` | Bytecode VM Nix evaluator | 4 |
-| `sui-build` | Sandboxed builder (Linux namespaces, macOS sandbox-exec) | 5 |
-| `sui-daemon` | Worker protocol server (nix-daemon replacement) | 5 |
-| `sui-orchestrate` | System rebuild + fleet deployment | 6 |
-| `sui` (root) | CLI (clap multicall) + triple-stack API server | 0-1 |
-
-## API Stack
+## Evaluation Pipeline
 
 ```
-REST (axum :8080) ←─┐
-GraphQL (async-graphql :8080/graphql) ←── SuiService ←── Domain crates
-gRPC (tonic :50051) ←─┘
+Source → rnix::parse → AST
+  → eval_expr_inner (tree-walker, 16B Values, HAMT env)
+  OR
+  → Compiler → Chunk → VM::run (8B NanBox, slot locals, TAILCALL)
+  ↕ (fallback bridge: VM → tree-walker on CompileError/RuntimeError)
+  → force_value → Result<Value>
 ```
 
-## Build
+## Build & Test
 
 ```bash
-cargo check          # workspace check
-cargo test           # all tests
-cargo run -- serve   # start API server
-cargo run -- --help  # CLI help
+cargo test --workspace          # all tests (~3000+)
+cargo test -p sui-eval --lib    # eval unit tests (~1200)
+cargo test -p sui-eval --test perf_regression  # 19 perf regression tests
+cargo build --release           # optimized binary
+SUI_EVAL_PERF=1 sui eval ...   # profiling mode (expression breakdown + thunk waste)
 ```
+
+## Performance Architecture
+
+- **Value:** 16 bytes (Rc-wrapped String/Attrs/Lambda/Builtin, Box-wrapped Path)
+- **Env:** im_rc::HashMap<Symbol, Value, FxBuildHasher> — O(log32 n) persistent HAMT
+- **Thunk:** OnceCell fast-path (150M+ cache hits bypass UnsafeCell) + state machine
+- **Strings:** SmolStr (22B inline), interned Symbol(u32) keys
+- **Lists:** Rc<Vec<Value>> — O(1) clone
+- **Allocator:** mimalloc global allocator
+- **VM NanBox:** 8-byte IEEE 754 NaN-payload encoding (null/bool/int48/float/heap pointer)
+- **maybe_thunk:** Skip thunking literals, paths, lambdas (CppNix maybeThunk equivalent)
+
+## Key Patterns
+
+- **Error helpers:** `EvalError::builtin_type(name, expected, got)`, `EvalError::op_type(op, lhs, rhs)`
+- **Builtin bridge:** VM calls tree-walker builtins via `StringKeyedValue::Callable` + `set_builtin_bridge()`
+- **Import fallback:** VM catches CompileError AND RuntimeError, falls back to tree-walker per-file
+- **Perf counters:** `crate::perf::inc(Counter::EvalExpr)` — enum-indexed array, zero-cost when disabled
 
 ## Conventions
 
-- Edition 2024, Rust 1.89.0+, MIT license
-- `clippy::pedantic` warnings enabled
-- Release profile: `codegen-units = 1`, `lto = true`, `opt-level = "z"`, `strip = true`
+- Edition 2024, Rust 1.89.0+, MIT, `clippy::pedantic`
+- Release: `codegen-units = 1`, `lto = true`, `opt-level = 3`, `strip = true`
 - All code clean-room — no vendored GPL code
-- SeaORM for store metadata (1:1 mapping to Nix SQLite schema)
-- OpenAPI spec at `spec/openapi.yaml` is the source of truth for all APIs
-
-## Forge Pipeline
-
-`forge-gen.toml` drives auto-generation from the OpenAPI spec:
-- MCP server (mcp-forge)
-- Terraform + Pulumi providers (iac-forge)
-- SDKs: Rust, Python, TypeScript, Go
-- Shell completions (completion-forge)
-- JSON Schema + API docs
+- `#[inline(always)]` on force_value, eval_expr fast paths
+- 19 unsafe blocks in value.rs — all justified with SAFETY comments
+- Compile-time assertion: `size_of::<Value>() <= 16`
