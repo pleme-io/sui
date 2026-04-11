@@ -83,6 +83,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "sui-cache-eval" = rec {
+      packageId = "sui-cache-eval";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "sui-cache-eval";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "sui-compat" = rec {
       packageId = "sui-compat";
       build = internal.buildRustCrateWithFeatures {
@@ -107,6 +117,16 @@ rec {
       packageId = "sui-eval";
       build = internal.buildRustCrateWithFeatures {
         packageId = "sui-eval";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "sui-intern" = rec {
+      packageId = "sui-intern";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "sui-intern";
       };
 
       # Debug support which might change between releases.
@@ -4055,6 +4075,27 @@ rec {
         ];
 
       };
+      "dirs-next" = rec {
+        crateName = "dirs-next";
+        version = "2.0.0";
+        edition = "2018";
+        sha256 = "1q9kr151h9681wwp6is18750ssghz6j9j7qm7qi1ngcwy7mzi35r";
+        libName = "dirs_next";
+        authors = [
+          "The @xdg-rs members"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "dirs-sys-next";
+            packageId = "dirs-sys-next";
+          }
+        ];
+
+      };
       "dirs-sys" = rec {
         crateName = "dirs-sys";
         version = "0.5.0";
@@ -4076,7 +4117,7 @@ rec {
           }
           {
             name = "redox_users";
-            packageId = "redox_users";
+            packageId = "redox_users 0.5.2";
             usesDefaultFeatures = false;
             target = { target, features }: ("redox" == target."os" or null);
           }
@@ -4085,6 +4126,36 @@ rec {
             packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_UI_Shell" "Win32_Foundation" "Win32_Globalization" "Win32_System_Com" ];
+          }
+        ];
+
+      };
+      "dirs-sys-next" = rec {
+        crateName = "dirs-sys-next";
+        version = "0.1.2";
+        edition = "2018";
+        sha256 = "0kavhavdxv4phzj4l0psvh55hszwnr0rcz8sxbvx20pyqi2a3gaf";
+        libName = "dirs_sys_next";
+        authors = [
+          "The @xdg-rs members"
+        ];
+        dependencies = [
+          {
+            name = "libc";
+            packageId = "libc";
+            target = { target, features }: (target."unix" or false);
+          }
+          {
+            name = "redox_users";
+            packageId = "redox_users 0.4.6";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("redox" == target."os" or null);
+          }
+          {
+            name = "winapi";
+            packageId = "winapi";
+            target = { target, features }: (target."windows" or false);
+            features = [ "knownfolders" "objbase" "shlobj" "winbase" "winerror" ];
           }
         ];
 
@@ -15066,7 +15137,40 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "userspace" ];
       };
-      "redox_users" = rec {
+      "redox_users 0.4.6" = rec {
+        crateName = "redox_users";
+        version = "0.4.6";
+        edition = "2021";
+        sha256 = "0hya2cxx6hxmjfxzv9n8rjl5igpychav7zfi1f81pz6i4krry05s";
+        authors = [
+          "Jose Narvaez <goyox86@gmail.com>"
+          "Wesley Hershberger <mggmugginsmc@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "getrandom";
+            packageId = "getrandom 0.2.17";
+            features = [ "std" ];
+          }
+          {
+            name = "libredox";
+            packageId = "libredox";
+            usesDefaultFeatures = false;
+            features = [ "std" "call" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 1.0.69";
+          }
+        ];
+        features = {
+          "auth" = [ "rust-argon2" "zeroize" ];
+          "default" = [ "auth" ];
+          "rust-argon2" = [ "dep:rust-argon2" ];
+          "zeroize" = [ "dep:zeroize" ];
+        };
+      };
+      "redox_users 0.5.2" = rec {
         crateName = "redox_users";
         version = "0.5.2";
         edition = "2021";
@@ -20345,6 +20449,10 @@ rec {
             packageId = "sui-compat";
           }
           {
+            name = "sui-intern";
+            packageId = "sui-intern";
+          }
+          {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
@@ -20473,6 +20581,43 @@ rec {
           {
             name = "tower";
             packageId = "tower 0.5.3";
+          }
+        ];
+
+      };
+      "sui-cache-eval" = rec {
+        crateName = "sui-cache-eval";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache-eval; };
+        libName = "sui_cache_eval";
+        dependencies = [
+          {
+            name = "blake3";
+            packageId = "blake3";
+          }
+          {
+            name = "dirs-next";
+            packageId = "dirs-next";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tempfile";
+            packageId = "tempfile";
           }
         ];
 
@@ -20697,6 +20842,10 @@ rec {
             packageId = "sui-compat";
           }
           {
+            name = "sui-intern";
+            packageId = "sui-intern";
+          }
+          {
             name = "sui-store";
             packageId = "sui-store";
           }
@@ -20746,6 +20895,20 @@ rec {
           {
             name = "test-case";
             packageId = "test-case";
+          }
+        ];
+
+      };
+      "sui-intern" = rec {
+        crateName = "sui-intern";
+        version = "0.1.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-intern; };
+        libName = "sui_intern";
+        dependencies = [
+          {
+            name = "rustc-hash";
+            packageId = "rustc-hash 2.1.2";
           }
         ];
 
@@ -24792,7 +24955,7 @@ rec {
         features = {
           "debug" = [ "impl-debug" ];
         };
-        resolvedDefaultFeatures = [ "handleapi" "iphlpapi" "std" "winerror" "winsock2" "ws2def" ];
+        resolvedDefaultFeatures = [ "handleapi" "iphlpapi" "knownfolders" "objbase" "shlobj" "std" "winbase" "winerror" "winsock2" "ws2def" ];
       };
       "winapi-i686-pc-windows-gnu" = rec {
         crateName = "winapi-i686-pc-windows-gnu";
