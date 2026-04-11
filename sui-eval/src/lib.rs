@@ -201,10 +201,15 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
             sui_bytecode::StringKeyedValue::Attrs(map)
         }
         Value::Lambda(closure) => {
-            let closure_clone = (**closure).clone();
+            // Wrap in Rc so the Fn closure captures a shared pointer
+            // rather than an owned Closure.  Each invocation clones out
+            // of the Rc (all Closure fields are refcounted, so O(1)),
+            // but the capture itself is just an Rc bump — no redundant
+            // outer+inner double-clone.
+            let closure_rc = std::rc::Rc::new((**closure).clone());
             sui_bytecode::StringKeyedValue::Callable(std::rc::Rc::new(move |arg| {
                 let eval_arg = convert::string_keyed_to_eval(&arg);
-                let func = Value::Lambda(Box::new(closure_clone.clone()));
+                let func = Value::Lambda(Box::new((*closure_rc).clone()));
                 let result = eval::apply(func, eval_arg)
                     .map_err(|e| e.to_string())?;
                 let forced = eval::force_value(&result)
@@ -213,10 +218,13 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
             }))
         }
         Value::Builtin(bf) => {
-            let bf_clone = (**bf).clone();
+            // Same Rc pattern as Lambda above — BuiltinFn::clone() is
+            // already cheap (static str + Rc bump on func), but the Rc
+            // wrapper avoids the misleading double-clone.
+            let bf_rc = std::rc::Rc::new((**bf).clone());
             sui_bytecode::StringKeyedValue::Callable(std::rc::Rc::new(move |arg| {
                 let eval_arg = convert::string_keyed_to_eval(&arg);
-                let func = Value::Builtin(Box::new(bf_clone.clone()));
+                let func = Value::Builtin(Box::new((*bf_rc).clone()));
                 let result = eval::apply(func, eval_arg)
                     .map_err(|e| e.to_string())?;
                 let forced = eval::force_value(&result)

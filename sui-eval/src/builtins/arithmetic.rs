@@ -11,9 +11,7 @@ macro_rules! register_numeric_binop {
                 (Value::Float(x), Value::Float(y)) => Ok(Value::Float($float_op(*x, *y))),
                 (Value::Int(x), Value::Float(y)) => Ok(Value::Float($float_op(*x as f64, *y))),
                 (Value::Float(x), Value::Int(y)) => Ok(Value::Float($float_op(*x, *y as f64))),
-                _ => Err(EvalError::TypeError(format!(
-                    "{}: expected numbers", $name
-                ))),
+                _ => Err(EvalError::builtin_type($name, "numbers", "non-numeric")),
             }
         });
     };

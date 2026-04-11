@@ -18,10 +18,11 @@ pub fn navigate_attrs(value: &Value, path: &[&str]) -> Result<Value, EvalError> 
                 current = crate::eval::force_value(&next)?;
             }
             _ => {
-                return Err(EvalError::TypeError(format!(
-                    "navigate_attrs: expected attrset at '{key}', got {}",
-                    current.type_name()
-                )));
+                return Err(EvalError::builtin_type(
+                    &format!("navigate_attrs at '{key}'"),
+                    "attrset",
+                    current.type_name(),
+                ));
             }
         }
     }

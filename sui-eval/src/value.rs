@@ -1146,6 +1146,18 @@ impl EvalError {
         EvalError::TypeMismatch { expected, got }
     }
 
+    /// Create a type error for a builtin argument type mismatch.
+    #[must_use]
+    pub fn builtin_type(builtin: &str, expected: &str, got: &str) -> Self {
+        EvalError::TypeError(format!("{builtin}: expected {expected}, got {got}"))
+    }
+
+    /// Create a type error for a binary operator type mismatch.
+    #[must_use]
+    pub fn op_type(op: &str, lhs: &str, rhs: &str) -> Self {
+        EvalError::TypeError(format!("cannot {op} {lhs} and {rhs}"))
+    }
+
     /// Whether this error was caused by `throw` or `abort`.
     #[must_use]
     pub fn is_throw(&self) -> bool {

@@ -106,7 +106,7 @@ pub fn call_builtin_by_name(name: &str, args: &[Value]) -> Result<Value, EvalErr
 
         let attrs = borrow.as_ref().unwrap();
         let builtin_val = attrs.get(name).ok_or_else(|| {
-            EvalError::TypeError(format!("bridge: unknown builtin '{name}'"))
+            EvalError::type_error(format!("bridge: unknown builtin '{name}'"))
         })?;
 
         match builtin_val {
@@ -126,9 +126,9 @@ pub fn call_builtin_by_name(name: &str, args: &[Value]) -> Result<Value, EvalErr
                         _ => Ok(partial),
                     }
                 } else if args.is_empty() {
-                    Err(EvalError::TypeError(format!(
-                        "bridge: builtin '{name}' called with no arguments"
-                    )))
+                    Err(EvalError::type_error(
+                        format!("bridge: builtin '{name}' called with no arguments"),
+                    ))
                 } else {
                     // 3+ args: chain partial applications
                     let mut result = (bf.func)(&args[..1])?;
@@ -143,9 +143,9 @@ pub fn call_builtin_by_name(name: &str, args: &[Value]) -> Result<Value, EvalErr
                     Ok(result)
                 }
             }
-            _ => Err(EvalError::TypeError(format!(
-                "bridge: '{name}' is not a builtin function"
-            ))),
+            _ => Err(EvalError::type_error(
+                format!("bridge: '{name}' is not a builtin function"),
+            )),
         }
     })
 }

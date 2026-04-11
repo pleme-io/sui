@@ -488,9 +488,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
                 return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
             }
-            return Err(EvalError::TypeError(format!(
-                "search path '{text}' not in NIX_PATH"
-            )));
+            return Err(EvalError::type_error(
+                format!("search path '{text}' not in NIX_PATH"),
+            ));
         }
 
         ast::Expr::Ident(ident) => {
@@ -835,10 +835,9 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                 Err(EvalError::AttrNotFound(key))
             }
         }
-        TraverseResult::NotAttrs(v) => Err(EvalError::TypeError(format!(
-            "cannot select from {}",
-            v.type_name()
-        ))),
+        TraverseResult::NotAttrs(v) => Err(EvalError::type_error(
+            format!("cannot select from {}", v.type_name()),
+        )),
     }
 }
 
@@ -869,10 +868,9 @@ fn eval_unary_op(op: &ast::UnaryOp, env: &Env) -> Result<Value, EvalError> {
         ast::UnaryOpKind::Negate => match val {
             Value::Int(n) => Ok(Value::Int(-n)),
             Value::Float(f) => Ok(Value::Float(-f)),
-            _ => Err(EvalError::TypeError(format!(
-                "cannot negate {}",
-                val.type_name()
-            ))),
+            _ => Err(EvalError::type_error(
+                format!("cannot negate {}", val.type_name()),
+            )),
         },
         ast::UnaryOpKind::Invert => Ok(Value::Bool(!val.as_bool()?)),
     }
@@ -1306,11 +1304,7 @@ fn eval_binop(
                     ctx,
                 ))))
             }
-            _ => Err(EvalError::TypeError(format!(
-                "cannot add {} and {}",
-                l.type_name(),
-                r.type_name()
-            ))),
+            _ => Err(EvalError::op_type("add", l.type_name(), r.type_name())),
         },
         ast::BinOpKind::Sub => num_op(&l, &r, |a, b| a - b, |a, b| a - b),
         ast::BinOpKind::Mul => num_op(&l, &r, |a, b| a * b, |a, b| a * b),
@@ -1357,11 +1351,7 @@ fn num_op(
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
-        _ => Err(EvalError::TypeError(format!(
-            "cannot perform arithmetic on {} and {}",
-            l.type_name(),
-            r.type_name()
-        ))),
+        _ => Err(EvalError::op_type("perform arithmetic on", l.type_name(), r.type_name())),
     }
 }
 
@@ -1383,11 +1373,7 @@ fn compare(
             .unwrap_or(std::cmp::Ordering::Equal),
         (Value::String(a), Value::String(b)) => a.chars.cmp(&b.chars),
         _ => {
-            return Err(EvalError::TypeError(format!(
-                "cannot compare {} and {}",
-                l.type_name(),
-                r.type_name()
-            )));
+            return Err(EvalError::op_type("compare", l.type_name(), r.type_name()));
         }
     };
     Ok(Value::Bool(pred(ord)))
@@ -1462,16 +1448,14 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
                 let partial = apply(functor, func.clone())?;
                 apply(partial, arg)
             } else {
-                Err(EvalError::TypeError(format!(
-                    "cannot call {} (missing __functor)",
-                    func.type_name()
-                )))
+                Err(EvalError::type_error(
+                    format!("cannot call {} (missing __functor)", func.type_name()),
+                ))
             }
         }
-        _ => Err(EvalError::TypeError(format!(
-            "cannot call {}",
-            func.type_name()
-        ))),
+        _ => Err(EvalError::type_error(
+            format!("cannot call {}", func.type_name()),
+        )),
     }
 }
 
@@ -1516,9 +1500,9 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                         env.clone(),
                     ))
                 } else {
-                    return Err(EvalError::TypeError(format!(
-                        "missing argument '{name}'"
-                    )));
+                    return Err(EvalError::type_error(
+                        format!("missing argument '{name}'"),
+                    ));
                 };
                 env.bind(name, value);
             }
@@ -1530,9 +1514,9 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                     .collect();
                 for key in attrs.keys() {
                     if !entry_names.contains(key.as_str()) {
-                        return Err(EvalError::TypeError(format!(
-                            "unexpected argument '{key}'"
-                        )));
+                        return Err(EvalError::type_error(
+                            format!("unexpected argument '{key}'"),
+                        ));
                     }
                 }
             }
