@@ -10,6 +10,7 @@ description = "Clean-room Nix language evaluator (bytecode VM)"
 [dependencies]
 sui-bytecode.workspace = true
 sui-compat.workspace = true
+sui-intern.workspace = true
 sui-store.workspace = true
 rnix.workspace = true
 rowan.workspace = true

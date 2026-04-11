@@ -1,0 +1,16 @@
+[package]
+name = "sui-intern"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "String interning for the sui Nix evaluator — Symbol(u32) handles for O(1) comparison"
+
+[dependencies]
+rustc-hash = "2"
+
+[dev-dependencies]
+
+[lints.clippy]
+pedantic = "warn"

@@ -7,7 +7,7 @@
 
 use crate::value::{NixAttrs, SmolStr, Value, Rc};
 use sui_bytecode::value::{StringKeyedValue, VMValue};
-use sui_bytecode::intern::Interner;
+use sui_intern::Interner;
 
 /// Convert a `StringKeyedValue` (from the bytecode VM) to a tree-walker `Value`.
 ///

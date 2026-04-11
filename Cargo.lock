@@ -5869,6 +5869,7 @@ dependencies = [
  "sha2",
  "sui-compat",
  "sui-eval",
+ "sui-intern",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -5949,6 +5950,7 @@ dependencies = [
  "im-rc",
  "pretty_assertions",
  "proptest",
+ "redb",
  "regex",
  "rnix",
  "rowan",
@@ -5963,6 +5965,7 @@ dependencies = [
  "stacker",
  "sui-bytecode",
  "sui-compat",
+ "sui-intern",
  "sui-store",
  "tar",
  "tempfile",
@@ -5972,6 +5975,13 @@ dependencies = [
  "toml",
  "tracing",
  "ureq",
+]
+
+[[package]]
+name = "sui-intern"
+version = "0.1.0"
+dependencies = [
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]

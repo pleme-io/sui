@@ -15,7 +15,7 @@ pub use smol_str::SmolStr;
 
 use rowan::ast::AstNode;
 
-use sui_bytecode::intern::{Interner, Symbol};
+use sui_intern::{Interner, Symbol};
 
 /// Type alias for the persistent hash map used by `NixAttrs` and `Env`.
 ///
