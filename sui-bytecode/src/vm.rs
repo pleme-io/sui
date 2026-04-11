@@ -216,7 +216,8 @@ impl<'a> VM<'a> {
                 }
                 // Attrsets
                 OpCode::MakeAttrs | OpCode::GetAttr | OpCode::HasAttr | OpCode::UpdateAttrs |
-                OpCode::SelectOrDefault | OpCode::DynGetAttr | OpCode::DynHasAttr => {
+                OpCode::SelectOrDefault | OpCode::DynGetAttr | OpCode::DynHasAttr |
+                OpCode::DynSelectOrDefault => {
                     self.dispatch_attrset(op)?;
                 }
                 // Lists
@@ -660,6 +661,34 @@ impl<'a> VM<'a> {
                 let key_sym = self.interner.intern(&key_str);
                 let result = attrset.as_attrs().map_or(false, |attrs| attrs.contains_key(&key_sym));
                 self.push(NanBox::bool(result));
+            }
+            OpCode::DynSelectOrDefault => {
+                let default = self.pop()?;
+                let key_val = self.pop_forced()?;
+                let attrset = self.pop_forced()?;
+                let key_str = key_val
+                    .as_string()
+                    .ok_or_else(|| VMError::TypeError {
+                        expected: "string",
+                        got: key_val.type_name(),
+                        context: "dynamic select-or-default key".to_string(),
+                    })?
+                    .to_string();
+                let key_sym = self.interner.intern(&key_str);
+                if let Some(attrs) = attrset.as_attrs() {
+                    if let Some(val) = attrs.get(&key_sym) {
+                        let forced = if val.is_thunk() {
+                            self.force_value(val.clone())?
+                        } else {
+                            val.clone()
+                        };
+                        self.push(forced);
+                    } else {
+                        self.push(default);
+                    }
+                } else {
+                    self.push(default);
+                }
             }
             _ => unreachable!(),
         }
@@ -3275,7 +3304,8 @@ impl<'a> VM<'a> {
                 | OpCode::Call | OpCode::TailCall | OpCode::Return
                 | OpCode::Assert | OpCode::Pop | OpCode::PushWith | OpCode::PopWith
                 | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
-                | OpCode::DynGetAttr | OpCode::DynHasAttr => 1,
+                | OpCode::DynGetAttr | OpCode::DynHasAttr
+                | OpCode::DynSelectOrDefault => 1,
 
                 // 1 u16 operand (3 bytes):
                 OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal
@@ -3737,6 +3767,51 @@ mod tests {
     fn eval_select_or_default() {
         assert_eq!(eval("{ a = 1; }.b or 0"), VMValue::Int(0));
         assert_eq!(eval("{ a = 1; }.a or 0"), VMValue::Int(1));
+    }
+
+    #[test]
+    fn eval_dyn_select_or_default_missing() {
+        // Dynamic key missing → returns default.
+        assert_eq!(
+            eval(r#"let x = "missing"; in { a = 1; }.${ x } or 99"#),
+            VMValue::Int(99),
+        );
+    }
+
+    #[test]
+    fn eval_dyn_select_or_default_found() {
+        // Dynamic key present → returns actual value.
+        assert_eq!(
+            eval(r#"let x = "a"; in { a = 42; }.${ x } or 99"#),
+            VMValue::Int(42),
+        );
+    }
+
+    #[test]
+    fn eval_dyn_select_or_default_dotted_key() {
+        // Key containing dots treated as single flat key, not nested path.
+        assert_eq!(
+            eval(r#"let x = "a.b"; in { "a.b" = 7; }.${ x } or 0"#),
+            VMValue::Int(7),
+        );
+    }
+
+    #[test]
+    fn eval_dyn_select_or_default_special_chars() {
+        // Key with dots and plus signs (nixpkgs armv8 CPU feature pattern).
+        assert_eq!(
+            eval(r#"let x = "armv8.3-a+crypto+sha2"; in { "armv8-a" = 1; }.${ x } or 0"#),
+            VMValue::Int(0),
+        );
+    }
+
+    #[test]
+    fn eval_dyn_select_or_default_non_attrset() {
+        // Base is not an attrset → returns default.
+        assert_eq!(
+            eval(r#"let x = "a"; base = 42; in base.${ x } or 99"#),
+            VMValue::Int(99),
+        );
     }
 
     // -- Lambdas / Apply ------------------------------------------------

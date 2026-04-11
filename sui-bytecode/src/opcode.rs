@@ -109,6 +109,10 @@ pub enum OpCode {
     /// Dynamic hasattr: pop string key, pop attrset, push bool.
     /// No inline operand — key comes from the stack at runtime.
     DynHasAttr = 66,
+    /// Dynamic select-or-default: pop default, key, attrset; push value or default.
+    /// Stack order (top to bottom): default, key (string), attrset.
+    /// No inline operand — key comes from the stack at runtime.
+    DynSelectOrDefault = 67,
 
     // ── Lists ──────────────────────────────────────────────────
     /// Pop N values, construct a list.
@@ -225,6 +229,7 @@ impl OpCode {
             64 => Some(OpCode::SelectOrDefault),
             65 => Some(OpCode::DynGetAttr),
             66 => Some(OpCode::DynHasAttr),
+            67 => Some(OpCode::DynSelectOrDefault),
             70 => Some(OpCode::MakeList),
             71 => Some(OpCode::Concat),
             80 => Some(OpCode::MakeClosure),
@@ -265,7 +270,7 @@ mod tests {
             OpCode::GetLocal, OpCode::SetLocal, OpCode::GetUpvalue, OpCode::SetUpvalue,
             OpCode::PushWith, OpCode::PopWith, OpCode::LookupWith,
             OpCode::MakeAttrs, OpCode::GetAttr, OpCode::HasAttr,
-            OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr, OpCode::DynHasAttr,
+            OpCode::UpdateAttrs, OpCode::SelectOrDefault, OpCode::DynGetAttr, OpCode::DynHasAttr, OpCode::DynSelectOrDefault,
             OpCode::MakeList, OpCode::Concat,
             OpCode::MakeClosure, OpCode::Call, OpCode::Return, OpCode::TailCall,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,

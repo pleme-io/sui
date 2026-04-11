@@ -1636,8 +1636,13 @@ impl Compiler {
                         self.emit(OpCode::GetAttr);
                         self.emit_u16(key_idx);
                     }
+                } else if i == segments.len() - 1 {
+                    // Last segment is dynamic with `or default`: use DynSelectOrDefault.
+                    self.compile_dynamic_attr_key(attr)?;
+                    self.compile_expr(&default_expr)?;
+                    self.emit(OpCode::DynSelectOrDefault);
                 } else {
-                    // Dynamic segment: compile key expression, use DynGetAttr.
+                    // Non-last dynamic segment: use DynGetAttr.
                     self.compile_dynamic_attr_key(attr)?;
                     self.emit(OpCode::DynGetAttr);
                 }
@@ -2243,6 +2248,10 @@ impl Compiler {
             // SelectOrDefault: pop 2 (default + attrset), push 1 (net -1)
             OpCode::SelectOrDefault => {
                 self.stack_depth = self.stack_depth.saturating_sub(1);
+            }
+            // DynSelectOrDefault: pop 3 (default + key + attrset), push 1 (net -2)
+            OpCode::DynSelectOrDefault => {
+                self.stack_depth = self.stack_depth.saturating_sub(2);
             }
             // GetLocalAttr: push 1 (fused GetLocal+GetAttr: push local, get attr = net +1)
             OpCode::GetLocalAttr => {
@@ -2920,6 +2929,14 @@ mod tests {
     fn compile_select_or_default() {
         let chunk = compile("{ a = 1; }.b or 0");
         assert!(chunk.code.contains(&(OpCode::SelectOrDefault as u8)));
+    }
+
+    #[test]
+    fn compile_dyn_select_or_default() {
+        let chunk = compile(r#"let x = "a"; in { a = 1; }.${ x } or 0"#);
+        assert!(chunk.code.contains(&(OpCode::DynSelectOrDefault as u8)));
+        // Must NOT contain DynGetAttr for this pattern — the default must be respected.
+        assert!(!chunk.code.contains(&(OpCode::DynGetAttr as u8)));
     }
 
     #[test]
