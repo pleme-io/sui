@@ -18541,7 +18541,7 @@ rec {
         crateName = "shikumi";
         version = "0.1.0";
         edition = "2024";
-        sha256 = "1ac9fx48rfg4f6l7jgj8wlzj4yc52z1g8cs6nbc6cckl7cbrn1ls";
+        sha256 = "1ipr6sbf9inxciqy7xbv2s3sm3139hrm0n5pwdgf4m8ahk3nkwvc";
         dependencies = [
           {
             name = "arc-swap";
