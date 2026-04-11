@@ -7,7 +7,7 @@
 use sui_compat::derivation::Derivation;
 use sui_compat::store_path::StorePath;
 
-use crate::traits::{BuildError, BuildOutcome, BuildResult, Builder};
+use crate::traits::{BuildError, BuildResult, Builder};
 
 /// A builder that drives convergence execution.
 ///

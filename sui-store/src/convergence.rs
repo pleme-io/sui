@@ -5,7 +5,7 @@
 //! The convergence store IS the Nix store — attestations are store paths.
 
 use sui_compat::store_path::StorePath;
-use crate::traits::{StoreError, StoreResult};
+use crate::traits::StoreResult;
 
 /// A convergence-aware store path with generation tracking.
 #[derive(Debug, Clone)]
