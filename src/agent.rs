@@ -483,6 +483,11 @@ fn parse_flake_ref(flake_ref: &str) -> (String, String) {
     }
 }
 
+/// Public wrapper for use from CLI commands (cache-warm).
+pub fn fetch_flake_source_public(flake_url: &str) -> Result<std::path::PathBuf, sui_eval::fetcher::FetchError> {
+    fetch_flake_source(flake_url)
+}
+
 /// Fetch a flake's source directory (clone via tarball).
 fn fetch_flake_source(flake_url: &str) -> Result<std::path::PathBuf, sui_eval::fetcher::FetchError> {
     // Parse github:owner/repo or github:owner/repo/ref
@@ -547,9 +552,10 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 
 // ── Strategy: eval (full sui-eval derivation resolution) ─────
 
-/// Full Nix evaluation strategy. Evaluates the flake expression to get
-/// exact derivation output paths, then substitutes from upstream caches.
-/// Requires ~16 GiB RAM for nixpkgs-dependent flakes.
+/// Eval strategy with derivation path caching.
+///
+/// On cache hit: instant lookup (~0 RAM). On miss: full sui-eval (needs RAM).
+/// Use `sui cache warm` to pre-populate the cache on a capable machine.
 async fn resolve_with_eval(
     request: &BuildRequest,
     upstream_caches: &[BinaryCacheStore],
@@ -562,17 +568,42 @@ async fn resolve_with_eval(
         attr_path
     };
 
-    info!(flake_url = %flake_url, attr_path = %attr_path, "Evaluating flake (full eval)");
+    info!(flake_url = %flake_url, attr_path = %attr_path, "Evaluating flake (eval strategy)");
 
-    let eval_expr = format!("(builtins.getFlake \"{flake_url}\").{attr_path}");
+    // Fetch the flake source to get a local directory for evaluate_flake_attr.
+    let flake_url_owned = flake_url.clone();
+    let attr_path_owned = attr_path.clone();
     let out_path = tokio::task::spawn_blocking(move || -> Result<String, AgentError> {
-        let value = sui_eval::eval(&eval_expr)
+        // Initialize the drv cache on this thread (thread-local).
+        sui_eval::drv_cache::init_global_cache();
+
+        // Fetch the flake source directory.
+        let flake_dir = fetch_flake_source(&flake_url_owned)
+            .map_err(|e| AgentError::Fetch(e.to_string()))?;
+
+        // Evaluate with cache check.
+        let segments: Vec<&str> = attr_path_owned.split('.').collect();
+        let value = sui_eval::builtins::evaluate_flake_attr(&flake_dir, &segments)
             .map_err(AgentError::Eval)?;
-        extract_out_path(&value)
+
+        // Extract outPath.
+        let attrs = value.as_attrs().map_err(|e| {
+            AgentError::Eval(sui_eval::EvalError::TypeError(format!(
+                "expected derivation attrs: {e}"
+            )))
+        })?;
+        attrs
+            .get("outPath")
+            .ok_or_else(|| AgentError::Fetch("no outPath in result".to_string()))?
+            .as_string()
+            .map(String::from)
+            .map_err(|e| AgentError::Eval(sui_eval::EvalError::TypeError(format!("outPath: {e}"))))
     })
     .await
     .map_err(|e| AgentError::Fetch(format!("eval panicked: {e}")))?
     .map_err(|e| AgentError::Fetch(e.to_string()))?;
+
+    info!(out_path = %out_path, "Derivation resolved");
 
     let store_path = sui_compat::store_path::StorePath::from_absolute_path(&out_path)
         .map_err(|e| AgentError::Fetch(e.to_string()))?;
@@ -593,26 +624,6 @@ async fn resolve_with_eval(
     }
 
     Ok((0, 1))
-}
-
-/// Extract `outPath` from a derivation Value.
-fn extract_out_path(value: &sui_eval::Value) -> Result<String, AgentError> {
-    let attrs = value.as_attrs().map_err(|e| {
-        AgentError::Eval(sui_eval::EvalError::TypeError(format!(
-            "expected derivation attrs: {e}"
-        )))
-    })?;
-    if let Some(v) = attrs.get("outPath") {
-        return v.as_string().map(String::from).map_err(|e| {
-            AgentError::Eval(sui_eval::EvalError::TypeError(format!("outPath: {e}")))
-        });
-    }
-    if let Some(v) = attrs.get("drvPath") {
-        return v.as_string().map(String::from).map_err(|e| {
-            AgentError::Eval(sui_eval::EvalError::TypeError(format!("drvPath: {e}")))
-        });
-    }
-    Err(AgentError::Fetch("no outPath or drvPath".to_string()))
 }
 
 // ── Strategy: nix (legacy shell-out) ─────────────────────────

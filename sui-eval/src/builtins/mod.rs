@@ -62,7 +62,7 @@ pub(crate) use versions::{compare_versions, parse_drv_name, split_version};
 
 // ── Public API ──────────────────────────────────────────────
 pub use derivation::build_derivation;
-pub use flake_eval::evaluate_flake;
+pub use flake_eval::{evaluate_flake, evaluate_flake_attr};
 pub(crate) use flake_eval::{FLAKE_EVAL_DEPTH, MAX_FLAKE_EVAL_DEPTH};
 pub use import_cache::clear_import_cache;
 pub(crate) use import_cache::IMPORT_CACHE;

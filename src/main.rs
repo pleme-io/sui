@@ -155,6 +155,16 @@ enum Commands {
         #[arg(long, default_value = "lockfile")]
         strategy: String,
     },
+    /// Pre-warm the derivation path cache for a flake.
+    /// Run on a machine with enough RAM, then ship drv-cache.redb to K8s pods.
+    #[command(name = "cache-warm")]
+    CacheWarm {
+        /// Path to the flake directory (or github:owner/repo reference)
+        flake_ref: String,
+        /// Attribute paths to cache (e.g., "packages.x86_64-linux.default")
+        #[arg(long)]
+        attrs: Vec<String>,
+    },
     Doctor,
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
@@ -910,6 +920,40 @@ async fn main() -> Result<(), CliError> {
         },
         Commands::Agent { nats_url, stream, consumer, cache_url, cache_name, strategy } => {
             agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name, &strategy).await?;
+        }
+        Commands::CacheWarm { flake_ref, attrs } => {
+            use sui_eval::drv_cache;
+            drv_cache::init_global_cache();
+            let flake_dir = if flake_ref.starts_with("github:") || flake_ref.starts_with("git+") {
+                // Remote ref — fetch the source first.
+                let dir = agent::fetch_flake_source_public(&flake_ref)
+                    .map_err(|e| CliError::MissingArgument(format!("fetch failed: {e}")))?;
+                dir
+            } else {
+                std::path::PathBuf::from(&flake_ref)
+            };
+
+            for attr in &attrs {
+                let segments: Vec<&str> = attr.split('.').collect();
+                println!("Evaluating {flake_ref}#{attr} ...");
+                match sui_eval::builtins::evaluate_flake_attr(&flake_dir, &segments) {
+                    Ok(value) => {
+                        if let Ok(attrs) = value.as_attrs() {
+                            if let Some(out) = attrs.get("outPath") {
+                                println!("  outPath: {}", out.as_string().unwrap_or("?"));
+                            }
+                            if let Some(drv) = attrs.get("drvPath") {
+                                println!("  drvPath: {}", drv.as_string().unwrap_or("?"));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Error: {e}");
+                    }
+                }
+            }
+            let entries = drv_cache::with_cache(|c| Some(c.len())).unwrap_or(0);
+            println!("Cache now has {entries} entries at {}", drv_cache::DrvCache::default_path().display());
         }
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }

@@ -116,6 +116,7 @@ mimalloc = { version = "0.1", default-features = false }
 aho-corasick = "1"
 base64 = "0.22"
 data-encoding = "2"
+redb = "2"
 regex = "1"
 toml = "0.8"
 

@@ -238,3 +238,103 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
 
     Ok(Value::Attrs(Rc::new(final_attrs)))
 }
+
+// ── Cached attribute evaluation ──────────────────────────────
+
+/// Evaluate a flake and navigate to a specific attribute, with caching.
+///
+/// If the derivation path for `(lock_hash, source_hash, attr_path)` is already
+/// in the drv cache, returns a synthetic derivation attrset without evaluating
+/// the flake (near-zero memory). Otherwise, evaluates normally and caches the
+/// result for future lookups.
+pub fn evaluate_flake_attr(
+    flake_dir: &std::path::Path,
+    attr_path: &[&str],
+) -> Result<Value, EvalError> {
+    let lock_path = flake_dir.join("flake.lock");
+    let source_path = flake_dir.join("flake.nix");
+
+    // Compute cache keys from file content.
+    let lock_hash = std::fs::read(&lock_path)
+        .ok()
+        .map(|c| crate::drv_cache::DrvCache::hash_bytes(&c));
+    let source_hash = std::fs::read(&source_path)
+        .ok()
+        .map(|c| crate::drv_cache::DrvCache::hash_bytes(&c));
+    let attr_key = attr_path.join(".");
+
+    // Check drv cache.
+    if let (Some(lh), Some(sh)) = (&lock_hash, &source_hash) {
+        if let Some(entry) = crate::drv_cache::with_cache(|cache| cache.get(lh, sh, &attr_key)) {
+            tracing::info!(
+                attr_path = %attr_key,
+                out_path = %entry.out_path,
+                "drv cache hit — skipping full evaluation"
+            );
+            return Ok(synthetic_drv_value(&entry));
+        }
+    }
+
+    // Cache miss — full evaluation.
+    tracing::info!(attr_path = %attr_key, "drv cache miss — evaluating flake");
+    let flake_result = evaluate_flake(flake_dir)?;
+
+    // Navigate to the target attribute.
+    let target = navigate_attr_path(&flake_result, attr_path)?;
+
+    // If the result is a derivation, cache it.
+    if let (Some(lh), Some(sh)) = (&lock_hash, &source_hash) {
+        if let Value::Attrs(ref attrs) = target {
+            let drv_path = attrs.get("drvPath").and_then(|v| v.as_string().ok());
+            let out_path = attrs.get("outPath").and_then(|v| v.as_string().ok());
+            if let (Some(dp), Some(op)) = (drv_path, out_path) {
+                crate::drv_cache::with_cache_mut(|cache| {
+                    let entry = crate::drv_cache::DrvCacheEntry {
+                        drv_path: dp.to_string(),
+                        out_path: op.to_string(),
+                    };
+                    if let Err(e) = cache.put(lh, sh, &attr_key, &entry) {
+                        tracing::warn!(error = %e, "Failed to cache derivation path");
+                    } else {
+                        tracing::info!(attr_path = %attr_key, out_path = %op, "Cached derivation path");
+                    }
+                });
+            }
+        }
+    }
+
+    Ok(target)
+}
+
+/// Navigate an attribute path like `["packages", "x86_64-linux", "default"]`
+/// through a Value, forcing thunks at each level.
+fn navigate_attr_path(value: &Value, path: &[&str]) -> Result<Value, EvalError> {
+    let mut current = crate::eval::force_value(value)?;
+    for segment in path {
+        let attrs = current.as_attrs().map_err(|_| {
+            EvalError::TypeError(format!(
+                "expected attrset at '.{segment}', got {}",
+                current.type_name()
+            ))
+        })?;
+        let next = attrs.get(*segment).ok_or_else(|| {
+            EvalError::AttrNotFound((*segment).to_string())
+        })?;
+        current = crate::eval::force_value(next)?;
+    }
+    Ok(current)
+}
+
+/// Build a synthetic derivation Value from cached paths.
+/// The caller only needs `drvPath`, `outPath`, and `type = "derivation"`.
+fn synthetic_drv_value(entry: &crate::drv_cache::DrvCacheEntry) -> Value {
+    let mut attrs = NixAttrs::new();
+    attrs.insert("type".to_string(), Value::string("derivation"));
+    attrs.insert("drvPath".to_string(), Value::string(entry.drv_path.clone()));
+    attrs.insert("outPath".to_string(), Value::string(entry.out_path.clone()));
+    // Extract name from store path: /nix/store/hash-name → name
+    if let Some(name) = entry.out_path.rsplit('/').next().and_then(|b| b.split_once('-').map(|(_, n)| n)) {
+        attrs.insert("name".to_string(), Value::string(name));
+    }
+    Value::Attrs(Rc::new(attrs))
+}
