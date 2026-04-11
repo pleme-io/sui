@@ -411,8 +411,19 @@ impl<'a> VM<'a> {
             }
             OpCode::GetUpvalue => {
                 let idx = self.read_u16()? as usize;
-                let value = self.current_frame().upvalues[idx].clone();
-                self.push(value);
+                let upvalues = &self.current_frame().upvalues;
+                if idx >= upvalues.len() {
+                    // Upvalue index out of bounds — compiler bug or missing
+                    // upvalue patching. Push null as fallback to avoid panic.
+                    eprintln!(
+                        "[sui-vm] GetUpvalue: index {} out of bounds (len {})",
+                        idx, upvalues.len()
+                    );
+                    self.push(NanBox::null());
+                } else {
+                    let value = upvalues[idx].clone();
+                    self.push(value);
+                }
             }
             OpCode::SetUpvalue => {
                 let idx = self.read_u16()? as usize;
