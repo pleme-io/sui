@@ -53,5 +53,6 @@
   "git+https://github.com/pleme-io/gitoxide?branch=edition-2024-compat#gix-worktree-state@0.28.0": "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd",
   "git+https://github.com/pleme-io/gitoxide?branch=edition-2024-compat#gix-worktree-stream@0.30.0": "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd",
   "git+https://github.com/pleme-io/gitoxide?branch=edition-2024-compat#gix-worktree@0.50.0": "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd",
-  "git+https://github.com/pleme-io/gitoxide?branch=edition-2024-compat#gix@0.81.0": "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd"
+  "git+https://github.com/pleme-io/gitoxide?branch=edition-2024-compat#gix@0.81.0": "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd",
+  "git+https://github.com/pleme-io/shikumi#0.1.0": "1w4hk7mfcgnjjcm5zk9lsivbj36rwk56a92h69wsa51f0by270pa"
 }
