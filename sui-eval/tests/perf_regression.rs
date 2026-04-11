@@ -179,3 +179,90 @@ in builtins.length (builtins.attrNames (fix composed))
         2000, // 2s budget -- currently takes ~23ms
     );
 }
+
+#[test]
+fn perf_mapattrs_lazy() {
+    // mapAttrs must be lazy — only accessed attrs are evaluated
+    eval_timed(
+        r#"
+let
+  big = builtins.listToAttrs (builtins.genList (i: { name = "k${toString i}"; value = i; }) 1000);
+  mapped = builtins.mapAttrs (n: v: v * 2) big;
+in mapped.k0
+"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_fixpoint_self_reference() {
+    // Fixpoint with self-referential attrs (the pattern that caused infinite recursion)
+    eval_timed(
+        r#"
+let fix = f: let x = f x; in x;
+in (fix (self: { a = 1; b = self.a + 1; c = self.b + 1; })).c
+"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_deep_equality() {
+    // Deep equality with nested attrsets (tests deep-force in ==)
+    eval_timed(
+        r#"
+let a = { x = { y = 1; }; z = [1 2 3]; };
+    b = { x = { y = 1; }; z = [1 2 3]; };
+in a == b
+"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_split_filter() {
+    // Split + filter pattern used by nixpkgs system parsing
+    eval_timed(
+        r#"builtins.filter builtins.isString (builtins.split "-" "aarch64-unknown-linux-gnu")"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_rec_attrset_dotted() {
+    // Recursive attrset with dotted bindings (the pattern that caused null upvalues)
+    eval_timed(
+        r#"
+rec {
+  types.a = 1;
+  types.b = 2;
+  result = types.a + types.b;
+}.result
+"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_inherit_shared_source() {
+    // Inherit with shared source thunk
+    eval_timed(
+        r#"
+let src = { a = 1; b = 2; c = 3; d = 4; e = 5; };
+in let inherit (src) a b c d e; in a + b + c + d + e
+"#,
+        500,
+    );
+}
+
+#[test]
+fn perf_select_or_default() {
+    // Select with or-default (tests DynSelectOrDefault path)
+    eval_timed(
+        r#"
+let s = { a = 1; };
+in (s.b or 42) + (s.a or 0)
+"#,
+        500,
+    );
+}

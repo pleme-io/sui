@@ -262,7 +262,7 @@ impl<'a> VM<'a> {
                     self.dispatch_super(op)?;
                 }
                 // Stack / String
-                OpCode::Pop | OpCode::Interpolate => {
+                OpCode::Pop | OpCode::Dup | OpCode::Interpolate => {
                     self.dispatch_stack(op)?;
                 }
             }
@@ -1141,6 +1141,10 @@ impl<'a> VM<'a> {
         match op {
             OpCode::Pop => {
                 self.pop()?;
+            }
+            OpCode::Dup => {
+                let top = self.stack.last().ok_or(VMError::StackUnderflow)?.clone();
+                self.push(top);
             }
             OpCode::Interpolate => {
                 let count = self.read_u16()? as usize;
@@ -3302,10 +3306,10 @@ impl<'a> VM<'a> {
                 | OpCode::LessEqual | OpCode::GreaterEqual
                 | OpCode::UpdateAttrs | OpCode::Concat
                 | OpCode::Call | OpCode::TailCall | OpCode::Return
-                | OpCode::Assert | OpCode::Pop | OpCode::PushWith | OpCode::PopWith
+                | OpCode::Assert | OpCode::Pop | OpCode::Dup | OpCode::PushWith | OpCode::PopWith
                 | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
                 | OpCode::DynGetAttr | OpCode::DynHasAttr
-                | OpCode::DynSelectOrDefault => 1,
+                | OpCode::DynSelectOrDefault | OpCode::Dup => 1,
 
                 // 1 u16 operand (3 bytes):
                 OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal

@@ -150,9 +150,11 @@ pub enum OpCode {
     /// Pop condition; if false, raise `AssertionFailed`.
     Assert = 100,
 
-    // ── Pop ────────────────────────────────────────────────────
+    // ── Stack manipulation ─────────────────────────────────────
     /// Discard the top of the stack.
     Pop = 110,
+    /// Duplicate the top of the stack.
+    Dup = 111,
 
     // ── Superinstructions ─────────────────────────────────────
     /// Fused `GetLocal` + `GetAttr`: push `stack[base+slot].key`.
@@ -241,6 +243,7 @@ impl OpCode {
             92 => Some(OpCode::JumpIfTrue),
             100 => Some(OpCode::Assert),
             110 => Some(OpCode::Pop),
+            111 => Some(OpCode::Dup),
             120 => Some(OpCode::GetLocalAttr),
             121 => Some(OpCode::GetLocalCall),
             130 => Some(OpCode::PushBuiltins),
@@ -274,7 +277,7 @@ mod tests {
             OpCode::MakeList, OpCode::Concat,
             OpCode::MakeClosure, OpCode::Call, OpCode::Return, OpCode::TailCall,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,
-            OpCode::Assert, OpCode::Pop,
+            OpCode::Assert, OpCode::Pop, OpCode::Dup,
             OpCode::GetLocalAttr, OpCode::GetLocalCall,
             OpCode::PushBuiltins, OpCode::CallBuiltin,
             OpCode::MakeThunk, OpCode::Force, OpCode::PatchThunkUpvalues, OpCode::MakeLazyThunk,
