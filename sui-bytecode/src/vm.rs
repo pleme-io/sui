@@ -41,6 +41,32 @@ use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMThunk, VMVal
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
 
+/// A tiny bytecode chunk: `GetUpvalue 0; GetUpvalue 1; Call; Return`.
+/// Used to create deferred-application thunks where upvalue 0 is a
+/// function and upvalue 1 is its argument. Cached to avoid repeated
+/// allocation.
+fn deferred_apply_chunk() -> Rc<Chunk> {
+    thread_local! {
+        static CHUNK: Rc<Chunk> = {
+            let mut c = Chunk::new();
+            // GetUpvalue 0 — push the function (upvalue index 0, little-endian u16)
+            c.write_op(OpCode::GetUpvalue, 0);
+            c.write_byte(0, 0); // lo byte of index 0
+            c.write_byte(0, 0); // hi byte of index 0
+            // GetUpvalue 1 — push the argument (upvalue index 1, little-endian u16)
+            c.write_op(OpCode::GetUpvalue, 0);
+            c.write_byte(1, 0); // lo byte of index 1
+            c.write_byte(0, 0); // hi byte of index 1
+            // Call
+            c.write_op(OpCode::Call, 0);
+            // Return
+            c.write_op(OpCode::Return, 0);
+            Rc::new(c)
+        };
+    }
+    CHUNK.with(|c| c.clone())
+}
+
 // ── Flake resolver callback ─────────────────────────────────
 
 /// Signature for an external flake resolver.
@@ -2952,12 +2978,20 @@ impl<'a> VM<'a> {
                 };
                 let func_nb = NanBox::from_vmvalue(&hob.func);
                 let entries: Vec<_> = attrs.iter().map(|(k, v)| (*k, v.clone())).collect();
+                let chunk = deferred_apply_chunk();
                 let mut result = BTreeMap::new();
                 for (sym, val) in entries {
                     let key_str = self.interner.resolve(sym).to_string();
+                    // Eagerly apply f to the key name (partial application).
+                    // This is cheap — it just creates a closure capturing the key.
                     let partial = self.call_callable(&func_nb, NanBox::string(key_str))?;
-                    let mapped = self.call_callable(&partial, NanBox::from_vmvalue(&val))?;
-                    result.insert(sym, mapped);
+                    // Defer the second application (partial value) as a thunk.
+                    // This matches CppNix semantics: mapAttrs is lazy in values.
+                    let thunk = VMThunk::new(
+                        chunk.clone(),
+                        vec![partial.to_vmvalue(), val],
+                    );
+                    result.insert(sym, NanBox::thunk(thunk));
                 }
                 Ok(NanBox::attrs(result))
             }
