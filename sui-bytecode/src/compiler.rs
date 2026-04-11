@@ -1787,12 +1787,42 @@ impl Compiler {
                 for (i, (fname, default)) in field_names.iter().enumerate() {
                     let key_idx = func_compiler.add_attr_key(fname.clone())?;
                     if let Some(default_expr) = default {
-                        // Use SelectOrDefault.
+                        // Lazy default: only evaluate default_expr when the
+                        // key is absent from the argument attrset AND the
+                        // parameter is actually forced.  Nix semantics require
+                        // defaults to be fully lazy — they must not be forced
+                        // at function entry even when the key is missing.
+                        //
+                        // Emit:
+                        //   GetLocal 0        ; push arg attrset
+                        //   HasAttr key_idx   ; bool: key present?
+                        //   JumpIfFalse L1    ; key missing → default path
+                        //   GetLocal 0        ; key present → fetch value
+                        //   GetAttr key_idx
+                        //   Jump L2
+                        // L1:
+                        //   MakeThunk(default) ; wrap in thunk — only forced on use
+                        // L2:
+                        //   ; result on stack
                         func_compiler.emit(OpCode::GetLocal);
                         func_compiler.emit_u16(0); // arg attrset at slot 0
-                        func_compiler.compile_expr(default_expr)?;
-                        func_compiler.emit(OpCode::SelectOrDefault);
+                        func_compiler.emit(OpCode::HasAttr);
                         func_compiler.emit_u16(key_idx);
+                        let else_jump = func_compiler.emit_jump(OpCode::JumpIfFalse);
+                        // After JumpIfFalse pops the bool, save depth.
+                        let depth_at_branch = func_compiler.stack_depth;
+                        // Key exists — get the value.
+                        func_compiler.emit(OpCode::GetLocal);
+                        func_compiler.emit_u16(0);
+                        func_compiler.emit(OpCode::GetAttr);
+                        func_compiler.emit_u16(key_idx);
+                        let end_jump = func_compiler.emit_jump(OpCode::Jump);
+                        // Key missing — wrap default in a thunk (lazy).
+                        func_compiler.stack_depth = depth_at_branch;
+                        func_compiler.patch_jump(else_jump)?;
+                        func_compiler.compile_thunk_immediate(default_expr)?;
+                        // Both branches leave exactly one value on the stack.
+                        func_compiler.patch_jump(end_jump)?;
                     } else {
                         // Use GetAttr (will error if missing).
                         func_compiler.emit(OpCode::GetLocal);
