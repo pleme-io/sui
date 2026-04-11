@@ -856,6 +856,35 @@ impl Compiler {
         Ok(uv_descs)
     }
 
+    /// Compile a deferred thunk for a dotted binding in rec attrsets.
+    /// Like `compile_thunk_deferred`, but the thunk body is a nested attrset
+    /// rather than a single expression.  Leaf values inside the nested attrset
+    /// are individually wrapped in immediate thunks so that forcing the outer
+    /// thunk doesn't eagerly evaluate all leaves (avoiding infinite recursion
+    /// when dotted bindings cross-reference each other through rec siblings).
+    fn compile_nested_attrset_thunk_deferred(
+        &mut self,
+        sub_bindings: &[(Vec<String>, ast::Expr)],
+    ) -> Result<Vec<UpvalueDesc>, CompileError> {
+        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+        tc.scope_depth = 1;
+        tc.enclosing = Some(self as *mut Compiler);
+        tc.with_depth = self.with_depth;
+        tc.base_dir = self.base_dir.clone();
+        tc.compile_nested_attrset_lazy(sub_bindings)?;
+        tc.emit(OpCode::Return);
+        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
+        let closure = VMValue::Closure(VMClosure {
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+        });
+        let idx = self.chunk.add_constant(closure)?;
+        self.emit(OpCode::MakeThunk);
+        self.stack_depth += 1; // MakeThunk pushes one thunk
+        self.emit_u16(idx);
+        self.emit_u16(0); // 0 upvalues, patched later
+        Ok(uv_descs)
+    }
+
     /// Compile a thunk with upvalues captured immediately (for non-rec attrsets).
     ///
     /// When the compiler has source text available and the expression has no
@@ -1224,7 +1253,16 @@ impl Compiler {
                     }
                 }
                 RecAttrBinding::Dotted(sub_bindings) => {
-                    self.compile_nested_attrset(sub_bindings)?;
+                    // Wrap dotted bindings in deferred thunks so that leaf
+                    // expressions referencing rec siblings are only evaluated
+                    // after PatchThunkUpvalues has populated upvalues.
+                    // Leaves inside the thunk are also made individually lazy
+                    // to avoid eagerly forcing siblings (which would cause
+                    // infinite recursion for cross-referencing dotted bindings).
+                    let uv_descs = self.compile_nested_attrset_thunk_deferred(sub_bindings)?;
+                    if !uv_descs.is_empty() {
+                        thunk_slots.push((slot, uv_descs));
+                    }
                 }
             }
             self.emit(OpCode::SetLocal);
@@ -1363,7 +1401,11 @@ impl Compiler {
                     }
                 }
                 RecAttrBinding::Dotted(sub_bindings) => {
-                    self.compile_nested_attrset(sub_bindings)?;
+                    // Wrap dotted bindings in deferred thunks (same as rec attrset).
+                    let uv_descs = self.compile_nested_attrset_thunk_deferred(sub_bindings)?;
+                    if !uv_descs.is_empty() {
+                        thunk_slots.push((slot, uv_descs));
+                    }
                 }
             }
             self.emit(OpCode::SetLocal);
@@ -1399,9 +1441,28 @@ impl Compiler {
 
     /// Compile a nested attrset from a list of (remaining-path, value) pairs.
     /// Used for dotted bindings like `{ a.b = 1; a.c = 2; }`.
+    ///
+    /// When `lazy_leaves` is true, non-trivial leaf values are wrapped in
+    /// immediate thunks (for rec attrsets where leaves may reference siblings
+    /// that aren't fully initialised until after `PatchThunkUpvalues` runs).
     fn compile_nested_attrset(
         &mut self,
         sub_bindings: &[(Vec<String>, ast::Expr)],
+    ) -> Result<(), CompileError> {
+        self.compile_nested_attrset_inner(sub_bindings, false)
+    }
+
+    fn compile_nested_attrset_lazy(
+        &mut self,
+        sub_bindings: &[(Vec<String>, ast::Expr)],
+    ) -> Result<(), CompileError> {
+        self.compile_nested_attrset_inner(sub_bindings, true)
+    }
+
+    fn compile_nested_attrset_inner(
+        &mut self,
+        sub_bindings: &[(Vec<String>, ast::Expr)],
+        lazy_leaves: bool,
     ) -> Result<(), CompileError> {
         // Group by next key.
         let mut groups: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
@@ -1427,10 +1488,14 @@ impl Compiler {
         for (key, nested) in &groups {
             if nested.len() == 1 && nested[0].0.is_empty() {
                 // Simple leaf.
-                self.compile_expr(&nested[0].1)?;
+                if lazy_leaves && !Self::is_trivial_value(&nested[0].1) {
+                    self.compile_thunk_immediate(&nested[0].1)?;
+                } else {
+                    self.compile_expr(&nested[0].1)?;
+                }
             } else {
                 // Recurse for deeper nesting.
-                self.compile_nested_attrset(nested)?;
+                self.compile_nested_attrset_inner(nested, lazy_leaves)?;
             }
             self.emit_constant(VMValue::String(key.clone()))?;
             count += 1;

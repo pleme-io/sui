@@ -415,15 +415,9 @@ impl<'a> VM<'a> {
                 if idx >= upvalues.len() {
                     // Upvalue index out of bounds — compiler bug or missing
                     // upvalue patching. Push null as fallback to avoid panic.
-                    let frame = self.current_frame();
-                    let chunk = &frame.chunk;
-                    let code_len = chunk.code.len();
-                    let first_bytes: Vec<u8> = chunk.code.iter().take(30).cloned().collect();
-                    let const_strs: Vec<String> = chunk.constants.iter().take(5).map(|c| format!("{:?}", c)).collect();
                     eprintln!(
-                        "[sui-vm] GetUpvalue: index {} out of bounds (len {}) at ip={} frame_depth={} chunk_len={} first_bytes={:?} consts={:?}",
-                        idx, upvalues.len(), frame.ip.saturating_sub(3), self.frames.len(),
-                        code_len, first_bytes, const_strs
+                        "[sui-vm] GetUpvalue: index {} out of bounds (len {})",
+                        idx, upvalues.len()
                     );
                     self.push(NanBox::null());
                 } else {
