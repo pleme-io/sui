@@ -2625,7 +2625,15 @@ impl<'a> VM<'a> {
                 stack_base,
                 upvalues,
             });
-            self.run_until(return_depth)
+            let result = self.run_until(return_depth);
+
+            // Restore the stack to its state before the call.
+            // The Return handler's early exit (at stop_depth) skips
+            // truncation, so the argument and any internal temporaries
+            // may still be on the stack.
+            self.stack.truncate(stack_base);
+
+            result
         } else if func.is_higher_order_builtin() {
             let hob = func.as_higher_order_builtin().unwrap().clone();
             self.call_higher_order_builtin(&hob, arg)
@@ -3493,6 +3501,36 @@ mod tests {
                 VMValue::Int(3),
                 VMValue::Int(4),
             ])
+        );
+    }
+
+    #[test]
+    fn eval_list_concat_with_inline_map() {
+        // Regression: call_callable did not truncate the stack after
+        // run_until, so map's per-element calls leaked values that
+        // shifted the Concat operands on the stack.
+        assert_eq!(
+            eval("[1] ++ builtins.map (a: a) [2 3]"),
+            VMValue::List(vec![VMValue::Int(1), VMValue::Int(2), VMValue::Int(3)])
+        );
+    }
+
+    #[test]
+    fn eval_list_concat_with_inline_map_attrsets() {
+        // Same regression with attrset-producing map (the nixpkgs pattern).
+        let result = eval(r#"[{ x = 1; }] ++ builtins.map (a: { v = a; }) ["a" "b"]"#);
+        match result {
+            VMValue::List(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected list, got {:?}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn eval_list_concat_with_inline_filter() {
+        // Also verify filter (another higher-order builtin) with ++.
+        assert_eq!(
+            eval("[0] ++ builtins.filter (x: x > 1) [1 2 3]"),
+            VMValue::List(vec![VMValue::Int(0), VMValue::Int(2), VMValue::Int(3)])
         );
     }
 
