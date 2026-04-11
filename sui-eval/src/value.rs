@@ -649,6 +649,12 @@ impl Thunk {
                 // retried because it has been consumed.
                 match f() {
                     Ok(mut value) => {
+                        // Store BEFORE transitively forcing — same pattern as
+                        // Suspended. Enables fixpoint re-entry: if inner thunks
+                        // reference this native thunk, they find Evaluated (not
+                        // Blackhole). This is critical for flake-parts and
+                        // NixOS module system fixpoints.
+                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
