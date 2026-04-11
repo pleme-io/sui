@@ -1018,9 +1018,19 @@ impl Compiler {
                                 dynamic_entries.push((key_expr, value_expr));
                             }
                             ast::Attr::Str(s) => {
-                                // String key like `${"foo"}` — compile it.
-                                let key_expr = ast::Expr::Str(s.clone());
-                                dynamic_entries.push((key_expr, value_expr));
+                                // Try to extract a plain string literal
+                                // (e.g. `"1" = ...`). These are static keys
+                                // and must be compiled like flat entries
+                                // (with lazy thunk-wrapped values) to avoid
+                                // eagerly evaluating throw expressions in
+                                // unaccessed attrset branches.
+                                if let Ok(key) = static_attr_name(&keys[0]) {
+                                    flat_entries.push((key, value_expr));
+                                } else {
+                                    // Interpolated string key — truly dynamic.
+                                    let key_expr = ast::Expr::Str(s.clone());
+                                    dynamic_entries.push((key_expr, value_expr));
+                                }
                             }
                             _ => {
                                 let key = static_attr_name(&keys[0])?;
@@ -1107,9 +1117,14 @@ impl Compiler {
             count += 1;
         }
 
-        // Emit dynamic entries.
+        // Emit dynamic entries (lazy: wrap non-trivial values in thunks
+        // to preserve Nix's lazy evaluation semantics).
         for (key_expr, value_expr) in &dynamic_entries {
-            self.compile_expr(value_expr)?;
+            if Self::is_trivial_value(value_expr) || self.with_depth > 0 {
+                self.compile_expr(value_expr)?;
+            } else {
+                self.compile_thunk_immediate(value_expr)?;
+            }
             self.compile_expr(key_expr)?;
             count += 1;
         }

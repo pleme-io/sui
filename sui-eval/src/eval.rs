@@ -3401,15 +3401,57 @@ mod tests {
     #[test]
     fn integration_builtins_split() {
         // Nix spec: split returns alternating non-match strings and match group lists.
-        // split "/" "a/b/c" => ["a" ["/"] "b" ["/"] "c"]
+        // When the regex has no capture groups, separator positions get empty lists.
+        // split "/" "a/b/c" => ["a" [] "b" [] "c"]
         assert_eq!(
             ev(r#"builtins.split "/" "a/b/c""#),
+            Value::list(vec![
+                Value::string("a"),
+                Value::list(vec![]),
+                Value::string("b"),
+                Value::list(vec![]),
+                Value::string("c"),
+            ]),
+        );
+        // With a capture group, the captured text appears in the list.
+        // split "(/)" "a/b/c" => ["a" ["/"] "b" ["/"] "c"]
+        assert_eq!(
+            ev(r#"builtins.split "(/)" "a/b/c""#),
             Value::list(vec![
                 Value::string("a"),
                 Value::list(vec![Value::string("/")]),
                 Value::string("b"),
                 Value::list(vec![Value::string("/")]),
                 Value::string("c"),
+            ]),
+        );
+    }
+
+    #[test]
+    fn integration_builtins_split_no_capture_groups() {
+        // builtins.split with no capture groups returns empty lists
+        // at separator positions — matches CppNix behavior.
+        // This is critical for nixpkgs lib.splitString which uses
+        // builtins.filter builtins.isString on the result.
+        assert_eq!(
+            ev(r#"builtins.split "-" "aarch64-darwin""#),
+            Value::list(vec![
+                Value::string("aarch64"),
+                Value::list(vec![]),
+                Value::string("darwin"),
+            ]),
+        );
+    }
+
+    #[test]
+    fn integration_builtins_split_system_string_filter() {
+        // Simulates nixpkgs lib.splitString: filter isString (split pattern string)
+        // This is the exact pattern that parses system strings like "aarch64-darwin".
+        assert_eq!(
+            ev(r#"builtins.filter builtins.isString (builtins.split "-" "aarch64-darwin")"#),
+            Value::list(vec![
+                Value::string("aarch64"),
+                Value::string("darwin"),
             ]),
         );
     }

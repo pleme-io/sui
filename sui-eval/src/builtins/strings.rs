@@ -186,7 +186,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         for m in re.find_iter(input) {
             // Add the non-matching part before this match
             result.push(Value::string(&input[last_end..m.start()]));
-            // Add the match groups as a list
+            // Add the match groups as a list.
+            // Per Nix spec: when the regex has no capture groups,
+            // the separator position gets an empty list [].
+            // When it has capture groups, those captures are the list elements.
             if let Some(caps) = re.captures(&input[m.start()..]) {
                 let groups: Vec<Value> = (1..caps.len())
                     .map(|i| match caps.get(i) {
@@ -194,12 +197,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         None => Value::Null,
                     })
                     .collect();
-                // If no capture groups, wrap the whole match in a list
-                if groups.is_empty() {
-                    result.push(Value::List(Rc::new(vec![Value::string(m.as_str())])));
-                } else {
-                    result.push(Value::List(Rc::new(groups)));
-                }
+                result.push(Value::List(Rc::new(groups)));
             }
             last_end = m.end();
         }

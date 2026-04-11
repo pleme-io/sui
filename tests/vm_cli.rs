@@ -238,6 +238,50 @@ fn no_vm_flag_uses_tree_walker() {
     assert_eq!(val, serde_json::json!(3));
 }
 
+// ── String-key attrsets (laziness) ────────────────────────────
+
+#[test]
+fn vm_parity_string_key_attrset() {
+    // String keys like "1" must be treated as static keys
+    // with lazy value evaluation (thunk-wrapped).
+    assert_vm_tw_parity(r#"{ "a" = 1; "b" = 2; }."b""#);
+}
+
+#[test]
+fn vm_string_key_attrset_lazy() {
+    // Accessing one key must not evaluate other keys' throw expressions.
+    // This is the pattern nixpkgs uses in lib.systems.parse.mkSkeletonFromList.
+    let assert = Command::cargo_bin("sui")
+        .expect("cargo_bin sui")
+        .args([
+            "eval",
+            "--json",
+            r#"{ "1" = throw "boom"; "2" = "ok"; }."2""#,
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val, serde_json::json!("ok"));
+}
+
+#[test]
+fn vm_string_key_dynamic_select_lazy() {
+    // Dynamic select with `or` fallback must not evaluate unaccessed keys.
+    let assert = Command::cargo_bin("sui")
+        .expect("cargo_bin sui")
+        .args([
+            "eval",
+            "--json",
+            r#"{ "1" = throw "boom"; "2" = "ok"; }.${toString 2} or "fallback""#,
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let val: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(val, serde_json::json!("ok"));
+}
+
 // ── Error paths ───────────────────────────────────────────────
 
 #[test]
