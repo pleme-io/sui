@@ -3,14 +3,15 @@
 Pure-Rust Nix evaluator + build system. Drop-in `nix` CLI replacement (`alias nix=sui`).
 Tree-walker exceeds CppNix 3x on 45/48 benchmarks. Bytecode VM with NaN-boxed 8-byte values.
 
-## Workspace (10 crates)
+## Workspace (11 crates)
 
 | Crate | Purpose |
 |-------|---------|
 | `sui` (root) | CLI binary — nix-compatible interface |
 | `sui-eval` | Tree-walker evaluator (Value 16B, Env, Thunk, NixAttrs) |
-| `sui-bytecode` | Bytecode VM (NanBox 8B, 42 opcodes, TAILCALL, slot locals) |
+| `sui-bytecode` | Bytecode VM (NanBox 8B, 44+ opcodes, TAILCALL, slot locals) |
 | `sui-intern` | Shared string interning (Symbol u32, Interner, thread-local) |
+| `sui-cache-eval` | Content-addressed eval cache (BLAKE3, JSON persistence) |
 | `sui-compat` | Nix formats (NAR, store paths, derivations, ATerm) |
 | `sui-store` | Store abstraction (SeaORM/SQLite) |
 | `sui-build` | Build execution (sandboxed builder) |
