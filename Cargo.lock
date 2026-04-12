@@ -5878,6 +5878,7 @@ version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
+ "blake3",
  "serde_json",
  "sha2",
  "sui-compat",

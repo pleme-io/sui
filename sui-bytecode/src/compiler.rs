@@ -105,6 +105,12 @@ pub struct Compiler {
     /// branches, and assert bodies. `compile_apply` checks this to emit
     /// `TailCall` instead of `Call`.
     tail_position: bool,
+    /// Stack slots of with-scope values stored as hidden locals.
+    /// When inside `with ns; body`, the namespace is Dup'd and stored as
+    /// a hidden local so thunks compiled inside the body can capture it as
+    /// an upvalue. At thunk force time, the thunk body emits
+    /// `GetUpvalue + PushWith` to restore the with-scope context.
+    with_scope_locals: Vec<u16>,
 }
 
 impl Compiler {
@@ -123,6 +129,7 @@ impl Compiler {
             stack_depth: 0,
             source_text: None,
             tail_position: false,
+            with_scope_locals: Vec::new(),
         }
     }
 
@@ -141,6 +148,7 @@ impl Compiler {
             stack_depth: 0,
             source_text: None,
             tail_position: false,
+            with_scope_locals: Vec::new(),
         }
     }
 
@@ -829,9 +837,11 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = self.with_depth;
+        tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
+        let with_count = self.emit_with_scope_preamble(&mut tc);
         tc.compile_expr(expr)?;
+        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
@@ -855,12 +865,14 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = self.with_depth;
+        tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
+        let with_count = self.emit_with_scope_preamble(&mut tc);
         tc.compile_expr(source_expr)?;
         let key_idx = tc.add_attr_key(attr_name.to_string())?;
         tc.emit(OpCode::GetAttr);
         tc.emit_u16(key_idx);
+        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
@@ -890,9 +902,11 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = self.with_depth;
+        tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
+        let with_count = self.emit_with_scope_preamble(&mut tc);
         tc.compile_nested_attrset_lazy(sub_bindings)?;
+        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
@@ -904,6 +918,28 @@ impl Compiler {
         self.emit_u16(idx);
         self.emit_u16(0); // 0 upvalues, patched later
         Ok(uv_descs)
+    }
+
+    /// Emit with-scope preamble in a child compiler: for each with-scope
+    /// local in the parent, capture it as an upvalue and emit
+    /// `GetUpvalue + PushWith` at the start of the thunk body.
+    /// Returns the count of with-scopes pushed (caller must emit PopWith for each).
+    fn emit_with_scope_preamble(&mut self, tc: &mut Compiler) -> usize {
+        let slots: Vec<u16> = self.with_scope_locals.clone();
+        for &slot in &slots {
+            // Find the local index for this slot in the parent.
+            let local_idx = self.locals.iter().rposition(|l| l.slot == slot);
+            if let Some(idx) = local_idx {
+                self.locals[idx].is_captured = true;
+                if let Ok(uv_idx) = tc.add_upvalue(true, slot) {
+                    tc.emit(OpCode::GetUpvalue);
+                    tc.emit_u16(uv_idx as u16);
+                    tc.emit(OpCode::PushWith);
+                    tc.with_depth += 1;
+                }
+            }
+        }
+        slots.len()
     }
 
     /// Compile a thunk with upvalues captured immediately (for non-rec attrsets).
@@ -944,9 +980,20 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = self.with_depth;
+        tc.with_depth = 0; // Reset: thunk body restores with-scopes via upvalues
         tc.base_dir = self.base_dir.clone();
+
+        // Capture with-scope locals from parent as upvalues in thunk body.
+        // Emit PushWith at thunk body start to restore with-scope context.
+        let with_count = self.emit_with_scope_preamble(&mut tc);
+
         tc.compile_expr(expr)?;
+
+        // Pop with-scopes in reverse.
+        for _ in 0..with_count {
+            tc.emit(OpCode::PopWith);
+        }
+
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
@@ -974,13 +1021,14 @@ impl Compiler {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = self.with_depth;
+        tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
-        // Emit: compile source expr, GetAttr(name), Return
+        let with_count = self.emit_with_scope_preamble(&mut tc);
         tc.compile_expr(source_expr)?;
         let key_idx = tc.add_attr_key(attr_name.to_string())?;
         tc.emit(OpCode::GetAttr);
         tc.emit_u16(key_idx);
+        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
@@ -1106,7 +1154,7 @@ impl Compiler {
         // except inside with-scopes where thunks can't capture the
         // dynamic scope).
         for (key, value_expr) in &flat_entries {
-            if Self::is_trivial_value(value_expr) || self.with_depth > 0 {
+            if Self::is_trivial_value(value_expr) {
                 self.compile_expr(value_expr)?;
             } else {
                 self.compile_thunk_immediate(value_expr)?;
@@ -1141,7 +1189,7 @@ impl Compiler {
         // Emit dynamic entries (lazy: wrap non-trivial values in thunks
         // to preserve Nix's lazy evaluation semantics).
         for (key_expr, value_expr) in &dynamic_entries {
-            if Self::is_trivial_value(value_expr) || self.with_depth > 0 {
+            if Self::is_trivial_value(value_expr) {
                 self.compile_expr(value_expr)?;
             } else {
                 self.compile_thunk_immediate(value_expr)?;
@@ -2187,9 +2235,24 @@ impl Compiler {
             .body()
             .ok_or_else(|| CompileError::MissingNode("with body".to_string()))?;
 
-        // Compile the namespace expression and push onto with-scope stack.
+        // Compile the namespace expression.
         self.compile_expr(&ns)?;
+
+        // Dup: one copy goes to PushWith (consumed), the other stays as a
+        // hidden local so thunks inside the body can capture it as an upvalue.
+        self.emit(OpCode::Dup);
+        self.stack_depth += 1;
+
+        // Push original onto with-scope stack (consumes TOS).
         self.emit(OpCode::PushWith);
+        // PushWith pops from value stack → but we already accounted for
+        // Dup's +1, so don't double-decrement. Net: hidden local remains.
+        // Note: PushWith's stack effect is -1 (line 2258 dispatch), but Dup
+        // pushed +1. The hidden local sits at stack_depth-1.
+
+        // Register the remaining copy as a hidden local.
+        let slot = self.add_local("__with_scope".to_string())?;
+        self.with_scope_locals.push(slot);
         self.with_depth += 1;
 
         // Compile the body.
@@ -2198,6 +2261,19 @@ impl Compiler {
         // Pop the with-scope.
         self.emit(OpCode::PopWith);
         self.with_depth -= 1;
+        self.with_scope_locals.pop();
+
+        // Clean up hidden local: body result is TOS, hidden local is below.
+        // Stack: [..., __with_scope, body_result]
+        // Swap them so body_result survives after Pop.
+        // Use SetLocal to overwrite the hidden local with body_result,
+        // then Pop to remove the duplicate TOS.
+        self.emit(OpCode::SetLocal);
+        self.emit_u16(slot);
+        self.emit(OpCode::Pop);
+        // Adjust: one slot removed (the hidden local is now body_result).
+        self.stack_depth = slot + 1;
+        self.locals.pop();
 
         Ok(())
     }
