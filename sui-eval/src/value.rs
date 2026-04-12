@@ -282,11 +282,13 @@ pub enum Value {
 
 // ── Concrete: construction-guaranteed non-thunk ──────────────
 
-/// A Value that has been explicitly demanded. Guaranteed NOT a Thunk.
+/// A demanded Nix value. Guaranteed NOT a Thunk at the TYPE level.
+///
+/// Unlike `Value` (which has a `Thunk` variant), `Concrete` is a separate
+/// enum that DOES NOT HAVE a Thunk variant. The compiler rejects any attempt
+/// to construct a `Concrete` from a thunk — the variant simply doesn't exist.
 ///
 /// The ONLY way to obtain a `Concrete` is through `Value::demand()`.
-/// This makes the Rust compiler reject code that skips forcing —
-/// accidental eagerness/laziness bugs become compile errors.
 ///
 /// ```rust,ignore
 /// let val: Value = eval_expr(expr, env)?;  // might be Thunk
@@ -294,72 +296,116 @@ pub enum Value {
 /// let n: i64 = c.as_int()?;                // type-safe, thunk-free
 /// ```
 #[derive(Debug, Clone)]
-pub struct Concrete(Value);
+pub enum Concrete {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Rc<NixString>),
+    Path(Box<SmolStr>),
+    List(Rc<Vec<Value>>),      // elements may be lazy (correct for Nix)
+    Attrs(Rc<NixAttrs>),       // values may be lazy (correct for Nix)
+    Lambda(Box<Closure>),
+    Builtin(Box<BuiltinFn>),
+    // NO Thunk variant. The compiler enforces this.
+}
 
 impl Concrete {
-    /// Unwrap back to a Value (for APIs that still take Value).
+    /// Convert back to a Value (for APIs that still take Value).
     #[inline]
     pub fn into_value(self) -> Value {
-        self.0
+        match self {
+            Concrete::Null => Value::Null,
+            Concrete::Bool(b) => Value::Bool(b),
+            Concrete::Int(n) => Value::Int(n),
+            Concrete::Float(f) => Value::Float(f),
+            Concrete::String(s) => Value::String(s),
+            Concrete::Path(p) => Value::Path(p),
+            Concrete::List(l) => Value::List(l),
+            Concrete::Attrs(a) => Value::Attrs(a),
+            Concrete::Lambda(c) => Value::Lambda(c),
+            Concrete::Builtin(b) => Value::Builtin(b),
+        }
     }
 
-    /// Borrow the inner Value.
-    #[inline]
-    pub fn value(&self) -> &Value {
-        &self.0
+    /// Borrow as a Value reference. Constructs a temporary Value.
+    /// Prefer specific accessors (as_bool, as_int, etc.) when possible.
+    pub fn to_value(&self) -> Value {
+        self.clone().into_value()
     }
 
     /// Extract bool — guaranteed no thunk.
     pub fn as_bool(&self) -> Result<bool, EvalError> {
-        match &self.0 {
-            Value::Bool(b) => Ok(*b),
+        match self {
+            Concrete::Bool(b) => Ok(*b),
             other => Err(EvalError::TypeMismatch { expected: "bool", got: other.type_name() }),
         }
     }
 
     /// Extract int — guaranteed no thunk.
     pub fn as_int(&self) -> Result<i64, EvalError> {
-        match &self.0 {
-            Value::Int(n) => Ok(*n),
+        match self {
+            Concrete::Int(n) => Ok(*n),
             other => Err(EvalError::TypeMismatch { expected: "int", got: other.type_name() }),
         }
     }
 
     /// Extract string ref — guaranteed no thunk.
     pub fn as_str(&self) -> Result<&str, EvalError> {
-        match &self.0 {
-            Value::String(s) => Ok(&s.chars),
+        match self {
+            Concrete::String(s) => Ok(&s.chars),
             other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
         }
     }
 
     /// Extract NixString ref — guaranteed no thunk.
     pub fn as_nix_string(&self) -> Result<&NixString, EvalError> {
-        match &self.0 {
-            Value::String(s) => Ok(s),
+        match self {
+            Concrete::String(s) => Ok(s),
             other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
         }
     }
 
-    /// Extract list ref — guaranteed no thunk.
+    /// Extract list ref — guaranteed no thunk at this level.
+    /// Note: list ELEMENTS may still be lazy (Value, not Concrete).
     pub fn as_list(&self) -> Result<&[Value], EvalError> {
-        match &self.0 {
-            Value::List(l) => Ok(l.as_slice()),
+        match self {
+            Concrete::List(l) => Ok(l.as_slice()),
             other => Err(EvalError::TypeMismatch { expected: "list", got: other.type_name() }),
         }
     }
 
-    /// Extract attrs ref — guaranteed no thunk.
+    /// Extract attrs ref — guaranteed no thunk at this level.
+    /// Note: attr VALUES may still be lazy (Value, not Concrete).
     pub fn as_attrs(&self) -> Result<&NixAttrs, EvalError> {
-        match &self.0 {
-            Value::Attrs(a) => Ok(a),
+        match self {
+            Concrete::Attrs(a) => Ok(a),
             other => Err(EvalError::TypeMismatch { expected: "set", got: other.type_name() }),
+        }
+    }
+
+    /// Extract float — guaranteed no thunk.
+    pub fn as_float(&self) -> Result<f64, EvalError> {
+        match self {
+            Concrete::Float(f) => Ok(*f),
+            Concrete::Int(n) => Ok(*n as f64),
+            other => Err(EvalError::TypeMismatch { expected: "float", got: other.type_name() }),
         }
     }
 
     /// Check the value type name.
     pub fn type_name(&self) -> &'static str {
-        self.0.type_name()
+        match self {
+            Concrete::Null => "null",
+            Concrete::Bool(_) => "bool",
+            Concrete::Int(_) => "int",
+            Concrete::Float(_) => "float",
+            Concrete::String(_) => "string",
+            Concrete::Path(_) => "path",
+            Concrete::List(_) => "list",
+            Concrete::Attrs(_) => "set",
+            Concrete::Lambda(_) | Concrete::Builtin(_) => "lambda",
+        }
     }
 }
 
@@ -367,16 +413,30 @@ impl Value {
     /// Demand a concrete value. Forces if Thunk, returns as-is if concrete.
     ///
     /// This is the TYPED forcing API. The returned `Concrete` is guaranteed
-    /// non-Thunk, and its accessors (`as_bool`, `as_int`, etc.) are
-    /// guaranteed to never encounter a thunk — enforced by the compiler.
+    /// non-Thunk — enforced by the Concrete enum having NO Thunk variant.
     pub fn demand(&self) -> Result<Concrete, EvalError> {
-        match self {
+        let v = match self {
+            Value::Thunk(_) => crate::eval::force_value(self)?,
+            other => other.clone(),
+        };
+        // Convert Value → Concrete. Thunk is impossible after force_value.
+        match v {
+            Value::Null => Ok(Concrete::Null),
+            Value::Bool(b) => Ok(Concrete::Bool(b)),
+            Value::Int(n) => Ok(Concrete::Int(n)),
+            Value::Float(f) => Ok(Concrete::Float(f)),
+            Value::String(s) => Ok(Concrete::String(s)),
+            Value::Path(p) => Ok(Concrete::Path(p)),
+            Value::List(l) => Ok(Concrete::List(l)),
+            Value::Attrs(a) => Ok(Concrete::Attrs(a)),
+            Value::Lambda(c) => Ok(Concrete::Lambda(c)),
+            Value::Builtin(b) => Ok(Concrete::Builtin(b)),
             Value::Thunk(_) => {
-                let forced = crate::eval::force_value(self)?;
-                debug_assert!(!matches!(forced, Value::Thunk(_)), "force_value returned a Thunk");
-                Ok(Concrete(forced))
+                // force_value contract violation — should never happen.
+                Err(EvalError::TypeError(
+                    "demand: force_value returned a Thunk (contract violation)".to_string(),
+                ))
             }
-            _ => Ok(Concrete(self.clone())),
         }
     }
 }
