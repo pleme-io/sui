@@ -168,6 +168,57 @@ impl Drop for DepthGuard {
     }
 }
 
+/// Collect free variable names from an AST expression (shallow).
+///
+/// Walks the expression tree and collects all `Ident` names that
+/// appear in non-binding positions. This is used for dead binding
+/// elimination: let-bindings whose names are NOT in the body's
+/// free variable set can be skipped (no thunk creation needed).
+///
+/// This is an APPROXIMATION — it over-estimates free variables
+/// (includes shadowed names). Over-estimation is safe: we may
+/// create a thunk that's unused (waste) but never skip a thunk
+/// that IS used (correctness).
+/// Collect ALL identifiers referenced in an AST expression.
+///
+/// This is an OVER-APPROXIMATION: it includes every `Ident` node
+/// in the tree, regardless of scoping. Over-approximation is SAFE
+/// for dead binding elimination — we may keep a binding that's
+/// unused (waste) but never skip a binding that IS used (correctness).
+///
+/// Handles: `inherit name;` (adds `name`), `inherit (source) name;`
+/// (adds `name` AND recurses into `source`), `with` bodies (marks
+/// ALL names as potentially needed via the `has_with` flag).
+///
+/// Returns (identifiers, has_with). If has_with is true, dead binding
+/// elimination must be disabled (with makes all names reachable).
+fn collect_referenced_names(expr: &ast::Expr) -> (HashSet<String>, bool) {
+    let mut names = HashSet::new();
+    let mut has_with = false;
+    collect_names_inner(expr, &mut names, &mut has_with);
+    (names, has_with)
+}
+
+fn collect_names_inner(expr: &ast::Expr, names: &mut HashSet<String>, has_with: &mut bool) {
+    // Use the generic syntax tree walker to visit ALL children.
+    // This is simpler and more correct than matching each variant.
+    if matches!(expr, ast::Expr::With(_)) {
+        *has_with = true;
+        return; // No need to recurse — has_with disables elimination
+    }
+    // Collect all Ident nodes at any depth
+    for node in expr.syntax().descendants() {
+        if let Some(ident) = ast::Ident::cast(node.clone()) {
+            names.insert(ident_text(&ident));
+        }
+        // Check for with at any depth
+        if ast::With::cast(node).is_some() {
+            *has_with = true;
+            return;
+        }
+    }
+}
+
 /// Evaluate a Nix expression string.
 #[must_use = "evaluation result should be used"]
 pub fn eval(input: &str) -> Result<Value, EvalError> {
