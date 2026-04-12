@@ -29,6 +29,8 @@ pub mod perf;
 pub mod trace;
 /// Nix value types, environments, thunks, and error types.
 pub mod value;
+/// Lazy evaluation primitives — making accidental eagerness impossible.
+pub mod lazy;
 
 /// Re-export flake lock types from sui-compat where they canonically live.
 pub mod flake {
