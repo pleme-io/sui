@@ -1003,11 +1003,21 @@ fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
         .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
     let func = force_value(&eval_expr(&func_expr, env)?)?;
     // Lambda arguments are wrapped in a thunk for call-by-need semantics.
-    // ALL arguments are wrapped in thunks for maximum laziness.
-    // CppNix wraps all args. Builtins force when they need the value.
-    // Previously only Lambda/tryEval args were thunked; builtins got
-    // eager args. This caused excess evaluation in overlay composition.
-    let arg = Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()));
+    // Thunk strategy depends on function type:
+    // - Lambda: ALWAYS thunk (call-by-need, enables fixpoints)
+    // - tryEval: ALWAYS thunk (must catch errors during force)
+    // - Builtin: evaluate eagerly (builtins always force args anyway;
+    //   thunking wastes Rc + OnceCell allocation per call)
+    // - __functor: evaluate eagerly (will be applied immediately)
+    let arg = match &func {
+        Value::Lambda(_) => {
+            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+        }
+        Value::Builtin(b) if b.name == "tryEval" => {
+            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+        }
+        _ => eval_expr(&arg_expr, env)?,
+    };
     apply(func, arg)
 }
 
