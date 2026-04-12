@@ -601,8 +601,14 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
         }
 
         ast::Expr::List(list) => {
-            let values: Result<Vec<_>, _> = list.items().map(|e| eval_expr(&e, env)).collect();
-            return Ok(Value::list(values?));
+            // Wrap list elements in thunks for maximum laziness.
+            // CppNix wraps list elements — only forced when accessed.
+            // This prevents eager evaluation of unused list elements
+            // (e.g., nixpkgs overlay lists with thousands of entries).
+            let values: Vec<Value> = list.items()
+                .map(|e| maybe_thunk(&e, env, false, None))
+                .collect();
+            return Ok(Value::list(values));
         }
 
         ast::Expr::AttrSet(set) => return eval_attrset(set, env),
@@ -997,15 +1003,11 @@ fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
         .ok_or_else(|| EvalError::ParseError("apply missing argument".to_string()))?;
     let func = force_value(&eval_expr(&func_expr, env)?)?;
     // Lambda arguments are wrapped in a thunk for call-by-need semantics.
-    let arg = match &func {
-        Value::Lambda(_) => {
-            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
-        }
-        Value::Builtin(b) if b.name == "tryEval" => {
-            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
-        }
-        _ => eval_expr(&arg_expr, env)?,
-    };
+    // ALL arguments are wrapped in thunks for maximum laziness.
+    // CppNix wraps all args. Builtins force when they need the value.
+    // Previously only Lambda/tryEval args were thunked; builtins got
+    // eager args. This caused excess evaluation in overlay composition.
+    let arg = Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()));
     apply(func, arg)
 }
 
@@ -5154,7 +5156,9 @@ mod tests {
         let v = ev("[(x: x + 1)]");
         if let Value::List(items) = v {
             assert_eq!(items.len(), 1);
-            assert!(matches!(items[0], Value::Lambda(_)));
+            // List elements are now lazy (thunked). Force to check type.
+            let forced = force_value(&items[0]).unwrap();
+            assert!(matches!(forced, Value::Lambda(_)));
         } else {
             panic!("expected list");
         }

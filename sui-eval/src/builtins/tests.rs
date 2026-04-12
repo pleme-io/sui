@@ -746,15 +746,15 @@ fn builtins_derivation_is_deterministic() {
         builder = "/bin/sh";
         args = [ "-e" "build.sh" ];
     }"#;
-    let a1 = eval(expr).unwrap().as_attrs().unwrap().clone();
-    let a2 = eval(expr).unwrap().as_attrs().unwrap().clone();
+    let a1 = eval(expr).unwrap().to_attrs().unwrap();
+    let a2 = eval(expr).unwrap().to_attrs().unwrap();
     assert_eq!(
-        a1.get("drvPath").unwrap().as_string().unwrap(),
-        a2.get("drvPath").unwrap().as_string().unwrap(),
+        a1.get("drvPath").unwrap().to_str().unwrap(),
+        a2.get("drvPath").unwrap().to_str().unwrap(),
     );
     assert_eq!(
-        a1.get("outPath").unwrap().as_string().unwrap(),
-        a2.get("outPath").unwrap().as_string().unwrap(),
+        a1.get("outPath").unwrap().to_str().unwrap(),
+        a2.get("outPath").unwrap().to_str().unwrap(),
     );
 }
 
@@ -920,8 +920,8 @@ fn drv_write_roundtrips_through_parse() {
         r#"builtins.derivation { name = "roundtrip"; system = "x86_64-linux"; builder = "/bin/sh"; args = ["-c" "echo hi"]; }"#,
         &store_dir,
     );
-    let a = v.as_attrs().unwrap();
-    let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+    let a = v.to_attrs().unwrap();
+    let drv_path = a.get("drvPath").unwrap().to_str().unwrap();
     let disk_path = drv_path.replacen("/nix/store", &store_dir.to_string_lossy(), 1);
     let content = std::fs::read(&disk_path).unwrap();
     let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
@@ -2082,7 +2082,7 @@ fn builtins_generic_closure_linear_chain() {
         assert_eq!(items.len(), 5);
         // Keys should be 1..5
         for (i, item) in items.iter().enumerate() {
-            let attrs = item.as_attrs().unwrap();
+            let attrs = item.to_attrs().unwrap();
             assert_eq!(attrs.get("key"), Some(&Value::Int(i as i64 + 1)));
         }
     } else {

@@ -95,7 +95,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         })))
     });
     register_builtin(builtins, "listToAttrs", |args| {
-        let list = args[0].as_list()?;
+        let list = args[0].to_list()?;
         let mut attrs = NixAttrs::new();
         for item in list {
             let item_attrs = item.to_attrs()?;
@@ -114,9 +114,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "catAttrs<partial>",
             func: Rc::new(move |args2| {
-                let list = args2[0].as_list()?;
+                let list = args2[0].to_list()?;
                 let mut result = Vec::new();
-                for item in list {
+                for item in &list {
                     if let Ok(attrs) = item.to_attrs()
                         && let Some(v) = attrs.get(&name) {
                             result.push(v.clone());
@@ -131,9 +131,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "removeAttrs<partial>",
             func: Rc::new(move |args2| {
-                let names = args2[0].as_list()?;
+                let names = args2[0].to_list()?;
                 let remove: Vec<String> = names.iter()
-                    .filter_map(|v| v.as_string().ok().map(|s| s.to_string()))
+                    .filter_map(|v| v.to_str().ok())
                     .collect();
                 let mut result = set.clone();
                 for name in &remove {
@@ -150,11 +150,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "zipAttrsWith<partial>",
             func: Rc::new(move |args2| {
-                let list = args2[0].as_list()?;
+                let list = args2[0].to_list()?;
                 // Collect all keys and their values across all attrsets
                 let mut collected: std::collections::BTreeMap<String, Vec<Value>> =
                     std::collections::BTreeMap::new();
-                for item in list {
+                for item in &list {
                     let attrs = item.to_attrs()?;
                     for (k, v) in attrs.iter() {
                         collected.entry(k.clone()).or_default().push(v.clone());

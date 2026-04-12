@@ -1685,6 +1685,13 @@ impl Value {
                 }
                 parts.join(" ")
             }
+            Value::Thunk(_) => {
+                // Force thunk then coerce the result.
+                let forced = crate::eval::force_value(self)?;
+                let (s, c) = forced.coerce_to_string()?;
+                ctx.merge(&c);
+                s
+            }
             other => {
                 return Err(EvalError::TypeError(format!(
                     "cannot coerce {} to string",

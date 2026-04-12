@@ -88,14 +88,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "replaceStrings", |args| {
-        let from = args[0].as_list()?.iter()
-            .map(|v| v.as_string().map(|s| s.to_string()))
+        let from = args[0].to_list()?.iter()
+            .map(|v| v.to_str())
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "replaceStrings<p1>",
             func: Rc::new(move |args2| {
-                let to = args2[0].as_list()?.iter()
-                    .map(|v| v.as_string().map(|s| s.to_string()))
+                let to = args2[0].to_list()?.iter()
+                    .map(|v| v.to_str())
                     .collect::<Result<Vec<_>, _>>()?;
                 let from2 = from.clone();
                 Ok(Value::Builtin(Box::new(BuiltinFn {
@@ -118,9 +118,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "concatStringsSep<partial>",
             func: Rc::new(move |args2| {
-                let list = args2[0].as_list()?;
+                let list = args2[0].to_list()?;
                 let strings: Result<Vec<_>, _> = list.iter()
-                    .map(|v| v.as_string().map(|s| s.to_string()))
+                    .map(|v| v.to_str())
                     .collect();
                 Ok(Value::string(strings?.join(&sep)))
             }),
@@ -133,9 +133,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     // concatStrings — concat without separator
     register_builtin(builtins, "concatStrings", |args| {
-        let list = args[0].as_list()?;
+        let list = args[0].to_list()?;
         let result: Result<String, _> = list.iter()
-            .map(|v| v.as_string())
+            .map(|v| v.to_str())
             .collect();
         Ok(Value::string(result?))
     });
