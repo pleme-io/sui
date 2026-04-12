@@ -126,9 +126,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                             // this, acc becomes a nested thunk chain (20+
                             // levels for nixpkgs overlays) that cascades
                             // into 150K forces instead of CppNix's 96.
-                            acc = crate::eval::force_value(
+                            acc = crate::eval::force_concrete(
                                 &crate::eval::apply(partial, v.clone())?
-                            )?;
+                            )?.into_value();
                         }
                         Ok(acc)
                     }),
