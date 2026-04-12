@@ -1005,6 +1005,24 @@ impl Env {
         Rc::make_mut(&mut self.0).eval_file = file;
     }
 
+    /// Number of direct bindings in this environment (debug).
+    #[must_use]
+    pub fn binding_count(&self) -> usize {
+        self.0.bindings.len()
+    }
+
+    /// First N binding names (debug).
+    #[must_use]
+    pub fn binding_names_preview(&self, n: usize) -> Vec<String> {
+        self.0.bindings.keys().take(n).map(|s| resolve(*s)).collect()
+    }
+
+    /// Number of `with` scopes (debug).
+    #[must_use]
+    pub fn with_scope_count(&self) -> usize {
+        self.0.with_scopes.len()
+    }
+
     /// Lookup matching Nix semantics:
     ///
     /// 1. Probe the flattened binding map (single O(log32 n) lookup).

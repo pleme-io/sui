@@ -393,9 +393,26 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "null" => Ok(Value::Null),
                 _ => env
                     .lookup(&name)
-                    .ok_or_else(|| EvalError::UndefinedVar(
-                        format!("'{name}'{}", eval_file_ctx()),
-                    )),
+                    .ok_or_else(|| {
+                        // Debug trace: when SUI_DEBUG_VAR is set, log
+                        // the env state on lookup failure for that var.
+                        if let Ok(dbg_var) = std::env::var("SUI_DEBUG_VAR") {
+                            if dbg_var == name || dbg_var == "*" {
+                                eprintln!(
+                                    "[sui-debug] UndefinedVar '{name}' in {}\n\
+                                     [sui-debug]   env bindings ({} total): {:?}\n\
+                                     [sui-debug]   with_scopes: {}",
+                                    eval_file_ctx(),
+                                    env.binding_count(),
+                                    env.binding_names_preview(20),
+                                    env.with_scope_count(),
+                                );
+                            }
+                        }
+                        EvalError::UndefinedVar(
+                            format!("'{name}'{}", eval_file_ctx()),
+                        )
+                    }),
             };
         }
         ast::Expr::Literal(lit) => {
@@ -1513,6 +1530,14 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
             let has_ellipsis = pat.ellipsis_token().is_some();
             let entries: Vec<ast::PatEntry> = pat.pat_entries().collect();
 
+            // Two-phase binding (matching CppNix semantics):
+            // Phase 1: Bind all formals. Defaults get thunks with a
+            //   preliminary env. We collect thunks for Phase 2 update.
+            // Phase 2: Update default thunks to capture the final env
+            //   (which now has ALL formals bound). This allows defaults
+            //   to reference any other formal — including forward refs.
+            let mut default_thunks: Vec<Thunk> = Vec::new();
+
             for entry in &entries {
                 let ident = entry.ident().ok_or_else(|| {
                     EvalError::ParseError("pat entry missing ident".to_string())
@@ -1526,16 +1551,23 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                     // Patterns like `vendor ? assert false; null` rely on
                     // the default never being forced when the body checks
                     // `args ? vendor` instead of using `vendor` directly.
-                    Value::Thunk(Thunk::new_suspended(
+                    let thunk = Thunk::new_suspended(
                         ast::Expr::cast(default_expr.syntax().clone()).unwrap(),
                         env.clone(),
-                    ))
+                    );
+                    default_thunks.push(thunk.clone());
+                    Value::Thunk(thunk)
                 } else {
                     return Err(EvalError::type_error(
                         format!("missing argument '{name}'{}", eval_file_ctx()),
                     ));
                 };
                 env.bind(name, value);
+            }
+
+            // Phase 2: Update default thunks to see ALL formals.
+            for thunk in &default_thunks {
+                thunk.update_env(env);
             }
 
             if !has_ellipsis {

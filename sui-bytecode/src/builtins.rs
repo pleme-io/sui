@@ -8,12 +8,13 @@
 //! Curried builtins (e.g., `map f list`) return a `VMBuiltin` partial
 //! application on the first call, then complete on the second.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::error::VMError;
 use crate::intern::{Interner, Symbol};
-use crate::value::{HigherOrderBuiltin, HigherOrderOp, VMBuiltin, VMValue};
+use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMBuiltin, VMValue};
 
 /// Registry of builtin functions accessible from the VM.
 pub struct BuiltinRegistry {
@@ -294,9 +295,9 @@ impl BuiltinRegistry {
         self.register("concatLists", 1, |args| {
             let lists = as_list(&args[0])?;
             let mut result = Vec::new();
-            for v in lists {
+            for v in &lists {
                 let inner = as_list(v)?;
-                result.extend(inner.iter().cloned());
+                result.extend(inner);
             }
             Ok(VMValue::List(result))
         });
@@ -392,9 +393,9 @@ impl BuiltinRegistry {
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "catAttrs<partial>",
                 func: Rc::new(move |args2| {
-                    let list = as_list(&args2[0])?;
+                    let list = force_as_list(&args2[0])?;
                     let mut result: Vec<VMValue> = Vec::new();
-                    for item in list {
+                    for item in &list {
                         if let VMValue::Attrs(_) = item {
                             let _ = &name;
                         }
@@ -530,9 +531,9 @@ impl BuiltinRegistry {
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "concatStringsSep<partial>",
                 func: Rc::new(move |args2| {
-                    let list = as_list(&args2[0])?;
+                    let list = force_as_list(&args2[0])?;
                     let strings: Result<Vec<String>, _> =
-                        list.iter().map(|v| as_string(v).map(|s| s.to_string())).collect();
+                        list.iter().map(|v| force_as_string(v)).collect();
                     Ok(VMValue::String(strings?.join(&sep)))
                 }),
                 arity: 1,
@@ -540,16 +541,16 @@ impl BuiltinRegistry {
         });
 
         self.register("replaceStrings", 1, |args| {
-            let from: Vec<String> = as_list(&args[0])?
+            let from: Vec<String> = force_as_list(&args[0])?
                 .iter()
-                .map(|v| as_string(v).map(|s| s.to_string()))
+                .map(|v| force_as_string(v))
                 .collect::<Result<_, _>>()?;
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "replaceStrings<p1>",
                 func: Rc::new(move |args2| {
-                    let to: Vec<String> = as_list(&args2[0])?
+                    let to: Vec<String> = force_as_list(&args2[0])?
                         .iter()
-                        .map(|v| as_string(v).map(|s| s.to_string()))
+                        .map(|v| force_as_string(v))
                         .collect::<Result<_, _>>()?;
                     let from2 = from.clone();
                     Ok(VMValue::Builtin(VMBuiltin {
@@ -1092,8 +1093,9 @@ impl BuiltinRegistry {
         self.register("concatStrings", 1, |args| {
             let list = as_list(&args[0])?;
             let mut result = String::new();
-            for item in list {
-                match item {
+            for item in &list {
+                let item = force_vmvalue(item.clone()).unwrap_or_else(|_| item.clone());
+                match &item {
                     VMValue::String(s) => result.push_str(s),
                     _ => {
                         return Err(VMError::TypeError {
@@ -1429,9 +1431,55 @@ impl Default for BuiltinRegistry {
 
 // ── Helper functions ──────────────────────────────────────────────
 
-fn as_list(v: &VMValue) -> Result<&Vec<VMValue>, VMError> {
+/// Try to extract a concrete value from a `Done` thunk without VM access.
+/// Returns the inner value for already-evaluated thunks. For non-thunks,
+/// returns `None` (use the value directly). For pending thunks, returns
+/// an error that will cause the VM to fall back to the tree-walker.
+fn try_unwrap_done_thunk(v: &VMValue) -> Option<Result<VMValue, VMError>> {
     match v {
-        VMValue::List(l) => Ok(l),
+        VMValue::Thunk(thunk) => {
+            let state = thunk.state.take();
+            match state {
+                Some(ThunkState::Done(boxed)) => {
+                    let inner = *boxed.clone();
+                    thunk.state.set(Some(ThunkState::Done(boxed)));
+                    // Recursively unwrap in case the result is itself a Done thunk.
+                    match &inner {
+                        VMValue::Thunk(_) => Some(try_unwrap_done_thunk(&inner)
+                            .unwrap_or(Ok(inner))),
+                        _ => Some(Ok(inner)),
+                    }
+                }
+                other => {
+                    thunk.state.set(other);
+                    Some(Err(VMError::TypeError {
+                        expected: "concrete value",
+                        got: "thunk (pending)",
+                        context: "builtin argument (thunk needs VM to force)".to_string(),
+                    }))
+                }
+            }
+        }
+        _ => None, // Not a thunk — caller uses value directly
+    }
+}
+
+/// Extract a list, forcing thunks if needed. Returns an owned Vec
+/// because thunk forcing may produce a value we can't borrow.
+fn as_list(v: &VMValue) -> Result<Vec<VMValue>, VMError> {
+    match v {
+        VMValue::List(l) => Ok(l.clone()),
+        VMValue::Thunk(_) => {
+            let forced = force_vmvalue(v.clone())?;
+            match forced {
+                VMValue::List(l) => Ok(l),
+                other => Err(VMError::TypeError {
+                    expected: "list",
+                    got: other.type_name(),
+                    context: "builtin argument".to_string(),
+                }),
+            }
+        }
         other => Err(VMError::TypeError {
             expected: "list",
             got: other.type_name(),
@@ -1440,9 +1488,89 @@ fn as_list(v: &VMValue) -> Result<&Vec<VMValue>, VMError> {
     }
 }
 
+/// Force a VMValue if it's a thunk, returning the resolved value.
+/// Handles Done thunks directly, NativeCallback via bridge, and
+/// Pending thunks cause a fallback error.
+fn force_vmvalue(v: VMValue) -> Result<VMValue, VMError> {
+    match v {
+        VMValue::Thunk(ref thunk) => {
+            let state = thunk.state.take();
+            match state {
+                Some(ThunkState::Done(boxed)) => {
+                    let inner = *boxed.clone();
+                    thunk.state.set(Some(ThunkState::Done(boxed)));
+                    force_vmvalue(inner) // Recursively unwrap
+                }
+                Some(ThunkState::NativeCallback(cb)) => {
+                    thunk.state.set(Some(ThunkState::Evaluating));
+                    match cb() {
+                        Ok(sk_val) => {
+                            // Convert StringKeyedValue back to VMValue
+                            let result = sk_to_vmvalue(&sk_val);
+                            thunk.state.set(Some(ThunkState::Done(Box::new(result.clone()))));
+                            force_vmvalue(result)
+                        }
+                        Err(e) => {
+                            thunk.state.set(Some(ThunkState::NativeCallback(cb)));
+                            Err(VMError::Throw(e))
+                        }
+                    }
+                }
+                other => {
+                    thunk.state.set(other);
+                    // Pending/LazySource/Evaluating — needs VM to force.
+                    Err(VMError::TypeError {
+                        expected: "concrete value",
+                        got: "thunk (pending)",
+                        context: "builtin argument (thunk needs VM to force)".to_string(),
+                    })
+                }
+            }
+        }
+        other => Ok(other),
+    }
+}
+
+/// Convert StringKeyedValue → VMValue (inverse of to_string_keyed).
+fn sk_to_vmvalue(sk: &crate::value::StringKeyedValue) -> VMValue {
+    use crate::value::StringKeyedValue;
+    match sk {
+        StringKeyedValue::Null => VMValue::Null,
+        StringKeyedValue::Bool(b) => VMValue::Bool(*b),
+        StringKeyedValue::Int(n) => VMValue::Int(*n),
+        StringKeyedValue::Float(f) => VMValue::Float(*f),
+        StringKeyedValue::String(s) => VMValue::String(s.clone()),
+        StringKeyedValue::Path(p) => VMValue::Path(p.clone()),
+        StringKeyedValue::List(items) => {
+            VMValue::List(items.iter().map(|i| sk_to_vmvalue(i)).collect())
+        }
+        StringKeyedValue::Attrs(map) => {
+            // Use the global interner for symbol resolution
+            let mut interner = crate::intern::Interner::new();
+            VMValue::Attrs(map.iter().map(|(k, v)| {
+                (interner.intern(k), sk_to_vmvalue(v))
+            }).collect())
+        }
+        StringKeyedValue::Lambda => VMValue::Null, // Can't reconstruct closures
+        StringKeyedValue::Thunk(cb) => {
+            // Wrap as a NativeCallback VMThunk for lazy evaluation
+            let cb = cb.clone();
+            VMValue::Thunk(crate::value::VMThunk {
+                state: Rc::new(Cell::new(Some(ThunkState::NativeCallback(cb)))),
+            })
+        }
+        StringKeyedValue::Callable(_) => VMValue::Null, // Can't reconstruct
+    }
+}
+
 fn as_attrs(v: &VMValue) -> Result<&BTreeMap<Symbol, VMValue>, VMError> {
     match v {
         VMValue::Attrs(a) => Ok(a),
+        VMValue::Thunk(_) => Err(VMError::TypeError {
+            expected: "set",
+            got: "thunk",
+            context: "builtin argument".to_string(),
+        }),
         other => Err(VMError::TypeError {
             expected: "set",
             got: other.type_name(),
@@ -1456,6 +1584,53 @@ fn as_string(v: &VMValue) -> Result<&str, VMError> {
         VMValue::String(s) => Ok(s),
         other => Err(VMError::TypeError {
             expected: "string",
+            got: other.type_name(),
+            context: "builtin argument".to_string(),
+        }),
+    }
+}
+
+/// Force-aware string extraction: forces thunks before extracting.
+/// Use this when iterating over list elements that may be thunks.
+fn force_as_string(v: &VMValue) -> Result<String, VMError> {
+    match v {
+        VMValue::String(s) => Ok(s.clone()),
+        VMValue::Thunk(_) => {
+            let forced = force_vmvalue(v.clone())?;
+            match forced {
+                VMValue::String(s) => Ok(s),
+                other => Err(VMError::TypeError {
+                    expected: "string",
+                    got: other.type_name(),
+                    context: "builtin argument (after forcing thunk)".to_string(),
+                }),
+            }
+        }
+        other => Err(VMError::TypeError {
+            expected: "string",
+            got: other.type_name(),
+            context: "builtin argument".to_string(),
+        }),
+    }
+}
+
+/// Force-aware list extraction: forces thunks before extracting.
+fn force_as_list(v: &VMValue) -> Result<Vec<VMValue>, VMError> {
+    match v {
+        VMValue::List(l) => Ok(l.clone()),
+        VMValue::Thunk(_) => {
+            let forced = force_vmvalue(v.clone())?;
+            match forced {
+                VMValue::List(l) => Ok(l),
+                other => Err(VMError::TypeError {
+                    expected: "list",
+                    got: other.type_name(),
+                    context: "builtin argument (after forcing thunk)".to_string(),
+                }),
+            }
+        }
+        other => Err(VMError::TypeError {
+            expected: "list",
             got: other.type_name(),
             context: "builtin argument".to_string(),
         }),

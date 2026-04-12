@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use crate::error::VMError;
 use crate::intern::Symbol;
-use crate::value::{HigherOrderBuiltin, VMBuiltin, VMClosure, VMThunk, VMValue};
+use crate::value::{HigherOrderBuiltin, ThunkState, VMBuiltin, VMClosure, VMThunk, VMValue};
 
 /// Quiet NaN base: exponent all 1s, mantissa MSB = 1.
 const QNAN: u64 = 0x7FF8_0000_0000_0000;
@@ -513,7 +513,24 @@ impl NanBox {
                 }
                 HeapObject::Closure(c) => VMValue::Closure(c.clone()),
                 HeapObject::Builtin(b) => VMValue::Builtin(b.clone()),
-                HeapObject::Thunk(t) => VMValue::Thunk(t.clone()),
+                HeapObject::Thunk(t) => {
+                    // Unwrap Done thunks to avoid re-wrapping forced values.
+                    // This is critical: deep_force resolves thunks to NanBox
+                    // values, but the HeapObject::Thunk wrapper persists.
+                    // Without this unwrap, builtins see VMValue::Thunk instead
+                    // of the concrete value, causing type errors.
+                    let state = t.state.take();
+                    match state {
+                        Some(ThunkState::Done(boxed)) => {
+                            t.state.set(Some(ThunkState::Done(boxed.clone())));
+                            *boxed
+                        }
+                        other => {
+                            t.state.set(other);
+                            VMValue::Thunk(t.clone())
+                        }
+                    }
+                }
                 HeapObject::HigherOrderBuiltin(h) => VMValue::HigherOrderBuiltin(h.clone()),
             }
         } else {

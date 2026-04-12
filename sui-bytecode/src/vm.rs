@@ -40,6 +40,9 @@ use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMThunk, VMVal
 
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
+/// Maximum depth for thunk-in-thunk chain unwrapping.
+/// Catches `let x = x; in x` cycles while allowing normal fixpoints.
+const MAX_THUNK_CHAIN_DEPTH: u32 = 2000;
 
 /// A tiny bytecode chunk: `GetUpvalue 0; GetUpvalue 1; Call; Return`.
 /// Used to create deferred-application thunks where upvalue 0 is a
@@ -831,7 +834,13 @@ impl<'a> VM<'a> {
                     if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
                         self.push(result);
                     } else {
-                        let arg_vmval = forced_arg.to_vmvalue();
+                        // Shallow-force container elements one level.
+                        // Can't deep_force here — nixpkgs has massive nested
+                        // structures that cause stack overflow. The force-aware
+                        // helpers (as_list, force_as_string) handle remaining
+                        // thunks on demand in builtin closures.
+                        let mut arg_vmval = forced_arg.to_vmvalue();
+                        arg_vmval = self.shallow_force_container(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -885,7 +894,13 @@ impl<'a> VM<'a> {
                     if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
                         self.push(result);
                     } else {
-                        let arg_vmval = forced_arg.to_vmvalue();
+                        // Shallow-force container elements one level.
+                        // Can't deep_force here — nixpkgs has massive nested
+                        // structures that cause stack overflow. The force-aware
+                        // helpers (as_list, force_as_string) handle remaining
+                        // thunks on demand in builtin closures.
+                        let mut arg_vmval = forced_arg.to_vmvalue();
+                        arg_vmval = self.shallow_force_container(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -1046,7 +1061,10 @@ impl<'a> VM<'a> {
                 let mut args = Vec::with_capacity(raw_args.len());
                 for raw in raw_args {
                     let forced = self.force_value(raw)?;
-                    args.push(forced.to_vmvalue());
+                    let mut vm_val = forced.to_vmvalue();
+                    // Shallow-force container elements one level.
+                    vm_val = self.shallow_force_container(vm_val)?;
+                    args.push(vm_val);
                 }
                 let result = self.builtins.call(builtin_idx, args)?;
                 self.push(NanBox::from_vmvalue(&result));
@@ -1121,7 +1139,13 @@ impl<'a> VM<'a> {
                     if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
                         self.push(result);
                     } else {
-                        let arg_vmval = forced_arg.to_vmvalue();
+                        // Shallow-force container elements one level.
+                        // Can't deep_force here — nixpkgs has massive nested
+                        // structures that cause stack overflow. The force-aware
+                        // helpers (as_list, force_as_string) handle remaining
+                        // thunks on demand in builtin closures.
+                        let mut arg_vmval = forced_arg.to_vmvalue();
+                        arg_vmval = self.shallow_force_container(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -1531,15 +1555,33 @@ impl<'a> VM<'a> {
 
                         match result {
                             Ok(value) => {
-                                let forced = if value.is_thunk() {
-                                    self.force_value(value)?
-                                } else {
-                                    value
-                                };
+                                // Store partial result IMMEDIATELY — enables
+                                // fixpoint re-access. Any re-entrant force_value
+                                // on this thunk (e.g., nixpkgs `fix`) will find
+                                // Done instead of Evaluating, preventing false
+                                // blackhole detection. Matches tree-walker
+                                // approach (sui-eval value.rs lines 522-554).
+                                let partial_vmval = value.to_vmvalue();
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(partial_vmval),
+                                )));
+
+                                // Depth-limited thunk-chain unwrap.
+                                let mut forced = value;
+                                let mut depth = 0u32;
+                                while forced.is_thunk() {
+                                    depth += 1;
+                                    if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        return Err(VMError::InfiniteRecursion);
+                                    }
+                                    forced = self.force_value(forced)?;
+                                }
+
+                                // Update with fully-unwrapped value.
                                 let forced_vmval = forced.to_vmvalue();
-                                thunk
-                                    .state
-                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(forced_vmval),
+                                )));
                                 Ok(forced)
                             }
                             Err(e) => {
@@ -1608,15 +1650,26 @@ impl<'a> VM<'a> {
 
                         match result {
                             Ok(value) => {
-                                let forced = if value.is_thunk() {
-                                    self.force_value(value)?
-                                } else {
-                                    value
-                                };
+                                // Store partial result IMMEDIATELY for fixpoints.
+                                let partial_vmval = value.to_vmvalue();
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(partial_vmval),
+                                )));
+
+                                let mut forced = value;
+                                let mut depth = 0u32;
+                                while forced.is_thunk() {
+                                    depth += 1;
+                                    if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        return Err(VMError::InfiniteRecursion);
+                                    }
+                                    forced = self.force_value(forced)?;
+                                }
+
                                 let forced_vmval = forced.to_vmvalue();
-                                thunk
-                                    .state
-                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(forced_vmval),
+                                )));
                                 Ok(forced)
                             }
                             Err(e) => {
@@ -1634,19 +1687,28 @@ impl<'a> VM<'a> {
 
                         match cb() {
                             Ok(sk_val) => {
-                                // Convert the StringKeyedValue result to a NanBox.
-                                // This may itself contain Thunk values which will
-                                // be lazily wrapped as VMThunks.
                                 let nb = self.string_keyed_to_nanbox(&sk_val);
-                                let forced = if nb.is_thunk() {
-                                    self.force_value(nb)?
-                                } else {
-                                    nb
-                                };
+
+                                // Store partial result IMMEDIATELY for fixpoints.
+                                let partial_vmval = nb.to_vmvalue();
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(partial_vmval),
+                                )));
+
+                                let mut forced = nb;
+                                let mut depth = 0u32;
+                                while forced.is_thunk() {
+                                    depth += 1;
+                                    if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        return Err(VMError::InfiniteRecursion);
+                                    }
+                                    forced = self.force_value(forced)?;
+                                }
+
                                 let forced_vmval = forced.to_vmvalue();
-                                thunk
-                                    .state
-                                    .set(Some(ThunkState::Done(Box::new(forced_vmval))));
+                                thunk.state.set(Some(ThunkState::Done(
+                                    Box::new(forced_vmval),
+                                )));
                                 Ok(forced)
                             }
                             Err(e) => {
@@ -1660,6 +1722,43 @@ impl<'a> VM<'a> {
                 }
             }
             _ => Ok(NanBox::from_vmvalue(&vmval)),
+        }
+    }
+
+    /// Shallow-force container elements: if `val` is a List, force each
+    /// element one level; if an Attrs, force each value one level. This
+    /// ensures builtins that iterate over list elements or attrset values
+    /// (calling `as_string`, `as_int`, etc.) see concrete values, not thunks.
+    /// Does NOT recurse into nested containers (preserves laziness).
+    fn shallow_force_container(&mut self, val: VMValue) -> Result<VMValue, VMError> {
+        match val {
+            VMValue::List(items) => {
+                let mut forced_items = Vec::with_capacity(items.len());
+                for item in items {
+                    let nb = NanBox::from_vmvalue(&item);
+                    if nb.is_thunk() {
+                        let forced = self.force_value(nb)?;
+                        forced_items.push(forced.to_vmvalue());
+                    } else {
+                        forced_items.push(item);
+                    }
+                }
+                Ok(VMValue::List(forced_items))
+            }
+            VMValue::Attrs(map) => {
+                let mut forced_map = BTreeMap::new();
+                for (k, v) in map {
+                    let nb = NanBox::from_vmvalue(&v);
+                    if nb.is_thunk() {
+                        let forced = self.force_value(nb)?;
+                        forced_map.insert(k, forced.to_vmvalue());
+                    } else {
+                        forced_map.insert(k, v);
+                    }
+                }
+                Ok(VMValue::Attrs(forced_map))
+            }
+            other => Ok(other),
         }
     }
 
@@ -2819,7 +2918,9 @@ impl<'a> VM<'a> {
             if let Some(result) = self.try_vm_builtin(builtin.name, &arg)? {
                 Ok(result)
             } else {
-                let arg_vmval = arg.to_vmvalue();
+                // Deep-force: builtins iterate over container elements.
+                let deep = self.deep_force(arg)?;
+                let arg_vmval = deep.to_vmvalue();
                 let builtin_func = builtin.func.clone();
                 let result = self.call_builtin_with_scoped_import_dispatch(
                     builtin_func, arg_vmval,
@@ -2839,6 +2940,7 @@ impl<'a> VM<'a> {
     ) -> Result<NanBox, VMError> {
         use HigherOrderOp::*;
         // Force the argument — higher-order builtins need concrete values.
+        // Use shallow_force_container to handle thunked list elements.
         let arg = self.force_value(arg)?;
         match hob.op {
             Map => {
