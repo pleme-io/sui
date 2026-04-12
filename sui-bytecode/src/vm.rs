@@ -191,7 +191,17 @@ impl<'a> VM<'a> {
     /// `stop_depth`, the loop exits and returns the result. This lets
     /// `import_file` and `force_value` run sub-programs without a separate VM.
     fn run_until(&mut self, stop_depth: usize) -> Result<NanBox, VMError> {
+        let mut op_count: u64 = 0;
         loop {
+            op_count += 1;
+            if std::env::var("SUI_VM_TRACE").is_ok() && op_count % 1_000_000 == 0 {
+                eprintln!(
+                    "[sui-vm] {}M ops, depth {}, chunk: {}",
+                    op_count / 1_000_000,
+                    self.frames.len(),
+                    self.current_chunk_name(),
+                );
+            }
             let op_byte = self.read_byte()?;
             let op = OpCode::from_byte(op_byte).ok_or(VMError::InvalidOpcode(op_byte))?;
 
@@ -880,7 +890,8 @@ impl<'a> VM<'a> {
                         // helpers (as_list, force_as_string) handle remaining
                         // thunks on demand in builtin closures.
                         let mut arg_vmval = forced_arg.to_vmvalue();
-                        arg_vmval = self.shallow_force_container(arg_vmval)?;
+                        // Force list elements only (not attrsets — too expensive).
+                        arg_vmval = self.shallow_force_list(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -940,7 +951,8 @@ impl<'a> VM<'a> {
                         // helpers (as_list, force_as_string) handle remaining
                         // thunks on demand in builtin closures.
                         let mut arg_vmval = forced_arg.to_vmvalue();
-                        arg_vmval = self.shallow_force_container(arg_vmval)?;
+                        // Force list elements only (not attrsets — too expensive).
+                        arg_vmval = self.shallow_force_list(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -1102,8 +1114,7 @@ impl<'a> VM<'a> {
                 for raw in raw_args {
                     let forced = self.force_value(raw)?;
                     let mut vm_val = forced.to_vmvalue();
-                    // Shallow-force container elements one level.
-                    vm_val = self.shallow_force_container(vm_val)?;
+                    vm_val = self.shallow_force_list(vm_val)?;
                     args.push(vm_val);
                 }
                 let result = self.builtins.call(builtin_idx, args)?;
@@ -1185,7 +1196,8 @@ impl<'a> VM<'a> {
                         // helpers (as_list, force_as_string) handle remaining
                         // thunks on demand in builtin closures.
                         let mut arg_vmval = forced_arg.to_vmvalue();
-                        arg_vmval = self.shallow_force_container(arg_vmval)?;
+                        // Force list elements only (not attrsets — too expensive).
+                        arg_vmval = self.shallow_force_list(arg_vmval)?;
                         let builtin_func = builtin.func.clone();
                         let result = self.call_builtin_with_scoped_import_dispatch(
                             builtin_func, arg_vmval,
@@ -1795,11 +1807,11 @@ impl<'a> VM<'a> {
     }
 
     /// Shallow-force container elements: if `val` is a List, force each
-    /// element one level; if an Attrs, force each value one level. This
-    /// ensures builtins that iterate over list elements or attrset values
-    /// (calling `as_string`, `as_int`, etc.) see concrete values, not thunks.
-    /// Does NOT recurse into nested containers (preserves laziness).
-    fn shallow_force_container(&mut self, val: VMValue) -> Result<VMValue, VMError> {
+    /// Force list elements one level. Builtins that iterate over list
+    /// elements (calling `as_string`, `as_int`, etc.) need concrete values.
+    /// Attrsets are NOT force — they can be enormous (nixpkgs has 80K+
+    /// attrs) and builtins access individual attrs lazily via GetAttr.
+    fn shallow_force_list(&mut self, val: VMValue) -> Result<VMValue, VMError> {
         match val {
             VMValue::List(items) => {
                 let mut forced_items = Vec::with_capacity(items.len());
@@ -1814,19 +1826,9 @@ impl<'a> VM<'a> {
                 }
                 Ok(VMValue::List(forced_items))
             }
-            VMValue::Attrs(map) => {
-                let mut forced_map = BTreeMap::new();
-                for (k, v) in map {
-                    let nb = NanBox::from_vmvalue(&v);
-                    if nb.is_thunk() {
-                        let forced = self.force_value(nb)?;
-                        forced_map.insert(k, forced.to_vmvalue());
-                    } else {
-                        forced_map.insert(k, v);
-                    }
-                }
-                Ok(VMValue::Attrs(forced_map))
-            }
+            // Attrsets: do NOT force values — too expensive for large sets.
+            // Force-aware helpers (force_vmvalue, force_as_string) handle
+            // individual thunked values on demand.
             other => Ok(other),
         }
     }
