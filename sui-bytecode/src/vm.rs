@@ -746,15 +746,55 @@ impl<'a> VM<'a> {
             OpCode::JumpIfFalse => {
                 let target = self.read_u16()? as usize;
                 let cond = self.pop_forced()?;
-                if !cond.is_truthy()? {
-                    self.current_frame_mut().ip = target;
+                match cond.is_truthy() {
+                    Ok(false) => { self.current_frame_mut().ip = target; }
+                    Ok(true) => {}
+                    Err(e) => {
+                        // Diagnostic for debugging (remove once fixed)
+                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                            let keys_preview = if let Some(attrs) = cond.as_attrs() {
+                                let keys: Vec<_> = attrs.keys().take(5)
+                                    .map(|k| self.interner.resolve(*k).to_string())
+                                    .collect();
+                                format!("{{{}}}", keys.join(", "))
+                            } else {
+                                cond.type_name().to_string()
+                            };
+                            eprintln!(
+                                "[sui-vm] condition type error: got {} ({}) at depth {}, chunk: {}",
+                                cond.type_name(), keys_preview,
+                                self.frames.len(), self.current_chunk_name(),
+                            );
+                        }
+                        return Err(e);
+                    }
                 }
             }
             OpCode::JumpIfTrue => {
                 let target = self.read_u16()? as usize;
                 let cond = self.pop_forced()?;
-                if cond.is_truthy()? {
-                    self.current_frame_mut().ip = target;
+                match cond.is_truthy() {
+                    Ok(true) => { self.current_frame_mut().ip = target; }
+                    Ok(false) => {}
+                    Err(e) => {
+                        // Diagnostic for debugging (remove once fixed)
+                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                            let keys_preview = if let Some(attrs) = cond.as_attrs() {
+                                let keys: Vec<_> = attrs.keys().take(5)
+                                    .map(|k| self.interner.resolve(*k).to_string())
+                                    .collect();
+                                format!("{{{}}}", keys.join(", "))
+                            } else {
+                                cond.type_name().to_string()
+                            };
+                            eprintln!(
+                                "[sui-vm] condition type error: got {} ({}) at depth {}, chunk: {}",
+                                cond.type_name(), keys_preview,
+                                self.frames.len(), self.current_chunk_name(),
+                            );
+                        }
+                        return Err(e);
+                    }
                 }
             }
             OpCode::Assert => {
