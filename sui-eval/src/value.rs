@@ -432,10 +432,25 @@ impl Value {
             Value::Lambda(c) => Ok(Concrete::Lambda(c)),
             Value::Builtin(b) => Ok(Concrete::Builtin(b)),
             Value::Thunk(_) => {
-                // force_value contract violation — should never happen.
-                Err(EvalError::TypeError(
-                    "demand: force_value returned a Thunk (contract violation)".to_string(),
-                ))
+                // force_value returned a Thunk — chase it.
+                // This can happen when the transitive unwrap loop hits
+                // a depth limit. Re-force to resolve.
+                let re_forced = crate::eval::force_value(&v)?;
+                match re_forced {
+                    Value::Null => Ok(Concrete::Null),
+                    Value::Bool(b) => Ok(Concrete::Bool(b)),
+                    Value::Int(n) => Ok(Concrete::Int(n)),
+                    Value::Float(f) => Ok(Concrete::Float(f)),
+                    Value::String(s) => Ok(Concrete::String(s)),
+                    Value::Path(p) => Ok(Concrete::Path(p)),
+                    Value::List(l) => Ok(Concrete::List(l)),
+                    Value::Attrs(a) => Ok(Concrete::Attrs(a)),
+                    Value::Lambda(c) => Ok(Concrete::Lambda(c)),
+                    Value::Builtin(b) => Ok(Concrete::Builtin(b)),
+                    Value::Thunk(_) => Err(EvalError::InfiniteRecursion(
+                        "demand: thunk chain could not be resolved".to_string(),
+                    )),
+                }
             }
         }
     }
