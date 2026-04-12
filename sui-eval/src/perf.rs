@@ -188,6 +188,8 @@ pub fn inc(counter: Counter) {
                 let waste = (1.0 - forced as f64 / created as f64) * 100.0;
                 eprintln!("  [thunks created:{created} forced:{forced} waste:{waste:.0}%]");
             }
+            // Force-site breakdown
+            crate::eval::dump_force_sites();
         }
     });
 }

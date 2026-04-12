@@ -250,12 +250,42 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
 #[inline(always)]
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::ForceValue);
-    // Fast path: non-thunk values don't need stacker or recursion.
     if let Value::Thunk(thunk) = value {
         force_thunk(thunk)
     } else {
         Ok(value.clone())
     }
+}
+
+/// Force with call-site tracking. Use `force_at!()` macro instead.
+pub fn force_value_tracked(value: &Value, site: &str) -> Result<Value, EvalError> {
+    crate::perf::inc(crate::perf::Counter::ForceValue);
+    if let Value::Thunk(thunk) = value {
+        FORCE_SITES.with(|sites| {
+            *sites.borrow_mut().entry(site.to_string()).or_insert(0) += 1;
+        });
+        force_thunk(thunk)
+    } else {
+        Ok(value.clone())
+    }
+}
+
+thread_local! {
+    static FORCE_SITES: std::cell::RefCell<std::collections::HashMap<String, u64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Dump force-site counters (call from perf reporting).
+pub fn dump_force_sites() {
+    FORCE_SITES.with(|sites| {
+        let sites = sites.borrow();
+        let mut sorted: Vec<_> = sites.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("[force-sites] top thunk force call sites:");
+        for (site, count) in sorted.iter().take(10) {
+            eprintln!("  {count:>8} {site}");
+        }
+    });
 }
 
 /// Force a thunk — split out from [`force_value`] so the fast path
@@ -359,6 +389,24 @@ fn maybe_thunk(
             } else {
                 Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
             }
+        }
+        // Select on a variable (e.g., lib.version, builtins.isAttrs):
+        // evaluate directly when the base is a simple ident that's available.
+        // CppNix's maybeThunk does this — these are always forced immediately
+        // so thunking wastes allocation + env clone + force overhead.
+        ast::Expr::Select(sel) if !is_rec => {
+            if let Some(base) = sel.expr() {
+                if let ast::Expr::Ident(ref ident) = base {
+                    let name = ident_text(ident);
+                    if env.lookup(&name).is_some() {
+                        // Base is an available variable — evaluate select directly.
+                        return eval_select(sel, env).unwrap_or_else(|_| {
+                            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+                        });
+                    }
+                }
+            }
+            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
         }
         // Everything else: wrap in a thunk for lazy evaluation.
         _ => Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone())),
@@ -579,7 +627,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let else_body = ie
                 .else_body()
                 .ok_or_else(|| EvalError::ParseError("if missing else body".to_string()))?;
-            if force_value(&eval_expr(&cond, env)?)?.as_bool()? {
+            if force_value_tracked(&eval_expr(&cond, env)?, "if_cond")?.as_bool()? {
                 cur_expr = body;
             } else {
                 cur_expr = else_body;
@@ -595,7 +643,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = assert
                 .body()
                 .ok_or_else(|| EvalError::ParseError("assert missing body".to_string()))?;
-            if !force_value(&eval_expr(&cond, env)?)?.as_bool()? {
+            if !force_value_tracked(&eval_expr(&cond, env)?, "if_cond")?.as_bool()? {
                 return Err(EvalError::AssertionFailed(eval_file_ctx()));
             }
             cur_expr = body;
@@ -842,15 +890,27 @@ fn traverse_attrpath(
     attrpath: &rnix::ast::Attrpath,
     env: &Env,
 ) -> Result<TraverseResult, EvalError> {
+    let attrs: Vec<_> = attrpath.attrs().collect();
     let mut value = base;
-    for attr in attrpath.attrs() {
-        let key = eval_attr(&attr, env)?;
-        match value {
-            Value::Attrs(ref attrs) => match attrs.get(&key) {
-                Some(v) => value = force_value(v)?,
+    for (i, attr) in attrs.iter().enumerate() {
+        let key = eval_attr(attr, env)?;
+        // Force the current value to an attrset to select from it.
+        let forced = force_value(&value)?;
+        match forced {
+            Value::Attrs(ref a) => match a.get(&key) {
+                Some(v) => {
+                    if i < attrs.len() - 1 {
+                        // Intermediate step: force to attrset for next selection.
+                        value = force_value(v)?;
+                    } else {
+                        // Final step: return WITHOUT forcing — let the caller
+                        // decide when to force. Matches CppNix's lazy attr access.
+                        value = v.clone();
+                    }
+                }
                 None => return Ok(TraverseResult::Missing(key)),
             },
-            _ => return Ok(TraverseResult::NotAttrs(value)),
+            _ => return Ok(TraverseResult::NotAttrs(forced)),
         }
     }
     Ok(TraverseResult::Found(value))
@@ -861,7 +921,7 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     let base_expr = sel.expr().ok_or_else(|| {
         EvalError::ParseError("select missing expression".to_string())
     })?;
-    let base = force_value(&eval_expr(&base_expr, env)?)?;
+    let base = force_value_tracked(&eval_expr(&base_expr, env)?, "select_base")?;
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
@@ -887,7 +947,7 @@ fn eval_has_attr(ha: &ast::HasAttr, env: &Env) -> Result<Value, EvalError> {
     let base_expr = ha.expr().ok_or_else(|| {
         EvalError::ParseError("hasattr missing expression".to_string())
     })?;
-    let base = force_value(&eval_expr(&base_expr, env)?)?;
+    let base = force_value_tracked(&eval_expr(&base_expr, env)?, "select_base")?;
     let attrpath = ha.attrpath().ok_or_else(|| {
         EvalError::ParseError("hasattr missing attrpath".to_string())
     })?;
@@ -1321,8 +1381,8 @@ fn eval_binop(
         _ => {}
     }
 
-    let l = force_value(&eval_expr(lhs, env)?)?;
-    let r = force_value(&eval_expr(rhs, env)?)?;
+    let l = force_value_tracked(&eval_expr(lhs, env)?, "binop_lhs")?;
+    let r = force_value_tracked(&eval_expr(rhs, env)?, "binop_rhs")?;
 
     match op {
         ast::BinOpKind::Add => match (&l, &r) {
@@ -1445,7 +1505,7 @@ pub fn apply_and_force(func: Value, arg: Value) -> Result<Value, EvalError> {
 
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Apply);
-    let func = force_value(&func)?;
+    let func = force_value_tracked(&func, "apply_func")?;
     match func {
         Value::Lambda(closure) => {
             let mut call_env = closure.env.child();
@@ -1468,7 +1528,7 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
                 }
                 rnix::ast::Param::Pattern(_) => {
                     // Pattern param needs the arg to be an attrset, so force.
-                    let forced_arg = force_value(&arg)?;
+                    let forced_arg = force_value_tracked(&arg, "apply_pattern")?;
                     bind_param(&closure.param, &forced_arg, &mut call_env)?;
                 }
             }
