@@ -121,7 +121,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         let mut acc = init.clone();
                         for v in list {
                             let partial = crate::eval::apply(func2.clone(), acc)?;
-                            acc = crate::eval::apply(partial, v.clone())?;
+                            // Force acc after each step — matches CppNix's
+                            // foldl' which calls forceValue(vCur). Without
+                            // this, acc becomes a nested thunk chain (20+
+                            // levels for nixpkgs overlays) that cascades
+                            // into 150K forces instead of CppNix's 96.
+                            acc = crate::eval::force_value(
+                                &crate::eval::apply(partial, v.clone())?
+                            )?;
                         }
                         Ok(acc)
                     }),
