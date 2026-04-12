@@ -278,6 +278,117 @@ impl Default for LazyAttrs {
     }
 }
 
+// ── Lazy overlay chain ────────────────────────────────────────
+
+/// A lazy overlay: `left // right` without eagerly merging.
+///
+/// When an attribute is accessed, the chain is walked right-to-left
+/// (right overrides left). Keys are collected lazily on first `.keys()`.
+/// This eliminates the O(n) merge cost per overlay application —
+/// critical for nixpkgs with 20+ overlays × 80K+ attrs each.
+#[derive(Clone, Debug)]
+pub enum OverlayAttrs {
+    /// A concrete base attrset.
+    Base(Rc<NixAttrs>),
+    /// A lazy overlay: `left // right`.
+    /// Right overrides left. Neither is forced until accessed.
+    Overlay {
+        left: Rc<OverlayAttrs>,
+        right: Rc<NixAttrs>,
+    },
+}
+
+impl OverlayAttrs {
+    /// Create from a concrete attrset.
+    pub fn base(attrs: NixAttrs) -> Self {
+        OverlayAttrs::Base(Rc::new(attrs))
+    }
+
+    /// Apply an overlay: `self // right`.
+    /// O(1) — just creates a new node. No iteration.
+    pub fn overlay(self, right: NixAttrs) -> Self {
+        OverlayAttrs::Overlay {
+            left: Rc::new(self),
+            right: Rc::new(right),
+        }
+    }
+
+    /// Look up an attribute — walks the chain right-to-left.
+    /// O(depth) where depth = number of overlays.
+    /// For nixpkgs: O(20) per access instead of O(80K) per merge.
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        match self {
+            OverlayAttrs::Base(attrs) => attrs.get(key),
+            OverlayAttrs::Overlay { left, right } => {
+                // Right overrides left
+                right.get(key).or_else(|| left.get(key))
+            }
+        }
+    }
+
+    /// Look up by pre-interned symbol.
+    pub fn get_sym(&self, sym: &Symbol) -> Option<&Value> {
+        match self {
+            OverlayAttrs::Base(attrs) => attrs.get_sym(sym),
+            OverlayAttrs::Overlay { left, right } => {
+                right.get_sym(sym).or_else(|| left.get_sym(sym))
+            }
+        }
+    }
+
+    /// Check if a key exists — walks chain, no value forcing.
+    pub fn contains_key(&self, key: &str) -> bool {
+        match self {
+            OverlayAttrs::Base(attrs) => attrs.contains_key(key),
+            OverlayAttrs::Overlay { left, right } => {
+                right.contains_key(key) || left.contains_key(key)
+            }
+        }
+    }
+
+    /// Collect all unique keys. O(total_keys) but only called when needed
+    /// (e.g., `builtins.attrNames`). NOT called during normal attribute access.
+    pub fn all_keys(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        self.collect_keys(&mut seen, &mut result);
+        result.sort();
+        result
+    }
+
+    fn collect_keys(&self, seen: &mut std::collections::HashSet<String>, result: &mut Vec<String>) {
+        match self {
+            OverlayAttrs::Base(attrs) => {
+                for (k, _) in attrs.iter_unsorted() {
+                    if seen.insert(k.clone()) {
+                        result.push(k);
+                    }
+                }
+            }
+            OverlayAttrs::Overlay { left, right } => {
+                // Right first (overrides left)
+                for (k, _) in right.iter_unsorted() {
+                    if seen.insert(k.clone()) {
+                        result.push(k);
+                    }
+                }
+                left.collect_keys(seen, result);
+            }
+        }
+    }
+
+    /// Flatten to a concrete NixAttrs. Use when the full attrset is needed.
+    pub fn flatten(&self) -> NixAttrs {
+        match self {
+            OverlayAttrs::Base(attrs) => (**attrs).clone(),
+            OverlayAttrs::Overlay { left, right } => {
+                let base = left.flatten();
+                base.update(right)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +530,90 @@ mod tests {
         let nix_attrs = attrs.force_all().unwrap();
         assert_eq!(nix_attrs.get("a"), Some(&Value::Int(1)));
         assert_eq!(nix_attrs.get("b"), Some(&Value::Int(2)));
+    }
+
+    // ── OverlayAttrs tests ───────────────────────────────────
+
+    #[test]
+    fn overlay_get_right_overrides_left() {
+        let mut left = NixAttrs::new();
+        left.insert("x".to_string(), Value::Int(1));
+        left.insert("y".to_string(), Value::Int(2));
+
+        let mut right = NixAttrs::new();
+        right.insert("x".to_string(), Value::Int(10)); // overrides
+
+        let overlay = OverlayAttrs::base(left).overlay(right);
+        assert_eq!(overlay.get("x"), Some(&Value::Int(10))); // right wins
+        assert_eq!(overlay.get("y"), Some(&Value::Int(2)));   // from left
+        assert_eq!(overlay.get("z"), None);                    // not found
+    }
+
+    #[test]
+    fn overlay_chain_three_levels() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let mut b = NixAttrs::new();
+        b.insert("y".to_string(), Value::Int(2));
+        let mut c = NixAttrs::new();
+        c.insert("x".to_string(), Value::Int(3)); // overrides a.x
+
+        let chain = OverlayAttrs::base(a).overlay(b).overlay(c);
+        assert_eq!(chain.get("x"), Some(&Value::Int(3)));  // c wins
+        assert_eq!(chain.get("y"), Some(&Value::Int(2)));  // b
+    }
+
+    #[test]
+    fn overlay_is_o1_construction() {
+        // Creating an overlay chain should be O(1) per overlay,
+        // NOT O(n) where n is the number of attributes.
+        let mut big = NixAttrs::new();
+        for i in 0..1000 {
+            big.insert(format!("attr_{i}"), Value::Int(i));
+        }
+        let mut small = NixAttrs::new();
+        small.insert("target".to_string(), Value::Int(42));
+
+        // This should be instant — no iteration over 1000 attrs
+        let overlay = OverlayAttrs::base(big).overlay(small);
+        assert_eq!(overlay.get("target"), Some(&Value::Int(42)));
+        assert_eq!(overlay.get("attr_0"), Some(&Value::Int(0)));
+    }
+
+    #[test]
+    fn overlay_all_keys() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        a.insert("y".to_string(), Value::Int(2));
+        let mut b = NixAttrs::new();
+        b.insert("y".to_string(), Value::Int(20));
+        b.insert("z".to_string(), Value::Int(30));
+
+        let overlay = OverlayAttrs::base(a).overlay(b);
+        let keys = overlay.all_keys();
+        assert_eq!(keys, vec!["x", "y", "z"]); // sorted, unique
+    }
+
+    #[test]
+    fn overlay_contains_key() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let overlay = OverlayAttrs::base(a);
+        assert!(overlay.contains_key("x"));
+        assert!(!overlay.contains_key("y"));
+    }
+
+    #[test]
+    fn overlay_flatten() {
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        let mut b = NixAttrs::new();
+        b.insert("x".to_string(), Value::Int(2));
+        b.insert("y".to_string(), Value::Int(3));
+
+        let overlay = OverlayAttrs::base(a).overlay(b);
+        let flat = overlay.flatten();
+        assert_eq!(flat.get("x"), Some(&Value::Int(2)));
+        assert_eq!(flat.get("y"), Some(&Value::Int(3)));
     }
 }

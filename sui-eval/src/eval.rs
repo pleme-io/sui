@@ -1427,10 +1427,16 @@ fn eval_binop(
         ast::BinOpKind::MoreOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
         ast::BinOpKind::Update => {
             // // operator: force both sides to concrete attrs.
-            // Lazy lambda args mean either operand may still be a
-            // thunk wrapping the attrs.
             let la = l.to_attrs()?;
             let ra = r.to_attrs()?;
+            // Optimization: if right side is empty, return left as-is.
+            if ra.is_empty() {
+                return Ok(Value::Attrs(Rc::new(la)));
+            }
+            // Optimization: if left side is empty, return right as-is.
+            if la.is_empty() {
+                return Ok(Value::Attrs(Rc::new(ra)));
+            }
             Ok(Value::Attrs(Rc::new(la.update(&ra))))
         }
         ast::BinOpKind::Concat => {
