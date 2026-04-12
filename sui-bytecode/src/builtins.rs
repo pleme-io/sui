@@ -376,10 +376,14 @@ impl BuiltinRegistry {
                 VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
                     Ok(VMValue::Attrs(BTreeMap::new()))
                 }
-                VMValue::Closure(_) => {
-                    Err(VMError::Throw(
-                        "functionArgs: requires VM-level implementation for closures".to_string(),
-                    ))
+                VMValue::Closure(closure) => {
+                    let mut result = BTreeMap::new();
+                    let mut interner = crate::intern::Interner::new();
+                    for (name, has_default) in &closure.formals {
+                        let sym = interner.intern(name);
+                        result.insert(sym, VMValue::Bool(*has_default));
+                    }
+                    Ok(VMValue::Attrs(result))
                 }
                 other => Err(VMError::TypeError {
                     expected: "lambda",
@@ -1336,6 +1340,17 @@ impl BuiltinRegistry {
         // replace the error with actual functionality when a bridge is set.
         // We register them with unique names to avoid conflicts, and the
         // VM's try_vm_builtin handles dispatch.
+
+        // Bridge complex builtins to tree-walker.
+        // These need tree-walker state, complex algorithms, or I/O.
+        for name in &["convertHash", "toXML", "toFile", "filterSource",
+                      "fetchClosure", "outputOf", "hashFile", "hashString"]
+        {
+            let n = (*name).to_string();
+            self.register(name, 1, move |args| {
+                bridge_call(&n, args.to_vec())
+            });
+        }
     }
 }
 

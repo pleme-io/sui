@@ -845,7 +845,7 @@ impl Compiler {
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None, formals: Vec::new(),
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
@@ -878,7 +878,7 @@ impl Compiler {
         let closure = VMValue::Closure(VMClosure {
             chunk: Rc::new(tc.chunk),
             upvalues: Vec::new(),
-            arity: 0,
+            arity: 0, formals: Vec::new(),
             name: None,
         });
         let idx = self.chunk.add_constant(closure)?;
@@ -910,7 +910,7 @@ impl Compiler {
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None, formals: Vec::new(),
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
@@ -997,7 +997,7 @@ impl Compiler {
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None,
+            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None, formals: Vec::new(),
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
@@ -1034,7 +1034,7 @@ impl Compiler {
         let closure = VMValue::Closure(VMClosure {
             chunk: Rc::new(tc.chunk),
             upvalues: Vec::new(),
-            arity: 0,
+            arity: 0, formals: Vec::new(),
             name: None,
         });
         let idx = self.chunk.add_constant(closure)?;
@@ -1936,6 +1936,7 @@ impl Compiler {
         // The function argument will be at slot 0 (pushed by VM Call handler).
         func_compiler.stack_depth = 1;
 
+        let mut formals_metadata: Vec<(String, bool)> = Vec::new();
         let (arity, name) = match &param {
             ast::Param::IdentParam(ip) => {
                 let ident = ip
@@ -1970,6 +1971,7 @@ impl Compiler {
                         .ok_or_else(|| CompileError::MissingNode("pattern entry ident".to_string()))?;
                     let fname = ident_text(&ident);
                     let default = entry.default();
+                    formals_metadata.push((fname.clone(), default.is_some()));
                     field_names.push((fname, default));
                 }
 
@@ -2054,6 +2056,7 @@ impl Compiler {
             upvalues: Vec::new(), // populated at runtime by MakeClosure
             arity,
             name,
+            formals: formals_metadata,
         });
 
         if upvalue_count == 0 {

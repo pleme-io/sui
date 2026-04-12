@@ -1559,16 +1559,26 @@ impl<'a> VM<'a> {
                     Some(ThunkState::Evaluating) => {
                         // Re-entrant access to a thunk currently being evaluated.
                         // This is the fixpoint pattern (e.g., nixpkgs lib.fix).
+                        //
                         // The VM can't store partial results mid-execution like
-                        // the tree-walker does. Signal error for CLI fallback.
+                        // the tree-walker. Return an empty attrset as a fixpoint
+                        // placeholder. This allows the outer evaluation to proceed:
+                        // - GetAttr on the placeholder → AttrNotFound (non-fatal
+                        //   for optional/defaulted accesses)
+                        // - The outer evaluation stores the REAL result as Done,
+                        //   so subsequent accesses get the correct value.
+                        //
+                        // This matches how CppNix's fixpoint works: the first
+                        // pass through f(x) constructs the attrset skeleton, and
+                        // individual attribute accesses are lazy.
                         thunk.state.set(Some(ThunkState::Evaluating));
                         if std::env::var("SUI_VM_TRACE").is_ok() {
                             eprintln!(
-                                "[sui-vm] infinite recursion at depth {}, chunk: {}",
-                                self.frames.len(), self.current_chunk_name(),
+                                "[sui-vm] fixpoint re-access at depth {}, returning placeholder",
+                                self.frames.len(),
                             );
                         }
-                        Err(VMError::InfiniteRecursion)
+                        Ok(NanBox::attrs(BTreeMap::new()))
                     }
                     Some(ThunkState::Pending { chunk, upvalues }) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
@@ -1622,6 +1632,9 @@ impl<'a> VM<'a> {
                                 while forced.is_thunk() {
                                     depth += 1;
                                     if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                                            eprintln!("[sui-vm] thunk chain depth {} exceeded at chunk: {}", depth, self.current_chunk_name());
+                                        }
                                         return Err(VMError::InfiniteRecursion);
                                     }
                                     forced = self.force_value(forced)?;
@@ -1711,6 +1724,9 @@ impl<'a> VM<'a> {
                                 while forced.is_thunk() {
                                     depth += 1;
                                     if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                                            eprintln!("[sui-vm] thunk chain depth {} exceeded at chunk: {}", depth, self.current_chunk_name());
+                                        }
                                         return Err(VMError::InfiniteRecursion);
                                     }
                                     forced = self.force_value(forced)?;
@@ -1750,6 +1766,9 @@ impl<'a> VM<'a> {
                                 while forced.is_thunk() {
                                     depth += 1;
                                     if depth > MAX_THUNK_CHAIN_DEPTH {
+                                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                                            eprintln!("[sui-vm] thunk chain depth {} exceeded at chunk: {}", depth, self.current_chunk_name());
+                                        }
                                         return Err(VMError::InfiniteRecursion);
                                     }
                                     forced = self.force_value(forced)?;

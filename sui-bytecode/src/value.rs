@@ -116,6 +116,11 @@ pub struct VMClosure {
     pub arity: u16,
     /// Name hint for error messages (e.g., the parameter name).
     pub name: Option<String>,
+    /// Formal parameter names and whether they have defaults.
+    /// Populated for pattern-destructuring lambdas (`{ a, b ? 1 }: ...`).
+    /// Empty for simple ident-param lambdas (`x: ...`).
+    /// Used by `builtins.functionArgs`.
+    pub formals: Vec<(String, bool)>,
 }
 
 /// A built-in function callable from the VM.
