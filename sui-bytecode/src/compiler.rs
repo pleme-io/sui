@@ -2624,13 +2624,11 @@ impl Compiler {
             return Some(self.add_upvalue(false, uv_idx as u16).ok()?);
         }
 
-        // Check if enclosing has a with-scope (propagate with-scope awareness).
-        if enclosing.has_with_scope() {
-            // Mark this compiler as having a transitive with-scope.
-            // We set a flag so that compile_ident can emit LookupWith.
-            self.with_depth = self.with_depth.max(1);
-        }
-
+        // No need to propagate with_depth here — has_with_scope()
+        // in compile_ident already walks the enclosing chain to find
+        // with-scopes transitively. Setting with_depth as a side effect
+        // would poison all subsequent identifier lookups in this compiler,
+        // causing names that should be upvalues to be emitted as LookupWith.
         None
     }
 
