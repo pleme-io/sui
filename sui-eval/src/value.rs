@@ -257,7 +257,11 @@ impl fmt::Display for NixString {
 
 // ── Value enum ────────────────────────────────────────────────
 
-/// A Nix value.
+/// A Nix value — potentially lazy (may be a Thunk).
+///
+/// To get a guaranteed-concrete value, call `.demand()` which returns
+/// `Concrete`. The `Concrete` type has thunk-free accessors that the
+/// compiler enforces — you cannot accidentally skip forcing.
 #[derive(Debug, Clone)]
 #[derive(Default)]
 pub enum Value {
@@ -274,6 +278,107 @@ pub enum Value {
     Builtin(Box<BuiltinFn>),
     /// A lazy value (thunk) with memoization and blackhole detection.
     Thunk(Thunk),
+}
+
+// ── Concrete: construction-guaranteed non-thunk ──────────────
+
+/// A Value that has been explicitly demanded. Guaranteed NOT a Thunk.
+///
+/// The ONLY way to obtain a `Concrete` is through `Value::demand()`.
+/// This makes the Rust compiler reject code that skips forcing —
+/// accidental eagerness/laziness bugs become compile errors.
+///
+/// ```rust,ignore
+/// let val: Value = eval_expr(expr, env)?;  // might be Thunk
+/// let c: Concrete = val.demand()?;          // NOW guaranteed concrete
+/// let n: i64 = c.as_int()?;                // type-safe, thunk-free
+/// ```
+#[derive(Debug, Clone)]
+pub struct Concrete(Value);
+
+impl Concrete {
+    /// Unwrap back to a Value (for APIs that still take Value).
+    #[inline]
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+
+    /// Borrow the inner Value.
+    #[inline]
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
+    /// Extract bool — guaranteed no thunk.
+    pub fn as_bool(&self) -> Result<bool, EvalError> {
+        match &self.0 {
+            Value::Bool(b) => Ok(*b),
+            other => Err(EvalError::TypeMismatch { expected: "bool", got: other.type_name() }),
+        }
+    }
+
+    /// Extract int — guaranteed no thunk.
+    pub fn as_int(&self) -> Result<i64, EvalError> {
+        match &self.0 {
+            Value::Int(n) => Ok(*n),
+            other => Err(EvalError::TypeMismatch { expected: "int", got: other.type_name() }),
+        }
+    }
+
+    /// Extract string ref — guaranteed no thunk.
+    pub fn as_str(&self) -> Result<&str, EvalError> {
+        match &self.0 {
+            Value::String(s) => Ok(&s.chars),
+            other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
+        }
+    }
+
+    /// Extract NixString ref — guaranteed no thunk.
+    pub fn as_nix_string(&self) -> Result<&NixString, EvalError> {
+        match &self.0 {
+            Value::String(s) => Ok(s),
+            other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
+        }
+    }
+
+    /// Extract list ref — guaranteed no thunk.
+    pub fn as_list(&self) -> Result<&[Value], EvalError> {
+        match &self.0 {
+            Value::List(l) => Ok(l.as_slice()),
+            other => Err(EvalError::TypeMismatch { expected: "list", got: other.type_name() }),
+        }
+    }
+
+    /// Extract attrs ref — guaranteed no thunk.
+    pub fn as_attrs(&self) -> Result<&NixAttrs, EvalError> {
+        match &self.0 {
+            Value::Attrs(a) => Ok(a),
+            other => Err(EvalError::TypeMismatch { expected: "set", got: other.type_name() }),
+        }
+    }
+
+    /// Check the value type name.
+    pub fn type_name(&self) -> &'static str {
+        self.0.type_name()
+    }
+}
+
+impl Value {
+    /// Demand a concrete value. Forces if Thunk, returns as-is if concrete.
+    ///
+    /// This is the TYPED forcing API. The returned `Concrete` is guaranteed
+    /// non-Thunk, and its accessors (`as_bool`, `as_int`, etc.) are
+    /// guaranteed to never encounter a thunk — enforced by the compiler.
+    pub fn demand(&self) -> Result<Concrete, EvalError> {
+        match self {
+            Value::Thunk(_) => {
+                let forced = crate::eval::force_value(self)?;
+                debug_assert!(!matches!(forced, Value::Thunk(_)), "force_value returned a Thunk");
+                Ok(Concrete(forced))
+            }
+            _ => Ok(Concrete(self.clone())),
+        }
+    }
 }
 
 #[cfg(target_pointer_width = "64")]
