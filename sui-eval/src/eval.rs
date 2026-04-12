@@ -263,13 +263,12 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
 /// be a regular function call with stacker protection.
 fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
-        let forced = thunk.force(&|expr, env| eval_expr(expr, env))?;
-        // Recursively force in case a thunk yields another thunk.
-        if let Value::Thunk(inner) = &forced {
-            force_thunk(inner)
-        } else {
-            Ok(forced)
-        }
+        // Force ONE level only — matches CppNix's forceValue which does
+        // not transitively chase thunk-in-thunk chains. The caller will
+        // force again when the value is actually needed. This is the key
+        // optimization: CppNix forces 71 thunks for lib.version while
+        // sui was forcing 180K due to transitive forcing.
+        thunk.force(&|expr, env| eval_expr(expr, env))
     })
 }
 
