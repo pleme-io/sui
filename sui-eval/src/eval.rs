@@ -248,6 +248,17 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
 /// Inlined aggressively so the non-thunk fast path compiles to a
 /// simple clone without a function-call boundary.
 #[inline(always)]
+/// Force a value and return a type-safe `Concrete` (guaranteed non-Thunk).
+///
+/// This is the preferred forcing API. The `Concrete` return type makes it
+/// impossible to accidentally use an unforced thunk — the compiler rejects it.
+pub fn force_concrete(value: &Value) -> Result<Concrete, EvalError> {
+    value.demand()
+}
+
+/// Force a value (legacy API — returns `Value` for backward compatibility).
+///
+/// Prefer `force_concrete()` or `Value::demand()` for new code.
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::ForceValue);
     if let Value::Thunk(thunk) = value {
@@ -257,7 +268,7 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     }
 }
 
-/// Force with call-site tracking. Use `force_at!()` macro instead.
+/// Force with call-site tracking (legacy API).
 pub fn force_value_tracked(value: &Value, site: &str) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::ForceValue);
     if let Value::Thunk(thunk) = value {
@@ -627,7 +638,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let else_body = ie
                 .else_body()
                 .ok_or_else(|| EvalError::ParseError("if missing else body".to_string()))?;
-            if force_value_tracked(&eval_expr(&cond, env)?, "if_cond")?.as_bool()? {
+            if force_concrete(&eval_expr(&cond, env)?)?.as_bool()? {
                 cur_expr = body;
             } else {
                 cur_expr = else_body;
@@ -643,7 +654,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = assert
                 .body()
                 .ok_or_else(|| EvalError::ParseError("assert missing body".to_string()))?;
-            if !force_value_tracked(&eval_expr(&cond, env)?, "if_cond")?.as_bool()? {
+            if !force_concrete(&eval_expr(&cond, env)?)?.as_bool()? {
                 return Err(EvalError::AssertionFailed(eval_file_ctx()));
             }
             cur_expr = body;
@@ -921,7 +932,7 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     let base_expr = sel.expr().ok_or_else(|| {
         EvalError::ParseError("select missing expression".to_string())
     })?;
-    let base = force_value_tracked(&eval_expr(&base_expr, env)?, "select_base")?;
+    let base = force_concrete(&eval_expr(&base_expr, env)?)?.into_value();
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
@@ -947,7 +958,7 @@ fn eval_has_attr(ha: &ast::HasAttr, env: &Env) -> Result<Value, EvalError> {
     let base_expr = ha.expr().ok_or_else(|| {
         EvalError::ParseError("hasattr missing expression".to_string())
     })?;
-    let base = force_value_tracked(&eval_expr(&base_expr, env)?, "select_base")?;
+    let base = force_concrete(&eval_expr(&base_expr, env)?)?.into_value();
     let attrpath = ha.attrpath().ok_or_else(|| {
         EvalError::ParseError("hasattr missing attrpath".to_string())
     })?;
@@ -1381,8 +1392,10 @@ fn eval_binop(
         _ => {}
     }
 
-    let l = force_value_tracked(&eval_expr(lhs, env)?, "binop_lhs")?;
-    let r = force_value_tracked(&eval_expr(rhs, env)?, "binop_rhs")?;
+    let lc = force_concrete(&eval_expr(lhs, env)?)?;
+    let rc = force_concrete(&eval_expr(rhs, env)?)?;
+    let l = lc.to_value();
+    let r = rc.to_value();
 
     match op {
         ast::BinOpKind::Add => match (&l, &r) {
@@ -1511,7 +1524,7 @@ pub fn apply_and_force(func: Value, arg: Value) -> Result<Value, EvalError> {
 
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Apply);
-    let func = force_value_tracked(&func, "apply_func")?;
+    let func = force_concrete(&func)?.into_value();
     match func {
         Value::Lambda(closure) => {
             let mut call_env = closure.env.child();
@@ -1534,7 +1547,7 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
                 }
                 rnix::ast::Param::Pattern(_) => {
                     // Pattern param needs the arg to be an attrset, so force.
-                    let forced_arg = force_value_tracked(&arg, "apply_pattern")?;
+                    let forced_arg = force_concrete(&arg)?.into_value();
                     bind_param(&closure.param, &forced_arg, &mut call_env)?;
                 }
             }
