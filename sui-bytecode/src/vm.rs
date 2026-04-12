@@ -1557,7 +1557,17 @@ impl<'a> VM<'a> {
                         Ok(NanBox::from_vmvalue(&*boxed))
                     }
                     Some(ThunkState::Evaluating) => {
+                        // Re-entrant access to a thunk currently being evaluated.
+                        // This is the fixpoint pattern (e.g., nixpkgs lib.fix).
+                        // The VM can't store partial results mid-execution like
+                        // the tree-walker does. Signal error for CLI fallback.
                         thunk.state.set(Some(ThunkState::Evaluating));
+                        if std::env::var("SUI_VM_TRACE").is_ok() {
+                            eprintln!(
+                                "[sui-vm] infinite recursion at depth {}, chunk: {}",
+                                self.frames.len(), self.current_chunk_name(),
+                            );
+                        }
                         Err(VMError::InfiniteRecursion)
                     }
                     Some(ThunkState::Pending { chunk, upvalues }) => {
