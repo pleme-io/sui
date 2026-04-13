@@ -485,9 +485,13 @@ impl Compiler {
                 if let Some(resolved) = resolve_search_path(inner) {
                     self.emit_constant(VMValue::Path(resolved))
                 } else {
-                    Err(CompileError::ParseError(format!(
+                    // Defer to runtime: emit Throw so tryEval can catch it.
+                    // Matches CppNix: search path failure is a throw, not a parse error.
+                    self.emit_constant(VMValue::String(format!(
                         "search path '{text}' not in NIX_PATH"
-                    )))
+                    )))?;
+                    self.emit(OpCode::Throw);
+                    Ok(())
                 }
             }
             ast::Expr::LegacyLet(ll) => {
@@ -2329,7 +2333,7 @@ impl Compiler {
             }
             // Pop one value
             OpCode::Pop | OpCode::PushWith
-            | OpCode::Assert | OpCode::Return => {
+            | OpCode::Assert | OpCode::Throw | OpCode::Return => {
                 self.stack_depth = self.stack_depth.saturating_sub(1);
             }
             // Pop 2, push 1 (net -1)

@@ -238,7 +238,7 @@ impl<'a> VM<'a> {
                     self.dispatch_list(op)?;
                 }
                 // Control flow
-                OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Assert => {
+                OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Assert | OpCode::Throw => {
                     self.dispatch_control(op)?;
                 }
                 // Functions
@@ -812,6 +812,14 @@ impl<'a> VM<'a> {
                 if !cond.is_truthy()? {
                     return Err(VMError::AssertionFailed);
                 }
+            }
+            OpCode::Throw => {
+                let msg = self.pop_forced()?;
+                let msg_str = match msg.to_vmvalue() {
+                    VMValue::String(s) => s,
+                    other => format!("{other:?}"),
+                };
+                return Err(VMError::Throw(msg_str));
             }
             _ => unreachable!(),
         }
@@ -3552,7 +3560,7 @@ impl<'a> VM<'a> {
                 | OpCode::LessEqual | OpCode::GreaterEqual
                 | OpCode::UpdateAttrs | OpCode::Concat
                 | OpCode::Call | OpCode::TailCall | OpCode::Return
-                | OpCode::Assert | OpCode::Pop | OpCode::Dup | OpCode::PushWith | OpCode::PopWith
+                | OpCode::Assert | OpCode::Throw | OpCode::Pop | OpCode::Dup | OpCode::PushWith | OpCode::PopWith
                 | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
                 | OpCode::DynGetAttr | OpCode::DynHasAttr
                 | OpCode::DynSelectOrDefault | OpCode::Dup => 1,

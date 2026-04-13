@@ -146,9 +146,12 @@ pub enum OpCode {
     /// Operand: u16 absolute target offset.
     JumpIfTrue = 92,
 
-    // ── Assertions ─────────────────────────────────────────────
+    // ── Assertions & Throw ──────────────────────────────────────
     /// Pop condition; if false, raise `AssertionFailed`.
     Assert = 100,
+    /// Pop a string from stack and raise `Throw(msg)`.
+    /// Used for deferred search path errors caught by tryEval.
+    Throw = 101,
 
     // ── Stack manipulation ─────────────────────────────────────
     /// Discard the top of the stack.
@@ -242,6 +245,7 @@ impl OpCode {
             91 => Some(OpCode::JumpIfFalse),
             92 => Some(OpCode::JumpIfTrue),
             100 => Some(OpCode::Assert),
+            101 => Some(OpCode::Throw),
             110 => Some(OpCode::Pop),
             111 => Some(OpCode::Dup),
             120 => Some(OpCode::GetLocalAttr),
@@ -277,7 +281,7 @@ mod tests {
             OpCode::MakeList, OpCode::Concat,
             OpCode::MakeClosure, OpCode::Call, OpCode::Return, OpCode::TailCall,
             OpCode::Jump, OpCode::JumpIfFalse, OpCode::JumpIfTrue,
-            OpCode::Assert, OpCode::Pop, OpCode::Dup,
+            OpCode::Assert, OpCode::Throw, OpCode::Pop, OpCode::Dup,
             OpCode::GetLocalAttr, OpCode::GetLocalCall,
             OpCode::PushBuiltins, OpCode::CallBuiltin,
             OpCode::MakeThunk, OpCode::Force, OpCode::PatchThunkUpvalues, OpCode::MakeLazyThunk,
