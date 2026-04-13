@@ -490,11 +490,10 @@ fn maybe_thunk(
         ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
             Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
         }),
-        // Ident resolution: lexical first, then with-scope cache, then
-        // WithIdent thunk. The WithIdent thunk stores a DIRECT reference
-        // to the with-scope's shared cache — when forced, it's an O(1)
-        // hash lookup instead of a full Env traversal. This is the
-        // construction-guarantee fix for the with-scope fixpoint problem.
+        // Ident resolution: CppNix's maybeThunk resolves lexical idents eagerly
+        // but DEFERS with-scope idents. The deferred thunks are forced later when
+        // the fixpoint resolves and the with-scope cache/OnceCell is populated.
+        // This prevents blackhole during fixpoint construction.
         ast::Expr::Ident(ident) if !is_rec => {
             let name = ident_text(ident);
             match name.as_str() {
@@ -502,15 +501,15 @@ fn maybe_thunk(
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
                 _ => {
-                    // 1. Lexical scope (no with-scope forcing)
+                    // Lexical scope (always safe)
                     if let Some(v) = env.lookup_lexical(&name) {
                         return v;
                     }
-                    // 2. With-scope cache (no forcing)
+                    // With-scope: try cache first (no forcing)
                     if let Some(v) = env.lookup_with_cache_only(&name) {
                         return v;
                     }
-                    // 3. WithIdent thunk — shares cache with all idents from same scope
+                    // Must defer — create WithIdent thunk for O(1) cache lookup
                     if let Some((scope_cache, scope_value)) = env.innermost_with_scope() {
                         return Value::Thunk(Thunk::new_with_ident(
                             SmolStr::from(name.as_str()),
@@ -519,7 +518,7 @@ fn maybe_thunk(
                             env.clone(),
                         ));
                     }
-                    // 4. No with-scopes — deferred UndefinedVar
+                    // No scope — will be UndefinedVar when forced
                     Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                 }
             }

@@ -760,9 +760,14 @@ impl Thunk {
                         // (not Blackhole), enabling self-referential fixpoints
                         // like nixpkgs `let self = f self; in self`.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        // Do NOT set the OnceCell cache here — the value may
-                        // still be a thunk-in-thunk that needs unwrapping below.
-                        // The cache is set after full unwrapping completes.
+                        // Set the OnceCell cache IMMEDIATELY for non-thunk values.
+                        // This enables re-entrant access during fixpoint evaluation —
+                        // matching CppNix's in-place thunk mutation where the result
+                        // is visible before transitive unwrapping completes.
+                        // Only cache non-thunk values to avoid demand() depth errors.
+                        if !matches!(value, Value::Thunk(_)) {
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                        }
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
                         let mut depth = 0u32;
