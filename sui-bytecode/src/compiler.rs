@@ -2243,15 +2243,9 @@ impl Compiler {
 
         // Dup: one copy goes to PushWith (consumed), the other stays as a
         // hidden local so thunks inside the body can capture it as an upvalue.
+        // Net stack effect of Dup (+1) + PushWith (-1) = 0.
         self.emit(OpCode::Dup);
-        self.stack_depth += 1;
-
-        // Push original onto with-scope stack (consumes TOS).
         self.emit(OpCode::PushWith);
-        // PushWith pops from value stack → but we already accounted for
-        // Dup's +1, so don't double-decrement. Net: hidden local remains.
-        // Note: PushWith's stack effect is -1 (line 2258 dispatch), but Dup
-        // pushed +1. The hidden local sits at stack_depth-1.
 
         // Register the remaining copy as a hidden local.
         let slot = self.add_local("__with_scope".to_string())?;
