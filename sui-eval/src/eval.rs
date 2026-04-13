@@ -37,6 +37,57 @@ thread_local! {
 
 thread_local! {
     static EVAL_FILE_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// Nix-level error context stack — captures source positions for --show-trace.
+    /// Each entry: (file, expression_snippet). Pushed on function calls, select,
+    /// force, and popped on return. Attached to errors for structured diagnostics.
+    static NIX_TRACE_STACK: RefCell<Vec<NixTraceFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A single frame in the Nix-level error trace.
+#[derive(Debug, Clone)]
+pub struct NixTraceFrame {
+    pub file: Option<String>,
+    pub description: String,
+}
+
+/// Push a Nix-level trace frame. Returns a guard that pops on drop.
+fn push_nix_trace(desc: impl Into<String>) -> NixTraceGuard {
+    let frame = NixTraceFrame {
+        file: current_eval_file().map(|p| {
+            p.display().to_string()
+                .rsplit_once("-source/")
+                .map_or_else(|| p.display().to_string(), |(_, s)| s.to_string())
+        }),
+        description: desc.into(),
+    };
+    NIX_TRACE_STACK.with(|s| s.borrow_mut().push(frame));
+    NixTraceGuard
+}
+
+struct NixTraceGuard;
+impl Drop for NixTraceGuard {
+    fn drop(&mut self) {
+        NIX_TRACE_STACK.with(|s| s.borrow_mut().pop());
+    }
+}
+
+/// Capture the current Nix trace and attach it to an error.
+pub fn attach_trace(err: EvalError) -> EvalError {
+    NIX_TRACE_STACK.with(|s| {
+        let stack = s.borrow();
+        if stack.is_empty() {
+            return err;
+        }
+        let mut trace = format!("{err}");
+        for (i, frame) in stack.iter().rev().take(15).enumerate() {
+            let loc = frame.file.as_deref().unwrap_or("<eval>");
+            trace.push_str(&format!("\n  {} ({loc})", frame.description));
+            if i >= 14 {
+                trace.push_str(&format!("\n  ... ({} more frames)", stack.len() - 15));
+            }
+        }
+        EvalError::TypeError(trace)
+    })
 }
 
 /// Return the directory of the file currently being evaluated, if any.
@@ -312,9 +363,9 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     let mut env = Env::new();
     env.set_eval_file(file);
     builtins::register(&mut env);
-    let result = eval_expr(&expr, &env)?;
+    let result = eval_expr(&expr, &env).map_err(|e| attach_trace(e))?;
     // Force the top-level result so callers always see a concrete value.
-    let final_result = force_value(&result);
+    let final_result = force_value(&result).map_err(|e| attach_trace(e));
     // Restore the previous source ID (matters for nested imports).
     CURRENT_SOURCE_ID.with(|s| s.set(prev_src_id));
     EVAL_NESTING.with(|n| n.set(n.get().saturating_sub(1)));
@@ -1668,17 +1719,19 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
                 });
             }
             let mut call_env = closure.env.child();
-            // Push the closure's captured eval file onto the
-            // file stack so any relative path literals inside
-            // the body (including in default parameter values)
-            // resolve against the file where the closure was
-            // *defined*, not where it's called from. The guard
-            // pops on drop.
             let _file_guard = closure
                 .env
                 .eval_file()
                 .cloned()
                 .map(push_eval_file);
+            // Push Nix-level trace frame for function calls
+            let _trace = {
+                let file = closure.env.eval_file()
+                    .map(|p| p.display().to_string()
+                        .rsplit_once("-source/")
+                        .map_or_else(|| p.display().to_string(), |(_, s)| s.to_string()));
+                push_nix_trace(format!("while calling function defined in {}", file.as_deref().unwrap_or("<eval>")))
+            };
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {
                     // Simple ident param: bind argument WITHOUT forcing.
@@ -1694,12 +1747,7 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             eval_expr(&closure.body, &call_env)
         }
         Value::Builtin(b) => {
-            // Most builtins want their argument forced before they
-            // get to inspect it, since their body assumes a concrete
-            // value. `tryEval` is the one exception: it must catch
-            // any `throw` / `abort` that fires *during* the force,
-            // so we hand it the unforced thunk and let it call
-            // `force_value` itself.
+            let _trace = push_nix_trace(format!("while calling the '{}' builtin", b.name));
             if b.name == "tryEval" {
                 (b.func)(&[arg])
             } else {

@@ -1554,7 +1554,9 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_list: force first via force_value()".into(),
             )),
-            _ => Err(EvalError::TypeMismatch { expected: "list", got: self.type_name() }),
+            _ => Err(crate::eval::attach_trace(
+                EvalError::TypeMismatch { expected: "list", got: self.type_name() }
+            )),
         }
     }
 
