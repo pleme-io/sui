@@ -1078,6 +1078,7 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
         EvalError::ParseError("select missing expression".to_string())
     })?;
     let base = force_concrete(&eval_expr(&base_expr, env)?)?.into_value();
+    let base_type = base.type_name();
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
@@ -1092,9 +1093,20 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                 ))
             }
         }
-        TraverseResult::NotAttrs(v) => Err(EvalError::type_error(
-            format!("cannot select from {}", v.type_name()),
-        )),
+        TraverseResult::NotAttrs(_) => {
+            // CppNix: `expr.a.b or default` falls back to default for
+            // ANY error in the path — including intermediate values
+            // that aren't attrsets (e.g., null). The module system
+            // relies on this: `x.options.type.name or null` must
+            // return null when x.options is null, not throw.
+            if let Some(def) = sel.default_expr() {
+                eval_expr(&def, env)
+            } else {
+                Err(attach_trace(EvalError::type_error(
+                    format!("cannot select from {base_type}"),
+                )))
+            }
+        }
     }
 }
 
