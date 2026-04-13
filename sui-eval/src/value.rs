@@ -589,6 +589,15 @@ impl Thunk {
         matches!(unsafe { &*self.0.repr.get() }, ThunkRepr::Native(_))
     }
 
+    /// Peek at the cached value WITHOUT forcing.
+    /// Returns Some(&Value) if the thunk has been evaluated, None otherwise.
+    /// This is used by with-scope lookup to check if the fixpoint thunk
+    /// has already been resolved (by another evaluation path) without
+    /// entering the force state machine.
+    pub fn peek(&self) -> Option<&Value> {
+        self.0.cache.get().map(|v| &**v)
+    }
+
     /// Replace the environment captured in a suspended thunk.
     /// For `InheritSelect`, delegates to the shared source thunk's
     /// `update_env` (which updates the source's captured env).
@@ -1212,6 +1221,40 @@ impl Env {
         self.0.bindings.get(&sym).cloned()
     }
 
+    /// Look up a name using ONLY with-scope caches (no forcing).
+    /// Returns Some if the name is in a cached with-scope, None otherwise.
+    /// Used by maybe_thunk to resolve with-scope idents without forcing fixpoints.
+    #[must_use]
+    pub fn lookup_with_cache_only(&self, name: &str) -> Option<Value> {
+        for scope in self.0.with_scopes.iter().rev() {
+            let cache = scope.cached.borrow();
+            if let Some(ref attrs) = *cache {
+                if let Some(v) = attrs.get(name) {
+                    return Some(v.clone());
+                }
+            }
+            // Also check if the thunk is already evaluated (peek)
+            drop(cache);
+            if let Value::Thunk(ref thunk) = scope.value {
+                if let Some(cached_val) = thunk.peek() {
+                    if let Value::Attrs(ref attrs) = *cached_val {
+                        // Populate the with-scope cache for future lookups
+                        *scope.cached.borrow_mut() = Some((**attrs).clone());
+                        if let Some(v) = attrs.get(name) {
+                            return Some(v.clone());
+                        }
+                    }
+                }
+            } else if let Value::Attrs(ref attrs) = scope.value {
+                *scope.cached.borrow_mut() = Some((**attrs).clone());
+                if let Some(v) = attrs.get(name) {
+                    return Some(v.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Lookup matching Nix semantics:
     ///
     /// 1. Probe the flattened binding map (single O(log32 n) lookup).
@@ -1240,22 +1283,58 @@ impl Env {
                     continue;
                 }
             }
-            // Slow path: force, cache, then check
-            match crate::eval::force_value_tracked(&scope.value, "with_scope") {
-                Ok(forced) => {
-                    if let Value::Attrs(ref attrs) = forced {
-                        let result = attrs.get(name).cloned();
-                        *scope.cached.borrow_mut() = Some((**attrs).clone());
-                        if result.is_some() {
-                            return result;
+            // Slow path: force, cache, then check.
+            // If the value is already concrete (not a thunk), use it directly.
+            // If it's a thunk, try to force. On blackhole (fixpoint being
+            // computed), return None so the caller can defer.
+            let resolved = match &scope.value {
+                Value::Attrs(attrs) => {
+                    // Already concrete — cache and use directly
+                    *scope.cached.borrow_mut() = Some((**attrs).clone());
+                    Some((**attrs).clone())
+                }
+                Value::Thunk(thunk) => {
+                    // Check if the thunk is already evaluated (OnceCell cache)
+                    // without entering the force state machine
+                    if let Some(cached_val) = thunk.peek() {
+                        if let Value::Attrs(ref attrs) = *cached_val {
+                            *scope.cached.borrow_mut() = Some((**attrs).clone());
+                            Some((**attrs).clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Thunk not yet evaluated — try to force
+                        match crate::eval::force_value_tracked(&scope.value, "with_scope") {
+                            Ok(forced) => {
+                                if let Value::Attrs(ref attrs) = forced {
+                                    *scope.cached.borrow_mut() = Some((**attrs).clone());
+                                    Some((**attrs).clone())
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(_) => None, // blackhole or other error — skip
                         }
                     }
                 }
-                Err(ref e) => {
-                    // Log with-scope force failures for debugging
-                    if std::env::var("SUI_DEBUG_VAR").is_ok() {
-                        eprintln!("[sui-debug] with_scope force failed for '{name}': {e:?}");
+                _ => {
+                    match crate::eval::force_value_tracked(&scope.value, "with_scope") {
+                        Ok(forced) => {
+                            if let Value::Attrs(ref attrs) = forced {
+                                *scope.cached.borrow_mut() = Some((**attrs).clone());
+                                Some((**attrs).clone())
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) => None,
                     }
+                }
+            };
+            if let Some(ref attrs) = resolved {
+                if let Some(v) = attrs.get(name) {
+                    return Some(v.clone());
                 }
             }
             // If forcing fails or it's not an attrset, try next scope

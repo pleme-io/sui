@@ -492,11 +492,14 @@ fn maybe_thunk(
         }),
         // Identifiers: look up directly from LEXICAL scope only.
         // If the env has with-scopes, the ident might resolve through
-        // a with-scope whose value is a fixpoint thunk. Eagerly resolving
-        // through with-scopes forces the fixpoint during attrset construction,
-        // causing blackhole in patterns like `with pkgs; { x = callPackage ...; }`.
-        // CppNix's maybeThunk defers with-scope lookups — we do the same
-        // by only resolving LEXICAL bindings here and thunking everything else.
+        // Ident resolution in maybe_thunk.
+        // Check lexical scope first (cheap, no with-scope forcing).
+        // If not found and there are with-scopes, check the with-scope CACHE.
+        // If the cache has the name, return it (no forcing needed).
+        // If the cache is empty AND the scope value is already evaluated (peek),
+        // populate the cache and check.
+        // Otherwise, create a NATIVE thunk that captures just the name + env
+        // (lighter than Thunk::new_suspended which clones the AST).
         ast::Expr::Ident(ident) if !is_rec => {
             let name = ident_text(ident);
             match name.as_str() {
@@ -504,20 +507,22 @@ fn maybe_thunk(
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
                 _ => {
-                    // Lexical scope first (no with-scope forcing, always safe).
+                    // 1. Check lexical scope (always safe)
                     if let Some(v) = env.lookup_lexical(&name) {
                         return v;
                     }
-                    // Not in lexical scope. If there are with-scopes, we
-                    // MUST defer the lookup — CppNix's maybeThunk never
-                    // forces with-scopes during attrset construction.
-                    // This is critical for fixpoints like `with pkgs;` in
-                    // all-packages.nix where pkgs is the fixpoint.
-                    //
-                    // The thunk captures the expr+env and resolves the
-                    // ident through the with-scope when actually forced
-                    // (after the fixpoint resolves).
-                    Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+                    // 2. Check with-scope cache (no forcing)
+                    if let Some(v) = env.lookup_with_cache_only(&name) {
+                        return v;
+                    }
+                    // 3. Defer — create a lightweight native thunk
+                    let env2 = env.clone();
+                    let name2 = name.clone();
+                    Value::Thunk(Thunk::new_native(move || {
+                        env2.lookup(&name2).ok_or_else(|| {
+                            EvalError::UndefinedVar(format!("'{name2}'"))
+                        })
+                    }))
                 }
             }
         }
