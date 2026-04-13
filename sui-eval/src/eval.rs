@@ -1763,7 +1763,16 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
         }
         Value::Builtin(b) => {
             let _trace = push_nix_trace(format!("while calling the '{}' builtin", b.name));
-            if b.name == "tryEval" {
+            // Special builtins that must receive UNFORCED arguments:
+            // - tryEval: must catch throw/abort during its own forcing
+            // - addErrorContext<partial>: wraps value with error context
+            //   without forcing (the value is the fixpoint `config` which
+            //   causes infinite recursion if forced during collectModules)
+            // - seq<partial>: forces first arg but returns second UNFORCED
+            if b.name == "tryEval"
+                || b.name == "addErrorContext<partial>"
+                || b.name == "seq<partial>"
+            {
                 (b.func)(&[arg])
             } else {
                 let forced_arg = force_value(&arg)?;
