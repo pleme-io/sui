@@ -493,6 +493,29 @@ pub enum ThunkRepr {
     /// instead of eagerly during flake setup, matching CppNix semantics
     /// where each input's outputs function is wrapped in a thunk.
     Native(Box<dyn FnOnce() -> Result<Value, EvalError>>),
+    /// A deferred with-scope ident lookup.  Stores a direct reference to the
+    /// with-scope's shared cache and the ident name.  When forced, checks the
+    /// cache for the resolved attrset and looks up the name — O(1) hash lookup,
+    /// no Env traversal, no fixpoint re-forcing.
+    ///
+    /// This is the construction-guarantee solution for the with-scope fixpoint
+    /// problem: instead of creating 80K+ Env-capturing thunks (each doing a
+    /// full lookup on force), we create 80K lightweight cache-referencing thunks
+    /// that share the same resolved attrset.
+    WithIdent {
+        /// The ident name to look up
+        name: SmolStr,
+        /// Direct reference to the with-scope's cached attrset.
+        /// Shared via Rc<RefCell> — all idents from the same `with` scope
+        /// reference the same cache.  When ANY lookup forces the scope,
+        /// the cache is populated and all subsequent WithIdent forces are O(1).
+        scope_cache: Rc<RefCell<Option<NixAttrs>>>,
+        /// The scope value (for initial force if cache is empty)
+        scope_value: Value,
+        /// Fallback: the full env for lexical+outer-scope lookup if the
+        /// with-scope doesn't contain this name
+        env: Env,
+    },
     /// Currently being evaluated -- detects infinite recursion.
     Blackhole,
     /// Already evaluated and memoized.
@@ -544,6 +567,27 @@ impl Thunk {
             repr: UnsafeCell::new(ThunkRepr::InheritSelect {
                 source_thunk,
                 name: name.into(),
+            }),
+        }))
+    }
+
+    /// Create a WithIdent thunk — a deferred with-scope ident lookup.
+    /// Stores a direct reference to the shared with-scope cache.
+    /// When forced: O(1) hash lookup in the cache, no Env traversal.
+    pub fn new_with_ident(
+        name: SmolStr,
+        scope_cache: Rc<RefCell<Option<NixAttrs>>>,
+        scope_value: Value,
+        env: Env,
+    ) -> Self {
+        crate::trace::inc_thunks_created();
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: UnsafeCell::new(ThunkRepr::WithIdent {
+                name,
+                scope_cache,
+                scope_value,
+                env,
             }),
         }))
     }
@@ -867,6 +911,45 @@ impl Thunk {
                     }
                 }
             }
+            ThunkRepr::WithIdent { name, scope_cache, scope_value, env } => {
+                crate::perf::inc(crate::perf::Counter::ThunkForce);
+                crate::trace::inc_thunks_forced_unique();
+                // Fast path: check the shared with-scope cache.
+                // All WithIdent thunks from the same `with` scope share
+                // this cache. Once ANY lookup populates it, all others
+                // are O(1) hash lookups.
+                {
+                    let cache = scope_cache.borrow();
+                    if let Some(ref attrs) = *cache {
+                        if let Some(v) = attrs.get(&name) {
+                            let value = v.clone();
+                            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            return Ok(value);
+                        }
+                        // Name not in cached attrset — fall through to env lookup
+                    }
+                }
+                // Cache not populated yet — force the scope value to populate it
+                if let Ok(forced) = crate::eval::force_value(&scope_value) {
+                    if let Value::Attrs(ref attrs) = forced {
+                        *scope_cache.borrow_mut() = Some((**attrs).clone());
+                        if let Some(v) = attrs.get(&name) {
+                            let value = v.clone();
+                            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            return Ok(value);
+                        }
+                    }
+                }
+                // Name not in with-scope — fall back to full env lookup
+                let result = env.lookup(&name).ok_or_else(|| {
+                    EvalError::UndefinedVar(format!("'{name}'"))
+                })?;
+                *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(result.clone()));
+                let _ = self.0.cache.set(Box::new(result.clone()));
+                Ok(result)
+            }
             ThunkRepr::Blackhole => {
                 // Capture the force chain leading to this cycle.
                 let chain = crate::trace::capture_cycle(thunk_id);
@@ -894,6 +977,7 @@ impl fmt::Debug for Thunk {
             ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
             ThunkRepr::InheritSelect { name, .. } => write!(f, "<inherit-select {name}>"),
             ThunkRepr::Native(_) => write!(f, "<native-thunk>"),
+            ThunkRepr::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
         }
@@ -1253,6 +1337,15 @@ impl Env {
             }
         }
         None
+    }
+
+    /// Get the innermost with-scope's cache and value for creating WithIdent thunks.
+    /// Returns None if there are no with-scopes.
+    #[must_use]
+    pub fn innermost_with_scope(&self) -> Option<(Rc<RefCell<Option<NixAttrs>>>, Value)> {
+        self.0.with_scopes.last().map(|scope| {
+            (scope.cached.clone(), scope.value.clone())
+        })
     }
 
     /// Lookup matching Nix semantics:

@@ -490,16 +490,11 @@ fn maybe_thunk(
         ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
             Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
         }),
-        // Identifiers: look up directly from LEXICAL scope only.
-        // If the env has with-scopes, the ident might resolve through
-        // Ident resolution in maybe_thunk.
-        // Check lexical scope first (cheap, no with-scope forcing).
-        // If not found and there are with-scopes, check the with-scope CACHE.
-        // If the cache has the name, return it (no forcing needed).
-        // If the cache is empty AND the scope value is already evaluated (peek),
-        // populate the cache and check.
-        // Otherwise, create a NATIVE thunk that captures just the name + env
-        // (lighter than Thunk::new_suspended which clones the AST).
+        // Ident resolution: lexical first, then with-scope cache, then
+        // WithIdent thunk. The WithIdent thunk stores a DIRECT reference
+        // to the with-scope's shared cache — when forced, it's an O(1)
+        // hash lookup instead of a full Env traversal. This is the
+        // construction-guarantee fix for the with-scope fixpoint problem.
         ast::Expr::Ident(ident) if !is_rec => {
             let name = ident_text(ident);
             match name.as_str() {
@@ -507,22 +502,25 @@ fn maybe_thunk(
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
                 _ => {
-                    // 1. Check lexical scope (always safe)
+                    // 1. Lexical scope (no with-scope forcing)
                     if let Some(v) = env.lookup_lexical(&name) {
                         return v;
                     }
-                    // 2. Check with-scope cache (no forcing)
+                    // 2. With-scope cache (no forcing)
                     if let Some(v) = env.lookup_with_cache_only(&name) {
                         return v;
                     }
-                    // 3. Defer — create a lightweight native thunk
-                    let env2 = env.clone();
-                    let name2 = name.clone();
-                    Value::Thunk(Thunk::new_native(move || {
-                        env2.lookup(&name2).ok_or_else(|| {
-                            EvalError::UndefinedVar(format!("'{name2}'"))
-                        })
-                    }))
+                    // 3. WithIdent thunk — shares cache with all idents from same scope
+                    if let Some((scope_cache, scope_value)) = env.innermost_with_scope() {
+                        return Value::Thunk(Thunk::new_with_ident(
+                            SmolStr::from(name.as_str()),
+                            scope_cache,
+                            scope_value,
+                            env.clone(),
+                        ));
+                    }
+                    // 4. No with-scopes — deferred UndefinedVar
+                    Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                 }
             }
         }
