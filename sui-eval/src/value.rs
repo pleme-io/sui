@@ -940,12 +940,14 @@ impl Thunk {
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
             }
             ThunkRepr::Evaluated(v) => {
-                // Reached if somehow the fast-path OnceCell check above
-                // missed (should not happen in single-threaded code).
-                // Put back, populate cache, and return the clone.
+                // Reached when OnceCell wasn't populated (value was a thunk
+                // when first evaluated). Cache only concrete values — caching
+                // a thunk would cause force_value's loop to spin.
                 crate::perf::inc(crate::perf::Counter::ThunkHit);
                 let cloned = (*v).clone();
-                let _ = self.0.cache.set(Box::new(cloned.clone()));
+                if !matches!(cloned, Value::Thunk(_)) {
+                    let _ = self.0.cache.set(Box::new(cloned.clone()));
+                }
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(v);
                 Ok(cloned)
             }
@@ -1976,25 +1978,19 @@ impl From<Vec<Value>> for Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        // Quick path: pointer-equal thunks are always equal.
-        if let (Value::Thunk(a), Value::Thunk(b)) = (self, other) {
-            if Rc::ptr_eq(&a.0, &b.0) {
-                return true;
-            }
+        // Quick path: pointer-equal values are always equal.
+        match (self, other) {
+            (Value::Thunk(a), Value::Thunk(b)) if Rc::ptr_eq(&a.0, &b.0) => return true,
+            (Value::Attrs(a), Value::Attrs(b)) if Rc::ptr_eq(a, b) => return true,
+            (Value::List(a), Value::List(b)) if Rc::ptr_eq(a, b) => return true,
+            (Value::String(a), Value::String(b)) if Rc::ptr_eq(a, b) => return true,
+            (Value::Lambda(a), Value::Lambda(b)) => return Rc::ptr_eq(a, b),
+            _ => {}
         }
-        // Force ONE level only — deeper thunks are compared lazily.
-        // Using force_value's transitive loop here causes cascading
-        // evaluation on large nixpkgs attrsets.
-        let force_one = |v: &Value| -> Value {
-            match v {
-                Value::Thunk(t) => t
-                    .force(&|e, env| crate::eval::eval_expr(e, env))
-                    .unwrap_or(Value::Null),
-                other => other.clone(),
-            }
-        };
-        let l = force_one(self);
-        let r = force_one(other);
+        // Force transitively — the Evaluated handler guards against
+        // caching thunks, preventing spin loops.
+        let l = crate::eval::force_value(self).unwrap_or(Value::Null);
+        let r = crate::eval::force_value(other).unwrap_or(Value::Null);
 
         match (&l, &r) {
             (Value::Null, Value::Null) => true,
@@ -2005,7 +2001,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a.chars == b.chars,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
-            (Value::Attrs(a), Value::Attrs(b)) => a.inner() == b.inner(),
+            (Value::Attrs(a), Value::Attrs(b)) => Rc::ptr_eq(a, b) || a.inner() == b.inner(),
             // Lambda: identity comparison via Rc pointer — same closure = same function.
             // Matches CppNix behavior: same Value pointer → true, different → false.
             // Without this, attrsets containing the same function (via inherit)
