@@ -5,6 +5,11 @@ use super::*;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "tryEval", |args| {
+        // CppNix: tryEval ONLY catches `throw` and `abort` — NOT evaluation
+        // errors like AttrNotFound, TypeMismatch, InfiniteRecursion, etc.
+        // Catching all errors breaks the nixpkgs module system which uses
+        // tryEval to detect if an option value throws, NOT to swallow
+        // real evaluation errors.
         match crate::eval::force_value(&args[0]) {
             Ok(v) => {
                 let mut result = NixAttrs::new();
@@ -12,12 +17,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 result.insert("value".to_string(), v);
                 Ok(Value::Attrs(Rc::new(result)))
             }
-            Err(_) => {
+            Err(EvalError::Throw(_)) | Err(EvalError::AssertionFailed(_)) => {
                 let mut result = NixAttrs::new();
                 result.insert("success".to_string(), Value::Bool(false));
                 result.insert("value".to_string(), Value::Bool(false));
                 Ok(Value::Attrs(Rc::new(result)))
             }
+            Err(e) => Err(e), // Propagate real evaluation errors
         }
     });
     register_builtin(builtins, "trace", |args| {

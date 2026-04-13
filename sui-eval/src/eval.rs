@@ -734,7 +734,10 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if let Some(resolved) = crate::builtins::resolve_search_path(inner) {
                 return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
             }
-            return Err(EvalError::type_error(
+            // CppNix: search path resolution failure is a throw
+            // (catchable by tryEval). Used by nixpkgs impure-overlays.nix
+            // which tries `import <nixpkgs-overlays>` inside tryEval.
+            return Err(EvalError::Throw(
                 format!("search path '{text}' not in NIX_PATH"),
             ));
         }
