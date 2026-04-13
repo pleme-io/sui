@@ -162,12 +162,24 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
                 let mut result = NixAttrs::new();
                 for (k, vs) in collected {
-                    let partial = crate::eval::apply(
-                        func.clone(),
-                        Value::string(k.clone()),
-                    )?;
-                    let val = crate::eval::apply(partial, Value::List(Rc::new(vs)))?;
-                    result.insert(k, val);
+                    // CRITICAL: Wrap each merge result in a native thunk.
+                    // CppNix's zipAttrsWith produces a lazy attrset where
+                    // each key's merge result is independently evaluable.
+                    // Eagerly applying the merge function forces ALL keys,
+                    // which breaks the nixpkgs module system's fixpoint:
+                    // pushedDownDefinitionsByName uses zipAttrsWith, and
+                    // eagerly merging ALL definitions forces config values
+                    // while config is still being computed (blackhole).
+                    let f = func.clone();
+                    let key = k.clone();
+                    let thunk = Thunk::new_native(move || {
+                        let partial = crate::eval::apply(
+                            f,
+                            Value::string(key),
+                        )?;
+                        crate::eval::apply(partial, Value::List(Rc::new(vs)))
+                    });
+                    result.insert(k, Value::Thunk(thunk));
                 }
                 Ok(Value::Attrs(Rc::new(result)))
             }),
