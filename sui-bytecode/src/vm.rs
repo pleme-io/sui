@@ -2618,12 +2618,16 @@ impl<'a> VM<'a> {
             }
         }
 
-        // Assemble result attrset.
-        let mut result: BTreeMap<Symbol, NanBox> = attrs;
+        // Assemble result attrset (CppNix-compatible).
+        let mut result: BTreeMap<Symbol, NanBox> = attrs.clone();
         let type_sym = self.interner.intern("type");
         result.insert(type_sym, NanBox::string("derivation".to_string()));
         let drv_path_sym = self.interner.intern("drvPath");
         result.insert(drv_path_sym, NanBox::string(drv_path.clone()));
+
+        // CppNix: drvAttrs contains the original input attributes
+        let drv_attrs_sym = self.interner.intern("drvAttrs");
+        result.insert(drv_attrs_sym, NanBox::attrs(attrs));
 
         let primary_out = out_paths
             .get("out")
@@ -2633,18 +2637,30 @@ impl<'a> VM<'a> {
         let out_path_sym = self.interner.intern("outPath");
         result.insert(out_path_sym, NanBox::string(primary_out));
 
+        // CppNix: outputName is the primary output name
+        let output_name_sym = self.interner.intern("outputName");
+        let primary_output_name = if out_paths.contains_key("out") { "out" }
+            else { out_paths.keys().next().map(|s| s.as_str()).unwrap_or("out") };
+        result.insert(output_name_sym, NanBox::string(primary_output_name.to_string()));
+
+        let mut all_outputs: Vec<NanBox> = Vec::new();
         for (output_name, output_path) in &out_paths {
             let mut out_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
             out_attrs.insert(out_path_sym, NanBox::string(output_path.clone()));
             out_attrs.insert(drv_path_sym, NanBox::string(drv_path.clone()));
             out_attrs.insert(type_sym, NanBox::string("derivation".to_string()));
-            let output_name_sym = self.interner.intern("outputName");
             out_attrs.insert(output_name_sym, NanBox::string(output_name.clone()));
             let name_sym = self.interner.intern("name");
             out_attrs.insert(name_sym, NanBox::string(name.clone()));
+            let out_val = NanBox::attrs(out_attrs);
+            all_outputs.push(out_val.clone());
             let out_sym = self.interner.intern(output_name);
-            result.insert(out_sym, NanBox::attrs(out_attrs));
+            result.insert(out_sym, out_val);
         }
+
+        // CppNix: `all` is a list of all output derivation attrsets
+        let all_sym = self.interner.intern("all");
+        result.insert(all_sym, NanBox::list(all_outputs));
 
         Ok(NanBox::attrs(result))
     }

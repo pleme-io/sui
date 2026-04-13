@@ -240,6 +240,9 @@ fn build_derivation_result(
     result.insert("type".to_string(), Value::string("derivation"));
     result.insert("drvPath".to_string(), Value::string(drv_path));
 
+    // CppNix: drvAttrs contains the original input attributes
+    result.insert("drvAttrs".to_string(), Value::Attrs(Rc::new(input.clone())));
+
     let primary_out = out_paths
         .get("out")
         .cloned()
@@ -247,6 +250,16 @@ fn build_derivation_result(
         .unwrap_or_default();
     result.insert("outPath".to_string(), Value::string(primary_out));
 
+    // CppNix: outputName is the primary output name
+    let primary_output_name = if out_paths.contains_key("out") {
+        "out"
+    } else {
+        out_paths.keys().next().map(|s| s.as_str()).unwrap_or("out")
+    };
+    result.insert("outputName".to_string(), Value::string(primary_output_name));
+
+    // Build per-output attrsets and collect them for `all`
+    let mut all_outputs: Vec<Value> = Vec::new();
     for (output_name, output_path) in out_paths {
         let mut out_attrs = NixAttrs::new();
         out_attrs.insert("outPath".to_string(), Value::string(output_path.clone()));
@@ -254,8 +267,13 @@ fn build_derivation_result(
         out_attrs.insert("type".to_string(), Value::string("derivation"));
         out_attrs.insert("outputName".to_string(), Value::string(output_name.clone()));
         out_attrs.insert("name".to_string(), Value::string(name));
-        result.insert(output_name.clone(), Value::Attrs(Rc::new(out_attrs)));
+        let out_val = Value::Attrs(Rc::new(out_attrs));
+        all_outputs.push(out_val.clone());
+        result.insert(output_name.clone(), out_val);
     }
+
+    // CppNix: `all` is a list of all output derivation attrsets
+    result.insert("all".to_string(), Value::List(Rc::new(all_outputs)));
 
     Ok(Value::Attrs(Rc::new(result)))
 }
