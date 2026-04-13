@@ -1414,7 +1414,11 @@ fn build_nested_attr(
     env: &Env,
 ) -> Result<Value, EvalError> {
     if path.is_empty() {
-        return eval_expr(expr, env);
+        // CRITICAL: Wrap leaf in a thunk instead of eagerly evaluating.
+        // For dotted paths like `config.warnings = optionals config.x [...]`,
+        // the leaf expression must be lazy — eagerly evaluating it during
+        // attrset construction forces fixpoint thunks prematurely.
+        return Ok(maybe_thunk(expr, env, false, None));
     }
     let key = path[0].clone();
     let inner = build_nested_attr(&path[1..], expr, env)?;
