@@ -3,6 +3,25 @@
 
 use super::*;
 
+/// Recursively force a value and all nested values (attrset values, list elements).
+fn deep_force(val: &Value) -> Result<(), EvalError> {
+    let forced = crate::eval::force_value(val)?;
+    match &forced {
+        Value::Attrs(attrs) => {
+            for (_k, v) in attrs.iter() {
+                deep_force(v)?;
+            }
+        }
+        Value::List(list) => {
+            for v in list.iter() {
+                deep_force(v)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "tryEval", |args| {
         // CppNix: tryEval ONLY catches `throw` and `abort` — NOT evaluation
@@ -65,15 +84,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let msg = args[0].as_string()?;
         Err(EvalError::Throw(format!("abort: {msg}")))
     });
-    register_builtin(builtins, "seq", |args| {
-        let _forced = args[0].clone(); // force first arg
+    // seq: force first arg to WHNF, return second arg unchanged.
+    // First arg is already forced by apply's force_value.
+    register_builtin(builtins, "seq", |_args| {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "seq<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
         })))
     });
+    // deepSeq: recursively force first arg (all nested values), return second.
+    // First arg is forced to WHNF by apply; we need to DEEPLY force it.
     register_builtin(builtins, "deepSeq", |args| {
-        let _forced = args[0].clone(); // force first arg (deep in real impl)
+        deep_force(&args[0])?;
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "deepSeq<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),

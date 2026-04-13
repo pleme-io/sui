@@ -79,15 +79,25 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // ownership model and already minimal.
 
     register_builtin(builtins, "map", |args| {
-        let func = args[0].clone(); // Rc bump (captured closure/builtin)
+        let func = args[0].clone();
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "map<partial>",
             func: Rc::new(move |args2| {
                 let list = args2[0].as_list()?;
-                let result: Result<Vec<_>, _> = list.iter()
-                    .map(|v| crate::eval::apply(func.clone(), v.clone()))
+                // CppNix: map returns a lazy list where each element is a
+                // thunk wrapping `f(element)`. Elements are only forced when
+                // accessed. Eagerly applying `f` to all elements breaks
+                // lazy list processing in nixpkgs.
+                let result: Vec<Value> = list.iter()
+                    .map(|v| {
+                        let f = func.clone();
+                        let val = v.clone();
+                        Value::Thunk(Thunk::new_native(move || {
+                            crate::eval::apply(f, val)
+                        }))
+                    })
                     .collect();
-                Ok(Value::List(Rc::new(result?)))
+                Ok(Value::List(Rc::new(result)))
             }),
         })))
     });

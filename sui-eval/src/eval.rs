@@ -1767,6 +1767,7 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
             if b.name == "tryEval"
                 || b.name == "addErrorContext<partial>"
                 || b.name == "seq<partial>"
+                || b.name == "deepSeq<partial>"
             {
                 (b.func)(&[arg])
             } else {
