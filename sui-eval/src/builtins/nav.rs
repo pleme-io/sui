@@ -50,9 +50,20 @@ pub fn parse_nix_path(s: &str) -> Vec<(String, String)> {
 
 /// Resolve a `<name>` search-path token to an absolute filesystem
 /// path by walking the entries parsed from `NIX_PATH`.
+///
+/// Also handles `<nix/...>` paths by resolving them to sui's embedded
+/// corepkgs (matching CppNix's built-in corepkgs behavior).
 #[must_use]
 pub fn resolve_search_path(name: &str) -> Option<String> {
-    let nix_path = std::env::var("NIX_PATH").ok()?;
+    // Built-in corepkgs: <nix/fetchurl.nix> etc.
+    if let Some(sub) = name.strip_prefix("nix/") {
+        return resolve_corepkg(sub);
+    }
+
+    let nix_path = std::env::var("NIX_PATH").unwrap_or_default();
+    if nix_path.is_empty() {
+        return None;
+    }
     for (prefix, path) in parse_nix_path(&nix_path) {
         if !prefix.is_empty() && name == prefix {
             if std::path::Path::new(&path).exists() {
@@ -78,4 +89,30 @@ pub fn resolve_search_path(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve a `<nix/sub>` path to an embedded corepkg file.
+/// Writes the embedded content to a temp directory on first access
+/// so that `import` can read it as a normal file.
+fn resolve_corepkg(sub: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static COREPKGS_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+
+    let dir = COREPKGS_DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join("sui-corepkgs");
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(
+            dir.join("fetchurl.nix"),
+            include_str!("../corepkgs/fetchurl.nix"),
+        ).ok()?;
+        Some(dir)
+    });
+
+    let dir = dir.as_ref()?;
+    let path = dir.join(sub);
+    if path.exists() {
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
 }
