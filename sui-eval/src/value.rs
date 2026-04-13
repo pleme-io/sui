@@ -1252,14 +1252,24 @@ impl Env {
 
     /// Attach a `with` scope to this environment.
     ///
-    /// The value is stored lazily and only forced when a name lookup
-    /// actually needs it, matching CppNix's lazy `with` semantics.
-    /// Scopes are pushed to the end of the vec (innermost last).
+    /// If the value is a thunk that's ALREADY evaluated (OnceCell cache hit),
+    /// pre-populate the with-scope cache immediately. This avoids creating
+    /// deferred WithIdent thunks when the fixpoint is already resolved —
+    /// critical for the overlay chain where multiple stages access the same
+    /// fixpoint through different `with self;` scopes.
     #[must_use]
     pub fn with_scope(mut self, value: Value) -> Self {
+        // Pre-populate cache if the value is already resolved
+        let pre_cached = match &value {
+            Value::Attrs(attrs) => Some((**attrs).clone()),
+            Value::Thunk(thunk) => thunk.peek().and_then(|v| {
+                if let Value::Attrs(attrs) = v { Some((**attrs).clone()) } else { None }
+            }),
+            _ => None,
+        };
         Rc::make_mut(&mut self.0).with_scopes.push(WithScope {
             value,
-            cached: Rc::new(RefCell::new(None)),
+            cached: Rc::new(RefCell::new(pre_cached)),
         });
         self
     }
@@ -3747,12 +3757,24 @@ mod tests {
 
     #[test]
     fn with_scope_created_with_empty_cache() {
+        // Thunk-valued scopes start with empty cache (thunk not yet forced)
+        let thunk = Thunk::new_suspended(
+            rnix::Root::parse("{}").tree().expr().unwrap(),
+            Env::new(),
+        );
+        let env = Env::new().with_scope(Value::Thunk(thunk));
+        let scope = &env.0.with_scopes[0];
+        assert!(scope.cached.borrow().is_none());
+    }
+
+    #[test]
+    fn with_scope_concrete_pre_populates_cache() {
+        // Concrete attrset scopes pre-populate cache immediately
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
-        // The cached field should be None initially.
         let scope = &env.0.with_scopes[0];
-        assert!(scope.cached.borrow().is_none());
+        assert!(scope.cached.borrow().is_some());
     }
 
     #[test]
@@ -3760,9 +3782,9 @@ mod tests {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(42));
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
-        // Before lookup, cache is empty.
-        assert!(env.0.with_scopes[0].cached.borrow().is_none());
-        // Lookup forces and caches.
+        // Cache is pre-populated for concrete attrsets.
+        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+        // Lookup hits the pre-populated cache.
         let _ = env.lookup("x");
         assert!(env.0.with_scopes[0].cached.borrow().is_some());
     }
