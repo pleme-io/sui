@@ -403,13 +403,13 @@ pub fn force_concrete(value: &Value) -> Result<Concrete, EvalError> {
 /// Prefer `force_concrete()` or `Value::demand()` for new code.
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::ForceValue);
+    // Fast path: non-thunk values are returned immediately (no clone needed
+    // until we actually have work to do).
+    if !matches!(value, Value::Thunk(_)) {
+        return Ok(value.clone());
+    }
+    // Slow path: chase thunk chains.
     let mut v = value.clone();
-    // Transitively chase thunk chains: evaluating a thunk can yield
-    // another thunk (e.g. `if ... then ... else def` where def is a
-    // thunk). CppNix handles this implicitly because thunk slots are
-    // mutated in-place; we must loop explicitly.
-    // Depth limit prevents infinite loops when force_inner caches an
-    // unresolvable thunk (WithIdent in blackhole, etc.).
     let mut depth = 0u32;
     loop {
         match v {
@@ -417,9 +417,6 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
                 v = force_thunk(thunk)?;
                 depth += 1;
                 if depth > 100 {
-                    // The thunk chain is pathologically deep or stuck.
-                    // Return whatever we have — the caller will re-force
-                    // when needed (after the fixpoint is further along).
                     return Ok(v);
                 }
             }
@@ -476,6 +473,11 @@ pub fn dump_force_sites() {
 /// (non-thunk clone) stays fully inlined while this cold path can
 /// be a regular function call with stacker protection.
 fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
+    // Ultra-fast path: if the thunk is already cached, skip stacker overhead.
+    if let Some(cached) = thunk.peek() {
+        crate::perf::inc(crate::perf::Counter::ThunkHit);
+        return Ok(cached.clone());
+    }
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
         // Force ONE level only — matches CppNix's forceValue which does
         // not transitively chase thunk-in-thunk chains. The caller will
