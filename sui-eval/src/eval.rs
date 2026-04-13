@@ -491,10 +491,12 @@ fn maybe_thunk(
         ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
             Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
         }),
-        // Ident resolution: CppNix's maybeThunk resolves lexical idents eagerly
-        // but DEFERS with-scope idents. The deferred thunks are forced later when
-        // the fixpoint resolves and the with-scope cache/OnceCell is populated.
-        // This prevents blackhole during fixpoint construction.
+        // Ident resolution: try full lookup (lexical + with-scope cache + force).
+        // On successful lookup → return value directly (most common case).
+        // On blackhole (fixpoint being constructed) → env.lookup returns None
+        // → create WithIdent thunk for deferred O(1) cache-based resolution.
+        // This approach: (1) is fast for resolved with-scopes (no thunk overhead),
+        // (2) handles blackhole fixpoints correctly via WithIdent deferral.
         ast::Expr::Ident(ident) if !is_rec => {
             let name = ident_text(ident);
             match name.as_str() {
@@ -502,15 +504,13 @@ fn maybe_thunk(
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
                 _ => {
-                    // Lexical scope (always safe)
-                    if let Some(v) = env.lookup_lexical(&name) {
+                    // Try full lookup. Returns Some on success, None on
+                    // blackhole or name-not-found.
+                    if let Some(v) = env.lookup(&name) {
                         return v;
                     }
-                    // With-scope: try cache first (no forcing)
-                    if let Some(v) = env.lookup_with_cache_only(&name) {
-                        return v;
-                    }
-                    // Must defer — create WithIdent thunk for O(1) cache lookup
+                    // Failed — either blackhole or missing. Create WithIdent
+                    // thunk for deferred resolution (only for the blackhole case).
                     if let Some((scope_cache, scope_value)) = env.innermost_with_scope() {
                         return Value::Thunk(Thunk::new_with_ident(
                             SmolStr::from(name.as_str()),
@@ -519,7 +519,6 @@ fn maybe_thunk(
                             env.clone(),
                         ));
                     }
-                    // No scope — will be UndefinedVar when forced
                     Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                 }
             }
