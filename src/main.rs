@@ -395,13 +395,25 @@ async fn main() -> Result<(), CliError> {
                 sui_eval::trace::set_max_force_depth(max_force_depth);
             }
             if cli.no_vm {
-                // Tree-walker evaluation path (legacy fallback).
-                let value = sui_eval::eval(&expr)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&value.to_json())?);
-                } else {
-                    println!("{value}");
-                }
+                // Tree-walker evaluation path.
+                // Spawn a thread with a large stack for deeply nested nixpkgs evaluation.
+                // macOS's main thread has a fixed 8MB stack that stacker can't grow.
+                let expr_clone = expr.clone();
+                let json_flag = json;
+                let handle = std::thread::Builder::new()
+                    .name("sui-eval".into())
+                    .stack_size(64 * 1024 * 1024) // 64MB
+                    .spawn(move || -> Result<(), CliError> {
+                        let value = sui_eval::eval(&expr_clone)?;
+                        if json_flag {
+                            println!("{}", serde_json::to_string_pretty(&value.to_json())?);
+                        } else {
+                            println!("{value}");
+                        }
+                        Ok(())
+                    })
+                    .expect("failed to spawn eval thread");
+                handle.join().expect("eval thread panicked")?;
             } else {
                 // Bytecode VM evaluation path (default).
                 // Install flake resolver so VM getFlake delegates to tree-walker.

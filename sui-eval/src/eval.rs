@@ -503,9 +503,22 @@ fn maybe_thunk(
                 "true" => Value::Bool(true),
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
-                _ => env.lookup(&name).unwrap_or_else(|| {
+                _ => {
+                    // Lexical scope first (no with-scope forcing, always safe).
+                    if let Some(v) = env.lookup_lexical(&name) {
+                        return v;
+                    }
+                    // Not in lexical scope. If there are with-scopes, we
+                    // MUST defer the lookup — CppNix's maybeThunk never
+                    // forces with-scopes during attrset construction.
+                    // This is critical for fixpoints like `with pkgs;` in
+                    // all-packages.nix where pkgs is the fixpoint.
+                    //
+                    // The thunk captures the expr+env and resolves the
+                    // ident through the with-scope when actually forced
+                    // (after the fixpoint resolves).
                     Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
-                }),
+                }
             }
         }
         // Identifiers in rec scope: check if it's a backward reference
