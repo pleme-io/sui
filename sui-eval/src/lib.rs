@@ -5,6 +5,8 @@
 //!
 //! Parsing is delegated to the `rnix` crate (MIT).
 
+use std::rc::Rc;
+
 /// Core Nix builtins (90+ functions).
 pub mod builtins;
 /// Bidirectional conversion between bytecode VM values and tree-walker values.
@@ -211,7 +213,7 @@ pub fn eval_to_string_keyed(val: &Value) -> sui_bytecode::StringKeyedValue {
             let closure_rc = std::rc::Rc::new((**closure).clone());
             sui_bytecode::StringKeyedValue::Callable(std::rc::Rc::new(move |arg| {
                 let eval_arg = convert::string_keyed_to_eval(&arg);
-                let func = Value::Lambda(Box::new((*closure_rc).clone()));
+                let func = Value::Lambda(Rc::new((*closure_rc).clone()));
                 let result = eval::apply(func, eval_arg)
                     .map_err(|e| e.to_string())?;
                 let forced = eval::force_value(&result)

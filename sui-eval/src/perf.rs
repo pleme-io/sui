@@ -58,9 +58,17 @@ pub enum Counter {
     ExprWith = 21,
     ExprLambda = 22,
     ExprOther = 23,
+    // Dead binding elimination
+    DeadBindingsSkipped = 24,
+    // Finer "other" breakdown
+    ExprBinOp = 25,
+    ExprHasAttr = 26,
+    ExprUnaryOp = 27,
+    ExprAssert = 28,
+    ExprPath = 29,
 }
 
-const NUM_COUNTERS: usize = 24;
+const NUM_COUNTERS: usize = 30;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -88,6 +96,12 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "expr_with",
     "expr_lambda",
     "expr_other",
+    "dead_bindings_skipped",
+    "expr_binop",
+    "expr_hasattr",
+    "expr_unaryop",
+    "expr_assert",
+    "expr_path",
 ];
 
 struct PerfCounters {
@@ -181,12 +195,25 @@ pub fn inc(counter: Counter) {
                 c.get(Counter::ExprList),
                 c.get(Counter::ExprOther),
             );
+            // Finer "other" breakdown
+            let binop = c.get(Counter::ExprBinOp);
+            let hasattr = c.get(Counter::ExprHasAttr);
+            let unary = c.get(Counter::ExprUnaryOp);
+            let assert = c.get(Counter::ExprAssert);
+            let path = c.get(Counter::ExprPath);
+            if binop + hasattr + unary + assert + path > 0 {
+                eprintln!(
+                    "  [binop:{binop} hasattr:{hasattr} unary:{unary} assert:{assert} path:{path}]",
+                );
+            }
+            // Dead binding elimination stats
+            let dead = c.get(Counter::DeadBindingsSkipped);
             // Thunk creation stats
             let created = crate::trace::get_thunks_created();
             let forced = crate::trace::get_thunks_forced();
             if created > 0 {
                 let waste = (1.0 - forced as f64 / created as f64) * 100.0;
-                eprintln!("  [thunks created:{created} forced:{forced} waste:{waste:.0}%]");
+                eprintln!("  [thunks created:{created} forced:{forced} waste:{waste:.0}% dead_skipped:{dead}]");
             }
             // Force-site breakdown
             crate::eval::dump_force_sites();
@@ -258,6 +285,11 @@ pub fn report() {
                 (Counter::ExprLiteral, "literal"),
                 (Counter::ExprStr, "string"),
                 (Counter::ExprList, "list"),
+                (Counter::ExprBinOp, "binop"),
+                (Counter::ExprHasAttr, "hasattr"),
+                (Counter::ExprUnaryOp, "unaryop"),
+                (Counter::ExprAssert, "assert"),
+                (Counter::ExprPath, "path"),
                 (Counter::ExprOther, "other"),
             ] {
                 let n = c.get(counter);
@@ -266,6 +298,11 @@ pub fn report() {
                     eprintln!("  {name:<12} {n:>12} ({pct:.1}%)");
                 }
             }
+        }
+        // Dead binding elimination
+        let dead = c.get(Counter::DeadBindingsSkipped);
+        if dead > 0 {
+            eprintln!("dead_skipped:   {dead}");
         }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
@@ -284,9 +321,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counter_enum_has_24_variants() {
-        // Each variant maps to an index 0..23, and NUM_COUNTERS == 24.
-        assert_eq!(NUM_COUNTERS, 24);
+    fn counter_enum_has_30_variants() {
+        // Each variant maps to an index 0..29, and NUM_COUNTERS == 30.
+        assert_eq!(NUM_COUNTERS, 30);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);
@@ -299,6 +336,9 @@ mod tests {
         assert_eq!(Counter::EnvClone as usize, 9);
         assert_eq!(Counter::EnvLookup as usize, 10);
         assert_eq!(Counter::EnvLookupDepth as usize, 11);
+        assert_eq!(Counter::DeadBindingsSkipped as usize, 24);
+        assert_eq!(Counter::ExprBinOp as usize, 25);
+        assert_eq!(Counter::ExprPath as usize, 29);
     }
 
     #[test]

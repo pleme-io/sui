@@ -5,7 +5,7 @@
 //! when their value is actually needed (call-by-need with memoization).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use rnix::ast::{self, AstToken, HasEntry, InterpolPart};
@@ -59,6 +59,16 @@ pub fn push_eval_file(file: PathBuf) -> EvalFileGuard {
 #[must_use]
 pub fn current_eval_file() -> Option<PathBuf> {
     EVAL_FILE_STACK.with(|s| s.borrow().last().cloned())
+}
+
+/// Snapshot the entire eval file stack (debug).
+pub fn eval_file_stack_snapshot() -> Vec<String> {
+    EVAL_FILE_STACK.with(|s| {
+        s.borrow().iter().map(|p| {
+            let s = p.display().to_string();
+            s.rsplit_once("-source/").map_or(s.clone(), |(_, r)| r.to_string())
+        }).collect()
+    })
 }
 
 /// Format the current eval file for error context strings.
@@ -168,55 +178,78 @@ impl Drop for DepthGuard {
     }
 }
 
-/// Collect free variable names from an AST expression (shallow).
+/// Collect ALL identifier names referenced in an AST expression.
 ///
-/// Walks the expression tree and collects all `Ident` names that
-/// appear in non-binding positions. This is used for dead binding
-/// elimination: let-bindings whose names are NOT in the body's
-/// free variable set can be skipped (no thunk creation needed).
+/// Walks the full expression tree (including inside `with` bodies)
+/// and collects every `Ident` node. This is an OVER-APPROXIMATION:
+/// it includes shadowed names and names inside `with` bodies.
 ///
-/// This is an APPROXIMATION — it over-estimates free variables
-/// (includes shadowed names). Over-estimation is safe: we may
-/// create a thunk that's unused (waste) but never skip a thunk
+/// Over-approximation is SAFE for dead binding elimination — we may
+/// keep a binding that's unused (waste) but never skip a binding
 /// that IS used (correctness).
-/// Collect ALL identifiers referenced in an AST expression.
 ///
-/// This is an OVER-APPROXIMATION: it includes every `Ident` node
-/// in the tree, regardless of scoping. Over-approximation is SAFE
-/// for dead binding elimination — we may keep a binding that's
-/// unused (waste) but never skip a binding that IS used (correctness).
-///
-/// Handles: `inherit name;` (adds `name`), `inherit (source) name;`
-/// (adds `name` AND recurses into `source`), `with` bodies (marks
-/// ALL names as potentially needed via the `has_with` flag).
-///
-/// Returns (identifiers, has_with). If has_with is true, dead binding
-/// elimination must be disabled (with makes all names reachable).
-fn collect_referenced_names(expr: &ast::Expr) -> (HashSet<String>, bool) {
+/// Previous versions bailed out on `with` expressions, disabling
+/// dead binding elimination entirely. The fix: collect idents even
+/// inside `with` bodies. If a binding name doesn't appear as ANY
+/// identifier ANYWHERE in the expression, it's provably dead
+/// regardless of `with` scopes — `with` makes names from the
+/// namespace reachable, not names from the enclosing let-scope.
+fn collect_referenced_names(expr: &ast::Expr) -> HashSet<String> {
     let mut names = HashSet::new();
-    let mut has_with = false;
-    collect_names_inner(expr, &mut names, &mut has_with);
-    (names, has_with)
-}
-
-fn collect_names_inner(expr: &ast::Expr, names: &mut HashSet<String>, has_with: &mut bool) {
-    // Use the generic syntax tree walker to visit ALL children.
-    // This is simpler and more correct than matching each variant.
-    if matches!(expr, ast::Expr::With(_)) {
-        *has_with = true;
-        return; // No need to recurse — has_with disables elimination
-    }
-    // Collect all Ident nodes at any depth
     for node in expr.syntax().descendants() {
-        if let Some(ident) = ast::Ident::cast(node.clone()) {
+        if let Some(ident) = ast::Ident::cast(node) {
             names.insert(ident_text(&ident));
         }
-        // Check for with at any depth
-        if ast::With::cast(node).is_some() {
-            *has_with = true;
-            return;
+    }
+    names
+}
+
+/// Compute the set of binding names that are transitively needed
+/// by the body expression in a recursive scope (let-in or rec attrset).
+///
+/// Algorithm:
+/// 1. Collect all ident references from the body → root set
+/// 2. Collect all ident references from each binding's value expression
+/// 3. BFS from root set through binding dependencies
+/// 4. Return the set of reachable binding names
+///
+/// Bindings NOT in the returned set are provably dead and can be skipped.
+/// This is correct even for recursive scopes because the BFS follows
+/// transitive dependencies: if A is needed and A references B, then B
+/// is added to the needed set.
+fn compute_needed_bindings(
+    body: &ast::Expr,
+    binding_info: &[(String, Option<ast::Expr>)], // (name, value_expr) — None for plain inherit
+) -> HashSet<String> {
+    // Step 1: Collect idents from the body
+    let body_refs = collect_referenced_names(body);
+
+    // Build the set of all binding names and their dependencies
+    let mut all_names: HashSet<String> = HashSet::with_capacity(binding_info.len());
+    let mut deps: HashMap<String, HashSet<String>> = HashMap::with_capacity(binding_info.len());
+
+    for (name, value_expr) in binding_info {
+        all_names.insert(name.clone());
+        if let Some(expr) = value_expr {
+            deps.insert(name.clone(), collect_referenced_names(expr));
         }
     }
+
+    // Step 2: BFS from body refs through binding dependencies
+    let mut needed: HashSet<String> = body_refs.intersection(&all_names).cloned().collect();
+    let mut queue: VecDeque<String> = needed.iter().cloned().collect();
+
+    while let Some(name) = queue.pop_front() {
+        if let Some(name_deps) = deps.get(&name) {
+            for dep in name_deps {
+                if all_names.contains(dep) && needed.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+
+    needed
 }
 
 /// Evaluate a Nix expression string.
@@ -335,6 +368,8 @@ pub fn force_value_tracked(value: &Value, site: &str) -> Result<Value, EvalError
 thread_local! {
     static FORCE_SITES: std::cell::RefCell<std::collections::HashMap<String, u64>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    static APPLY_SITES: std::cell::RefCell<std::collections::HashMap<String, u64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Dump force-site counters (call from perf reporting).
@@ -346,6 +381,17 @@ pub fn dump_force_sites() {
         eprintln!("[force-sites] top thunk force call sites:");
         for (site, count) in sorted.iter().take(10) {
             eprintln!("  {count:>8} {site}");
+        }
+    });
+    APPLY_SITES.with(|sites| {
+        let sites = sites.borrow();
+        let mut sorted: Vec<_> = sites.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("[apply-sites] top lambda call sites by source file:");
+        for (site, count) in sorted.iter().take(15) {
+            // Strip nix store prefix for readability
+            let short = site.rsplit_once("-source/").map_or(site.as_str(), |(_,s)| s);
+            eprintln!("  {count:>8} {short}");
         }
     });
 }
@@ -443,7 +489,7 @@ fn maybe_thunk(
         // final env with all sibling bindings (set in Phase 2).
         ast::Expr::Lambda(lam) if !is_rec => {
             if let (Some(param), Some(body)) = (lam.param(), lam.body()) {
-                Value::Lambda(Box::new(Closure {
+                Value::Lambda(Rc::new(Closure {
                     param,
                     body,
                     env: env.clone(),
@@ -579,6 +625,12 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             ast::Expr::IfElse(_) => Counter::ExprIfElse,
             ast::Expr::With(_) => Counter::ExprWith,
             ast::Expr::Lambda(_) => Counter::ExprLambda,
+            ast::Expr::BinOp(_) => Counter::ExprBinOp,
+            ast::Expr::HasAttr(_) => Counter::ExprHasAttr,
+            ast::Expr::UnaryOp(_) => Counter::ExprUnaryOp,
+            ast::Expr::Assert(_) => Counter::ExprAssert,
+            ast::Expr::PathAbs(_) | ast::Expr::PathRel(_)
+            | ast::Expr::PathHome(_) | ast::Expr::PathSearch(_) => Counter::ExprPath,
             _ => Counter::ExprOther,
         };
         crate::perf::inc(c);
@@ -796,21 +848,6 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                     }
                     ast::Entry::Inherit(ref inherit) => {
                         if let Some(from) = inherit.from() {
-                            // `inherit (source) name1 name2 ...` —
-                            // bind each name to a thunk that defers
-                            // evaluating `source` until the name is
-                            // actually used. Required for nixpkgs
-                            // self-referential patterns where
-                            // `inherit (lib.X) ...` lives in a file
-                            // that itself contributes to lib.X.
-                            //
-                            // The thunk is initially created with the
-                            // parent env and then updated in Phase 2 to
-                            // capture the full let-block env, so that
-                            // the source expression can reference other
-                            // let-bound names (e.g. `inherit (import
-                            // ./file { inherit lib; }) makeExtensible;`
-                            // where `lib` is a sibling let-binding).
                             let source_expr = from.expr().ok_or_else(|| {
                                 EvalError::ParseError(
                                     "inherit from missing expr".to_string(),
@@ -880,7 +917,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             let body = lam
                 .body()
                 .ok_or_else(|| EvalError::ParseError("lambda missing body".to_string()))?;
-            return Ok(Value::Lambda(Box::new(Closure {
+            return Ok(Value::Lambda(Rc::new(Closure {
                 param,
                 body,
                 env: env.clone(),
@@ -1590,6 +1627,28 @@ pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
     let func = force_concrete(&func)?.into_value();
     match func {
         Value::Lambda(closure) => {
+            // Hot function tracker: log source file + param name for each lambda call
+            if crate::perf::enabled() {
+                APPLY_SITES.with(|sites| {
+                    let file = closure.env.eval_file()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<eval>".into());
+                    // Include param info for identification
+                    let param_name = match &closure.param {
+                        rnix::ast::Param::IdentParam(ip) => ip.ident().map(|i| ident_text(&i)).unwrap_or_default(),
+                        rnix::ast::Param::Pattern(pat) => {
+                            let mut names: Vec<String> = pat.pat_entries()
+                                .filter_map(|e| e.ident().map(|i| ident_text(&i)))
+                                .take(3)
+                                .collect();
+                            if pat.pat_entries().count() > 3 { names.push("...".to_string()); }
+                            format!("{{{}}}", names.join(","))
+                        }
+                    };
+                    let key = format!("{}:{}", file.rsplit_once("-source/").map_or(file.as_str(), |(_,s)| s), param_name);
+                    *sites.borrow_mut().entry(key).or_insert(0u64) += 1;
+                });
+            }
             let mut call_env = closure.env.child();
             // Push the closure's captured eval file onto the
             // file stack so any relative path literals inside
@@ -5390,6 +5449,49 @@ mod tests {
     #[test]
     fn equal_attrsets_same() {
         assert_eq!(ev("{a = 1; b = 2;} == {b = 2; a = 1;}"), Value::Bool(true));
+    }
+
+    // ── Lambda identity equality (Rc ptr_eq) ────────────────
+    // Regression test: same lambda via Rc must compare equal.
+    // Without this, nixpkgs stdenv evaluation enters an infinite loop
+    // because `crossSystem != localSystem` returns true even when both
+    // are the same elaborate result (containing shared function attrs).
+
+    #[test]
+    fn lambda_self_equality_in_attrset() {
+        // Same closure shared via let → inherit must be equal
+        assert_eq!(
+            ev("let f = x: x; in { a = 1; inherit f; } == { a = 1; inherit f; }"),
+            Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn lambda_self_reference_attrset_equality() {
+        // Attrset with function attr: x == x must be true
+        assert_eq!(
+            ev("let x = { a = 1; f = y: y; }; in x == x"),
+            Value::Bool(true),
+        );
+    }
+
+    #[test]
+    fn lambda_different_closures_not_equal() {
+        // Different lambda closures (even structurally identical) must be false
+        assert_eq!(
+            ev("{ f = x: x; } == { f = x: x; }"),
+            Value::Bool(false),
+        );
+    }
+
+    #[test]
+    fn lambda_ne_does_not_force_unused_branch() {
+        // If crossSystem == localSystem (same obj), != returns false,
+        // and the then-branch (with throw) is never forced.
+        assert_eq!(
+            ev("let ls = { a = 1; f = x: x; }; in if ls != ls then builtins.throw \"bug\" else 42"),
+            Value::Int(42),
+        );
     }
 
     // ── force_value chains thunks ──────────────────────────

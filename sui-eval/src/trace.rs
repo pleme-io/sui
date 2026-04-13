@@ -246,6 +246,11 @@ pub fn inc_thunks_forced_unique() {
     }
 }
 
+/// Get current force depth (debug).
+pub fn current_force_depth() -> u32 {
+    THUNK_CURRENT_FORCE_DEPTH.with(Cell::get)
+}
+
 /// Get thunks created count (for progress snapshots).
 pub fn get_thunks_created() -> u64 {
     THUNKS_CREATED.with(Cell::get)

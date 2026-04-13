@@ -274,7 +274,7 @@ pub enum Value {
     Path(Box<SmolStr>),
     List(Rc<Vec<Value>>),
     Attrs(Rc<NixAttrs>),
-    Lambda(Box<Closure>),
+    Lambda(Rc<Closure>),
     Builtin(Box<BuiltinFn>),
     /// A lazy value (thunk) with memoization and blackhole detection.
     Thunk(Thunk),
@@ -305,7 +305,7 @@ pub enum Concrete {
     Path(Box<SmolStr>),
     List(Rc<Vec<Value>>),      // elements may be lazy (correct for Nix)
     Attrs(Rc<NixAttrs>),       // values may be lazy (correct for Nix)
-    Lambda(Box<Closure>),
+    Lambda(Rc<Closure>),
     Builtin(Box<BuiltinFn>),
     // NO Thunk variant. The compiler enforces this.
 }
@@ -1817,6 +1817,11 @@ impl PartialEq for Value {
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Attrs(a), Value::Attrs(b)) => a.inner() == b.inner(),
+            // Lambda: identity comparison via Rc pointer — same closure = same function.
+            // Matches CppNix behavior: same Value pointer → true, different → false.
+            // Without this, attrsets containing the same function (via inherit)
+            // compare as unequal, breaking nixpkgs overlay/stdenv evaluation.
+            (Value::Lambda(a), Value::Lambda(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1937,7 +1942,7 @@ mod tests {
             env: Env::new(),
         };
         assert_eq!(
-            Value::Lambda(Box::new(closure)).to_json(),
+            Value::Lambda(Rc::new(closure)).to_json(),
             serde_json::Value::String("<lambda>".to_string()),
         );
     }
@@ -1993,7 +1998,7 @@ mod tests {
             body: lambda.body().unwrap(),
             env: Env::new(),
         };
-        assert_eq!(Value::Lambda(Box::new(closure)).type_name(), "lambda");
+        assert_eq!(Value::Lambda(Rc::new(closure)).type_name(), "lambda");
     }
 
     #[test]
@@ -2128,7 +2133,7 @@ mod tests {
             body: lambda.body().unwrap(),
             env: Env::new(),
         };
-        assert_eq!(format!("{}", Value::Lambda(Box::new(closure))), "<<lambda>>");
+        assert_eq!(format!("{}", Value::Lambda(Rc::new(closure))), "<<lambda>>");
     }
 
     #[test]
@@ -3341,7 +3346,7 @@ mod tests {
             },
             env: Env::new(),
         };
-        let val = Value::Lambda(Box::new(closure));
+        let val = Value::Lambda(Rc::new(closure));
         assert!(val.coerce_to_string().is_err());
     }
 
