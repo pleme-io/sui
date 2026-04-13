@@ -16,6 +16,7 @@ use crate::value::*;
 
 thread_local! { static EVAL_DEPTH: Cell<usize> = const { Cell::new(0) }; }
 
+
 // ── Source ID for identifier symbol cache ─────────────────────
 //
 // Each call to `rnix::Root::parse` produces a distinct AST tree.

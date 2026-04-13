@@ -753,18 +753,7 @@ impl Thunk {
                 let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
                 match evaluator(&expr, &env) {
                     Ok(mut value) => {
-                        // Store the result FIRST, then transitively force.
-                        // This order is critical: by storing before forcing
-                        // inner thunks, any re-entrant access to THIS thunk
-                        // during inner-thunk forcing will find Evaluated
-                        // (not Blackhole), enabling self-referential fixpoints
-                        // like nixpkgs `let self = f self; in self`.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        // Set the OnceCell cache IMMEDIATELY for non-thunk values.
-                        // This enables re-entrant access during fixpoint evaluation —
-                        // matching CppNix's in-place thunk mutation where the result
-                        // is visible before transitive unwrapping completes.
-                        // Only cache non-thunk values to avoid demand() depth errors.
                         if !matches!(value, Value::Thunk(_)) {
                             let _ = self.0.cache.set(Box::new(value.clone()));
                         }
@@ -956,7 +945,6 @@ impl Thunk {
                 Ok(result)
             }
             ThunkRepr::Blackhole => {
-                // Capture the force chain leading to this cycle.
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
