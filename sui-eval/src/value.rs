@@ -759,21 +759,15 @@ impl Thunk {
                         }
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
-                        // Transitively unwrap thunk-in-thunk chains.
-                        // Only unwrap thunks whose cached result is already
-                        // available — don't force new thunks here (that could
-                        // trigger infinite force_value ↔ force_inner loops).
+                        // Chase already-resolved thunks only (peek).
+                        // force_value handles full transitive resolution.
                         while let Value::Thunk(ref inner) = value {
-                            if let Some(cached) = inner.peek() {
-                                value = cached.clone();
-                            } else {
-                                break; // Not yet resolved — leave as thunk
+                            match inner.peek() {
+                                Some(cached) => value = cached.clone(),
+                                None => break,
                             }
                         }
-                        // Update with the unwrapped value.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        // Only cache concrete values — caching a thunk would
-                        // cause force_value's loop to spin indefinitely.
                         if !matches!(value, Value::Thunk(_)) {
                             let _ = self.0.cache.set(Box::new(value.clone()));
                         }
@@ -841,9 +835,7 @@ impl Thunk {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(ref inner) = value {
-                            if let Some(cached) = inner.peek() {
-                                value = cached.clone();
-                            } else { break; }
+                            match inner.peek() { Some(c) => value = c.clone(), None => break }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
@@ -882,9 +874,7 @@ impl Thunk {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(ref inner) = value {
-                            if let Some(cached) = inner.peek() {
-                                value = cached.clone();
-                            } else { break; }
+                            match inner.peek() { Some(c) => value = c.clone(), None => break }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
