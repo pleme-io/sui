@@ -416,6 +416,16 @@ async fn main() -> Result<(), CliError> {
                 handle.join().expect("eval thread panicked")?;
             } else {
                 // Bytecode VM evaluation path (default).
+                // Run VM on a large-stack thread: the tree-walker bridge
+                // (__import) can recurse deeply on nixpkgs evaluation.
+                // Bridge guards (flake resolver, builtin bridge) must be
+                // installed inside the thread since they use thread-local storage.
+                let expr_clone = expr.clone();
+                let json_flag = json;
+                let vm_handle = std::thread::Builder::new()
+                    .name("sui-vm-eval".into())
+                    .stack_size(256 * 1024 * 1024) // 256MB
+                    .spawn(move || -> Result<(), CliError> {
                 // Install flake resolver so VM getFlake delegates to tree-walker.
                 let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
                     let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
@@ -433,8 +443,6 @@ async fn main() -> Result<(), CliError> {
                 // and compilation fallback (__import) to the tree-walker.
                 let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
                     |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
-                        // Special case: __import — the VM compiler couldn't handle
-                        // this file, so fall back to the tree-walker evaluator.
                         if name == "__import" {
                             let path_str = match &args[0] {
                                 sui_bytecode::StringKeyedValue::Path(p)
@@ -448,53 +456,49 @@ async fn main() -> Result<(), CliError> {
                             let _guard = sui_eval::eval::push_eval_file(path_buf.clone());
                             let result = sui_eval::eval::eval_with_file(&source, Some(path_buf))
                                 .map_err(|e| e.to_string())?;
-                            // Force the top-level result before converting — if the
-                            // tree-walker returned a thunk, the VM would see
-                            // "expected set, got thunk" when accessing attrs.
                             let forced = sui_eval::eval::force_value(&result)
                                 .map_err(|e| e.to_string())?;
                             return Ok(sui_eval::eval_to_string_keyed(&forced));
                         }
 
-                        // Convert StringKeyedValue args → tree-walker Value
                         let eval_args: Vec<sui_eval::Value> = args
                             .iter()
                             .map(|a| sui_eval::convert::string_keyed_to_eval(a))
                             .collect();
 
-                        // Call the tree-walker builtin
                         let result = sui_eval::builtins::call_builtin_by_name(name, &eval_args)
                             .map_err(|e| e.to_string())?;
 
-                        // Force the result before converting — builtins may return
-                        // thunks that the VM cannot handle directly.
                         let forced = sui_eval::eval::force_value(&result)
                             .map_err(|e| e.to_string())?;
 
-                        // Convert tree-walker Value → StringKeyedValue
                         Ok(sui_eval::eval_to_string_keyed(&forced))
                     },
                 ));
-                let sk = match sui_bytecode::eval_full(&expr) {
-                    Ok(r) => r.to_string_keyed(),
-                    Err(e) => {
-                        // VM failed — fall back to tree-walker.
-                        eprintln!("[sui-vm] CLI fallback to tree-walker: {e}");
-                        let tw_result = sui_eval::eval::eval(&expr).map_err(|e| {
-                            CliError::Orchestrate {
-                                operation: "eval",
-                                message: e.to_string(),
+                        let sk = match sui_bytecode::eval_full(&expr_clone) {
+                            Ok(r) => r.to_string_keyed(),
+                            Err(e) => {
+                                // VM failed — fall back to tree-walker.
+                                eprintln!("[sui-vm] CLI fallback to tree-walker: {e}");
+                                let tw_result = sui_eval::eval::eval(&expr_clone).map_err(|e| {
+                                    CliError::Orchestrate {
+                                        operation: "eval",
+                                        message: e.to_string(),
+                                    }
+                                })?;
+                                sui_eval::eval_to_string_keyed(&tw_result)
                             }
-                        })?;
-                        sui_eval::eval_to_string_keyed(&tw_result)
-                    }
-                };
-                if json {
-                    let json_val = string_keyed_to_json(&sk);
-                    println!("{}", serde_json::to_string_pretty(&json_val)?);
-                } else {
-                    println!("{sk}");
-                }
+                        };
+                        if json_flag {
+                            let json_val = string_keyed_to_json(&sk);
+                            println!("{}", serde_json::to_string_pretty(&json_val)?);
+                        } else {
+                            println!("{sk}");
+                        }
+                        Ok(())
+                    })
+                    .expect("failed to spawn VM eval thread");
+                vm_handle.join().expect("VM eval thread panicked")?;
             }
         }
 
