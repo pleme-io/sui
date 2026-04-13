@@ -969,130 +969,215 @@ impl fmt::Debug for Thunk {
     }
 }
 
-/// A Nix attribute set.
+/// A Nix attribute set with lazy overlay support.
 ///
-/// Uses `FxHashMap` (im_rc::HashMap with FxBuildHasher) internally for
-/// O(log32 n) lookups with O(1) structural-sharing clones (the hot path
-/// during overlay fixpoint evaluation). FxHash is optimal for `Symbol(u32)`
-/// keys — a single multiply-shift instead of SipHash. Sorted iteration
-/// (needed by `attrNames`, `attrValues`, Display, equality) collects and sorts.
-#[derive(Debug, Clone, Default)]
-pub struct NixAttrs(FxHashMap<Symbol, Value>);
+/// Internally uses either a concrete `FxHashMap` or a lazy overlay chain.
+/// The `//` operator creates O(1) overlay nodes instead of O(m log n) merges.
+/// Attribute access walks the chain right-to-left in O(depth).
+/// Full iteration (attrNames, attrValues) flattens on demand.
+#[derive(Clone)]
+pub struct NixAttrs(AttrsInner);
+
+/// Internal representation: either a flat map or an overlay chain.
+#[derive(Clone)]
+enum AttrsInner {
+    /// Concrete attribute set — O(log32 n) FxHashMap.
+    Flat(FxHashMap<Symbol, Value>),
+    /// Lazy overlay: right overrides left. O(1) construction.
+    /// `cache` is populated on first full iteration (attrNames, etc.).
+    Overlay {
+        left: Rc<NixAttrs>,
+        right: Rc<NixAttrs>,
+        cache: Rc<OnceCell<FxHashMap<Symbol, Value>>>,
+    },
+}
+
+impl fmt::Debug for NixAttrs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NixAttrs({})", self.len())
+    }
+}
+
+impl Default for NixAttrs {
+    fn default() -> Self {
+        Self(AttrsInner::Flat(FxHashMap::default()))
+    }
+}
 
 impl NixAttrs {
-    /// Create an empty attribute set.
     pub fn new() -> Self {
-        Self(FxHashMap::default())
+        Self::default()
     }
 
-    /// Create an attribute set (capacity hint ignored — `im_rc::HashMap`
-    /// uses structural sharing instead of pre-allocation).
     pub fn with_capacity(_capacity: usize) -> Self {
-        Self(FxHashMap::default())
+        Self::default()
     }
 
-    /// Borrow the underlying map (read-only).
+    /// Borrow the underlying map. Flattens if overlay.
     #[must_use]
-    pub fn inner(&self) -> &FxHashMap<Symbol, Value> {
-        &self.0
+    pub fn inner(&self) -> FxHashMap<Symbol, Value> {
+        self.as_flat().clone()
     }
 
-    /// Collect and sort entries by resolved key name.
+    /// Get a reference to a flat FxHashMap, populating cache if overlay.
+    fn as_flat(&self) -> &FxHashMap<Symbol, Value> {
+        match &self.0 {
+            AttrsInner::Flat(m) => m,
+            AttrsInner::Overlay { left, right, cache } => {
+                cache.get_or_init(|| {
+                    let mut result = left.as_flat().clone();
+                    for (k, v) in right.as_flat().iter() {
+                        result.insert(*k, v.clone());
+                    }
+                    result
+                })
+            }
+        }
+    }
+
     fn sorted_entries(&self) -> Vec<(String, &Value)> {
-        let mut pairs: Vec<(String, &Value)> = self.0.iter()
+        let m = self.as_flat();
+        let mut pairs: Vec<(String, &Value)> = m.iter()
             .map(|(sym, v)| (resolve(*sym), v))
             .collect();
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
         pairs
     }
 
-    /// Look up an attribute by name.
+    /// Look up an attribute by name. Walks overlay chain right-to-left.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.get(&intern(key))
+        let sym = intern(key);
+        self.get_sym(&sym)
     }
 
-    /// Look up an attribute by pre-interned [`Symbol`].
-    ///
-    /// Skips the `intern()` call — use when the caller already has
-    /// a cached symbol (e.g. from [`intern_cached`]).
+    /// Look up by pre-interned Symbol. O(depth × log32 n) for overlays.
     #[must_use]
     pub fn get_sym(&self, sym: &Symbol) -> Option<&Value> {
-        self.0.get(sym)
+        match &self.0 {
+            AttrsInner::Flat(m) => m.get(sym),
+            AttrsInner::Overlay { left, right, .. } => {
+                // Right overrides left
+                right.get_sym(sym).or_else(|| left.get_sym(sym))
+            }
+        }
     }
 
-    /// Insert or overwrite an attribute.
+    /// Insert or overwrite an attribute. Flattens overlay if needed.
     pub fn insert(&mut self, key: String, value: Value) {
-        self.0.insert(intern(&key), value);
+        self.ensure_flat();
+        if let AttrsInner::Flat(ref mut m) = self.0 {
+            m.insert(intern(&key), value);
+        }
     }
 
-    /// Check whether an attribute exists.
+    /// Ensure the inner representation is Flat (for mutation).
+    fn ensure_flat(&mut self) {
+        if matches!(self.0, AttrsInner::Overlay { .. }) {
+            self.0 = AttrsInner::Flat(self.as_flat().clone());
+        }
+    }
+
     #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
-        self.0.contains_key(&intern(key))
+        let sym = intern(key);
+        self.contains_key_sym(&sym)
     }
 
-    /// Iterate over attribute names in sorted order.
-    ///
-    /// Returns resolved `String` keys (not references) because the
-    /// internal storage uses `Symbol` handles.
+    #[must_use]
+    pub fn contains_key_sym(&self, sym: &Symbol) -> bool {
+        match &self.0 {
+            AttrsInner::Flat(m) => m.contains_key(sym),
+            AttrsInner::Overlay { left, right, .. } => {
+                right.contains_key_sym(sym) || left.contains_key_sym(sym)
+            }
+        }
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = String> {
         self.sorted_entries().into_iter().map(|(k, _)| k)
     }
 
-    /// Iterate over (name, value) pairs in sorted key order.
-    ///
-    /// Returns resolved `String` keys because the internal storage
-    /// uses `Symbol` handles.
     pub fn iter(&self) -> impl Iterator<Item = (String, &Value)> {
         self.sorted_entries().into_iter()
     }
 
-    /// Iterate over (name, value) pairs in arbitrary order (fast path).
-    /// Use this when sorted order is NOT required.
     pub fn iter_unsorted(&self) -> impl Iterator<Item = (String, &Value)> {
-        self.0.iter().map(|(sym, v)| (resolve(*sym), v))
+        self.as_flat().iter().map(|(sym, v)| (resolve(*sym), v)).collect::<Vec<_>>().into_iter()
     }
 
-    /// Iterate over values in sorted key order.
     pub fn values(&self) -> impl Iterator<Item = &Value> {
         self.sorted_entries().into_iter().map(|(_, v)| v)
     }
 
-    /// Remove an attribute, returning its value if present.
+
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.0.remove(&intern(key))
+        self.ensure_flat();
+        if let AttrsInner::Flat(ref mut m) = self.0 {
+            m.remove(&intern(key))
+        } else {
+            None
+        }
     }
 
-    /// Return the number of attributes.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        match &self.0 {
+            AttrsInner::Flat(m) => m.len(),
+            AttrsInner::Overlay { .. } => {
+                // Must flatten to count unique keys
+                self.as_flat().clone().len()
+            }
+        }
     }
 
-    /// Whether this attribute set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        match &self.0 {
+            AttrsInner::Flat(m) => m.is_empty(),
+            AttrsInner::Overlay { left, right, .. } => left.is_empty() && right.is_empty(),
+        }
     }
 
-    /// Merge two attrsets (right overrides left, like `//`).
-    ///
-    /// O(m log n) where m = `other.len()` thanks to `FxHashMap`'s
-    /// structural sharing — the left side is cloned in O(1).
+    /// O(1) lazy overlay: `self // other`. Does NOT merge eagerly.
+    #[must_use]
+    pub fn overlay(self, other: NixAttrs) -> NixAttrs {
+        if other.is_empty() { return self; }
+        if self.is_empty() { return other; }
+        NixAttrs(AttrsInner::Overlay {
+            left: Rc::new(self),
+            right: Rc::new(other),
+            cache: Rc::new(OnceCell::new()),
+        })
+    }
+
+    /// Eager merge (legacy API — prefer `overlay` for `//`).
     #[must_use]
     pub fn update(&self, other: &NixAttrs) -> NixAttrs {
-        let mut result = self.0.clone(); // O(1) structural sharing
-        for (k, v) in other.0.iter() {
-            result.insert(*k, v.clone());
+        match (&self.0, &other.0) {
+            (AttrsInner::Flat(l), AttrsInner::Flat(r)) => {
+                let mut result = l.clone();
+                for (k, v) in r.iter() {
+                    result.insert(*k, v.clone());
+                }
+                NixAttrs(AttrsInner::Flat(result))
+            }
+            _ => {
+                // For overlay inputs, flatten then merge
+                let mut result = self.as_flat().clone();
+                let other_flat = other.as_flat();
+                for (k, v) in other_flat.iter() {
+                    result.insert(*k, v.clone());
+                }
+                NixAttrs(AttrsInner::Flat(result))
+            }
         }
-        NixAttrs(result)
     }
 }
 
 impl FromIterator<(String, Value)> for NixAttrs {
     fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
-        NixAttrs(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect())
+        NixAttrs(AttrsInner::Flat(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect()))
     }
 }
 
@@ -1101,7 +1186,8 @@ impl IntoIterator for NixAttrs {
     type IntoIter = Box<dyn Iterator<Item = (String, Value)>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Box::new(self.0.into_iter().map(|(sym, v)| (resolve(sym), v)))
+        let flat = self.as_flat().clone();
+        Box::new(flat.into_iter().map(|(sym, v)| (resolve(sym), v)))
     }
 }
 

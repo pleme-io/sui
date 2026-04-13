@@ -1682,15 +1682,8 @@ fn eval_binop(
         ast::BinOpKind::Update => {
             let la = l.to_attrs()?;
             let ra = r.to_attrs()?;
-            // Optimization: if right side is empty, return left as-is.
-            if ra.is_empty() {
-                return Ok(Value::Attrs(Rc::new(la)));
-            }
-            // Optimization: if left side is empty, return right as-is.
-            if la.is_empty() {
-                return Ok(Value::Attrs(Rc::new(ra)));
-            }
-            Ok(Value::Attrs(Rc::new(la.update(&ra))))
+            // O(1) lazy overlay — defers merge until attribute access.
+            Ok(Value::Attrs(Rc::new(la.overlay(ra))))
         }
         ast::BinOpKind::Concat => {
             let mut la = l.as_list()?.to_vec();
