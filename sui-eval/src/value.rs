@@ -716,34 +716,34 @@ impl Thunk {
             ThunkRepr::Suspended { expr, env } => {
                 crate::perf::inc(crate::perf::Counter::ThunkForce);
                 crate::trace::inc_thunks_forced_unique();
-                // Push force frame for chain capture (always on).
-                let desc: String = expr
-                    .syntax()
-                    .text()
-                    .to_string()
-                    .chars()
-                    .take(60)
-                    .collect();
-                crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: env.eval_file().cloned(),
-                    description: desc.clone(),
-                    thunk_id,
-                });
-                // Trace mode logging.
-                crate::trace::trace_force_enter(
-                    env.eval_file().map(|p| p.as_path()),
-                    &desc,
-                );
-                // Check max force depth limit.
-                if let Err(msg) = crate::trace::check_force_depth() {
-                    crate::trace::dump_trace_on_error();
-                    crate::trace::pop_force();
-                    crate::trace::trace_force_exit();
-                    *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Suspended {
-                        expr,
-                        env,
-                    };
-                    return Err(EvalError::InfiniteRecursion(msg));
+                let tracing = crate::trace::trace_enabled();
+                if tracing {
+                    let desc: String = expr
+                        .syntax()
+                        .text()
+                        .to_string()
+                        .chars()
+                        .take(60)
+                        .collect();
+                    crate::trace::push_force(crate::trace::ForceFrame {
+                        defined_in: env.eval_file().cloned(),
+                        description: desc.clone(),
+                        thunk_id,
+                    });
+                    crate::trace::trace_force_enter(
+                        env.eval_file().map(|p| p.as_path()),
+                        &desc,
+                    );
+                    if let Err(msg) = crate::trace::check_force_depth() {
+                        crate::trace::dump_trace_on_error();
+                        crate::trace::pop_force();
+                        crate::trace::trace_force_exit();
+                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Suspended {
+                            expr,
+                            env,
+                        };
+                        return Err(EvalError::InfiniteRecursion(msg));
+                    }
                 }
                 // Push the thunk's captured eval_file onto the thread-local
                 // stack so PathRel literals and relative imports inside the
@@ -789,46 +789,47 @@ impl Thunk {
                         // Update with the fully-unwrapped value.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         let _ = self.0.cache.set(Box::new(value.clone()));
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing {
+                            crate::trace::pop_force();
+                            crate::trace::trace_force_exit();
+                        }
                         Ok(value)
                     }
                     Err(e) => {
-                        // Restore suspended state so the thunk can be retried or
-                        // at least not left as a permanent blackhole.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Suspended { expr, env };
-                        crate::trace::dump_trace_on_error();
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing {
+                            crate::trace::dump_trace_on_error();
+                            crate::trace::pop_force();
+                            crate::trace::trace_force_exit();
+                        }
                         Err(e)
                     }
                 }
             }
             ThunkRepr::InheritSelect { source_thunk, name } => {
-                // Push force frame for inherit-select thunks.
-                let desc = format!("inherit (..) {name}");
-                crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: None,
-                    description: desc.clone(),
-                    thunk_id,
-                });
-                crate::trace::trace_force_enter(None, &desc);
-                crate::trace::inc_thunks_forced_unique();
-                // Check max force depth limit.
-                if let Err(msg) = crate::trace::check_force_depth() {
-                    crate::trace::dump_trace_on_error();
-                    crate::trace::pop_force();
-                    crate::trace::trace_force_exit();
-                    // SAFETY: Single-threaded evaluator (Rc, not Arc).
-                    *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect {
-                        source_thunk,
-                        name,
-                    };
-                    return Err(EvalError::InfiniteRecursion(msg));
+                let tracing = crate::trace::trace_enabled();
+                if tracing {
+                    let desc = format!("inherit (..) {name}");
+                    crate::trace::push_force(crate::trace::ForceFrame {
+                        defined_in: None,
+                        description: desc.clone(),
+                        thunk_id,
+                    });
+                    crate::trace::trace_force_enter(None, &desc);
                 }
-                // Force the shared source thunk (cache hit after first
-                // force — all sibling inherit names share this thunk).
-                // Then select the requested attribute.
+                crate::trace::inc_thunks_forced_unique();
+                if tracing {
+                    if let Err(msg) = crate::trace::check_force_depth() {
+                        crate::trace::dump_trace_on_error();
+                        crate::trace::pop_force();
+                        crate::trace::trace_force_exit();
+                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect {
+                            source_thunk,
+                            name,
+                        };
+                        return Err(EvalError::InfiniteRecursion(msg));
+                    }
+                }
                 let attempt = (|| -> Result<Value, EvalError> {
                     let mut forced = source_thunk.force(evaluator)?;
                     while let Value::Thunk(inner) = forced {
@@ -850,38 +851,36 @@ impl Thunk {
                 })();
                 match attempt {
                     Ok(mut value) => {
-                        // Store first, then transitively force (same pattern
-                        // as Suspended — enables fixpoint re-entry).
-                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(inner) = value {
                             value = inner.force(evaluator)?;
                         }
-                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         let _ = self.0.cache.set(Box::new(value.clone()));
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
-                        // SAFETY: Single-threaded evaluator (Rc, not Arc).
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect { source_thunk, name };
-                        crate::trace::dump_trace_on_error();
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing {
+                            crate::trace::dump_trace_on_error();
+                            crate::trace::pop_force();
+                            crate::trace::trace_force_exit();
+                        }
                         Err(e)
                     }
                 }
             }
             ThunkRepr::Native(f) => {
-                // Push force frame for native thunks.
-                crate::trace::push_force(crate::trace::ForceFrame {
-                    defined_in: None,
-                    description: "<native-thunk>".into(),
-                    thunk_id,
-                });
-                crate::trace::trace_force_enter(None, "<native-thunk>");
+                let tracing = crate::trace::trace_enabled();
+                if tracing {
+                    crate::trace::push_force(crate::trace::ForceFrame {
+                        defined_in: None,
+                        description: "<native-thunk>".into(),
+                        thunk_id,
+                    });
+                    crate::trace::trace_force_enter(None, "<native-thunk>");
+                }
                 crate::trace::inc_thunks_forced_unique();
                 // The closure is consumed (FnOnce).  On success we
                 // memoize the result.  On failure we leave Blackhole
@@ -900,20 +899,17 @@ impl Thunk {
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         let _ = self.0.cache.set(Box::new(value.clone()));
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
-                        // Cannot restore the closure — leave an
-                        // evaluated Null so subsequent forces don't
-                        // hit Blackhole and confuse the user with an
-                        // "infinite recursion" message.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
                         let _ = self.0.cache.set(Box::new(Value::Null));
-                        crate::trace::dump_trace_on_error();
-                        crate::trace::pop_force();
-                        crate::trace::trace_force_exit();
+                        if tracing {
+                            crate::trace::dump_trace_on_error();
+                            crate::trace::pop_force();
+                            crate::trace::trace_force_exit();
+                        }
                         Err(e)
                     }
                 }
@@ -921,11 +917,6 @@ impl Thunk {
             ThunkRepr::WithIdent { name, scope_cache, scope_value, env } => {
                 crate::perf::inc(crate::perf::Counter::ThunkForce);
                 crate::trace::inc_thunks_forced_unique();
-                // Debug: log when WithIdent is forced
-                if crate::perf::enabled() {
-                    eprintln!("[WITHIDENT-FORCE] name={name} file={}",
-                        env.eval_file().map(|p| p.display().to_string()).unwrap_or_default());
-                }
                 // Fast path: check the shared with-scope cache.
                 // All WithIdent thunks from the same `with` scope share
                 // this cache. Once ANY lookup populates it, all others
