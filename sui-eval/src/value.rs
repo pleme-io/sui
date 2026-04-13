@@ -1439,9 +1439,13 @@ impl Env {
     ///    finds `x` in Y if Y has it, otherwise in X.
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
+        self.lookup_fast(intern(name), name)
+    }
+
+    /// Lookup by pre-interned Symbol + string name. Avoids re-interning.
+    #[must_use]
+    pub fn lookup_fast(&self, sym: Symbol, name: &str) -> Option<Value> {
         crate::perf::inc(crate::perf::Counter::EnvLookup);
-        // 1. Flat lexical lookup — single O(1) hash + O(log32 n) probe.
-        let sym = intern(name);
         if let Some(v) = self.0.bindings.get(&sym) {
             return Some(v.clone());
         }
@@ -1451,7 +1455,7 @@ impl Env {
             {
                 let cache = scope.cached.borrow();
                 if let Some(ref attrs) = *cache {
-                    if let Some(v) = attrs.get(name) {
+                    if let Some(v) = attrs.get_sym(&sym) {
                         return Some(v.clone());
                     }
                     continue;

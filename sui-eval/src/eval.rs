@@ -530,9 +530,8 @@ fn maybe_thunk(
                 "false" => Value::Bool(false),
                 "null" => Value::Null,
                 _ => {
-                    // Try full lookup. Returns Some on success, None on
-                    // blackhole or name-not-found.
-                    if let Some(v) = env.lookup(&name) {
+                    let sym = crate::value::intern(&name);
+                    if let Some(v) = env.lookup_fast(sym, &name) {
                         return v;
                     }
                     // Failed — either blackhole or missing. Create WithIdent
@@ -635,7 +634,9 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "false" => Ok(Value::Bool(false)),
                 "null" => Ok(Value::Null),
                 _ => {
-                    if let Some(v) = env.lookup(&name) {
+                    // Intern once, use symbol for all lookups.
+                    let sym = crate::value::intern(&name);
+                    if let Some(v) = env.lookup_fast(sym, &name) {
                         Ok(v)
                     } else if env.with_scope_count() > 0 {
                         // With-scope lookup failed (likely blackhole from fixpoint).
