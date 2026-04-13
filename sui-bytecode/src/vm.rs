@@ -14,21 +14,17 @@
 //! The constant pool (in `Chunk`) still uses `VMValue`; values are converted
 //! to `NanBox` when pushed onto the stack and converted back only at the
 //! external API boundary (`execute` returns `VMValue`).
-
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-
 /// Counts how many files fell back to the tree-walker during VM import.
 static VM_FALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
-
 /// Return the number of files that fell back to tree-walker evaluation.
 pub fn vm_fallback_count() -> u64 {
     VM_FALLBACK_COUNT.load(Ordering::Relaxed)
 }
-
 use crate::builtins::BuiltinRegistry;
 use crate::chunk::Chunk;
 use crate::compiler::Compiler;
@@ -37,13 +33,11 @@ use crate::intern::{Interner, Symbol};
 use crate::nanbox::NanBox;
 use crate::opcode::OpCode;
 use crate::value::{HigherOrderBuiltin, HigherOrderOp, ThunkState, VMThunk, VMValue};
-
 /// Maximum call depth before we report a stack overflow.
 const MAX_CALL_DEPTH: usize = 1024;
 /// Maximum depth for thunk-in-thunk chain unwrapping.
 /// Catches `let x = x; in x` cycles while allowing normal fixpoints.
 const MAX_THUNK_CHAIN_DEPTH: u32 = 2000;
-
 /// A tiny bytecode chunk: `GetUpvalue 0; GetUpvalue 1; Call; Return`.
 /// Used to create deferred-application thunks where upvalue 0 is a
 /// function and upvalue 1 is its argument. Cached to avoid repeated
@@ -69,9 +63,7 @@ fn deferred_apply_chunk() -> Rc<Chunk> {
     }
     CHUNK.with(|c| c.clone())
 }
-
 // ── Flake resolver callback ─────────────────────────────────
-
 /// Signature for an external flake resolver.
 ///
 /// When set, the VM delegates `builtins.getFlake` to this callback
@@ -84,11 +76,9 @@ fn deferred_apply_chunk() -> Rc<Chunk> {
 /// handles all input types (GitHub, path, indirect) and produces
 /// correct results for `(getFlake ref).inputs.nixpkgs`.
 pub type FlakeResolverFn = dyn Fn(&str) -> Result<crate::value::StringKeyedValue, String>;
-
 thread_local! {
     static FLAKE_RESOLVER: RefCell<Option<Box<FlakeResolverFn>>> = const { RefCell::new(None) };
 }
-
 /// Install a flake resolver callback for the current thread.
 ///
 /// Returns an RAII guard that restores the previous resolver on drop.
@@ -100,19 +90,16 @@ pub fn set_flake_resolver(
     let prev = FLAKE_RESOLVER.with(|r| r.borrow_mut().replace(resolver));
     FlakeResolverGuard { _prev: prev }
 }
-
 /// RAII guard that restores the previous flake resolver on drop.
 pub struct FlakeResolverGuard {
     _prev: Option<Box<FlakeResolverFn>>,
 }
-
 impl Drop for FlakeResolverGuard {
     fn drop(&mut self) {
         let prev = self._prev.take();
         FLAKE_RESOLVER.with(|r| *r.borrow_mut() = prev);
     }
 }
-
 /// A call frame on the VM's call stack.
 #[derive(Clone)]
 struct CallFrame {
@@ -125,7 +112,6 @@ struct CallFrame {
     /// Upvalues captured by this frame's closure (NaN-boxed).
     upvalues: Vec<NanBox>,
 }
-
 /// The bytecode virtual machine.
 ///
 /// Uses NaN-boxed values on the value stack: each entry is exactly 8 bytes,
@@ -150,7 +136,6 @@ pub struct VM<'a> {
     /// multiple times (e.g. via scopedImport or recursive imports).
     compile_cache: HashMap<PathBuf, Rc<Chunk>>,
 }
-
 impl<'a> VM<'a> {
     /// Create a new VM and execute a chunk, returning the result.
     pub fn execute(chunk: Chunk, interner: &'a mut Interner) -> Result<VMValue, VMError> {
@@ -163,14 +148,12 @@ impl<'a> VM<'a> {
             import_cache: Rc::new(RefCell::new(HashMap::new())),
             compile_cache: HashMap::new(),
         };
-
         vm.frames.push(CallFrame {
             chunk: Rc::new(chunk),
             ip: 0,
             stack_base: 0,
             upvalues: Vec::new(),
         });
-
         let result = vm.run()?;
         // Force the top-level result so we never return a thunk.
         let result = vm.force_value(result)?;
@@ -179,12 +162,10 @@ impl<'a> VM<'a> {
         let result = vm.deep_force(result)?;
         Ok(result.to_vmvalue())
     }
-
     /// Main execution loop -- delegates to `run_until(0)`.
     fn run(&mut self) -> Result<NanBox, VMError> {
         self.run_until(0)
     }
-
     /// Execute until the frame stack drops to `stop_depth`.
     ///
     /// When the `Return` opcode pops a frame and the stack depth equals
@@ -204,7 +185,6 @@ impl<'a> VM<'a> {
             }
             let op_byte = self.read_byte()?;
             let op = OpCode::from_byte(op_byte).ok_or(VMError::InvalidOpcode(op_byte))?;
-
             match op {
                 // Arithmetic
                 OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Negate => {
@@ -281,9 +261,7 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     // ── Dispatch handler groups ──────────────────────────────────
-
     fn dispatch_constant(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Constant => {
@@ -299,7 +277,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_arithmetic(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Add => {
@@ -343,7 +320,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_logic(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Not => {
@@ -370,7 +346,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_comparison(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Equal => {
@@ -409,7 +384,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_variable(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::GetLocal => {
@@ -476,7 +450,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_scope(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::PushWith => {
@@ -523,7 +496,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_attrset(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::MakeAttrs => {
@@ -707,7 +679,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_list(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::MakeList => {
@@ -746,7 +717,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_control(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Jump => {
@@ -825,7 +795,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_function(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::MakeClosure => {
@@ -888,23 +857,24 @@ impl<'a> VM<'a> {
                     let result = self.call_higher_order_builtin(&hob, forced_arg)?;
                     self.push(result);
                 } else if let Some(builtin) = func.as_builtin() {
-                    let forced_arg = self.force_value(arg)?;
-                    if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
-                        self.push(result);
+                    // tryEval MUST receive unforced arg to catch errors during forcing
+                    if builtin.name == "tryEval" {
+                        if let Some(result) = self.try_vm_builtin("tryEval", &arg)? {
+                            self.push(result);
+                        }
                     } else {
-                        // Shallow-force container elements one level.
-                        // Can't deep_force here — nixpkgs has massive nested
-                        // structures that cause stack overflow. The force-aware
-                        // helpers (as_list, force_as_string) handle remaining
-                        // thunks on demand in builtin closures.
-                        let mut arg_vmval = forced_arg.to_vmvalue();
-                        // Force list elements only (not attrsets — too expensive).
-                        arg_vmval = self.shallow_force_list(arg_vmval)?;
-                        let builtin_func = builtin.func.clone();
-                        let result = self.call_builtin_with_scoped_import_dispatch(
-                            builtin_func, arg_vmval,
-                        )?;
-                        self.push(result);
+                        let forced_arg = self.force_value(arg)?;
+                        if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
+                            self.push(result);
+                        } else {
+                            let mut arg_vmval = forced_arg.to_vmvalue();
+                            arg_vmval = self.shallow_force_list(arg_vmval)?;
+                            let builtin_func = builtin.func.clone();
+                            let result = self.call_builtin_with_scoped_import_dispatch(
+                                builtin_func, arg_vmval,
+                            )?;
+                            self.push(result);
+                        }
                     }
                 } else {
                     return Err(VMError::NotCallable(func.type_name().to_string()));
@@ -949,23 +919,23 @@ impl<'a> VM<'a> {
                     let result = self.call_higher_order_builtin(&hob, forced_arg)?;
                     self.push(result);
                 } else if let Some(builtin) = func.as_builtin() {
-                    let forced_arg = self.force_value(arg)?;
-                    if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
-                        self.push(result);
+                    if builtin.name == "tryEval" {
+                        if let Some(result) = self.try_vm_builtin("tryEval", &arg)? {
+                            self.push(result);
+                        }
                     } else {
-                        // Shallow-force container elements one level.
-                        // Can't deep_force here — nixpkgs has massive nested
-                        // structures that cause stack overflow. The force-aware
-                        // helpers (as_list, force_as_string) handle remaining
-                        // thunks on demand in builtin closures.
-                        let mut arg_vmval = forced_arg.to_vmvalue();
-                        // Force list elements only (not attrsets — too expensive).
-                        arg_vmval = self.shallow_force_list(arg_vmval)?;
-                        let builtin_func = builtin.func.clone();
-                        let result = self.call_builtin_with_scoped_import_dispatch(
-                            builtin_func, arg_vmval,
-                        )?;
-                        self.push(result);
+                        let forced_arg = self.force_value(arg)?;
+                        if let Some(result) = self.try_vm_builtin(builtin.name, &forced_arg)? {
+                            self.push(result);
+                        } else {
+                            let mut arg_vmval = forced_arg.to_vmvalue();
+                            arg_vmval = self.shallow_force_list(arg_vmval)?;
+                            let builtin_func = builtin.func.clone();
+                            let result = self.call_builtin_with_scoped_import_dispatch(
+                                builtin_func, arg_vmval,
+                            )?;
+                            self.push(result);
+                        }
                     }
                 } else {
                     return Err(VMError::NotCallable(func.type_name().to_string()));
@@ -975,7 +945,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_thunk(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::MakeThunk => {
@@ -1093,7 +1062,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_import(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Import => {
@@ -1132,7 +1100,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_super(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::GetLocalAttr => {
@@ -1220,7 +1187,6 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     fn dispatch_stack(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
             OpCode::Pop => {
@@ -1311,9 +1277,7 @@ impl<'a> VM<'a> {
         }
         Ok(())
     }
-
     // -- Deep equality (forces thunks during comparison) ----------------
-
     /// Deep equality comparison that forces thunks in both operands.
     ///
     /// Nix `==` semantics require that values are forced before comparison.
@@ -1324,7 +1288,6 @@ impl<'a> VM<'a> {
         // Force both values if they are thunks.
         let a = if a.is_thunk() { self.force_value(a.clone())? } else { a.clone() };
         let b = if b.is_thunk() { self.force_value(b.clone())? } else { b.clone() };
-
         // Scalars and strings: use NanBox::PartialEq (no thunks possible inside).
         if a.is_null() || a.is_bool() || a.is_int() || a.is_float() {
             return Ok(a == b);
@@ -1332,7 +1295,6 @@ impl<'a> VM<'a> {
         if a.is_string() || a.is_path() {
             return Ok(a == b);
         }
-
         // List comparison: force each element pair.
         if let (Some(a_items), Some(b_items)) = (a.as_list(), b.as_list()) {
             if a_items.len() != b_items.len() {
@@ -1345,7 +1307,6 @@ impl<'a> VM<'a> {
             }
             return Ok(true);
         }
-
         // Attrs comparison: force each value pair.
         if let (Some(a_attrs), Some(b_attrs)) = (a.as_attrs(), b.as_attrs()) {
             if a_attrs.len() != b_attrs.len() {
@@ -1364,58 +1325,45 @@ impl<'a> VM<'a> {
             }
             return Ok(true);
         }
-
         // Functions are never equal.
         if a.is_closure() || a.is_builtin() || a.is_higher_order_builtin() {
             return Ok(false);
         }
-
         // Fallback: use NanBox::PartialEq.
         Ok(a == b)
     }
-
     // -- Stack helpers --------------------------------------------------
-
     fn push(&mut self, value: NanBox) {
         self.stack.push(value);
     }
-
     fn pop(&mut self) -> Result<NanBox, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow)
     }
-
     /// Pop a value from the stack, forcing it if it is a thunk.
     /// Use this when the operation needs a concrete (non-thunk) value.
     fn pop_forced(&mut self) -> Result<NanBox, VMError> {
         let val = self.pop()?;
         self.force_value(val)
     }
-
     fn peek(&self) -> Result<&NanBox, VMError> {
         self.stack.last().ok_or(VMError::StackUnderflow)
     }
-
     // -- Frame helpers --------------------------------------------------
-
     fn current_frame(&self) -> &CallFrame {
         self.frames.last().expect("no active frame")
     }
-
     fn current_frame_mut(&mut self) -> &mut CallFrame {
         self.frames.last_mut().expect("no active frame")
     }
-
     fn current_chunk(&self) -> &Chunk {
         &self.current_frame().chunk
     }
-
     fn current_chunk_name(&self) -> String {
         self.current_chunk()
             .source_file
             .clone()
             .unwrap_or_else(|| "<inline>".to_string())
     }
-
     fn read_byte(&mut self) -> Result<u8, VMError> {
         let frame = self.current_frame();
         if frame.ip >= frame.chunk.code.len() {
@@ -1425,13 +1373,11 @@ impl<'a> VM<'a> {
         self.current_frame_mut().ip += 1;
         Ok(byte)
     }
-
     fn read_u16(&mut self) -> Result<u16, VMError> {
         let lo = self.read_byte()?;
         let hi = self.read_byte()?;
         Ok(u16::from_le_bytes([lo, hi]))
     }
-
     fn read_u32(&mut self) -> Result<u32, VMError> {
         let b0 = self.read_byte()?;
         let b1 = self.read_byte()?;
@@ -1439,7 +1385,6 @@ impl<'a> VM<'a> {
         let b3 = self.read_byte()?;
         Ok(u32::from_le_bytes([b0, b1, b2, b3]))
     }
-
     /// Peek ahead: check if the next instruction in the current frame
     /// is a `Return` opcode (used for tail-call optimization).
     fn peek_next_is_return(&self) -> bool {
@@ -1450,27 +1395,21 @@ impl<'a> VM<'a> {
             false
         }
     }
-
     // -- Interning helpers ----------------------------------------------
-
     /// Resolve a constant pool string to a `Symbol`.
     fn resolve_key_constant(&mut self, idx: u16) -> Result<Symbol, VMError> {
         let idx_usize = idx as usize;
         let chunk = self.current_frame().chunk.clone();
-
         if let Some(Some(sym)) = chunk.key_symbols.get(idx_usize) {
             return Ok(*sym);
         }
-
         let key_string = match &chunk.constants[idx_usize] {
             VMValue::String(s) => s.clone(),
             _ => return Err(VMError::Internal("attr key constant not a string".to_string())),
         };
         Ok(self.interner.intern(&key_string))
     }
-
     // -- Arithmetic helpers (NanBox) ------------------------------------
-
     fn add(&self, a: &NanBox, b: &NanBox) -> Result<NanBox, VMError> {
         // Fast paths for inline scalars.
         if let (Some(x), Some(y)) = (a.as_int(), b.as_int()) {
@@ -1501,7 +1440,6 @@ impl<'a> VM<'a> {
             context: format!("addition ({} + {})", a.type_name(), b.type_name()),
         })
     }
-
     fn num_op(
         &self,
         a: &NanBox,
@@ -1528,7 +1466,6 @@ impl<'a> VM<'a> {
             context: context.to_string(),
         })
     }
-
     fn compare(&self, a: &NanBox, b: &NanBox) -> Result<std::cmp::Ordering, VMError> {
         if let (Some(x), Some(y)) = (a.as_int(), b.as_int()) {
             return Ok(x.cmp(&y));
@@ -1555,9 +1492,7 @@ impl<'a> VM<'a> {
             context: "comparison".to_string(),
         })
     }
-
     // -- Thunk forcing --------------------------------------------------
-
     /// Force a value: if it is a thunk, evaluate it (with memoization
     /// and blackhole detection). If it is already a concrete value,
     /// return it unchanged.
@@ -1565,7 +1500,6 @@ impl<'a> VM<'a> {
         if !val.is_thunk() {
             return Ok(val);
         }
-
         // Convert to VMValue to access ThunkState machinery.
         let vmval = val.to_vmvalue();
         match vmval {
@@ -1602,7 +1536,6 @@ impl<'a> VM<'a> {
                     }
                     Some(ThunkState::Pending { chunk, upvalues }) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
-
                         if self.frames.len() >= MAX_CALL_DEPTH {
                             thunk.state.set(Some(ThunkState::Pending {
                                 chunk,
@@ -1610,7 +1543,6 @@ impl<'a> VM<'a> {
                             }));
                             return Err(VMError::StackOverflow);
                         }
-
                         let return_depth = self.frames.len();
                         let stack_base = self.stack.len();
                         // Convert captured upvalues to NanBox for the frame.
@@ -1625,14 +1557,11 @@ impl<'a> VM<'a> {
                             stack_base,
                             upvalues: frame_upvalues,
                         });
-
                         let result = self.run_until(return_depth);
-
                         // Restore the stack to its state before thunk evaluation.
                         // The Return handler's early exit (at stop_depth) skips
                         // truncation, so internal function calls may leave values.
                         self.stack.truncate(stack_base);
-
                         match result {
                             Ok(value) => {
                                 // Store partial result IMMEDIATELY — enables
@@ -1645,7 +1574,6 @@ impl<'a> VM<'a> {
                                 thunk.state.set(Some(ThunkState::Done(
                                     Box::new(partial_vmval),
                                 )));
-
                                 // Depth-limited thunk-chain unwrap.
                                 let mut forced = value;
                                 let mut depth = 0u32;
@@ -1659,7 +1587,6 @@ impl<'a> VM<'a> {
                                     }
                                     forced = self.force_value(forced)?;
                                 }
-
                                 // Update with fully-unwrapped value.
                                 let forced_vmval = forced.to_vmvalue();
                                 thunk.state.set(Some(ThunkState::Done(
@@ -1678,7 +1605,6 @@ impl<'a> VM<'a> {
                     }
                     Some(ThunkState::LazySource { source, offset, length, base_dir, upvalues }) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
-
                         // Compile the expression span on demand.
                         let expr_text = &source[offset..offset + length];
                         let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
@@ -1705,16 +1631,13 @@ impl<'a> VM<'a> {
                             Ok(cell) => cell.into_inner(),
                             Err(rc) => rc.borrow().clone(),
                         };
-
                         let chunk = Rc::new(compiled);
-
                         if self.frames.len() >= MAX_CALL_DEPTH {
                             thunk.state.set(Some(ThunkState::LazySource {
                                 source, offset, length, base_dir, upvalues,
                             }));
                             return Err(VMError::StackOverflow);
                         }
-
                         let return_depth = self.frames.len();
                         let stack_base = self.stack.len();
                         let frame_upvalues: Vec<NanBox> = upvalues
@@ -1727,10 +1650,8 @@ impl<'a> VM<'a> {
                             stack_base,
                             upvalues: frame_upvalues,
                         });
-
                         let result = self.run_until(return_depth);
                         self.stack.truncate(stack_base);
-
                         match result {
                             Ok(value) => {
                                 // Store partial result IMMEDIATELY for fixpoints.
@@ -1738,7 +1659,6 @@ impl<'a> VM<'a> {
                                 thunk.state.set(Some(ThunkState::Done(
                                     Box::new(partial_vmval),
                                 )));
-
                                 let mut forced = value;
                                 let mut depth = 0u32;
                                 while forced.is_thunk() {
@@ -1751,7 +1671,6 @@ impl<'a> VM<'a> {
                                     }
                                     forced = self.force_value(forced)?;
                                 }
-
                                 let forced_vmval = forced.to_vmvalue();
                                 thunk.state.set(Some(ThunkState::Done(
                                     Box::new(forced_vmval),
@@ -1770,17 +1689,14 @@ impl<'a> VM<'a> {
                     }
                     Some(ThunkState::NativeCallback(cb)) => {
                         thunk.state.set(Some(ThunkState::Evaluating));
-
                         match cb() {
                             Ok(sk_val) => {
                                 let nb = self.string_keyed_to_nanbox(&sk_val);
-
                                 // Store partial result IMMEDIATELY for fixpoints.
                                 let partial_vmval = nb.to_vmvalue();
                                 thunk.state.set(Some(ThunkState::Done(
                                     Box::new(partial_vmval),
                                 )));
-
                                 let mut forced = nb;
                                 let mut depth = 0u32;
                                 while forced.is_thunk() {
@@ -1793,7 +1709,6 @@ impl<'a> VM<'a> {
                                     }
                                     forced = self.force_value(forced)?;
                                 }
-
                                 let forced_vmval = forced.to_vmvalue();
                                 thunk.state.set(Some(ThunkState::Done(
                                     Box::new(forced_vmval),
@@ -1813,7 +1728,6 @@ impl<'a> VM<'a> {
             _ => Ok(NanBox::from_vmvalue(&vmval)),
         }
     }
-
     /// Shallow-force container elements: if `val` is a List, force each
     /// Force list elements one level. Builtins that iterate over list
     /// elements (calling `as_string`, `as_int`, etc.) need concrete values.
@@ -1840,7 +1754,6 @@ impl<'a> VM<'a> {
             other => Ok(other),
         }
     }
-
     /// Deep-force a value: recursively force thunks inside attrsets and lists.
     /// Used at the VM boundary so callers never receive unforced thunks.
     fn deep_force(&mut self, val: NanBox) -> Result<NanBox, VMError> {
@@ -1869,9 +1782,7 @@ impl<'a> VM<'a> {
             Ok(forced)
         }
     }
-
     // -- VM-level builtin dispatch (builtins needing interner access) ------
-
     /// Try to handle a builtin call at the VM level (for builtins that need
     /// interner access, like derivation, attrNames, etc.).
     /// Returns `Some(result)` if handled, `None` to fall through to the
@@ -1883,6 +1794,7 @@ impl<'a> VM<'a> {
     ) -> Result<Option<NanBox>, VMError> {
         match name {
             "tryEval" => {
+                
                 // tryEval forces its argument and catches throws/errors.
                 // Success: { success = true; value = <forced>; }
                 // Failure: { success = false; value = false; }
@@ -2187,7 +2099,6 @@ impl<'a> VM<'a> {
                 } else {
                     "{}".to_string()
                 };
-
                 // Return a partial that takes the path
                 let result = VMValue::Builtin(crate::value::VMBuiltin {
                     name: "scopedImport<partial>",
@@ -2360,11 +2271,9 @@ impl<'a> VM<'a> {
             _ => Ok(None),
         }
     }
-
     /// Build a derivation from a VM attrset (with interner access).
     fn vm_build_derivation(&mut self, arg: NanBox) -> Result<NanBox, VMError> {
         use sui_compat::derivation::{Derivation, DerivationOutput};
-
         let attrs = match arg.as_attrs() {
             Some(a) => a.clone(),
             None => {
@@ -2375,7 +2284,6 @@ impl<'a> VM<'a> {
                 });
             }
         };
-
         // Helper: resolve a symbol key and get string value.
         let get_str = |attrs: &BTreeMap<Symbol, NanBox>,
                        interner: &mut Interner,
@@ -2394,7 +2302,6 @@ impl<'a> VM<'a> {
                 }),
             }
         };
-
         let get_str_opt = |attrs: &BTreeMap<Symbol, NanBox>,
                            interner: &mut Interner,
                            key: &str|
@@ -2412,11 +2319,9 @@ impl<'a> VM<'a> {
                 },
             }
         };
-
         let name = get_str(&attrs, self.interner, "name")?;
         let system = get_str(&attrs, self.interner, "system")?;
         let builder = get_str(&attrs, self.interner, "builder")?;
-
         // Optional `args` list of strings.
         let args_sym = self.interner.intern("args");
         let args_list: Vec<String> = if let Some(a) = attrs.get(&args_sym) {
@@ -2443,7 +2348,6 @@ impl<'a> VM<'a> {
         } else {
             Vec::new()
         };
-
         // Optional `outputs` list.
         let outputs_sym = self.interner.intern("outputs");
         let outputs: Vec<String> = if let Some(o) = attrs.get(&outputs_sym) {
@@ -2467,7 +2371,6 @@ impl<'a> VM<'a> {
         } else {
             vec!["out".to_string()]
         };
-
         // Build env vars from non-special attributes.
         let special = [
             "name", "system", "builder", "args", "outputs",
@@ -2477,7 +2380,6 @@ impl<'a> VM<'a> {
             .iter()
             .map(|s| self.interner.intern(s))
             .collect();
-
         let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
         for (k, v) in &attrs {
             if special_syms.contains(k) {
@@ -2500,11 +2402,9 @@ impl<'a> VM<'a> {
         env_vars.insert("name".to_string(), name.clone());
         env_vars.insert("system".to_string(), system.clone());
         env_vars.insert("builder".to_string(), builder.clone());
-
         // Detect fixed-output derivation.
         let output_hash_sym = self.interner.intern("outputHash");
         let is_fod = attrs.contains_key(&output_hash_sym);
-
         let mut drv = Derivation {
             outputs: BTreeMap::new(),
             input_derivations: BTreeMap::new(),
@@ -2514,7 +2414,6 @@ impl<'a> VM<'a> {
             args: args_list,
             env: env_vars,
         };
-
         let (drv_path, out_paths) = if is_fod {
             let output_hash = get_str(&attrs, self.interner, "outputHash")?;
             let output_hash_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
@@ -2523,14 +2422,12 @@ impl<'a> VM<'a> {
                 .unwrap_or_else(|| "flat".to_string());
             let is_recursive =
                 output_hash_mode == "recursive" || output_hash_mode == "nar";
-
             let out_path = sui_compat::store_path::compute_fixed_output_hash(
                 &output_hash_algo,
                 &output_hash,
                 is_recursive,
                 &name,
             );
-
             drv.outputs.insert(
                 "out".to_string(),
                 DerivationOutput {
@@ -2543,13 +2440,11 @@ impl<'a> VM<'a> {
                     hash: output_hash,
                 },
             );
-
             let drv_content = drv.serialize();
             let drv_path = sui_compat::store_path::compute_drv_path(
                 drv_content.as_bytes(),
                 &name,
             );
-
             let mut out_paths = BTreeMap::new();
             out_paths.insert("out".to_string(), out_path);
             (drv_path, out_paths)
@@ -2564,13 +2459,11 @@ impl<'a> VM<'a> {
                     },
                 );
             }
-
             let drv_content = drv.serialize();
             let drv_path = sui_compat::store_path::compute_drv_path(
                 drv_content.as_bytes(),
                 &name,
             );
-
             use sha2::{Digest, Sha256};
             let inner = Sha256::digest(drv_content.as_bytes());
             let inner_hex: String =
@@ -2584,7 +2477,6 @@ impl<'a> VM<'a> {
             }
             (drv_path, out_paths)
         };
-
         // Update derivation outputs with final paths and write .drv file.
         for (output_name, output_path) in &out_paths {
             if let Some(output) = drv.outputs.get_mut(output_name) {
@@ -2594,7 +2486,6 @@ impl<'a> VM<'a> {
             }
             drv.env.insert(output_name.clone(), output_path.clone());
         }
-
         let drv_content_final = drv.serialize();
         let store_dir = std::env::var("SUI_STORE_DIR")
             .unwrap_or_else(|_| "/nix/store".to_string());
@@ -2625,18 +2516,15 @@ impl<'a> VM<'a> {
                 }
             }
         }
-
         // Assemble result attrset (CppNix-compatible).
         let mut result: BTreeMap<Symbol, NanBox> = attrs.clone();
         let type_sym = self.interner.intern("type");
         result.insert(type_sym, NanBox::string("derivation".to_string()));
         let drv_path_sym = self.interner.intern("drvPath");
         result.insert(drv_path_sym, NanBox::string(drv_path.clone()));
-
         // CppNix: drvAttrs contains the original input attributes
         let drv_attrs_sym = self.interner.intern("drvAttrs");
         result.insert(drv_attrs_sym, NanBox::attrs(attrs));
-
         let primary_out = out_paths
             .get("out")
             .cloned()
@@ -2644,13 +2532,11 @@ impl<'a> VM<'a> {
             .unwrap_or_default();
         let out_path_sym = self.interner.intern("outPath");
         result.insert(out_path_sym, NanBox::string(primary_out));
-
         // CppNix: outputName is the primary output name
         let output_name_sym = self.interner.intern("outputName");
         let primary_output_name = if out_paths.contains_key("out") { "out" }
             else { out_paths.keys().next().map(|s| s.as_str()).unwrap_or("out") };
         result.insert(output_name_sym, NanBox::string(primary_output_name.to_string()));
-
         let mut all_outputs: Vec<NanBox> = Vec::new();
         for (output_name, output_path) in &out_paths {
             let mut out_attrs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
@@ -2665,14 +2551,11 @@ impl<'a> VM<'a> {
             let out_sym = self.interner.intern(output_name);
             result.insert(out_sym, out_val);
         }
-
         // CppNix: `all` is a list of all output derivation attrsets
         let all_sym = self.interner.intern("all");
         result.insert(all_sym, NanBox::list(all_outputs));
-
         Ok(NanBox::attrs(result))
     }
-
     /// Call a builtin function, intercepting scopedImport dispatch errors.
     fn call_builtin_with_scoped_import_dispatch(
         &mut self,
@@ -2703,7 +2586,6 @@ impl<'a> VM<'a> {
             Err(e) => Err(e),
         }
     }
-
     /// Evaluate `builtins.getFlake` for a path-based flake reference.
     ///
     /// If a thread-local flake resolver has been installed (via
@@ -2721,16 +2603,13 @@ impl<'a> VM<'a> {
                 None
             }
         });
-
         if let Some(result) = resolved {
             let sk = result.map_err(|e| VMError::Throw(format!("getFlake: {e}")))?;
             return Ok(self.string_keyed_to_nanbox(&sk));
         }
-
         // Fallback: VM-native resolution (path-based only).
         self.vm_get_flake_native(flake_ref)
     }
-
     /// Convert a `StringKeyedValue` to a `NanBox` for the VM stack.
     ///
     /// `StringKeyedValue::Thunk` variants are wrapped in `VMThunk`s with
@@ -2787,7 +2666,6 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     /// VM-native flake resolution (path-based inputs only).
     fn vm_get_flake_native(&mut self, flake_ref: &str) -> Result<NanBox, VMError> {
         let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
@@ -2799,7 +2677,6 @@ impl<'a> VM<'a> {
                 "getFlake: unsupported flake reference: {flake_ref} (only path: refs supported in VM)"
             )));
         };
-
         let flake_nix = flake_dir.join("flake.nix");
         if !flake_nix.exists() {
             return Err(VMError::Throw(format!(
@@ -2807,12 +2684,10 @@ impl<'a> VM<'a> {
                 flake_dir.display()
             )));
         }
-
         // Import flake.nix to get the raw flake attrset.
         let flake_nix_str = flake_nix.to_string_lossy().to_string();
         let flake_attrs = self.import_file(&flake_nix_str)?;
         let flake_attrs = self.force_value(flake_attrs)?;
-
         // Build the inputs attrset. For now, create a minimal `self` input.
         let self_sym = self.interner.intern("self");
         let out_path_sym = self.interner.intern("outPath");
@@ -2821,7 +2696,6 @@ impl<'a> VM<'a> {
         self_attrs.insert(out_path_sym, NanBox::string(flake_dir_str.clone()));
         let mut inputs: BTreeMap<Symbol, NanBox> = BTreeMap::new();
         inputs.insert(self_sym, NanBox::attrs(self_attrs));
-
         // Try to read flake.lock and resolve inputs.
         let lock_path = flake_dir.join("flake.lock");
         if lock_path.exists() {
@@ -2831,7 +2705,6 @@ impl<'a> VM<'a> {
                 }
             }
         }
-
         // Extract the `outputs` function and call it with the inputs attrset.
         let outputs_sym = self.interner.intern("outputs");
         if let Some(attrs) = flake_attrs.as_attrs() {
@@ -2841,7 +2714,6 @@ impl<'a> VM<'a> {
                 let inputs_nb = NanBox::attrs(inputs);
                 let result = self.call_callable(&outputs_func, inputs_nb)?;
                 let mut result_forced = self.force_value(result)?;
-
                 // Merge top-level metadata (description) into the result.
                 let desc_sym = self.interner.intern("description");
                 if let Some(desc) = attrs.get(&desc_sym) {
@@ -2851,15 +2723,12 @@ impl<'a> VM<'a> {
                         result_forced = NanBox::attrs(merged);
                     }
                 }
-
                 return Ok(result_forced);
             }
         }
-
         // If no outputs function, return the raw flake attrset.
         Ok(flake_attrs)
     }
-
     /// Resolve flake.lock inputs into the inputs attrset.
     fn resolve_flake_lock_inputs(
         &mut self,
@@ -2883,7 +2752,6 @@ impl<'a> VM<'a> {
             Some(i) => i,
             None => return,
         };
-
         for (input_name, node_ref) in root_inputs {
             let node_key = match node_ref.as_str() {
                 Some(s) => s.to_string(),
@@ -2926,7 +2794,6 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     /// Import a file with a scope (for scopedImport).
     ///
     /// Handles the directory → `default.nix` fallback like `import_file`.
@@ -2943,15 +2810,12 @@ impl<'a> VM<'a> {
         };
         let source = std::fs::read_to_string(&resolved)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
-
         // Wrap the source in `with <scope>; <source>` to inject the scope.
         let wrapped = format!("with {scope_nix}; {source}");
-
         let file_dir = std::path::Path::new(&resolved)
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
-
         // Share the VM's interner so symbol IDs stay consistent.
         let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
         let chunk = Compiler::compile_with_shared_interner(&wrapped, file_dir, shared_interner.clone())
@@ -2960,7 +2824,6 @@ impl<'a> VM<'a> {
             Ok(cell) => cell.into_inner(),
             Err(rc) => rc.borrow().clone(),
         };
-
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
         }
@@ -2972,12 +2835,9 @@ impl<'a> VM<'a> {
             stack_base,
             upvalues: Vec::new(),
         });
-
         self.run_until(return_depth)
     }
-
     // -- Higher-order builtin execution -----------------------------------
-
     fn call_callable(&mut self, func: &NanBox, arg: NanBox) -> Result<NanBox, VMError> {
         if let Some(closure) = func.as_closure() {
             if self.frames.len() >= MAX_CALL_DEPTH {
@@ -2996,13 +2856,11 @@ impl<'a> VM<'a> {
                 upvalues,
             });
             let result = self.run_until(return_depth);
-
             // Restore the stack to its state before the call.
             // The Return handler's early exit (at stop_depth) skips
             // truncation, so the argument and any internal temporaries
             // may still be on the stack.
             self.stack.truncate(stack_base);
-
             result
         } else if func.is_higher_order_builtin() {
             let hob = func.as_higher_order_builtin().unwrap().clone();
@@ -3026,7 +2884,6 @@ impl<'a> VM<'a> {
             Err(VMError::NotCallable(func.type_name().to_string()))
         }
     }
-
     #[allow(clippy::too_many_lines)]
     fn call_higher_order_builtin(
         &mut self,
@@ -3310,7 +3167,6 @@ impl<'a> VM<'a> {
                 // Uses deep_eq which recursively forces nested values.
                 let needle = NanBox::from_vmvalue(&hob.func);
                 let forced_needle = self.force_value(needle)?;
-
                 let list = if let Some(items) = arg.as_list() {
                     items.to_vec()
                 } else {
@@ -3325,7 +3181,6 @@ impl<'a> VM<'a> {
                         });
                     }
                 };
-
                 for item in &list {
                     let forced_item = self.force_value(item.clone())?;
                     if self.deep_eq(&forced_needle, &forced_item)? {
@@ -3336,9 +3191,7 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     // -- Import ---------------------------------------------------------
-
     /// Import a Nix file: compile it, execute it, cache the result.
     ///
     /// Handles the Nix convention that importing a directory is equivalent
@@ -3346,24 +3199,19 @@ impl<'a> VM<'a> {
     fn import_file(&mut self, path: &str) -> Result<NanBox, VMError> {
         let resolved = std::fs::canonicalize(path)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
-
         // Directory → default.nix fallback (Nix convention).
         let resolved = if resolved.is_dir() {
             resolved.join("default.nix")
         } else {
             resolved
         };
-
         let canonical = resolved.to_string_lossy().to_string();
-
         // Check cache.
         if let Some(cached) = self.import_cache.borrow().get(&canonical) {
             return Ok(NanBox::from_vmvalue(cached));
         }
-
         // Try VM compilation, falling back to tree-walker on CompileError.
         let chunk = self.try_compile_import(&resolved, &canonical)?;
-
         let chunk = match chunk {
             Some(c) => c,
             None => {
@@ -3371,11 +3219,9 @@ impl<'a> VM<'a> {
                 return self.import_via_bridge(&canonical);
             }
         };
-
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(VMError::StackOverflow);
         }
-
         let return_depth = self.frames.len();
         let stack_base = self.stack.len();
         self.frames.push(CallFrame {
@@ -3384,7 +3230,6 @@ impl<'a> VM<'a> {
             stack_base,
             upvalues: Vec::new(),
         });
-
         let result = match self.run_until(return_depth) {
             Ok(r) => r,
             Err(e) => {
@@ -3403,11 +3248,9 @@ impl<'a> VM<'a> {
                 return self.import_via_bridge(&canonical);
             }
         };
-
         // Clean up the imported frame's stack slots.
         // Return at stop_depth skips truncation, so we must do it here.
         self.stack.truncate(stack_base);
-
         // Cache as VMValue and return as NanBox.
         let result_vmval = result.to_vmvalue();
         self.import_cache
@@ -3415,7 +3258,6 @@ impl<'a> VM<'a> {
             .insert(canonical, result_vmval);
         Ok(result)
     }
-
     /// Try to compile an imported file. Returns `Ok(Some(chunk))` on success,
     /// `Ok(None)` on `CompileError` (caller should fall back to tree-walker),
     /// or `Err` on I/O errors.
@@ -3428,16 +3270,13 @@ impl<'a> VM<'a> {
         if let Some(cached_chunk) = self.compile_cache.get(resolved) {
             return Ok(Some(cached_chunk.clone()));
         }
-
         // Read the file.
         let source = std::fs::read_to_string(canonical)
             .map_err(|e| VMError::ImportError(format!("{canonical}: {e}")))?;
-
         let file_dir = resolved
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
-
         // Share the VM's interner with the compiler so that symbol IDs
         // are consistent — no need to clear key_symbols afterwards.
         let shared_interner = Rc::new(RefCell::new(std::mem::take(self.interner)));
@@ -3447,7 +3286,6 @@ impl<'a> VM<'a> {
             Ok(cell) => cell.into_inner(),
             Err(rc) => rc.borrow().clone(),
         };
-
         match compile_result {
             Ok(mut compiled) => {
                 Self::set_source_file_recursive(&mut compiled, canonical);
@@ -3465,7 +3303,6 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     /// Fall back to tree-walker evaluation for an imported file via the
     /// builtin bridge. Called when the bytecode compiler cannot handle
     /// the file (e.g. unsupported AST constructs).
@@ -3499,7 +3336,6 @@ impl<'a> VM<'a> {
             ))),
         }
     }
-
     /// Recursively set `source_file` on a chunk and all nested closure chunks.
     fn set_source_file_recursive(chunk: &mut Chunk, file: &str) {
         chunk.source_file = Some(file.to_string());
@@ -3511,14 +3347,12 @@ impl<'a> VM<'a> {
             }
         }
     }
-
     /// Disassemble instructions around a given offset for error diagnostics.
     /// Returns a human-readable string showing `window` instructions before
     /// and after `center_ip`, with an arrow marking the center.
     fn disassemble_around(chunk: &Chunk, center_ip: usize, window: usize) -> String {
         let code = &chunk.code;
         let mut lines: Vec<String> = Vec::new();
-
         // Collect instruction boundaries by scanning from the start.
         let mut boundaries: Vec<usize> = Vec::new();
         let mut pos = 0;
@@ -3526,12 +3360,10 @@ impl<'a> VM<'a> {
             boundaries.push(pos);
             pos += Self::instruction_width(code, pos);
         }
-
         // Find the boundary closest to center_ip.
         let center_idx = boundaries.iter().position(|&b| b >= center_ip).unwrap_or(0);
         let start_idx = center_idx.saturating_sub(window);
         let end_idx = (center_idx + window + 1).min(boundaries.len());
-
         for idx in start_idx..end_idx {
             let ip = boundaries[idx];
             let marker = if ip == center_ip { ">>>" } else { "   " };
@@ -3543,10 +3375,8 @@ impl<'a> VM<'a> {
                 lines.push(format!("    {marker} {ip:4}: <unknown {}>  (line {line})", code[ip]));
             }
         }
-
         lines.join("\n")
     }
-
     /// Determine the total byte width of an instruction at `pos`.
     fn instruction_width(code: &[u8], pos: usize) -> usize {
         let byte = code[pos];
@@ -3564,7 +3394,6 @@ impl<'a> VM<'a> {
                 | OpCode::PushBuiltins | OpCode::Force | OpCode::Import
                 | OpCode::DynGetAttr | OpCode::DynHasAttr
                 | OpCode::DynSelectOrDefault | OpCode::Dup => 1,
-
                 // 1 u16 operand (3 bytes):
                 OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal
                 | OpCode::GetUpvalue | OpCode::SetUpvalue | OpCode::LookupWith
@@ -3572,10 +3401,8 @@ impl<'a> VM<'a> {
                 | OpCode::SelectOrDefault | OpCode::MakeList
                 | OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue
                 | OpCode::Interpolate => 3,
-
                 // 2 u16 operands (5 bytes):
                 OpCode::GetLocalAttr | OpCode::GetLocalCall | OpCode::CallBuiltin => 5,
-
                 // MakeClosure: u16 const_idx, u16 uv_count, then uv_count * 3 bytes
                 OpCode::MakeClosure => {
                     if pos + 5 <= code.len() {
@@ -3585,7 +3412,6 @@ impl<'a> VM<'a> {
                         3 // truncated
                     }
                 }
-
                 // MakeThunk: u16 const_idx, u16 uv_count, then uv_count * 3 bytes
                 OpCode::MakeThunk => {
                     if pos + 5 <= code.len() {
@@ -3595,7 +3421,6 @@ impl<'a> VM<'a> {
                         3
                     }
                 }
-
                 // PatchThunkUpvalues: u16 slot, u16 uv_count, then uv_count * 3 bytes
                 OpCode::PatchThunkUpvalues => {
                     if pos + 5 <= code.len() {
@@ -3605,7 +3430,6 @@ impl<'a> VM<'a> {
                         3
                     }
                 }
-
                 // MakeLazyThunk: u16 src, u32 offset, u32 length, u16 dir, u16 uv_count, then uv_count * 3
                 OpCode::MakeLazyThunk => {
                     if pos + 15 <= code.len() {
@@ -3619,7 +3443,6 @@ impl<'a> VM<'a> {
             None => 1, // unknown opcode, skip 1
         }
     }
-
     /// Format inline operands for a single instruction (for disassembly).
     fn format_operands(code: &[u8], pos: usize, op: OpCode) -> String {
         let read_u16_at = |p: usize| -> Option<u16> {
@@ -3629,7 +3452,6 @@ impl<'a> VM<'a> {
                 None
             }
         };
-
         match op {
             OpCode::Constant | OpCode::GetLocal | OpCode::SetLocal
             | OpCode::GetUpvalue | OpCode::SetUpvalue | OpCode::LookupWith
@@ -3666,115 +3488,92 @@ impl<'a> VM<'a> {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compiler::Compiler;
     use crate::value::StringKeyedValue;
-
     fn eval(input: &str) -> VMValue {
         let (chunk, mut interner) =
             Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
         VM::execute(chunk, &mut interner).unwrap_or_else(|e| panic!("execute '{input}': {e}"))
     }
-
     fn eval_full_helper(input: &str) -> crate::StringKeyedValue {
         let result =
             crate::eval_full(input).unwrap_or_else(|e| panic!("eval_full '{input}': {e}"));
         result.to_string_keyed()
     }
-
     fn eval_err(input: &str) -> VMError {
         let (chunk, mut interner) =
             Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
         VM::execute(chunk, &mut interner).unwrap_err()
     }
-
     // -- Literals -------------------------------------------------------
-
     #[test]
     fn eval_integer() {
         assert_eq!(eval("42"), VMValue::Int(42));
     }
-
     #[test]
     fn eval_negative_integer() {
         assert_eq!(eval("-7"), VMValue::Int(-7));
     }
-
     #[test]
     fn eval_float() {
         assert_eq!(eval("3.14"), VMValue::Float(3.14));
     }
-
     #[test]
     fn eval_bool_true() {
         assert_eq!(eval("true"), VMValue::Bool(true));
     }
-
     #[test]
     fn eval_bool_false() {
         assert_eq!(eval("false"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_null() {
         assert_eq!(eval("null"), VMValue::Null);
     }
-
     #[test]
     fn eval_string() {
         assert_eq!(eval(r#""hello""#), VMValue::String("hello".to_string()));
     }
-
     // -- Arithmetic -----------------------------------------------------
-
     #[test]
     fn eval_add_int() {
         assert_eq!(eval("1 + 2"), VMValue::Int(3));
     }
-
     #[test]
     fn eval_sub_int() {
         assert_eq!(eval("10 - 3"), VMValue::Int(7));
     }
-
     #[test]
     fn eval_mul_int() {
         assert_eq!(eval("3 * 4"), VMValue::Int(12));
     }
-
     #[test]
     fn eval_div_int() {
         assert_eq!(eval("10 / 3"), VMValue::Int(3));
     }
-
     #[test]
     fn eval_div_zero() {
         assert!(matches!(eval_err("1 / 0"), VMError::DivisionByZero));
     }
-
     #[test]
     fn eval_float_arithmetic() {
         assert_eq!(eval("1.5 + 2.5"), VMValue::Float(4.0));
     }
-
     #[test]
     fn eval_mixed_arithmetic() {
         assert_eq!(eval("1 + 2.0"), VMValue::Float(3.0));
     }
-
     #[test]
     fn eval_compound_arithmetic() {
         assert_eq!(eval("2 * 3 + 1"), VMValue::Int(7));
     }
-
     #[test]
     fn eval_negate_float() {
         assert_eq!(eval("-3.14"), VMValue::Float(-3.14));
     }
-
     #[test]
     fn eval_string_concat() {
         assert_eq!(
@@ -3782,69 +3581,57 @@ mod tests {
             VMValue::String("hello world".to_string())
         );
     }
-
     // -- Comparison -----------------------------------------------------
-
     #[test]
     fn eval_equal() {
         assert_eq!(eval("1 == 1"), VMValue::Bool(true));
         assert_eq!(eval("1 == 2"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_not_equal() {
         assert_eq!(eval("1 != 2"), VMValue::Bool(true));
         assert_eq!(eval("1 != 1"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_less() {
         assert_eq!(eval("1 < 2"), VMValue::Bool(true));
         assert_eq!(eval("2 < 1"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_greater() {
         assert_eq!(eval("2 > 1"), VMValue::Bool(true));
         assert_eq!(eval("1 > 2"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_less_equal() {
         assert_eq!(eval("1 <= 1"), VMValue::Bool(true));
         assert_eq!(eval("1 <= 2"), VMValue::Bool(true));
         assert_eq!(eval("2 <= 1"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_greater_equal() {
         assert_eq!(eval("1 >= 1"), VMValue::Bool(true));
         assert_eq!(eval("2 >= 1"), VMValue::Bool(true));
         assert_eq!(eval("1 >= 2"), VMValue::Bool(false));
     }
-
     // -- Logical --------------------------------------------------------
-
     #[test]
     fn eval_not() {
         assert_eq!(eval("!true"), VMValue::Bool(false));
         assert_eq!(eval("!false"), VMValue::Bool(true));
     }
-
     #[test]
     fn eval_and_short_circuit() {
         assert_eq!(eval("true && true"), VMValue::Bool(true));
         assert_eq!(eval("true && false"), VMValue::Bool(false));
         assert_eq!(eval("false && true"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_or_short_circuit() {
         assert_eq!(eval("false || true"), VMValue::Bool(true));
         assert_eq!(eval("false || false"), VMValue::Bool(false));
         assert_eq!(eval("true || false"), VMValue::Bool(true));
     }
-
     #[test]
     fn eval_implication() {
         assert_eq!(eval("true -> true"), VMValue::Bool(true));
@@ -3852,19 +3639,15 @@ mod tests {
         assert_eq!(eval("false -> true"), VMValue::Bool(true));
         assert_eq!(eval("false -> false"), VMValue::Bool(true));
     }
-
     // -- Conditionals ---------------------------------------------------
-
     #[test]
     fn eval_if_true() {
         assert_eq!(eval("if true then 1 else 2"), VMValue::Int(1));
     }
-
     #[test]
     fn eval_if_false() {
         assert_eq!(eval("if false then 1 else 2"), VMValue::Int(2));
     }
-
     #[test]
     fn eval_if_expression() {
         assert_eq!(
@@ -3872,7 +3655,6 @@ mod tests {
             VMValue::String("no".to_string())
         );
     }
-
     #[test]
     fn eval_nested_if() {
         assert_eq!(
@@ -3880,14 +3662,11 @@ mod tests {
             VMValue::Int(2)
         );
     }
-
     // -- Let/in ---------------------------------------------------------
-
     #[test]
     fn eval_let_simple() {
         assert_eq!(eval("let x = 1; y = 2; in x + y"), VMValue::Int(3));
     }
-
     #[test]
     fn eval_let_nested() {
         assert_eq!(
@@ -3895,24 +3674,19 @@ mod tests {
             VMValue::Int(30)
         );
     }
-
     #[test]
     fn eval_let_shadow() {
         assert_eq!(eval("let x = 1; in let x = 2; in x"), VMValue::Int(2));
     }
-
     #[test]
     fn eval_let_with_expression() {
         assert_eq!(eval("let x = 2 * 3; in x + 1"), VMValue::Int(7));
     }
-
     // -- Lists ----------------------------------------------------------
-
     #[test]
     fn eval_empty_list() {
         assert_eq!(eval("[]"), VMValue::List(vec![]));
     }
-
     #[test]
     fn eval_list() {
         assert_eq!(
@@ -3920,7 +3694,6 @@ mod tests {
             VMValue::List(vec![VMValue::Int(1), VMValue::Int(2), VMValue::Int(3)])
         );
     }
-
     #[test]
     fn eval_list_concat() {
         assert_eq!(
@@ -3933,7 +3706,6 @@ mod tests {
             ])
         );
     }
-
     #[test]
     fn eval_list_concat_with_inline_map() {
         // Regression: call_callable did not truncate the stack after
@@ -3944,7 +3716,6 @@ mod tests {
             VMValue::List(vec![VMValue::Int(1), VMValue::Int(2), VMValue::Int(3)])
         );
     }
-
     #[test]
     fn eval_list_concat_with_inline_map_attrsets() {
         // Same regression with attrset-producing map (the nixpkgs pattern).
@@ -3954,7 +3725,6 @@ mod tests {
             other => panic!("expected list, got {:?}", other.type_name()),
         }
     }
-
     #[test]
     fn eval_list_concat_with_inline_filter() {
         // Also verify filter (another higher-order builtin) with ++.
@@ -3963,7 +3733,6 @@ mod tests {
             VMValue::List(vec![VMValue::Int(0), VMValue::Int(2), VMValue::Int(3)])
         );
     }
-
     #[test]
     fn eval_list_mixed() {
         assert_eq!(
@@ -3975,14 +3744,11 @@ mod tests {
             ])
         );
     }
-
     // -- Attribute sets -------------------------------------------------
-
     #[test]
     fn eval_empty_attrset() {
         assert_eq!(eval("{ }"), VMValue::Attrs(BTreeMap::new()));
     }
-
     #[test]
     fn eval_attrset() {
         let result = eval_full_helper("{ a = 1; b = 2; }");
@@ -3991,12 +3757,10 @@ mod tests {
         expected.insert("b".to_string(), crate::StringKeyedValue::Int(2));
         assert_eq!(result, crate::StringKeyedValue::Attrs(expected));
     }
-
     #[test]
     fn eval_attrset_select() {
         assert_eq!(eval("{ a = 1; b = 2; }.a"), VMValue::Int(1));
     }
-
     #[test]
     fn eval_attrset_update() {
         let result = eval_full_helper("{ a = 1; } // { b = 2; }");
@@ -4005,28 +3769,23 @@ mod tests {
         expected.insert("b".to_string(), crate::StringKeyedValue::Int(2));
         assert_eq!(result, crate::StringKeyedValue::Attrs(expected));
     }
-
     #[test]
     fn eval_attrset_update_override() {
         assert_eq!(eval("({ a = 1; } // { a = 2; }).a"), VMValue::Int(2));
     }
-
     #[test]
     fn eval_has_attr_true() {
         assert_eq!(eval("{ a = 1; } ? a"), VMValue::Bool(true));
     }
-
     #[test]
     fn eval_has_attr_false() {
         assert_eq!(eval("{ a = 1; } ? b"), VMValue::Bool(false));
     }
-
     #[test]
     fn eval_select_or_default() {
         assert_eq!(eval("{ a = 1; }.b or 0"), VMValue::Int(0));
         assert_eq!(eval("{ a = 1; }.a or 0"), VMValue::Int(1));
     }
-
     #[test]
     fn eval_dyn_select_or_default_missing() {
         // Dynamic key missing → returns default.
@@ -4035,7 +3794,6 @@ mod tests {
             VMValue::Int(99),
         );
     }
-
     #[test]
     fn eval_dyn_select_or_default_found() {
         // Dynamic key present → returns actual value.
@@ -4044,7 +3802,6 @@ mod tests {
             VMValue::Int(42),
         );
     }
-
     #[test]
     fn eval_dyn_select_or_default_dotted_key() {
         // Key containing dots treated as single flat key, not nested path.
@@ -4053,7 +3810,6 @@ mod tests {
             VMValue::Int(7),
         );
     }
-
     #[test]
     fn eval_dyn_select_or_default_special_chars() {
         // Key with dots and plus signs (nixpkgs armv8 CPU feature pattern).
@@ -4062,7 +3818,6 @@ mod tests {
             VMValue::Int(0),
         );
     }
-
     #[test]
     fn eval_dyn_select_or_default_non_attrset() {
         // Base is not an attrset → returns default.
@@ -4071,25 +3826,20 @@ mod tests {
             VMValue::Int(99),
         );
     }
-
     // -- Lambdas / Apply ------------------------------------------------
-
     #[test]
     fn eval_identity_lambda() {
         assert_eq!(eval("(x: x) 42"), VMValue::Int(42));
     }
-
     #[test]
     fn eval_lambda_arithmetic() {
         assert_eq!(eval("(x: x + 1) 5"), VMValue::Int(6));
     }
-
     #[test]
     #[ignore = "requires upvalue capture (Phase 2)"]
     fn eval_curried_lambda() {
         assert_eq!(eval("(x: y: x + y) 3 4"), VMValue::Int(7));
     }
-
     #[test]
     fn eval_let_lambda() {
         assert_eq!(
@@ -4097,12 +3847,10 @@ mod tests {
             VMValue::Int(10)
         );
     }
-
     #[test]
     fn eval_pattern_lambda() {
         assert_eq!(eval("({ a, b }: a + b) { a = 3; b = 4; }"), VMValue::Int(7));
     }
-
     #[test]
     fn eval_pattern_lambda_default() {
         assert_eq!(
@@ -4110,7 +3858,6 @@ mod tests {
             VMValue::Int(15)
         );
     }
-
     #[test]
     fn eval_lambda_with_let() {
         assert_eq!(
@@ -4118,21 +3865,16 @@ mod tests {
             VMValue::Int(8)
         );
     }
-
     // -- Assert ---------------------------------------------------------
-
     #[test]
     fn eval_assert_pass() {
         assert_eq!(eval("assert true; 42"), VMValue::Int(42));
     }
-
     #[test]
     fn eval_assert_fail() {
         assert!(matches!(eval_err("assert false; 42"), VMError::AssertionFailed));
     }
-
     // -- Deep equality (thunk forcing) ----------------------------------
-
     #[test]
     fn deep_eq_attrs_with_thunked_values() {
         // Attrsets from let bindings have thunked values;
@@ -4142,7 +3884,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn deep_eq_attrs_different_values() {
         assert_eq!(
@@ -4150,7 +3891,6 @@ mod tests {
             VMValue::Bool(false)
         );
     }
-
     #[test]
     fn deep_eq_nested_attrs() {
         assert_eq!(
@@ -4158,7 +3898,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn deep_eq_list_with_thunked_elements() {
         assert_eq!(
@@ -4166,9 +3905,7 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     // -- builtins.elem (thunk forcing) ----------------------------------
-
     #[test]
     fn eval_elem_thunked_attrsets() {
         // elem must force list elements before comparison.
@@ -4177,7 +3914,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn eval_elem_basic_int() {
         assert_eq!(
@@ -4185,7 +3921,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn eval_elem_missing() {
         assert_eq!(
@@ -4193,7 +3928,6 @@ mod tests {
             VMValue::Bool(false)
         );
     }
-
     #[test]
     fn eval_elem_string() {
         assert_eq!(
@@ -4201,7 +3935,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn eval_elem_thunked_list_elements() {
         assert_eq!(
@@ -4209,9 +3942,7 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     // -- String interpolation -------------------------------------------
-
     #[test]
     fn eval_string_interpolation() {
         assert_eq!(
@@ -4219,7 +3950,6 @@ mod tests {
             VMValue::String("hello world".to_string()),
         );
     }
-
     #[test]
     #[ignore = "requires builtins.toString (Phase 2)"]
     fn eval_string_interpolation_int() {
@@ -4228,16 +3958,12 @@ mod tests {
             VMValue::String("value: 42".to_string()),
         );
     }
-
     // -- Path literals --------------------------------------------------
-
     #[test]
     fn eval_absolute_path() {
         assert_eq!(eval("/tmp/x"), VMValue::Path("/tmp/x".to_string()));
     }
-
     // -- Complex expressions --------------------------------------------
-
     #[test]
     fn eval_fibonacci_like() {
         assert_eq!(
@@ -4245,7 +3971,6 @@ mod tests {
             VMValue::Int(5)
         );
     }
-
     #[test]
     fn eval_nested_attrset_select() {
         assert_eq!(
@@ -4253,7 +3978,6 @@ mod tests {
             VMValue::Int(42)
         );
     }
-
     #[test]
     fn eval_let_with_attrset() {
         assert_eq!(
@@ -4261,7 +3985,6 @@ mod tests {
             VMValue::Int(30)
         );
     }
-
     #[test]
     fn eval_conditional_attrset() {
         assert_eq!(
@@ -4269,24 +3992,19 @@ mod tests {
             VMValue::Int(1)
         );
     }
-
     // -- Builtin tests --------------------------------------------------
-
     #[test]
     fn builtin_length() {
         assert_eq!(eval("builtins.length [1 2 3]"), VMValue::Int(3));
     }
-
     #[test]
     fn builtin_length_empty() {
         assert_eq!(eval("builtins.length []"), VMValue::Int(0));
     }
-
     #[test]
     fn builtin_head() {
         assert_eq!(eval("builtins.head [10 20 30]"), VMValue::Int(10));
     }
-
     #[test]
     fn builtin_tail() {
         let result = eval_full_helper("builtins.tail [1 2 3]");
@@ -4295,7 +4013,6 @@ mod tests {
             StringKeyedValue::List(vec![StringKeyedValue::Int(2), StringKeyedValue::Int(3)])
         );
     }
-
     #[test]
     fn builtin_type_of_int() {
         assert_eq!(
@@ -4303,7 +4020,6 @@ mod tests {
             VMValue::String("int".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_string() {
         assert_eq!(
@@ -4311,7 +4027,6 @@ mod tests {
             VMValue::String("string".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_bool() {
         assert_eq!(
@@ -4319,7 +4034,6 @@ mod tests {
             VMValue::String("bool".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_null() {
         assert_eq!(
@@ -4327,7 +4041,6 @@ mod tests {
             VMValue::String("null".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_list() {
         assert_eq!(
@@ -4335,7 +4048,6 @@ mod tests {
             VMValue::String("list".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_set() {
         assert_eq!(
@@ -4343,7 +4055,6 @@ mod tests {
             VMValue::String("set".to_string())
         );
     }
-
     #[test]
     fn builtin_type_of_lambda() {
         assert_eq!(
@@ -4351,7 +4062,6 @@ mod tests {
             VMValue::String("lambda".to_string())
         );
     }
-
     #[test]
     fn builtin_is_int() {
         assert_eq!(eval("builtins.isInt 42"), VMValue::Bool(true));
@@ -4360,19 +4070,16 @@ mod tests {
             VMValue::Bool(false)
         );
     }
-
     #[test]
     fn builtin_is_string() {
         assert_eq!(eval("builtins.isString \"hi\""), VMValue::Bool(true));
         assert_eq!(eval("builtins.isString 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_is_list() {
         assert_eq!(eval("builtins.isList [1]"), VMValue::Bool(true));
         assert_eq!(eval("builtins.isList 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_is_attrs() {
         assert_eq!(
@@ -4381,7 +4088,6 @@ mod tests {
         );
         assert_eq!(eval("builtins.isAttrs 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_is_function() {
         assert_eq!(
@@ -4390,19 +4096,16 @@ mod tests {
         );
         assert_eq!(eval("builtins.isFunction 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_is_bool() {
         assert_eq!(eval("builtins.isBool true"), VMValue::Bool(true));
         assert_eq!(eval("builtins.isBool 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_is_null() {
         assert_eq!(eval("builtins.isNull null"), VMValue::Bool(true));
         assert_eq!(eval("builtins.isNull 42"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_string_length() {
         assert_eq!(
@@ -4410,7 +4113,6 @@ mod tests {
             VMValue::Int(5)
         );
     }
-
     #[test]
     fn builtin_to_string_int() {
         assert_eq!(
@@ -4418,7 +4120,6 @@ mod tests {
             VMValue::String("42".to_string())
         );
     }
-
     #[test]
     fn builtin_to_string_bool() {
         assert_eq!(
@@ -4426,50 +4127,41 @@ mod tests {
             VMValue::String("1".to_string())
         );
     }
-
     #[test]
     fn builtin_throw() {
         let result = eval_err("builtins.throw \"test error\"");
         assert!(matches!(result, VMError::Throw(_)));
     }
-
     #[test]
     fn builtin_abort() {
         let result = eval_err("builtins.abort \"fatal\"");
         assert!(matches!(result, VMError::Throw(_)));
     }
-
     #[test]
     fn builtin_add_curried() {
         assert_eq!(eval("builtins.add 3 4"), VMValue::Int(7));
     }
-
     #[test]
     fn builtin_sub_curried() {
         assert_eq!(eval("builtins.sub 10 3"), VMValue::Int(7));
     }
-
     #[test]
     fn builtin_mul_curried() {
         assert_eq!(eval("builtins.mul 6 7"), VMValue::Int(42));
     }
-
     #[test]
     fn builtin_div_curried() {
         assert_eq!(eval("builtins.div 42 6"), VMValue::Int(7));
     }
-
     #[test]
     fn builtin_elem_at() {
         assert_eq!(eval("builtins.elemAt [10 20 30] 1"), VMValue::Int(20));
     }
-
     #[test]
     fn builtin_elem() {
         assert_eq!(eval("builtins.elem 2 [1 2 3]"), VMValue::Bool(true));
         assert_eq!(eval("builtins.elem 5 [1 2 3]"), VMValue::Bool(false));
     }
-
     #[test]
     fn builtin_concat_lists() {
         let result = eval_full_helper("builtins.concatLists [[1 2] [3 4]]");
@@ -4483,7 +4175,6 @@ mod tests {
             ])
         );
     }
-
     #[test]
     fn builtin_has_prefix() {
         assert_eq!(
@@ -4495,7 +4186,6 @@ mod tests {
             VMValue::Bool(false)
         );
     }
-
     #[test]
     fn builtin_has_suffix() {
         assert_eq!(
@@ -4503,7 +4193,6 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn builtin_concat_strings_sep() {
         assert_eq!(
@@ -4511,7 +4200,6 @@ mod tests {
             VMValue::String("a, b, c".to_string())
         );
     }
-
     #[test]
     fn builtin_to_lower() {
         assert_eq!(
@@ -4519,7 +4207,6 @@ mod tests {
             VMValue::String("hello world".to_string())
         );
     }
-
     #[test]
     fn builtin_to_upper() {
         assert_eq!(
@@ -4527,7 +4214,6 @@ mod tests {
             VMValue::String("HELLO".to_string())
         );
     }
-
     #[test]
     fn builtin_from_json() {
         assert_eq!(
@@ -4539,17 +4225,14 @@ mod tests {
             VMValue::Bool(true)
         );
     }
-
     #[test]
     fn builtin_seq() {
         assert_eq!(eval("builtins.seq 1 42"), VMValue::Int(42));
     }
-
     #[test]
     fn builtin_deep_seq() {
         assert_eq!(eval("builtins.deepSeq [1 2] 42"), VMValue::Int(42));
     }
-
     #[test]
     fn builtin_trace() {
         assert_eq!(
@@ -4557,20 +4240,17 @@ mod tests {
             VMValue::Int(42)
         );
     }
-
     #[test]
     fn builtin_ceil_floor() {
         assert_eq!(eval("builtins.ceil 3.2"), VMValue::Int(4));
         assert_eq!(eval("builtins.floor 3.8"), VMValue::Int(3));
     }
-
     #[test]
     fn builtin_bit_ops() {
         assert_eq!(eval("builtins.bitAnd 12 10"), VMValue::Int(8));
         assert_eq!(eval("builtins.bitOr 12 10"), VMValue::Int(14));
         assert_eq!(eval("builtins.bitXor 12 10"), VMValue::Int(6));
     }
-
     #[test]
     fn builtin_intersect_attrs() {
         let result =
@@ -4584,7 +4264,6 @@ mod tests {
             _ => panic!("expected Attrs, got {result:?}"),
         }
     }
-
     #[test]
     fn builtin_attr_values() {
         let result = eval_full_helper("builtins.attrValues { a = 1; b = 2; }");
@@ -4597,12 +4276,10 @@ mod tests {
             _ => panic!("expected List, got {result:?}"),
         }
     }
-
     #[test]
     fn builtin_to_int() {
         assert_eq!(eval("builtins.toInt \"42\""), VMValue::Int(42));
     }
-
     #[test]
     fn builtin_replace_strings() {
         assert_eq!(
@@ -4610,7 +4287,6 @@ mod tests {
             VMValue::String("f00".to_string())
         );
     }
-
     #[test]
     fn builtin_substring() {
         assert_eq!(
@@ -4618,9 +4294,7 @@ mod tests {
             VMValue::String("ell".to_string())
         );
     }
-
     // -- Import tests ---------------------------------------------------
-
     #[test]
     fn import_basic() {
         let dir = tempfile::tempdir().unwrap();
@@ -4629,7 +4303,6 @@ mod tests {
         let nix_expr = format!("import {}", file_path.display());
         assert_eq!(eval(&nix_expr), VMValue::Int(42));
     }
-
     #[test]
     fn import_cached() {
         let dir = tempfile::tempdir().unwrap();
@@ -4642,7 +4315,6 @@ mod tests {
         );
         assert_eq!(eval(&nix_expr), VMValue::Bool(true));
     }
-
     #[test]
     fn import_attrset() {
         let dir = tempfile::tempdir().unwrap();
@@ -4651,7 +4323,6 @@ mod tests {
         let nix_expr = format!("(import {}).greeting", file_path.display());
         assert_eq!(eval(&nix_expr), VMValue::String("hello".to_string()));
     }
-
     #[test]
     fn import_directory_default_nix() {
         // Importing a directory should resolve to <dir>/default.nix
@@ -4662,7 +4333,6 @@ mod tests {
         let nix_expr = format!("(import {}).x", sub.display());
         assert_eq!(eval(&nix_expr), VMValue::Int(42));
     }
-
     #[test]
     fn import_directory_cached() {
         // Importing the same directory twice should hit the cache.
@@ -4677,7 +4347,6 @@ mod tests {
         );
         assert_eq!(eval(&nix_expr), VMValue::Bool(true));
     }
-
     #[test]
     fn import_directory_nested() {
         // Nested directory imports: lib/default.nix imports sub/default.nix
@@ -4694,9 +4363,7 @@ mod tests {
         let nix_expr = format!("import {}", lib.display());
         assert_eq!(eval(&nix_expr), VMValue::Int(10));
     }
-
     // -- Lazy evaluation tests ------------------------------------------
-
     #[test]
     fn lazy_unused_throw_in_attrset() {
         assert_eq!(
@@ -4704,14 +4371,11 @@ mod tests {
             VMValue::Int(1)
         );
     }
-
     #[test]
     fn lazy_unused_let_binding() {
         assert_eq!(eval("let x = 1; y = 2; in x"), VMValue::Int(1));
     }
-
     // -- Import handler tests -------------------------------------------
-
     #[test]
     fn import_forces_thunk_before_type_check() {
         // The import path is a thunk (non-trivial let binding); the VM
@@ -4725,7 +4389,6 @@ mod tests {
         );
         assert_eq!(eval(&nix_expr), VMValue::Int(99));
     }
-
     #[test]
     fn import_with_path_value_succeeds() {
         let dir = tempfile::tempdir().unwrap();
@@ -4737,7 +4400,6 @@ mod tests {
             VMValue::String("from-path".to_string())
         );
     }
-
     #[test]
     fn import_with_string_value_succeeds() {
         let dir = tempfile::tempdir().unwrap();
@@ -4752,9 +4414,7 @@ mod tests {
             VMValue::String("from-string".to_string())
         );
     }
-
     // -- TailCall opcode tests ------------------------------------------
-
     #[test]
     fn tail_call_deep_recursion_via_import() {
         // Test deep tail-recursive calls via import (self-referencing let
@@ -4775,7 +4435,6 @@ mod tests {
         );
         assert_eq!(eval(&nix_expr), VMValue::Int(0));
     }
-
     #[test]
     fn tail_call_simple_lambda_chain() {
         // Non-recursive tail call: the last call in a lambda body should
@@ -4786,7 +4445,6 @@ mod tests {
             VMValue::Int(42)
         );
     }
-
     #[test]
     fn tail_call_if_branches() {
         // Both if-then and if-else branches should produce tail calls
@@ -4800,9 +4458,7 @@ mod tests {
             VMValue::Int(1)
         );
     }
-
     // -- Builtin dispatch tests -----------------------------------------
-
     #[test]
     fn builtin_get_env_returns_value() {
         // Set a known env var and verify getEnv returns it.
@@ -4814,7 +4470,6 @@ mod tests {
         );
         unsafe { std::env::remove_var("SUI_TEST_VAR") };
     }
-
     #[test]
     fn builtin_get_env_missing_returns_empty() {
         // getEnv with a missing var should return "".
@@ -4825,7 +4480,6 @@ mod tests {
             VMValue::String(String::new())
         );
     }
-
     #[test]
     fn builtin_try_eval_success() {
         // tryEval with a successful expression returns { success=true; value=result; }.
@@ -4844,7 +4498,6 @@ mod tests {
             _ => panic!("expected Attrs, got {result:?}"),
         }
     }
-
     #[test]
     fn builtin_try_eval_with_non_throwing_expr() {
         // tryEval wraps a non-throwing expression — still produces
@@ -4866,7 +4519,6 @@ mod tests {
             _ => panic!("expected Attrs, got {result:?}"),
         }
     }
-
     #[test]
     fn builtin_try_eval_with_throw_propagates() {
         // NOTE: tryEval with a throwing expression currently propagates the
@@ -4878,9 +4530,7 @@ mod tests {
         );
         assert!(result.is_err(), "throw propagates through tryEval (current limitation)");
     }
-
     // -- Regression: stack_depth tracking for branches -------------------
-
     #[test]
     fn if_else_in_let_body_stack_depth() {
         // If/else inside a let body should not corrupt stack_depth for
@@ -4890,7 +4540,6 @@ mod tests {
             VMValue::Int(10),
         );
     }
-
     #[test]
     fn nested_let_with_if_else() {
         // Inner let after an if/else: the if/else must not drift stack_depth.
@@ -4905,7 +4554,6 @@ mod tests {
             VMValue::Int(12),
         );
     }
-
     #[test]
     fn short_circuit_and_in_let_body() {
         // Short-circuit && inside a let body must track stack_depth correctly.
@@ -4914,7 +4562,6 @@ mod tests {
             VMValue::Bool(false),
         );
     }
-
     #[test]
     fn short_circuit_or_in_let_body() {
         assert_eq!(
@@ -4922,7 +4569,6 @@ mod tests {
             VMValue::Bool(true),
         );
     }
-
     #[test]
     fn short_circuit_implication_in_let_body() {
         // a -> b is !a || b. false -> anything is true.
@@ -4931,7 +4577,6 @@ mod tests {
             VMValue::Bool(true),
         );
     }
-
     #[test]
     fn inherit_from_in_attrset_stack_depth() {
         // inherit (source) in non-rec attrset must track stack_depth for
@@ -4946,7 +4591,6 @@ mod tests {
             VMValue::Int(6),
         );
     }
-
     #[test]
     fn inherit_from_many_fields_stack_depth() {
         // Multiple inherit-from fields: each one was missing +1,
@@ -4961,7 +4605,6 @@ mod tests {
             VMValue::Int(20),
         );
     }
-
     #[test]
     fn if_else_followed_by_let_binding() {
         // The if/else result is used in a subsequent let binding.
@@ -4982,7 +4625,6 @@ mod tests {
             VMValue::Int(102),
         );
     }
-
     #[test]
     fn multi_segment_hasattr_stack_depth() {
         // Multi-segment hasattr with short-circuit jumps must track
@@ -4998,7 +4640,6 @@ mod tests {
             VMValue::Int(42),
         );
     }
-
     #[test]
     fn many_let_bindings_with_if_else() {
         // Stress test: many let bindings where some RHS contain if/else.
@@ -5028,7 +4669,6 @@ mod tests {
             VMValue::Int(25),
         );
     }
-
     #[test]
     fn import_in_pattern_default_stack_depth() {
         // The Import opcode is net 0 on the stack (pop path, push result).
@@ -5046,7 +4686,6 @@ mod tests {
             VMValue::Int(6),
         );
     }
-
     #[test]
     fn pattern_lambda_many_defaults_then_let() {
         // Pattern lambda with many defaults followed by let bindings.
@@ -5067,9 +4706,7 @@ mod tests {
             VMValue::Int(202),
         );
     }
-
     // -- Blocker #13: dotted attrs + lambda closure in rec ------------------
-
     #[test]
     fn rec_dotted_lambda_captures_sibling() {
         // Lambdas in rec attrsets must not be compiled as trivial values,
@@ -5087,7 +4724,6 @@ mod tests {
             other => panic!("expected attrset, got {other:?}"),
         }
     }
-
     #[test]
     fn rec_dotted_lambda_attr_select() {
         // Lambda body selects an attribute from a dotted sibling.
@@ -5096,7 +4732,6 @@ mod tests {
             VMValue::Int(2),
         );
     }
-
     #[test]
     fn rec_dotted_lambda_assert_check() {
         // Pattern from nixpkgs parse.nix: `mkSystem` uses
@@ -5115,7 +4750,6 @@ mod tests {
             VMValue::Int(42),
         );
     }
-
     #[test]
     fn let_lambda_captures_rec_sibling() {
         // Let bindings are recursive — lambdas capturing siblings must
@@ -5125,7 +4759,6 @@ mod tests {
             VMValue::Int(2),
         );
     }
-
     #[test]
     fn rec_dotted_multiple_lambdas() {
         // Multiple lambdas capturing different dotted siblings.
