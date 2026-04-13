@@ -760,35 +760,23 @@ impl Thunk {
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
                         // Transitively unwrap thunk-in-thunk chains.
-                        // IMPORTANT: only unwrap thunks that CAN be forced NOW.
-                        // WithIdent thunks may not be resolvable yet (fixpoint in
-                        // blackhole) — leave them as Value::Thunk for later forcing.
-                        let mut depth = 0u32;
+                        // Only unwrap thunks whose cached result is already
+                        // available — don't force new thunks here (that could
+                        // trigger infinite force_value ↔ force_inner loops).
                         while let Value::Thunk(ref inner) = value {
-                            // Check if the inner thunk is already cached (safe to unwrap)
                             if let Some(cached) = inner.peek() {
                                 value = cached.clone();
-                                continue;
-                            }
-                            // Try to force — if it fails, keep the thunk as-is
-                            match inner.force(evaluator) {
-                                Ok(v) => value = v,
-                                Err(_) => break, // Can't force now — keep as thunk
-                            }
-                            depth += 1;
-                            if depth > 2000 {
-                                *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
-                                crate::trace::dump_trace_on_error();
-                                crate::trace::pop_force();
-                                crate::trace::trace_force_exit();
-                                return Err(EvalError::InfiniteRecursion(
-                                    "thunk chain depth exceeded".to_string(),
-                                ));
+                            } else {
+                                break; // Not yet resolved — leave as thunk
                             }
                         }
-                        // Update with the fully-unwrapped value.
+                        // Update with the unwrapped value.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        let _ = self.0.cache.set(Box::new(value.clone()));
+                        // Only cache concrete values — caching a thunk would
+                        // cause force_value's loop to spin indefinitely.
+                        if !matches!(value, Value::Thunk(_)) {
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                        }
                         if tracing {
                             crate::trace::pop_force();
                             crate::trace::trace_force_exit();
@@ -852,11 +840,15 @@ impl Thunk {
                 match attempt {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        while let Value::Thunk(inner) = value {
-                            value = inner.force(evaluator)?;
+                        while let Value::Thunk(ref inner) = value {
+                            if let Some(cached) = inner.peek() {
+                                value = cached.clone();
+                            } else { break; }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        let _ = self.0.cache.set(Box::new(value.clone()));
+                        if !matches!(value, Value::Thunk(_)) {
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                        }
                         if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
@@ -888,17 +880,16 @@ impl Thunk {
                 // retried because it has been consumed.
                 match f() {
                     Ok(mut value) => {
-                        // Store BEFORE transitively forcing — same pattern as
-                        // Suspended. Enables fixpoint re-entry: if inner thunks
-                        // reference this native thunk, they find Evaluated (not
-                        // Blackhole). This is critical for flake-parts and
-                        // NixOS module system fixpoints.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        while let Value::Thunk(inner) = value {
-                            value = inner.force(evaluator)?;
+                        while let Value::Thunk(ref inner) = value {
+                            if let Some(cached) = inner.peek() {
+                                value = cached.clone();
+                            } else { break; }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        let _ = self.0.cache.set(Box::new(value.clone()));
+                        if !matches!(value, Value::Thunk(_)) {
+                            let _ = self.0.cache.set(Box::new(value.clone()));
+                        }
                         if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
                     }

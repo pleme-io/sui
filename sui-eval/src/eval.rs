@@ -408,10 +408,20 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     // another thunk (e.g. `if ... then ... else def` where def is a
     // thunk). CppNix handles this implicitly because thunk slots are
     // mutated in-place; we must loop explicitly.
+    // Depth limit prevents infinite loops when force_inner caches an
+    // unresolvable thunk (WithIdent in blackhole, etc.).
+    let mut depth = 0u32;
     loop {
         match v {
             Value::Thunk(ref thunk) => {
                 v = force_thunk(thunk)?;
+                depth += 1;
+                if depth > 100 {
+                    // The thunk chain is pathologically deep or stuck.
+                    // Return whatever we have — the caller will re-force
+                    // when needed (after the fixpoint is further along).
+                    return Ok(v);
+                }
             }
             _ => return Ok(v),
         }
