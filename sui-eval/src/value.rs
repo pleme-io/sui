@@ -1484,9 +1484,6 @@ impl Value {
     pub fn as_string(&self) -> Result<&str, EvalError> {
         match self {
             Value::String(s) => Ok(&s.chars),
-            // Note: we cannot return a reference into a forced thunk here
-            // because the forced value is transient. Callers that go through
-            // force_value() in eval.rs will match on the concrete value.
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_string: force first via force_value()".into(),
             )),

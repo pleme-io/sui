@@ -74,9 +74,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         })))
     });
 
-    // addErrorContext — wraps an expression with error context (passthrough in our impl)
+    // addErrorContext — wraps an expression with error context (passthrough in our impl).
+    // CRITICAL: Do NOT force the context string eagerly. CppNix only
+    // stringifies it when an error actually occurs. Eagerly forcing it
+    // breaks nixpkgs lib/modules.nix where context strings reference
+    // module config that isn't yet fully initialized (null attrs).
     register_builtin(builtins, "addErrorContext", |args| {
-        let _ctx = args[0].as_string()?.to_string();
+        let _ctx = &args[0]; // captured but not forced
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "addErrorContext<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),

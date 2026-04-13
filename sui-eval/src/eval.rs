@@ -1129,19 +1129,33 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
     Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
 }
 
+/// Evaluate an attribute name, requiring non-null.
+/// Use `eval_attr_maybe_null` when null dynamic attrs should be skipped.
 fn eval_attr(attr: &ast::Attr, env: &Env) -> Result<String, EvalError> {
+    eval_attr_maybe_null(attr, env)?
+        .ok_or_else(|| EvalError::TypeError("null dynamic attribute name".into()))
+}
+
+/// Evaluate an attribute name. Returns `None` for null dynamic attrs
+/// (CppNix silently omits attributes with null names).
+fn eval_attr_maybe_null(attr: &ast::Attr, env: &Env) -> Result<Option<String>, EvalError> {
     match attr {
-        ast::Attr::Ident(ident) => Ok(ident_text(ident)),
+        ast::Attr::Ident(ident) => Ok(Some(ident_text(ident))),
         ast::Attr::Dynamic(dyn_) => {
             let expr = dyn_
                 .expr()
                 .ok_or_else(|| EvalError::ParseError("dynamic attr missing expr".to_string()))?;
             let val = force_value(&eval_expr(&expr, env)?)?;
-            Ok(val.as_string()?.to_string())
+            // CppNix: null dynamic attr name → skip the attribute entirely.
+            // Used by nixpkgs module system: `${if cond then null else "name"} = value;`
+            if val == Value::Null {
+                return Ok(None);
+            }
+            Ok(Some(val.as_string()?.to_string()))
         }
         ast::Attr::Str(s) => {
             let val = eval_str(s, env)?;
-            Ok(val.as_string()?.to_string())
+            Ok(Some(val.as_string()?.to_string()))
         }
     }
 }
@@ -1186,8 +1200,10 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     })?;
                     let mut path_keys: Vec<String> = attrpath
                         .attrs()
-                        .map(|a| eval_attr(&a, env))
+                        .filter_map(|a| eval_attr_maybe_null(&a, env).transpose())
                         .collect::<Result<_, _>>()?;
+                    // Null dynamic attr name → skip entire binding (CppNix compat)
+                    if path_keys.is_empty() { continue; }
                     if path_keys.len() == 1 {
                         let key = path_keys.pop().unwrap();
                         // maybeThunk: skip thunk for trivial exprs.
@@ -1243,8 +1259,10 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     })?;
                     let mut path_keys: Vec<String> = attrpath
                         .attrs()
-                        .map(|a| eval_attr(&a, env))
+                        .filter_map(|a| eval_attr_maybe_null(&a, env).transpose())
                         .collect::<Result<_, _>>()?;
+                    // Null dynamic attr name → skip entire binding (CppNix compat)
+                    if path_keys.is_empty() { continue; }
                     if path_keys.len() == 1 {
                         let key = path_keys.pop().unwrap();
                         // maybeThunk: skip thunk for trivial exprs.
