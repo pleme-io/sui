@@ -87,7 +87,13 @@ pub fn attach_trace(err: EvalError) -> EvalError {
                 trace.push_str(&format!("\n  ... ({} more frames)", stack.len() - 15));
             }
         }
-        EvalError::TypeError(trace)
+        // CRITICAL: preserve Throw/AssertionFailed variants so tryEval can catch them.
+        // Converting to TypeError would make tryEval miss them.
+        match err {
+            EvalError::Throw(_) => EvalError::Throw(trace),
+            EvalError::AssertionFailed(_) => EvalError::AssertionFailed(trace),
+            _ => EvalError::TypeError(trace),
+        }
     })
 }
 
@@ -608,11 +614,26 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 "true" => Ok(Value::Bool(true)),
                 "false" => Ok(Value::Bool(false)),
                 "null" => Ok(Value::Null),
-                _ => env
-                    .lookup(&name)
-                    .ok_or_else(|| {
-                        // Debug trace: when SUI_DEBUG_VAR is set, log
-                        // the env state on lookup failure for that var.
+                _ => {
+                    if let Some(v) = env.lookup(&name) {
+                        Ok(v)
+                    } else if env.with_scope_count() > 0 {
+                        // With-scope lookup failed (likely blackhole from fixpoint).
+                        // Return a WithIdent thunk for deferred resolution.
+                        // This is the eval_expr equivalent of maybe_thunk's deferral.
+                        if let Some((scope_cache, scope_value)) = env.innermost_with_scope() {
+                            Ok(Value::Thunk(Thunk::new_with_ident(
+                                SmolStr::from(name.as_str()),
+                                scope_cache,
+                                scope_value,
+                                env.clone(),
+                            )))
+                        } else {
+                            Err(EvalError::UndefinedVar(
+                                format!("'{name}'{}", eval_file_ctx()),
+                            ))
+                        }
+                    } else {
                         if let Ok(dbg_var) = std::env::var("SUI_DEBUG_VAR") {
                             if dbg_var == name || dbg_var == "*" {
                                 eprintln!(
@@ -626,10 +647,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                 );
                             }
                         }
-                        EvalError::UndefinedVar(
+                        Err(EvalError::UndefinedVar(
                             format!("'{name}'{}", eval_file_ctx()),
-                        )
-                    }),
+                        ))
+                    }
+                },
             };
         }
         ast::Expr::Literal(lit) => {

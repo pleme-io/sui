@@ -759,8 +759,22 @@ impl Thunk {
                         }
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
+                        // Transitively unwrap thunk-in-thunk chains.
+                        // IMPORTANT: only unwrap thunks that CAN be forced NOW.
+                        // WithIdent thunks may not be resolvable yet (fixpoint in
+                        // blackhole) — leave them as Value::Thunk for later forcing.
                         let mut depth = 0u32;
                         while let Value::Thunk(ref inner) = value {
+                            // Check if the inner thunk is already cached (safe to unwrap)
+                            if let Some(cached) = inner.peek() {
+                                value = cached.clone();
+                                continue;
+                            }
+                            // Try to force — if it fails, keep the thunk as-is
+                            match inner.force(evaluator) {
+                                Ok(v) => value = v,
+                                Err(_) => break, // Can't force now — keep as thunk
+                            }
                             depth += 1;
                             if depth > 2000 {
                                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
@@ -771,7 +785,6 @@ impl Thunk {
                                     "thunk chain depth exceeded".to_string(),
                                 ));
                             }
-                            value = inner.force(evaluator)?;
                         }
                         // Update with the fully-unwrapped value.
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
@@ -908,6 +921,11 @@ impl Thunk {
             ThunkRepr::WithIdent { name, scope_cache, scope_value, env } => {
                 crate::perf::inc(crate::perf::Counter::ThunkForce);
                 crate::trace::inc_thunks_forced_unique();
+                // Debug: log when WithIdent is forced
+                if crate::perf::enabled() {
+                    eprintln!("[WITHIDENT-FORCE] name={name} file={}",
+                        env.eval_file().map(|p| p.display().to_string()).unwrap_or_default());
+                }
                 // Fast path: check the shared with-scope cache.
                 // All WithIdent thunks from the same `with` scope share
                 // this cache. Once ANY lookup populates it, all others
