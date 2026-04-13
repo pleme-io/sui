@@ -692,6 +692,20 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 return eval_expr(&inner, env);
             }
         }
+        // Lambda: no recursion — just captures env into a closure.
+        ast::Expr::Lambda(lam) => {
+            crate::perf::inc(crate::perf::Counter::EvalExpr);
+            if crate::perf::enabled() {
+                crate::perf::inc(crate::perf::Counter::ExprLambda);
+            }
+            if let (Some(param), Some(body)) = (lam.param(), lam.body()) {
+                return Ok(Value::Lambda(Rc::new(Closure {
+                    param,
+                    body,
+                    env: env.clone(),
+                })));
+            }
+        }
         _ => {}
     }
     // Complex expressions: need stacker for recursion safety
@@ -1282,8 +1296,6 @@ fn eval_attr_maybe_null(attr: &ast::Attr, env: &Env) -> Result<Option<String>, E
 
 /// Get the text of an rnix Ident node.
 fn ident_text(ident: &ast::Ident) -> String {
-    // Ident's ident_token() returns TOKEN_IDENT, but `or` keyword gets
-    // a TOKEN_OR token instead. Use syntax().text() which always works.
     ident.syntax().text().to_string()
 }
 
