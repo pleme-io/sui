@@ -407,6 +407,114 @@ impl Concrete {
             Concrete::Lambda(_) | Concrete::Builtin(_) => "lambda",
         }
     }
+
+    /// Alias for `as_str()` — API parity with Value::as_string().
+    pub fn as_string(&self) -> Result<&str, EvalError> {
+        self.as_str()
+    }
+
+    /// Extract owned NixAttrs — guaranteed no thunk at this level.
+    pub fn to_attrs(&self) -> Result<NixAttrs, EvalError> {
+        match self {
+            Concrete::Attrs(a) => Ok((**a).clone()),
+            other => Err(EvalError::TypeMismatch { expected: "set", got: other.type_name() }),
+        }
+    }
+
+    /// Extract owned list — guaranteed no thunk at this level.
+    pub fn to_list(&self) -> Result<Vec<Value>, EvalError> {
+        match self {
+            Concrete::List(l) => Ok((**l).clone()),
+            other => Err(EvalError::TypeMismatch { expected: "list", got: other.type_name() }),
+        }
+    }
+
+    /// Extract a filesystem path from Path or String.
+    pub fn coerce_to_path(&self, context: &str) -> Result<String, EvalError> {
+        match self {
+            Concrete::Path(p) => Ok(p.to_string()),
+            Concrete::String(ns) => Ok(ns.chars.to_string()),
+            Concrete::Attrs(attrs) => {
+                if let Some(out_path) = attrs.get("outPath") {
+                    let forced = crate::eval::force_value(out_path)?;
+                    forced.coerce_to_path(context)
+                } else {
+                    Err(EvalError::type_error(format!(
+                        "{context}: expected path or string, got set without outPath"
+                    )))
+                }
+            }
+            other => Err(EvalError::type_error(format!(
+                "{context}: expected path or string, got {}", other.type_name()
+            ))),
+        }
+    }
+
+    /// Extract owned string.
+    pub fn to_str(&self) -> Result<String, EvalError> {
+        match self {
+            Concrete::String(s) => Ok(s.chars.to_string()),
+            other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
+        }
+    }
+
+    /// Extract owned NixString (with context).
+    pub fn to_nix_string(&self) -> Result<NixString, EvalError> {
+        match self {
+            Concrete::String(s) => Ok((**s).clone()),
+            other => Err(EvalError::TypeMismatch { expected: "string", got: other.type_name() }),
+        }
+    }
+
+    /// Check if value is a function (lambda or builtin).
+    pub fn is_function(&self) -> bool {
+        matches!(self, Concrete::Lambda(_) | Concrete::Builtin(_))
+    }
+}
+
+// Type-safe conversion: Concrete → Value (infallible)
+impl From<Concrete> for Value {
+    fn from(c: Concrete) -> Value {
+        c.into_value()
+    }
+}
+
+impl PartialEq for Concrete {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Concrete::Null, Concrete::Null) => true,
+            (Concrete::Bool(a), Concrete::Bool(b)) => a == b,
+            (Concrete::Int(a), Concrete::Int(b)) => a == b,
+            (Concrete::Float(a), Concrete::Float(b)) => a == b,
+            (Concrete::Int(a), Concrete::Float(b)) | (Concrete::Float(b), Concrete::Int(a)) => (*a as f64) == *b,
+            (Concrete::String(a), Concrete::String(b)) => Rc::ptr_eq(a, b) || a.chars == b.chars,
+            (Concrete::Path(a), Concrete::Path(b)) => a == b,
+            (Concrete::List(a), Concrete::List(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Concrete::Attrs(a), Concrete::Attrs(b)) => Rc::ptr_eq(a, b) || a.inner() == b.inner(),
+            (Concrete::Lambda(a), Concrete::Lambda(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Value {
+    /// Convert a known-concrete Value to Concrete. Panics if Thunk.
+    /// Only use when the caller guarantees the value is not a thunk.
+    pub(crate) fn demand_unchecked(self) -> Concrete {
+        match self {
+            Value::Null => Concrete::Null,
+            Value::Bool(b) => Concrete::Bool(b),
+            Value::Int(n) => Concrete::Int(n),
+            Value::Float(f) => Concrete::Float(f),
+            Value::String(s) => Concrete::String(s),
+            Value::Path(p) => Concrete::Path(p),
+            Value::List(l) => Concrete::List(l),
+            Value::Attrs(a) => Concrete::Attrs(a),
+            Value::Lambda(c) => Concrete::Lambda(c),
+            Value::Builtin(b) => Concrete::Builtin(b),
+            Value::Thunk(_) => panic!("demand_unchecked called on Thunk"),
+        }
+    }
 }
 
 impl Value {
@@ -534,7 +642,7 @@ struct ThunkInner {
     /// Fast-path cache for already-evaluated thunks.
     /// Set once when `Evaluated` is stored, never cleared.
     /// Reads bypass the `UnsafeCell` entirely.
-    cache: OnceCell<Box<Value>>,
+    cache: OnceCell<Box<Concrete>>,
     /// Full state machine for the thunk lifecycle.
     repr: UnsafeCell<ThunkRepr>,
 }
@@ -609,7 +717,9 @@ impl Thunk {
     pub fn new_evaluated(value: Value) -> Self {
         crate::trace::inc_thunks_created();
         let cache = OnceCell::new();
-        let _ = cache.set(Box::new(value.clone()));
+        if !matches!(value, Value::Thunk(_)) {
+            let _ = cache.set(Box::new(value.clone().demand_unchecked()));
+        }
         Self(Rc::new(ThunkInner {
             cache,
             repr: UnsafeCell::new(ThunkRepr::Evaluated(Box::new(value))),
@@ -638,7 +748,7 @@ impl Thunk {
     /// This is used by with-scope lookup to check if the fixpoint thunk
     /// has already been resolved (by another evaluation path) without
     /// entering the force state machine.
-    pub fn peek(&self) -> Option<&Value> {
+    pub fn peek(&self) -> Option<&Concrete> {
         self.0.cache.get().map(|v| &**v)
     }
 
@@ -678,7 +788,7 @@ impl Thunk {
         // check overhead on ~150M cache hits during nixpkgs evaluation.
         if let Some(cached) = self.0.cache.get() {
             crate::perf::inc(crate::perf::Counter::ThunkHit);
-            return Ok((**cached).clone());
+            return Ok((**cached).clone().into_value());
         }
         // Cold path: evaluation may recurse deeply, so use stacker.
         stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
@@ -702,7 +812,7 @@ impl Thunk {
         // Ultra-fast path: check OnceCell cache (no borrow).
         if let Some(cached) = self.0.cache.get() {
             crate::perf::inc(crate::perf::Counter::ThunkHit);
-            return Ok((**cached).clone());
+            return Ok((**cached).clone().into_value());
         }
 
         let thunk_id = Rc::as_ptr(&self.0) as usize;
@@ -755,7 +865,7 @@ impl Thunk {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
@@ -763,13 +873,13 @@ impl Thunk {
                         // force_value handles full transitive resolution.
                         while let Value::Thunk(ref inner) = value {
                             match inner.peek() {
-                                Some(cached) => value = cached.clone(),
+                                Some(cached) => value = cached.clone().into_value(),
                                 None => break,
                             }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
                         if tracing {
                             crate::trace::pop_force();
@@ -835,11 +945,11 @@ impl Thunk {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(ref inner) = value {
-                            match inner.peek() { Some(c) => value = c.clone(), None => break }
+                            match inner.peek() { Some(c) => value = c.clone().into_value(), None => break }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
                         if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
@@ -874,18 +984,18 @@ impl Thunk {
                     Ok(mut value) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         while let Value::Thunk(ref inner) = value {
-                            match inner.peek() { Some(c) => value = c.clone(), None => break }
+                            match inner.peek() { Some(c) => value = c.clone().into_value(), None => break }
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
                         if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
-                        let _ = self.0.cache.set(Box::new(Value::Null));
+                        let _ = self.0.cache.set(Box::new(Concrete::Null));
                         if tracing {
                             crate::trace::dump_trace_on_error();
                             crate::trace::pop_force();
@@ -908,7 +1018,7 @@ impl Thunk {
                         if let Some(v) = attrs.get(&name) {
                             let value = v.clone();
                             *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                             return Ok(value);
                         }
                         // Name not in cached attrset — fall through to env lookup
@@ -921,7 +1031,7 @@ impl Thunk {
                         if let Some(v) = attrs.get(&name) {
                             let value = v.clone();
                             *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                            let _ = self.0.cache.set(Box::new(value.clone()));
+                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                             return Ok(value);
                         }
                     }
@@ -931,7 +1041,7 @@ impl Thunk {
                     EvalError::UndefinedVar(format!("'{name}'"))
                 })?;
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(result.clone()));
-                let _ = self.0.cache.set(Box::new(result.clone()));
+                if !matches!(result, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(result.clone().demand_unchecked())); }
                 Ok(result)
             }
             ThunkRepr::Blackhole => {
@@ -946,7 +1056,7 @@ impl Thunk {
                 crate::perf::inc(crate::perf::Counter::ThunkHit);
                 let cloned = (*v).clone();
                 if !matches!(cloned, Value::Thunk(_)) {
-                    let _ = self.0.cache.set(Box::new(cloned.clone()));
+                    if !matches!(cloned, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(cloned.clone().demand_unchecked())); }
                 }
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(v);
                 Ok(cloned)
@@ -1329,7 +1439,7 @@ impl Env {
         let pre_cached = match &value {
             Value::Attrs(attrs) => Some((**attrs).clone()),
             Value::Thunk(thunk) => thunk.peek().and_then(|v| {
-                if let Value::Attrs(attrs) = v { Some((**attrs).clone()) } else { None }
+                if let Concrete::Attrs(attrs) = v { Some((**attrs).clone()) } else { None }
             }),
             _ => None,
         };
@@ -1402,7 +1512,7 @@ impl Env {
             drop(cache);
             if let Value::Thunk(ref thunk) = scope.value {
                 if let Some(cached_val) = thunk.peek() {
-                    if let Value::Attrs(ref attrs) = *cached_val {
+                    if let Concrete::Attrs(ref attrs) = *cached_val {
                         // Populate the with-scope cache for future lookups
                         *scope.cached.borrow_mut() = Some((**attrs).clone());
                         if let Some(v) = attrs.get(name) {
@@ -1475,7 +1585,7 @@ impl Env {
                     // Check if the thunk is already evaluated (OnceCell cache)
                     // without entering the force state machine
                     if let Some(cached_val) = thunk.peek() {
-                        if let Value::Attrs(ref attrs) = *cached_val {
+                        if let Concrete::Attrs(ref attrs) = *cached_val {
                             *scope.cached.borrow_mut() = Some((**attrs).clone());
                             Some((**attrs).clone())
                         } else {
@@ -2068,37 +2178,15 @@ impl From<Vec<Value>> for Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        // Quick path: pointer-equal values are always equal.
-        match (self, other) {
-            (Value::Thunk(a), Value::Thunk(b)) if Rc::ptr_eq(&a.0, &b.0) => return true,
-            (Value::Attrs(a), Value::Attrs(b)) if Rc::ptr_eq(a, b) => return true,
-            (Value::List(a), Value::List(b)) if Rc::ptr_eq(a, b) => return true,
-            (Value::String(a), Value::String(b)) if Rc::ptr_eq(a, b) => return true,
-            (Value::Lambda(a), Value::Lambda(b)) => return Rc::ptr_eq(a, b),
-            _ => {}
+        // Quick path: pointer-equal thunks are always equal.
+        if let (Value::Thunk(a), Value::Thunk(b)) = (self, other) {
+            if Rc::ptr_eq(&a.0, &b.0) { return true; }
         }
-        // Force transitively — the Evaluated handler guards against
-        // caching thunks, preventing spin loops.
-        let l = crate::eval::force_value(self).unwrap_or(Value::Null);
-        let r = crate::eval::force_value(other).unwrap_or(Value::Null);
-
-        match (&l, &r) {
-            (Value::Null, Value::Null) => true,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
-            (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => (*a as f64) == *b,
-            (Value::String(a), Value::String(b)) => a.chars == b.chars,
-            (Value::Path(a), Value::Path(b)) => a == b,
-            (Value::List(a), Value::List(b)) => a == b,
-            (Value::Attrs(a), Value::Attrs(b)) => Rc::ptr_eq(a, b) || a.inner() == b.inner(),
-            // Lambda: identity comparison via Rc pointer — same closure = same function.
-            // Matches CppNix behavior: same Value pointer → true, different → false.
-            // Without this, attrsets containing the same function (via inherit)
-            // compare as unequal, breaking nixpkgs overlay/stdenv evaluation.
-            (Value::Lambda(a), Value::Lambda(b)) => Rc::ptr_eq(a, b),
-            _ => false,
-        }
+        // Force to Concrete, delegate to Concrete::PartialEq.
+        // Single source of truth — no duplicated comparison logic.
+        let l = self.demand().unwrap_or(Concrete::Null);
+        let r = other.demand().unwrap_or(Concrete::Null);
+        l == r
     }
 }
 

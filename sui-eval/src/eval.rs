@@ -476,7 +476,7 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
     // Ultra-fast path: if the thunk is already cached, skip stacker overhead.
     if let Some(cached) = thunk.peek() {
         crate::perf::inc(crate::perf::Counter::ThunkHit);
-        return Ok(cached.clone());
+        return Ok(cached.clone().into_value());
     }
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
         // Force ONE level only — matches CppNix's forceValue which does
