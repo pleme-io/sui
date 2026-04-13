@@ -549,24 +549,15 @@ fn maybe_thunk(
                 Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
             }
         }
-        // Select on a variable (e.g., lib.version, builtins.isAttrs):
-        // evaluate directly when the base is a simple ident that's available.
-        // CppNix's maybeThunk does this — these are always forced immediately
-        // so thunking wastes allocation + env clone + force overhead.
-        ast::Expr::Select(sel) if !is_rec => {
-            if let Some(base) = sel.expr() {
-                if let ast::Expr::Ident(ref ident) = base {
-                    let name = ident_text(ident);
-                    if env.lookup(&name).is_some() {
-                        // Base is an available variable — evaluate select directly.
-                        return eval_select(sel, env).unwrap_or_else(|_| {
-                            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
-                        });
-                    }
-                }
-            }
-            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
-        }
+        // Select on a variable: CppNix's maybeThunk evaluates these eagerly
+        // when the base is a simple ident. However, this breaks fixpoints
+        // where the base (e.g., `config`) is a thunk being computed — eagerly
+        // evaluating `config.x` during attrset construction triggers blackhole.
+        //
+        // The nixpkgs module system relies on `{ ...; default = config.x; }`
+        // being lazy. Wrap selects in thunks unconditionally.
+        // The performance cost is minimal (thunk allocation + deferred eval)
+        // and correctness is critical for fixpoint patterns.
         // Everything else: wrap in a thunk for lazy evaluation.
         _ => Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone())),
     }
