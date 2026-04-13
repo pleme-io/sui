@@ -1707,6 +1707,10 @@ pub fn apply_and_force(func: Value, arg: Value) -> Result<Value, EvalError> {
 }
 
 pub fn apply(func: Value, arg: Value) -> Result<Value, EvalError> {
+    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || apply_inner(func, arg))
+}
+
+fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Apply);
     let func = force_concrete(&func)?.into_value();
     match func {

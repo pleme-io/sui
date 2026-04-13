@@ -5,21 +5,23 @@ use super::*;
 
 /// Recursively force a value and all nested values (attrset values, list elements).
 fn deep_force(val: &Value) -> Result<(), EvalError> {
-    let forced = crate::eval::force_value(val)?;
-    match &forced {
-        Value::Attrs(attrs) => {
-            for (_k, v) in attrs.iter() {
-                deep_force(v)?;
+    stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
+        let forced = crate::eval::force_value(val)?;
+        match &forced {
+            Value::Attrs(attrs) => {
+                for (_k, v) in attrs.iter() {
+                    deep_force(v)?;
+                }
             }
-        }
-        Value::List(list) => {
-            for v in list.iter() {
-                deep_force(v)?;
+            Value::List(list) => {
+                for v in list.iter() {
+                    deep_force(v)?;
+                }
             }
+            _ => {}
         }
-        _ => {}
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub(crate) fn register(builtins: &mut NixAttrs) {

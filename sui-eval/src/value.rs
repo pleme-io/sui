@@ -1241,12 +1241,20 @@ impl Env {
                 }
             }
             // Slow path: force, cache, then check
-            if let Ok(forced) = crate::eval::force_value_tracked(&scope.value, "with_scope") {
-                if let Value::Attrs(ref attrs) = forced {
-                    let result = attrs.get(name).cloned();
-                    *scope.cached.borrow_mut() = Some((**attrs).clone());
-                    if result.is_some() {
-                        return result;
+            match crate::eval::force_value_tracked(&scope.value, "with_scope") {
+                Ok(forced) => {
+                    if let Value::Attrs(ref attrs) = forced {
+                        let result = attrs.get(name).cloned();
+                        *scope.cached.borrow_mut() = Some((**attrs).clone());
+                        if result.is_some() {
+                            return result;
+                        }
+                    }
+                }
+                Err(ref e) => {
+                    // Log with-scope force failures for debugging
+                    if std::env::var("SUI_DEBUG_VAR").is_ok() {
+                        eprintln!("[sui-debug] with_scope force failed for '{name}': {e:?}");
                     }
                 }
             }
