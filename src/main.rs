@@ -402,7 +402,7 @@ async fn main() -> Result<(), CliError> {
                 let json_flag = json;
                 let handle = std::thread::Builder::new()
                     .name("sui-eval".into())
-                    .stack_size(64 * 1024 * 1024) // 64MB
+                    .stack_size(256 * 1024 * 1024) // 256MB
                     .spawn(move || -> Result<(), CliError> {
                         let value = sui_eval::eval(&expr_clone)?;
                         if json_flag {
