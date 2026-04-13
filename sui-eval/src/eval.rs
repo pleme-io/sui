@@ -403,10 +403,18 @@ pub fn force_concrete(value: &Value) -> Result<Concrete, EvalError> {
 /// Prefer `force_concrete()` or `Value::demand()` for new code.
 pub fn force_value(value: &Value) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::ForceValue);
-    if let Value::Thunk(thunk) = value {
-        force_thunk(thunk)
-    } else {
-        Ok(value.clone())
+    let mut v = value.clone();
+    // Transitively chase thunk chains: evaluating a thunk can yield
+    // another thunk (e.g. `if ... then ... else def` where def is a
+    // thunk). CppNix handles this implicitly because thunk slots are
+    // mutated in-place; we must loop explicitly.
+    loop {
+        match v {
+            Value::Thunk(ref thunk) => {
+                v = force_thunk(thunk)?;
+            }
+            _ => return Ok(v),
+        }
     }
 }
 
