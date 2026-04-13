@@ -490,8 +490,13 @@ fn maybe_thunk(
         ast::Expr::Literal(lit) => eval_literal(lit).unwrap_or_else(|_| {
             Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
         }),
-        // Identifiers: look up directly (unless in rec scope where
-        // forward references to sibling bindings are possible).
+        // Identifiers: look up directly from LEXICAL scope only.
+        // If the env has with-scopes, the ident might resolve through
+        // a with-scope whose value is a fixpoint thunk. Eagerly resolving
+        // through with-scopes forces the fixpoint during attrset construction,
+        // causing blackhole in patterns like `with pkgs; { x = callPackage ...; }`.
+        // CppNix's maybeThunk defers with-scope lookups — we do the same
+        // by only resolving LEXICAL bindings here and thunking everything else.
         ast::Expr::Ident(ident) if !is_rec => {
             let name = ident_text(ident);
             match name.as_str() {

@@ -1203,6 +1203,15 @@ impl Env {
         self.0.with_scopes.len()
     }
 
+    /// Lookup in LEXICAL scope only (no with-scopes).
+    /// Used by maybe_thunk to avoid forcing with-scope fixpoints during
+    /// attrset construction.
+    #[must_use]
+    pub fn lookup_lexical(&self, name: &str) -> Option<Value> {
+        let sym = intern(name);
+        self.0.bindings.get(&sym).cloned()
+    }
+
     /// Lookup matching Nix semantics:
     ///
     /// 1. Probe the flattened binding map (single O(log32 n) lookup).
