@@ -1668,7 +1668,6 @@ fn eval_binop(
         ast::BinOpKind::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
         ast::BinOpKind::MoreOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
         ast::BinOpKind::Update => {
-            // // operator: force both sides to concrete attrs.
             let la = l.to_attrs()?;
             let ra = r.to_attrs()?;
             // Optimization: if right side is empty, return left as-is.

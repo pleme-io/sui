@@ -48,8 +48,12 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
     });
     register_builtin(builtins, "trace", |args| {
-        let msg = args[0].clone();
-        tracing::debug!("trace: {msg}");
+        let msg = crate::eval::force_value(&args[0])?;
+        let msg_str = match &msg {
+            Value::String(s) => s.chars.to_string(),
+            other => format!("{other}"),
+        };
+        eprintln!("trace: {msg_str}");
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "trace<partial>",
             func: Rc::new(|args2| Ok(args2[0].clone())),
