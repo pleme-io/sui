@@ -1976,8 +1976,16 @@ impl From<Vec<Value>> for Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        // Force thunks before comparing.
-        let force = |v: &Value| -> Value {
+        // Quick path: pointer-equal thunks are always equal.
+        if let (Value::Thunk(a), Value::Thunk(b)) = (self, other) {
+            if Rc::ptr_eq(&a.0, &b.0) {
+                return true;
+            }
+        }
+        // Force ONE level only — deeper thunks are compared lazily.
+        // Using force_value's transitive loop here causes cascading
+        // evaluation on large nixpkgs attrsets.
+        let force_one = |v: &Value| -> Value {
             match v {
                 Value::Thunk(t) => t
                     .force(&|e, env| crate::eval::eval_expr(e, env))
@@ -1985,8 +1993,8 @@ impl PartialEq for Value {
                 other => other.clone(),
             }
         };
-        let l = force(self);
-        let r = force(other);
+        let l = force_one(self);
+        let r = force_one(other);
 
         match (&l, &r) {
             (Value::Null, Value::Null) => true,
