@@ -2212,7 +2212,7 @@ impl<'a> VM<'a> {
                         // which will produce the appropriate error.
                         Ok(None)
                     }
-                    Err(e) => Err(VMError::Throw(e)),
+                    Err(e) => Err(VMError::Internal(format!("bridge error in '{name}': {e}"))),
                 }
             }
             // match and split are curried: first call takes pattern,
@@ -2261,7 +2261,7 @@ impl<'a> VM<'a> {
                                 Ok(None) => Err(VMError::Throw(format!(
                                     "{builtin_name}: requires bridge but no bridge is set"
                                 ))),
-                                Err(e) => Err(VMError::Throw(e)),
+                                Err(e) => Err(VMError::Internal(format!("bridge error in '{builtin_name}': {e}"))),
                             }
                         }),
                         arity: 1,
