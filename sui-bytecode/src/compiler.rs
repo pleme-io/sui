@@ -860,6 +860,7 @@ impl Compiler {
         tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
         let with_count = self.emit_with_scope_preamble(&mut tc);
+        tc.compile_expr(expr)?;
         for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -872,6 +873,28 @@ impl Compiler {
         self.emit_u16(idx);
         self.emit_u16(0); // 0 upvalues, patched later
         Ok(uv_descs)
+    }
+
+    /// Compile a function argument with call-by-need semantics.
+    fn compile_arg_maybe_thunk(&mut self, arg: &ast::Expr) -> Result<(), CompileError> {
+        if Self::is_trivial_arg(arg) {
+            self.compile_expr(arg)
+        } else {
+            self.compile_thunk_immediate(arg)
+        }
+    }
+
+    fn is_trivial_arg(expr: &ast::Expr) -> bool {
+        match expr {
+            ast::Expr::Literal(_) | ast::Expr::Ident(_)
+            | ast::Expr::PathAbs(_) | ast::Expr::PathRel(_)
+            | ast::Expr::PathHome(_) | ast::Expr::Lambda(_) => true,
+            // Paren: check inner expression
+            ast::Expr::Paren(p) => p.expr().map_or(false, |inner| Self::is_trivial_arg(&inner)),
+            // Str without interpolation is trivial
+            ast::Expr::Str(s) => s.normalized_parts().iter().all(|p| matches!(p, InterpolPart::Literal(_))),
+            _ => false,
+        }
     }
 
     /// Compile a deferred thunk for `inherit (source) name;` in let bindings.
@@ -2130,7 +2153,7 @@ impl Compiler {
         // tail calls use the standard TailCall opcode which handles frame reuse).
         if !tail {
             if let Some(slot) = self.try_resolve_as_local(&func) {
-                self.compile_expr(&arg)?;
+                self.compile_arg_maybe_thunk(&arg)?;
                 self.emit(OpCode::GetLocalCall);
                 self.emit_u16(slot);
                 return Ok(());
@@ -2139,7 +2162,7 @@ impl Compiler {
 
         // Normal: push function, then argument, then Call/TailCall.
         self.compile_expr(&func)?;
-        self.compile_expr(&arg)?;
+        self.compile_arg_maybe_thunk(&arg)?;
         self.emit(call_op);
         Ok(())
     }
