@@ -844,7 +844,6 @@ impl Compiler {
         tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
         let with_count = self.emit_with_scope_preamble(&mut tc);
-        tc.compile_expr(expr)?;
         for _ in 0..with_count { tc.emit(OpCode::PopWith); }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
@@ -2115,7 +2114,7 @@ impl Compiler {
         // tail calls use the standard TailCall opcode which handles frame reuse).
         if !tail {
             if let Some(slot) = self.try_resolve_as_local(&func) {
-                self.compile_arg_maybe_thunk(&arg)?;
+                self.compile_expr(&arg)?;
                 self.emit(OpCode::GetLocalCall);
                 self.emit_u16(slot);
                 return Ok(());
@@ -2124,7 +2123,7 @@ impl Compiler {
 
         // Normal: push function, then argument, then Call/TailCall.
         self.compile_expr(&func)?;
-        self.compile_arg_maybe_thunk(&arg)?;
+        self.compile_expr(&arg)?;
         self.emit(call_op);
         Ok(())
     }
@@ -2133,50 +2132,6 @@ impl Compiler {
     /// Trivial expressions (literals, idents, paths, lambdas) are inlined.
     /// Non-trivial expressions are wrapped in thunks for lazy evaluation.
     /// This matches CppNix's maybeThunk for function arguments.
-    fn compile_arg_maybe_thunk(&mut self, arg: &ast::Expr) -> Result<(), CompileError> {
-        if Self::is_trivial_arg(arg) {
-            self.compile_expr(arg)
-        } else {
-            // Wrap in a thunk — deferred until the function body forces it.
-            // Unlike let-bindings, function arg thunks get upvalues patched
-            // immediately (all captures are already on the stack).
-            let uv_descs = self.compile_thunk_deferred(arg)?;
-            if !uv_descs.is_empty() {
-                // The thunk is currently on TOS. We need to store it in a
-                // temporary local, patch its upvalues, then leave it on TOS.
-                // Simpler: emit inline upvalue data with MakeThunk.
-                // But compile_thunk_deferred already emitted MakeThunk with 0 upvalues.
-                // Patch the emitted upvalue count and append the upvalue data.
-                let thunk_pos = self.chunk.code.len();
-                // The MakeThunk was: opcode(1) + chunk_idx(2) + uv_count(2) = 5 bytes
-                // uv_count is at thunk_pos - 2
-                let uv_count_pos = thunk_pos - 2;
-                self.chunk.code[uv_count_pos] = (uv_descs.len() & 0xFF) as u8;
-                self.chunk.code[uv_count_pos + 1] = ((uv_descs.len() >> 8) & 0xFF) as u8;
-                for uv in &uv_descs {
-                    self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
-                    let lo = (uv.index & 0xFF) as u8;
-                    let hi = ((uv.index >> 8) & 0xFF) as u8;
-                    self.chunk.write_byte(lo, self.current_line);
-                    self.chunk.write_byte(hi, self.current_line);
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// Check if an expression is trivial enough to evaluate eagerly as a function arg.
-    fn is_trivial_arg(expr: &ast::Expr) -> bool {
-        matches!(expr,
-            ast::Expr::Literal(_)
-            | ast::Expr::Ident(_)
-            | ast::Expr::PathAbs(_)
-            | ast::Expr::PathRel(_)
-            | ast::Expr::PathHome(_)
-            | ast::Expr::Lambda(_)
-            | ast::Expr::Paren(_)
-        )
-    }
 
     // ── Binary operations ──────────────────────────────────────
 
