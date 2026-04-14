@@ -485,12 +485,28 @@ impl Compiler {
                 if let Some(resolved) = resolve_search_path(inner) {
                     self.emit_constant(VMValue::Path(resolved))
                 } else {
-                    // Defer to runtime: emit Throw so tryEval can catch it.
-                    // Matches CppNix: search path failure is a throw, not a parse error.
-                    self.emit_constant(VMValue::String(format!(
-                        "search path '{text}' not in NIX_PATH"
-                    )))?;
-                    self.emit(OpCode::Throw);
+                    // Wrap the throw in a THUNK so it only fires when forced.
+                    // This matches CppNix: unresolvable search paths are deferred
+                    // and caught by tryEval at force-time, not at eval-time.
+                    let msg = format!("search path '{text}' not in NIX_PATH");
+                    let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
+                    tc.scope_depth = 1;
+                    tc.base_dir = self.base_dir.clone();
+                    tc.emit_constant(VMValue::String(msg))?;
+                    tc.emit(OpCode::Throw);
+                    tc.emit(OpCode::Return);
+                    let closure = VMValue::Closure(VMClosure {
+                        chunk: Rc::new(tc.chunk),
+                        upvalues: Vec::new(),
+                        arity: 0,
+                        name: None,
+                        formals: Vec::new(),
+                    });
+                    let idx = self.chunk.add_constant(closure)?;
+                    self.emit(OpCode::MakeThunk);
+                    self.stack_depth += 1;
+                    self.emit_u16(idx);
+                    self.emit_u16(0); // 0 upvalues
                     Ok(())
                 }
             }

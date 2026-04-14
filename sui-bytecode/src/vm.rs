@@ -3232,16 +3232,21 @@ impl<'a> VM<'a> {
         });
         let result = match self.run_until(return_depth) {
             Ok(r) => r,
+            Err(e @ VMError::Throw(_)) | Err(e @ VMError::AssertionFailed) => {
+                // Nix-level errors (throw/assert) must propagate so tryEval
+                // can catch them. Do NOT fall back to tree-walker.
+                self.stack.truncate(stack_base);
+                if self.frames.len() > return_depth {
+                    self.frames.truncate(return_depth);
+                }
+                return Err(e);
+            }
             Err(e) => {
-                // Runtime error — fall back to tree-walker for this file.
-                // This handles compiler bugs (e.g., GetLocal slot mismatch)
-                // that the compilation phase didn't catch.
+                // VM-internal error — fall back to tree-walker for this file.
                 eprintln!("[sui-vm] runtime fallback for {canonical}: {e}");
                 use std::sync::atomic::Ordering;
                 crate::vm::VM_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-                // Clean up the failed frame's stack.
                 self.stack.truncate(stack_base);
-                // Remove the frame if it's still present.
                 if self.frames.len() > return_depth {
                     self.frames.truncate(return_depth);
                 }
