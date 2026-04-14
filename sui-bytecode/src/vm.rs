@@ -2196,7 +2196,10 @@ impl<'a> VM<'a> {
             | "convertHash" | "path" | "filterSource" | "parseFlakeRef"
             | "flakeRefToString" | "toFile" | "currentTime" | "hashFile"
             | "findFile" => {
-                let forced = self.force_value(arg.clone())?;
+                // Deep-force: bridge builtins need fully concrete values
+                // because to_string_keyed converts unforced thunks to Lambda.
+                let shallow = self.force_value(arg.clone())?;
+                let forced = self.deep_force(shallow)?;
                 let vmval = forced.to_vmvalue();
                 let sk = vmval.to_string_keyed(self.interner);
                 match crate::bridge::call_builtin_bridge(name, vec![sk]) {
