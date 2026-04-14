@@ -2855,13 +2855,11 @@ impl<'a> VM<'a> {
                 stack_base,
                 upvalues,
             });
-            let result = self.run_until(return_depth);
-            // Restore the stack to its state before the call.
-            // The Return handler's early exit (at stop_depth) skips
-            // truncation, so the argument and any internal temporaries
-            // may still be on the stack.
+            let result = self.run_until(return_depth)?;
             self.stack.truncate(stack_base);
-            result
+            // Force the result — callers expect concrete values
+            // (e.g., filter checks is_truthy on predicate results).
+            self.force_value(result)
         } else if func.is_higher_order_builtin() {
             let hob = func.as_higher_order_builtin().unwrap().clone();
             self.call_higher_order_builtin(&hob, arg)
@@ -2926,6 +2924,7 @@ impl<'a> VM<'a> {
                 for item in list {
                     let item_nb = NanBox::from_vmvalue(item);
                     let r = self.call_callable(&func_nb, item_nb.clone())?;
+                    
                     if r.is_truthy()? { results.push(item_nb); }
                 }
                 Ok(NanBox::list(results))
