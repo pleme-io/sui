@@ -211,6 +211,31 @@
   :expected-json "[null,true,42,\"hi\"]"
   :tags ("regression" "json" "builtin"))
 
+;; ── #8: hashString missing md5 + sha1 (fixed at next commit) ────────
+
+(defnix hashString-md5
+  :source "builtins.hashString \"md5\" \"hello\""
+  :expected-json "\"5d41402abc4b2a76b9719d911017c592\""
+  :tags ("regression" "hash" "builtin")
+  :note
+    "Regression guard: sui previously rejected md5 as unsupported.
+     CppNix supports md5/sha1/sha256/sha512 at minimum; we now do
+     the same via the md-5 and sha1 crates.")
+
+(defnix hashString-sha1
+  :source "builtins.hashString \"sha1\" \"hello\""
+  :expected-json "\"aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d\""
+  :tags ("regression" "hash" "builtin"))
+
+(defnix hashString-sha512
+  :source
+    "builtins.substring 0 16 (builtins.hashString \"sha512\" \"hello\")"
+  :expected-json "\"9b71d224bd62f378\""
+  :tags ("regression" "hash" "builtin")
+  :note
+    "Truncated to first 16 chars so the test value stays readable;
+     still enough to catch any hash-algorithm misdispatch.")
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

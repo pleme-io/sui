@@ -158,7 +158,21 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "hashString", |algo, s| {
         let algo_str = algo.as_string()?;
         let input = s.as_string()?;
+        // CppNix supports md5, sha1, sha256, sha512 at minimum (plus
+        // blake3/blake2b/etc. on newer versions via `builtins.convertHash`
+        // — which routes elsewhere). Adding the missing three; found
+        // by probing `builtins.hashString "md5" "hello"` which CppNix
+        // returns `"5d41402abc4b2a76b9719d911017c592"` and sui was
+        // rejecting with 'unsupported algorithm'.
         let hex = match algo_str {
+            "md5" => {
+                use md5::{Md5, Digest};
+                format!("{:x}", Md5::digest(input.as_bytes()))
+            }
+            "sha1" => {
+                use sha1::{Sha1, Digest};
+                format!("{:x}", Sha1::digest(input.as_bytes()))
+            }
             "sha256" => {
                 use sha2::{Sha256, Digest};
                 format!("{:x}", Sha256::digest(input.as_bytes()))
