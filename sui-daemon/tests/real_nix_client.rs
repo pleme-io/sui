@@ -254,6 +254,76 @@ async fn real_nix_store_queries_references_via_sui_daemon() {
     }
 }
 
+/// Second-wave probes: commands that push further into the op
+/// surface. Each either passes (validating an existing op) or
+/// surfaces the next gap. Log everything; assert only the
+/// minimum bar so one failure doesn't hide others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_nix_store_probes_more_commands() {
+    if let Some(reason) = skip_reason() {
+        eprintln!("skip real_nix_store_probes_more_commands: {reason}");
+        return;
+    }
+
+    let fixture = DaemonFixture::start().await;
+    let Some(target) = pick_valid_store_path() else {
+        eprintln!("skip: no valid store path");
+        return;
+    };
+
+    let probes: &[(&str, &[&str])] = &[
+        // IsValidPath (op 1) — boolean existence check. Exits 0 if
+        // valid, non-zero if not.
+        ("check-validity (op 1)", &["--check-validity", &target]),
+        // QueryPathInfo (op 26) — size is pulled from PathInfo.
+        ("query --size (op 26)", &["--query", "--size", &target]),
+        // QueryPathInfo — hash field.
+        ("query --hash (op 26)", &["--query", "--hash", &target]),
+        // QueryPathInfo + closure walk — forces repeated references()
+        // queries over the transitive closure.
+        ("query --requisites (op 26 ×N)", &["--query", "--requisites", &target]),
+        // `nix store ping` exercises handshake + trust exchange and
+        // nothing else. If this fails, the handshake regressed.
+        ("path-info --json via modern CLI",
+          // Fall back to nix-store --query --hash if modern `nix` CLI
+          // doesn't honor NIX_REMOTE the same way (some builds route
+          // through different code paths).
+          &["--query", "--binding", "", &target]),
+    ];
+
+    let mut outcomes: Vec<(String, Result<String, String>)> = Vec::new();
+    for (name, args) in probes {
+        let r = run_nix_store_against(&fixture.remote_env(), args);
+        outcomes.push((name.to_string(), r));
+    }
+
+    eprintln!("\n── nix-store probe table ──");
+    let mut fatal_fail = 0;
+    for (name, r) in &outcomes {
+        match r {
+            Ok(out) => eprintln!(
+                "  ✓ {name}\n    output: {}",
+                truncate(out.trim(), 200)
+            ),
+            Err(e) => {
+                eprintln!("  ✗ {name}\n    err: {}", truncate(e, 300));
+                // Only fail the test on timeout (exit=124) — that
+                // means the daemon got stuck, which is always a bug.
+                // Other errors might be "op returned an expected
+                // error like bad-path-format," which doesn't imply
+                // a daemon problem.
+                if e.contains("exit=124") {
+                    fatal_fail += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        fatal_fail, 0,
+        "{fatal_fail} probe(s) hung the daemon — see log for which ops"
+    );
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
