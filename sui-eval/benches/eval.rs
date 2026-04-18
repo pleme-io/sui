@@ -167,5 +167,109 @@ fn bench_realistic(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_parse, bench_eval, bench_to_json, bench_realistic);
+/// Attrs-focused benches — isolate the hot paths behind the `attrs`
+/// tag in the oracle perf report (second-largest total µs, highest
+/// avg µs of the bulk categories). Future optimizations to
+/// `NixAttrs::get_sym`, overlay caching, or construction paths will
+/// show up here as a measurable delta.
+///
+/// Each bench constructs its attrset INSIDE the `b.iter` closure so
+/// we measure both construction and access — you can't optimize one
+/// in isolation without accidentally pessimizing the other.
+fn bench_attrs(c: &mut Criterion) {
+    // Five-key attrset, all five accessed. Representative of typical
+    // derivation-shaped records (`pname`, `version`, `src`,
+    // `buildInputs`, `meta`). Hash vs linear-scan crossover is
+    // somewhere in the 4–16 key range; this bench sits below it.
+    let small_access = r#"
+        let attrs = { a = 1; b = 2; c = 3; d = 4; e = 5; };
+        in attrs.a + attrs.b + attrs.c + attrs.d + attrs.e
+    "#;
+
+    // 50-key attrset with 3 point accesses. Representative of a
+    // module options record where only a few fields are read.
+    let large_sparse_access = {
+        let mut s = String::from("let attrs = { ");
+        for i in 0..50 {
+            s.push_str(&format!("k{i:02} = {i}; "));
+        }
+        s.push_str("}; in attrs.k00 + attrs.k25 + attrs.k49");
+        s
+    };
+
+    // Three-overlay chain, then iterate (warms the flat cache), then
+    // five point accesses. This is the pattern module-system eval
+    // follows: build the overlay stack, iterate attrNames for schema,
+    // then dot-access specific fields for value. After my earlier
+    // `get_sym` fast-path fix, the post-iter accesses should be O(1).
+    let overlay_warm_then_access = {
+        let mut base = String::from("let base = { ");
+        for i in 0..10 {
+            base.push_str(&format!("b{i:02} = {i}; "));
+        }
+        base.push_str("}; overlay = { ");
+        for i in 10..20 {
+            base.push_str(&format!("b{i:02} = {i}; "));
+        }
+        base.push_str("}; final = { ");
+        for i in 20..25 {
+            base.push_str(&format!("b{i:02} = {i}; "));
+        }
+        base.push_str("}; merged = base // overlay // final; in ");
+        base.push_str("(builtins.length (builtins.attrNames merged)) + ");
+        base.push_str("merged.b00 + merged.b10 + merged.b20 + merged.b05 + merged.b24");
+        base
+    };
+
+    // `hasAttr` probing — answers the "does this option have a user
+    // override?" question all over the module system.  Must walk the
+    // overlay unless the cache is warm.
+    let has_attr_probe = {
+        let mut s = String::from("let attrs = { ");
+        for i in 0..30 {
+            s.push_str(&format!("k{i:02} = {i}; "));
+        }
+        s.push_str("}; in builtins.hasAttr \"k00\" attrs && ");
+        s.push_str("builtins.hasAttr \"k15\" attrs && ");
+        s.push_str("builtins.hasAttr \"k29\" attrs && ");
+        s.push_str("!(builtins.hasAttr \"missing\" attrs)");
+        s
+    };
+
+    let mut group = c.benchmark_group("attrs");
+    group.bench_function("small_5_all", |b| {
+        b.iter(|| {
+            let r = sui_eval::eval(black_box(small_access));
+            black_box(r.expect("eval ok"));
+        });
+    });
+    group.bench_function("large_50_sparse_3", |b| {
+        b.iter(|| {
+            let r = sui_eval::eval(black_box(&large_sparse_access));
+            black_box(r.expect("eval ok"));
+        });
+    });
+    group.bench_function("overlay_warm_then_5", |b| {
+        b.iter(|| {
+            let r = sui_eval::eval(black_box(&overlay_warm_then_access));
+            black_box(r.expect("eval ok"));
+        });
+    });
+    group.bench_function("has_attr_30_probe_4", |b| {
+        b.iter(|| {
+            let r = sui_eval::eval(black_box(&has_attr_probe));
+            black_box(r.expect("eval ok"));
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_parse,
+    bench_eval,
+    bench_to_json,
+    bench_realistic,
+    bench_attrs
+);
 criterion_main!(benches);
