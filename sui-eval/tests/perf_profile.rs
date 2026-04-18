@@ -153,6 +153,60 @@ fn render_report(mut rows: Vec<Row>) -> String {
     .unwrap();
     writeln!(out).unwrap();
 
+    // ── Per-tag aggregation ────────────────────────────────
+    // Cross-cut the corpus by tag so we can answer "how much of our
+    // time does the overlay code path take?" or "which builtin
+    // category has the thinnest margin vs budget?" at a glance.
+    {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct TagAgg {
+            count: u64,
+            nanos: u128,
+            eval_exprs: u64,
+            force_value: u64,
+        }
+        let mut by_tag: BTreeMap<String, TagAgg> = BTreeMap::new();
+        for r in &rows {
+            for tag in &r.tags {
+                let a = by_tag.entry(tag.clone()).or_default();
+                a.count += 1;
+                a.nanos += r.nanos;
+                a.eval_exprs += r.eval_exprs;
+                a.force_value += r.force_value;
+            }
+        }
+        writeln!(out, "## Per-tag aggregation").unwrap();
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "Each program can carry multiple tags; programs are counted \
+             once per tag. Sorted by total µs descending — top rows are \
+             the code paths where a regression is most visible."
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+        let mut tag_rows: Vec<(String, TagAgg)> = by_tag.into_iter().collect();
+        tag_rows.sort_by(|a, b| b.1.nanos.cmp(&a.1.nanos));
+        writeln!(out, "| tag | programs | total µs | avg µs | eval | force |").unwrap();
+        writeln!(out, "|-----|---------:|---------:|-------:|-----:|------:|").unwrap();
+        for (tag, a) in tag_rows {
+            let avg = if a.count > 0 { a.nanos / u128::from(a.count) } else { 0 };
+            writeln!(
+                out,
+                "| `{}` | {} | {} | {} | {} | {} |",
+                tag,
+                a.count,
+                a.nanos / 1000,
+                avg / 1000,
+                a.eval_exprs,
+                a.force_value,
+            )
+            .unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
     writeln!(out, "## Top 10 by work score").unwrap();
     writeln!(out).unwrap();
     writeln!(
