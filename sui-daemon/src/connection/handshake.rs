@@ -7,7 +7,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use sui_compat::wire::{PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2};
 
-use super::wire::{read_u64, write_string, write_u64};
+use super::wire::{read_u64, write_stderr_last, write_string, write_u64};
 use super::{
     Connection, ConnectionError, PROTOCOL_MINOR_CPU_AFFINITY, PROTOCOL_MINOR_RESERVE_SPACE,
     PROTOCOL_MINOR_TRUST_EXCHANGE,
@@ -70,6 +70,21 @@ where
         if self.client_version >= PROTOCOL_MINOR_TRUST_EXCHANGE {
             write_u64(&mut self.writer, u64::from(self.trust)).await?;
         }
+
+        // 9. Terminate the handshake with STDERR_LAST.
+        //
+        // This is the step discovered via end-to-end testing against
+        // real `nix-store`: CppNix clients issue their first opcode
+        // ONLY after seeing `STDERR_LAST` following the trust-flag
+        // write. Without it, the client sits in a blocking read
+        // forever. Missing this was the reason
+        // `tests/real_nix_client.rs` hung for 60+ seconds on every
+        // invocation despite the handshake "completing" server-side.
+        //
+        // The symmetry with per-op replies — every handler already
+        // terminates its own response with `write_stderr_last` — is
+        // load-bearing: the handshake is effectively op-zero.
+        write_stderr_last(&mut self.writer).await?;
 
         self.writer.flush().await?;
 

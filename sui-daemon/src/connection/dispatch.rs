@@ -16,7 +16,11 @@ use super::wire::{
     read_string, read_u64, write_bool, write_stderr_error, write_stderr_last, write_string,
     write_string_list, write_u64,
 };
-use super::{Connection, ConnectionError, PROTOCOL_MINOR_OVERRIDES};
+use super::{
+    Connection, ConnectionError, PROTOCOL_MINOR_BUILD_CORES, PROTOCOL_MINOR_OBSOLETE_LOG_FIELDS,
+    PROTOCOL_MINOR_OVERRIDES, PROTOCOL_MINOR_USE_BUILD_HOOK, PROTOCOL_MINOR_USE_SUBSTITUTES,
+    PROTOCOL_MINOR_VERBOSE_BUILD,
+};
 
 impl<S, R, W> Connection<S, R, W>
 where
@@ -155,42 +159,58 @@ where
 
     /// `SetOptions` (op 19): Read and discard client options.
     ///
-    /// The real Nix daemon processes ~30 option fields. We read and discard
-    /// them to keep the protocol flowing, then respond with success.
+    /// The wire format evolved version-by-version, each step adding
+    /// a field. The layout below mirrors CppNix's
+    /// `RemoteStore::setOptions` exactly: every `GET_PROTOCOL_MINOR
+    /// (ver) >= N` write on the client becomes a conditional read
+    /// here. One wrong conditional desyncs the entire stream — the
+    /// previous implementation inverted the `useBuildHook` check,
+    /// which caused modern `nix-store` to hang forever on the first
+    /// op after handshake (discovered via `tests/real_nix_client.rs`
+    /// end-to-end integration).
     async fn handle_set_options(&mut self) -> Result<(), ConnectionError> {
-        tracing::debug!("SetOptions (consuming and discarding)");
+        tracing::debug!(
+            client_version = self.client_version,
+            "SetOptions (consuming and discarding)"
+        );
 
-        // keepFailed
+        // Always present — base 6 fields.
         let _keep_failed = read_u64(&mut self.reader).await?;
-        // keepGoing
         let _keep_going = read_u64(&mut self.reader).await?;
-        // tryFallback
         let _try_fallback = read_u64(&mut self.reader).await?;
-        // verbosity
         let _verbosity = read_u64(&mut self.reader).await?;
-        // maxBuildJobs
         let _max_build_jobs = read_u64(&mut self.reader).await?;
-        // maxSilentTime
         let _max_silent_time = read_u64(&mut self.reader).await?;
 
-        // Obsolete useBuildHook field (removed in protocol >= 1.12 but
-        // older clients still send it).
-        if self.client_version < PROTOCOL_MINOR_OVERRIDES {
+        // useBuildHook — minor >= 2. Every realistic client. Skipping
+        // this was the bug.
+        if self.client_version >= PROTOCOL_MINOR_USE_BUILD_HOOK {
             let _use_build_hook = read_u64(&mut self.reader).await?;
         }
 
-        // verboseBuild
-        let _verbose_build = read_u64(&mut self.reader).await?;
-        // logType (obsolete)
-        let _log_type = read_u64(&mut self.reader).await?;
-        // printBuildTrace (obsolete)
-        let _print_build_trace = read_u64(&mut self.reader).await?;
-        // buildCores
-        let _build_cores = read_u64(&mut self.reader).await?;
-        // useSubstitutes
-        let _use_substitutes = read_u64(&mut self.reader).await?;
+        // verboseBuild — minor >= 4.
+        if self.client_version >= PROTOCOL_MINOR_VERBOSE_BUILD {
+            let _verbose_build = read_u64(&mut self.reader).await?;
+        }
 
-        // overrides (map of string->string sent as flat list)
+        // Obsolete logType + printBuildTrace pair — minor >= 6. CppNix
+        // writes `0 0`; read and discard.
+        if self.client_version >= PROTOCOL_MINOR_OBSOLETE_LOG_FIELDS {
+            let _log_type = read_u64(&mut self.reader).await?;
+            let _print_build_trace = read_u64(&mut self.reader).await?;
+        }
+
+        // buildCores — minor >= 10.
+        if self.client_version >= PROTOCOL_MINOR_BUILD_CORES {
+            let _build_cores = read_u64(&mut self.reader).await?;
+        }
+
+        // useSubstitutes — minor >= 11.
+        if self.client_version >= PROTOCOL_MINOR_USE_SUBSTITUTES {
+            let _use_substitutes = read_u64(&mut self.reader).await?;
+        }
+
+        // Trailing overrides map — minor >= 12.
         if self.client_version >= PROTOCOL_MINOR_OVERRIDES {
             let count = read_u64(&mut self.reader).await?;
             for _ in 0..count {

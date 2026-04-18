@@ -34,8 +34,18 @@ const PROTOCOL_MINOR_CPU_AFFINITY: u64 = (1 << 8) | 14;
 const PROTOCOL_MINOR_RESERVE_SPACE: u64 = (1 << 8) | 11;
 /// Minimum client version that exchanges the trust-level field.
 const PROTOCOL_MINOR_TRUST_EXCHANGE: u64 = (1 << 8) | 35;
-/// Protocol version below which the (obsolete) `useBuildHook` field is sent
-/// in `SetOptions`, and above/equal to which string-pair overrides are sent.
+/// Minimum client version that sends the `useBuildHook` field in SetOptions.
+const PROTOCOL_MINOR_USE_BUILD_HOOK: u64 = (1 << 8) | 2;
+/// Minimum client version that sends the `verboseBuild` field in SetOptions.
+const PROTOCOL_MINOR_VERBOSE_BUILD: u64 = (1 << 8) | 4;
+/// Minimum client version that sends the obsolete `logType` +
+/// `printBuildTrace` pair in SetOptions.
+const PROTOCOL_MINOR_OBSOLETE_LOG_FIELDS: u64 = (1 << 8) | 6;
+/// Minimum client version that sends the `buildCores` field in SetOptions.
+const PROTOCOL_MINOR_BUILD_CORES: u64 = (1 << 8) | 10;
+/// Minimum client version that sends the `useSubstitutes` field in SetOptions.
+const PROTOCOL_MINOR_USE_SUBSTITUTES: u64 = (1 << 8) | 11;
+/// Minimum client version that sends the trailing overrides map.
 const PROTOCOL_MINOR_OVERRIDES: u64 = (1 << 8) | 12;
 
 /// Errors specific to connection handling.
@@ -416,7 +426,8 @@ mod tests {
         let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
         conn.handshake().await.expect("1.34 handshake should succeed");
 
-        // Verify response: magic2 + version + daemon string, but NO trust field
+        // Verify response: magic2 + version + daemon string + trailing
+        // STDERR_LAST, but NO trust field (< 1.35).
         let out = &conn.writer;
         let mut cursor = Cursor::new(out.as_slice());
         let magic2 = wire::read_u64(&mut cursor).unwrap();
@@ -425,7 +436,13 @@ mod tests {
         assert_eq!(version, PROTOCOL_VERSION);
         let daemon_str = wire::read_string(&mut cursor).unwrap();
         assert!(daemon_str.starts_with("sui-daemon"));
-        // No more bytes (no trust level for < 1.35)
+        // No trust level for < 1.35, but handshake terminator follows.
+        let terminator = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(
+            terminator,
+            StderrMsg::Last as u64,
+            "handshake must end with STDERR_LAST so clients know to send their first op"
+        );
         assert_eq!(cursor.position() as usize, out.len());
     }
 
@@ -724,24 +741,46 @@ mod tests {
     // ── SetOptions handler tests ──────────────────────────────
 
     /// Build a SetOptions payload for a given client version.
+    /// Build a SetOptions payload that matches the real CppNix
+    /// `RemoteStore::setOptions` wire format for `client_version`.
+    /// Each field is gated on the minor version that introduced it
+    /// (see `dispatch.rs` `handle_set_options`). Getting this wrong
+    /// here desyncs the server-side read stream and causes bogus
+    /// allocations when a misread u64 gets interpreted as a string
+    /// length — which is exactly how `tests/real_nix_client.rs`
+    /// surfaced the `useBuildHook` bug.
     fn build_set_options_payload(client_version: u64) -> Vec<u8> {
         let mut buf = Vec::new();
         wire::write_u64(&mut buf, WorkerOp::SetOptions as u64).unwrap();
-        // keepFailed, keepGoing, tryFallback, verbosity, maxBuildJobs, maxSilentTime
+        // Always: keepFailed, keepGoing, tryFallback, verbosity,
+        //         maxBuildJobs, maxSilentTime.
         for _ in 0..6 {
             wire::write_u64(&mut buf, 0).unwrap();
         }
-        // useBuildHook (only sent for client < 1.12)
-        if client_version < (1 << 8 | 12) {
+        // useBuildHook — minor >= 2.
+        if client_version >= (1 << 8 | 2) {
             wire::write_u64(&mut buf, 1).unwrap();
         }
-        // verboseBuild, logType, printBuildTrace, buildCores, useSubstitutes
-        for _ in 0..5 {
+        // verboseBuild — minor >= 4.
+        if client_version >= (1 << 8 | 4) {
             wire::write_u64(&mut buf, 0).unwrap();
         }
-        // overrides (for client >= 1.12)
+        // Obsolete logType + printBuildTrace pair — minor >= 6.
+        if client_version >= (1 << 8 | 6) {
+            wire::write_u64(&mut buf, 0).unwrap();
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // buildCores — minor >= 10.
+        if client_version >= (1 << 8 | 10) {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // useSubstitutes — minor >= 11.
+        if client_version >= (1 << 8 | 11) {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        // Trailing overrides map — minor >= 12 (count = 0).
         if client_version >= (1 << 8 | 12) {
-            wire::write_u64(&mut buf, 0).unwrap(); // count=0
+            wire::write_u64(&mut buf, 0).unwrap();
         }
         buf
     }
@@ -785,34 +824,16 @@ mod tests {
 
     #[tokio::test]
     async fn set_options_with_overrides() {
-        let store = Arc::new(MockStore::new());
-        let client_version = PROTOCOL_VERSION;
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::SetOptions as u64).unwrap();
-        // 6 fixed fields
-        for _ in 0..6 {
-            wire::write_u64(&mut input, 0).unwrap();
-        }
-        // 5 more fields
-        for _ in 0..5 {
-            wire::write_u64(&mut input, 0).unwrap();
-        }
-        // overrides: 2 key-value pairs
-        wire::write_u64(&mut input, 2).unwrap();
-        wire::write_string(&mut input, "cores").unwrap();
-        wire::write_string(&mut input, "4").unwrap();
-        wire::write_string(&mut input, "max-jobs").unwrap();
-        wire::write_string(&mut input, "8").unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = client_version;
-
-        conn.run().await.expect("SetOptions with overrides should succeed");
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
+        // Delegate wire-format construction to the canonical helper
+        // so every field condition matches `handle_set_options` by
+        // construction. Hand-rolling this payload was the source of
+        // the previous inconsistency.
+        let payload = build_set_options_with_overrides(
+            PROTOCOL_VERSION,
+            &[("cores", "4"), ("max-jobs", "8")],
+        );
+        let out = run_set_options(payload, PROTOCOL_VERSION).await;
+        let mut cursor = Cursor::new(out.as_slice());
         let stderr_last = wire::read_u64(&mut cursor).unwrap();
         assert_eq!(stderr_last, StderrMsg::Last as u64);
     }
@@ -1505,22 +1526,30 @@ mod tests {
 
     // ── SetOptions edge cases ──────────────────────────────────
 
-    /// Build a `SetOptions` payload with a custom override count and entries.
-    /// Always uses a modern client_version (>= 1.12) so the override block
-    /// is included.
+    /// Build a `SetOptions` payload with a custom override count and
+    /// entries. Wire format mirrors `build_set_options_payload`
+    /// exactly; every field is gated on the minor version that
+    /// introduced it in CppNix.
     fn build_set_options_with_overrides(client_version: u64, overrides: &[(&str, &str)]) -> Vec<u8> {
         let mut buf = Vec::new();
         wire::write_u64(&mut buf, WorkerOp::SetOptions as u64).unwrap();
-        // 6 fixed fields
         for _ in 0..6 {
             wire::write_u64(&mut buf, 0).unwrap();
         }
-        // useBuildHook (only for old clients)
-        if client_version < (1 << 8 | 12) {
+        if client_version >= (1 << 8 | 2) {
             wire::write_u64(&mut buf, 1).unwrap();
         }
-        // 5 more fields
-        for _ in 0..5 {
+        if client_version >= (1 << 8 | 4) {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        if client_version >= (1 << 8 | 6) {
+            wire::write_u64(&mut buf, 0).unwrap();
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        if client_version >= (1 << 8 | 10) {
+            wire::write_u64(&mut buf, 0).unwrap();
+        }
+        if client_version >= (1 << 8 | 11) {
             wire::write_u64(&mut buf, 0).unwrap();
         }
         if client_version >= (1 << 8 | 12) {
@@ -1758,12 +1787,13 @@ mod tests {
         let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
         conn.handshake().await.expect("1.10 handshake");
         assert_eq!(conn.client_version, v);
-        // Trust field should NOT be sent for < 1.35.
+        // No trust field (< 1.35), but every version receives the
+        // trailing STDERR_LAST that signals "handshake done, send ops."
         let mut cursor = Cursor::new(conn.writer.as_slice());
         let _magic2 = wire::read_u64(&mut cursor).unwrap();
         let _ver = wire::read_u64(&mut cursor).unwrap();
         let _daemon = wire::read_string(&mut cursor).unwrap();
-        // No trailing bytes.
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
         assert_eq!(cursor.position() as usize, conn.writer.len());
     }
 

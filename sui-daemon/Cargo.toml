@@ -24,3 +24,5 @@ shikumi = { git = "https://github.com/pleme-io/shikumi" }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["full", "test-util", "process"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
