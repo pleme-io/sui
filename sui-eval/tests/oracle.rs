@@ -48,6 +48,36 @@ fn oracle_corpus_matches_expected() {
             continue;
         }
 
+        // Error-case path: spec declared `expected-error`, so we must
+        // FAIL with a message containing that substring.
+        if !case.spec.expected_error.is_empty() {
+            let needle = case.spec.expected_error.to_lowercase();
+            match sui_eval::eval(&case.spec.source) {
+                Ok(v) => {
+                    failures.push(format!(
+                        "{}\n   source:         {}\n   expected-error: {:?}\n   actual:         Ok({})\n   note:           {}",
+                        case.name,
+                        case.spec.source,
+                        case.spec.expected_error,
+                        value_to_json(&v),
+                        case.spec.note,
+                    ));
+                }
+                Err(e) => {
+                    let msg = e.to_string().to_lowercase();
+                    if msg.contains(&needle) {
+                        ok += 1;
+                    } else {
+                        failures.push(format!(
+                            "{}\n   source:         {}\n   expected-error: {:?}\n   actual-error:   {}\n   note:           {}",
+                            case.name, case.spec.source, case.spec.expected_error, e, case.spec.note,
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
+
         let expected: serde_json::Value = match serde_json::from_str(&case.spec.expected_json) {
             Ok(v) => v,
             Err(e) => {
@@ -128,6 +158,55 @@ fn oracle_corpus_matches_cppnix() {
         if case.spec.tags.iter().any(|t| t == "sui-extension") {
             continue;
         }
+
+        // Error-case path: both engines must error, and the two
+        // error messages must share the `:expected-error` substring.
+        // This catches the "sui returns Ok but CppNix errors" class
+        // of bug — e.g. the `let x = x; in x` silent-Ok regression
+        // fixed at ac7ce0a.
+        if !case.spec.expected_error.is_empty() {
+            let needle = case.spec.expected_error.to_lowercase();
+            let sui_res = sui_eval::eval(&case.spec.source);
+            let nix_out = common::nix_eval_json(&case.spec.source);
+            let nix_errored = common::is_error_json(&nix_out);
+            match sui_res {
+                Ok(v) => {
+                    mismatches.push(format!(
+                        "{}\n   source:         {}\n   expected-error: {:?}\n   sui:            Ok({})\n   nix:            {}",
+                        case.name,
+                        case.spec.source,
+                        case.spec.expected_error,
+                        common::value_to_json(&v),
+                        if nix_errored { "errored (expected)" } else { "unexpectedly ok" },
+                    ));
+                }
+                Err(e) => {
+                    let sui_msg = e.to_string().to_lowercase();
+                    let nix_msg = nix_out
+                        .get("__error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let sui_has = sui_msg.contains(&needle);
+                    let nix_has = nix_msg.contains(&needle);
+                    if !nix_errored {
+                        mismatches.push(format!(
+                            "{}\n   source:         {}\n   expected-error: {:?}\n   sui:            {e}\n   nix:            returned a value, not an error",
+                            case.name, case.spec.source, case.spec.expected_error,
+                        ));
+                    } else if !sui_has || !nix_has {
+                        mismatches.push(format!(
+                            "{}\n   source:         {}\n   expected-error: {:?}\n   sui match?      {sui_has}\n   nix match?      {nix_has}\n   sui msg:        {e}\n   nix msg:        {nix_msg}",
+                            case.name, case.spec.source, case.spec.expected_error,
+                        ));
+                    } else {
+                        ok += 1;
+                    }
+                }
+            }
+            continue;
+        }
+
         let sui_out = common::sui_eval_json(&case.spec.source);
         let nix_out = common::nix_eval_json(&case.spec.source);
         if sui_out != nix_out {

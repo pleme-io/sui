@@ -58,7 +58,22 @@ pub struct NixProgramSpec {
     pub source: String,
     /// Expected result as raw JSON. Parsed into `serde_json::Value`
     /// at test time; diffed against `sui_eval::eval(source).to_json()`.
+    /// When `expected_error` is set, this field is ignored (use `"null"`
+    /// as a placeholder or omit in future schema revisions).
     pub expected_json: String,
+    /// When set, this program is expected to FAIL, and the error
+    /// message from sui (and from CppNix in the differential oracle)
+    /// must contain this substring. Typical values:
+    /// `"infinite recursion"`, `"undefined variable"`, `"type error"`,
+    /// `"assertion"`, `"assertion failed"`, `"abort"`. The match is
+    /// case-insensitive + substring-only so it survives minor wording
+    /// drift between Nix versions.
+    ///
+    /// Error-case coverage closes the class of bugs where sui returns
+    /// `Ok(wrong_value)` on programs CppNix rejects — the fix at
+    /// `ac7ce0a` was that bug's concrete instance.
+    #[serde(default)]
+    pub expected_error: String,
     /// Optional categorization — `("arith" "trivial")` style.
     #[serde(default)]
     pub tags: Vec<String>,
