@@ -427,9 +427,23 @@ impl BuiltinRegistry {
             ))
         });
 
-        self.register("attrValues", 1, |args| {
-            let attrs = as_attrs(&args[0])?;
-            Ok(VMValue::List(attrs.values().cloned().collect()))
+        // attrValues needs the VM's interner to resolve Symbol keys to
+        // their string names for lex-sorting — which is what CppNix
+        // semantics require. Symbol itself is an intern-order u32,
+        // NOT a lex-sorted key, so BTreeMap's native iteration is
+        // intern-order and wrong whenever any transitive eval
+        // (e.g. nixpkgs/lib) has interned a "later" key before an
+        // "earlier" one. Route through VM dispatch the same way
+        // attrNames does. Placeholder error that the VM recognizes.
+        //
+        // Discovered while probing sui against real nixpkgs:
+        // `(import <nixpkgs>/lib).attrsets.mapAttrsToList
+        //    (n: v: "${n}=${toString v}") { a = 1; b = 2; }`
+        // returned `[ "b=2" "a=1" ]` instead of `[ "a=1" "b=2" ]`.
+        self.register("attrValues", 1, |_args| {
+            Err(VMError::Throw(
+                "attrValues: requires interner access (use VM dispatch)".to_string(),
+            ))
         });
 
         self.register("hasAttr", 1, |args| {

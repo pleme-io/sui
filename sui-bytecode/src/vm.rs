@@ -1858,6 +1858,30 @@ impl<'a> VM<'a> {
                     })
                 }
             }
+            "attrValues" => {
+                // Parallel to attrNames: sort the Symbol keys by their
+                // resolved string names (CppNix semantics), then emit
+                // values in that order. Fixes the bug where real
+                // nixpkgs `mapAttrsToList` returned values in
+                // intern-order instead of lex-order.
+                let forced = self.force_value(arg.clone())?;
+                if let Some(attrs) = forced.as_attrs() {
+                    let mut pairs: Vec<(String, &NanBox)> = attrs
+                        .iter()
+                        .map(|(k, v)| (self.interner.resolve(*k).to_string(), v))
+                        .collect();
+                    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    let values: Vec<NanBox> =
+                        pairs.into_iter().map(|(_, v)| v.clone()).collect();
+                    Ok(Some(NanBox::list(values)))
+                } else {
+                    Err(VMError::TypeError {
+                        expected: "set",
+                        got: forced.type_name(),
+                        context: "attrValues".to_string(),
+                    })
+                }
+            }
             "listToAttrs" => {
                 let forced = self.force_value(arg.clone())?;
                 let vmval = forced.to_vmvalue();
