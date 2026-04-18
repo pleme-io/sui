@@ -49,7 +49,10 @@ fn bench_eval(c: &mut Criterion) {
     let inputs = [
         ("arith", "1 + 2 * 3 - 4"),
         ("let_5", "let a = 1; b = a + 1; c = b + 1; d = c + 1; e = d + 1; in e"),
-        ("rec_fib_small", "let rec f = n: if n < 2 then n else f (n - 1) + f (n - 2); in f 10"),
+        // Note: Nix `let`-bindings are implicitly recursive — no `rec`
+        // keyword needed (that's attrset-only). This originally read
+        // `let rec f = …` which is a parse error.
+        ("rec_fib_small", "let f = n: if n < 2 then n else f (n - 1) + f (n - 2); in f 10"),
         ("list_map_20", "builtins.map (x: x * x) (builtins.genList (x: x) 20)"),
         (
             "list_foldl_100",
