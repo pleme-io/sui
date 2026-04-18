@@ -88,6 +88,8 @@ impl InputFetcher {
 
         match locked.source_type.as_str() {
             "github" => self.fetch_github(locked),
+            "gitlab" => self.fetch_gitlab(locked),
+            "sourcehut" => self.fetch_sourcehut(locked),
             "path" => Self::fetch_path(locked),
             "git" => self.fetch_git(locked),
             "tarball" | "file" => self.fetch_tarball(locked),
@@ -99,6 +101,29 @@ impl InputFetcher {
     #[must_use]
     pub fn github_archive_url(owner: &str, repo: &str, rev: &str) -> String {
         format!("https://github.com/{owner}/{repo}/archive/{rev}.tar.gz")
+    }
+
+    /// GitLab archive URL. Shape differs from GitHub — the file name
+    /// embeds the repo + rev and lives under `/-/archive/{rev}/`.
+    /// We target gitlab.com; custom `host` is not yet honored.
+    #[must_use]
+    pub fn gitlab_archive_url(owner: &str, repo: &str, rev: &str) -> String {
+        format!(
+            "https://gitlab.com/{owner}/{repo}/-/archive/{rev}/{repo}-{rev}.tar.gz"
+        )
+    }
+
+    /// Sourcehut archive URL. Owners carry the `~` prefix on the
+    /// platform; the flake-ref parser stores them without the prefix,
+    /// so we prepend here.
+    #[must_use]
+    pub fn sourcehut_archive_url(owner: &str, repo: &str, rev: &str) -> String {
+        let owner_prefix = if owner.starts_with('~') {
+            owner.to_string()
+        } else {
+            format!("~{owner}")
+        };
+        format!("https://git.sr.ht/{owner_prefix}/{repo}/archive/{rev}.tar.gz")
     }
 
     // ── Private fetch methods ─────────────────────────────
@@ -127,6 +152,52 @@ impl InputFetcher {
         }
 
         Ok(find_single_subdir_or_self(&dest))
+    }
+
+    /// GitLab and Sourcehut share the same archive-fetch shape as
+    /// GitHub — download a tar.gz, extract, return the single top-
+    /// level directory. Only the URL construction differs.
+    fn fetch_archive(
+        &self,
+        locked: &LockedInput,
+        url: &str,
+        cache_key: &str,
+    ) -> Result<PathBuf, FetchError> {
+        let dest = self.dest_dir(locked, cache_key);
+        std::fs::create_dir_all(&dest)?;
+        let bytes = match download_bytes(url) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dest);
+                return Err(e);
+            }
+        };
+        if let Err(e) = extract_tar_gz(&bytes, &dest) {
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(e);
+        }
+        Ok(find_single_subdir_or_self(&dest))
+    }
+
+    fn fetch_gitlab(&self, locked: &LockedInput) -> Result<PathBuf, FetchError> {
+        let owner = locked.owner.as_deref().ok_or(FetchError::MissingField("owner"))?;
+        let repo = locked.repo.as_deref().ok_or(FetchError::MissingField("repo"))?;
+        let rev = locked.rev.as_deref().ok_or(FetchError::MissingField("rev"))?;
+        let url = Self::gitlab_archive_url(owner, repo, rev);
+        self.fetch_archive(locked, &url, &format!("gitlab-{owner}-{repo}-{rev}"))
+    }
+
+    fn fetch_sourcehut(&self, locked: &LockedInput) -> Result<PathBuf, FetchError> {
+        let owner = locked.owner.as_deref().ok_or(FetchError::MissingField("owner"))?;
+        let repo = locked.repo.as_deref().ok_or(FetchError::MissingField("repo"))?;
+        let rev = locked.rev.as_deref().ok_or(FetchError::MissingField("rev"))?;
+        let url = Self::sourcehut_archive_url(owner, repo, rev);
+        let sanitized_owner = owner.trim_start_matches('~');
+        self.fetch_archive(
+            locked,
+            &url,
+            &format!("sourcehut-{sanitized_owner}-{repo}-{rev}"),
+        )
     }
 
     fn fetch_path(locked: &LockedInput) -> Result<PathBuf, FetchError> {
@@ -500,11 +571,40 @@ mod tests {
 
     #[test]
     fn fetch_unsupported_type_returns_error() {
+        // `mercurial` — parser doesn't produce this and fetcher
+        // doesn't handle it. Remains unsupported for now. If a
+        // future commit adds mercurial support, swap this to the
+        // next truly-unsupported source_type to keep the test
+        // meaningful.
         let tmp = tempfile::tempdir().unwrap();
         let fetcher = InputFetcher::with_cache_dir(tmp.path().join("cache"));
-        let locked = make_locked("sourcehut");
+        let locked = make_locked("mercurial");
         let result = fetcher.fetch(&locked);
         assert!(matches!(result, Err(FetchError::UnsupportedType(_))));
+    }
+
+    #[test]
+    fn gitlab_archive_url_is_well_formed() {
+        assert_eq!(
+            InputFetcher::gitlab_archive_url("group", "proj", "abc123"),
+            "https://gitlab.com/group/proj/-/archive/abc123/proj-abc123.tar.gz"
+        );
+    }
+
+    #[test]
+    fn sourcehut_archive_url_prepends_tilde() {
+        // Sourcehut owner names on the platform carry a `~` prefix
+        // (`~emersion`) but the flake-ref parser drops it. Fetcher
+        // must reinstate so the URL is canonical.
+        assert_eq!(
+            InputFetcher::sourcehut_archive_url("emersion", "page", "HEAD"),
+            "https://git.sr.ht/~emersion/page/archive/HEAD.tar.gz"
+        );
+        // If the caller already included `~`, don't double it.
+        assert_eq!(
+            InputFetcher::sourcehut_archive_url("~emersion", "page", "HEAD"),
+            "https://git.sr.ht/~emersion/page/archive/HEAD.tar.gz"
+        );
     }
 
     // ── cache hit ─────────────────────────────────────────

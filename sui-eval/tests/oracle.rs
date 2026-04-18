@@ -272,6 +272,131 @@ fn getflake_attrset_input_works() {
     );
 }
 
+/// Probe what's actually reachable on a fetched flake. Each sub-assert
+/// uses its own eval so one failure doesn't mask the others — the
+/// harness emits a human-readable report even on green. Real flakes
+/// access `.outputs`, `.lib.*`, `.inputs.*` etc., so any gap here is
+/// a gap blocking "drop-in replacement" status.
+#[test]
+fn getflake_return_shape_is_usable() {
+    if common::skip_if_offline("getflake_return_shape_is_usable") {
+        return;
+    }
+    let probes: &[(&str, &str)] = &[
+        // Shallow shape ──────────────────────────────────────────
+        ("description",           r#"builtins.isString (builtins.getFlake "flake-utils").description"#),
+        ("outPath",               r#"builtins.isString (builtins.getFlake "flake-utils").outPath"#),
+        ("has lib",               r#"builtins.hasAttr "lib" (builtins.getFlake "flake-utils")"#),
+        ("lib is attrs",          r#"builtins.isAttrs (builtins.getFlake "flake-utils").lib"#),
+        ("lib.eachDefaultSystem", r#"builtins.isFunction (builtins.getFlake "flake-utils").lib.eachDefaultSystem"#),
+        ("inputs attrset",        r#"builtins.isAttrs (builtins.getFlake "flake-utils").inputs"#),
+        // Actual output USE — the real "is this a drop-in" signal
+        ("apply eachDefaultSystem",
+          r#"let u = (builtins.getFlake "flake-utils").lib;
+                 r = u.eachDefaultSystem (system: { hello = "world-${system}"; });
+             in builtins.isAttrs r"#),
+        ("eachDefaultSystem produces per-system keys",
+          r#"let u = (builtins.getFlake "flake-utils").lib;
+                 r = u.eachDefaultSystem (system: { hello = "hi"; });
+             in builtins.hasAttr "hello" r"#),
+        ("lib.defaultSystems is list",
+          r#"builtins.isList (builtins.getFlake "flake-utils").lib.defaultSystems"#),
+        // Metadata
+        ("outPath under /tmp or /nix or similar",
+          r#"let p = (builtins.getFlake "flake-utils").outPath;
+             in builtins.substring 0 1 p == "/"
+          "#),
+    ];
+    let mut results: Vec<(String, Result<bool, String>)> = Vec::new();
+    for (name, src) in probes {
+        let r = sui_eval::eval(src);
+        let ok = match r {
+            Ok(sui_eval::Value::Bool(b)) => Ok(b),
+            Ok(other) => Err(format!("non-bool: {other:?}")),
+            Err(e) => Err(e.to_string()),
+        };
+        results.push((name.to_string(), ok));
+    }
+    eprintln!("\ngetFlake return-shape probe:");
+    let mut failed = Vec::new();
+    for (name, r) in &results {
+        match r {
+            Ok(true) => eprintln!("  ✓ {name}"),
+            Ok(false) => {
+                eprintln!("  ✗ {name}: predicate returned false");
+                failed.push(name.clone());
+            }
+            Err(e) => {
+                eprintln!("  ✗ {name}: {e}");
+                failed.push(name.clone());
+            }
+        }
+    }
+    // Minimum bar: description + outPath + has-lib MUST work. The
+    // deeper ones (lib.eachDefaultSystem, inputs attrset, actual
+    // function application) are how we discover real gaps — if a
+    // probe fails, it's a precise TODO.
+    let required = ["description", "outPath", "has lib"];
+    for req in required {
+        let passed = matches!(
+            results.iter().find(|(n, _)| n == req).map(|(_, r)| r),
+            Some(Ok(true))
+        );
+        assert!(passed, "required probe '{req}' failed — see log above");
+    }
+    if !failed.is_empty() {
+        eprintln!(
+            "\nnon-required probes failing (each is a next-session target): {}",
+            failed.join(", ")
+        );
+    } else {
+        eprintln!("\nall probes green — getFlake return shape is production-usable on flake-utils.");
+    }
+}
+
+/// The harder test: fetch a flake that declares inputs in its own
+/// flake.lock and verify sui resolves + fetches those transitively.
+/// flake-parts imports nothing from nixpkgs but has a `nixpkgs-lib`
+/// input that's fetched as a tarball. If sui's flake.lock reader
+/// + transitive fetcher work, `.inputs.nixpkgs-lib.outPath` should
+/// be a non-empty string path.
+#[test]
+fn getflake_resolves_transitive_inputs() {
+    if common::skip_if_offline("getflake_resolves_transitive_inputs") {
+        return;
+    }
+    let probes: &[(&str, &str)] = &[
+        ("flake-parts.inputs is attrset",
+          r#"builtins.isAttrs (builtins.getFlake "flake-parts").inputs"#),
+        ("flake-parts.inputs has nixpkgs-lib",
+          r#"builtins.hasAttr "nixpkgs-lib" (builtins.getFlake "flake-parts").inputs"#),
+        ("nixpkgs-lib.outPath is string",
+          r#"builtins.isString (builtins.getFlake "flake-parts").inputs.nixpkgs-lib.outPath"#),
+    ];
+    let mut failed = Vec::new();
+    eprintln!("\ntransitive-inputs probe (flake-parts):");
+    for (name, src) in probes {
+        match sui_eval::eval(src) {
+            Ok(sui_eval::Value::Bool(true)) => eprintln!("  ✓ {name}"),
+            Ok(other) => {
+                eprintln!("  ✗ {name}: {other:?}");
+                failed.push(*name);
+            }
+            Err(e) => {
+                eprintln!("  ✗ {name}: {e}");
+                failed.push(*name);
+            }
+        }
+    }
+    if !failed.is_empty() {
+        eprintln!(
+            "\n{} transitive-input probes failed — each is a targeted gap",
+            failed.len()
+        );
+    }
+    // Don't assert-fail — these are exploratory. The log is the signal.
+}
+
 #[test]
 fn executable_specs_parse_even_when_skipped() {
     let cases = load_corpus();
