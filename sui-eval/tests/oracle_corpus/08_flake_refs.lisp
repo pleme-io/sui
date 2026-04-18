@@ -95,3 +95,49 @@
     "builtins.flakeRefToString (builtins.parseFlakeRef \"flake:nixpkgs/master\")"
   :expected-json "\"flake:nixpkgs/master\""
   :tags ("flake" "roundtrip" "indirect" "ref"))
+
+;; ── Registry resolution (sui-specific builtin) ───────────────────
+;; `builtins.resolveFlakeRef` is not a CppNix builtin — it's a sui
+;; extension that exposes the layered-registry lookup machinery so
+;; the resolution step is testable independently of getFlake. The
+;; vendored default registry has 37 entries mirroring CppNix's
+;; canonical flake-registry.json as of Determinate Nix 3.17.
+
+(defnix resolve-nixpkgs-from-default-registry
+  :source "builtins.resolveFlakeRef \"flake:nixpkgs\""
+  :expected-json "{\"owner\":\"NixOS\",\"ref\":\"nixpkgs-unstable\",\"repo\":\"nixpkgs\",\"type\":\"github\"}"
+  :tags ("flake" "registry" "sui-extension"))
+
+(defnix resolve-bare-id-from-default-registry
+  :source "builtins.resolveFlakeRef \"home-manager\""
+  :expected-json "{\"owner\":\"nix-community\",\"repo\":\"home-manager\",\"type\":\"github\"}"
+  :tags ("flake" "registry" "sui-extension"))
+
+(defnix resolve-preserves-caller-ref
+  :source
+    "builtins.resolveFlakeRef {
+       type = \"indirect\";
+       id = \"nixpkgs\";
+       ref = \"nixos-25.05\";
+     }"
+  :expected-json "{\"owner\":\"NixOS\",\"ref\":\"nixos-25.05\",\"repo\":\"nixpkgs\",\"type\":\"github\"}"
+  :tags ("flake" "registry" "sui-extension")
+  :note
+    "Caller's :ref override should win over the registry default
+     (nixpkgs-unstable) — this is the common pattern of
+     `inputs.nixpkgs.url = \"nixpkgs/nixos-25.05\"` in user flakes.")
+
+(defnix resolve-concrete-passes-through
+  :source "builtins.resolveFlakeRef \"github:NixOS/nixpkgs\""
+  :expected-json "{\"owner\":\"NixOS\",\"repo\":\"nixpkgs\",\"type\":\"github\"}"
+  :tags ("flake" "registry" "sui-extension")
+  :note
+    "Concrete (non-indirect) refs should pass through unchanged.
+     Lets callers do `resolveFlakeRef (parseFlakeRef inputStr)` without
+     branching on type.")
+
+;; Unknown-id error behavior is unit-tested in
+;; `builtins::flake_registry::tests::resolve_unknown_id_errors`
+;; — oracle corpus can't assert on it through tryEval because
+;; resolveFlakeRef raises a TypeError (not a throw), which bypasses
+;; tryEval per CppNix semantics.

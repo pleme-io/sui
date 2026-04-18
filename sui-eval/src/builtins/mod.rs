@@ -35,6 +35,7 @@ mod fetchers;
 mod flake;
 mod flake_eval;
 mod flake_parse;
+mod flake_registry;
 mod helpers;
 mod import_cache;
 mod lists;

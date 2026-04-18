@@ -120,6 +120,14 @@ fn oracle_corpus_matches_cppnix() {
         if case.spec.skip {
             continue;
         }
+        // Tests tagged `sui-extension` exercise builtins that don't
+        // exist in CppNix (e.g. `resolveFlakeRef`, sui-specific
+        // introspection). Skip them in the differential — they'd
+        // diverge by design. The author-curated oracle still covers
+        // them.
+        if case.spec.tags.iter().any(|t| t == "sui-extension") {
+            continue;
+        }
         let sui_out = common::sui_eval_json(&case.spec.source);
         let nix_out = common::nix_eval_json(&case.spec.source);
         if sui_out != nix_out {

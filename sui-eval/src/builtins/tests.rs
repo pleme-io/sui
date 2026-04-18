@@ -3189,7 +3189,15 @@ fn builtins_parse_flake_ref_path_explicit() {
 
 #[test]
 fn builtins_parse_flake_ref_invalid_errors() {
-    let result = eval(r#"builtins.parseFlakeRef "not-a-ref""#);
+    // A bare identifier like "not-a-ref" is a VALID flake reference
+    // in CppNix semantics — it parses as an indirect ref. Previously
+    // sui rejected these; aligning with CppNix (registry lookup is
+    // a later step, not a parse-time concern).
+    //
+    // An input that is genuinely unparseable needs to break the
+    // identifier grammar — `:` in the middle without a recognized
+    // scheme, for example.
+    let result = eval(r#"builtins.parseFlakeRef "bogus:schema:more""#);
     assert!(result.is_err());
 }
 

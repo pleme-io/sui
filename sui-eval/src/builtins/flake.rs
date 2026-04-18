@@ -12,6 +12,47 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         flake_ref_to_string(&attrs)
     });
 
+    // sui-specific: resolve an indirect ref (`flake:nixpkgs`) to its
+    // concrete registry target. Not a CppNix builtin — exposed here
+    // so the layered-registry machinery is testable without needing
+    // the full `getFlake` → fetcher → store pipeline.
+    register_builtin(builtins, "resolveFlakeRef", |args| {
+        let arg = crate::eval::force_value(&args[0])?;
+        // Accept either a pre-parsed attrset or a string that needs
+        // parsing first. Matches the ergonomic CppNix pattern for
+        // flake-ref-shaped inputs.
+        let attrs = match arg {
+            Value::Attrs(a) => (*a).clone(),
+            Value::String(_) => {
+                let s = arg.as_string()?.to_string();
+                let parsed = parse_flake_ref(&s)?;
+                let Value::Attrs(a) = parsed else {
+                    return Err(EvalError::TypeError(
+                        "resolveFlakeRef: parsed flake ref is not an attrset".into(),
+                    ));
+                };
+                (*a).clone()
+            }
+            _ => {
+                return Err(EvalError::TypeError(
+                    "resolveFlakeRef: expected string or attrset".into(),
+                ));
+            }
+        };
+        // Only indirect refs need resolving; concrete refs pass
+        // through so callers can chain `resolveFlakeRef (parseFlakeRef …)`
+        // without branching on type.
+        let ty = attrs
+            .get("type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        if ty == "indirect" {
+            super::flake_registry::resolve_indirect(&attrs)
+        } else {
+            Ok(Value::Attrs(std::rc::Rc::new(attrs)))
+        }
+    });
+
     register_builtin(builtins, "getFlake", |args| {
         let flake_ref = crate::eval::force_value(&args[0])?;
         let flake_ref_str = flake_ref.as_string()?.to_string();
