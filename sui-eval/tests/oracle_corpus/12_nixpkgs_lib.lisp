@@ -236,6 +236,25 @@
     "Truncated to first 16 chars so the test value stays readable;
      still enough to catch any hash-algorithm misdispatch.")
 
+;; ── #9: functionArgs cross-interner pollution (fixed at next commit) ─
+
+(defnix functionArgs-pattern
+  :source "builtins.functionArgs ({a, b ? 1, c, ...}: a)"
+  :expected-json "{\"a\":false,\"b\":true,\"c\":false}"
+  :tags ("regression" "lambda" "builtin")
+  :note
+    "Regression guard: the VM's functionArgs used a FRESH local
+     interner to intern parameter names, but the resulting
+     Symbol-keyed attrs got resolved against the VM's REAL interner
+     during printing — producing nonsense keys like
+     `functionArgs = false` and inverted booleans. Routed through
+     VM dispatch so `self.interner` is used throughout.")
+
+(defnix functionArgs-positional-is-empty
+  :source "builtins.functionArgs (x: y: z: x)"
+  :expected-json "{}"
+  :tags ("regression" "lambda" "builtin"))
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

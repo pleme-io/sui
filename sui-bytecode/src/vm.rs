@@ -1917,6 +1917,39 @@ impl<'a> VM<'a> {
                     })
                 }
             }
+            "functionArgs" => {
+                // The registered builtin entry created a FRESH interner
+                // locally, interned the parameter names into it, and
+                // returned `VMValue::Attrs` keyed on those Symbols —
+                // which were then resolved against the VM's REAL
+                // interner during printing/conversion, producing
+                // nonsense keys (`functionArgs = false` showing up as
+                // an attribute!) plus inverted booleans.
+                // Route through VM dispatch so we intern against
+                // `self.interner`.
+                let forced = self.force_value(arg.clone())?;
+                let vmval = forced.to_vmvalue();
+                match vmval {
+                    VMValue::Closure(closure) => {
+                        let mut result = std::collections::BTreeMap::new();
+                        for (name, has_default) in &closure.formals {
+                            let sym = self.interner.intern(name);
+                            result.insert(sym, VMValue::Bool(*has_default));
+                        }
+                        Ok(Some(NanBox::from_vmvalue(&VMValue::Attrs(result))))
+                    }
+                    VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
+                        Ok(Some(NanBox::from_vmvalue(&VMValue::Attrs(
+                            std::collections::BTreeMap::new(),
+                        ))))
+                    }
+                    other => Err(VMError::TypeError {
+                        expected: "lambda",
+                        got: other.type_name(),
+                        context: "functionArgs".to_string(),
+                    }),
+                }
+            }
             "fromJSON" => {
                 // JSON objects need the interner to intern keys as
                 // Symbols. The registered builtin returned `null` for
