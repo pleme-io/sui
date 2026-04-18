@@ -49,7 +49,17 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             name: "genList<partial>",
             func: Rc::new(move |args2| {
                 let n = args2[0].as_int()?;
-                let mut result = Vec::new();
+                // CppNix rejects negative counts with "negative list length";
+                // the prior sui behavior was to silently return `[]` because
+                // `for i in 0..n` is an empty range when n < 0 on i64.
+                // That's a silent-Ok bug — values CppNix rejects must not
+                // succeed here. Mirror the CppNix error shape.
+                if n < 0 {
+                    return Err(EvalError::TypeError(format!(
+                        "genList: negative list length {n}"
+                    )));
+                }
+                let mut result = Vec::with_capacity(n as usize);
                 for i in 0..n {
                     result.push(crate::eval::apply(func.clone(), Value::Int(i))?);
                 }

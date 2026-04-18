@@ -1697,10 +1697,25 @@ fn eval_binop(
         },
         ast::BinOpKind::Sub => num_op(&l, &r, |a, b| a - b, |a, b| a - b),
         ast::BinOpKind::Mul => num_op(&l, &r, |a, b| a * b, |a, b| a * b),
-        ast::BinOpKind::Div => match (&l, &r) {
-            (Value::Int(_), Value::Int(0)) => Err(EvalError::DivisionByZero),
-            _ => num_op(&l, &r, |a, b| a / b, |a, b| a / b),
-        },
+        ast::BinOpKind::Div => {
+            // CppNix rejects division by zero for both int and float
+            // operands; Rust's native int-div-by-0 panics (we handle
+            // that below) but float-div-by-0 silently returns `inf`
+            // or `NaN`, which sui was then serializing as `null` —
+            // an invisible silent-Ok bug surfaced by the error-case
+            // differential corpus.
+            //
+            // Cover every zero-denominator case explicitly.
+            let rhs_is_zero = match &r {
+                Value::Int(0) => true,
+                Value::Float(f) => *f == 0.0,
+                _ => false,
+            };
+            if rhs_is_zero {
+                return Err(EvalError::DivisionByZero);
+            }
+            num_op(&l, &r, |a, b| a / b, |a, b| a / b)
+        }
         ast::BinOpKind::Equal => Ok(Value::Bool(l == r)),
         ast::BinOpKind::NotEqual => Ok(Value::Bool(l != r)),
         ast::BinOpKind::Less => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
