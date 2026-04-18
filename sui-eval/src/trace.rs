@@ -261,6 +261,14 @@ pub fn get_thunks_forced() -> u64 {
     THUNKS_FORCED_UNIQUE.with(Cell::get)
 }
 
+/// Zero the thunk-creation/force counters. Used by `perf::reset` /
+/// `perf::with_scope` to establish a clean measurement window.
+pub fn reset_thunk_stats() {
+    THUNKS_CREATED.with(|c| c.set(0));
+    THUNKS_FORCED_UNIQUE.with(|c| c.set(0));
+    THUNK_MAX_FORCE_DEPTH.with(|c| c.set(0));
+}
+
 /// Report thunk stats to stderr (called from `perf::report`).
 pub fn report_thunk_stats() {
     if !crate::perf::enabled() {

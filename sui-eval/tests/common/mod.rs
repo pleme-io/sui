@@ -36,6 +36,83 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+use tatara_lisp::DeriveTataraDomain;
+
+// ── Lisp-authored corpus (oracle + perf + specs) ────────────────────────
+
+/// A single oracle test case. The fields mirror the Lisp authoring
+/// surface exactly; `#[derive(TataraDomain)]` turns this into the
+/// `(defnix …)` keyword.
+///
+/// `expected_json` is a **raw JSON string** parsed at test time. Using
+/// a string rather than `serde_json::Value` sidesteps the Sexp → JSON
+/// round-trip ambiguity in tatara-lisp (no `[]`/`{}` literals; lists
+/// and kwargs both use `(…)`). Authors write the JSON they mean; the
+/// harness parses it.
+#[derive(DeriveTataraDomain, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+#[tatara(keyword = "defnix")]
+pub struct NixProgramSpec {
+    /// The Nix source text to evaluate.
+    pub source: String,
+    /// Expected result as raw JSON. Parsed into `serde_json::Value`
+    /// at test time; diffed against `sui_eval::eval(source).to_json()`.
+    pub expected_json: String,
+    /// Optional categorization — `("arith" "trivial")` style.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// When true, skip the case. Used by `99_executable_specs.lisp`
+    /// to document unimplemented builtins as expected-behavior specs.
+    #[serde(default)]
+    pub skip: bool,
+    /// Human-readable rationale. Shown on failure. Optional.
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Load every `.lisp` file under `tests/oracle_corpus/` and compile
+/// each one into a stream of `NamedDefinition<NixProgramSpec>` via
+/// `tatara_lisp::compile_named`. Sort order is deterministic — file
+/// name ascending — so perf reports are stable across runs.
+#[must_use]
+pub fn load_corpus() -> Vec<tatara_lisp::NamedDefinition<NixProgramSpec>> {
+    let corpus_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("oracle_corpus");
+
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&corpus_dir)
+        .unwrap_or_else(|e| panic!("corpus dir {}: {e}", corpus_dir.display()))
+        .filter_map(|e| e.ok().map(|d| d.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("lisp"))
+        .collect();
+    paths.sort();
+
+    let mut out = Vec::new();
+    for path in paths {
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut defs = tatara_lisp::compile_named::<NixProgramSpec>(&src)
+            .unwrap_or_else(|e| panic!("compile {}: {e}", path.display()));
+        for def in &mut defs {
+            def.name = format!(
+                "{}::{}",
+                path.file_stem().and_then(|s| s.to_str()).unwrap_or("?"),
+                def.name
+            );
+        }
+        out.extend(defs);
+    }
+    out
+}
+
+/// Convert a sui `Value` to a `serde_json::Value`. Thin wrapper kept
+/// for naming clarity at call sites.
+#[must_use]
+pub fn value_to_json(v: &sui_eval::Value) -> serde_json::Value {
+    v.to_json()
+}
+
 /// Returns `true` when `SUI_TEST_ONLINE=1` is set in the environment.
 ///
 /// Oracle-backed tests gate on this to stay green on CI without nix.

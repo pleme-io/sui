@@ -12,11 +12,22 @@ use std::time::Instant;
 /// Cached flag — checked once at startup to avoid repeated `env::var` calls.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Call once at the start of evaluation to check the env var.
+/// Check the env var and, if set, enable counters. Called on every
+/// top-level `eval()`. Deliberately one-way: if `SUI_EVAL_PERF` is
+/// NOT set we leave the flag as-is rather than clearing it, so that
+/// a prior `set_enabled(true)` (from a profiling tool or integration
+/// test) survives the next `eval()` call.
 pub fn init() {
-    let on = std::env::var("SUI_EVAL_PERF")
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    if std::env::var("SUI_EVAL_PERF").ok().as_deref() == Some("1") {
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Enable or disable perf counters programmatically. Use this from
+/// profiling tools, integration tests, or the `sui perf` subcommand
+/// that wants counters even when `SUI_EVAL_PERF=1` isn't set in the
+/// environment. Production code paths don't call this.
+pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }
 
@@ -314,6 +325,171 @@ pub fn report() {
 #[allow(dead_code)]
 pub fn counter_name(counter: Counter) -> &'static str {
     COUNTER_NAMES[counter as usize]
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Programmatic snapshot API — the foundation for perf-analysis tools.
+//
+// `report()` dumps to stderr; great for humans, useless for tools that
+// want structured data, want to sort, diff, or capture counter deltas
+// per-eval. `PerfSnapshot` gives you a plain struct you can move
+// around, serialize, subtract, and inspect.
+// ──────────────────────────────────────────────────────────────────
+
+/// An immutable snapshot of counter + timer state at a single point.
+///
+/// Cheap to clone (just a fixed-size array + a few u64). Subtract two
+/// snapshots (`b.delta_from(&a)`) to get the work done between them —
+/// the foundation of `with_scope` and per-program profiling.
+#[derive(Clone, Debug)]
+pub struct PerfSnapshot {
+    /// Wall-clock elapsed since [`start`] was called. `None` if `start`
+    /// wasn't called in this thread.
+    pub elapsed: Option<std::time::Duration>,
+    /// Raw counter values, indexed by `Counter as usize`.
+    pub counters: [u64; NUM_COUNTERS],
+    /// Thunks allocated in this thread to date (from `trace` module).
+    pub thunks_created: u64,
+    /// Thunks forced (from suspended → evaluated) to date.
+    pub thunks_forced: u64,
+}
+
+impl PerfSnapshot {
+    /// All-zero snapshot. Useful as the identity element for folds.
+    #[must_use]
+    pub fn zero() -> Self {
+        Self {
+            elapsed: None,
+            counters: [0; NUM_COUNTERS],
+            thunks_created: 0,
+            thunks_forced: 0,
+        }
+    }
+
+    /// Read a counter by enum variant.
+    #[must_use]
+    pub fn get(&self, counter: Counter) -> u64 {
+        self.counters[counter as usize]
+    }
+
+    /// `self - other`, treating both as counter totals. Used to get
+    /// the delta across a scoped evaluation (snapshot before, snapshot
+    /// after, subtract). Saturates to zero on underflow — shouldn't
+    /// happen in normal use but guards against races / manual resets.
+    #[must_use]
+    pub fn delta_from(&self, other: &PerfSnapshot) -> PerfSnapshot {
+        let mut counters = [0u64; NUM_COUNTERS];
+        for i in 0..NUM_COUNTERS {
+            counters[i] = self.counters[i].saturating_sub(other.counters[i]);
+        }
+        let elapsed = match (self.elapsed, other.elapsed) {
+            (Some(a), Some(b)) => Some(a.saturating_sub(b)),
+            _ => self.elapsed,
+        };
+        PerfSnapshot {
+            elapsed,
+            counters,
+            thunks_created: self.thunks_created.saturating_sub(other.thunks_created),
+            thunks_forced: self.thunks_forced.saturating_sub(other.thunks_forced),
+        }
+    }
+
+    /// Thunk memoization hit rate — 1.0 means every suspended thunk
+    /// produced useful work; 0.0 means everything we built was wasted.
+    /// Returns `None` when no thunks were created in this window.
+    #[must_use]
+    pub fn thunk_hit_rate(&self) -> Option<f64> {
+        let created = self.thunks_created;
+        if created == 0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let r = self.thunks_forced as f64 / created as f64;
+        Some(r)
+    }
+
+    /// `(top_variant, count)` — the expression kind with the highest
+    /// count in this snapshot. For ranking "what is this eval mostly
+    /// doing?" at a glance.
+    #[must_use]
+    pub fn dominant_expr_kind(&self) -> Option<(Counter, u64)> {
+        let kinds = [
+            Counter::ExprIdent,
+            Counter::ExprLiteral,
+            Counter::ExprStr,
+            Counter::ExprList,
+            Counter::ExprAttrs,
+            Counter::ExprSelect,
+            Counter::ExprApply,
+            Counter::ExprLetIn,
+            Counter::ExprIfElse,
+            Counter::ExprWith,
+            Counter::ExprLambda,
+            Counter::ExprBinOp,
+            Counter::ExprHasAttr,
+            Counter::ExprUnaryOp,
+            Counter::ExprAssert,
+            Counter::ExprPath,
+            Counter::ExprOther,
+        ];
+        kinds
+            .iter()
+            .map(|&k| (k, self.get(k)))
+            .filter(|&(_, n)| n > 0)
+            .max_by_key(|&(_, n)| n)
+    }
+}
+
+/// Capture the current counter state as a [`PerfSnapshot`].
+///
+/// Does NOT reset anything — the next `snapshot()` / `inc()` / `add()`
+/// call sees the same state. Use [`reset`] if you want a fresh window.
+#[must_use]
+pub fn snapshot() -> PerfSnapshot {
+    let mut out = [0u64; NUM_COUNTERS];
+    COUNTERS.with(|c| {
+        let c = c.borrow();
+        out.copy_from_slice(&c.counts);
+    });
+    let elapsed = START.with(|s| s.borrow().map(|s| s.elapsed()));
+    PerfSnapshot {
+        elapsed,
+        counters: out,
+        thunks_created: crate::trace::get_thunks_created(),
+        thunks_forced: crate::trace::get_thunks_forced(),
+    }
+}
+
+/// Zero every counter and restart the timer. The thread-local thunk
+/// trace counters are reset too.
+pub fn reset() {
+    COUNTERS.with(|c| {
+        let mut c = c.borrow_mut();
+        *c = PerfCounters::default();
+    });
+    START.with(|s| *s.borrow_mut() = Some(Instant::now()));
+    crate::trace::reset_thunk_stats();
+}
+
+/// Scoped profiling: enable counters if they aren't already, reset
+/// them, run `f`, and return `(result, delta_snapshot)`.
+///
+/// The counters are left enabled after this returns — callers that
+/// want strict zero-overhead production eval should `set_enabled(false)`
+/// afterwards.
+pub fn with_scope<F, R>(f: F) -> (R, PerfSnapshot)
+where
+    F: FnOnce() -> R,
+{
+    let prev_enabled = enabled();
+    set_enabled(true);
+    reset();
+    let before = snapshot();
+    let result = f();
+    let after = snapshot();
+    let delta = after.delta_from(&before);
+    set_enabled(prev_enabled);
+    (result, delta)
 }
 
 #[cfg(test)]

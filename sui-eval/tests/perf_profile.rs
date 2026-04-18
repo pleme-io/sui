@@ -1,0 +1,317 @@
+//! Perf-analysis harness — runs every `(defnix …)` in the oracle
+//! corpus under `sui_eval::perf::with_scope` to capture per-program
+//! counters + wall time, then emits a ranked markdown report.
+//!
+//! # What this gives you
+//!
+//! The existing `SUI_EVAL_PERF=1` stderr dump aggregates all evals in
+//! a process into one set of counters — useful for end-to-end ratios,
+//! useless for finding which *specific* program is slow. This test
+//! uses the new [`sui_eval::perf::with_scope`] API to measure each
+//! corpus entry individually and produces a sortable, diffable report
+//! at `target/oracle-perf.md`.
+//!
+//! The markdown shape is chosen for human-friendly `git diff` output:
+//! changing a perf-affecting line in the code produces a tiny, well-
+//! scoped set of +/- lines in this file. By default the report writes
+//! to `target/oracle-perf.md` (gitignored, per-machine); to commit a
+//! baseline, copy it into the crate (e.g. to
+//! `sui-eval/tests/oracle-perf-baseline.md`) and diff locally:
+//!
+//! ```bash
+//! cargo test -p sui-eval --test perf_profile -- --nocapture
+//! diff sui-eval/tests/oracle-perf-baseline.md target/oracle-perf.md
+//! ```
+//!
+//! # What this is NOT
+//!
+//! - Not a CI gate — the test succeeds unless the harness itself
+//!   panics. A trend of numbers getting bigger is visible to humans
+//!   via git diff, not enforced by a threshold. Thresholds require
+//!   stable hardware; CI fleet noise would produce flakes we'd soon
+//!   ignore. Human review of the diff is cheaper.
+//! - Not a statistical benchmark — one run per program, no warmup,
+//!   no outlier rejection. That's what criterion in `benches/` does.
+//!   This is the *complement*: wide coverage, low ceremony, one
+//!   number per program per counter.
+
+mod common;
+
+use common::load_corpus;
+use std::fmt::Write as _;
+use sui_eval::perf;
+
+/// One row of the perf report — wall time + selected counter values
+/// for a single corpus program.
+#[derive(Debug)]
+struct Row {
+    name: String,
+    tags: Vec<String>,
+    nanos: u128,
+    eval_exprs: u64,
+    force_value: u64,
+    thunk_forces: u64,
+    thunk_hits: u64,
+    env_clones: u64,
+    env_lookups: u64,
+    dominant_expr: String,
+    thunks_created: u64,
+    thunks_forced: u64,
+    ok: bool,
+}
+
+impl Row {
+    fn work_score(&self) -> u64 {
+        // Crude "how much did this program actually do" composite.
+        // Ranks by total eval work, not wall time, so the sort is
+        // stable across runs even under jitter.
+        self.eval_exprs + self.force_value + self.thunk_forces
+    }
+}
+
+fn run_one(case: &tatara_lisp::NamedDefinition<common::NixProgramSpec>) -> Row {
+    let (result, snap) = perf::with_scope(|| sui_eval::eval(&case.spec.source));
+    let dominant = snap
+        .dominant_expr_kind()
+        .map(|(c, n)| format!("{} ({})", perf::counter_name(c), n))
+        .unwrap_or_else(|| "-".to_string());
+    let nanos = snap.elapsed.map(|d| d.as_nanos()).unwrap_or(0);
+    Row {
+        name: case.name.clone(),
+        tags: case.spec.tags.clone(),
+        nanos,
+        eval_exprs: snap.get(perf::Counter::EvalExpr),
+        force_value: snap.get(perf::Counter::ForceValue),
+        thunk_forces: snap.get(perf::Counter::ThunkForce),
+        thunk_hits: snap.get(perf::Counter::ThunkHit),
+        env_clones: snap.get(perf::Counter::EnvClone),
+        env_lookups: snap.get(perf::Counter::EnvLookup),
+        dominant_expr: dominant,
+        thunks_created: snap.thunks_created,
+        thunks_forced: snap.thunks_forced,
+        ok: result.is_ok(),
+    }
+}
+
+/// Render the ranked rows into a markdown report. The report is
+/// structured so `git diff oracle-perf.md` produces useful signal —
+/// columns are fixed-width, rows are sorted deterministically, and
+/// the summary block up top shows the corpus-wide totals for easy
+/// regression spotting at a glance.
+fn render_report(mut rows: Vec<Row>) -> String {
+    let total_nanos: u128 = rows.iter().map(|r| r.nanos).sum();
+    let total_evals: u64 = rows.iter().map(|r| r.eval_exprs).sum();
+    let total_forces: u64 = rows.iter().map(|r| r.force_value).sum();
+    let total_thunks_created: u64 = rows.iter().map(|r| r.thunks_created).sum();
+    let total_thunks_forced: u64 = rows.iter().map(|r| r.thunks_forced).sum();
+    let corpus_waste = if total_thunks_created > 0 {
+        #[allow(clippy::cast_precision_loss)]
+        let r = 1.0 - (total_thunks_forced as f64 / total_thunks_created as f64);
+        r * 100.0
+    } else {
+        0.0
+    };
+    let n_programs = rows.len();
+    let n_ok = rows.iter().filter(|r| r.ok).count();
+
+    // Rank rows by work_score descending — the slowest programs
+    // bubble to the top of each view.
+    rows.sort_by(|a, b| b.work_score().cmp(&a.work_score()));
+
+    let mut out = String::new();
+    writeln!(out, "# Oracle corpus perf profile").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "> Regenerated by `cargo test -p sui-eval --test perf_profile`."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "> Each row measures one `(defnix …)` program via \
+         `sui_eval::perf::with_scope`. Rows are sorted by composite \
+         work score (`eval_exprs + force_value + thunk_forces`) so a \
+         small code change that shifts a few programs up/down rides \
+         the row-wise diff instead of the byte-level noise."
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Summary").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "| metric | value |").unwrap();
+    writeln!(out, "|--------|------:|").unwrap();
+    writeln!(out, "| programs | {n_programs} ({n_ok} ok) |").unwrap();
+    writeln!(out, "| total wall | {} µs |", total_nanos / 1000).unwrap();
+    writeln!(out, "| total eval_expr calls | {total_evals} |").unwrap();
+    writeln!(out, "| total force_value calls | {total_forces} |").unwrap();
+    writeln!(
+        out,
+        "| thunks created / forced | {} / {} ({:.1}% waste) |",
+        total_thunks_created, total_thunks_forced, corpus_waste
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Top 10 by work score").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "| program | µs | eval | force | thunk_f | thunk_h | env_c | env_l | dominant |"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "|---------|--:|-----:|------:|--------:|--------:|------:|------:|----------|"
+    )
+    .unwrap();
+    for r in rows.iter().take(10) {
+        writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} |",
+            r.name,
+            r.nanos / 1000,
+            r.eval_exprs,
+            r.force_value,
+            r.thunk_forces,
+            r.thunk_hits,
+            r.env_clones,
+            r.env_lookups,
+            r.dominant_expr,
+        )
+        .unwrap();
+    }
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Full table").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "Sorted alphabetically for stable diffs. Each column is one counter."
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    writeln!(
+        out,
+        "| program | µs | eval | force | thunk_f | thunk_h | env_c | env_l | th_cr | th_fo | ok |"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "|---------|--:|-----:|------:|--------:|--------:|------:|------:|------:|------:|:--:|"
+    )
+    .unwrap();
+    for r in rows {
+        writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            r.name,
+            r.nanos / 1000,
+            r.eval_exprs,
+            r.force_value,
+            r.thunk_forces,
+            r.thunk_hits,
+            r.env_clones,
+            r.env_lookups,
+            r.thunks_created,
+            r.thunks_forced,
+            if r.ok { "✓" } else { "✗" },
+        )
+        .unwrap();
+    }
+    out
+}
+
+/// Write the rendered report to `target/oracle-perf.md` so it's
+/// within the cargo build tree (git-ignored) but discoverable.
+fn write_report(body: &str) -> std::path::PathBuf {
+    // `CARGO_MANIFEST_DIR` is the crate root (sui-eval/). Walk one up
+    // to hit the workspace, then target/.
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root exists")
+        .join("target");
+    std::fs::create_dir_all(&target).ok();
+    let path = target.join("oracle-perf.md");
+    std::fs::write(&path, body).expect("write oracle-perf.md");
+    path
+}
+
+#[test]
+fn emit_perf_profile_report() {
+    let cases = load_corpus();
+    assert!(!cases.is_empty(), "corpus empty");
+
+    let rows: Vec<Row> = cases
+        .iter()
+        .filter(|c| !c.spec.skip)
+        .map(run_one)
+        .collect();
+
+    let body = render_report(rows);
+    let path = write_report(&body);
+    eprintln!("\nwrote perf profile to {}", path.display());
+    eprintln!("view with:  bat {}", path.display());
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Sanity tests for the perf API itself.
+// ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn with_scope_captures_nonzero_counters() {
+    let (_, snap) = perf::with_scope(|| {
+        let _ = sui_eval::eval("let f = n: if n <= 0 then 0 else n + f (n - 1); in f 10");
+    });
+    // A recursive function should exercise at least eval_expr, force_value,
+    // apply, and env lookups. If any of these are zero the scoped API is
+    // broken — either the counters aren't being enabled or the reset is
+    // clearing the deltas.
+    assert!(
+        snap.get(perf::Counter::EvalExpr) > 0,
+        "expected EvalExpr > 0, got {}",
+        snap.get(perf::Counter::EvalExpr)
+    );
+    assert!(
+        snap.get(perf::Counter::ForceValue) > 0,
+        "expected ForceValue > 0"
+    );
+    assert!(snap.get(perf::Counter::Apply) > 0, "expected Apply > 0");
+}
+
+#[test]
+fn with_scope_deltas_are_per_call() {
+    // Two independent scoped calls should yield independent deltas —
+    // the second shouldn't see the first's accumulated counts.
+    let (_, a) = perf::with_scope(|| {
+        let _ = sui_eval::eval("1 + 1");
+    });
+    let (_, b) = perf::with_scope(|| {
+        let _ = sui_eval::eval("1 + 1");
+    });
+    // Both should show roughly the same work — not zero, not 2×.
+    assert!(a.get(perf::Counter::EvalExpr) > 0);
+    assert!(b.get(perf::Counter::EvalExpr) > 0);
+    // Within a factor of 2 of each other (allows for cache-warmup jitter).
+    let min = a.get(perf::Counter::EvalExpr).min(b.get(perf::Counter::EvalExpr));
+    let max = a.get(perf::Counter::EvalExpr).max(b.get(perf::Counter::EvalExpr));
+    assert!(
+        max <= min * 3 + 1,
+        "deltas wildly different: {} vs {}",
+        a.get(perf::Counter::EvalExpr),
+        b.get(perf::Counter::EvalExpr)
+    );
+}
+
+#[test]
+fn dominant_expr_kind_is_sensible() {
+    let (_, snap) = perf::with_scope(|| {
+        let _ = sui_eval::eval(
+            "let xs = builtins.genList (x: x) 50; in \
+             builtins.foldl' (a: x: a + x) 0 xs",
+        );
+    });
+    let dom = snap.dominant_expr_kind();
+    assert!(dom.is_some(), "should have at least one non-zero expr kind");
+}
