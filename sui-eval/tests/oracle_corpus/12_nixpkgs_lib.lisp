@@ -140,6 +140,50 @@
      — intentional: the test is verifying the mapAttrs + recursion
      shape, not the full library semantics.")
 
+;; ── #5: substring with negative length (fixed at next commit) ──
+
+(defnix substring-negative-len-returns-rest
+  :source "builtins.substring 4 (0 - 1) \"foo-bar\""
+  :expected-json "\"bar\""
+  :tags ("regression" "string" "builtin")
+  :note
+    "CppNix convention: `substring start (-1) str` means 'from start
+     to end of string'. Used all over nixpkgs — notably in
+     `lib.strings.removePrefix`. Sui's VM was casting i64→usize
+     before the bounds check, turning -1 into usize::MAX and
+     panicking on the arithmetic overflow.")
+
+(defnix substring-negative-start-errors
+  :source "builtins.substring (0 - 5) 3 \"hello\""
+  :expected-json "null"
+  :expected-error "negative"
+  :tags ("regression" "string" "builtin")
+  :note
+    "Per CppNix: negative start position raises 'negative start
+     position in substring'. Sui previously returned empty string
+     on negative start (my guess was wrong); the differential
+     oracle caught it.")
+
+(defnix substring-len-past-end-clamps
+  :source "builtins.substring 2 999 \"hello\""
+  :expected-json "\"llo\""
+  :tags ("regression" "string" "builtin")
+  :note "Length past end of string clamps to end.")
+
+(defnix removePrefix-via-lib-shape
+  :source
+    "let preLen = builtins.stringLength \"foo-\";
+         hasPrefix = p: s: builtins.substring 0 (builtins.stringLength p) s == p;
+     in if hasPrefix \"foo-\" \"foo-bar\"
+        then builtins.substring preLen (0 - 1) \"foo-bar\"
+        else \"foo-bar\""
+  :expected-json "\"bar\""
+  :tags ("regression" "nixpkgs" "string")
+  :note
+    "Mirrors lib.strings.removePrefix's implementation end-to-end so
+     the chain that surfaced the substring bug (hasPrefix check →
+     substring with -1 length) stays green.")
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

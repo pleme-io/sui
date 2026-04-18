@@ -53,17 +53,31 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Int(args[0].as_string()?.len() as i64))
     });
     register_builtin(builtins, "substring", |args| {
-        let start = args[0].as_int()? as usize;
+        // Mirror the VM's substring — see sui-bytecode/src/builtins.rs
+        // for the rationale. CppNix uses negative length to mean
+        // "to end of string" (core idiom in lib.strings.removePrefix);
+        // negative start yields an empty string.
+        let start_i = args[0].as_int()?;
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "substring<p1>",
             func: Rc::new(move |args2| {
-                let len = args2[0].as_int()? as usize;
+                let len_i = args2[0].as_int()?;
                 Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "substring<p2>",
                     func: Rc::new(move |args3| {
                         let s = args3[0].as_string()?;
-                        let end = (start + len).min(s.len());
-                        let start = start.min(s.len());
+                        if start_i < 0 {
+                            return Err(EvalError::TypeError(
+                                "substring: negative start position".into(),
+                            ));
+                        }
+                        let s_len = s.len();
+                        let start = (start_i as usize).min(s_len);
+                        let end = if len_i < 0 {
+                            s_len
+                        } else {
+                            start.saturating_add(len_i as usize).min(s_len)
+                        };
                         Ok(Value::string(&s[start..end]))
                     }),
                 })))

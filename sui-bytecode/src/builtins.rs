@@ -524,18 +524,40 @@ impl BuiltinRegistry {
         });
 
         self.register("substring", 1, |args| {
-            let start = as_int(&args[0])? as usize;
+            // CppNix semantics (verified against 2.33):
+            //   - negative `len` means "to end of string"
+            //   - negative `start` yields empty string
+            //   - out-of-range start clamps; out-of-range end clamps
+            //
+            // sui's VM was previously casting `i64 as usize` immediately,
+            // which turned `-1` (a common CppNix convention for "rest of
+            // string", used by lib.strings.removePrefix) into usize::MAX
+            // and panicked with "begin <= end" on the arithmetic overflow.
+            // Discovered while probing `(import <nixpkgs>/lib).strings
+            //   .removePrefix "foo-" "foo-bar"` — fifth silent/loud bug
+            // of the session.
+            let start_i = as_int(&args[0])?;
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "substring<p1>",
                 func: Rc::new(move |args2| {
-                    let len = as_int(&args2[0])? as usize;
+                    let len_i = as_int(&args2[0])?;
                     Ok(VMValue::Builtin(VMBuiltin {
                         name: "substring<p2>",
                         func: Rc::new(move |args3| {
                             let s = as_string(&args3[0])?;
-                            let end = (start + len).min(s.len());
-                            let actual_start = start.min(s.len());
-                            Ok(VMValue::String(s[actual_start..end].to_string()))
+                            if start_i < 0 {
+                                return Err(VMError::Throw(
+                                    "substring: negative start position".to_string(),
+                                ));
+                            }
+                            let s_len = s.len();
+                            let start = (start_i as usize).min(s_len);
+                            let end = if len_i < 0 {
+                                s_len
+                            } else {
+                                start.saturating_add(len_i as usize).min(s_len)
+                            };
+                            Ok(VMValue::String(s[start..end].to_string()))
                         }),
                         arity: 1,
                     }))
