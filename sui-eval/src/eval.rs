@@ -409,6 +409,19 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
         return Ok(value.clone());
     }
     // Slow path: chase thunk chains.
+    //
+    // A legitimate chain is typically 1–3 links deep (result of lazy
+    // evaluation wrapping an intermediate value in another thunk).
+    // Reaching 100 means either (a) a self-referential cycle like
+    // `let x = x; in x` that bypassed per-thunk Blackhole detection,
+    // or (b) pathological Thunk(Thunk(...)) nesting. Both are errors.
+    //
+    // Previous behavior silently returned `Ok(last_thunk)` at depth
+    // 100, which hid infinite-recursion bugs — the blackhole tests
+    // in the lib suite failed because `result.is_ok()` instead of
+    // `is_err()`. Returning `Err` here makes the silent-bail visible
+    // at the CppNix-compatible call site (real Nix raises "infinite
+    // recursion encountered").
     let mut v = value.clone();
     let mut depth = 0u32;
     loop {
@@ -417,7 +430,9 @@ pub fn force_value(value: &Value) -> Result<Value, EvalError> {
                 v = force_thunk(thunk)?;
                 depth += 1;
                 if depth > 100 {
-                    return Ok(v);
+                    return Err(EvalError::InfiniteRecursion(
+                        "force_value: thunk chain exceeded depth 100 (cycle or runaway lazy wrap)".into(),
+                    ));
                 }
             }
             _ => return Ok(v),
