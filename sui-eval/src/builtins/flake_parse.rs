@@ -113,6 +113,49 @@ pub(crate) fn parse_flake_ref(s: &str) -> Result<Value, EvalError> {
         return Ok(Value::Attrs(Rc::new(attrs)));
     }
 
+    // ── flake:<id>[/ref] or bare <id>[/ref] — indirect refs ────
+    // CppNix's `flake:nixpkgs` (and the bare `nixpkgs` form used in
+    // flake inputs = { nixpkgs.url = "nixpkgs"; } syntax) resolves
+    // via the flake registry. We parse them to a `{ type =
+    // "indirect"; id = …; [ref|rev] = …; }` attrset here; the
+    // registry lookup that turns indirect refs into concrete
+    // github:/tarball:/git+ refs is a separate step (to be wired
+    // through fetchTree).
+    {
+        let bare = s.strip_prefix("flake:").unwrap_or(s);
+        // Indirect candidates are identifiers optionally followed by
+        // `/ref` / `/ref/rev`. Distinguish from other schemes by the
+        // lack of `:` in the portion before any `/`.
+        let first_segment = bare.split('/').next().unwrap_or("");
+        let looks_indirect = !first_segment.is_empty()
+            && !first_segment.contains(':')
+            && !first_segment.contains('.')
+            && first_segment
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if looks_indirect {
+            let (base, params) = split_query(bare);
+            let parts: Vec<&str> = base.splitn(3, '/').collect();
+            attrs.insert("type".into(), Value::string("indirect"));
+            attrs.insert("id".into(), Value::string(parts[0].to_string()));
+            // Middle segment is ref when present. Third is rev.
+            if let Some(reff) = parts.get(1)
+                && !reff.is_empty()
+            {
+                attrs.insert("ref".into(), Value::string((*reff).to_string()));
+            }
+            if let Some(rev) = parts.get(2)
+                && !rev.is_empty()
+            {
+                attrs.insert("rev".into(), Value::string((*rev).to_string()));
+            }
+            for (k, v) in params {
+                attrs.insert(k, Value::string(v));
+            }
+            return Ok(Value::Attrs(Rc::new(attrs)));
+        }
+    }
+
     Err(EvalError::TypeError(format!(
         "parseFlakeRef: '{s}' is not a recognised flake reference"
     )))
@@ -204,6 +247,22 @@ pub(crate) fn flake_ref_to_string(attrs: &NixAttrs) -> Result<Value, EvalError> 
                 .to_str()?;
             let qs = query_string(attrs, &["type", "path"])?;
             Ok(Value::string(format!("path:{path}{qs}")))
+        }
+        "indirect" => {
+            let id = attrs
+                .get("id")
+                .ok_or_else(|| EvalError::AttrNotFound("id".into()))?
+                .to_str()?;
+            let mut out = format!("flake:{id}");
+            if let Some(rev) = attrs.get("rev") {
+                out.push('/');
+                out.push_str(&rev.to_str()?);
+            } else if let Some(reff) = attrs.get("ref") {
+                out.push('/');
+                out.push_str(&reff.to_str()?);
+            }
+            out.push_str(&query_string(attrs, &["type", "id", "ref", "rev"])?);
+            Ok(Value::string(out))
         }
         other => Err(EvalError::TypeError(format!(
             "flakeRefToString: unknown flake type '{other}'"

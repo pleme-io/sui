@@ -73,10 +73,16 @@
 (defnix spec-nixVersion-string
   :source "builtins.nixVersion"
   :expected-json "\"2.24.0\""
-  :tags ("spec" "meta" "verified")
+  :tags ("spec" "meta" "verified" "version-dependent")
+  :skip #t
   :note
     "sui identifies as Nix 2.24.0 for compat. This test catches drift
-     if someone changes the hardcoded value without a semantic reason.")
+     on sui's side, but will diverge from the `oracle_corpus_matches_cppnix`
+     check whenever the host CppNix is a different version (e.g. 2.33 on
+     Determinate Nix 3.17). Skipped by default because it's the only
+     corpus entry that can't agree with arbitrary host nix — pick one
+     oracle or the other, not both. The author-curated value still
+     protects against sui-internal version drift when run standalone.")
 
 ;; ── path — filtered path import ──────────────────────────────────
 ;; sui implements this in sui-eval/src/builtins/paths.rs but it
