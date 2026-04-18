@@ -255,6 +255,32 @@
   :expected-json "{}"
   :tags ("regression" "lambda" "builtin"))
 
+;; ── #10: float toString now matches CppNix's %f format (fixed at next commit) ─
+
+(defnix toString-float-one-decimal
+  :source "builtins.toString 1.5"
+  :expected-json "\"1.500000\""
+  :tags ("regression" "float" "builtin")
+  :note
+    "CppNix coerces floats via C printf %f — always 6 decimal
+     places. Rust's default formatter strips trailing zeros
+     (`1.5` stayed `1.5`). Fixed in both engines via
+     `format!(\"{f:.6}\")` at every Value::Float coercion site.")
+
+(defnix toString-float-six-plus
+  :source "builtins.toString 3.14159"
+  :expected-json "\"3.141590\""
+  :tags ("regression" "float" "builtin")
+  :note "Exactly 6 decimal places — no more, no less.")
+
+(defnix toString-float-integer-valued
+  :source "builtins.toString 1.0"
+  :expected-json "\"1.000000\""
+  :tags ("regression" "float" "builtin")
+  :note
+    "1.0 must not collapse to \"1\" — CppNix preserves the float
+     shape in coercion.")
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

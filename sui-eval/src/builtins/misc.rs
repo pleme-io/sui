@@ -101,7 +101,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let forced = crate::eval::force_value(v)?;
                 let rhs = match &forced {
                     Value::Int(n) => n.to_string(),
-                    Value::Float(f) => format!("{f}"),
+                    Value::Float(f) => format!("{f:.6}"),
                     Value::Bool(true) => "true".to_string(),
                     Value::Bool(false) => "false".to_string(),
                     Value::Null => "null".to_string(),

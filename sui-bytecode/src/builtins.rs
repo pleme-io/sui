@@ -1721,7 +1721,8 @@ fn vm_coerce_to_string(v: &VMValue) -> Result<VMValue, VMError> {
     match v {
         VMValue::String(s) => Ok(VMValue::String(s.clone())),
         VMValue::Int(n) => Ok(VMValue::String(n.to_string())),
-        VMValue::Float(f) => Ok(VMValue::String(format!("{f}"))),
+        // 6-decimal fixed-point to match CppNix's `%f` float coercion.
+        VMValue::Float(f) => Ok(VMValue::String(format!("{f:.6}"))),
         VMValue::Bool(true) => Ok(VMValue::String("1".to_string())),
         VMValue::Bool(false) => Ok(VMValue::String(String::new())),
         VMValue::Null => Ok(VMValue::String(String::new())),

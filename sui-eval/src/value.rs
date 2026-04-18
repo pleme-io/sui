@@ -2073,7 +2073,12 @@ impl Value {
                 p.to_string()
             }
             Value::Int(n) => n.to_string(),
-            Value::Float(f) => format!("{f}"),
+            // CppNix uses C printf "%f" for float → string coercion,
+            // which always emits 6 decimal places (`1.5` → "1.500000",
+            // `3.14159` → "3.141590"). Rust's `{}` formatter strips
+            // trailing zeros. Match CppNix so `lib.strings.floatToString`
+            // and module-system defaults round-trip identically.
+            Value::Float(f) => format!("{f:.6}"),
             Value::Bool(true) => "1".to_string(),
             Value::Bool(false) => String::new(),
             Value::Null => String::new(),
@@ -3693,9 +3698,10 @@ mod tests {
 
     #[test]
     fn coerce_to_string_float() {
+        // CppNix %f-format: always 6 decimal places.
         let v = Value::Float(3.14);
         let (s, _ctx) = v.coerce_to_string().unwrap();
-        assert_eq!(s, "3.14");
+        assert_eq!(s, "3.140000");
     }
 
     #[test]

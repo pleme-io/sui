@@ -4636,9 +4636,10 @@ mod tests {
 
     #[test]
     fn interp_float_coercion() {
+        // CppNix %f-format: always 6 decimal places.
         assert_eq!(
             ev(r#""${toString 3.14}""#),
-            Value::string("3.14"),
+            Value::string("3.140000"),
         );
     }
 
