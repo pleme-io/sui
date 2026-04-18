@@ -5995,6 +5995,8 @@ dependencies = [
  "im-rc",
  "pretty_assertions",
  "proptest",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "redb",
  "regex",
  "rnix",
@@ -6013,6 +6015,8 @@ dependencies = [
  "sui-intern",
  "sui-store",
  "tar",
+ "tatara-lisp",
+ "tatara-lisp-derive",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -6155,6 +6159,26 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "tatara-lisp"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "tatara-lisp-derive",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tatara-lisp-derive"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
