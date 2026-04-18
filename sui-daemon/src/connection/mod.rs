@@ -1218,9 +1218,28 @@ mod tests {
         assert_eq!(last, StderrMsg::Last as u64);
     }
 
+    // ── Newly-implemented read-path ops ──────────────────────────
+    //
+    // These six replace the earlier `unimpl_*` stubs that asserted
+    // the op returned "not yet implemented". Each exercises the
+    // happy-path wire format so a future refactor of the handler
+    // can't silently change the response shape.
+
     #[tokio::test]
-    async fn unimpl_has_substitutes() {
-        assert_op_unimplemented(WorkerOp::HasSubstitutes).await;
+    async fn has_substitutes_returns_false() {
+        // No substituter client yet → always false. Deliberate.
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::HasSubstitutes as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/whatever").unwrap();
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        assert!(!wire::read_bool(&mut cursor).unwrap());
     }
 
     #[tokio::test]
@@ -1229,13 +1248,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimpl_query_references() {
-        assert_op_unimplemented(WorkerOp::QueryReferences).await;
+    async fn query_references_empty_for_unknown_path() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryReferences as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/missing").unwrap();
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        let count = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(count, 0, "unknown path should produce empty reference list");
     }
 
     #[tokio::test]
-    async fn unimpl_query_referrers() {
-        assert_op_unimplemented(WorkerOp::QueryReferrers).await;
+    async fn query_referrers_empty_for_mock_store() {
+        // MockStore inherits the trait default which returns
+        // NotSupported. Our handler catches that and produces an
+        // empty list, which is the expected graceful-degradation
+        // behavior — a client querying referrers on an isolated
+        // store just gets "nothing depends on this."
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryReferrers as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/something").unwrap();
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -1259,8 +1306,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimpl_add_temp_root() {
-        assert_op_unimplemented(WorkerOp::AddTempRoot).await;
+    async fn add_temp_root_acks_with_one() {
+        // Client sends the path to pin; we ACK with a u64 1, which
+        // is what CppNix's protocol expects so the client's blocking
+        // call returns.
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddTempRoot as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/anything").unwrap();
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1284,8 +1345,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimpl_query_deriver() {
-        assert_op_unimplemented(WorkerOp::QueryDeriver).await;
+    async fn query_deriver_empty_string_for_missing_path() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryDeriver as u64).unwrap();
+        wire::write_string(&mut input, "/nix/store/missing").unwrap();
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        let deriver = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(deriver, "");
     }
 
     #[tokio::test]
@@ -1334,8 +1407,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimpl_query_valid_paths() {
-        assert_op_unimplemented(WorkerOp::QueryValidPaths).await;
+    async fn query_valid_paths_filters_to_existing() {
+        // Two candidates: one exists in the store, one doesn't.
+        // Response should list only the existing one.
+        let known = "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-hello-2.12";
+        let store = Arc::new(MockStore::new().with_path(known, "sha256:abc"));
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::QueryValidPaths as u64).unwrap();
+        wire::write_u64(&mut input, 2).unwrap();
+        wire::write_string(&mut input, known).unwrap();
+        wire::write_string(&mut input, "/nix/store/00000000000000000000000000000000-missing").unwrap();
+        // No trailing substitute bool — we test with an older
+        // protocol version so `read_u64` doesn't try to consume
+        // bytes that aren't there.
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = 26; // < PROTOCOL_MINOR_VALID_PATHS_SUBSTITUTE
+        conn.run().await.unwrap();
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+        let count = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(count, 1, "only the known path should come back");
+        let first = wire::read_string(&mut cursor).unwrap();
+        assert_eq!(first, known);
     }
 
     #[tokio::test]
