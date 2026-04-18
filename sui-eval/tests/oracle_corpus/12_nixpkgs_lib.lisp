@@ -184,6 +184,33 @@
      the chain that surfaced the substring bug (hasPrefix check →
      substring with -1 length) stays green.")
 
+;; ── #7: builtins.fromJSON on objects returned null (fixed at next commit) ─
+
+(defnix fromJSON-object-simple
+  :source "builtins.fromJSON \"{\\\"a\\\":1,\\\"b\\\":2}\""
+  :expected-json "{\"a\":1,\"b\":2}"
+  :tags ("regression" "json" "builtin")
+  :note
+    "Regression guard: before this commit, fromJSON on an Object
+     returned null because json_to_vm_value had no interner access.
+     Routed through VM dispatch so keys intern properly.")
+
+(defnix fromJSON-nested
+  :source "builtins.fromJSON \"{\\\"a\\\":1,\\\"b\\\":[2,3,{\\\"c\\\":4}]}\""
+  :expected-json "{\"a\":1,\"b\":[2,3,{\"c\":4}]}"
+  :tags ("regression" "json" "builtin"))
+
+(defnix fromJSON-primitives
+  :source
+    "[
+       (builtins.fromJSON \"null\")
+       (builtins.fromJSON \"true\")
+       (builtins.fromJSON \"42\")
+       (builtins.fromJSON \"\\\"hi\\\"\")
+     ]"
+  :expected-json "[null,true,42,\"hi\"]"
+  :tags ("regression" "json" "builtin"))
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

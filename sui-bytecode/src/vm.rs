@@ -1496,6 +1496,41 @@ impl<'a> VM<'a> {
     /// Force a value: if it is a thunk, evaluate it (with memoization
     /// and blackhole detection). If it is already a concrete value,
     /// return it unchanged.
+    /// Recursively convert a `serde_json::Value` to a `VMValue`, using
+    /// the live interner for object keys. Mirrors the shape used by
+    /// `builtins.fromJSON`. Lives on the VM so it can intern keys.
+    fn json_value_to_vm(&mut self, v: &serde_json::Value) -> VMValue {
+        use std::collections::BTreeMap;
+        match v {
+            serde_json::Value::Null => VMValue::Null,
+            serde_json::Value::Bool(b) => VMValue::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    VMValue::Int(i)
+                } else {
+                    VMValue::Float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(s) => VMValue::String(s.clone()),
+            serde_json::Value::Array(arr) => {
+                VMValue::List(arr.iter().map(|v| self.json_value_to_vm(v)).collect())
+            }
+            serde_json::Value::Object(map) => {
+                let mut attrs: BTreeMap<Symbol, VMValue> = BTreeMap::new();
+                for (k, val) in map {
+                    let sym = self.interner.intern(k);
+                    attrs.insert(sym, self.json_value_to_vm(val));
+                }
+                VMValue::Attrs(attrs)
+            }
+        }
+    }
+
+    /// Wrapper for callers that want a NanBox directly.
+    fn json_value_to_nanbox(&mut self, v: &serde_json::Value) -> NanBox {
+        NanBox::from_vmvalue(&self.json_value_to_vm(v))
+    }
+
     fn force_value(&mut self, val: NanBox) -> Result<NanBox, VMError> {
         if !val.is_thunk() {
             return Ok(val);
@@ -1881,6 +1916,31 @@ impl<'a> VM<'a> {
                         context: "attrValues".to_string(),
                     })
                 }
+            }
+            "fromJSON" => {
+                // JSON objects need the interner to intern keys as
+                // Symbols. The registered builtin returned `null` for
+                // Object variants because `json_to_vm_value` has no
+                // interner access — that silently broke every
+                // `fromJSON "{...}"` call. Route through VM dispatch
+                // so we can intern properly. Primitives, arrays, and
+                // nested structures all handled here too, so the
+                // registry path is effectively dead for fromJSON
+                // post this change.
+                let forced = self.force_value(arg.clone())?;
+                let s = match forced.as_string() {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return Err(VMError::TypeError {
+                            expected: "string",
+                            got: forced.type_name(),
+                            context: "fromJSON".to_string(),
+                        });
+                    }
+                };
+                let parsed: serde_json::Value = serde_json::from_str(&s)
+                    .map_err(|e| VMError::Throw(format!("fromJSON: {e}")))?;
+                Ok(Some(self.json_value_to_nanbox(&parsed)))
             }
             "listToAttrs" => {
                 let forced = self.force_value(arg.clone())?;
