@@ -15,7 +15,7 @@ pub use smol_str::SmolStr;
 
 use rowan::ast::AstNode;
 
-use sui_intern::{Interner, Symbol};
+use sui_intern::Symbol;
 
 /// Type alias for the persistent hash map used by `NixAttrs` and `Env`.
 ///
@@ -24,21 +24,41 @@ use sui_intern::{Interner, Symbol};
 /// the hash is a single multiply-shift — no SipHash overhead.
 pub type FxHashMap<K, V> = im_rc::HashMap<K, V, FxBuildHasher>;
 
-// -- Thread-local string interner --
-
-thread_local! {
-    static INTERNER: RefCell<Interner> = RefCell::new(Interner::new());
-}
+// -- String interner (shared with sui-bytecode via sui-intern's thread-local) --
+//
+// Previously this module owned its own `thread_local! INTERNER`. That
+// diverged from `sui-bytecode`'s `sui_intern::*` thread-local — Symbols
+// were NOT portable across the tree-walker ↔ VM fallback boundary,
+// which only worked because both paths happened to re-intern strings
+// from the same source text. Delegating both to the same thread-local
+// closes the gap and makes `sui_intern::prewarm()` affect this crate
+// too.
 
 /// Intern a string key, returning a Symbol handle.
 /// Used for NixAttrs keys and Env binding names.
 pub fn intern(s: &str) -> Symbol {
-    INTERNER.with(|i| i.borrow_mut().intern(s))
+    sui_intern::intern(s)
 }
 
-/// Resolve a Symbol back to its string content.
+/// Resolve a Symbol back to its string content. Allocates a fresh
+/// `String`. For hot paths prefer [`resolve_rc`] or [`with_resolved`]
+/// — `Rc::clone` is ~20x cheaper than `String::from` for identifier-
+/// sized inputs.
 pub fn resolve(sym: Symbol) -> String {
-    INTERNER.with(|i| i.borrow().resolve(sym).to_string())
+    sui_intern::resolve(sym)
+}
+
+/// Resolve a Symbol to a shared `Rc<str>`. Zero-copy.
+pub fn resolve_rc(sym: Symbol) -> std::rc::Rc<str> {
+    sui_intern::resolve_rc(sym)
+}
+
+/// Borrow the resolved string inside a closure without allocating.
+pub fn with_resolved<F, R>(sym: Symbol, f: F) -> R
+where
+    F: FnOnce(&str) -> R,
+{
+    sui_intern::with_resolved(sym, f)
 }
 
 // -- Identifier symbol cache --
@@ -1161,12 +1181,27 @@ impl NixAttrs {
         self.get_sym(&sym)
     }
 
-    /// Look up by pre-interned Symbol. O(depth × log32 n) for overlays.
+    /// Look up by pre-interned Symbol.
+    ///
+    /// Fast path: if the overlay's flat cache has been populated (by any
+    /// prior full iteration — `attrNames`, `attrValues`, `//` merge that
+    /// needed key enumeration, etc.), read directly from it in O(1). This
+    /// matters in real Nix workloads where an attrset is first iterated
+    /// (module eval, `with` desugaring) and then hit many times by dotted
+    /// access — CppNix has no such structure and pays O(1) always; we want
+    /// to match that whenever the cache is warm.
+    ///
+    /// Slow path: walk the overlay chain right-to-left in O(depth). Not
+    /// populating the cache on cold lookups is deliberate — the cache
+    /// costs O(n) to build and the chain is usually short (1–3 overlays).
     #[must_use]
     pub fn get_sym(&self, sym: &Symbol) -> Option<&Value> {
         match &self.0 {
             AttrsInner::Flat(m) => m.get(sym),
-            AttrsInner::Overlay { left, right, .. } => {
+            AttrsInner::Overlay { left, right, cache } => {
+                if let Some(flat) = cache.get() {
+                    return flat.get(sym);
+                }
                 // Right overrides left
                 right.get_sym(sym).or_else(|| left.get_sym(sym))
             }
@@ -1198,7 +1233,10 @@ impl NixAttrs {
     pub fn contains_key_sym(&self, sym: &Symbol) -> bool {
         match &self.0 {
             AttrsInner::Flat(m) => m.contains_key(sym),
-            AttrsInner::Overlay { left, right, .. } => {
+            AttrsInner::Overlay { left, right, cache } => {
+                if let Some(flat) = cache.get() {
+                    return flat.contains_key(sym);
+                }
                 right.contains_key_sym(sym) || left.contains_key_sym(sym)
             }
         }
@@ -3882,7 +3920,9 @@ mod tests {
         let thunk = Thunk::new_suspended(expr, Env::new());
         let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
         let cached = thunk.0.cache.get().unwrap();
-        assert_eq!(**cached, forced);
+        // Cache stores Concrete (thunk-free); force returns Value.
+        // Compare via Concrete→Value promotion.
+        assert_eq!((**cached).clone().into_value(), forced);
     }
 
     #[test]
@@ -3890,7 +3930,7 @@ mod tests {
         let thunk = Thunk::new_evaluated(Value::Int(77));
         // Cache should be set immediately.
         let cached = thunk.0.cache.get().expect("cache should be pre-populated");
-        assert_eq!(**cached, Value::Int(77));
+        assert_eq!(**cached, Concrete::Int(77));
     }
 
     #[test]

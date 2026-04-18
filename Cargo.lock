@@ -5860,6 +5860,7 @@ dependencies = [
  "sui-compat",
  "sui-daemon",
  "sui-eval",
+ "sui-intern",
  "sui-orchestrate",
  "sui-store",
  "thiserror 2.0.18",

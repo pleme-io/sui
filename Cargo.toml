@@ -158,6 +158,7 @@ sui-store.workspace = true
 sui-eval.workspace = true
 sui-build.workspace = true
 sui-daemon.workspace = true
+sui-intern.workspace = true
 sui-orchestrate.workspace = true
 tokio.workspace = true
 axum.workspace = true

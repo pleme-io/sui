@@ -279,6 +279,11 @@ async fn main() -> Result<(), CliError> {
         )
         .init();
 
+    // Pre-intern the hot nixpkgs/flake/stdenv identifier set on the
+    // main thread. Subsequent intern() calls for these are hashmap
+    // hits; also amortizes the interner's initial resize cost.
+    sui_intern::prewarm();
+
     let cli = Cli::parse();
 
     match cli.command {
