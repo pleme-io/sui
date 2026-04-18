@@ -1228,10 +1228,21 @@ fn builtins_get_flake_path_based() {
 }
 
 #[test]
-fn builtins_get_flake_rejects_registry_refs() {
-    // Non-path flake references are not yet supported
+fn builtins_get_flake_accepts_indirect_ref_offline() {
+    // `getFlake "nixpkgs"` now resolves through the registry and
+    // attempts to fetch. Without network (the expected state in CI
+    // and most dev runs) the fetch step fails — but the error is an
+    // IoError (fetch failure), NOT a NotImplemented (unsupported
+    // scheme). This asserts the routing/resolution lands correctly;
+    // the online path is exercised by the SUI_TEST_ONLINE-gated
+    // integration test in tests/oracle.rs.
     let result = eval(r#"builtins.getFlake "nixpkgs""#);
-    assert!(result.is_err());
+    match result {
+        Err(crate::value::EvalError::NotImplemented(msg)) => {
+            panic!("getFlake should route indirect refs, not reject them: {msg}")
+        }
+        Ok(_) | Err(_) => {} // Ok (network up) or other Err (fetch/eval) both fine
+    }
 }
 
 #[test]

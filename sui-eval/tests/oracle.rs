@@ -211,6 +211,67 @@ mod fuzz {
 // formed and carry a :note explaining the reason.
 // ──────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────
+// getFlake integration — exercises the end-to-end indirect → resolve
+// → fetch → evaluate chain against real github. Opt-in via the same
+// SUI_TEST_ONLINE gate as the differential oracle (network-dependent).
+// ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn getflake_indirect_resolves_and_fetches() {
+    if common::skip_if_offline("getflake_indirect_resolves_and_fetches") {
+        return;
+    }
+    // Using `flake-utils` rather than `nixpkgs` because the nixpkgs
+    // tarball is ~60 MB and unzips to ~250 MB of text. flake-utils is
+    // tiny (~20 KB) and has a stable top-level flake.nix with a
+    // non-empty description. Routes through:
+    //   parseFlakeRef → registry lookup → github archive fetch →
+    //   tar extract → evaluate_flake → attrset with `description`.
+    let result = sui_eval::eval(r#"(builtins.getFlake "flake-utils").description"#);
+    match result {
+        Ok(sui_eval::Value::String(s)) => {
+            assert!(!s.as_str().is_empty(), "description should be non-empty");
+            eprintln!("getFlake flake-utils description: {}", s.as_str());
+        }
+        Ok(other) => panic!("expected string description, got {other:?}"),
+        Err(e) => panic!("getFlake chain failed: {e}"),
+    }
+}
+
+#[test]
+fn getflake_github_scheme_fetches() {
+    if common::skip_if_offline("getflake_github_scheme_fetches") {
+        return;
+    }
+    // Exercises the github: scheme directly (no registry hop). Same
+    // end-to-end chain past the parse step — proves the refactored
+    // dispatch doesn't regress the concrete-ref path.
+    let result =
+        sui_eval::eval(r#"(builtins.getFlake "github:numtide/flake-utils").description"#);
+    assert!(
+        matches!(result, Ok(sui_eval::Value::String(_))),
+        "github:numtide/flake-utils should fetch + evaluate cleanly, got {result:?}"
+    );
+}
+
+#[test]
+fn getflake_attrset_input_works() {
+    if common::skip_if_offline("getflake_attrset_input_works") {
+        return;
+    }
+    // Exercises the attrset-input path: CppNix's getFlake accepts a
+    // pre-parsed ref attrset in addition to the string form. This
+    // proves the normalize step at the top of getFlake handles both.
+    let result = sui_eval::eval(
+        r#"(builtins.getFlake { type = "github"; owner = "numtide"; repo = "flake-utils"; }).description"#,
+    );
+    assert!(
+        matches!(result, Ok(sui_eval::Value::String(_))),
+        "attrset-form getFlake should work, got {result:?}"
+    );
+}
+
 #[test]
 fn executable_specs_parse_even_when_skipped() {
     let cases = load_corpus();

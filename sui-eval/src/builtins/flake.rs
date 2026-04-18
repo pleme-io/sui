@@ -55,56 +55,110 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     register_builtin(builtins, "getFlake", |args| {
         let flake_ref = crate::eval::force_value(&args[0])?;
-        let flake_ref_str = flake_ref.as_string()?.to_string();
 
-        // Path-based references: evaluate directly.
-        if flake_ref_str.starts_with('/') || flake_ref_str.starts_with('.') {
-            return evaluate_flake(&std::path::PathBuf::from(&flake_ref_str));
-        }
-        if let Some(path) = flake_ref_str.strip_prefix("path:") {
-            return evaluate_flake(&std::path::PathBuf::from(path));
-        }
-
-        // GitHub shorthand: "github:owner/repo" or "github:owner/repo/rev".
-        if let Some(gh_ref) = flake_ref_str.strip_prefix("github:") {
-            let parts: Vec<&str> = gh_ref.splitn(3, '/').collect();
-            if parts.len() < 2 {
-                return Err(EvalError::TypeError(format!(
-                    "getFlake: invalid github ref: {flake_ref_str}"
-                )));
+        // Step 1: normalize input to a parsed attrset. CppNix accepts
+        // either a string (parsed) or a pre-parsed attrset; we do the
+        // same so `builtins.getFlake { type = "github"; owner = ...; repo = ...; }`
+        // and `builtins.getFlake "github:owner/repo"` both work.
+        let parsed_attrs = match &flake_ref {
+            Value::String(_) => {
+                let s = flake_ref.as_string()?.to_string();
+                let parsed = parse_flake_ref(&s)?;
+                parsed.to_attrs()?
             }
-            let owner = parts[0];
-            let repo = parts[1];
-            let rev = if parts.len() >= 3 { parts[2] } else { "HEAD" };
+            Value::Attrs(a) => (**a).clone(),
+            _ => {
+                return Err(EvalError::TypeError(
+                    "getFlake: expected string or attrset".into(),
+                ));
+            }
+        };
 
-            let locked = sui_compat::flake::LockedInput {
-                source_type: "github".to_string(),
-                owner: Some(owner.to_string()),
-                repo: Some(repo.to_string()),
-                rev: Some(rev.to_string()),
-                nar_hash: None,
-                last_modified: None,
-                path: None,
-                url: None,
-                git_ref: None,
-                dir: None,
-                extra: std::collections::BTreeMap::new(),
-            };
+        // Step 2: if indirect, resolve through the registry. The
+        // resolver handles chain-follow + caller-override preservation.
+        let ty = parsed_attrs
+            .get("type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        let resolved_attrs = if ty == "indirect" {
+            let resolved_val = super::flake_registry::resolve_indirect(&parsed_attrs)?;
+            resolved_val.to_attrs()?
+        } else {
+            parsed_attrs
+        };
 
-            let fetcher = crate::fetcher::InputFetcher::new();
-            let fetched_dir = fetcher.fetch(&locked).map_err(|e| {
-                EvalError::IoError {
-                    context: format!("getFlake: fetch {flake_ref_str}"),
-                    message: e.to_string(),
-                }
-            })?;
+        // Step 3: dispatch on the concrete type and fetch into a
+        // local path. Every non-path scheme goes through InputFetcher.
+        let ref_type = resolved_attrs
+            .get("type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
 
-            return evaluate_flake(&fetched_dir);
+        // path: evaluates directly — no fetch needed.
+        if ref_type == "path" {
+            let p = resolved_attrs
+                .get("path")
+                .ok_or_else(|| EvalError::AttrNotFound("path".into()))?
+                .to_str()?;
+            return evaluate_flake(&std::path::PathBuf::from(&*p));
         }
 
-        // For any other reference style, return a proper error.
-        Err(EvalError::NotImplemented(format!(
-            "getFlake: unsupported flake reference scheme: {flake_ref_str}"
-        )))
+        // github/gitlab/sourcehut/git/tarball — convert to LockedInput
+        // and run through the fetcher.
+        let locked = attrs_to_locked_input(&resolved_attrs)?;
+        let context_str = flake_ref_to_string(&resolved_attrs)
+            .ok()
+            .and_then(|v| v.as_string().ok().map(|s| s.to_string()))
+            .unwrap_or_else(|| ref_type.to_string());
+
+        let fetcher = crate::fetcher::InputFetcher::new();
+        let fetched_dir = fetcher.fetch(&locked).map_err(|e| EvalError::IoError {
+            context: format!("getFlake: fetch {context_str}"),
+            message: e.to_string(),
+        })?;
+
+        evaluate_flake(&fetched_dir)
     });
+}
+
+/// Convert a parsed flake-ref attrset (output of `parseFlakeRef` or
+/// the registry resolver) into a `sui_compat::flake::LockedInput` that
+/// `crate::fetcher::InputFetcher` accepts. `LockedInput` expects a
+/// concrete `rev` for github/git sources; we use `ref` as a fallback
+/// when no `rev` is present (the GitHub tarball endpoint accepts both
+/// SHAs and ref names, and flake consumers get the deterministic-
+/// enough behavior they need for one-shot evaluation).
+fn attrs_to_locked_input(
+    attrs: &NixAttrs,
+) -> Result<sui_compat::flake::LockedInput, EvalError> {
+    let ty = attrs
+        .get("type")
+        .ok_or_else(|| EvalError::AttrNotFound("type".into()))?
+        .to_str()?;
+
+    let str_field = |name: &str| -> Option<String> {
+        attrs.get(name).and_then(|v| v.to_str().ok())
+    };
+
+    // `ref` fallback: if rev is missing, use ref; if both are missing,
+    // use "HEAD". The fetcher will try the GitHub tarball endpoint with
+    // whatever string we hand it, so this covers branch names, tags,
+    // and full SHAs uniformly.
+    let rev = str_field("rev")
+        .or_else(|| str_field("ref"))
+        .unwrap_or_else(|| "HEAD".to_string());
+
+    Ok(sui_compat::flake::LockedInput {
+        source_type: ty.to_string(),
+        owner: str_field("owner"),
+        repo: str_field("repo"),
+        rev: Some(rev),
+        nar_hash: None,
+        last_modified: None,
+        path: str_field("path"),
+        url: str_field("url"),
+        git_ref: str_field("ref"),
+        dir: str_field("dir"),
+        extra: std::collections::BTreeMap::new(),
+    })
 }
