@@ -12,6 +12,7 @@ sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-intern.workspace = true
 sui-store.workspace = true
+sui-spec.workspace = true
 rnix.workspace = true
 rowan.workspace = true
 tokio.workspace = true

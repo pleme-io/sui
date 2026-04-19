@@ -5903,6 +5903,7 @@ dependencies = [
  "sui-compat",
  "sui-eval",
  "sui-intern",
+ "sui-spec",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -6016,10 +6017,11 @@ dependencies = [
  "sui-bytecode",
  "sui-compat",
  "sui-intern",
+ "sui-spec",
  "sui-store",
  "tar",
- "tatara-lisp",
- "tatara-lisp-derive",
+ "tatara-lisp 0.2.0",
+ "tatara-lisp-derive 0.2.0",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -6055,6 +6057,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "sui-spec"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "sui-compat",
+ "tatara-lisp 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
+ "tatara-lisp-derive 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6171,13 +6186,35 @@ dependencies = [
  "blake3",
  "serde",
  "serde_json",
- "tatara-lisp-derive",
+ "tatara-lisp-derive 0.2.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tatara-lisp"
+version = "0.2.0"
+source = "git+ssh://git@github.com/pleme-io/tatara.git#b41c3fba4f65619e6392ffe4db03c5ae0a5c511e"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "tatara-lisp-derive 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "tatara-lisp-derive"
 version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "tatara-lisp-derive"
+version = "0.2.0"
+source = "git+ssh://git@github.com/pleme-io/tatara.git#b41c3fba4f65619e6392ffe4db03c5ae0a5c511e"
 dependencies = [
  "proc-macro2",
  "quote",

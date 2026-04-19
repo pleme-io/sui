@@ -1,0 +1,5 @@
+# Use the system git CLI for fetches.  Required so private-repo
+# git deps (e.g. tatara-lisp via ssh://) inherit the user's
+# ssh-agent credentials — cargo's built-in libgit2 does not.
+[net]
+git-fetch-with-cli = true

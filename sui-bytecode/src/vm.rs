@@ -2543,7 +2543,7 @@ impl<'a> VM<'a> {
             args: args_list,
             env: env_vars,
         };
-        let (drv_path, out_paths) = if is_fod {
+        let (drv_path, out_paths, mut drv) = if is_fod {
             let output_hash = get_str(&attrs, self.interner, "outputHash")?;
             let output_hash_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
                 .unwrap_or_else(|| "sha256".to_string());
@@ -2576,57 +2576,30 @@ impl<'a> VM<'a> {
             );
             let mut out_paths = BTreeMap::new();
             out_paths.insert("out".to_string(), out_path);
-            (drv_path, out_paths)
+            (drv_path, out_paths, drv)
         } else {
-            // Input-addressed drv: see extended comment in
-            // `sui-eval/src/builtins/derivation.rs::compute_derivation_outputs`.
-            // CppNix unparses the unresolved form with maskOutputs=true,
-            // which (a) empties outputs[].path, (b) empties any env
-            // entry whose name matches an output name. Sui must do the
-            // same for its inner_hex to match. Then output paths are
-            // filled in + env entries are updated to the placeholder,
-            // then the FINAL form is serialized + hashed for .drv path.
-            for o in &outputs {
-                drv.outputs.insert(
-                    o.clone(),
-                    DerivationOutput {
-                        path: String::new(),
-                        hash_algo: String::new(),
-                        hash: String::new(),
-                    },
-                );
-                drv.env.insert(o.clone(), String::new());
-            }
-            let unresolved_content = drv.serialize();
-            use sha2::{Digest, Sha256};
-            let inner = Sha256::digest(unresolved_content.as_bytes());
-            let inner_hex: String =
-                inner.iter().map(|b| format!("{b:02x}")).collect();
-            let mut out_paths = BTreeMap::new();
-            for o in &outputs {
-                let p = sui_compat::store_path::compute_output_path(
-                    &inner_hex, o, &name,
-                );
-                out_paths.insert(o.clone(), p);
-            }
-            // Fill in outputs[].path + env.<o> with the computed
-            // placeholders, then compute .drv path from the FINAL form.
-            for o in &outputs {
-                let placeholder = out_paths
-                    .get(o)
-                    .expect("just inserted above")
-                    .clone();
-                if let Some(entry) = drv.outputs.get_mut(o) {
-                    entry.path = placeholder.clone();
+            // Input-addressed drv: algorithm lives in
+            // `sui-spec/specs/derivation.lisp`.  Both the VM and the
+            // tree-walker call `sui_spec::derivation::apply`, which
+            // interprets that one authored spec.  Bug-fix history
+            // (#11–#14 this session) was all spec drift between two
+            // independently-maintained copies; this call is how we
+            // make that drift impossible by construction.
+            let algo = sui_spec::derivation::load_canonical().map_err(|e| {
+                VMError::TypeError {
+                    expected: "valid derivation algorithm spec",
+                    got: "load error",
+                    context: format!("sui-spec: {e}"),
                 }
-                drv.env.insert(o.clone(), placeholder);
-            }
-            let final_content = drv.serialize();
-            let drv_path = sui_compat::store_path::compute_drv_path(
-                final_content.as_bytes(),
-                &name,
-            );
-            (drv_path, out_paths)
+            })?;
+            let (drv_path, out_paths, drv_final) =
+                sui_spec::derivation::apply(&algo, drv, outputs.clone(), &name)
+                    .map_err(|e| VMError::TypeError {
+                        expected: "derivation interpreter success",
+                        got: "interp error",
+                        context: format!("sui-spec: {e}"),
+                    })?;
+            (drv_path, out_paths, drv_final)
         };
         // Update derivation outputs with final paths and write .drv file.
         for (output_name, output_path) in &out_paths {

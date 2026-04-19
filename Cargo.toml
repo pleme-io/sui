@@ -10,6 +10,12 @@ members = [
     "sui-daemon",
     "sui-orchestrate",
     "sui-cache-eval",
+    # Declarative Lisp-authored specs (behavioral oracle for CppNix
+    # parity). Every imperative Rust function whose body reads "this
+    # is what CppNix does" is a spec that belongs here, not in the
+    # engine. Rust provides typed borders; Lisp is the free-middle
+    # surface; the pair generates each other.
+    "sui-spec",
 ]
 resolver = "3"
 
@@ -31,6 +37,16 @@ sui-build = { path = "sui-build" }
 sui-daemon = { path = "sui-daemon" }
 sui-orchestrate = { path = "sui-orchestrate" }
 sui-cache-eval = { path = "sui-cache-eval" }
+sui-spec = { path = "sui-spec" }
+
+# Lisp surface for declarative specs.  tatara-lisp is a pleme-io
+# workspace sub-crate (MIT, currently private repo) we consume via
+# SSH git dep.  Requires `net.git-fetch-with-cli = true` in
+# `.cargo/config.toml` so cargo inherits the user's ssh-agent
+# credentials.  Once tatara-lisp is published to crates.io we'll
+# switch to a version-based dep.
+tatara-lisp = { git = "ssh://git@github.com/pleme-io/tatara.git", package = "tatara-lisp" }
+tatara-lisp-derive = { git = "ssh://git@github.com/pleme-io/tatara.git", package = "tatara-lisp-derive" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
