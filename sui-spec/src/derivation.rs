@@ -111,6 +111,23 @@ pub enum PhaseKind {
     /// `.drv` store path via `sui_compat::store_path::compute_drv_path`
     /// and record it as the overall result.
     ComputeDrvPath,
+
+    /// Like [`Serialize`] but replace every `input_derivations`
+    /// key (a `.drv` path) with its `hashDerivationModulo` lookup
+    /// from the thread-local modulo cache — CppNix's recursion
+    /// over dependent derivations.  Input drvs with no cached
+    /// modulo hash are passed through unchanged, which matches
+    /// the parity-on-leaves case (a drv with no dependencies
+    /// serialises identically in both forms).
+    ///
+    /// [`Serialize`]: PhaseKind::Serialize
+    SerializeModulo,
+
+    /// Record the current hex hash in `from_hash` as the modulo
+    /// hash for the produced `.drv` path, so derivations that
+    /// depend on this one can look it up during their own
+    /// `SerializeModulo` phase.
+    CacheSelfModulo,
 }
 
 // ── Interpreter ────────────────────────────────────────────────────
@@ -192,7 +209,53 @@ fn run_phase(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecError> {
         PhaseKind::ComputeOutputPaths => compute_output_paths(phase, s),
         PhaseKind::FillPlaceholders => fill_placeholders(s),
         PhaseKind::ComputeDrvPath => compute_drv_path(phase, s),
+        PhaseKind::SerializeModulo => serialize_modulo(phase, s),
+        PhaseKind::CacheSelfModulo => cache_self_modulo(phase, s),
     }
+}
+
+// ── Modulo cache (for hashDerivationModulo recursion) ──────────────
+//
+// CppNix builds a dependent derivation's `.drv` path by hashing its
+// final ATerm WITH each input derivation's `.drv` path replaced by
+// that input's own recursive modulo hash.  We cache the modulo hash
+// alongside every `.drv` path we produce so subsequent derivations
+// that depend on it can look up the right substitute.
+//
+// Thread-local keeps this simple: single-threaded eval, same cache
+// visible to tree-walker + VM, cleared between test runs by the
+// test harness reseting thread-locals.  A production deploy that
+// wanted cross-eval memoization would swap this for a persistent
+// store — the interface stays the same.
+
+use std::cell::RefCell;
+
+thread_local! {
+    static MODULO_CACHE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// Record a `.drv` path → modulo hash binding, so dependent
+/// derivations can look it up later.
+pub fn remember_modulo_hash(drv_path: &str, modulo_hex: &str) {
+    MODULO_CACHE.with(|c| {
+        c.borrow_mut().insert(drv_path.to_string(), modulo_hex.to_string());
+    });
+}
+
+/// Look up the modulo hash for `drv_path`.  Returns the `drv_path`
+/// unchanged if no entry exists — which is correct for leaves
+/// (derivations with no inputs produce the same bytes in both
+/// normal and modulo forms).
+#[must_use]
+pub fn modulo_of(drv_path: &str) -> String {
+    MODULO_CACHE.with(|c| {
+        c.borrow().get(drv_path).cloned().unwrap_or_else(|| drv_path.to_string())
+    })
+}
+
+/// Clear the cache.  Intended for test isolation.
+pub fn reset_modulo_cache() {
+    MODULO_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 fn mask_outputs_and_env(s: &mut DerivationState) -> Result<(), SpecError> {
@@ -286,17 +349,54 @@ fn compute_drv_path(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecEr
     }
     // Convention: the hex slot name is `<bytes-slot>-hex`, so the
     // raw ATerm bytes live at the same name without that suffix.
-    // `compute_drv_path` re-hashes the bytes internally; we need
-    // the bytes (not the hex) because the store-path construction
-    // happens atop the hash *and* includes input refs as prefix
-    // terms (via `makeTextPath`).
+    // `compute_drv_path_with_refs` re-hashes the bytes internally
+    // but ALSO folds the derivation's input refs (input_derivations
+    // + input_sources) into the fingerprint — `makeTextPath` style.
+    // Without refs, any derivation that references another drv or
+    // a /nix/store source disagrees with CppNix (discovered while
+    // wiring transitive parity).
     let bytes_slot = from.trim_end_matches("-hex").to_string();
     let drv_name = s.drv_name.clone();
+    let refs: Vec<String> = s.drv.input_derivations
+        .keys()
+        .cloned()
+        .chain(s.drv.input_sources.iter().cloned())
+        .collect();
     let drv_path = {
         let bytes = s.get_bytes(&bytes_slot)?;
-        sui_compat::store_path::compute_drv_path(bytes, &drv_name)
+        sui_compat::store_path::compute_drv_path_with_refs(bytes, &drv_name, &refs)
     };
     s.drv_path = Some(drv_path);
+    Ok(())
+}
+
+fn serialize_modulo(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecError> {
+    let slot = phase.bind.clone().ok_or_else(|| SpecError::Interp {
+        phase: "SerializeModulo".into(),
+        message: ":bind is required".into(),
+    })?;
+    let bytes = s.drv.serialize_modulo(|drv_path| modulo_of(drv_path)).into_bytes();
+    s.binds.insert(slot, bytes);
+    Ok(())
+}
+
+fn cache_self_modulo(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecError> {
+    let from = phase.from_hash.clone().ok_or_else(|| SpecError::Interp {
+        phase: "CacheSelfModulo".into(),
+        message: ":from-hash is required".into(),
+    })?;
+    let drv_path = s.drv_path.clone().ok_or_else(|| SpecError::Interp {
+        phase: "CacheSelfModulo".into(),
+        message: "no drv path bound yet (run ComputeDrvPath first)".into(),
+    })?;
+    let hex = {
+        let bytes = s.get_bytes(&from)?;
+        std::str::from_utf8(bytes).map_err(|e| SpecError::Interp {
+            phase: "CacheSelfModulo".into(),
+            message: format!("slot {from} is not valid utf-8: {e}"),
+        })?.to_string()
+    };
+    remember_modulo_hash(&drv_path, &hex);
     Ok(())
 }
 

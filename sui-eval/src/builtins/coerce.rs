@@ -13,11 +13,29 @@ pub(crate) fn coerce_drv_value_to_string(v: &Value) -> Result<String, EvalError>
     Ok(s)
 }
 
+/// Like [`coerce_drv_value_to_string`] but also returns the string
+/// context (drv-path + output-source references the string carries).
+/// Used by derivation construction to populate `input_derivations`
+/// / `input_sources` — CppNix parity on transitive closures.
+pub(crate) fn coerce_drv_value_to_string_with_context(
+    v: &Value,
+) -> Result<(String, StringContext), EvalError> {
+    v.coerce_to_string()
+}
+
 /// Variant of `coerce_drv_value_to_string` that returns `None` for values
 /// that have no meaningful string form (used to skip env entries instead of
 /// erroring out).
 pub(crate) fn coerce_drv_value_to_string_opt(v: &Value) -> Option<String> {
     coerce_drv_value_to_string(v).ok()
+}
+
+/// Like [`coerce_drv_value_to_string_opt`] but keeps the context.
+/// Returns `None` if the value has no meaningful string form.
+pub(crate) fn coerce_drv_value_to_string_opt_with_context(
+    v: &Value,
+) -> Option<(String, StringContext)> {
+    v.coerce_to_string().ok()
 }
 
 /// Force an attribute and require it to be present + string-coercible.

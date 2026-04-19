@@ -226,6 +226,58 @@ impl Derivation {
         out.push_str("])");
         out
     }
+
+    /// Serialize to ATerm in "modulo" form: each `input_derivations`
+    /// key (a `.drv` store path) is replaced by the result of
+    /// `resolver(drv_path)` — CppNix's `hashDerivationModulo`
+    /// recursion.  Used when computing the hash that becomes the
+    /// *dependent* derivation's store path.
+    ///
+    /// The resolver typically looks up a pre-computed modulo hash
+    /// (lowercase hex) in an evaluator-level cache.  If the resolver
+    /// returns the drv path unchanged, this is identical to
+    /// [`Self::serialize`].
+    ///
+    /// # Panics
+    ///
+    /// Does not panic; any resolver-returned string is inserted verbatim.
+    #[must_use]
+    pub fn serialize_modulo(&self, resolver: impl Fn(&str) -> String) -> String {
+        let mut out = String::from("Derive(");
+
+        out.push('[');
+        out.push_str(&join_comma(self.outputs.iter().map(|(name, o)| {
+            format!("({},{},{},{})", escape(name), escape(&o.path), escape(&o.hash_algo), escape(&o.hash))
+        })));
+        out.push_str("],");
+
+        out.push('[');
+        out.push_str(&join_comma(self.input_derivations.iter().map(|(path, outputs)| {
+            let resolved = resolver(path);
+            let outs = join_comma(outputs.iter().map(|o| escape(o)));
+            format!("({},[{outs}])", escape(&resolved))
+        })));
+        out.push_str("],");
+
+        let mut sources: Vec<_> = self.input_sources.iter().collect();
+        sources.sort();
+        out.push('[');
+        out.push_str(&join_comma(sources.iter().map(|s| escape(s))));
+        out.push_str("],");
+
+        out.push_str(&escape(&self.system));
+        out.push(',');
+        out.push_str(&escape(&self.builder));
+
+        out.push_str(",[");
+        out.push_str(&join_comma(self.args.iter().map(|a| escape(a))));
+        out.push_str("],[");
+        out.push_str(&join_comma(self.env.iter().map(|(k, v)| {
+            format!("({},{})", escape(k), escape(v))
+        })));
+        out.push_str("])");
+        out
+    }
 }
 
 /// Join an iterator of string fragments with commas.

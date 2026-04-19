@@ -331,6 +331,64 @@
      exactly.  The aarch64-darwin system string is load-bearing —
      changing it changes both paths.")
 
+;; ── Transitive derivation hashing (hashDerivationModulo) ──────────────
+;;
+;; CppNix computes a dependent derivation's .drv path via:
+;;   1. outputs filled in (final form)
+;;   2. input_derivations preserved as REAL .drv paths
+;;   3. refs = sorted (input_derivations + input_sources)
+;;   4. drvPath inner hash = sha256(final-form ATerm)
+;;   5. fingerprint = text:<refs>:sha256:<hex>:<storedir>:<name>.drv
+;;
+;; A second sha256 — the MODULO form (input drv paths substituted
+;; recursively) — is cached separately so derivations that depend
+;; on THIS one can find it during their own drvPath computation.
+;;
+;; Every bug in transitive parity was a phase that used the wrong
+;; form (modulo vs final) for the wrong hash.  Landing these
+;; regression guards so the algorithm can't silently regress.
+
+(defnix derivation-transitive-drvPath-2-deep
+  :source
+    "(let
+        b = builtins.derivation {
+          name = \"dep-b\"; system = \"aarch64-darwin\";
+          builder = \"/bin/sh\"; args = [ \"-c\" \"echo b > $out\" ];
+        };
+      in builtins.derivation {
+        name = \"dep-a\"; system = \"aarch64-darwin\";
+        builder = \"/bin/sh\"; args = [ \"-c\" \"cat ${b} > $out\" ];
+      }).drvPath"
+  :expected-json "\"/nix/store/qjdgmqpf997383bwr3667sk0if4gkfz5-dep-a.drv\""
+  :tags ("regression" "derivation" "transitive" "drop-in-replacement")
+  :note
+    "2-deep derivation chain: dep-a depends on dep-b.  A spec drift
+     between `final form` and `modulo form` hashing broke this on
+     every pleme-io flake with real package graphs.  Proves
+     hashDerivationModulo recursion + input-ref fingerprinting.")
+
+(defnix derivation-transitive-drvPath-3-deep
+  :source
+    "(let
+        c = builtins.derivation {
+          name = \"dep-c\"; system = \"aarch64-darwin\";
+          builder = \"/bin/sh\"; args = [ \"-c\" \"echo c > $out\" ];
+        };
+        b = builtins.derivation {
+          name = \"dep-b\"; system = \"aarch64-darwin\";
+          builder = \"/bin/sh\"; args = [ \"-c\" \"cat ${c} > $out\" ];
+        };
+      in builtins.derivation {
+        name = \"dep-a\"; system = \"aarch64-darwin\";
+        builder = \"/bin/sh\"; args = [ \"-c\" \"cat ${b} > $out\" ];
+      }).drvPath"
+  :expected-json "\"/nix/store/p4fngiw1hylq5ljxjaxyb9g4rar2haks-dep-a.drv\""
+  :tags ("regression" "derivation" "transitive" "drop-in-replacement")
+  :note
+    "3-deep chain exercises the modulo cache across two hops.  A
+     bug in CacheSelfModulo (e.g. caching the wrong hash) would
+     pass the 2-deep test but break the 3-deep.")
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

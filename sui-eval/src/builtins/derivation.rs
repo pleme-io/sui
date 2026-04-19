@@ -40,21 +40,38 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
 }
 
 /// Extract required/optional attributes and construct the Derivation skeleton.
+///
+/// Walks each user-provided attribute, string-coerces it for the
+/// builder env, AND collects the string's context (drv-path +
+/// output references + plain paths).  The collected context is
+/// funnelled into `input_derivations` / `input_sources` — the
+/// fields CppNix uses to compute the dependent's drvPath via
+/// `hashDerivationModulo`.
 fn construct_derivation(
     input: &NixAttrs,
 ) -> Result<(String, sui_compat::derivation::Derivation), EvalError> {
     use std::collections::BTreeMap;
+    use crate::value::{ContextElement, StringContext};
 
     let name = force_attr_string(input, "name")?;
     let system = force_attr_string(input, "system")?;
     let builder = force_attr_string(input, "builder")?;
+
+    // Accumulate context across every coerce call.  Each element
+    // ends up in one of three places on the Derivation:
+    //   - Output { drv, output } → input_derivations[drv].push(output)
+    //   - Plain(path) starting with /nix/store/ → input_sources
+    //   - Plain(path) elsewhere                  → ignored (not a store ref)
+    let mut collected_ctx = StringContext::new();
 
     let args_list: Vec<String> = if let Some(a) = input.get("args") {
         let forced_args = crate::eval::force_value(a)?;
         let list = forced_args.as_list()?;
         let mut out = Vec::with_capacity(list.len());
         for item in list {
-            out.push(coerce_drv_value_to_string(item)?);
+            let (s, ctx) = coerce_drv_value_to_string_with_context(item)?;
+            collected_ctx.merge(&ctx);
+            out.push(s);
         }
         out
     } else {
@@ -74,7 +91,8 @@ fn construct_derivation(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(s) = coerce_drv_value_to_string_opt(&forced_v) {
+        if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
+            collected_ctx.merge(&ctx);
             env_vars.insert(k.clone(), s);
         }
     }
@@ -82,10 +100,36 @@ fn construct_derivation(
     env_vars.insert("system".to_string(), system.clone());
     env_vars.insert("builder".to_string(), builder.clone());
 
+    // Fold context into input_derivations / input_sources.
+    let mut input_derivations: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut input_sources: Vec<String> = Vec::new();
+    for elem in collected_ctx.iter() {
+        match elem {
+            ContextElement::Output { drv, output } => {
+                input_derivations
+                    .entry(drv.to_string())
+                    .or_default()
+                    .push(output.to_string());
+            }
+            ContextElement::Plain(p) => {
+                let s = p.to_string();
+                if s.starts_with("/nix/store/") && !input_sources.contains(&s) {
+                    input_sources.push(s);
+                }
+            }
+            _ => {}  // `DrvDeep` etc. not consumed into these fields
+        }
+    }
+    // Deduplicate + sort output names per drv (CppNix canonicalizes).
+    for outs in input_derivations.values_mut() {
+        outs.sort();
+        outs.dedup();
+    }
+
     let drv = sui_compat::derivation::Derivation {
         outputs: BTreeMap::new(),
-        input_derivations: BTreeMap::new(),
-        input_sources: Vec::new(),
+        input_derivations,
+        input_sources,
         system,
         builder,
         args: args_list,
@@ -229,40 +273,60 @@ fn write_derivation_to_store(
 }
 
 /// Assemble the result attrset from computed derivation paths.
+///
+/// Every path-valued string built here carries a [`StringContext`]
+/// so that downstream coercions (another derivation's `args` or
+/// env-var interpolations) can rediscover the producing drv/output
+/// and populate `input_derivations` correctly.  Without this
+/// context, `${pkg}` interpolation would silently lose the
+/// dependency edge — which is exactly the bug that made transitive
+/// derivations disagree with CppNix on drvPath.
 fn build_derivation_result(
     input: &NixAttrs,
     name: &str,
     drv_path: &str,
     out_paths: &std::collections::BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
+    use crate::value::{NixString, StringContext};
+
+    // Helper — a string carrying a single `Output { drv, output }` context.
+    let out_str = |s: &str, output_name: &str| -> Value {
+        let mut ctx = StringContext::new();
+        ctx.add_output(drv_path.to_string(), output_name.to_string());
+        Value::String(Rc::new(NixString::with_context(s, ctx)))
+    };
+    // Helper — a string carrying just the deep-drv context (for `.drvPath`).
+    let drv_str = |s: &str| -> Value {
+        let mut ctx = StringContext::new();
+        ctx.add_drv_deep(drv_path.to_string());
+        Value::String(Rc::new(NixString::with_context(s, ctx)))
+    };
+
     let mut result = input.clone();
     result.insert("type".to_string(), Value::string("derivation"));
-    result.insert("drvPath".to_string(), Value::string(drv_path));
+    result.insert("drvPath".to_string(), drv_str(drv_path));
 
     // CppNix: drvAttrs contains the original input attributes
     result.insert("drvAttrs".to_string(), Value::Attrs(Rc::new(input.clone())));
 
-    let primary_out = out_paths
-        .get("out")
-        .cloned()
-        .or_else(|| out_paths.values().next().cloned())
-        .unwrap_or_default();
-    result.insert("outPath".to_string(), Value::string(primary_out));
-
-    // CppNix: outputName is the primary output name
     let primary_output_name = if out_paths.contains_key("out") {
-        "out"
+        "out".to_string()
     } else {
-        out_paths.keys().next().map(|s| s.as_str()).unwrap_or("out")
+        out_paths.keys().next().cloned().unwrap_or_else(|| "out".to_string())
     };
-    result.insert("outputName".to_string(), Value::string(primary_output_name));
+    let primary_out = out_paths
+        .get(&primary_output_name)
+        .cloned()
+        .unwrap_or_default();
+    result.insert("outPath".to_string(), out_str(&primary_out, &primary_output_name));
+    result.insert("outputName".to_string(), Value::string(primary_output_name.clone()));
 
     // Build per-output attrsets and collect them for `all`
     let mut all_outputs: Vec<Value> = Vec::new();
     for (output_name, output_path) in out_paths {
         let mut out_attrs = NixAttrs::new();
-        out_attrs.insert("outPath".to_string(), Value::string(output_path.clone()));
-        out_attrs.insert("drvPath".to_string(), Value::string(drv_path));
+        out_attrs.insert("outPath".to_string(), out_str(output_path, output_name));
+        out_attrs.insert("drvPath".to_string(), drv_str(drv_path));
         out_attrs.insert("type".to_string(), Value::string("derivation"));
         out_attrs.insert("outputName".to_string(), Value::string(output_name.clone()));
         out_attrs.insert("name".to_string(), Value::string(name));

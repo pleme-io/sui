@@ -31,11 +31,39 @@
 
 (defderivation-algorithm
   :name "cppnix-input-addressed"
-  :phases ((:kind MaskOutputsAndEnv)
-           (:kind Serialize        :bind "unresolved")
+  :phases (;; ── Phase 1 — output placeholder paths ────────────────
+           ;; Seed hash comes from the MODULO form with outputs+env
+           ;; masked.  CppNix computes output paths from
+           ;; `hashDerivationModulo(drv, maskOutputs=true)` — i.e.
+           ;; each input-drv path in the ATerm is replaced by that
+           ;; input's own recursive modulo hash before hashing.
+           ;; Without the substitution, dependents see their output
+           ;; paths shift whenever an input's .drv name bytes change
+           ;; for non-semantic reasons (a property of Nix's
+           ;; content-addressed design).
+           (:kind MaskOutputsAndEnv)
+           (:kind SerializeModulo  :bind "unresolved")
            (:kind Sha256           :from "unresolved" :bind "unresolved-hex")
            (:kind ComputeOutputPaths                  :from-hash "unresolved-hex")
            (:kind FillPlaceholders)
+           ;; ── Phase 2 — the `.drv` path itself ─────────────────
+           ;; The drvPath uses sha256 of the FINAL form (outputs
+           ;; filled, input_derivations preserved AS THE REAL .drv
+           ;; PATHS, not modulo-substituted).  These are the exact
+           ;; bytes written to disk as the `.drv` file.  Refs in
+           ;; the fingerprint come from input_derivations +
+           ;; input_sources so `makeTextPath` can express the
+           ;; dependency closure.
            (:kind Serialize        :bind "final")
            (:kind Sha256           :from "final"      :bind "final-hex")
-           (:kind ComputeDrvPath                      :from-hash "final-hex")))
+           (:kind ComputeDrvPath                      :from-hash "final-hex")
+           ;; ── Phase 3 — cache modulo for dependents ────────────
+           ;; Someone downstream who depends on US will need our
+           ;; `hashDerivationModulo` when they compute their own
+           ;; drvPath.  That's sha256 of OUR modulo form (final
+           ;; outputs, input_derivations substituted recursively).
+           ;; We compute + cache it here; lookups go through the
+           ;; thread-local store.
+           (:kind SerializeModulo  :bind "modulo")
+           (:kind Sha256           :from "modulo"     :bind "modulo-hex")
+           (:kind CacheSelfModulo                     :from-hash "modulo-hex")))
