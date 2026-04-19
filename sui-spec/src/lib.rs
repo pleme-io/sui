@@ -43,6 +43,7 @@
 //! the engine.
 
 pub mod derivation;
+pub mod flake;
 pub mod loader;
 pub mod error;
 

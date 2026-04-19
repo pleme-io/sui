@@ -220,33 +220,29 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
 
     // 8. Build the final flake value.
     //
-    // Shape mirrors CppNix's `callFlake` result:
-    //   {
-    //     _type     = "flake";            # marker
-    //     outPath   = <store path>;       # source root (see bug A)
-    //     sourceInfo= { outPath, narHash, ... };
-    //     inputs    = <resolved>;
-    //     outputs   = <raw outputs fn result>;  # accessible under .outputs
-    //     …         = <raw outputs fn result>;  # ALSO spread at top
-    //   }
-    //
-    // Previously sui copied every attr from `flake_attrs` (the parsed
-    // flake.nix source) into the top level — that leaked `description`,
-    // `nixConfig`, etc., which CppNix does not expose there.  And the
-    // `_type` / `outputs` keys were missing.  Fix: only `inputs` is
-    // consumed from the parsed flake body; everything else lives on
-    // the outputs-fn result side.
+    // Shape policy lives in `sui-spec/specs/flake.lisp` as a
+    // `(defflake-shape :name "cppnix" …)` form.  We consult the
+    // spec for the type marker, the spread-outputs rule, and the
+    // never-leak denylist — so changes to CppNix's flake shape are
+    // one-line Lisp edits, not Rust surgery.  (Previously this
+    // function was the drift surface for leak bugs like the
+    // `description`-at-top-level regression.)
+    let shape = sui_spec::flake::load_canonical().map_err(|e| {
+        EvalError::TypeError(format!("flake shape spec failed to load: {e}"))
+    })?;
     let mut final_attrs = NixAttrs::new();
-    final_attrs.insert("_type".to_string(), Value::string("flake".to_string()));
+    final_attrs.insert("_type".to_string(), Value::string(shape.type_marker.clone()));
     final_attrs.insert("outPath".to_string(), Value::string(self_path));
     final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(NixAttrs::new())));
     final_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs)));
     final_attrs.insert("outputs".to_string(), result.clone());
 
-    if let Value::Attrs(out_attrs) = &result {
-        for (k, v) in out_attrs.iter() {
-            if !final_attrs.contains_key(k.as_str()) {
-                final_attrs.insert(k.clone(), v.clone());
+    if shape.spreads_output_fn() {
+        if let Value::Attrs(out_attrs) = &result {
+            for (k, v) in out_attrs.iter() {
+                if !final_attrs.contains_key(k.as_str()) {
+                    final_attrs.insert(k.clone(), v.clone());
+                }
             }
         }
     }
