@@ -22,9 +22,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 }
 
 pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
-    use std::collections::BTreeMap;
-    use sui_compat::derivation::Derivation;
-
     let forced = crate::eval::force_value(arg)?;
     let input_owned = forced.to_attrs()?;
     let input = &input_owned;
@@ -133,24 +130,75 @@ fn compute_derivation_outputs(
         out_paths.insert("out".to_string(), out_path);
         Ok((drv_path, out_paths, drv))
     } else {
+        // Input-addressed derivation path computation — CppNix algorithm:
+        //
+        //   1. Start with a derivation whose `outputs[]` entries have
+        //      empty path/hashAlgo/hash. Serialize that "unresolved"
+        //      form. sha256(unresolved) → `inner_hex`.
+        //   2. For each output name, compute the placeholder store path
+        //      from `inner_hex` + output name.
+        //   3. Fill those placeholder paths back into BOTH `outputs[]`
+        //      (as the `path` field) AND `env` (CppNix copies each
+        //      output name → its placeholder store path into env so
+        //      `$out` expands correctly in the builder). Re-serialize
+        //      this FINAL form.
+        //   4. Compute the .drv path from sha256(finalForm) via
+        //      `makeTextPath` with the input refs as prefix terms.
+        //
+        // Previous sui behavior skipped step 3 entirely — it hashed
+        // the unresolved form for BOTH output-path and .drv-path
+        // computation, and never added `env.out`. Result: every
+        // real-world .drv path disagreed with CppNix.  Discovered by
+        // the first `builtins.derivation` probe:
+        //   sui:   /nix/store/0qi9d…-hello.drv
+        //   cpp:   /nix/store/mypmk…-hello.drv
+        // on the same input. This breaks byte-compatibility with
+        // nixpkgs for every downstream package.
         let outputs = parse_outputs_list(input)?;
         for o in &outputs {
             drv.outputs.insert(o.clone(), DerivationOutput {
                 path: String::new(), hash_algo: String::new(), hash: String::new(),
             });
+            // CppNix quirk: when hashDerivationModulo unparses the
+            // derivation with maskOutputs=true, it masks BOTH the
+            // outputs[].path AND any env entry whose name matches an
+            // output name (default: "out"). That means the unresolved
+            // ATerm has `("out", "")` present in env — not absent.
+            // Sui was leaving `out` out of env entirely at this point,
+            // so the unresolved serialization differed by exactly
+            // one env entry, producing a different inner_hex and
+            // therefore different output paths + .drv path.
+            drv.env.insert(o.clone(), String::new());
         }
 
-        let drv_content = drv.serialize();
-        let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
-
+        // Step 1–2: hash the unresolved form, compute output placeholders.
+        let unresolved_content = drv.serialize();
         use sha2::{Digest, Sha256};
-        let inner = Sha256::digest(drv_content.as_bytes());
+        let inner = Sha256::digest(unresolved_content.as_bytes());
         let inner_hex: String = inner.iter().map(|b| format!("{b:02x}")).collect();
         let mut out_paths = BTreeMap::new();
         for o in &outputs {
             let p = sui_compat::store_path::compute_output_path(&inner_hex, o, name);
             out_paths.insert(o.clone(), p);
         }
+
+        // Step 3: substitute the computed placeholders back into the
+        // derivation — fill `outputs[].path` AND add `env.<outputName>`
+        // for each output.
+        for o in &outputs {
+            let placeholder = out_paths
+                .get(o)
+                .expect("just inserted above")
+                .clone();
+            if let Some(entry) = drv.outputs.get_mut(o) {
+                entry.path = placeholder.clone();
+            }
+            drv.env.insert(o.clone(), placeholder);
+        }
+
+        // Step 4: serialize the FINAL form and compute .drv path.
+        let final_content = drv.serialize();
+        let drv_path = sui_compat::store_path::compute_drv_path(final_content.as_bytes(), name);
         Ok((drv_path, out_paths, drv))
     }
 }

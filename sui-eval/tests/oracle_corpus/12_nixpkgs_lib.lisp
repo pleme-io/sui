@@ -281,6 +281,56 @@
     "1.0 must not collapse to \"1\" — CppNix preserves the float
      shape in coercion.")
 
+;; ── #11-13: store path parity with CppNix (fixed at next commit) ──────
+;;
+;; The single biggest drop-in-replacement invariant: sui must compute
+;; the same `/nix/store/…-name.drv` path and output placeholder as
+;; CppNix for any given derivation input. Three bugs stacked:
+;;
+;;   #11 sui never filled `env.<output>` with the placeholder
+;;       after output-path computation.
+;;   #12 sui hashed the UNRESOLVED form (empty outputs) for the
+;;       .drv path, but CppNix hashes the FINAL form (outputs
+;;       filled in). Two-phase serialization required.
+;;   #13 the unresolved form should have `env.out = ""` (empty
+;;       string present) — CppNix's unparse(maskOutputs=true)
+;;       masks env entries that match output names but does not
+;;       drop them. sui was dropping them entirely.
+;;
+;; Plus bug #14: VM's args reader didn't force list items, so
+;; every computed arg vanished into an empty string, breaking
+;; every non-trivial derivation on the VM path.
+
+(defnix derivation-drvPath-hello
+  :source
+    "(builtins.derivation {
+       name = \"hello\";
+       system = \"aarch64-darwin\";
+       builder = \"/bin/sh\";
+       args = [ \"-c\" \"echo hi > $out\" ];
+     }).drvPath"
+  :expected-json "\"/nix/store/mypmkciickjnhjjimhzjn6w7qj7g8n2k-hello.drv\""
+  :tags ("regression" "derivation" "store-path" "drop-in-replacement")
+  :note
+    "THE drop-in-replacement invariant. If sui computes the same
+     /nix/store path as CppNix for this input, every downstream
+     derivation hash agrees. If not, every build is byte-different.")
+
+(defnix derivation-outPath-hello
+  :source
+    "(builtins.derivation {
+       name = \"hello\";
+       system = \"aarch64-darwin\";
+       builder = \"/bin/sh\";
+       args = [ \"-c\" \"echo hi > $out\" ];
+     }).outPath"
+  :expected-json "\"/nix/store/k6lq59b6dilrfy0blhkr10m27ga7ncwr-hello\""
+  :tags ("regression" "derivation" "store-path" "drop-in-replacement")
+  :note
+    "Pairs with derivation-drvPath-hello. Both must match CppNix
+     exactly.  The aarch64-darwin system string is load-bearing —
+     changing it changes both paths.")
+
 (defnix lib-generators-toJSON-int-key
   :source "builtins.toJSON { \"1\" = 1; \"2\" = 2; }"
   :expected-json "\"{\\\"1\\\":1,\\\"2\\\":2}\""

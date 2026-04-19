@@ -2442,17 +2442,27 @@ impl<'a> VM<'a> {
         let system = get_str(&attrs, self.interner, "system")?;
         let builder = get_str(&attrs, self.interner, "builder")?;
         // Optional `args` list of strings.
+        // IMPORTANT: List items come as NanBox entries that are often
+        // still thunks — they MUST be forced before coercion, else
+        // every string arg vanishes. Previous code pattern-matched
+        // directly on `VMValue::Thunk(_)` → `_ => push("")`, which
+        // emitted empty strings and caused every derivation with
+        // computed args to have args=[] in its ATerm. That made the
+        // .drv path diverge from CppNix on any non-trivial derivation.
         let args_sym = self.interner.intern("args");
         let args_list: Vec<String> = if let Some(a) = attrs.get(&args_sym) {
-            let vmval = a.to_vmvalue();
+            let forced_a = self.force_value(a.clone())?;
+            let vmval = forced_a.to_vmvalue();
             match vmval {
                 VMValue::List(l) => {
                     let mut out = Vec::with_capacity(l.len());
                     for item in &l {
-                        match item {
+                        // Each item may still be a thunk — force it.
+                        let forced = self.force_value(NanBox::from_vmvalue(item))?;
+                        match forced.to_vmvalue() {
                             VMValue::String(s) => out.push(s.clone()),
                             VMValue::Int(n) => out.push(n.to_string()),
-                            VMValue::Float(f) => out.push(format!("{f}")),
+                            VMValue::Float(f) => out.push(format!("{f:.6}")),
                             VMValue::Bool(true) => out.push("1".to_string()),
                             VMValue::Bool(false) => out.push(String::new()),
                             VMValue::Null => out.push(String::new()),
@@ -2568,6 +2578,14 @@ impl<'a> VM<'a> {
             out_paths.insert("out".to_string(), out_path);
             (drv_path, out_paths)
         } else {
+            // Input-addressed drv: see extended comment in
+            // `sui-eval/src/builtins/derivation.rs::compute_derivation_outputs`.
+            // CppNix unparses the unresolved form with maskOutputs=true,
+            // which (a) empties outputs[].path, (b) empties any env
+            // entry whose name matches an output name. Sui must do the
+            // same for its inner_hex to match. Then output paths are
+            // filled in + env entries are updated to the placeholder,
+            // then the FINAL form is serialized + hashed for .drv path.
             for o in &outputs {
                 drv.outputs.insert(
                     o.clone(),
@@ -2577,14 +2595,11 @@ impl<'a> VM<'a> {
                         hash: String::new(),
                     },
                 );
+                drv.env.insert(o.clone(), String::new());
             }
-            let drv_content = drv.serialize();
-            let drv_path = sui_compat::store_path::compute_drv_path(
-                drv_content.as_bytes(),
-                &name,
-            );
+            let unresolved_content = drv.serialize();
             use sha2::{Digest, Sha256};
-            let inner = Sha256::digest(drv_content.as_bytes());
+            let inner = Sha256::digest(unresolved_content.as_bytes());
             let inner_hex: String =
                 inner.iter().map(|b| format!("{b:02x}")).collect();
             let mut out_paths = BTreeMap::new();
@@ -2594,6 +2609,23 @@ impl<'a> VM<'a> {
                 );
                 out_paths.insert(o.clone(), p);
             }
+            // Fill in outputs[].path + env.<o> with the computed
+            // placeholders, then compute .drv path from the FINAL form.
+            for o in &outputs {
+                let placeholder = out_paths
+                    .get(o)
+                    .expect("just inserted above")
+                    .clone();
+                if let Some(entry) = drv.outputs.get_mut(o) {
+                    entry.path = placeholder.clone();
+                }
+                drv.env.insert(o.clone(), placeholder);
+            }
+            let final_content = drv.serialize();
+            let drv_path = sui_compat::store_path::compute_drv_path(
+                final_content.as_bytes(),
+                &name,
+            );
             (drv_path, out_paths)
         };
         // Update derivation outputs with final paths and write .drv file.
