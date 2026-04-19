@@ -411,7 +411,7 @@ async fn main() -> Result<(), CliError> {
                     .spawn(move || -> Result<(), CliError> {
                         let value = sui_eval::eval(&expr_clone)?;
                         if json_flag {
-                            println!("{}", serde_json::to_string_pretty(&value.to_json())?);
+                            println!("{}", serde_json::to_string(&value.to_json())?);
                         } else {
                             println!("{value}");
                         }
@@ -496,7 +496,7 @@ async fn main() -> Result<(), CliError> {
                         };
                         if json_flag {
                             let json_val = string_keyed_to_json(&sk);
-                            println!("{}", serde_json::to_string_pretty(&json_val)?);
+                            println!("{}", serde_json::to_string(&json_val)?);
                         } else {
                             println!("{sk}");
                         }

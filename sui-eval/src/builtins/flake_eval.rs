@@ -219,20 +219,35 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     let result = crate::eval::force_value(&result)?;
 
     // 8. Build the final flake value.
+    //
+    // Shape mirrors CppNix's `callFlake` result:
+    //   {
+    //     _type     = "flake";            # marker
+    //     outPath   = <store path>;       # source root (see bug A)
+    //     sourceInfo= { outPath, narHash, ... };
+    //     inputs    = <resolved>;
+    //     outputs   = <raw outputs fn result>;  # accessible under .outputs
+    //     …         = <raw outputs fn result>;  # ALSO spread at top
+    //   }
+    //
+    // Previously sui copied every attr from `flake_attrs` (the parsed
+    // flake.nix source) into the top level — that leaked `description`,
+    // `nixConfig`, etc., which CppNix does not expose there.  And the
+    // `_type` / `outputs` keys were missing.  Fix: only `inputs` is
+    // consumed from the parsed flake body; everything else lives on
+    // the outputs-fn result side.
     let mut final_attrs = NixAttrs::new();
+    final_attrs.insert("_type".to_string(), Value::string("flake".to_string()));
     final_attrs.insert("outPath".to_string(), Value::string(self_path));
     final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(NixAttrs::new())));
     final_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs)));
+    final_attrs.insert("outputs".to_string(), result.clone());
 
-    for (k, v) in flake_attrs.iter() {
-        if k != "outputs" && !final_attrs.contains_key(&k) {
-            final_attrs.insert(k.clone(), v.clone());
-        }
-    }
-
-    if let Value::Attrs(out_attrs) = result {
+    if let Value::Attrs(out_attrs) = &result {
         for (k, v) in out_attrs.iter() {
-            final_attrs.insert(k.clone(), v.clone());
+            if !final_attrs.contains_key(k.as_str()) {
+                final_attrs.insert(k.clone(), v.clone());
+            }
         }
     }
 

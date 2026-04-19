@@ -1212,7 +1212,10 @@ fn builtins_placeholder() {
 
 #[test]
 fn builtins_get_flake_path_based() {
-    // getFlake with a path-based flake reference reads and evaluates flake.nix
+    // getFlake with a path-based flake reference reads and evaluates
+    // flake.nix. We probe via an output-fn attribute (`value`) since
+    // flake-body metadata like `description` intentionally does NOT
+    // appear on the top-level getFlake result (CppNix parity).
     let dir = std::env::temp_dir().join("sui_eval_test_getflake");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1221,9 +1224,9 @@ fn builtins_get_flake_path_based() {
         r#"{ description = "test flake"; outputs = { self }: { value = 42; }; }"#,
     )
     .unwrap();
-    let expr = format!(r#"(builtins.getFlake "{}").description"#, dir.display());
+    let expr = format!(r#"(builtins.getFlake "{}").value"#, dir.display());
     let v = eval(&expr).unwrap();
-    assert_eq!(v, Value::string("test flake"));
+    assert_eq!(v, Value::Int(42));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1720,7 +1723,9 @@ fn flake_multiple_inputs_all_accessible() {
 
 #[test]
 fn flake_result_has_outpath() {
-    // The top-level flake result must include `outPath`.
+    // The top-level flake result exposes outPath + output-fn keys, but
+    // NOT flake-body metadata like `description` (CppNix does not leak
+    // that into the top-level attrset — verified empirically).
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1735,7 +1740,7 @@ fn flake_result_has_outpath() {
     let has_desc = format!(r#"(builtins.getFlake "{flake_path}") ? description"#);
     let has_val = format!(r#"(builtins.getFlake "{flake_path}") ? value"#);
     assert_eq!(eval(&has_out).unwrap(), Value::Bool(true));
-    assert_eq!(eval(&has_desc).unwrap(), Value::Bool(true));
+    assert_eq!(eval(&has_desc).unwrap(), Value::Bool(false));
     assert_eq!(eval(&has_val).unwrap(), Value::Bool(true));
 }
 
