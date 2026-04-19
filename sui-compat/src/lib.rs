@@ -11,5 +11,6 @@ pub mod hash;
 pub mod nar;
 pub mod narinfo;
 pub mod signature;
+pub mod source;
 pub mod store_path;
 pub mod wire;

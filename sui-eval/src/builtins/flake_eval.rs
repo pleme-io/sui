@@ -196,13 +196,39 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                 }
             }
 
-    // 5. Build `self`.
+    // 4c. Hash the source tree.  Computes the CppNix-compatible
+    //     /nix/store/<hash>-source path + SRI narHash that flake
+    //     consumers see under `outPath` / `sourceInfo.narHash`.
+    //     Verified byte-identical to CppNix on both trivial fixtures
+    //     and real pleme-io flakes with .git present.
+    let source_hash = sui_compat::source::nar_hash_source_tree(
+        std::path::Path::new(&self_path),
+        "source",
+    ).map_err(|e| EvalError::TypeError(
+        format!("getFlake: nar-hashing source tree at {self_path}: {e}")
+    ))?;
+    let source_store_path = source_hash.store_path.clone();
+    let source_nar_sri = source_hash.nar_hash_sri.clone();
+    let source_info = {
+        let mut a = NixAttrs::new();
+        a.insert("outPath".to_string(), Value::string(source_store_path.clone()));
+        a.insert("narHash".to_string(), Value::string(source_nar_sri.clone()));
+        a
+    };
+
+    // 5. Build `self`.  Mirrors CppNix: `self.outPath` is the
+    //    source *store path* (not the filesystem path), and the
+    //    source-info attrset carries `narHash` + `outPath`.  Note
+    //    that `self` — unlike the top-level flake result — DOES
+    //    surface flake-body metadata (description, nixConfig, …)
+    //    because outputs functions commonly read `self.description`.
     let mut self_attrs = NixAttrs::new();
-    self_attrs.insert("outPath".to_string(), Value::string(self_path.clone()));
-    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(NixAttrs::new())));
+    self_attrs.insert("outPath".to_string(), Value::string(source_store_path.clone()));
+    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info.clone())));
+    self_attrs.insert("narHash".to_string(), Value::string(source_nar_sri.clone()));
     self_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs.clone())));
     for (k, v) in flake_attrs.iter() {
-        if k != "outputs" && k != "inputs" {
+        if k != "outputs" && k != "inputs" && !self_attrs.contains_key(k.as_str()) {
             self_attrs.insert(k.clone(), v.clone());
         }
     }
@@ -232,8 +258,9 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
     })?;
     let mut final_attrs = NixAttrs::new();
     final_attrs.insert("_type".to_string(), Value::string(shape.type_marker.clone()));
-    final_attrs.insert("outPath".to_string(), Value::string(self_path));
-    final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(NixAttrs::new())));
+    final_attrs.insert("outPath".to_string(), Value::string(source_store_path));
+    final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info)));
+    final_attrs.insert("narHash".to_string(), Value::string(source_nar_sri));
     final_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs)));
     final_attrs.insert("outputs".to_string(), result.clone());
 

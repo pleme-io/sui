@@ -1268,6 +1268,9 @@ fn flake_minimal_no_inputs() {
 
 #[test]
 fn flake_with_self_output_path() {
+    // Inside an outputs fn, `self.outPath` is the NAR-hashed store
+    // path (same value the top-level flake result surfaces).  It
+    // is NOT the raw filesystem path — CppNix parity.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1281,7 +1284,10 @@ fn flake_with_self_output_path() {
     let flake_path = dir.path().to_string_lossy().to_string();
     let expr = format!(r#"(builtins.getFlake "{flake_path}").result"#);
     let result = eval(&expr).unwrap();
-    assert_eq!(result.as_string().unwrap(), flake_path);
+    let out = result.as_string().unwrap();
+    assert!(out.starts_with("/nix/store/"), "self.outPath must be a store path, got {out}");
+    assert!(out.ends_with("-source"), "self.outPath must end with -source, got {out}");
+    assert_ne!(out, flake_path, "self.outPath must NOT be the raw filesystem path");
 }
 
 #[test]
@@ -1868,7 +1874,10 @@ fn flake_self_has_inputs() {
 
 #[test]
 fn flake_self_outpath_in_outputs() {
-    // `self.outPath` should be the flake directory.
+    // `self.outPath` inside an outputs fn is the NAR-hashed source
+    // store path (same value the top-level flake result surfaces).
+    // This is CppNix parity: the filesystem path is never exposed
+    // to Nix code, only the store path.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1881,7 +1890,10 @@ fn flake_self_outpath_in_outputs() {
     let flake_path = dir.path().to_string_lossy().to_string();
     let expr = format!(r#"(builtins.getFlake "{flake_path}").dir"#);
     let result = eval(&expr).unwrap();
-    assert_eq!(result.as_string().unwrap(), flake_path);
+    let out = result.as_string().unwrap();
+    assert!(out.starts_with("/nix/store/"), "self.outPath must be a store path, got {out}");
+    assert!(out.ends_with("-source"), "self.outPath must end with -source, got {out}");
+    assert_ne!(out, flake_path);
 }
 
 #[test]
@@ -1938,8 +1950,11 @@ fn flake_string_interpolation_with_input() {
 }
 
 #[test]
-fn flake_result_outpath_matches_dir() {
-    // The `outPath` on the result should be the flake directory path.
+fn flake_result_outpath_is_a_store_path() {
+    // `outPath` on a flake result is the NAR-hashed source store
+    // path — `/nix/store/<hash>-source` — NOT the raw filesystem
+    // path.  This matches CppNix byte-for-byte (verified empirically
+    // against `nix eval`).
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("flake.nix"),
@@ -1949,7 +1964,13 @@ fn flake_result_outpath_matches_dir() {
     let flake_path = dir.path().to_string_lossy().to_string();
     let expr = format!(r#"(builtins.getFlake "{flake_path}").outPath"#);
     let result = eval(&expr).unwrap();
-    assert_eq!(result.as_string().unwrap(), flake_path);
+    let out = result.as_string().unwrap();
+    assert!(out.starts_with("/nix/store/"),
+        "outPath must start with /nix/store/, got {out}");
+    assert!(out.ends_with("-source"),
+        "outPath must end with -source, got {out}");
+    assert_ne!(out, flake_path,
+        "outPath must be a store path, not the raw filesystem path");
 }
 
 #[test]
