@@ -46,5 +46,6 @@ pub mod derivation;
 pub mod flake;
 pub mod loader;
 pub mod error;
+pub mod probe;
 
 pub use error::SpecError;

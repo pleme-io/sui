@@ -16,5 +16,13 @@ thiserror.workspace = true
 sha2.workspace = true
 sui-compat.workspace = true
 
+# Needed only by the `sui-sweep` binary for SIGKILL on timeout.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "sui-sweep"
+path = "src/bin/sui-sweep.rs"
+
 [lints.clippy]
 pedantic = "warn"
