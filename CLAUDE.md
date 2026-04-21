@@ -1,5 +1,13 @@
 # Sui (粋) — Rust-Native Nix Replacement
 
+<!-- Blackmatter alignment: pillars 1, 9 -->
+<!-- See ~/code/github/pleme-io/BLACKMATTER.md for pillar definitions. -->
+
+## Blackmatter pillars upheld
+
+- **Pillar 1** (Rust + tatara-lisp + WASM/WASI): Sui is the Rust half of the language stack, taken all the way down — a pure-Rust evaluator + bytecode VM + build system that replaces CppNix. Exceeds CppNix 3x on 45/48 benchmarks with a 16-byte Value and 8-byte NanBox.
+- **Pillar 9** (SDLC): Sui extends the SDLC from single-node to distributed. `sui build` replaces `nix build`; NATS-triggered rebuilds shard across a cluster; Attic is the shared convergence memory. Store paths stay the content-hash proof in either mode.
+
 Pure-Rust Nix evaluator + build system. Drop-in `nix` CLI replacement.
 
 ## Core Philosophy: Construction Guarantees
