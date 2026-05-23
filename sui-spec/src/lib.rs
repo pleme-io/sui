@@ -86,11 +86,14 @@ pub mod realisation;
 pub mod rebuild;
 pub mod registry;
 pub mod sandbox;
+pub mod spec_trait;
 pub mod store_layout;
 pub mod substituter;
 pub mod sweep;
 pub mod trust_model;
 pub mod worker_protocol;
+
+pub use spec_trait::{HasName, Spec};
 
 pub use error::SpecError;
 pub use parity::{ParityCheck, ProbeContext, ProbeKind, ShadowReport, Verdict};
