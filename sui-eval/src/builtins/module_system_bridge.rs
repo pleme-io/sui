@@ -177,16 +177,7 @@ fn parse_option_decl(decl_val: &Value, path: &str) -> Result<OptionDecl, EvalErr
     };
 
     let type_name = match attrs.get("type") {
-        Some(v) => match crate::eval::force_value(v)? {
-            Value::String(s) => s.chars.to_string(),
-            other => {
-                return Err(EvalError::type_error(format!(
-                    "builtins.sui.evalModules: option `{path}`.type must be a \
-                     string (e.g. \"bool\", \"int\", \"str\"); got {}",
-                    other.type_name(),
-                )));
-            }
-        },
+        Some(v) => parse_type_field(v, path)?,
         None => {
             return Err(EvalError::type_error(format!(
                 "builtins.sui.evalModules: option `{path}` missing required `type` field",
@@ -213,6 +204,49 @@ fn parse_option_decl(decl_val: &Value, path: &str) -> Result<OptionDecl, EvalErr
         description,
         submodule: None,
     })
+}
+
+/// Parse the option's `type` field.  Accepts two shapes:
+///
+/// - **M3.1 bare string**: `type = "bool"` — direct
+///   OptionTypeSpec.name reference.
+/// - **M3.2 cppnix typed object**: `type = { name = "bool"; ... }` —
+///   the cppnix `lib.types.<X>` convention.  The bridge looks up
+///   the `name` field; other fields (check, merge, description)
+///   are ignored here because the M2.1 interpreter dispatches by
+///   the type's OptionTypeSpec rather than cppnix-style typed
+///   check/merge functions.
+///
+/// The dual-shape support lets operators consume real-world
+/// cppnix modules unchanged while keeping the M3.1 bare-string
+/// shape working.
+fn parse_type_field(v: &Value, path: &str) -> Result<String, EvalError> {
+    let forced = crate::eval::force_value(v)?;
+    match forced {
+        // M3.1 string-typed field.
+        Value::String(s) => Ok(s.chars.to_string()),
+        // M3.2 cppnix typed-object: extract the `name` field.
+        Value::Attrs(attrs) => match attrs.get("name") {
+            Some(name_val) => match crate::eval::force_value(name_val)? {
+                Value::String(s) => Ok(s.chars.to_string()),
+                other => Err(EvalError::type_error(format!(
+                    "builtins.sui.evalModules: option `{path}`.type is a typed \
+                     object but its `name` field is {}, expected string",
+                    other.type_name(),
+                ))),
+            },
+            None => Err(EvalError::type_error(format!(
+                "builtins.sui.evalModules: option `{path}`.type is an attrset \
+                 but has no `name` field — typed-object types (M3.2) must \
+                 carry their type name in `name`",
+            ))),
+        },
+        other => Err(EvalError::type_error(format!(
+            "builtins.sui.evalModules: option `{path}`.type must be a string \
+             (e.g. \"bool\") or a typed object with a `name` field; got {}",
+            other.type_name(),
+        ))),
+    }
 }
 
 /// Convert the typed Config back into a `Value::Attrs`.
@@ -304,17 +338,48 @@ mod tests {
     }
 
     #[test]
-    fn rejects_option_with_typed_object_type_field() {
-        // M3.1 requires bare-string `type`; cppnix typed-object
-        // surface lands in M3.2.
-        let typed_obj = attrs_of(&[("__type", Value::string("bool"))]);
+    fn m32_accepts_typed_object_with_name_field() {
+        // cppnix shape: `type = { name = "bool"; check = ...; ... }`.
+        // M3.2 extracts the `name` field.
+        let typed_obj = attrs_of(&[
+            ("name", Value::string("bool")),
+            ("check", Value::string("<fake-fn>")),  // ignored
+        ]);
+        let opt_decl = attrs_of(&[("type", typed_obj)]);
+        let options = attrs_of(&[("enable", opt_decl)]);
+        let config = attrs_of(&[("enable", Value::Bool(true))]);
+        let module = attrs_of(&[("options", options), ("config", config)]);
+        let result = eval_modules_builtin(&module_list(vec![module])).unwrap();
+        let attrs = match result {
+            Value::Attrs(a) => a,
+            _ => panic!("expected attrs"),
+        };
+        match attrs.get("enable") {
+            Some(Value::Bool(b)) => assert!(*b),
+            other => panic!("expected enable=true, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn m32_rejects_typed_object_without_name_field() {
+        let typed_obj = attrs_of(&[("check", Value::string("<fn>"))]);
         let opt_decl = attrs_of(&[("type", typed_obj)]);
         let options = attrs_of(&[("foo", opt_decl)]);
         let module = attrs_of(&[("options", options)]);
         let err = eval_modules_builtin(&module_list(vec![module])).unwrap_err();
         let msg = format!("{err:?}");
-        assert!(msg.contains("must be a"));
-        assert!(msg.contains("string"));
+        assert!(msg.contains("no `name` field"));
+    }
+
+    #[test]
+    fn m32_rejects_typed_object_with_non_string_name() {
+        let typed_obj = attrs_of(&[("name", Value::Int(42))]);
+        let opt_decl = attrs_of(&[("type", typed_obj)]);
+        let options = attrs_of(&[("foo", opt_decl)]);
+        let module = attrs_of(&[("options", options)]);
+        let err = eval_modules_builtin(&module_list(vec![module])).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("`name` field is"));
     }
 
     #[test]

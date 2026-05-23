@@ -40,6 +40,8 @@ mod helpers;
 mod import_cache;
 mod lists;
 mod misc;
+mod activation_script_bridge;
+mod hash_bridge;
 mod module_system_bridge;
 mod nav;
 mod paths;
@@ -207,6 +209,8 @@ pub fn register(env: &mut Env) {
     sui_ext::register(&mut sui_ext_set);
     convergence::register(&mut sui_ext_set);
     module_system_bridge::register(&mut sui_ext_set);
+    activation_script_bridge::register(&mut sui_ext_set);
+    hash_bridge::register(&mut sui_ext_set);
     builtins_set.insert("sui".to_string(), Value::Attrs(Rc::new(sui_ext_set)));
 
     // ── builtins.builtins (self-reference) ───────────────
