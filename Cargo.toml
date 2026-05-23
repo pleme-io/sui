@@ -92,8 +92,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # HTTP client (for binary cache, fetchers)
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
 
-# Git operations (pure Rust, no C dependencies)
-gix = { git = "https://github.com/pleme-io/gitoxide", branch = "edition-2024-compat", default-features = false, features = [
+# Git operations (pure Rust, no C dependencies) — published version
+# on crates.io.  Upstream gix has caught up with the edition-2024
+# fixes the pleme-io fork ported, so we no longer need the fork.
+gix = { version = "0.83", default-features = false, features = [
     "sha1",
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
