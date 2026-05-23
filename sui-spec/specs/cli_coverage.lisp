@@ -685,4 +685,31 @@
   :maturity SuiNative
   :substrate ("derivation")
   :notes "Walks every .drv reachable from a root via inputDrvs. Emits typed dependency DAG (nodes / inputDrv edges / inputSrc refs) as JSON or Nord. Composes against sui-compat's ATerm parser.")
+(defsui-command
+  :name "store find"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("store_layout" "nar")
+  :notes "Typed predicate query: name regex, min/max size, contents regex. Composes via StorePredicate AND.")
+
+(defsui-command
+  :name "store stats"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("store_layout" "nar")
+  :notes "Reduce over inventory: total size, file count, mean/min/max, log-bucket distribution.")
+
+(defsui-command
+  :name "store analyze"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Auto-find: duplicate NAR hashes, orphan paths (no referrers), high-fanout drvs, version-shadow pairs. Typed Findings.")
+
+(defsui-command
+  :name "store upgrade-paths"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("store_layout")
+  :notes "Mine upgrade-shadow pairs from observed store + RefIndex blast-radius. Sorted typed recommendations.")
 

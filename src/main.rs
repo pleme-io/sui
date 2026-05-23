@@ -342,6 +342,68 @@ enum StoreCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Find store entries matching a typed predicate.  Predicate
+    /// syntax: `name=<regex>` / `size>N` / `size<N` / `contents=<regex>`.
+    /// Multiple flags AND together.
+    Find {
+        /// Profile name (inventory walk).
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Name regex filter (e.g. `^hello-.*`).
+        #[arg(long)]
+        name: Option<String>,
+        /// Minimum size in bytes.
+        #[arg(long)]
+        min_size: Option<u64>,
+        /// Maximum size in bytes.
+        #[arg(long)]
+        max_size: Option<u64>,
+        /// File-content regex filter.
+        #[arg(long)]
+        contents: Option<String>,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reduce: typed aggregate statistics across an inventory
+    /// profile (entry count / total size / size distribution).
+    Stats {
+        /// Profile name.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Auto-analyze observed store state: duplicates, orphans,
+    /// high-fanout drvs, version shadows.  Emits typed Findings
+    /// the operator can act on.
+    Analyze {
+        /// Profile name.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Skip duplicate detection (expensive — NAR-hashes
+        /// every entry).
+        #[arg(long)]
+        no_duplicates: bool,
+        /// High-fanout threshold (drvs with ≥N inputs).
+        #[arg(long, default_value = "8")]
+        high_fanout_threshold: usize,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mine upgrade-path recommendations from observed store
+    /// state.  Walks the version-shadow graph + emits typed
+    /// suggestions sorted by referrer-count blast radius.
+    UpgradePaths {
+        /// Profile name.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1233,6 +1295,339 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store find` — typed predicate query ────────────────────
+
+fn store_find(
+    profile_name: &str,
+    name_re: Option<&str>,
+    min_size: Option<u64>,
+    max_size: Option<u64>,
+    contents_re: Option<&str>,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_inventory::{self, StoreInventory};
+    use sui_spec::store_query::{matches, StorePredicate};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("find: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("find: unknown profile `{profile_name}`")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("find: walk: {e:?}")))?;
+
+    // Build the AND predicate from operator flags.
+    let mut preds: Vec<StorePredicate> = Vec::new();
+    if let Some(n) = name_re { preds.push(StorePredicate::NameMatches(n.to_string())); }
+    if let Some(n) = min_size { preds.push(StorePredicate::SizeAtLeast(n)); }
+    if let Some(n) = max_size { preds.push(StorePredicate::SizeAtMost(n)); }
+    if let Some(c) = contents_re { preds.push(StorePredicate::ContentsMatch(c.to_string())); }
+    let p = if preds.is_empty() {
+        // No predicate → all
+        StorePredicate::Any(vec![])  // never matches; force operator to specify
+    } else {
+        StorePredicate::All(preds)
+    };
+
+    let matches_iter: Vec<_> = inv.entries.values()
+        .filter(|e| matches(e, &p, None))
+        .collect();
+
+    if json {
+        let probes: Vec<serde_json::Value> = matches_iter.iter().map(|e| serde_json::json!({
+            "path":       e.path.display().to_string(),
+            "name":       e.parsed.name,
+            "size":       e.size,
+            "file_count": e.file_count,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile": profile_name,
+            "matches": matches_iter.len(),
+            "results": probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store find"),
+            muted(&format!("profile={profile_name}")));
+        println!();
+        println!("  {} {} match(es) of {} scanned", body("∑"),
+            success(&matches_iter.len().to_string()),
+            info(&inv.entries.len().to_string()));
+        println!();
+        for e in matches_iter.iter().take(50) {
+            println!("  {} {} {} bytes / {} files",
+                success("→"),
+                ident(&e.parsed.name),
+                info(&e.size.to_string()),
+                muted(&e.file_count.to_string()));
+        }
+        if matches_iter.len() > 50 {
+            println!("  {} … {} more", muted(""), muted(&(matches_iter.len() - 50).to_string()));
+        }
+        println!();
+        println!("  {} {} of {} entries match", glyph_arrow(),
+            success(&matches_iter.len().to_string()), info(&inv.entries.len().to_string()));
+    }
+    Ok(())
+}
+
+// ── `sui store stats` — typed aggregate reduce ─────────────────
+
+fn store_stats(profile_name: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_inventory::{self, StoreInventory};
+    use sui_spec::style::{body, glyph_snowflake, header, ident, info, muted, success};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("stats: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("stats: unknown profile `{profile_name}`")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("stats: walk: {e:?}")))?;
+
+    let n = inv.entries.len();
+    let total_size: u64 = inv.total_size();
+    let total_files: usize = inv.total_files();
+    let mean_size = if n > 0 { total_size / n as u64 } else { 0 };
+    let max_size = inv.entries.values().map(|e| e.size).max().unwrap_or(0);
+    let min_size = inv.entries.values().map(|e| e.size).min().unwrap_or(0);
+
+    // Distribution by size class (log10 buckets).
+    let mut classes: std::collections::BTreeMap<&'static str, usize> = Default::default();
+    for e in inv.entries.values() {
+        let key = match e.size {
+            0..=1_023            => "1 KB",
+            1_024..=1_048_575    => "1 MB",
+            1_048_576..=10_485_759 => "10 MB",
+            10_485_760..=104_857_599 => "100 MB",
+            _ => "> 100 MB",
+        };
+        *classes.entry(key).or_insert(0) += 1;
+    }
+
+    if json {
+        let dist: serde_json::Value = serde_json::json!(
+            classes.iter().map(|(k, v)| (k.to_string(), *v)).collect::<std::collections::HashMap<_,_>>()
+        );
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile": profile_name,
+            "entries": n,
+            "total_size": total_size,
+            "total_files": total_files,
+            "mean_size": mean_size,
+            "min_size": min_size,
+            "max_size": max_size,
+            "size_distribution": dist,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store stats"),
+            muted(&format!("profile={profile_name}")));
+        println!();
+        println!("  {} {}", body("entries:       "), info(&n.to_string()));
+        println!("  {} {} bytes", body("total size:    "), info(&total_size.to_string()));
+        println!("  {} {}", body("total files:   "), info(&total_files.to_string()));
+        println!("  {} {} bytes", body("mean size:     "), info(&mean_size.to_string()));
+        println!("  {} {} bytes", body("min size:      "), info(&min_size.to_string()));
+        println!("  {} {} bytes", body("max size:      "), info(&max_size.to_string()));
+        println!();
+        println!("  {}", body("size distribution:"));
+        for (cls, count) in &classes {
+            println!("    {} ≤ {}  {} entries", success("→"), ident(cls), info(&count.to_string()));
+        }
+    }
+    Ok(())
+}
+
+// ── `sui store analyze` — typed findings emitter ───────────────
+
+fn store_analyze_cmd(
+    profile_name: &str,
+    detect_duplicates: bool,
+    high_fanout_threshold: usize,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_analyze::{self, AnalyzeConfig, Finding};
+    use sui_spec::store_inventory::{self, StoreInventory, RefIndex};
+    use sui_spec::style::{body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("analyze: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("analyze: unknown profile `{profile_name}`")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("analyze: walk: {e:?}")))?;
+    let idx = RefIndex::build(&inv, "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("analyze: ref index: {e:?}")))?;
+
+    let config = AnalyzeConfig {
+        detect_duplicates,
+        detect_orphans: true,
+        high_fanout_threshold,
+        detect_version_shadows: true,
+    };
+    let findings = store_analyze::analyze(&inv, Some(&idx), &config);
+    let h = store_analyze::histogram(&findings);
+
+    if json {
+        let probes: Vec<serde_json::Value> = findings.iter().map(|f| match f {
+            Finding::Duplicate { hash, paths, bytes_each } => serde_json::json!({
+                "kind": "Duplicate", "hash": hash,
+                "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "bytes_each": bytes_each,
+            }),
+            Finding::Orphan { path, size } => serde_json::json!({
+                "kind": "Orphan", "path": path.display().to_string(), "size": size,
+            }),
+            Finding::HighFanout { path, fanout } => serde_json::json!({
+                "kind": "HighFanout", "path": path.display().to_string(), "fanout": fanout,
+            }),
+            Finding::VersionShadow { older, newer, name_root, older_version, newer_version } => serde_json::json!({
+                "kind": "VersionShadow",
+                "older": older.display().to_string(),
+                "newer": newer.display().to_string(),
+                "name_root": name_root,
+                "older_version": older_version,
+                "newer_version": newer_version,
+            }),
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile": profile_name,
+            "histogram": {
+                "duplicates": h.duplicates,
+                "orphans": h.orphans,
+                "high_fanout": h.high_fanout,
+                "version_shadows": h.version_shadows,
+            },
+            "findings": probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store analyze"),
+            muted(&format!("profile={profile_name}")));
+        println!();
+        println!("  {} {} duplicate group(s)", body("∑"),
+            if h.duplicates > 0 { warn(&h.duplicates.to_string()) } else { success("0") });
+        println!("  {} {} orphan path(s)", body("∑"),
+            if h.orphans > 0 { warn(&h.orphans.to_string()) } else { success("0") });
+        println!("  {} {} high-fanout drv(s)", body("∑"),
+            if h.high_fanout > 0 { warn(&h.high_fanout.to_string()) } else { success("0") });
+        println!("  {} {} version-shadow pair(s)", body("∑"),
+            if h.version_shadows > 0 { info(&h.version_shadows.to_string()) } else { success("0") });
+        println!();
+        if findings.is_empty() {
+            println!("  {} store looks clean — no findings to act on", success("✓"));
+            return Ok(());
+        }
+        for f in findings.iter().take(20) {
+            match f {
+                Finding::Duplicate { hash, paths, bytes_each } => {
+                    println!("  {} dup {} bytes ({}…) {} paths",
+                        error("✘"), info(&bytes_each.to_string()),
+                        muted(&hash[..8]), warn(&paths.len().to_string()));
+                    for p in paths.iter().take(3) {
+                        println!("       {} {}", muted("·"),
+                            ident(p.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+                    }
+                }
+                Finding::Orphan { path, size } => {
+                    println!("  {} orphan {} {} bytes",
+                        warn("○"),
+                        ident(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+                        info(&size.to_string()));
+                }
+                Finding::HighFanout { path, fanout } => {
+                    println!("  {} fanout={} {}",
+                        warn("◐"),
+                        info(&fanout.to_string()),
+                        ident(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+                }
+                Finding::VersionShadow { older, newer, older_version, newer_version, name_root } => {
+                    println!("  {} {} {}→{} (shadowed)",
+                        info("↑"), ident(name_root),
+                        muted(older_version), success(newer_version));
+                    let _ = (older, newer);
+                }
+            }
+        }
+        if findings.len() > 20 {
+            println!("  {} … {} more findings", muted(""), muted(&(findings.len() - 20).to_string()));
+        }
+        println!();
+        println!("  {} {} finding(s) across {} scanned entries",
+            glyph_arrow(), info(&findings.len().to_string()), info(&inv.entries.len().to_string()));
+    }
+    Ok(())
+}
+
+// ── `sui store upgrade-paths` — typed upgrade recommendations ──
+
+fn store_upgrade_paths(profile_name: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_analyze::{self, AnalyzeConfig};
+    use sui_spec::store_inventory::{self, StoreInventory, RefIndex};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("upgrade-paths: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("upgrade-paths: unknown profile")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("upgrade-paths: walk: {e:?}")))?;
+    let idx = RefIndex::build(&inv, "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("upgrade-paths: ref index: {e:?}")))?;
+    let findings = store_analyze::analyze(&inv, Some(&idx), &AnalyzeConfig {
+        detect_duplicates: false,  // skip — irrelevant for upgrades
+        detect_orphans: false,
+        high_fanout_threshold: 0,
+        detect_version_shadows: true,
+    });
+    let mut paths = store_analyze::mine_upgrade_paths(&findings, &idx);
+    store_analyze::sort_upgrade_paths(&mut paths);
+
+    if json {
+        let probes: Vec<serde_json::Value> = paths.iter().map(|up| serde_json::json!({
+            "from": up.from.display().to_string(),
+            "to":   up.to.display().to_string(),
+            "name_root": up.name_root,
+            "from_version": up.from_version,
+            "to_version":   up.to_version,
+            "referrers_count": up.referrers_count,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile": profile_name,
+            "upgrade_paths": probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store upgrade-paths"),
+            muted(&format!("profile={profile_name}")));
+        println!();
+        if paths.is_empty() {
+            println!("  {} no upgrade-shadow pairs found in this profile",
+                success("✓"));
+            return Ok(());
+        }
+        println!("  {} {} upgrade recommendation(s)",
+            body("∑"), info(&paths.len().to_string()));
+        println!();
+        for up in paths.iter().take(30) {
+            println!("  {} {} {}→{} ({} referrer{})",
+                success("↑"),
+                ident(&up.name_root),
+                muted(&up.from_version),
+                success(&up.to_version),
+                info(&up.referrers_count.to_string()),
+                if up.referrers_count == 1 { "" } else { "s" });
+        }
+        if paths.len() > 30 {
+            println!("  {} … {} more", muted(""), muted(&(paths.len() - 30).to_string()));
+        }
+        println!();
+        println!("  {} {} recommended upgrade(s) — sorted by blast radius",
+            glyph_arrow(), info(&paths.len().to_string()));
+    }
     Ok(())
 }
 
@@ -3042,6 +3437,18 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::Fingerprint { path, json } => {
                     store_fingerprint(&path, json)?;
+                }
+                StoreCommands::Find { profile, name, min_size, max_size, contents, json } => {
+                    store_find(&profile, name.as_deref(), min_size, max_size, contents.as_deref(), json)?;
+                }
+                StoreCommands::Stats { profile, json } => {
+                    store_stats(&profile, json)?;
+                }
+                StoreCommands::Analyze { profile, no_duplicates, high_fanout_threshold, json } => {
+                    store_analyze_cmd(&profile, !no_duplicates, high_fanout_threshold, json)?;
+                }
+                StoreCommands::UpgradePaths { profile, json } => {
+                    store_upgrade_paths(&profile, json)?;
                 }
             }
         }
