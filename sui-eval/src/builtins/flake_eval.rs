@@ -216,26 +216,53 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
         a
     };
 
-    // 5. Build `self`.  Mirrors CppNix: `self.outPath` is the
-    //    source *store path* (not the filesystem path), and the
-    //    source-info attrset carries `narHash` + `outPath`.  Note
-    //    that `self` — unlike the top-level flake result — DOES
-    //    surface flake-body metadata (description, nixConfig, …)
-    //    because outputs functions commonly read `self.description`.
-    let mut self_attrs = NixAttrs::new();
-    self_attrs.insert("outPath".to_string(), Value::string(source_store_path.clone()));
-    self_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info.clone())));
-    self_attrs.insert("narHash".to_string(), Value::string(source_nar_sri.clone()));
-    self_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs.clone())));
-    for (k, v) in flake_attrs.iter() {
-        if k != "outputs" && k != "inputs" && !self_attrs.contains_key(k.as_str()) {
-            self_attrs.insert(k.clone(), v.clone());
-        }
-    }
+    // 5. Build `self` as a CppNix-equivalent fixpoint reference.
+    //
+    // Critical: `self` must point at the FINAL flake result
+    // including outputs (lib, darwinModules, packages, ...) — not
+    // just flake-body metadata.  CppNix achieves this via a
+    // self-fixpoint: lambdas in outputs body capture `self`, then
+    // access e.g. `self.lib.evalConfig` at invocation time AFTER
+    // outputs has already returned.
+    //
+    // We implement this with a shared `OnceCell<Rc<NixAttrs>>`:
+    //   - At outputs-call time, `self` is a thunk that reads the
+    //     OnceCell (initially empty).
+    //   - After outputs returns, we fill the OnceCell with the
+    //     final merged attrset.
+    //   - Later, when a captured `self` is forced, the OnceCell is
+    //     populated and the thunk yields the final attrset.
+    //
+    // This was the load-bearing M2.1 bug: previously sui passed
+    // outputs a `self` containing only outPath/sourceInfo/inputs/
+    // flake-body metadata, so `nix-darwin`'s `darwinSystem` body
+    // (`self.lib.evalConfig (...)`) errored "attribute not found:
+    // 'lib'" at invocation time.
+    let self_promise: Rc<std::cell::OnceCell<Rc<NixAttrs>>> = Rc::new(std::cell::OnceCell::new());
+    let self_thunk = {
+        let self_promise = self_promise.clone();
+        let fallback_out_path = source_store_path.clone();
+        Thunk::new_native(move || {
+            if let Some(attrs) = self_promise.get() {
+                Ok(Value::Attrs(attrs.clone()))
+            } else {
+                // outputs body forced `self` BEFORE we filled the
+                // OnceCell.  This is rare but possible if outputs
+                // does something like `forAllSystems = self.…`
+                // eagerly at the top level.  Return the pre-output
+                // skeleton with whatever flake-body metadata we
+                // have so the caller can read outPath etc.
+                let mut fallback = NixAttrs::new();
+                fallback.insert("outPath".to_string(),
+                    Value::string(fallback_out_path.clone()));
+                Ok(Value::Attrs(Rc::new(fallback)))
+            }
+        })
+    };
 
     // 6. Build arguments for `outputs`.
     let mut outputs_args = NixAttrs::new();
-    outputs_args.insert("self".to_string(), Value::Attrs(Rc::new(self_attrs)));
+    outputs_args.insert("self".to_string(), Value::Thunk(self_thunk));
     for (k, v) in resolved_inputs.iter() {
         outputs_args.insert(k.clone(), v.clone());
     }
@@ -274,7 +301,24 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
         }
     }
 
-    Ok(Value::Attrs(Rc::new(final_attrs)))
+    // Also surface flake-body metadata (description, nixConfig) on
+    // self.  CppNix exposes these on the flake result, so lambdas
+    // captured during outputs that read e.g. `self.description`
+    // should resolve correctly.
+    for (k, v) in flake_attrs.iter() {
+        if k != "outputs" && k != "inputs" && !final_attrs.contains_key(k.as_str()) {
+            final_attrs.insert(k.clone(), v.clone());
+        }
+    }
+
+    let final_attrs_rc = Rc::new(final_attrs);
+
+    // Fill the self-fixpoint promise.  Lambdas captured during
+    // outputs now resolve `self.lib`, `self.darwinModules`, etc.
+    // against this final attrset.
+    let _ = self_promise.set(final_attrs_rc.clone());
+
+    Ok(Value::Attrs(final_attrs_rc))
 }
 
 // ── Cached attribute evaluation ──────────────────────────────
