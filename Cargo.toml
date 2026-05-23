@@ -20,7 +20,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -29,16 +29,16 @@ repository = "https://github.com/pleme-io/sui"
 [workspace.dependencies]
 # Internal crates
 sui-intern = { path = "sui-intern" }
-sui-bytecode = { path = "sui-bytecode", version = "0.1.5" }
-sui-cache = { path = "sui-cache", version = "0.1.5" }
-sui-compat = { path = "sui-compat", version = "0.1.5" }
-sui-store = { path = "sui-store", version = "0.1.5" }
-sui-eval = { path = "sui-eval", version = "0.1.5" }
-sui-build = { path = "sui-build", version = "0.1.5" }
-sui-daemon = { path = "sui-daemon", version = "0.1.5" }
-sui-orchestrate = { path = "sui-orchestrate", version = "0.1.5" }
-sui-cache-eval = { path = "sui-cache-eval", version = "0.1.5" }
-sui-spec = { path = "sui-spec", version = "0.1.5" }
+sui-bytecode = { path = "sui-bytecode", version = "0.1.6" }
+sui-cache = { path = "sui-cache", version = "0.1.6" }
+sui-compat = { path = "sui-compat", version = "0.1.6" }
+sui-store = { path = "sui-store", version = "0.1.6" }
+sui-eval = { path = "sui-eval", version = "0.1.6" }
+sui-build = { path = "sui-build", version = "0.1.6" }
+sui-daemon = { path = "sui-daemon", version = "0.1.6" }
+sui-orchestrate = { path = "sui-orchestrate", version = "0.1.6" }
+sui-cache-eval = { path = "sui-cache-eval", version = "0.1.6" }
+sui-spec = { path = "sui-spec", version = "0.1.6" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
