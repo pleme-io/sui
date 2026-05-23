@@ -264,6 +264,22 @@ pub struct OptionDecl {
     pub default: Option<NixValue>,
     /// Human-readable description.
     pub description: String,
+    /// For `type_name == "submodule"`: the submodule's nested
+    /// option declarations + own definitions.  The M2.1
+    /// SubmoduleMerge implementation recurses into
+    /// `eval_modules` against this spec.
+    pub submodule: Option<Box<Module>>,
+}
+
+impl Default for OptionDecl {
+    fn default() -> Self {
+        Self {
+            type_name: "any".into(),
+            default: None,
+            description: String::new(),
+            submodule: None,
+        }
+    }
 }
 
 /// One config definition — a value assigned to an option path, with
@@ -277,6 +293,14 @@ pub struct Definition {
     pub value: NixValue,
     /// Priority level (lower = wins).  See [`PriorityRank`].
     pub priority: u32,
+    /// `mkIf cond ...` translates here.  `None` = unconditional
+    /// (the default and most common shape).  `Some(false)` drops
+    /// the definition before priority resolution.  `Some(true)`
+    /// keeps it (equivalent to `None`).
+    ///
+    /// Nested `mkIf` wrappers collapse to a single AND-combined
+    /// bool at translation time — this surface stays Boolean.
+    pub cond: Option<bool>,
 }
 
 /// The output of `eval_modules` — a path-keyed config attrset.
@@ -318,11 +342,16 @@ pub fn eval_modules(
         }
     }
 
-    // Phase: GroupDefinitions — collect every config definition into
-    // per-option lists.
+    // Phase: GroupDefinitions + ResolveConditionals — collect every
+    // config definition into per-option lists, filtering out
+    // mkIf-false definitions early.  ResolveConditionals comes
+    // before priority resolution in the cppnix algorithm spec.
     let mut by_path: HashMap<String, Vec<Definition>> = HashMap::new();
     for module in modules {
         for def in &module.config {
+            if def.cond == Some(false) {
+                continue;
+            }
             by_path.entry(def.path.clone()).or_default().push(def.clone());
         }
     }
@@ -383,7 +412,14 @@ pub fn eval_modules(
         }
 
         // Phase: MergePerOption — dispatch on the type's strategy.
-        let merged = merge_definitions(type_spec, &winners, path)?;
+        // SubmoduleMerge routes through merge_submodule because it
+        // needs the option's nested template + the type registry
+        // for recursion.
+        let merged = if type_spec.merge_strategy == MergeStrategy::SubmoduleMerge {
+            merge_submodule(decl, &winners, path, option_types)?
+        } else {
+            merge_definitions(type_spec, &winners, path)?
+        };
 
         // Phase: EmitConfig (incremental).
         config.insert(path.clone(), merged);
@@ -528,20 +564,190 @@ fn merge_definitions(
             }
             Ok(winners[0].value.clone())
         }
-        MergeStrategy::SubmoduleMerge | MergeStrategy::Custom => {
-            // M2.1: SubmoduleMerge recurses into eval_modules.
-            // M2.x: Custom plugs in a registered merge function.
+        MergeStrategy::SubmoduleMerge => {
+            // M2.1: SubmoduleMerge recurses into eval_modules with
+            // the option's submodule spec as the option tree and
+            // each winning definition's attrset values as
+            // definitions.  Caller-provided OptionDecl::submodule
+            // is the schema; the values come from `winners`.
+            //
+            // The merge is left-to-right: later winners override
+            // earlier ones per-key, but identical priorities at
+            // sub-options still merge per their own type strategy.
+            // (Achieved by passing all winning attrsets as
+            // multiple module-shaped contributions.)
+            let mut synth_options: HashMap<String, OptionDecl> = HashMap::new();
+            // The submodule template must be known — caller looks
+            // it up on the OptionDecl, which we don't have direct
+            // access to here.  Hence the caller passes it via the
+            // `submodule_for` lookup wired in eval_modules.
+            // For M2.1 the merge_definitions surface is extended
+            // through a sibling helper in eval_modules; see
+            // `eval_modules` for the dispatch on submodule.
+            //
+            // This arm is reached when the caller failed to wire
+            // the submodule properly — surface the gap clearly.
+            let _ = (&mut synth_options, winners, path);
+            Err(SpecError::Interp {
+                phase: "submodule-misuse".into(),
+                message: format!(
+                    "option `{path}` is submodule-typed but \
+                     merge_definitions was called without the \
+                     submodule context — eval_modules must dispatch \
+                     submodule merges directly via merge_submodule",
+                ),
+            })
+        }
+        MergeStrategy::Custom => {
             Err(SpecError::Interp {
                 phase: "merge-unimplemented".into(),
                 message: format!(
-                    "option `{path}` uses merge strategy `{:?}` which \
-                     M2.0 doesn't implement yet — M2.1 lands SubmoduleMerge, \
-                     M2.x lands Custom",
-                    type_spec.merge_strategy,
+                    "option `{path}` uses Custom merge strategy — \
+                     M2.x will land the named-merge-function registry",
                 ),
             })
         }
     }
+}
+
+/// SubmoduleMerge dispatcher — recurses into `eval_modules` against
+/// the option's submodule spec.  Called directly by `eval_modules`
+/// when it sees an option with `MergeStrategy::SubmoduleMerge`,
+/// because only `eval_modules` has the `option_types` registry +
+/// the OptionDecl::submodule context.
+fn merge_submodule(
+    decl: &OptionDecl,
+    winners: &[&Definition],
+    path: &str,
+    option_types: &[OptionTypeSpec],
+) -> Result<NixValue, SpecError> {
+    let Some(sub_template) = decl.submodule.as_deref() else {
+        return Err(SpecError::Interp {
+            phase: "submodule-missing-spec".into(),
+            message: format!(
+                "option `{path}` is submodule-typed but its OptionDecl \
+                 has no `submodule` field set — declare the nested \
+                 Module schema",
+            ),
+        });
+    };
+    // Each winning definition's value must be an attrset
+    // representing a partial submodule.  Build one synthetic Module
+    // per winner, all carrying the submodule's own options.
+    let mut synthetic: Vec<Module> = Vec::new();
+    for w in winners {
+        let Some(obj) = w.value.as_object() else {
+            return Err(SpecError::Interp {
+                phase: "type-check".into(),
+                message: format!(
+                    "submodule option `{path}` definition must be an \
+                     attrset, got `{}`",
+                    value_type(&w.value),
+                ),
+            });
+        };
+        let mut sub_defs: Vec<Definition> = Vec::new();
+        for (key, value) in obj {
+            sub_defs.push(Definition {
+                path: key.clone(),
+                value: value.clone(),
+                priority: w.priority,
+                cond: None,
+            });
+        }
+        synthetic.push(Module {
+            imports: Vec::new(),
+            options: sub_template.options.clone(),
+            config: sub_defs,
+        });
+    }
+    // Submodules carry their OWN config definitions from the
+    // template too — surface those.
+    if !sub_template.config.is_empty() {
+        synthetic.push((**decl.submodule.as_ref().unwrap()).clone());
+    }
+    let sub_config = eval_modules(&synthetic, option_types)?;
+    // Serialise the sub-config map back to a JSON object.
+    let mut obj = serde_json::Map::new();
+    for (k, v) in sub_config {
+        obj.insert(k, v);
+    }
+    Ok(NixValue::Object(obj))
+}
+
+/// Flatten a tree of modules by resolving `imports` transitively.
+/// The `resolver` closure receives an import name and must return
+/// the corresponding Module; returning `None` errors.  Imports are
+/// deduplicated by name — the same name imported from multiple
+/// modules contributes its options + config exactly once.
+///
+/// Caller invokes `flatten_imports` then passes the result to
+/// `eval_modules`.  The split keeps `eval_modules` pure-data and
+/// easy to test in isolation.
+///
+/// # Errors
+///
+/// Returns `SpecError::Load` if `resolver` returns `None` for an
+/// import name; returns `SpecError::Interp` with phase
+/// `imports-cycle` if the import graph contains a cycle.
+pub fn flatten_imports<F>(
+    roots: &[Module],
+    mut resolver: F,
+) -> Result<Vec<Module>, SpecError>
+where
+    F: FnMut(&str) -> Option<Module>,
+{
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut in_path: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut out: Vec<Module> = Vec::new();
+
+    fn visit<F>(
+        module: &Module,
+        name: Option<&str>,
+        resolver: &mut F,
+        seen: &mut std::collections::BTreeSet<String>,
+        in_path: &mut std::collections::BTreeSet<String>,
+        out: &mut Vec<Module>,
+    ) -> Result<(), SpecError>
+    where F: FnMut(&str) -> Option<Module>,
+    {
+        // Recurse into imports first (depth-first).
+        // Standard white/gray/black DFS cycle detection:
+        //  - in_path tracks the currently-active visit stack.
+        //  - seen tracks completed traversals (for dedup).
+        // Cycle is detected when an import refers to a name
+        // already in in_path.
+        for import_name in &module.imports {
+            if in_path.contains(import_name) {
+                return Err(SpecError::Interp {
+                    phase: "imports-cycle".into(),
+                    message: format!(
+                        "import cycle detected involving `{import_name}`",
+                    ),
+                });
+            }
+            if !seen.insert(import_name.clone()) {
+                continue;
+            }
+            in_path.insert(import_name.clone());
+            let imported = resolver(import_name).ok_or_else(|| {
+                SpecError::Load(format!("import `{import_name}` not found"))
+            })?;
+            visit(&imported, Some(import_name), resolver, seen, in_path, out)?;
+            in_path.remove(import_name);
+        }
+        // Then push the module itself (so leaves come before
+        // dependents — same ordering convention as the substrate
+        // dependency graph).
+        let _ = name;
+        out.push(module.clone());
+        Ok(())
+    }
+
+    for root in roots {
+        visit(root, None, &mut resolver, &mut seen, &mut in_path, &mut out)?;
+    }
+    Ok(out)
 }
 
 /// Legacy `apply()` — kept for backwards compatibility with the
@@ -715,8 +921,7 @@ mod tests {
     fn opt(type_name: &str) -> OptionDecl {
         OptionDecl {
             type_name: type_name.into(),
-            default: None,
-            description: String::new(),
+            ..Default::default()
         }
     }
 
@@ -724,12 +929,24 @@ mod tests {
         OptionDecl {
             type_name: type_name.into(),
             default: Some(default),
-            description: String::new(),
+            ..Default::default()
+        }
+    }
+
+    fn opt_submodule(template: Module) -> OptionDecl {
+        OptionDecl {
+            type_name: "submodule".into(),
+            submodule: Some(Box::new(template)),
+            ..Default::default()
         }
     }
 
     fn def(path: &str, value: NixValue) -> Definition {
-        Definition { path: path.into(), value, priority: 100 } // normal
+        Definition { path: path.into(), value, priority: 100, cond: None }
+    }
+
+    fn def_if(path: &str, value: NixValue, cond: bool) -> Definition {
+        Definition { path: path.into(), value, priority: 100, cond: Some(cond) }
     }
 
     #[test]
@@ -782,11 +999,13 @@ mod tests {
             path: "foo".into(),
             value: NixValue::from(7),
             priority: 1000, // mkDefault
+            cond: None,
         });
         module.config.push(Definition {
             path: "foo".into(),
             value: NixValue::from(99),
             priority: 50,   // mkForce
+            cond: None,
         });
         let config = eval_modules(&[module], &registry()).unwrap();
         assert_eq!(config.get("foo"), Some(&NixValue::from(99)));
@@ -861,6 +1080,207 @@ mod tests {
         match err {
             SpecError::Interp { phase, .. } => assert_eq!(phase, "merge-conflict"),
             _ => panic!("expected merge-conflict"),
+        }
+    }
+
+    // ── M2.1 tests: mkIf, SubmoduleMerge, flatten_imports ──────
+
+    #[test]
+    fn mkif_false_drops_definition() {
+        let mut module = Module::default();
+        module.options.insert(
+            "foo".into(),
+            opt_with_default("bool", NixValue::Bool(false)),
+        );
+        module.config.push(def_if("foo", NixValue::Bool(true), false));
+        let config = eval_modules(&[module], &registry()).unwrap();
+        // mkIf false dropped the def; default kicks in.
+        assert_eq!(config.get("foo"), Some(&NixValue::Bool(false)));
+    }
+
+    #[test]
+    fn mkif_true_keeps_definition() {
+        let mut module = Module::default();
+        module.options.insert(
+            "foo".into(),
+            opt_with_default("bool", NixValue::Bool(false)),
+        );
+        module.config.push(def_if("foo", NixValue::Bool(true), true));
+        let config = eval_modules(&[module], &registry()).unwrap();
+        assert_eq!(config.get("foo"), Some(&NixValue::Bool(true)));
+    }
+
+    #[test]
+    fn mkif_filters_one_def_in_a_list_of_definitions() {
+        // Two definitions for a listOf; one is mkIf-false and
+        // dropped, the other survives.
+        let mut module = Module::default();
+        module.options.insert("xs".into(), opt("listOf"));
+        module.config.push(def("xs", serde_json::json!([1, 2])));
+        module.config.push(def_if("xs", serde_json::json!([99]), false));
+        let config = eval_modules(&[module], &registry()).unwrap();
+        // [99] was dropped; only [1, 2] survives.
+        assert_eq!(config.get("xs"), Some(&serde_json::json!([1, 2])));
+    }
+
+    #[test]
+    fn submodule_evaluates_nested_options() {
+        // The inner submodule template:
+        //   options.enable = mkOption { type = bool; default = false; };
+        //   options.port   = mkOption { type = int; default = 80; };
+        let mut sub_template = Module::default();
+        sub_template.options.insert(
+            "enable".into(),
+            opt_with_default("bool", NixValue::Bool(false)),
+        );
+        sub_template.options.insert(
+            "port".into(),
+            opt_with_default("int", NixValue::from(80)),
+        );
+
+        // The outer module wraps the submodule as an option.
+        let mut outer = Module::default();
+        outer.options.insert("foo".into(), opt_submodule(sub_template));
+        outer.config.push(def(
+            "foo",
+            serde_json::json!({"enable": true, "port": 8080}),
+        ));
+
+        let config = eval_modules(&[outer], &registry()).unwrap();
+        let foo = config.get("foo").expect("foo must resolve");
+        assert_eq!(foo.get("enable"), Some(&NixValue::Bool(true)));
+        assert_eq!(foo.get("port"), Some(&NixValue::from(8080)));
+    }
+
+    #[test]
+    fn submodule_picks_up_inner_defaults_when_unset() {
+        let mut sub_template = Module::default();
+        sub_template.options.insert(
+            "enable".into(),
+            opt_with_default("bool", NixValue::Bool(false)),
+        );
+        sub_template.options.insert(
+            "port".into(),
+            opt_with_default("int", NixValue::from(80)),
+        );
+
+        let mut outer = Module::default();
+        outer.options.insert("foo".into(), opt_submodule(sub_template));
+        // Only `enable` defined; port should fall back to inner default.
+        outer.config.push(def("foo", serde_json::json!({"enable": true})));
+
+        let config = eval_modules(&[outer], &registry()).unwrap();
+        let foo = config.get("foo").unwrap();
+        assert_eq!(foo.get("enable"), Some(&NixValue::Bool(true)));
+        assert_eq!(foo.get("port"), Some(&NixValue::from(80)));
+    }
+
+    #[test]
+    fn submodule_type_checks_inner_values() {
+        let mut sub_template = Module::default();
+        sub_template.options.insert("enable".into(), opt("bool"));
+
+        let mut outer = Module::default();
+        outer.options.insert("foo".into(), opt_submodule(sub_template));
+        // `enable` declared as bool but config gives int — should
+        // surface as type-check error during recursion.
+        outer.config.push(def(
+            "foo",
+            serde_json::json!({"enable": 42}),
+        ));
+
+        let err = eval_modules(&[outer], &registry()).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "type-check"),
+            _ => panic!("expected type-check error"),
+        }
+    }
+
+    #[test]
+    fn flatten_imports_resolves_one_level() {
+        let inner = Module {
+            imports: vec![],
+            options: {
+                let mut h = HashMap::new();
+                h.insert("nested".into(), opt("str"));
+                h
+            },
+            config: vec![],
+        };
+        let root = Module {
+            imports: vec!["inner".into()],
+            options: HashMap::new(),
+            config: vec![def("nested", NixValue::from("from-root"))],
+        };
+        let inner_for_resolve = inner.clone();
+        let flat = flatten_imports(&[root], move |name| {
+            if name == "inner" { Some(inner_for_resolve.clone()) } else { None }
+        })
+        .unwrap();
+        // Flatten must include `inner` before `root` (leaves first).
+        assert_eq!(flat.len(), 2);
+        assert!(flat[0].options.contains_key("nested"));
+        assert!(!flat[0].config.iter().any(|d| d.path == "nested"));
+        assert!(flat[1].config.iter().any(|d| d.path == "nested"));
+        // Now evaluate the flat list.
+        let config = eval_modules(&flat, &registry()).unwrap();
+        assert_eq!(config.get("nested"), Some(&NixValue::from("from-root")));
+    }
+
+    #[test]
+    fn flatten_imports_dedups_repeated() {
+        // A diamond import — two roots both importing `common`.
+        let common = Module::default();
+        let root_a = Module {
+            imports: vec!["common".into()],
+            options: HashMap::new(),
+            config: vec![],
+        };
+        let root_b = Module {
+            imports: vec!["common".into()],
+            options: HashMap::new(),
+            config: vec![],
+        };
+        let common_for_resolve = common.clone();
+        let flat = flatten_imports(&[root_a, root_b], move |name| {
+            if name == "common" { Some(common_for_resolve.clone()) } else { None }
+        })
+        .unwrap();
+        // `common` appears exactly once + the two roots = 3 modules
+        // total, NOT 4 (no double-import).
+        assert_eq!(flat.len(), 3);
+    }
+
+    #[test]
+    fn flatten_imports_detects_cycle() {
+        // A → B → A
+        let a = Module { imports: vec!["b".into()], ..Default::default() };
+        let b = Module { imports: vec!["a".into()], ..Default::default() };
+        let a_for_resolve = a.clone();
+        let b_for_resolve = b.clone();
+        let err = flatten_imports(&[a.clone()], move |name| match name {
+            "a" => Some(a_for_resolve.clone()),
+            "b" => Some(b_for_resolve.clone()),
+            _ => None,
+        })
+        .unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "imports-cycle"),
+            _ => panic!("expected imports-cycle"),
+        }
+    }
+
+    #[test]
+    fn flatten_imports_unknown_name_errors() {
+        let root = Module {
+            imports: vec!["nope".into()],
+            options: HashMap::new(),
+            config: vec![],
+        };
+        let err = flatten_imports(&[root], |_| None).unwrap_err();
+        match err {
+            SpecError::Load(msg) => assert!(msg.contains("nope")),
+            _ => panic!("expected Load error for missing import"),
         }
     }
 
