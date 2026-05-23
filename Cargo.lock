@@ -6104,6 +6104,7 @@ dependencies = [
 name = "sui-spec"
 version = "0.1.2"
 dependencies = [
+ "base64",
  "libc",
  "proptest",
  "serde",
