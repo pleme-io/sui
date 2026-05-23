@@ -5877,7 +5877,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sui"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "assert_cmd",
  "async-graphql",
@@ -5916,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "sui-build"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -5933,7 +5933,7 @@ dependencies = [
 
 [[package]]
 name = "sui-bytecode"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "criterion",
  "pretty_assertions",
@@ -5951,7 +5951,7 @@ dependencies = [
 
 [[package]]
 name = "sui-cache"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -5978,7 +5978,7 @@ dependencies = [
 
 [[package]]
 name = "sui-cache-eval"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "dirs-next",
@@ -5990,7 +5990,7 @@ dependencies = [
 
 [[package]]
 name = "sui-compat"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "criterion",
@@ -6006,7 +6006,7 @@ dependencies = [
 
 [[package]]
 name = "sui-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "libc",
@@ -6027,7 +6027,7 @@ dependencies = [
 
 [[package]]
 name = "sui-eval"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "blake3",
@@ -6074,14 +6074,14 @@ dependencies = [
 
 [[package]]
 name = "sui-intern"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rustc-hash 2.1.2",
 ]
 
 [[package]]
 name = "sui-orchestrate"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6102,7 +6102,7 @@ dependencies = [
 
 [[package]]
 name = "sui-spec"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "libc",
@@ -6119,7 +6119,7 @@ dependencies = [
 
 [[package]]
 name = "sui-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
