@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Content-addressed evaluation cache for sui — hash-keyed memoization of Nix expressions"
+keywords = ["nix", "cache", "memoization", "blake3"]
+categories = ["caching"]
 
 [dependencies]
 blake3 = { workspace = true }

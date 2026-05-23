@@ -39,14 +39,12 @@ sui-orchestrate = { path = "sui-orchestrate" }
 sui-cache-eval = { path = "sui-cache-eval" }
 sui-spec = { path = "sui-spec" }
 
-# Lisp surface for declarative specs.  tatara-lisp is a pleme-io
-# workspace sub-crate (MIT, currently private repo) we consume via
-# SSH git dep.  Requires `net.git-fetch-with-cli = true` in
-# `.cargo/config.toml` so cargo inherits the user's ssh-agent
-# credentials.  Once tatara-lisp is published to crates.io we'll
-# switch to a version-based dep.
-tatara-lisp = { git = "ssh://git@github.com/pleme-io/tatara.git", package = "tatara-lisp" }
-tatara-lisp-derive = { git = "ssh://git@github.com/pleme-io/tatara.git", package = "tatara-lisp-derive" }
+# Lisp surface for declarative specs — pleme-io's homoiconic
+# S-expression reader + derive macro, both published on crates.io.
+# Version-pinned to keep the workspace reproducible; bump in lockstep
+# when adding a new domain to sui-spec.
+tatara-lisp = "0.2.1"
+tatara-lisp-derive = "0.2.1"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -157,7 +155,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rust-native Nix replacement with API-first design"
+description = "Rust-native Nix replacement (粋 sui) — drop-in nix CLI with lazy evaluator, bytecode VM, sandboxed builder, content-addressed eval cache, and NATS-federated build agent"
+keywords = ["nix", "package-manager", "build-system", "evaluator"]
+categories = ["command-line-utilities", "development-tools::build-utils"]
+readme = "README.md"
 
 [[bin]]
 name = "sui"

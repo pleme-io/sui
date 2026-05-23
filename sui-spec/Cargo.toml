@@ -1,6 +1,8 @@
 [package]
 name = "sui-spec"
 description = "Declarative Lisp-authored specs for CppNix-parity behaviors. Rust types are the hard boundary; Lisp forms are the free-middle authoring surface. Both engines (tree-walker + VM) drive the same spec, so they cannot drift."
+keywords = ["nix", "parity", "testing", "lisp", "tatara"]
+categories = ["development-tools::testing"]
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

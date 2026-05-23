@@ -1,0 +1,27 @@
+name: auto-release
+
+# Per the org-level pleme-io ★★ AUTO-RELEASE directive: every merge to
+# `main` auto-bumps the patch version of every workspace crate, tags,
+# pushes, and publishes each crate to crates.io in dep order.  No PR
+# ceremony; substrate's reusable workflow handles rate-limit retry,
+# name-conflict auto-rename, and idempotent skip-if-already-published.
+#
+# To bump minor or major instead of patch: trigger via Actions UI
+# (workflow_dispatch) with the `bump-type` input.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: "Version bump: patch | minor | major"
+        required: false
+        default: patch
+
+jobs:
+  release:
+    uses: pleme-io/substrate/.github/workflows/rust-auto-release.yml@main
+    with:
+      bump-type: ${{ github.event.inputs.bump-type || 'patch' }}
+    secrets: inherit

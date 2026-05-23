@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Bytecode compiler and VM for the Nix evaluator"
+description = "Bytecode compiler and VM for the sui Rust-native Nix evaluator"
+keywords = ["nix", "bytecode", "vm", "compiler", "evaluator"]
+categories = ["compilers"]
 
 [dependencies]
 rnix.workspace = true

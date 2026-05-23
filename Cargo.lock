@@ -1287,7 +1287,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1381,7 +1381,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3149,7 +3149,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3203,7 +3203,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3673,7 +3673,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4426,7 +4426,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4860,7 +4860,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4941,7 +4941,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5410,7 +5410,8 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 [[package]]
 name = "shikumi"
 version = "0.1.0"
-source = "git+https://github.com/pleme-io/shikumi#15c4e5484d80717ff2256f098378baaeab18b971"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a069b173b743266d8b24633f4c2178579223fe5483e79a871e4b98c487789a9"
 dependencies = [
  "arc-swap",
  "figment",
@@ -6067,8 +6068,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "sui-compat",
- "tatara-lisp 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
- "tatara-lisp-derive 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
+ "tatara-lisp 0.2.1",
+ "tatara-lisp-derive 0.2.1",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -6193,13 +6194,14 @@ dependencies = [
 
 [[package]]
 name = "tatara-lisp"
-version = "0.2.0"
-source = "git+ssh://git@github.com/pleme-io/tatara.git#b41c3fba4f65619e6392ffe4db03c5ae0a5c511e"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8e86ceb7f2fb8a742463897db3d5c78febde46cb503a9d4cb1f29f88af96d72"
 dependencies = [
  "blake3",
  "serde",
  "serde_json",
- "tatara-lisp-derive 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
+ "tatara-lisp-derive 0.2.1",
  "thiserror 2.0.18",
 ]
 
@@ -6214,8 +6216,9 @@ dependencies = [
 
 [[package]]
 name = "tatara-lisp-derive"
-version = "0.2.0"
-source = "git+ssh://git@github.com/pleme-io/tatara.git#b41c3fba4f65619e6392ffe4db03c5ae0a5c511e"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a155c87454fd4affed8c6676fb2c942cc247e679e87cd93f380af4cf29935d4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6232,7 +6235,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7203,7 +7206,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

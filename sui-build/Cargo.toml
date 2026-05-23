@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Nix builder with sandboxed execution"
+description = "Nix builder with sandboxed execution, closure topo-sort, and reference scanning for the sui Rust-native runtime"
+keywords = ["nix", "builder", "sandbox", "derivation"]
+categories = ["development-tools::build-utils"]
 
 [dependencies]
 sui-compat.workspace = true

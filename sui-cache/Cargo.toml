@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Built-in binary cache server and push pipeline for sui"
+description = "Built-in binary cache server and push pipeline for the sui Rust-native Nix runtime"
+keywords = ["nix", "binary-cache", "cache", "store"]
+categories = ["caching", "web-programming::http-server"]
 
 [dependencies]
 sui-compat = { path = "../sui-compat" }

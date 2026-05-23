@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Nix store abstraction with SeaORM metadata"
+description = "Nix store abstraction with SeaORM-backed metadata for the sui Rust-native runtime"
+keywords = ["nix", "store", "seaorm", "substituter"]
+categories = ["database-implementations", "filesystem"]
 
 [dependencies]
 sui-compat.workspace = true

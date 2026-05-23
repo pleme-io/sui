@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "System and fleet orchestration for Nix deployments"
+description = "System and fleet orchestration for Nix deployments — sui-native NixOS/Darwin/HM rebuild pipeline"
+keywords = ["nix", "orchestration", "fleet", "rebuild"]
+categories = ["development-tools::build-utils"]
 
 [dependencies]
 sui-compat.workspace = true

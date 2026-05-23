@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Clean-room Nix format and protocol compatibility layer"
+description = "Clean-room Nix format and protocol compatibility layer (NAR, store paths, ATerm, derivations)"
+keywords = ["nix", "nar", "store-path", "aterm", "derivation"]
+categories = ["parser-implementations", "encoding"]
 
 [dependencies]
 ed25519-dalek.workspace = true

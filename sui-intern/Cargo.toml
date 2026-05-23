@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "String interning for the sui Nix evaluator — Symbol(u32) handles for O(1) comparison"
+keywords = ["nix", "interning", "symbol", "evaluator"]
+categories = ["data-structures", "text-processing"]
 
 [dependencies]
 rustc-hash = "2"

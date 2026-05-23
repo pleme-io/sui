@@ -5,7 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Clean-room Nix language evaluator (bytecode VM)"
+description = "Clean-room Nix language evaluator — lazy tree-walker + bytecode VM with construction-guaranteed Lazy<T>"
+keywords = ["nix", "evaluator", "lazy", "tree-walker", "vm"]
+categories = ["compilers", "parser-implementations"]
 
 [dependencies]
 sui-bytecode.workspace = true
