@@ -241,6 +241,26 @@ enum StoreCommands {
     #[command(name = "prefetch-file")] PrefetchFile { url: String, #[arg(long)] name: Option<String>, #[arg(long)] hash: Option<String>, #[arg(long)] hash_type: Option<String>, #[arg(long)] unpack: bool },
     Sign { paths: Vec<String>, #[arg(short = 'k', long)] key_file: String },
     Repair { paths: Vec<String> },
+    /// Walk /nix/store via a typed inventory profile + emit
+    /// summary (entries / total size / total files).
+    Inventory {
+        /// Profile name from the canonical store-inventory catalog.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Emit JSON instead of the Nord table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compute the typed closure of a store path — every
+    /// transitive `/nix/store/...` reference embedded in its
+    /// NAR contents.  Used for diff / audit / mover workflows.
+    Closure {
+        /// Store path whose closure to walk.
+        path: String,
+        /// Emit JSON instead of Nord summary.
+        #[arg(long)]
+        json: bool,
+    },
     /// Materialize a typed store-slice at a destination dir
     /// using sui's NAR encoder + decoder; verify byte-perfect
     /// equality against the source via NAR sha256.
@@ -1133,6 +1153,106 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store inventory` — typed Nix-store walker ──────────────
+
+fn store_inventory(profile_name: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_inventory::{self, StoreInventory};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("inventory: load profiles: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!(
+            "inventory: unknown profile `{profile_name}`; available: {}",
+            profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "),
+        )))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("inventory: walk: {e:?}")))?;
+
+    if json {
+        let entries: Vec<serde_json::Value> = inv.entries.values().map(|e| serde_json::json!({
+            "path":         e.path.display().to_string(),
+            "hash":         e.parsed.hash,
+            "name":         e.parsed.name,
+            "is_directory": e.is_directory,
+            "file_count":   e.file_count,
+            "size":         e.size,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile":     profile_name,
+            "source_root": inv.root.display().to_string(),
+            "entries":     entries,
+            "summary":     {
+                "entries":     inv.entries.len(),
+                "total_size":  inv.total_size(),
+                "total_files": inv.total_files(),
+            },
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}  {}",
+            glyph_snowflake(),
+            header("store inventory"),
+            muted(&format!("profile={profile_name}")),
+            muted(&format!("root={}", inv.root.display())),
+        );
+        println!();
+        println!("  {}  {}", body("entries:        "), ident(&inv.entries.len().to_string()));
+        println!("  {}  {} bytes", body("total size:     "), info(&inv.total_size().to_string()));
+        println!("  {}  {}", body("total files:    "), info(&inv.total_files().to_string()));
+
+        // Show top-10 largest entries.
+        let mut sorted: Vec<_> = inv.entries.values().collect();
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.size));
+        let top = sorted.into_iter().take(10).collect::<Vec<_>>();
+        println!();
+        println!("  {}", body("top by size:"));
+        for e in &top {
+            println!("    {}  {} bytes / {} files",
+                success(&e.parsed.name),
+                info(&e.size.to_string()),
+                muted(&e.file_count.to_string()),
+            );
+        }
+        println!();
+        println!("  {} typed inventory built for {} store path(s)",
+            glyph_arrow(), success(&inv.entries.len().to_string()));
+    }
+    Ok(())
+}
+
+// ── `sui store closure` — typed dependency walker ───────────────
+
+fn store_closure(path: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_inventory::Closure;
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let closure = Closure::walk(std::path::Path::new(path), "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("closure: {e:?}")))?;
+
+    if json {
+        let paths: Vec<String> = closure.paths.iter().map(|p| p.display().to_string()).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "root":  closure.root.display().to_string(),
+            "count": closure.paths.len(),
+            "paths": paths,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store closure"), muted(path));
+        println!();
+        println!("  {}  {}", body("paths in closure:"), ident(&closure.paths.len().to_string()));
+        println!();
+        for p in &closure.paths {
+            let basename = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!("    {}  {}", muted("→"), success(basename));
+        }
+        println!();
+        println!("  {} {} transitive reference(s) discovered",
+            glyph_arrow(), info(&(closure.paths.len().saturating_sub(1)).to_string()));
+    }
     Ok(())
 }
 
@@ -2334,6 +2454,12 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::Materialize { slice, dest, json } => {
                     store_materialize(&slice, dest.as_deref(), json)?;
+                }
+                StoreCommands::Inventory { profile, json } => {
+                    store_inventory(&profile, json)?;
+                }
+                StoreCommands::Closure { path, json } => {
+                    store_closure(&path, json)?;
                 }
             }
         }

@@ -277,6 +277,13 @@ impl HasName for crate::store_ops::StoreSlice {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::store_inventory::StoreInventoryProfile {
+    const CANONICAL_LISP: &'static str = crate::store_inventory::CANONICAL_STORE_INVENTORY_LISP;
+}
+impl HasName for crate::store_inventory::StoreInventoryProfile {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

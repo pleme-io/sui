@@ -625,3 +625,24 @@
   :maturity SuiNative
   :substrate ("hash" "nar")
   :notes "Operator-facing continuous nix-vs-sui parity sweep: 7 byte-equivalent probes (hash conv x4, hash file, NAR sha256, ATerm round-trip). Exits non-zero on divergence. JSON or Nord output.")
+(defsui-command
+  :name "store inventory"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("store_layout" "nar")
+  :notes "Typed Nix-store walker — parses /nix/store via canonical layouts + emits size/file count summary. Profiles authored in specs/store_inventory.lisp (default/tiny/sources-only/deep).")
+
+(defsui-command
+  :name "store closure"
+  :nix-equivalent "nix-store --query --requisites"
+  :maturity Working
+  :substrate ("nar" "store_layout")
+  :notes "Substrate-typed transitive reference walker — scans NAR contents for embedded /nix/store paths, discovers full closure deterministically.")
+
+(defsui-command
+  :name "store materialize"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "NAR encode + decode round-trip rematerializer; proves byte-perfect copy via NAR sha256 over named slice (tiny-sources/tiny-patches/tiny-drvs).")
+
