@@ -206,10 +206,10 @@ serde_json.workspace = true
 http-body-util = "0.1"
 tower.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-sui-eval = { path = "sui-eval" }
-sui-build = { path = "sui-build" }
-sui-store = { path = "sui-store" }
-sui-compat = { path = "sui-compat" }
+sui-eval.workspace = true
+sui-build.workspace = true
+sui-store.workspace = true
+sui-compat.workspace = true
 
 [profile.release]
 codegen-units = 1

@@ -20,7 +20,7 @@ sui-spec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-sui-eval = { path = "../sui-eval" }
+sui-eval.workspace = true
 pretty_assertions.workspace = true
 criterion.workspace = true
 tempfile.workspace = true

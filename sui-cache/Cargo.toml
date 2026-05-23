@@ -10,7 +10,7 @@ keywords = ["nix", "binary-cache", "cache", "store"]
 categories = ["caching", "web-programming::http-server"]
 
 [dependencies]
-sui-compat = { path = "../sui-compat" }
+sui-compat.workspace = true
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
