@@ -68,7 +68,7 @@ pub(crate) use fetchers::{
 };
 pub(crate) use flake_parse::{flake_ref_to_string, parse_flake_ref};
 pub(crate) use helpers::*;
-pub(crate) use versions::{compare_versions, parse_drv_name, split_version};
+pub(crate) use sui_compat::versions::{compare_versions, parse_drv_name, split_version};
 
 // ── Public API ──────────────────────────────────────────────
 pub use derivation::build_derivation;

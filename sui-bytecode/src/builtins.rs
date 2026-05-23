@@ -1089,42 +1089,31 @@ impl BuiltinRegistry {
             }
         });
 
-        // compareVersions: compare two version strings
+        // compareVersions — delegates to sui_compat::versions so the
+        // tree-walker and VM stay in lock-step.  The previous naive
+        // local implementation (split on `.` only, no `pre` handling)
+        // diverged from cppnix on every nixpkgs version probe.
         self.register("compareVersions", 1, |args| {
             let a = as_string(&args[0])?.to_string();
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "compareVersions<partial>",
                 func: Rc::new(move |inner_args: Vec<VMValue>| {
                     let b = as_string(&inner_args[0])?;
-                    // Simple version comparison
-                    let parts_a: Vec<&str> = a.split('.').collect();
-                    let parts_b: Vec<&str> = b.split('.').collect();
-                    let max_len = parts_a.len().max(parts_b.len());
-                    for i in 0..max_len {
-                        let pa = parts_a.get(i).unwrap_or(&"0");
-                        let pb = parts_b.get(i).unwrap_or(&"0");
-                        let na = pa.parse::<i64>().unwrap_or(0);
-                        let nb = pb.parse::<i64>().unwrap_or(0);
-                        if na < nb {
-                            return Ok(VMValue::Int(-1));
-                        }
-                        if na > nb {
-                            return Ok(VMValue::Int(1));
-                        }
-                    }
-                    Ok(VMValue::Int(0))
+                    Ok(VMValue::Int(
+                        sui_compat::versions::compare_versions(&a, b),
+                    ))
                 }),
                 arity: 1,
             }))
         });
 
-        // splitVersion: split a version string into components
+        // splitVersion — delegates to sui_compat::versions for the
+        // same reason compareVersions does.
         self.register("splitVersion", 1, |args| {
             let version = as_string(&args[0])?;
-            let parts: Vec<VMValue> = version
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|s| !s.is_empty())
-                .map(|s| VMValue::String(s.to_string()))
+            let parts: Vec<VMValue> = sui_compat::versions::split_version(version)
+                .into_iter()
+                .map(VMValue::String)
                 .collect();
             Ok(VMValue::List(parts))
         });

@@ -13,4 +13,5 @@ pub mod narinfo;
 pub mod signature;
 pub mod source;
 pub mod store_path;
+pub mod versions;
 pub mod wire;

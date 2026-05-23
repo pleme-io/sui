@@ -34,10 +34,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
     });
 
-    // readFile — read file contents to string
+    // readFile — read file contents to string.  Consults the
+    // sui-tofile-cache fallback when /nix/store/<x> is missing,
+    // so that `builtins.readFile (builtins.toFile name content)`
+    // round-trips even when the operator isn't a nixbld user.
     register_builtin(builtins, "readFile", |args| {
         let path = args[0].coerce_to_path("readFile")?;
-        let contents = std::fs::read_to_string(&path)
+        let contents = read_file_with_tofile_fallback(&path)
             .map_err(|e| EvalError::IoError { context: "readFile".into(), message: e.to_string() })?;
         Ok(Value::string(contents))
     });
@@ -250,4 +253,28 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
         Ok(Value::Path(Box::new(SmolStr::from(target.to_string_lossy().as_ref()))))
     });
+}
+
+/// Read a UTF-8 file, consulting the sui-tofile-cache fallback when
+/// the primary path is missing.  Pairs with
+/// [`super::misc::write_store_text_object`] (toFile) so that
+/// `readFile (toFile name content) == content` even on hosts where
+/// the operator can't write to `/nix/store` directly.
+fn read_file_with_tofile_fallback(path: &str) -> Result<String, std::io::Error> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                && path.starts_with("/nix/store/") => {
+            let basename = std::path::Path::new(path)
+                .file_name()
+                .ok_or_else(|| std::io::Error::other(
+                    format!("readFile: cannot derive basename from {path}"),
+                ))?;
+            let fallback = std::env::temp_dir()
+                .join("sui-tofile-cache")
+                .join(basename);
+            std::fs::read_to_string(&fallback)
+        }
+        Err(e) => Err(e),
+    }
 }

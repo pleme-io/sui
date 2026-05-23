@@ -197,13 +197,61 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Err(EvalError::TypeError(format!("findFile: file '{name}' not found in search path")))
     });
 
-    // toFile (curried)
+    // toFile (curried) — compute the CppNix text:sha256 store path
+    // (byte-equivalent with cppnix) AND write the content so a
+    // subsequent `builtins.readFile` can read it back.  Tries
+    // /nix/store first; on PermissionDenied falls back to a
+    // process-local sui-tofile-cache so the round-trip succeeds even
+    // when the operator isn't a nixbld user.
     register_curried(builtins, "toFile", |name_val, content_val| {
         let name = name_val.as_string()?;
         let content = content_val.as_string()?;
-        use sha2::{Sha256, Digest};
-        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-        let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
+        let store_path =
+            sui_compat::content_address::compute_text_store_path(&name, content.as_bytes(), &[])
+                .map_err(|e| EvalError::TypeError(
+                    format!("toFile: store-path computation failed: {e}"),
+                ))?
+                .to_absolute_path();
+        write_store_text_object(&store_path, content.as_bytes())
+            .map_err(|e| EvalError::IoError {
+                context: format!("toFile {store_path}"),
+                message: e.to_string(),
+            })?;
         Ok(Value::Path(Box::new(SmolStr::from(store_path.as_str()))))
     });
+}
+
+/// Try to materialize `content` at `store_path`, falling back to a
+/// per-user sui-tofile-cache when /nix/store is read-only.  Idempotent:
+/// writes the file only when missing (or, in the fallback, only when
+/// the cached basename hasn't been materialized yet this session).
+///
+/// Pairs with [`read_store_text_object`] in `paths.rs`, which
+/// transparently consults the same fallback location when reading.
+pub(crate) fn write_store_text_object(
+    store_path: &str,
+    content: &[u8],
+) -> Result<(), std::io::Error> {
+    let primary = std::path::Path::new(store_path);
+    if primary.exists() {
+        return Ok(());
+    }
+    match std::fs::write(primary, content) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let fallback_dir = std::env::temp_dir().join("sui-tofile-cache");
+            std::fs::create_dir_all(&fallback_dir)?;
+            let basename = primary
+                .file_name()
+                .ok_or_else(|| std::io::Error::other(
+                    format!("toFile: cannot derive basename from {store_path}"),
+                ))?;
+            let fallback_path = fallback_dir.join(basename);
+            if !fallback_path.exists() {
+                std::fs::write(&fallback_path, content)?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
