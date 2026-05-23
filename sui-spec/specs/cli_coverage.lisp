@@ -752,4 +752,38 @@
   :maturity SuiNative
   :substrate ("derivation")
   :notes "ASCII-render a derivation DAG via inputDrvs walk + tree connectors. Bounded by --max-depth.")
+(defsui-command
+  :name "store sbom"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Emit SPDX 2.3 JSON SBOM over the closure of a store path. Industry-standard, ecosystem-wide compatible (syft, trivy, grype, dependency-track).")
+
+(defsui-command
+  :name "store sign-manifest"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("hash")
+  :notes "Sign a fingerprint manifest with an ed25519 key; emits sidecar .sig.json with signature + key name.")
+
+(defsui-command
+  :name "store verify-manifest"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("hash")
+  :notes "Verify a signed fingerprint manifest against a public key. Sigstore-compatible attestation.")
+
+(defsui-command
+  :name "store license-scan"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar")
+  :notes "Walk closure NAR contents for LICENSE/COPYING/NOTICE markers + emit typed audit.")
+
+(defsui-command
+  :name "store cve-scan"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar")
+  :notes "Closure-wide regex scan for CVE-pattern or arbitrary content. Exits non-zero on matches.")
 

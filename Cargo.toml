@@ -202,6 +202,7 @@ ed25519-dalek.workspace = true
 rand = "0.8"
 url = "2"
 ureq = "3"
+regex.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
