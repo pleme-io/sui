@@ -492,18 +492,22 @@ impl OperatorView for NarinfoView {
 // ── --registry-resolve mode ───────────────────────────────────────
 
 fn emit_registry_resolve(flake_ref: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // The canonical registry formats only declare SHAPE (scope +
-    // precedence + path).  Per-machine entries live in JSON files
-    // on disk and aren't yet loaded by the substrate.  For now we
-    // surface the algorithm via a deterministic demonstration set;
-    // when sui-spec gains `registry::load_entries_from_disk`, this
-    // mode lifts off it directly (third-site pattern: lock_file,
-    // narinfo, soon registry).
-    let _formats = registry::load_canonical()?;
-    let registries: registry::Registries = demonstration_entries(flake_ref);
+    // Try real disk entries first via the M3.1 disk loader.  Fall
+    // back to the demo set when no on-disk registry exists (fresh
+    // operator workstation, CI sandbox, etc.) — this keeps the
+    // tool useful at every maturity level.
+    let real = registry::discover_disk_registries()?;
+    let any_entries = real.iter().any(|(_, e)| !e.is_empty());
+    let registries: registry::Registries = if any_entries {
+        real
+    } else {
+        demonstration_entries(flake_ref)
+    };
+
     let view = RegistryResolveView {
         flake_ref: flake_ref.to_string(),
         registries,
+        from_disk: any_entries,
     };
     render_view(&view);
     Ok(())
@@ -512,12 +516,21 @@ fn emit_registry_resolve(flake_ref: &str) -> Result<(), Box<dyn std::error::Erro
 struct RegistryResolveView {
     flake_ref: String,
     registries: registry::Registries,
+    from_disk: bool,
 }
 
 impl OperatorView for RegistryResolveView {
     fn subject(&self) -> &str { &self.flake_ref }
     fn header_label(&self) -> &str { "registry resolve" }
     fn render_body(&self) {
+        if !self.from_disk {
+            println!(
+                "  {} {}",
+                muted("·"),
+                muted("(no on-disk registries; showing demo entries)"),
+            );
+            println!();
+        }
         let mut sorted: Vec<&(RegistryScope, Vec<RegistryEntry>)> =
             self.registries.iter().collect();
         sorted.sort_by_key(|(scope, _)| scope_precedence(*scope));
