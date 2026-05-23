@@ -63,12 +63,14 @@
 //! function belongs in this crate as a spec + interpreter, not in
 //! the engine.
 
+pub mod activation_script;
 pub mod cli;
 pub mod derivation;
 pub mod error;
 pub mod exec;
 pub mod flake;
 pub mod loader;
+pub mod module_system;
 pub mod parity;
 pub mod probe;
 pub mod rebuild;
