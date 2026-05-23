@@ -112,16 +112,29 @@ fn every_stub_apply_returns_typed_error() {
     .expect_err("fetchGit must return typed error until M3.1");
     assert!(matches!(err, SpecError::Interp { .. }));
 
-    // substituter::apply
+    // substituter::apply — M3.0 has a working interpreter.
+    // Verify it surfaces a typed error when the requested path
+    // isn't in the substituter (`narinfo-not-found`).
+    struct NoPathsEnv;
+    impl substituter::SubstituterEnvironment for NoPathsEnv {
+        fn query_narinfo(&self, _: &str, _: &str)
+            -> Result<Option<substituter::NarInfoRecord>, String>
+        { Ok(None) }
+        fn fetch_nar(&self, _: &str, _: &str) -> Result<Vec<u8>, String> { unreachable!() }
+        fn decompress(&self, _: &str, _: &[u8]) -> Result<Vec<u8>, String> { unreachable!() }
+        fn verify_nar_hash(&self, _: &str, _: &[u8]) -> Result<bool, String> { unreachable!() }
+        fn import_nar(&self, _: &str, _: &[u8]) -> Result<String, String> { unreachable!() }
+    }
     let s = substituter::load_named("cache.nixos.org").unwrap();
     let err = substituter::apply(
         &s,
-        substituter::SubstituteArgs {
+        &substituter::SubstituteArgs {
             store_path_hash: "abc".into(),
             name_hint: None,
         },
+        &NoPathsEnv,
     )
-    .expect_err("substituter::apply must return typed error");
+    .expect_err("substituter::apply must error when no path found");
     assert!(matches!(err, SpecError::Interp { .. }));
 
     // gc::apply

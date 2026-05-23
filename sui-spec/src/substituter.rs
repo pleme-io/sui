@@ -132,27 +132,236 @@ pub enum SubstituterPhaseKind {
     RealizeReferences,
 }
 
-// ── Spec interpreter (M3 stub) ─────────────────────────────────────
+// ── Spec interpreter (M3.0 minimal) ────────────────────────────────
 
-/// Inputs to a substitution run.  M3 will replace these with the
-/// typed wire values.
+/// Inputs to a substitution run.
 pub struct SubstituteArgs {
+    /// The store-path hash component (the 32-char base32 prefix
+    /// of `/nix/store/<hash>-<name>`).
     pub store_path_hash: String,
+    /// Optional display name for logs / store-write.
     pub name_hint: Option<String>,
 }
 
-/// Apply the substituter spec.  M3 stub — returns typed
-/// `not-yet-implemented`.
+/// Result of a substitution run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubstituteOutcome {
+    /// The store path the substituted content landed at.
+    pub store_path: String,
+    /// The NAR hash recorded for this path (from the narinfo).
+    pub nar_hash: String,
+    /// Reference closure pulled in by this substitution.
+    pub references: Vec<String>,
+}
+
+/// One narinfo record produced by `query_narinfo` and consumed by
+/// the rest of the pipeline.  Typed border for the wire format
+/// declared in [`crate::narinfo`].
+#[derive(Debug, Clone, Default)]
+pub struct NarInfoRecord {
+    pub store_path: String,
+    pub url: String,
+    pub compression: String,
+    pub file_hash: String,
+    pub nar_hash: String,
+    pub nar_size: u64,
+    pub references: Vec<String>,
+    /// `Sig:` lines from the narinfo, in document order.
+    pub signatures: Vec<String>,
+}
+
+/// Abstract IO for the substituter.  Pattern parallel to
+/// [`crate::fetcher::FetcherEnvironment`] — tests pass a mock,
+/// production passes an HTTP + sig-verify + store-write impl.
+pub trait SubstituterEnvironment {
+    /// GET `<endpoint>/<hash>.narinfo`.  Returns the parsed record
+    /// on hit, `None` on 404 / no-such-path.
+    ///
+    /// # Errors
+    ///
+    /// As above.
+    fn query_narinfo(&self, endpoint: &str, hash: &str)
+        -> Result<Option<NarInfoRecord>, String>;
+
+    /// GET the NAR bytes referenced by the narinfo's `url` field.
+    fn fetch_nar(&self, endpoint: &str, url: &str)
+        -> Result<Vec<u8>, String>;
+
+    /// Verify the narinfo's signatures against the substituter's
+    /// trusted-keys set.  Returns true iff at least one signature
+    /// validates.  Default impl trusts everything — production
+    /// must override.
+    fn verify_signatures(&self, _record: &NarInfoRecord) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    /// Decompress NAR bytes per the `compression` field.  Returns
+    /// the raw NAR.
+    fn decompress(&self, compression: &str, bytes: &[u8])
+        -> Result<Vec<u8>, String>;
+
+    /// Verify the decompressed bytes' hash matches the narinfo's
+    /// `nar_hash` field.
+    fn verify_nar_hash(&self, expected: &str, bytes: &[u8])
+        -> Result<bool, String>;
+
+    /// Import the NAR into the store at its declared path.
+    /// Returns the full store path.
+    fn import_nar(&self, store_path: &str, nar_bytes: &[u8])
+        -> Result<String, String>;
+}
+
+/// Apply a substituter spec.  M3.0: drives the canonical phase
+/// pipeline declared in `defsubstituter`.  Trust-level enforcement
+/// runs at the VerifyNarSignature phase — `TrustLevel::Untrusted`
+/// substituters skip signature checks; `Trusted` and
+/// `TrustedUsersOnly` require at least one valid signature.
 ///
 /// # Errors
 ///
-/// Always until M3.
-pub fn apply(_spec: &SubstituterSpec, _args: SubstituteArgs) -> Result<String, SpecError> {
-    Err(SpecError::Interp {
-        phase: "substituter".into(),
-        message: "substituter spec interpreter not yet implemented — \
-                  M3 work lifts sui-store + sui-cache to consume this \
-                  typed border".into(),
+/// - `query-narinfo`, `fetch-nar`, `verify-signature`,
+///   `decompress`, `verify-nar-hash`, `import-nar` for the
+///   corresponding phase failures.
+/// - `narinfo-not-found` if the substituter doesn't have the path.
+/// - `signature-required` for trusted substituters with no valid
+///   signature on the record.
+pub fn apply<E: SubstituterEnvironment>(
+    spec: &SubstituterSpec,
+    args: &SubstituteArgs,
+    env: &E,
+) -> Result<SubstituteOutcome, SpecError> {
+    // Query narinfo first — always the first wire step.
+    let narinfo = env
+        .query_narinfo(&spec.endpoint, &args.store_path_hash)
+        .map_err(|e| SpecError::Interp {
+            phase: "query-narinfo".into(),
+            message: format!("{}: {e}", spec.name),
+        })?
+        .ok_or_else(|| SpecError::Interp {
+            phase: "narinfo-not-found".into(),
+            message: format!(
+                "substituter `{}` has no path for hash `{}`",
+                spec.name, args.store_path_hash,
+            ),
+        })?;
+
+    let mut nar_bytes: Option<Vec<u8>> = None;
+    let mut decompressed: Option<Vec<u8>> = None;
+    let mut import_path: Option<String> = None;
+
+    for phase in &spec.phases {
+        match phase.kind {
+            SubstituterPhaseKind::QueryNarInfo => {
+                // Already done above.  Re-running is idempotent
+                // but wasteful; M3.0 leaves it as a no-op here.
+            }
+            SubstituterPhaseKind::FetchNar => {
+                let bytes = env
+                    .fetch_nar(&spec.endpoint, &narinfo.url)
+                    .map_err(|e| SpecError::Interp {
+                        phase: "fetch-nar".into(),
+                        message: format!("{}: {e}", spec.name),
+                    })?;
+                nar_bytes = Some(bytes);
+            }
+            SubstituterPhaseKind::VerifyNarSignature => {
+                if spec.trust_level == TrustLevel::Untrusted {
+                    continue;  // skip signature check
+                }
+                let ok = env
+                    .verify_signatures(&narinfo)
+                    .map_err(|e| SpecError::Interp {
+                        phase: "verify-signature".into(),
+                        message: format!("{}: {e}", spec.name),
+                    })?;
+                if !ok {
+                    return Err(SpecError::Interp {
+                        phase: "signature-required".into(),
+                        message: format!(
+                            "substituter `{}` requires a valid signature \
+                             but none verified for `{}`",
+                            spec.name, narinfo.store_path,
+                        ),
+                    });
+                }
+            }
+            SubstituterPhaseKind::DecompressNar => {
+                let Some(bytes) = nar_bytes.as_deref() else {
+                    return Err(SpecError::Interp {
+                        phase: "phase-order".into(),
+                        message: format!(
+                            "{}: DecompressNar phase ran before FetchNar — \
+                             phase ordering broken",
+                            spec.name,
+                        ),
+                    });
+                };
+                let out = env
+                    .decompress(&narinfo.compression, bytes)
+                    .map_err(|e| SpecError::Interp {
+                        phase: "decompress".into(),
+                        message: format!("{}: {e}", spec.name),
+                    })?;
+                decompressed = Some(out);
+            }
+            SubstituterPhaseKind::VerifyNarHash => {
+                let Some(bytes) = decompressed.as_deref().or(nar_bytes.as_deref()) else {
+                    return Err(SpecError::Interp {
+                        phase: "phase-order".into(),
+                        message: format!(
+                            "{}: VerifyNarHash ran without FetchNar bytes",
+                            spec.name,
+                        ),
+                    });
+                };
+                let ok = env
+                    .verify_nar_hash(&narinfo.nar_hash, bytes)
+                    .map_err(|e| SpecError::Interp {
+                        phase: "verify-nar-hash".into(),
+                        message: format!("{}: {e}", spec.name),
+                    })?;
+                if !ok {
+                    return Err(SpecError::Interp {
+                        phase: "nar-hash-mismatch".into(),
+                        message: format!(
+                            "{}: NAR hash mismatch for `{}` (expected `{}`)",
+                            spec.name, narinfo.store_path, narinfo.nar_hash,
+                        ),
+                    });
+                }
+            }
+            SubstituterPhaseKind::ImportNarToStore => {
+                let Some(bytes) = decompressed.as_deref().or(nar_bytes.as_deref()) else {
+                    return Err(SpecError::Interp {
+                        phase: "phase-order".into(),
+                        message: format!(
+                            "{}: ImportNarToStore ran without bytes",
+                            spec.name,
+                        ),
+                    });
+                };
+                let path = env
+                    .import_nar(&narinfo.store_path, bytes)
+                    .map_err(|e| SpecError::Interp {
+                        phase: "import-nar".into(),
+                        message: format!("{}: {e}", spec.name),
+                    })?;
+                import_path = Some(path);
+            }
+            SubstituterPhaseKind::RealizeReferences => {
+                // M3.0: the substituter only resolves the *direct*
+                // path.  Walking References + recursively
+                // substituting is the caller's job (the closure
+                // walker outside this function).  Future M3.x
+                // wires it up via a callback.
+            }
+        }
+    }
+
+    Ok(SubstituteOutcome {
+        store_path: import_path.unwrap_or(narinfo.store_path),
+        nar_hash: narinfo.nar_hash,
+        references: narinfo.references,
     })
 }
 
@@ -249,23 +458,187 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_is_typed_not_yet() {
-        let s = load_named("cache.nixos.org").unwrap();
-        let err = apply(
-            &s,
-            SubstituteArgs {
-                store_path_hash: "abc123".into(),
-                name_hint: Some("hello".into()),
-            },
-        )
-        .expect_err("apply must return error until M3");
-        match err {
-            SpecError::Interp { phase, message } => {
-                assert_eq!(phase, "substituter");
-                assert!(message.contains("not yet implemented"));
+    // ── M3.0 substituter interpreter tests ─────────────────────
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    struct MockEnv {
+        narinfos: HashMap<String, NarInfoRecord>,
+        nars: HashMap<String, Vec<u8>>,
+        store: RefCell<HashMap<String, Vec<u8>>>,
+        verify_sig_returns: bool,
+        nar_hash_matches: bool,
+    }
+
+    impl MockEnv {
+        fn new() -> Self {
+            Self {
+                narinfos: HashMap::new(),
+                nars: HashMap::new(),
+                store: RefCell::new(HashMap::new()),
+                verify_sig_returns: true,
+                nar_hash_matches: true,
             }
-            _ => panic!("expected SpecError::Interp"),
         }
+        fn with_path(mut self, hash: &str, record: NarInfoRecord, nar: Vec<u8>) -> Self {
+            self.nars.insert(record.url.clone(), nar);
+            self.narinfos.insert(hash.into(), record);
+            self
+        }
+    }
+
+    impl SubstituterEnvironment for MockEnv {
+        fn query_narinfo(&self, _endpoint: &str, hash: &str)
+            -> Result<Option<NarInfoRecord>, String>
+        {
+            Ok(self.narinfos.get(hash).cloned())
+        }
+        fn fetch_nar(&self, _endpoint: &str, url: &str) -> Result<Vec<u8>, String> {
+            self.nars.get(url).cloned().ok_or_else(|| format!("no nar at {url}"))
+        }
+        fn verify_signatures(&self, _record: &NarInfoRecord) -> Result<bool, String> {
+            Ok(self.verify_sig_returns)
+        }
+        fn decompress(&self, _compression: &str, bytes: &[u8])
+            -> Result<Vec<u8>, String>
+        {
+            // Mock: pretend everything is already decompressed.
+            Ok(bytes.to_vec())
+        }
+        fn verify_nar_hash(&self, _expected: &str, _bytes: &[u8])
+            -> Result<bool, String>
+        {
+            Ok(self.nar_hash_matches)
+        }
+        fn import_nar(&self, store_path: &str, nar_bytes: &[u8])
+            -> Result<String, String>
+        {
+            self.store.borrow_mut().insert(store_path.into(), nar_bytes.to_vec());
+            Ok(store_path.into())
+        }
+    }
+
+    fn rec(hash: &str, store_path: &str, nar: &str) -> NarInfoRecord {
+        NarInfoRecord {
+            store_path: store_path.into(),
+            url: format!("nar/{hash}.nar.xz"),
+            compression: "xz".into(),
+            file_hash: format!("sha256:test-{hash}-file"),
+            nar_hash: format!("sha256:test-{hash}-nar"),
+            nar_size: nar.len() as u64,
+            references: Vec::new(),
+            signatures: vec![format!("cache.nixos.org-1:test-sig-{hash}")],
+        }
+    }
+
+    #[test]
+    fn substitute_happy_path_imports_to_store() {
+        let spec = load_named("cache.nixos.org").unwrap();
+        let env = MockEnv::new().with_path(
+            "abc123",
+            rec("abc123", "/nix/store/abc123-hello", "nar bytes"),
+            b"nar bytes".to_vec(),
+        );
+        let args = SubstituteArgs {
+            store_path_hash: "abc123".into(),
+            name_hint: Some("hello".into()),
+        };
+        let outcome = apply(&spec, &args, &env).unwrap();
+        assert_eq!(outcome.store_path, "/nix/store/abc123-hello");
+        assert!(outcome.nar_hash.contains("abc123"));
+        // The store recorded the bytes.
+        assert!(env.store.borrow().contains_key("/nix/store/abc123-hello"));
+    }
+
+    #[test]
+    fn substitute_missing_path_errors() {
+        let spec = load_named("cache.nixos.org").unwrap();
+        let env = MockEnv::new();
+        let args = SubstituteArgs {
+            store_path_hash: "nonexistent".into(),
+            name_hint: None,
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "narinfo-not-found"),
+            _ => panic!("expected narinfo-not-found"),
+        }
+    }
+
+    #[test]
+    fn trusted_substituter_with_bad_signature_errors() {
+        let spec = load_named("cache.nixos.org").unwrap(); // TrustLevel::Trusted
+        let mut env = MockEnv::new().with_path(
+            "abc",
+            rec("abc", "/nix/store/abc-x", "bytes"),
+            b"bytes".to_vec(),
+        );
+        env.verify_sig_returns = false;
+        let args = SubstituteArgs {
+            store_path_hash: "abc".into(),
+            name_hint: None,
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "signature-required"),
+            _ => panic!("expected signature-required"),
+        }
+    }
+
+    #[test]
+    fn untrusted_substituter_skips_signature_check() {
+        let spec = load_named("local-mirror").unwrap();  // TrustLevel::Untrusted
+        let mut env = MockEnv::new().with_path(
+            "xyz",
+            rec("xyz", "/nix/store/xyz-y", "bytes"),
+            b"bytes".to_vec(),
+        );
+        env.verify_sig_returns = false;
+        let args = SubstituteArgs {
+            store_path_hash: "xyz".into(),
+            name_hint: None,
+        };
+        // Untrusted: bad signature is fine, import succeeds.
+        let outcome = apply(&spec, &args, &env).unwrap();
+        assert_eq!(outcome.store_path, "/nix/store/xyz-y");
+    }
+
+    #[test]
+    fn nar_hash_mismatch_errors() {
+        let spec = load_named("cache.nixos.org").unwrap();
+        let mut env = MockEnv::new().with_path(
+            "def",
+            rec("def", "/nix/store/def-z", "bytes"),
+            b"bytes".to_vec(),
+        );
+        env.nar_hash_matches = false;
+        let args = SubstituteArgs {
+            store_path_hash: "def".into(),
+            name_hint: None,
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "nar-hash-mismatch"),
+            _ => panic!("expected nar-hash-mismatch"),
+        }
+    }
+
+    #[test]
+    fn references_returned_for_closure_walk() {
+        let spec = load_named("cache.nixos.org").unwrap();
+        let mut record = rec("ghi", "/nix/store/ghi-app", "bytes");
+        record.references = vec![
+            "/nix/store/dep1".into(),
+            "/nix/store/dep2".into(),
+        ];
+        let env = MockEnv::new().with_path("ghi", record, b"bytes".to_vec());
+        let args = SubstituteArgs {
+            store_path_hash: "ghi".into(),
+            name_hint: None,
+        };
+        let outcome = apply(&spec, &args, &env).unwrap();
+        assert_eq!(outcome.references.len(), 2);
+        assert!(outcome.references.contains(&"/nix/store/dep1".into()));
     }
 }
