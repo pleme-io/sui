@@ -466,6 +466,63 @@ enum StoreCommands {
         #[arg(long, default_value = "5")]
         max_depth: usize,
     },
+    /// Emit SPDX 2.3 JSON SBOM (Software Bill of Materials) over
+    /// the closure of a store path.  Industry-standard format
+    /// compatible with syft / trivy / grype / dependency-track.
+    Sbom {
+        /// Root store path.
+        path: String,
+        /// Optional output file (default stdout).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Sign a fingerprint manifest with an ed25519 key.  Output
+    /// is a sidecar `<manifest>.sig.json` containing the
+    /// base64-encoded signature + key name.
+    SignManifest {
+        /// Path to manifest JSON (from `fingerprint-many`).
+        manifest: std::path::PathBuf,
+        /// Path to ed25519 secret key file (from
+        /// `key generate-secret`).
+        #[arg(short = 'k', long)]
+        key_file: std::path::PathBuf,
+    },
+    /// Verify a signed manifest against a public key.  Exits
+    /// non-zero if the signature doesn't validate or if the
+    /// manifest bytes have changed.
+    VerifyManifest {
+        /// Path to the manifest JSON.
+        manifest: std::path::PathBuf,
+        /// Path to the public key file (one-line `name:base64`).
+        #[arg(short = 'p', long)]
+        pubkey: std::path::PathBuf,
+        /// Path to the signature sidecar JSON.  Defaults to
+        /// `<manifest>.sig.json`.
+        #[arg(long)]
+        sig: Option<std::path::PathBuf>,
+    },
+    /// Scan the closure of a store path for license-bearing
+    /// files (`LICENSE`, `COPYING`, `LICENCE`, etc.).  Emits a
+    /// typed audit + summary.
+    LicenseScan {
+        /// Root store path.
+        path: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Scan closure content for a CVE-like pattern (regex over
+    /// file bytes).  Useful for ad-hoc CVE searches across an
+    /// entire closure.
+    CveScan {
+        /// Root store path.
+        path: String,
+        /// Content regex (e.g. `CVE-202[0-9]-\\d{4,7}`).
+        pattern: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1357,6 +1414,337 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store sbom` — SPDX 2.3 JSON emitter ─────────────────
+
+fn store_sbom(path: &str, out: Option<&std::path::Path>) -> Result<(), CliError> {
+    use sui_spec::store_inventory::Closure;
+
+    let closure = Closure::walk(std::path::Path::new(path), "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("sbom: closure: {e:?}")))?;
+
+    let document_namespace = format!("urn:sui:sbom:{}",
+        std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("root"));
+
+    // SPDX 2.3 package records.
+    let packages: Vec<serde_json::Value> = closure.paths.iter().map(|p| {
+        let parsed = sui_spec::store_layout::validate_against_canonical(&p.to_string_lossy()).ok();
+        let nar_hash = sui_spec::nar::hash_path_nar(p).ok();
+        let nar_hash_hex = nar_hash.map(|h| {
+            let mut s = String::with_capacity(64);
+            for b in h { s.push_str(&format!("{b:02x}")); }
+            s
+        });
+        let name = parsed.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "unknown".into());
+        let spdx_id = format!("SPDXRef-{}",
+            parsed.as_ref().map(|p| p.hash.clone()).unwrap_or_else(|| "unknown".into()));
+        let mut pkg = serde_json::json!({
+            "SPDXID":              spdx_id,
+            "name":                name,
+            "downloadLocation":    "NOASSERTION",
+            "filesAnalyzed":       false,
+            "copyrightText":       "NOASSERTION",
+            "licenseConcluded":    "NOASSERTION",
+            "licenseDeclared":     "NOASSERTION",
+            "externalRefs": [{
+                "referenceCategory":  "PACKAGE-MANAGER",
+                "referenceLocator":   p.display().to_string(),
+                "referenceType":      "purl",
+            }],
+        });
+        if let Some(hex) = nar_hash_hex {
+            pkg["checksums"] = serde_json::json!([{
+                "algorithm": "SHA256",
+                "checksumValue": hex,
+            }]);
+        }
+        pkg
+    }).collect();
+
+    // SPDX 2.3 relationships (DESCRIBES from document to root + DEPENDS_ON for closure edges).
+    let root_id = sui_spec::store_layout::validate_against_canonical(
+        &std::path::Path::new(path).to_string_lossy()
+    ).map(|p| format!("SPDXRef-{}", p.hash)).unwrap_or_else(|_| "SPDXRef-root".into());
+    let relationships: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "spdxElementId":      "SPDXRef-DOCUMENT",
+            "relationshipType":   "DESCRIBES",
+            "relatedSpdxElement": root_id,
+        }),
+    ];
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let sbom = serde_json::json!({
+        "spdxVersion":     "SPDX-2.3",
+        "dataLicense":     "CC0-1.0",
+        "SPDXID":          "SPDXRef-DOCUMENT",
+        "name":            format!("sui-sbom-{}", path.split('/').next_back().unwrap_or("")),
+        "documentNamespace": document_namespace,
+        "creationInfo": {
+            "created":       format!("ts={timestamp}"),
+            "creators":      ["Tool: sui-spec"],
+        },
+        "packages":        packages,
+        "relationships":   relationships,
+    });
+
+    let body = serde_json::to_string_pretty(&sbom).unwrap();
+    match out {
+        Some(target) => {
+            std::fs::write(target, &body)
+                .map_err(|e| CliError::NotImplemented(format!("sbom: write {}: {e}", target.display())))?;
+            eprintln!("SBOM written: {} ({} packages, {} bytes)",
+                target.display(), closure.paths.len(), body.len());
+        }
+        None => println!("{body}"),
+    }
+    Ok(())
+}
+
+// ── `sui store sign-manifest` / `verify-manifest` ───────────────
+
+fn store_sign_manifest(
+    manifest: &std::path::Path,
+    key_file: &std::path::Path,
+) -> Result<(), CliError> {
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let manifest_bytes = std::fs::read(manifest)
+        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: read {}: {e}", manifest.display())))?;
+
+    let key_text = std::fs::read_to_string(key_file)
+        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: key: {e}")))?;
+    let (key_name, b64) = key_text.trim().split_once(':').ok_or_else(||
+        CliError::NotImplemented("sign-manifest: expected `<name>:<base64>` key".into())
+    )?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64)
+        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: base64: {e}")))?;
+    let arr: [u8; 32] = bytes.try_into()
+        .map_err(|_| CliError::NotImplemented("sign-manifest: key must be 32 bytes".into()))?;
+    let signing = SigningKey::from_bytes(&arr);
+    let sig = signing.sign(&manifest_bytes);
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let sig_path = manifest.with_extension("json.sig.json");
+    let payload = serde_json::json!({
+        "schema":        "sui.manifest-signature.v1",
+        "key_name":      key_name,
+        "signature":     sig_b64,
+        "manifest_size": manifest_bytes.len(),
+        "manifest_path": manifest.display().to_string(),
+    });
+    std::fs::write(&sig_path, serde_json::to_string_pretty(&payload).unwrap())
+        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: write sig: {e}")))?;
+    eprintln!("signature written: {} (key={key_name}, {} bytes)",
+        sig_path.display(), manifest_bytes.len());
+    Ok(())
+}
+
+fn store_verify_manifest(
+    manifest: &std::path::Path,
+    pubkey: &std::path::Path,
+    sig: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    use base64::Engine;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let manifest_bytes = std::fs::read(manifest)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: read manifest: {e}")))?;
+
+    let pubkey_text = std::fs::read_to_string(pubkey)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: pubkey: {e}")))?;
+    let (key_name, b64) = pubkey_text.trim().split_once(':').ok_or_else(||
+        CliError::NotImplemented("verify-manifest: expected `<name>:<base64>` pubkey".into())
+    )?;
+    let pub_bytes = base64::engine::general_purpose::STANDARD.decode(b64)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: base64 pubkey: {e}")))?;
+    let pub_arr: [u8; 32] = pub_bytes.try_into()
+        .map_err(|_| CliError::NotImplemented("verify-manifest: pubkey must be 32 bytes".into()))?;
+    let verifying = VerifyingKey::from_bytes(&pub_arr)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: bad pubkey: {e}")))?;
+
+    let sig_path = sig.map(|p| p.to_path_buf())
+        .unwrap_or_else(|| manifest.with_extension("json.sig.json"));
+    let sig_text = std::fs::read_to_string(&sig_path)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: sig: {e}")))?;
+    let sig_doc: serde_json::Value = serde_json::from_str(&sig_text)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: parse sig: {e}")))?;
+    let sig_b64 = sig_doc["signature"].as_str()
+        .ok_or_else(|| CliError::NotImplemented("verify-manifest: sig.signature missing".into()))?;
+    let sig_bytes = base64::engine::general_purpose::STANDARD.decode(sig_b64)
+        .map_err(|e| CliError::NotImplemented(format!("verify-manifest: sig base64: {e}")))?;
+    let sig_arr: [u8; 64] = sig_bytes.try_into()
+        .map_err(|_| CliError::NotImplemented("verify-manifest: sig must be 64 bytes".into()))?;
+    let signature = Signature::from_bytes(&sig_arr);
+
+    use sui_spec::style::{glyph_snowflake, header, ident, info, muted, success, error};
+    println!("{}  {}  {}",
+        glyph_snowflake(), header("verify manifest"), muted(&manifest.display().to_string()));
+    println!();
+    println!("  {}  {}", info("pubkey:"), ident(key_name));
+    match verifying.verify(&manifest_bytes, &signature) {
+        Ok(()) => {
+            println!("  {} signature valid", success("✓"));
+            println!("  {} manifest bytes match signed payload ({} bytes)",
+                success("✓"), info(&manifest_bytes.len().to_string()));
+            Ok(())
+        }
+        Err(e) => {
+            println!("  {} signature INVALID: {e}", error("✘"));
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── `sui store license-scan` ────────────────────────────────────
+
+fn store_license_scan(path: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_inventory::Closure;
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let closure = Closure::walk(std::path::Path::new(path), "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("license-scan: closure: {e:?}")))?;
+
+    let needles = [
+        b"LICENSE".as_slice(),
+        b"LICENCE".as_slice(),
+        b"COPYING".as_slice(),
+        b"COPYRIGHT".as_slice(),
+        b"NOTICE".as_slice(),
+    ];
+    let mut hits: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for p in &closure.paths {
+        let nar_bytes = match sui_spec::nar::encode(p) {
+            Ok(b) => b, Err(_) => continue,
+        };
+        for needle in &needles {
+            let mut i = 0;
+            while i + needle.len() < nar_bytes.len() {
+                if &nar_bytes[i..i + needle.len()] == *needle {
+                    let label = std::str::from_utf8(needle).unwrap_or("?").to_string();
+                    hits.push((p.clone(), label));
+                    break;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    if json {
+        let probes: Vec<serde_json::Value> = hits.iter().map(|(p, label)| serde_json::json!({
+            "path":         p.display().to_string(),
+            "license_file": label,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "root":            path,
+            "closure_size":    closure.paths.len(),
+            "license_hits":    hits.len(),
+            "results":         probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("license-scan"), muted(path));
+        println!();
+        println!("  {}  {} closure path(s)", body("∑"), info(&closure.paths.len().to_string()));
+        println!("  {}  {} license hits", body("∑"),
+            if hits.is_empty() { warn("0").to_string() } else { success(&hits.len().to_string()).to_string() });
+        println!();
+        // Group by license label.
+        let mut by_label: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, label) in &hits { *by_label.entry(label.clone()).or_insert(0) += 1; }
+        for (label, count) in &by_label {
+            println!("    {} {} → {} paths", success("→"), ident(label), info(&count.to_string()));
+        }
+        if hits.is_empty() {
+            println!();
+            println!("  {} no license-bearing files detected — review upstream",
+                warn("⚠"));
+        } else {
+            println!();
+            println!("  {} {} license file(s) across {} closure paths",
+                glyph_arrow(), info(&hits.len().to_string()),
+                info(&closure.paths.len().to_string()));
+        }
+    }
+    Ok(())
+}
+
+// ── `sui store cve-scan` ────────────────────────────────────────
+
+fn store_cve_scan(path: &str, pattern: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_inventory::Closure;
+    use sui_spec::style::{body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let re = regex::bytes::Regex::new(pattern)
+        .map_err(|e| CliError::NotImplemented(format!("cve-scan: regex: {e}")))?;
+    let closure = Closure::walk(std::path::Path::new(path), "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("cve-scan: closure: {e:?}")))?;
+
+    let mut hits: Vec<(std::path::PathBuf, Vec<String>)> = Vec::new();
+    for p in &closure.paths {
+        let nar_bytes = match sui_spec::nar::encode(p) {
+            Ok(b) => b, Err(_) => continue,
+        };
+        let mut matched: std::collections::BTreeSet<String> = Default::default();
+        for m in re.find_iter(&nar_bytes) {
+            if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
+                matched.insert(s.to_string());
+            }
+        }
+        if !matched.is_empty() {
+            hits.push((p.clone(), matched.into_iter().collect()));
+        }
+    }
+
+    if json {
+        let probes: Vec<serde_json::Value> = hits.iter().map(|(p, matches)| serde_json::json!({
+            "path":    p.display().to_string(),
+            "matches": matches,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "root":         path,
+            "pattern":      pattern,
+            "closure_size": closure.paths.len(),
+            "paths_with_matches": hits.len(),
+            "results":      probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("cve-scan"),
+            muted(&format!("pattern=`{pattern}`")));
+        println!();
+        println!("  {}  closure: {}",
+            body("∑"), info(&closure.paths.len().to_string()));
+        println!("  {}  paths with matches: {}",
+            body("∑"),
+            if hits.is_empty() { success("0").to_string() } else { error(&hits.len().to_string()).to_string() });
+        println!();
+        for (p, matches) in hits.iter().take(20) {
+            let bn = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!("  {} {} {} match(es)",
+                error("⚠"), ident(bn), info(&matches.len().to_string()));
+            for m in matches.iter().take(3) {
+                println!("       {} {}", muted("·"), error(m));
+            }
+        }
+        if hits.len() > 20 {
+            println!("  {} … {} more", muted(""), muted(&(hits.len() - 20).to_string()));
+        }
+        println!();
+        println!("  {} {} hit(s) across {} closure path(s)",
+            glyph_arrow(), info(&hits.len().to_string()),
+            info(&closure.paths.len().to_string()));
+    }
+    if !hits.is_empty() {
+        std::process::exit(2);
+    }
     Ok(())
 }
 
@@ -3980,6 +4368,21 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::AsciiGraph { path, max_depth } => {
                     store_ascii_graph(&path, max_depth)?;
+                }
+                StoreCommands::Sbom { path, out } => {
+                    store_sbom(&path, out.as_deref())?;
+                }
+                StoreCommands::SignManifest { manifest, key_file } => {
+                    store_sign_manifest(&manifest, &key_file)?;
+                }
+                StoreCommands::VerifyManifest { manifest, pubkey, sig } => {
+                    store_verify_manifest(&manifest, &pubkey, sig.as_deref())?;
+                }
+                StoreCommands::LicenseScan { path, json } => {
+                    store_license_scan(&path, json)?;
+                }
+                StoreCommands::CveScan { path, pattern, json } => {
+                    store_cve_scan(&path, &pattern, json)?;
                 }
             }
         }

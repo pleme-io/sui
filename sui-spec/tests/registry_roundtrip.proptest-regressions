@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 1d3aec4d02ecdc03edc4220ff743b2112981475c41cb9efd749403a969899bbc # shrinks to from = "f8", to = "github:ct/tvnnzq", exact = true
 cc 68d35770066d19c85a304a158b63ca8863a7cf38b8145dc90ade7fb72fbdbe0f # shrinks to froms = ["x-f46-c-9-vg", "hq", "c5e-hlax", "zbo-dw48"]
+cc c353544f6175f51cad9f0f87e4b475ee3eaafc7014e701abdd90c0f86abc8c5d # shrinks to from = "o-2-i9h9z-4-", to = "ro", exact = false
