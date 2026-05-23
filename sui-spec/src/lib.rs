@@ -66,6 +66,7 @@
 pub mod activation_script;
 pub mod catalog;
 pub mod cli;
+pub mod cli_coverage;
 pub mod derivation;
 pub mod error;
 pub mod eval_cache;

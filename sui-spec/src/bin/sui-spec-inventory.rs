@@ -17,6 +17,7 @@
 //! ```
 
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
+use sui_spec::cli_coverage::{self, SuiCommand, SuiCommandMaturity};
 use sui_spec::hash;
 use sui_spec::lock_file::{self, ParsedLockFile};
 use sui_spec::narinfo::{self, ParsedNarInfo};
@@ -74,6 +75,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // `--coverage` emits sui's nix-replacement progress matrix
+    // (working / partial / stub / missing / sui-native).
+    if args.coverage {
+        emit_coverage(&args)?;
+        return Ok(());
+    }
+
     let cat = if args.topo {
         catalog::topological_order()?
     } else {
@@ -123,6 +131,8 @@ struct Args {
     realisation_path: Option<String>,
     hash_decode: Option<String>,
     store_path: Option<String>,
+    coverage: bool,
+    coverage_filter: Option<SuiCommandMaturity>,
 }
 
 impl Args {
@@ -140,6 +150,8 @@ impl Args {
             realisation_path: None,
             hash_decode: None,
             store_path: None,
+            coverage: false,
+            coverage_filter: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -162,6 +174,21 @@ impl Args {
                     .ok_or("--hash-decode needs <hash-string>")?),
                 "--store-path" => out.store_path = Some(args.next()
                     .ok_or("--store-path needs </nix/store/...>")?),
+                "--coverage" => out.coverage = true,
+                "--coverage-only" => {
+                    out.coverage = true;
+                    let v = args.next().ok_or("--coverage-only needs <maturity>")?;
+                    out.coverage_filter = Some(match v.as_str() {
+                        "working"    => SuiCommandMaturity::Working,
+                        "partial"    => SuiCommandMaturity::Partial,
+                        "stub"       => SuiCommandMaturity::Stub,
+                        "missing"    => SuiCommandMaturity::Missing,
+                        "sui-native" => SuiCommandMaturity::SuiNative,
+                        other => return Err(format!(
+                            "--coverage-only takes working|partial|stub|missing|sui-native, got `{other}`"
+                        )),
+                    });
+                }
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -190,6 +217,9 @@ fn print_help() {
          --realisation <path>   Parse a CA-derivation realisation and show its record\n  \
          --hash-decode <hash>   Classify a hash by algorithm + encoding; decode it\n  \
          --store-path <path>    Decompose a /nix/store path into typed components\n  \
+         --coverage             Show sui's nix-replacement coverage matrix\n  \
+         --coverage-only <m>    --coverage filtered to one maturity gate\n                        \
+                                (working | partial | stub | missing | sui-native)\n  \
          -h, --help             This message"
     );
 }
@@ -1034,5 +1064,128 @@ impl OperatorView for StorePathView {
             ),
         };
         println!("  {} {}", glyph_arrow(), parts);
+    }
+}
+
+// ── --coverage mode — sui's nix-replacement progress matrix ────────
+
+fn emit_coverage(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    let cat = cli_coverage::load_canonical()?;
+    let hist = cli_coverage::maturity_histogram()?;
+    let pct = cli_coverage::replacement_percentage()?;
+
+    // Banner + summary chip
+    println!(
+        "{}  {}  ({} commands)",
+        glyph_snowflake(),
+        header("sui nix-replacement coverage"),
+        ident(&cat.len().to_string()),
+    );
+    println!();
+
+    // Headline percentage bar
+    let bar_w = 40;
+    let filled = ((pct * bar_w as f64) as usize).min(bar_w);
+    let bar: String = (0..bar_w)
+        .map(|i| if i < filled { '█' } else { '░' })
+        .collect();
+    let bar_color = if pct >= 0.7 {
+        success(&bar)
+    } else if pct >= 0.4 {
+        style::pending(&bar)
+    } else {
+        warn(&bar)
+    };
+    println!(
+        "  {}  {}  {}",
+        body("nix replacement:"),
+        bar_color,
+        ident(&format!("{:.1}%", pct * 100.0)),
+    );
+    println!();
+
+    // Histogram
+    println!("  {}", body("maturity histogram:"));
+    for (m, count) in &hist {
+        let row = format!("{:<12}", m.name());
+        let styled = maturity_style(*m, &row);
+        println!(
+            "    {} {}  {}",
+            maturity_glyph(*m),
+            styled,
+            ident(&count.to_string()),
+        );
+    }
+    println!();
+
+    // Per-command table (filtered if --coverage-only was supplied)
+    let filtered: Vec<&SuiCommand> = cat
+        .iter()
+        .filter(|c| match args.coverage_filter {
+            Some(m) => c.maturity == m,
+            None => true,
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        eprintln!("no commands match the filter");
+        return Ok(());
+    }
+
+    let name_w = filtered.iter().map(|c| c.name.len()).max().unwrap_or(10);
+    let nix_w = filtered.iter().map(|c| c.nix_equivalent.len()).max()
+        .unwrap_or(20).min(40);
+
+    println!(
+        "  {}  {}  {}  {}",
+        body(&format!("{:<name_w$}", "sui command", name_w = name_w)),
+        body(&format!("{:<width$}", "nix equivalent", width = nix_w)),
+        body("maturity"),
+        body("substrate"),
+    );
+    println!("  {}", muted(&"─".repeat(name_w + nix_w + 32)));
+
+    for c in &filtered {
+        let nix = if c.nix_equivalent.is_empty() {
+            muted(&format!("{:<width$}", "(sui-native)", width = nix_w))
+        } else {
+            ident(&format!("{:<width$}", &c.nix_equivalent, width = nix_w))
+        };
+        let m_label = maturity_style(c.maturity, c.maturity.name());
+        let m_glyph = maturity_glyph(c.maturity);
+        let subs = if c.substrate.is_empty() {
+            muted("—").to_string()
+        } else {
+            success(&c.substrate.join(", "))
+        };
+        println!(
+            "  {} {}  {}  {}  {}",
+            m_glyph,
+            ident(&format!("{:<name_w$}", c.name, name_w = name_w.saturating_sub(2))),
+            nix,
+            m_label,
+            subs,
+        );
+    }
+    Ok(())
+}
+
+fn maturity_glyph(m: SuiCommandMaturity) -> String {
+    match m {
+        SuiCommandMaturity::Working   => glyph_ok(),
+        SuiCommandMaturity::Partial   => style::pending("◐"),
+        SuiCommandMaturity::Stub      => style::warn("○"),
+        SuiCommandMaturity::Missing   => error("✘"),
+        SuiCommandMaturity::SuiNative => info("◆"),
+    }
+}
+
+fn maturity_style(m: SuiCommandMaturity, text: &str) -> String {
+    match m {
+        SuiCommandMaturity::Working   => success(text),
+        SuiCommandMaturity::Partial   => style::pending(text),
+        SuiCommandMaturity::Stub      => style::warn(text),
+        SuiCommandMaturity::Missing   => error(text),
+        SuiCommandMaturity::SuiNative => info(text),
     }
 }

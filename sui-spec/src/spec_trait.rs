@@ -263,6 +263,13 @@ impl HasName for crate::catalog::SubstrateDomain {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::cli_coverage::SuiCommand {
+    const CANONICAL_LISP: &'static str = crate::cli_coverage::CANONICAL_CLI_COVERAGE_LISP;
+}
+impl HasName for crate::cli_coverage::SuiCommand {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
