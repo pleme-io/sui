@@ -41,9 +41,14 @@ mod import_cache;
 mod lists;
 mod misc;
 mod activation_script_bridge;
+mod bridge_helpers;
 mod hash_bridge;
+mod lock_file_bridge;
 mod module_system_bridge;
+mod narinfo_bridge;
 mod nav;
+mod realisation_bridge;
+mod registry_bridge;
 mod paths;
 mod strings;
 mod convergence;
@@ -211,6 +216,10 @@ pub fn register(env: &mut Env) {
     module_system_bridge::register(&mut sui_ext_set);
     activation_script_bridge::register(&mut sui_ext_set);
     hash_bridge::register(&mut sui_ext_set);
+    lock_file_bridge::register(&mut sui_ext_set);
+    narinfo_bridge::register(&mut sui_ext_set);
+    registry_bridge::register(&mut sui_ext_set);
+    realisation_bridge::register(&mut sui_ext_set);
     builtins_set.insert("sui".to_string(), Value::Attrs(Rc::new(sui_ext_set)));
 
     // ── builtins.builtins (self-reference) ───────────────
