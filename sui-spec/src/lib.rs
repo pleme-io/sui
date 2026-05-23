@@ -86,6 +86,7 @@ pub mod sandbox;
 pub mod store_layout;
 pub mod substituter;
 pub mod sweep;
+pub mod worker_protocol;
 
 pub use error::SpecError;
 pub use parity::{ParityCheck, ProbeContext, ProbeKind, ShadowReport, Verdict};
