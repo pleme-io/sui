@@ -18,6 +18,8 @@
 
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
 use sui_spec::lock_file::{self, ParsedLockFile};
+use sui_spec::narinfo::{self, ParsedNarInfo};
+use sui_spec::registry::{self, RegistryEntry, RegistryScope};
 use sui_spec::style::{
     self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
     header, ident, info, muted, pending, success, warn, NORD13, NORD15, NORD3, NORD8,
@@ -30,6 +32,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // listing and emits a Nord-styled flake input summary.
     if let Some(path) = &args.flake_lock {
         emit_flake_lock(path)?;
+        return Ok(());
+    }
+
+    // `--narinfo <path>` mode parses a single binary-cache narinfo
+    // file and emits a Nord-styled record summary.
+    if let Some(path) = &args.narinfo_path {
+        emit_narinfo(path)?;
+        return Ok(());
+    }
+
+    // `--registry-resolve <ref>` mode walks the canonical registry
+    // precedence chain and shows where each scope would map the ref.
+    if let Some(flake_ref) = &args.registry_resolve {
+        emit_registry_resolve(flake_ref)?;
         return Ok(());
     }
 
@@ -77,6 +93,8 @@ struct Args {
     gate_filter: Option<String>,
     domain_filter: Option<String>,
     flake_lock: Option<String>,
+    narinfo_path: Option<String>,
+    registry_resolve: Option<String>,
 }
 
 impl Args {
@@ -89,6 +107,8 @@ impl Args {
             gate_filter: None,
             domain_filter: None,
             flake_lock: None,
+            narinfo_path: None,
+            registry_resolve: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -101,6 +121,10 @@ impl Args {
                     .ok_or("--domain needs value")?),
                 "--flake-lock" => out.flake_lock = Some(args.next()
                     .ok_or("--flake-lock needs <path>")?),
+                "--narinfo" => out.narinfo_path = Some(args.next()
+                    .ok_or("--narinfo needs <path>")?),
+                "--registry-resolve" => out.registry_resolve = Some(args.next()
+                    .ok_or("--registry-resolve needs <ref>")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -124,6 +148,8 @@ fn print_help() {
                                 M3TypedOnly | M4TypedOnly | Informational)\n  \
          --domain <name>        Show one domain (e.g. fetcher, derivation)\n  \
          --flake-lock <path>    Parse a flake.lock and emit a Nord-styled input summary\n  \
+         --narinfo <path>       Parse a single .narinfo and emit a Nord-styled record\n  \
+         --registry-resolve <ref>   Walk registry precedence (flake-local → user → system → global) for <ref>\n  \
          -h, --help             This message"
     );
 }
@@ -364,5 +390,282 @@ fn truncate(s: &str, n: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..n.saturating_sub(1)])
+    }
+}
+
+// ── --narinfo mode ─────────────────────────────────────────────────
+
+fn emit_narinfo(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading {path}: {e}"))?;
+    let fmt = narinfo::load_canonical()?
+        .into_iter()
+        .find(|f| f.name == "cppnix-narinfo-v1")
+        .ok_or("missing cppnix-narinfo-v1 format")?;
+    let parsed = narinfo::parse(&text, &fmt)?;
+    emit_narinfo_table(&parsed, path);
+    Ok(())
+}
+
+fn emit_narinfo_table(rec: &ParsedNarInfo, path: &str) {
+    let banner = format!(
+        "{}  {}  {}",
+        glyph_snowflake(),
+        header("narinfo"),
+        muted(path),
+    );
+    println!("{banner}");
+    println!();
+
+    let label_w = 14;
+    let kv = |k: &str, v: &str| {
+        println!(
+            "  {}  {}",
+            body(&format!("{:>label_w$}", k, label_w = label_w)),
+            ident(v),
+        );
+    };
+    let opt = |k: &str, v: Option<&str>| {
+        let display = v.unwrap_or("(none)");
+        let val = if v.is_some() { info(display) } else { muted(display) };
+        println!(
+            "  {}  {}",
+            body(&format!("{:>label_w$}", k, label_w = label_w)),
+            val,
+        );
+    };
+
+    kv("StorePath", &rec.store_path);
+    kv("URL", &rec.url);
+    kv("Compression", &rec.compression);
+    kv("NarHash", &rec.nar_hash);
+    kv("NarSize", &format!("{} bytes", rec.nar_size));
+    opt("FileHash", rec.file_hash.as_deref());
+    opt(
+        "FileSize",
+        rec.file_size
+            .map(|n| format!("{n} bytes"))
+            .as_deref(),
+    );
+    opt("Deriver", rec.deriver.as_deref());
+    opt("System", rec.system.as_deref());
+    opt("CA", rec.ca.as_deref());
+
+    println!();
+    println!(
+        "  {}  {}",
+        body(&format!("{:>label_w$}", "References", label_w = label_w)),
+        ident(&rec.references.len().to_string()),
+    );
+    for r in &rec.references {
+        println!("    {}  {}", muted("→"), success(r));
+    }
+
+    println!();
+    println!(
+        "  {}  {}",
+        body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
+        ident(&rec.signatures.len().to_string()),
+    );
+    for sig in &rec.signatures {
+        // Format `<key>:<base64>` — colour the key.
+        match sig.split_once(':') {
+            Some((key, val)) => println!(
+                "    {}  {}{}{}",
+                muted("⎷"),
+                info(key),
+                muted(":"),
+                muted(&truncate(val, 32)),
+            ),
+            None => println!("    {}  {}", muted("⎷"), muted(sig)),
+        }
+    }
+}
+
+// ── --registry-resolve mode ───────────────────────────────────────
+
+fn emit_registry_resolve(flake_ref: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // The canonical registry formats only declare SHAPE (scope +
+    // precedence + path).  Per-machine entries live in JSON files
+    // on disk and aren't yet loaded by the substrate.  For now we
+    // surface the algorithm via a deterministic demonstration set;
+    // when sui-spec gains `registry::load_entries_from_disk`, this
+    // mode lifts off it directly (third-site pattern: lock_file,
+    // narinfo, soon registry).
+    let formats = registry::load_canonical()?;
+    let mut registries: registry::Registries = demonstration_entries(flake_ref);
+
+    emit_registry_table(flake_ref, &registries, &formats);
+    // Read clippy: registries is moved into the function — re-use
+    // is fine here since it's consumed at the call site.
+    let _ = &mut registries;
+    Ok(())
+}
+
+/// Built-in demo entries so the precedence walk is visible to the
+/// operator even before `registry::load_entries_from_disk` exists.
+/// Walks the same algorithm `sui_spec::registry::resolve` will use
+/// once the disk-loader lands.
+fn demonstration_entries(flake_ref: &str) -> registry::Registries {
+    vec![
+        (
+            RegistryScope::FlakeLocal,
+            if flake_ref == "self" || flake_ref == "nixpkgs-overlay" {
+                vec![RegistryEntry {
+                    from: flake_ref.into(),
+                    to: "github:pleme-io/substrate".into(),
+                    exact: true,
+                }]
+            } else {
+                vec![]
+            },
+        ),
+        (
+            RegistryScope::User,
+            if flake_ref == "nixpkgs" {
+                vec![RegistryEntry {
+                    from: "nixpkgs".into(),
+                    to: "github:NixOS/nixpkgs/nixos-unstable".into(),
+                    exact: false,
+                }]
+            } else {
+                vec![]
+            },
+        ),
+        (
+            RegistryScope::System,
+            vec![],
+        ),
+        (
+            RegistryScope::Global,
+            match flake_ref {
+                "nixpkgs" => vec![RegistryEntry {
+                    from: "nixpkgs".into(),
+                    to: "github:NixOS/nixpkgs".into(),
+                    exact: false,
+                }],
+                "home-manager" => vec![RegistryEntry {
+                    from: "home-manager".into(),
+                    to: "github:nix-community/home-manager".into(),
+                    exact: false,
+                }],
+                "flake-utils" => vec![RegistryEntry {
+                    from: "flake-utils".into(),
+                    to: "github:numtide/flake-utils".into(),
+                    exact: false,
+                }],
+                _ => vec![],
+            },
+        ),
+    ]
+}
+
+fn emit_registry_table(
+    flake_ref: &str,
+    registries: &registry::Registries,
+    formats: &[registry::RegistryFormat],
+) {
+    let _ = formats; // Kept for upcoming default_path display.
+    let banner = format!(
+        "{}  {}  {}",
+        glyph_snowflake(),
+        header("registry resolve"),
+        ident(flake_ref),
+    );
+    println!("{banner}");
+    println!();
+
+    // Sort scopes by precedence (flake-local first, global last).
+    let mut sorted: Vec<&(RegistryScope, Vec<RegistryEntry>)> = registries.iter().collect();
+    sorted.sort_by_key(|(scope, _)| scope_precedence(*scope));
+
+    // Find the winning scope per cppnix precedence (lowest first).
+    let mut winning_scope: Option<RegistryScope> = None;
+    let mut winning_entry: Option<&RegistryEntry> = None;
+    for (scope, entries) in &sorted {
+        for entry in entries.iter() {
+            if entry.from == flake_ref {
+                winning_scope = Some(*scope);
+                winning_entry = Some(entry);
+                break;
+            }
+        }
+        if winning_entry.is_some() {
+            break;
+        }
+    }
+
+    let scope_w = 14;
+    println!(
+        "  {}  {}",
+        body(&format!("{:<scope_w$}", "Scope", scope_w = scope_w)),
+        body("Entry"),
+    );
+    println!("  {}", muted(&"─".repeat(60)));
+    for (scope, entries) in &sorted {
+        let name = scope_name(*scope);
+        let match_entry = entries.iter().find(|e| e.from == flake_ref);
+        match match_entry {
+            Some(entry) => {
+                let wins = Some(*scope) == winning_scope;
+                let marker = if wins { glyph_ok() } else { "·".to_string() };
+                println!(
+                    "  {} {}  {} {} {}{}",
+                    marker,
+                    success(&format!("{:<scope_w$}", name, scope_w = scope_w - 2)),
+                    info(&entry.from),
+                    muted("→"),
+                    ident(&entry.to),
+                    if entry.exact { format!("  {}", muted("[exact]")) } else { String::new() },
+                );
+            }
+            None => {
+                println!(
+                    "  {} {}  {}",
+                    muted("·"),
+                    muted(&format!("{:<scope_w$}", name, scope_w = scope_w - 2)),
+                    muted("(no entry)"),
+                );
+            }
+        }
+    }
+
+    println!();
+    match (winning_scope, winning_entry) {
+        (Some(scope), Some(entry)) => {
+            println!(
+                "  {} resolves to {} via {}",
+                glyph_arrow(),
+                success(&entry.to),
+                ident(scope_name(scope)),
+            );
+        }
+        _ => {
+            println!(
+                "  {} {} {} {}",
+                error("✘"),
+                muted("no scope maps"),
+                ident(flake_ref),
+                muted("— would error: registry-unresolved"),
+            );
+        }
+    }
+}
+
+fn scope_precedence(scope: RegistryScope) -> u32 {
+    match scope {
+        RegistryScope::FlakeLocal => 0,
+        RegistryScope::User       => 1,
+        RegistryScope::System     => 2,
+        RegistryScope::Global     => 3,
+    }
+}
+
+fn scope_name(scope: RegistryScope) -> &'static str {
+    match scope {
+        RegistryScope::FlakeLocal => "flake-local",
+        RegistryScope::User       => "user",
+        RegistryScope::System     => "system",
+        RegistryScope::Global     => "global",
     }
 }

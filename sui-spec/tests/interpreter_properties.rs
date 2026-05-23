@@ -228,6 +228,7 @@ fn registry() -> Vec<ms::OptionTypeSpec> {
     ms::load_canonical().unwrap().types
 }
 
+#[allow(dead_code)]
 fn opt_int() -> OptionDecl {
     OptionDecl { type_name: "int".into(), ..Default::default() }
 }
