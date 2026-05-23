@@ -64,6 +64,7 @@
 //! the engine.
 
 pub mod activation_script;
+pub mod catalog;
 pub mod cli;
 pub mod derivation;
 pub mod error;
