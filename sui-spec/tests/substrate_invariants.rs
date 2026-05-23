@@ -67,22 +67,24 @@ fn every_stub_apply_returns_typed_error() {
     .expect_err("module_system::apply must return typed error");
     assert!(matches!(err, SpecError::Interp { .. }));
 
-    // activation_script::apply
-    let a_algo = activation_script::ActivationScriptAlgorithm {
-        name: "test".into(),
-        target: activation_script::ActivationTarget::Darwin,
-        phases: vec![],
-    };
-    let err = activation_script::apply(
+    // activation_script::apply — M3.0 has a working interpreter.
+    // The substrate-wide check used to assert it returned a typed
+    // not-yet error; now we verify it successfully runs on an
+    // empty config and returns a well-formed outcome.
+    let a_algo = activation_script::load_canonical().unwrap()
+        .into_iter()
+        .find(|a| a.target == activation_script::ActivationTarget::Darwin)
+        .unwrap();
+    let _outcome = activation_script::apply(
         &a_algo,
-        activation_script::ActivationArgs {
+        &activation_script::ActivationArgs {
+            config: sui_spec::module_system::Config::new(),
             toplevel_path: "/nix/store/x".into(),
             host: "h".into(),
             user: "u".into(),
         },
     )
-    .expect_err("activation_script::apply must return typed error");
-    assert!(matches!(err, SpecError::Interp { .. }));
+    .expect("activation_script::apply must succeed on empty config");
 
     // fetcher::apply — M3.0 has a working interpreter for
     // fetchurl, so this test verifies that a non-fetchurl
