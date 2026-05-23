@@ -98,20 +98,91 @@ pub enum NarPhaseKind {
     BuildTree,
 }
 
-// ── Spec interpreter (M3 stub) ─────────────────────────────────────
+// ── Spec interpreter (M3.0 minimal — magic + framing check) ───────
 
-/// Apply the NAR algorithm.  M3 stub.
+/// Validate that the leading bytes of a NAR stream match the
+/// declared magic for the format.  M3.0 doesn't parse the full
+/// archive (sui-compat consumes nix-nar for that); this surface
+/// verifies the format dispatch is well-formed.
 ///
 /// # Errors
 ///
-/// Always until M3.
-pub fn apply(_format: &NarFormat) -> Result<String, SpecError> {
-    Err(SpecError::Interp {
-        phase: "nar".into(),
-        message: "NAR spec interpreter not yet landed — sui-compat \
-                  consumes nix-nar upstream today, M3 work lifts to \
-                  this typed border".into(),
-    })
+/// - `nar-too-short` if the input is shorter than the framed
+///   magic.
+/// - `nar-bad-magic` if the magic bytes don't match the declared
+///   format.
+pub fn validate_magic(format: &NarFormat, input: &[u8]) -> Result<(), SpecError> {
+    // cppnix encodes strings as: 8-byte LE length + content +
+    // padding to 8-byte alignment.  So the leading framed magic
+    // is: [magic_len_u64_le, magic_bytes, pad].
+    let magic_bytes = format.magic.as_bytes();
+    let needed = 8 + ((magic_bytes.len() + 7) & !7);
+    if input.len() < needed {
+        return Err(SpecError::Interp {
+            phase: "nar-too-short".into(),
+            message: format!(
+                "input is {} bytes, expected at least {needed} for framed magic `{}`",
+                input.len(),
+                format.magic,
+            ),
+        });
+    }
+    // Read the LE u64 length.
+    let mut len_bytes = [0u8; 8];
+    len_bytes.copy_from_slice(&input[0..8]);
+    let declared_len = u64::from_le_bytes(len_bytes) as usize;
+    if declared_len != magic_bytes.len() {
+        return Err(SpecError::Interp {
+            phase: "nar-bad-magic".into(),
+            message: format!(
+                "magic-len header {declared_len} != expected {}",
+                magic_bytes.len(),
+            ),
+        });
+    }
+    // Read the magic bytes.
+    let magic_in = &input[8..8 + magic_bytes.len()];
+    if magic_in != magic_bytes {
+        return Err(SpecError::Interp {
+            phase: "nar-bad-magic".into(),
+            message: format!(
+                "magic bytes mismatch: got `{}`, expected `{}`",
+                String::from_utf8_lossy(magic_in),
+                format.magic,
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Pack a string per cppnix's NAR framing (`u64-le length + bytes +
+/// pad-to-8`).  Useful for tests + future M3.1 emitter.
+#[must_use]
+pub fn pack_framed(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let pad = (8 - (bytes.len() % 8)) % 8;
+    let mut out = Vec::with_capacity(8 + bytes.len() + pad);
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(bytes);
+    out.extend(std::iter::repeat_n(0u8, pad));
+    out
+}
+
+/// Apply the NAR algorithm.  M3.0: validates magic on the input
+/// and returns an empty marker on success.  Full parse + emit are
+/// M3.1 work (the sui-compat crate already handles them; this
+/// surface is the typed entry-point future code dispatches
+/// through).
+///
+/// # Errors
+///
+/// Whatever `validate_magic` returns.
+pub fn apply(format: &NarFormat, input: &[u8]) -> Result<String, SpecError> {
+    validate_magic(format, input)?;
+    Ok(format!(
+        "magic ok ({} bytes), full parse M3.1 (sui-compat::nar)",
+        input.len(),
+    ))
 }
 
 // ── Canonical spec ─────────────────────────────────────────────────
@@ -179,5 +250,62 @@ mod tests {
                 f.name,
             );
         }
+    }
+
+    // ── M3.0 magic-validation tests ────────────────────────────
+
+    fn cppnix() -> NarFormat {
+        load_canonical().unwrap().into_iter()
+            .find(|f| f.name == "cppnix-nar")
+            .unwrap()
+    }
+
+    #[test]
+    fn pack_framed_roundtrip_shape() {
+        // "nix-archive-1" is 13 bytes → padded to 16.  With the
+        // 8-byte length prefix, total is 24 bytes.
+        let packed = pack_framed("nix-archive-1");
+        assert_eq!(packed.len(), 8 + 16);
+        // First 8 bytes = LE u64 of 13.
+        let mut len_bytes = [0u8; 8];
+        len_bytes.copy_from_slice(&packed[0..8]);
+        assert_eq!(u64::from_le_bytes(len_bytes), 13);
+    }
+
+    #[test]
+    fn validate_magic_passes_on_correct_bytes() {
+        let format = cppnix();
+        let packed = pack_framed(&format.magic);
+        validate_magic(&format, &packed).unwrap();
+    }
+
+    #[test]
+    fn validate_magic_rejects_short_input() {
+        let format = cppnix();
+        let err = validate_magic(&format, &[0u8; 3]).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "nar-too-short"),
+            _ => panic!("expected nar-too-short"),
+        }
+    }
+
+    #[test]
+    fn validate_magic_rejects_wrong_magic() {
+        let format = cppnix();
+        let packed = pack_framed("wrong-archive-id");
+        let err = validate_magic(&format, &packed).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "nar-bad-magic"),
+            _ => panic!("expected nar-bad-magic"),
+        }
+    }
+
+    #[test]
+    fn apply_succeeds_on_well_framed_magic() {
+        let format = cppnix();
+        let packed = pack_framed(&format.magic);
+        let msg = apply(&format, &packed).unwrap();
+        assert!(msg.contains("magic ok"));
+        assert!(msg.contains("M3.1"));
     }
 }

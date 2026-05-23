@@ -169,6 +169,92 @@ pub fn load_opcode_named(name: &str) -> Result<WorkerOpcode, SpecError> {
         .ok_or_else(|| SpecError::Load(format!("no (defworker-opcode) with :name {name:?}")))
 }
 
+/// Return the opcode with the given `code`.
+///
+/// # Errors
+///
+/// Returns an error if the spec fails to parse or `code` doesn't
+/// match any authored opcode.
+pub fn load_opcode_by_code(code: u32) -> Result<WorkerOpcode, SpecError> {
+    load_canonical_opcodes()?
+        .into_iter()
+        .find(|o| o.code == code)
+        .ok_or_else(|| SpecError::Load(format!("no (defworker-opcode) with :code {code}")))
+}
+
+// ── M3.0 dispatch interpreter ──────────────────────────────────────
+
+/// Result of dispatching a worker-protocol opcode against a handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchOutcome {
+    /// The opcode that was dispatched.
+    pub opcode_name: String,
+    /// The numeric code.
+    pub opcode_code: u32,
+    /// Response body bytes the handler produced.  Empty for
+    /// opcodes with no `response_fields`.
+    pub response_body: Vec<u8>,
+}
+
+/// Abstract handler for the worker protocol's server side.  Each
+/// opcode dispatches to a corresponding method here; the default
+/// implementation returns a typed `unhandled-opcode` error so an
+/// incomplete handler surfaces missing opcodes loudly.
+///
+/// In production, sui-daemon implements this trait against its
+/// real store.  Tests can provide a mock that records dispatched
+/// opcodes for verification.
+pub trait WorkerProtocolHandler {
+    /// Catch-all handler.  Default returns `unhandled-opcode`
+    /// error.  Concrete impls override per opcode they support.
+    ///
+    /// # Errors
+    ///
+    /// Default impl always.  Concrete handlers return per-opcode
+    /// errors.
+    fn dispatch(&self, opcode: &WorkerOpcode, body: &[u8])
+        -> Result<Vec<u8>, String>
+    {
+        Err(format!(
+            "unhandled opcode `{}` (code {}) — handler must override dispatch \
+             or implement an explicit case",
+            opcode.name, opcode.code,
+        ))
+    }
+}
+
+/// Dispatch one wire-arriving opcode against a handler.  Looks up
+/// the opcode by code in the canonical catalog, then routes to
+/// `handler.dispatch`.
+///
+/// # Errors
+///
+/// - `unknown-opcode` if `code` doesn't appear in the canonical
+///   opcode set.
+/// - `dispatch-failed` if the handler returns an error.
+pub fn apply<H: WorkerProtocolHandler>(
+    code: u32,
+    body: &[u8],
+    handler: &H,
+) -> Result<DispatchOutcome, SpecError> {
+    let opcode = load_opcode_by_code(code).map_err(|_| SpecError::Interp {
+        phase: "unknown-opcode".into(),
+        message: format!(
+            "received opcode {code} but no (defworker-opcode :code {code}) \
+             is authored in the canonical worker-protocol spec",
+        ),
+    })?;
+    let response_body = handler.dispatch(&opcode, body).map_err(|e| SpecError::Interp {
+        phase: "dispatch-failed".into(),
+        message: format!("opcode `{}` (code {code}): {e}", opcode.name),
+    })?;
+    Ok(DispatchOutcome {
+        opcode_name: opcode.name,
+        opcode_code: code,
+        response_body,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +334,104 @@ mod tests {
             .collect();
         assert!(names.contains("QueryRealisation"));
         assert!(names.contains("RegisterDrvOutput"));
+    }
+
+    // ── M3.0 dispatch tests ────────────────────────────────────
+
+    use std::cell::RefCell;
+
+    struct LoggingHandler {
+        seen: RefCell<Vec<(String, u32)>>,
+        response_for: HashMap<u32, Vec<u8>>,
+    }
+
+    impl LoggingHandler {
+        fn new() -> Self {
+            Self {
+                seen: RefCell::new(Vec::new()),
+                response_for: HashMap::new(),
+            }
+        }
+        fn responds(mut self, code: u32, body: &[u8]) -> Self {
+            self.response_for.insert(code, body.to_vec());
+            self
+        }
+    }
+
+    impl WorkerProtocolHandler for LoggingHandler {
+        fn dispatch(&self, opcode: &WorkerOpcode, _body: &[u8])
+            -> Result<Vec<u8>, String>
+        {
+            self.seen.borrow_mut().push((opcode.name.clone(), opcode.code));
+            self.response_for
+                .get(&opcode.code)
+                .cloned()
+                .ok_or_else(|| format!("no response configured for code {}", opcode.code))
+        }
+    }
+
+    #[test]
+    fn dispatch_known_opcode_succeeds() {
+        let handler = LoggingHandler::new().responds(1, b"\x01");  // IsValidPath
+        let outcome = apply(1, b"", &handler).unwrap();
+        assert_eq!(outcome.opcode_name, "IsValidPath");
+        assert_eq!(outcome.opcode_code, 1);
+        assert_eq!(outcome.response_body, vec![1u8]);
+        let log = handler.seen.borrow();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].0, "IsValidPath");
+    }
+
+    #[test]
+    fn dispatch_unknown_opcode_errors() {
+        let handler = LoggingHandler::new();
+        let err = apply(9999, b"", &handler).unwrap_err();
+        match err {
+            SpecError::Interp { phase, message } => {
+                assert_eq!(phase, "unknown-opcode");
+                assert!(message.contains("9999"));
+            }
+            _ => panic!("expected unknown-opcode"),
+        }
+    }
+
+    #[test]
+    fn dispatch_handler_failure_surfaces_as_dispatch_failed() {
+        // LoggingHandler returns Err when no response is configured.
+        let handler = LoggingHandler::new();  // no responses
+        let err = apply(1, b"", &handler).unwrap_err();
+        match err {
+            SpecError::Interp { phase, message } => {
+                assert_eq!(phase, "dispatch-failed");
+                assert!(message.contains("IsValidPath"));
+            }
+            _ => panic!("expected dispatch-failed"),
+        }
+    }
+
+    #[test]
+    fn load_opcode_by_code_finds_known() {
+        let op = load_opcode_by_code(26).unwrap();  // QueryPathInfo
+        assert_eq!(op.name, "QueryPathInfo");
+    }
+
+    #[test]
+    fn load_opcode_by_code_errors_on_missing() {
+        let err = load_opcode_by_code(99999).unwrap_err();
+        match err {
+            SpecError::Load(msg) => assert!(msg.contains("99999")),
+            _ => panic!("expected Load error"),
+        }
+    }
+
+    #[test]
+    fn default_handler_returns_unhandled() {
+        struct Empty;
+        impl WorkerProtocolHandler for Empty {}
+        let err = apply(1, b"", &Empty).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "dispatch-failed"),
+            _ => panic!("expected dispatch-failed"),
+        }
     }
 }
