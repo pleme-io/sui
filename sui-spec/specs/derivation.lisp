@@ -67,3 +67,49 @@
            (:kind SerializeModulo  :bind "modulo")
            (:kind Sha256           :from "modulo"     :bind "modulo-hex")
            (:kind CacheSelfModulo                     :from-hash "modulo-hex")))
+
+;; ── Fixed-output derivation algorithm ─────────────────────────────
+;;
+;; Used by builtins.fetchurl, fetchTarball, fetchGit when an output
+;; hash is supplied up front.  The output's store path derives from
+;; the *content hash*, not the recipe.  This means an FOD's store
+;; path is stable across recipe permutations as long as the resulting
+;; bytes are identical — the property that makes binary caches work.
+;;
+;; The M3 implementation wires SeedFixedOutputHash to
+;; sui_compat::store_path::compute_fixed_output_path; the rest of
+;; the pipeline shares phases with input-addressed.
+
+(defderivation-algorithm
+  :name "cppnix-fixed-output"
+  :phases ((:kind SeedFixedOutputHash)
+           (:kind FillPlaceholders)
+           (:kind Serialize        :bind "final")
+           (:kind Sha256           :from "final"      :bind "final-hex")
+           (:kind ComputeDrvPath                      :from-hash "final-hex")
+           (:kind SerializeModulo  :bind "modulo")
+           (:kind Sha256           :from "modulo"     :bind "modulo-hex")
+           (:kind CacheSelfModulo                     :from-hash "modulo-hex")))
+
+;; ── Content-addressed derivation algorithm ────────────────────────
+;;
+;; CA derivations defer output-path computation to build-time — the
+;; output's store path is derived from the actually-realised content
+;; hash, not the recipe.  At recipe time we emit *placeholders* the
+;; builder rewrites once it knows the real hash.  Enabled by the
+;; `ca-derivations` experimental feature on cppnix.
+;;
+;; M4 implementation wires MarkContentAddressed +
+;; EmitCaPlaceholders to sui_compat::store_path.
+
+(defderivation-algorithm
+  :name "cppnix-content-addressed"
+  :phases ((:kind MarkContentAddressed)
+           (:kind MaskOutputsAndEnv)
+           (:kind EmitCaPlaceholders)
+           (:kind Serialize        :bind "final")
+           (:kind Sha256           :from "final"      :bind "final-hex")
+           (:kind ComputeDrvPath                      :from-hash "final-hex")
+           (:kind SerializeModulo  :bind "modulo")
+           (:kind Sha256           :from "modulo"     :bind "modulo-hex")
+           (:kind CacheSelfModulo                     :from-hash "modulo-hex")))

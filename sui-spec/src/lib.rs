@@ -68,12 +68,14 @@ pub mod cli;
 pub mod derivation;
 pub mod error;
 pub mod exec;
+pub mod fetcher;
 pub mod flake;
 pub mod loader;
 pub mod module_system;
 pub mod parity;
 pub mod probe;
 pub mod rebuild;
+pub mod substituter;
 pub mod sweep;
 
 pub use error::SpecError;

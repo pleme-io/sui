@@ -128,6 +128,32 @@ pub enum PhaseKind {
     /// depend on this one can look it up during their own
     /// `SerializeModulo` phase.
     CacheSelfModulo,
+
+    // ── Fixed-output / content-addressed extensions (M3 stubs) ──
+    //
+    // The two phase variants below name the contract for the
+    // remaining cppnix store-path schemes.  Today they return
+    // SpecError::Interp; the M3 implementation wires them up to
+    // sui_compat::store_path's fixed-output / CA computation paths.
+
+    /// For a fixed-output derivation: read `drv.env.outputHash`,
+    /// `outputHashAlgo`, `outputHashMode` and seed the per-output
+    /// fingerprint from the *output content hash* rather than the
+    /// recipe hash.  Output store path follows from this seed via
+    /// the same `compute_output_path` route as input-addressed.
+    SeedFixedOutputHash,
+
+    /// Mark the derivation as CA (`__contentAddressed = true`).
+    /// CA outputs' paths aren't known at recipe time; the builder
+    /// resolves them post-realisation and rewrites the .drv in
+    /// place.  This phase plants the marker so downstream phases
+    /// route correctly.
+    MarkContentAddressed,
+
+    /// For CA derivations only: write a *placeholder* output path
+    /// (cppnix uses `/nix/store/<placeholder>-<name>` style); the
+    /// builder substitutes real paths after a successful build.
+    EmitCaPlaceholders,
 }
 
 // ── Interpreter ────────────────────────────────────────────────────
@@ -211,6 +237,22 @@ fn run_phase(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecError> {
         PhaseKind::ComputeDrvPath => compute_drv_path(phase, s),
         PhaseKind::SerializeModulo => serialize_modulo(phase, s),
         PhaseKind::CacheSelfModulo => cache_self_modulo(phase, s),
+        PhaseKind::SeedFixedOutputHash => Err(SpecError::Interp {
+            phase: "SeedFixedOutputHash".into(),
+            message: "fixed-output derivation phase not yet implemented — \
+                      M3 will wire to sui_compat::store_path::compute_fixed_output_path"
+                .into(),
+        }),
+        PhaseKind::MarkContentAddressed => Err(SpecError::Interp {
+            phase: "MarkContentAddressed".into(),
+            message: "content-addressed derivation phase not yet implemented — \
+                      M4 work hangs off this border"
+                .into(),
+        }),
+        PhaseKind::EmitCaPlaceholders => Err(SpecError::Interp {
+            phase: "EmitCaPlaceholders".into(),
+            message: "CA placeholder emission not yet implemented (M4)".into(),
+        }),
     }
 }
 
@@ -410,18 +452,45 @@ fn cache_self_modulo(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecE
 pub const CPPNIX_INPUT_ADDRESSED_LISP: &str = include_str!("../specs/derivation.lisp");
 
 /// Compile the embedded canonical spec into a typed algorithm.
+/// Returns the `cppnix-input-addressed` algorithm specifically; for
+/// the FOD or CA variants see [`load_named`].
 ///
 /// # Errors
 ///
 /// Returns an error if the compile-time spec fails to parse or
-/// produces no `(defderivation-algorithm ...)` forms.
+/// the input-addressed algorithm is missing from the corpus.
 pub fn load_canonical() -> Result<DerivationAlgorithm, SpecError> {
-    let mut compiled = tatara_lisp::compile_typed::<DerivationAlgorithm>(
+    load_named("cppnix-input-addressed")
+}
+
+/// Compile the canonical spec and return every authored algorithm.
+///
+/// # Errors
+///
+/// Returns an error if the spec fails to parse.
+pub fn load_all_canonical() -> Result<Vec<DerivationAlgorithm>, SpecError> {
+    Ok(tatara_lisp::compile_typed::<DerivationAlgorithm>(
         CPPNIX_INPUT_ADDRESSED_LISP,
-    )?;
-    compiled.pop().ok_or_else(|| SpecError::Load(
-        "no (defderivation-algorithm ...) forms found in canonical spec".into(),
-    ))
+    )?)
+}
+
+/// Compile the canonical spec and return the algorithm whose `name`
+/// matches.  Today's named algorithms:
+///
+/// - `"cppnix-input-addressed"` — the default builder path.
+/// - `"cppnix-fixed-output"` — fetchurl/fetchTarball-style FODs (M3 stub).
+/// - `"cppnix-content-addressed"` — CA-drv experimental (M4 stub).
+///
+/// # Errors
+///
+/// Returns an error if the spec fails to parse or `name` is missing.
+pub fn load_named(name: &str) -> Result<DerivationAlgorithm, SpecError> {
+    let all = load_all_canonical()?;
+    all.into_iter()
+        .find(|a| a.name == name)
+        .ok_or_else(|| SpecError::Load(
+            format!("no (defderivation-algorithm) with :name {name:?}"),
+        ))
 }
 
 #[cfg(test)]
@@ -435,6 +504,66 @@ mod tests {
         // Six declared phases — masking, two serialize/hash pairs,
         // one placeholder fill, one final drv-path emission.
         assert!(!algo.phases.is_empty(), "algorithm must have phases");
+    }
+
+    #[test]
+    fn fixed_output_algorithm_parses() {
+        let algo = load_named("cppnix-fixed-output")
+            .expect("FOD algorithm must compile");
+        let kinds: Vec<PhaseKind> = algo.phases.iter().map(|p| p.kind).collect();
+        assert!(kinds.contains(&PhaseKind::SeedFixedOutputHash));
+        assert!(kinds.contains(&PhaseKind::ComputeDrvPath));
+    }
+
+    #[test]
+    fn content_addressed_algorithm_parses() {
+        let algo = load_named("cppnix-content-addressed")
+            .expect("CA-drv algorithm must compile");
+        let kinds: Vec<PhaseKind> = algo.phases.iter().map(|p| p.kind).collect();
+        assert!(kinds.contains(&PhaseKind::MarkContentAddressed));
+        assert!(kinds.contains(&PhaseKind::EmitCaPlaceholders));
+    }
+
+    #[test]
+    fn all_canonical_algorithms_load() {
+        let all = load_all_canonical().expect("all algos must compile");
+        let names: std::collections::HashSet<&str> =
+            all.iter().map(|a| a.name.as_str()).collect();
+        for required in [
+            "cppnix-input-addressed",
+            "cppnix-fixed-output",
+            "cppnix-content-addressed",
+        ] {
+            assert!(
+                names.contains(required),
+                "canonical corpus missing algorithm `{required}`",
+            );
+        }
+    }
+
+    #[test]
+    fn fod_apply_returns_typed_not_yet() {
+        let algo = load_named("cppnix-fixed-output").unwrap();
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("outputHash".into(), "sha256-abc123".into());
+        let drv = Derivation {
+            outputs: std::collections::BTreeMap::new(),
+            input_derivations: std::collections::BTreeMap::new(),
+            input_sources: Vec::new(),
+            system: "aarch64-darwin".into(),
+            builder: "/bin/sh".into(),
+            args: vec![],
+            env,
+        };
+        let err = apply(&algo, drv, vec!["out".into()], "fixed-output-test")
+            .expect_err("FOD apply must surface typed not-yet");
+        match err {
+            SpecError::Interp { phase, message } => {
+                assert_eq!(phase, "SeedFixedOutputHash");
+                assert!(message.contains("M3"));
+            }
+            _ => panic!("expected SpecError::Interp, got {err:?}"),
+        }
     }
 
     #[test]
