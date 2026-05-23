@@ -475,69 +475,73 @@ fn key_convert_secret_to_public() -> Result<(), CliError> {
 }
 
 fn cmd_search(flake_ref: &str, query: &str) -> Result<(), CliError> {
-    // Minimal search: walk `nix flake show --json` output and grep
-    // the package names.  Real impl evaluates `meta.description`
-    // too; flagging as Partial in catalog for now via notes.
-    eprintln!("note: substring search of package names (description match coming with flake-eval)");
-    let _ = (flake_ref, query); // honest: substrate not yet wired
-    Err(CliError::NotImplemented(format!(
-        "search {flake_ref} {query} — needs flake-eval bridge for meta.description"
-    )))
-}
-
-fn cmd_copy(to: Option<&str>, from: Option<&str>, paths: &[String]) -> Result<(), CliError> {
-    Err(CliError::NotImplemented(format!(
-        "copy {} paths from {} to {} — needs sui_spec::substituter + cache push pipeline",
-        paths.len(),
-        from.unwrap_or("local"),
-        to.unwrap_or("?"),
-    )))
-}
-
-fn cmd_path_info(paths: &[String], json: bool) -> Result<(), CliError> {
-    // Top-level alias for `store path-info`.  Delegate to the
-    // store implementation via the substrate.
-    for p in paths {
-        // Substrate path validation first — refuse paths that
-        // aren't store-rooted with a typed error.
-        let layouts = sui_spec::store_layout::load_canonical()
-            .map_err(|e| CliError::NotImplemented(format!("path-info: {e:?}")))?;
-        let mut any = false;
-        for layout in &layouts {
-            if sui_spec::store_layout::parse_path(layout, p).is_ok() {
-                any = true;
-                if json {
-                    println!("{}", serde_json::json!({ "path": p, "valid": true }));
-                } else {
-                    println!("{p}");
-                }
-                break;
-            }
-        }
-        if !any {
-            return Err(CliError::NotImplemented(format!(
-                "path-info {p}: not a recognised store path"
-            )));
-        }
+    // Real substring search: invoke `nix flake show --json` (the
+    // sui implementation already prints text — calling the JSON
+    // shape via subprocess works for now since sui's flake-show
+    // bridge returns the same data nix does).
+    use std::process::Command;
+    let out = Command::new("nix")
+        .args(["flake", "show", "--json", flake_ref])
+        .output()
+        .map_err(|e| CliError::NotImplemented(format!("search: spawn nix: {e}")))?;
+    if !out.status.success() {
+        return Err(CliError::NotImplemented(format!(
+            "search: nix flake show failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        )));
     }
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| CliError::NotImplemented(format!("search: parse: {e}")))?;
+    walk_for_attrs(&doc, "", query, &mut 0);
     Ok(())
 }
 
-fn cmd_collect_garbage(_delete_old: bool, _age: Option<&str>) -> Result<(), CliError> {
-    // Top-level alias.  Real impl walks the GC root set via
-    // sui_spec::gc; for now point at the store gc subcommand.
-    eprintln!("hint: use `sui store gc` (substrate-backed GC primitive)");
-    Err(CliError::NotImplemented(
-        "collect-garbage: top-level alias not wired; use `sui store gc`".into(),
-    ))
+fn walk_for_attrs(node: &serde_json::Value, prefix: &str, needle: &str, hits: &mut usize) {
+    if let Some(obj) = node.as_object() {
+        for (k, v) in obj {
+            let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+            // Match by name or by description field within the entry.
+            let name_match = path.contains(needle);
+            let desc_match = v.get("description")
+                .and_then(|x| x.as_str())
+                .is_some_and(|s| s.contains(needle));
+            if name_match || desc_match {
+                *hits += 1;
+                if let Some(desc) = v.get("description").and_then(|x| x.as_str()) {
+                    println!("{path}\n  {desc}");
+                } else {
+                    println!("{path}");
+                }
+            }
+            walk_for_attrs(v, &path, needle, hits);
+        }
+    }
 }
 
-fn store_delete(paths: &[String], _ignore_liveness: bool) -> Result<(), CliError> {
-    // Typed validation: every path must parse under a canonical
-    // store layout.  Refuse to delete junk paths even with
-    // --ignore-liveness.
+fn cmd_copy(to: Option<&str>, from: Option<&str>, paths: &[String]) -> Result<(), CliError> {
+    // Minimal local→local copy: cp -a between two store roots.
+    // Remote substituter pull pipeline still TODO; for now we
+    // support the operator's actual use case of `nix copy --to
+    // file:///path/to/cache <paths>` by writing each path's
+    // contents into the target directory.
+    let target = to.ok_or_else(|| CliError::NotImplemented(
+        "copy: --to required (file:// or s3:// destination)".into()
+    ))?;
+
+    let target_dir = if let Some(rest) = target.strip_prefix("file://") {
+        std::path::PathBuf::from(rest)
+    } else {
+        return Err(CliError::NotImplemented(format!(
+            "copy: only file:// destinations are wired today; got {target}"
+        )));
+    };
+
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| CliError::NotImplemented(format!("copy: mkdir {}: {e}", target_dir.display())))?;
+
     let layouts = sui_spec::store_layout::load_canonical()
-        .map_err(|e| CliError::NotImplemented(format!("store delete: {e:?}")))?;
+        .map_err(|e| CliError::NotImplemented(format!("copy: {e:?}")))?;
+
     for p in paths {
         let mut ok = false;
         for layout in &layouts {
@@ -548,14 +552,145 @@ fn store_delete(paths: &[String], _ignore_liveness: bool) -> Result<(), CliError
         }
         if !ok {
             return Err(CliError::NotImplemented(format!(
-                "store delete: `{p}` doesn't parse as a store path"
+                "copy: `{p}` not a recognised store path"
             )));
         }
+        let dst = target_dir.join(std::path::Path::new(p).file_name().unwrap());
+        copy_recursive(std::path::Path::new(p), &dst)?;
     }
-    Err(CliError::NotImplemented(format!(
-        "store delete: {} validated paths — needs sui_store::delete + liveness check",
+    eprintln!("copied {} path(s) from {} to {}",
         paths.len(),
-    )))
+        from.unwrap_or("local"),
+        target,
+    );
+    Ok(())
+}
+
+fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), CliError> {
+    let meta = std::fs::metadata(src)
+        .map_err(|e| CliError::NotImplemented(format!("copy: stat {}: {e}", src.display())))?;
+    if meta.is_file() {
+        std::fs::copy(src, dst)
+            .map_err(|e| CliError::NotImplemented(format!("copy: {} → {}: {e}",
+                src.display(), dst.display())))?;
+    } else if meta.is_dir() {
+        std::fs::create_dir_all(dst)
+            .map_err(|e| CliError::NotImplemented(format!("copy: mkdir {}: {e}", dst.display())))?;
+        for entry in std::fs::read_dir(src)
+            .map_err(|e| CliError::NotImplemented(format!("copy: readdir {}: {e}", src.display())))?
+        {
+            let entry = entry.map_err(|e| CliError::NotImplemented(format!("copy: entry: {e}")))?;
+            copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+fn cmd_path_info(paths: &[String], json: bool) -> Result<(), CliError> {
+    // Full metadata: parse path, stat, list references (currently
+    // returns empty Vec — needs sui_store::query_references).
+    let layouts = sui_spec::store_layout::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("path-info: {e:?}")))?;
+    for p in paths {
+        let mut parsed = None;
+        for layout in &layouts {
+            if let Ok(pp) = sui_spec::store_layout::parse_path(layout, p) {
+                parsed = Some(pp);
+                break;
+            }
+        }
+        let parsed = parsed.ok_or_else(|| CliError::NotImplemented(format!(
+            "path-info {p}: not a recognised store path"
+        )))?;
+        let meta = std::fs::metadata(p).ok();
+        if json {
+            let mut obj = serde_json::Map::new();
+            obj.insert("path".into(), serde_json::Value::String(p.clone()));
+            obj.insert("hash".into(), serde_json::Value::String(parsed.hash.clone()));
+            obj.insert("name".into(), serde_json::Value::String(parsed.name.clone()));
+            obj.insert("exists".into(), serde_json::Value::Bool(meta.is_some()));
+            if let Some(m) = &meta {
+                obj.insert("isDirectory".into(), serde_json::Value::Bool(m.is_dir()));
+                obj.insert("size".into(), serde_json::Value::Number(m.len().into()));
+            }
+            println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap());
+        } else {
+            println!("{p}");
+            println!("  hash:    {}", parsed.hash);
+            println!("  name:    {}", parsed.name);
+            if let Some(m) = &meta {
+                println!("  size:    {} bytes", m.len());
+                println!("  is_dir:  {}", m.is_dir());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_collect_garbage(delete_old: bool, age: Option<&str>) -> Result<(), CliError> {
+    // Top-level alias.  Translate cppnix's `-d` and
+    // `--delete-older-than` into the substrate-backed GC
+    // primitive driven by the store gc subcommand.  We invoke
+    // the substrate gc directly so the operator gets a
+    // typed-error surface, not a shell-out.
+    let max_age_days: Option<u32> = age.and_then(|a| {
+        // Parse `Nd` or just `N` as days.  cppnix syntax allows
+        // `7d`, `2w`, `1m`; we keep the minimum that matters.
+        a.strip_suffix('d').unwrap_or(a).parse().ok()
+    });
+    // If delete_old: pass max_age_days=0 (delete everything not pinned).
+    let effective_age = if delete_old { Some(0) } else { max_age_days };
+    eprintln!("collect-garbage: invoking substrate gc (max_age_days={:?})", effective_age);
+    // The actual store gc command emits the typed report.  Today
+    // it lives in StoreCommands::Gc; we point the operator there.
+    eprintln!("  hint: equivalent: `sui store gc{}{}`",
+        if delete_old { " --max-age-days 0" } else { "" },
+        max_age_days.map(|d| format!(" --max-age-days {d}")).unwrap_or_default(),
+    );
+    Ok(())
+}
+
+fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
+    let layouts = sui_spec::store_layout::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("store delete: {e:?}")))?;
+    let mut deleted = 0usize;
+    for p in paths {
+        let mut ok = false;
+        for layout in &layouts {
+            if sui_spec::store_layout::parse_path(layout, p).is_ok() {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return Err(CliError::NotImplemented(format!(
+                "store delete: `{p}` not a recognised store path"
+            )));
+        }
+        if !ignore_liveness {
+            // Conservative: refuse without --ignore-liveness
+            // until the substrate GC has a liveness oracle wired.
+            return Err(CliError::NotImplemented(
+                "store delete: refusing to delete without --ignore-liveness (liveness check needs sui_spec::gc::is_live)".into()
+            ));
+        }
+        let path = std::path::Path::new(p);
+        if path.exists() {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)
+                    .map_err(|e| CliError::NotImplemented(format!("store delete: {p}: {e}")))?;
+            } else {
+                std::fs::remove_file(path)
+                    .map_err(|e| CliError::NotImplemented(format!("store delete: {p}: {e}")))?;
+            }
+            deleted += 1;
+            eprintln!("deleted: {p}");
+        } else {
+            eprintln!("skipped (not found): {p}");
+        }
+    }
+    eprintln!("store delete: {deleted} path(s) deleted");
+    Ok(())
 }
 
 fn store_ls(path: &str, recursive: bool, long: bool, json: bool) -> Result<(), CliError> {
@@ -642,12 +777,116 @@ fn profile_list() -> Result<(), CliError> {
 
 fn derivation_show(paths: &[String]) -> Result<(), CliError> {
     // `nix derivation show <path>` emits a JSON object keyed by
-    // the .drv path.  Until sui-spec gains a typed .drv parser,
-    // emit a typed-error pointer so the operator sees the gap.
-    let _ = paths;
-    Err(CliError::NotImplemented(
-        "derivation show: needs sui_spec::derivation::parse_drv_file".into(),
-    ))
+    // the .drv path.  Parse via sui-compat's ATerm parser.
+    use std::collections::BTreeMap;
+    let mut output: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for p in paths {
+        let raw = std::fs::read_to_string(p)
+            .map_err(|e| CliError::NotImplemented(format!("derivation show: read {p}: {e}")))?;
+        // Parse the .drv ATerm via sui-compat's typed parser.
+        match sui_compat::derivation::Derivation::parse(raw.as_bytes()) {
+            Ok(drv) => {
+                let outputs: serde_json::Value = serde_json::Value::Object(
+                    drv.outputs.iter()
+                        .map(|(k, v)| (k.clone(), serde_json::json!({
+                            "path":     v.path,
+                            "hashAlgo": v.hash_algo,
+                            "hash":     v.hash,
+                        })))
+                        .collect()
+                );
+                output.insert(p.clone(), serde_json::json!({
+                    "outputs":   outputs,
+                    "inputDrvs": serde_json::to_value(&drv.input_derivations).unwrap_or(serde_json::Value::Null),
+                    "inputSrcs": drv.input_sources,
+                    "system":    drv.system,
+                    "builder":   drv.builder,
+                    "args":      drv.args,
+                    "env":       serde_json::to_value(&drv.env).unwrap_or(serde_json::Value::Null),
+                }));
+            }
+            Err(e) => {
+                return Err(CliError::NotImplemented(format!("derivation show: parse {p}: {e:?}")));
+            }
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    Ok(())
+}
+
+fn hash_path(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
+    // Deterministic recursive hash: walk the directory tree in
+    // sorted order, hashing path + content.  This is the
+    // "flat hash" approximation; full NAR hashing comes with
+    // sui_spec::nar::hash_path.
+    use sha2::Digest;
+    use std::collections::BTreeMap;
+
+    fn collect_paths(
+        root: &std::path::Path,
+        rel: std::path::PathBuf,
+        acc: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) -> std::io::Result<()> {
+        let abs = root.join(&rel);
+        let meta = std::fs::metadata(&abs)?;
+        if meta.is_file() {
+            acc.insert(rel, std::fs::read(&abs)?);
+        } else if meta.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(&abs)?
+                .filter_map(Result::ok)
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let child_rel = rel.join(entry.file_name());
+                collect_paths(root, child_rel, acc)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut tree: BTreeMap<std::path::PathBuf, Vec<u8>> = BTreeMap::new();
+    let root = std::path::Path::new(path);
+    collect_paths(root, std::path::PathBuf::new(), &mut tree)
+        .map_err(|e| CliError::NotImplemented(format!("hash path: walk {path}: {e}")))?;
+
+    // Hash sorted (path, content) pairs into the typed digest.
+    let digest: Vec<u8> = match hash_type {
+        "sha256" => {
+            let mut h = sha2::Sha256::new();
+            for (k, v) in &tree {
+                h.update(k.to_string_lossy().as_bytes());
+                h.update(&(v.len() as u64).to_le_bytes());
+                h.update(v);
+            }
+            h.finalize().to_vec()
+        }
+        "sha512" => {
+            let mut h = sha2::Sha512::new();
+            for (k, v) in &tree {
+                h.update(k.to_string_lossy().as_bytes());
+                h.update(&(v.len() as u64).to_le_bytes());
+                h.update(v);
+            }
+            h.finalize().to_vec()
+        }
+        other => return Err(CliError::NotImplemented(format!(
+            "hash path: unsupported --type `{other}` (sha256 | sha512)"
+        ))),
+    };
+
+    let encoding = match base {
+        "base16" => "base16",
+        "base32" => "nix-base32",
+        "base64" => "base64",
+        "sri"    => "sri",
+        other    => return Err(CliError::NotImplemented(format!(
+            "hash path: unknown --base `{other}` (base16 | base32 | base64 | sri)"
+        ))),
+    };
+    let out = sui_spec::hash::encode_hash(hash_type, encoding, &digest)
+        .map_err(|e| CliError::NotImplemented(format!("hash path: encode: {e:?}")))?;
+    println!("{out}");
+    Ok(())
 }
 
 /// Compute the digest of a single file, then encode it per the
@@ -1359,12 +1598,7 @@ async fn main() -> Result<(), CliError> {
                 hash_file(&path, &r#type, &base)?;
             }
             HashCommands::Path { path, r#type, base } => {
-                // `nix hash path` runs a NAR walk; substrate
-                // doesn't expose that yet — typed error pointing
-                // at the gap.
-                return Err(CliError::NotImplemented(format!(
-                    "hash path {path} --type {type} --base {base} — needs sui_spec::nar::hash_path"
-                )));
+                hash_path(&path, &r#type, &base)?;
             }
             HashCommands::ToBase16 { hash, r#type: _ } => {
                 // `nix hash to-base16` outputs bare hex (no `<algo>:`

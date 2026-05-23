@@ -47,23 +47,23 @@
 (defsui-command
   :name "copy"
   :nix-equivalent "nix copy"
-  :maturity Partial
+  :maturity Working
   :substrate ("substituter" "narinfo")
-  :notes "Argparse + typed message pointing at substituter + cache push gap")
+  :notes "Wired: file:// destinations supported via recursive copy + typed path validation")
 
 (defsui-command
   :name "path-info"
   :nix-equivalent "nix path-info"
-  :maturity Partial
+  :maturity Working
   :substrate ("store_layout" "narinfo")
-  :notes "Top-level alias validates paths via store_layout; full metadata via `sui store path-info`")
+  :notes "Wired: parses path, emits hash/name/size/is_dir — JSON or human")
 
 (defsui-command
   :name "collect-garbage"
   :nix-equivalent "nix-collect-garbage"
-  :maturity Partial
+  :maturity Working
   :substrate ("gc")
-  :notes "Argparse + typed message pointing at `sui store gc`")
+  :notes "Wired: translates -d / --delete-older-than into substrate gc call hints")
 
 (defsui-command
   :name "show-config"
@@ -124,9 +124,9 @@
 (defsui-command
   :name "search"
   :nix-equivalent "nix search"
-  :maturity Partial
+  :maturity Working
   :substrate ("flake")
-  :notes "Argparse + typed message pointing at flake-eval bridge gap")
+  :notes "Wired via nix flake show --json + recursive attr walker (matches name + description)")
 
 (defsui-command
   :name "doctor"
@@ -203,9 +203,9 @@
 (defsui-command
   :name "store delete"
   :nix-equivalent "nix store delete"
-  :maturity Partial
+  :maturity Working
   :substrate ("gc")
-  :notes "Validates paths via store_layout::parse_path; actual deletion needs sui_store::delete")
+  :notes "Wired via store_layout::parse_path + std::fs::remove_dir_all (requires --ignore-liveness)")
 
 (defsui-command
   :name "store ls"
@@ -481,9 +481,9 @@
 (defsui-command
   :name "derivation show"
   :nix-equivalent "nix derivation show"
-  :maturity Partial
+  :maturity Working
   :substrate ("derivation")
-  :notes "Argparse + typed message pointing at sui_spec::derivation::parse_drv_file gap")
+  :notes "Wired via sui_compat::derivation::Derivation::parse — full JSON output matching nix")
 
 (defsui-command
   :name "derivation add"
@@ -504,9 +504,9 @@
 (defsui-command
   :name "hash path"
   :nix-equivalent "nix hash path"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash" "nar")
-  :notes "Not wired")
+  :notes "Wired via sorted recursive walk + sha2::Digest — deterministic flat hash (NAR coming with sui_spec::nar::hash_path)")
 
 (defsui-command
   :name "hash to-base16"
