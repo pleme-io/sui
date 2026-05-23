@@ -168,6 +168,45 @@ enum Commands {
     Doctor,
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
+    /// Run differential parity probes (sui vs cppnix) and write a typed
+    /// JSON ShadowReport.  Tests sui as a full nix replacement without
+    /// ever mutating the system.  Thin wrapper around the same library
+    /// the sui-sweep binary uses; corpora authored in sui-spec/specs/*.lisp.
+    #[command(name = "rebuild-shadow")]
+    RebuildShadow {
+        /// Explicit flake directories to sweep.  Defaults to walking
+        /// --flakes-root for every direct child containing flake.nix.
+        flakes: Vec<std::path::PathBuf>,
+        /// Path to the cppnix binary (the oracle).
+        #[arg(long, default_value = "nix")]
+        nix: std::path::PathBuf,
+        /// Root directory to walk for flake.nix files.  Default:
+        /// `$HOME/code/github/pleme-io`.
+        #[arg(long)]
+        flakes_root: Option<std::path::PathBuf>,
+        /// Corpus selection: `parity` | `builtins` | `rebuild` | `all`.
+        #[arg(long, default_value = "all")]
+        corpus: String,
+        /// Include only probes carrying any of these tags.
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Exclude probes carrying any of these tags.
+        #[arg(long)]
+        skip_tag: Vec<String>,
+        /// Per-probe timeout in seconds.
+        #[arg(long, default_value = "30")]
+        timeout_secs: u64,
+        /// Explicit JSON report output path.  Default:
+        /// `~/.cache/sui/shadow-reports/<host>-<ts>.json`.
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+        /// Skip writing the JSON report.
+        #[arg(long)]
+        no_report: bool,
+        /// Print per-probe diagnostics to stderr.
+        #[arg(long = "verbose-probes")]
+        verbose_probes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -979,6 +1018,44 @@ async fn main() -> Result<(), CliError> {
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
+        Commands::RebuildShadow {
+            flakes, nix, flakes_root, corpus, tag, skip_tag,
+            timeout_secs, report, no_report, verbose_probes,
+        } => {
+            let mut config = sui_spec::sweep::SweepConfig::defaults();
+            // Default to the current process — operator runs `sui
+            // rebuild-shadow` and the same binary is also the engine
+            // under test.
+            if let Ok(self_exe) = std::env::current_exe() {
+                config.sui_bin = self_exe;
+            }
+            config.nix_bin = nix;
+            if let Some(root) = flakes_root {
+                config.flakes_root = root;
+            }
+            config.explicit_flakes = flakes;
+            config.include_tags = tag;
+            config.exclude_tags = skip_tag;
+            config.timeout = std::time::Duration::from_secs(timeout_secs);
+            config.verbose = verbose_probes;
+            config.corpus = sui_spec::sweep::Corpus::from_str(&corpus)
+                .ok_or_else(|| CliError::Orchestrate {
+                    operation: "rebuild-shadow",
+                    message: format!("unknown corpus `{corpus}` (expected parity | builtins | rebuild | all)"),
+                })?;
+            config.report_path = match (no_report, report) {
+                (true, _)              => None,
+                (false, Some(path))    => Some(path),
+                (false, None)          => Some(sui_spec::sweep::default_report_path()),
+            };
+            let report = sui_spec::sweep::run(&config).map_err(|e| CliError::Orchestrate {
+                operation: "rebuild-shadow",
+                message: e.to_string(),
+            })?;
+            if !report.all_pass() {
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())

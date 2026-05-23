@@ -5862,6 +5862,7 @@ dependencies = [
  "sui-eval",
  "sui-intern",
  "sui-orchestrate",
+ "sui-spec",
  "sui-store",
  "thiserror 2.0.18",
  "tokio",

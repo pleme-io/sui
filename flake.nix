@@ -52,12 +52,35 @@
           })
         );
 
-      # Image release app
+      # App index: the substrate-produced toolOutputs apps + two
+      # sui-specific wrappers.
+      #
+      # - `shadow-rebuild` runs `sui rebuild-shadow` — the canonical
+      #   way to test sui as a full nix replacement.  `nix run
+      #   github:pleme-io/sui#shadow-rebuild -- --corpus rebuild`
+      #   on any host gets a typed JSON shadow report without
+      #   `cargo install`.
+      # - `sui-sweep` runs the standalone differential parity runner
+      #   (same library, different operator surface).
+      # - `release-image` is the substrate's image release plumbing.
       apps = nixpkgs.lib.genAttrs
         [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
-        (system:
+        (system: let
+          pkgs = import nixpkgs { inherit system; };
+          suiPkg = (toolOutputs.packages.${system} or {}).default or null;
+        in
           (toolOutputs.apps.${system} or {})
           // {
+            shadow-rebuild = {
+              type = "app";
+              program = "${pkgs.writeShellScript "sui-shadow-rebuild" ''
+                exec ${suiPkg}/bin/sui rebuild-shadow "$@"
+              ''}";
+            };
+            sui-sweep = {
+              type = "app";
+              program = "${suiPkg}/bin/sui-sweep";
+            };
             release-image = (imageOutputs.apps.${system} or {}).release or {
               type = "app";
               program = "echo 'image release not available on ${system}'";
