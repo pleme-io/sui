@@ -2544,16 +2544,28 @@ impl<'a> VM<'a> {
             env: env_vars,
         };
         let (drv_path, out_paths, mut drv) = if is_fod {
-            let output_hash = get_str(&attrs, self.interner, "outputHash")?;
+            let raw_output_hash = get_str(&attrs, self.interner, "outputHash")?;
             let output_hash_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
                 .unwrap_or_else(|| "sha256".to_string());
             let output_hash_mode = get_str_opt(&attrs, self.interner, "outputHashMode")?
                 .unwrap_or_else(|| "flat".to_string());
             let is_recursive =
                 output_hash_mode == "recursive" || output_hash_mode == "nar";
+            // Normalize hex/nix-base32/SRI → lowercase hex before
+            // building the fixed:out:<algo>:<hex>: fingerprint.  See
+            // sui-compat::hash::NixHash::parse_any for the contract.
+            let algo = sui_compat::hash::HashAlgorithm::from_nix_str(&output_hash_algo)
+                .map_err(|e| VMError::Internal(format!(
+                    "derivation: invalid outputHashAlgo {output_hash_algo:?}: {e}",
+                )))?;
+            let parsed = sui_compat::hash::NixHash::parse_any(algo, &raw_output_hash)
+                .map_err(|e| VMError::Internal(format!(
+                    "derivation: invalid outputHash {raw_output_hash:?}: {e}",
+                )))?;
+            let output_hash_hex = parsed.to_hex();
             let out_path = sui_compat::store_path::compute_fixed_output_hash(
                 &output_hash_algo,
-                &output_hash,
+                &output_hash_hex,
                 is_recursive,
                 &name,
             );
@@ -2566,7 +2578,7 @@ impl<'a> VM<'a> {
                     } else {
                         output_hash_algo.clone()
                     },
-                    hash: output_hash,
+                    hash: output_hash_hex,
                 },
             );
             let drv_content = drv.serialize();

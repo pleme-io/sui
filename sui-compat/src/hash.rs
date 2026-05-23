@@ -93,6 +93,133 @@ impl NixHash {
     pub fn to_sri(&self) -> String {
         format!("{}-{}", self.algorithm, base64_encode(&self.digest))
     }
+
+    /// Lower-case hex of the digest (no `<algo>:` prefix).  Useful
+    /// for embedding into the `fixed:out:<algo>:<hex>:` content-
+    /// address fingerprints CppNix uses to compute fixed-output
+    /// store paths.
+    #[must_use]
+    pub fn to_hex(&self) -> String {
+        hex::encode(&self.digest)
+    }
+
+    /// Decode a user-supplied hash string under `algorithm`,
+    /// accepting any of the three formats CppNix tolerates as
+    /// `outputHash` input:
+    ///
+    /// 1. **lowercase hex** — `<digest_len * 2>` characters
+    ///    (e.g. 64 chars for sha256).
+    /// 2. **nix-base32** — `(digest_len * 8 + 4) / 5` characters
+    ///    using the alphabet `0123456789abcdfghijklmnpqrsvwxyz`
+    ///    (52 chars for sha256, 32 for sha1).
+    /// 3. **SRI** — `<algo>-<standard-base64-of-digest>` (e.g.
+    ///    `sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`).
+    ///
+    /// The parser chooses by length + alphabet without backtracking.
+    /// Returns [`HashError::InvalidEncoding`] for any malformed or
+    /// length-mismatched input.
+    ///
+    /// This is the canonical hash-ingress primitive: every callsite
+    /// that takes a hash string from user code (derivation
+    /// `outputHash`, builtin `fetchurl`, flake-input `narHash`)
+    /// **must** normalize through here before computing store paths
+    /// — the `fixed:out:<algo>:<hex>:` fingerprint embedded in the
+    /// store-path digest is byte-equivalent to CppNix only when the
+    /// hash is canonicalized to lowercase hex first.
+    ///
+    /// # Errors
+    ///
+    /// - [`HashError::InvalidEncoding`] if the string can't be
+    ///   decoded as any of the three formats, or if the decoded
+    ///   length doesn't match the algorithm's `digest_len()`.
+    pub fn parse_any(
+        algorithm: HashAlgorithm,
+        raw: &str,
+    ) -> Result<Self, HashError> {
+        let digest = decode_hash_any(algorithm, raw)?;
+        Ok(Self::new(algorithm, digest))
+    }
+}
+
+/// Decode a hash string under `algo` from hex / nix-base32 / SRI
+/// into raw digest bytes.  Helper for [`NixHash::parse_any`] kept
+/// public so callers that just want the bytes (e.g. CppNix
+/// `fixed:out:` fingerprint construction) don't pay a
+/// [`NixHash`] allocation.
+///
+/// # Errors
+///
+/// See [`NixHash::parse_any`].
+pub fn decode_hash_any(
+    algo: HashAlgorithm,
+    raw: &str,
+) -> Result<Vec<u8>, HashError> {
+    let want = algo.digest_len();
+    let hex_len = want * 2;
+    let base32_len = (want * 8 + 4) / 5;
+    // SRI is `<algo>-<base64-of-digest>`; the base64 length for
+    // n bytes is 4 * ceil(n / 3), padded to a multiple of 4.
+    let sri_prefix = format!("{}-", algo.as_nix_str());
+
+    if let Some(b64) = raw.strip_prefix(&sri_prefix) {
+        let bytes = base64_decode(b64)?;
+        if bytes.len() != want {
+            return Err(HashError::InvalidEncoding);
+        }
+        return Ok(bytes);
+    }
+
+    if raw.len() == hex_len
+        && raw.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+    {
+        let bytes = hex::decode(raw)?;
+        return Ok(bytes);
+    }
+
+    if raw.len() == base32_len {
+        // Nix-base32 alphabet (note: 'e', 'o', 't', 'u' are not in
+        // the alphabet — they were excluded to avoid confusion).
+        let alphabet = "0123456789abcdfghijklmnpqrsvwxyz";
+        if raw.chars().all(|c| alphabet.contains(c)) {
+            let bytes = decode_nix_base32(raw, want)?;
+            return Ok(bytes);
+        }
+    }
+
+    Err(HashError::InvalidEncoding)
+}
+
+/// Decode a nix-base32 string of expected byte length `want`.
+///
+/// The encoder writes the most-significant 5-bit group first; the
+/// decoder must walk the input in reverse to recover bytes in
+/// natural order.  See [`crate::store_path::nix_base32_decode`]
+/// for the same algorithm specialized to a 20-byte compressed
+/// hash; this variant accepts arbitrary `want` lengths so it can
+/// service every supported [`HashAlgorithm`].
+fn decode_nix_base32(input: &str, want: usize) -> Result<Vec<u8>, HashError> {
+    let alphabet = b"0123456789abcdfghijklmnpqrsvwxyz";
+    let mut digit_value = [0u8; 128];
+    for (i, &c) in alphabet.iter().enumerate() {
+        digit_value[c as usize] = i as u8;
+    }
+    let mut out = vec![0u8; want];
+    let bytes = input.as_bytes();
+    for (n, &c) in bytes.iter().rev().enumerate() {
+        let d = digit_value[c as usize] as usize;
+        let b = n * 5;
+        let i = b / 8;
+        let j = b % 8;
+        out[i] |= ((d << j) & 0xff) as u8;
+        if i + 1 < want {
+            out[i + 1] |= (d >> (8 - j)) as u8;
+        } else if (d >> (8 - j)) != 0 {
+            // High bits set past the end of the digest → not a
+            // valid base32 encoding of a `want`-byte value.
+            return Err(HashError::InvalidEncoding);
+        }
+    }
+    Ok(out)
 }
 
 impl std::fmt::Display for NixHash {
@@ -153,6 +280,77 @@ pub(crate) mod hex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn parse_any_accepts_64_char_hex_sha256() {
+        let raw = "0".repeat(64);
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, &raw).unwrap();
+        assert_eq!(h.digest, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn parse_any_accepts_52_char_base32_sha256() {
+        let raw = "0".repeat(52);
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, &raw).unwrap();
+        assert_eq!(h.digest, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn parse_any_accepts_sri_sha256() {
+        // SRI of 32 zero bytes.
+        let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, sri).unwrap();
+        assert_eq!(h.digest, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn parse_any_rejects_wrong_length() {
+        // 50 chars: neither valid hex nor base32 sha256 length.
+        let bad = "0".repeat(50);
+        assert!(NixHash::parse_any(HashAlgorithm::Sha256, &bad).is_err());
+    }
+
+    #[test]
+    fn parse_any_rejects_invalid_alphabet() {
+        // 'e' is not in the nix-base32 alphabet at the right position
+        // length to look like base32; lead with a char that breaks both
+        // hex (uppercase) and base32 (out-of-alphabet) attempts.
+        let bad = format!("Z{}", "0".repeat(51));
+        assert!(NixHash::parse_any(HashAlgorithm::Sha256, &bad).is_err());
+    }
+
+    proptest! {
+        /// All three input formats decode to the same digest.
+        #[test]
+        fn parse_any_all_formats_agree(digest in proptest::collection::vec(any::<u8>(), 32..=32)) {
+            let nh = NixHash::new(HashAlgorithm::Sha256, digest.clone());
+            let hex_str = hex::encode(&digest);
+            let sri = nh.to_sri();
+            // Build the nix-base32 form using the existing encoder
+            // (digest length must be 32 → base32 length = 52).
+            let mut b32 = String::with_capacity(52);
+            // Re-implement encoder inline to avoid coupling to
+            // store_path::nix_base32_encode (which is specialized to 20-byte input).
+            let alphabet = b"0123456789abcdfghijklmnpqrsvwxyz";
+            for n in (0..52usize).rev() {
+                let b = n * 5;
+                let i = b / 8;
+                let j = b % 8;
+                let mut v = (digest[i] as usize) >> j;
+                if i + 1 < 32 {
+                    v |= (digest[i + 1] as usize) << (8 - j);
+                }
+                b32.push(alphabet[v & 0x1f] as char);
+            }
+            let parsed_hex = NixHash::parse_any(HashAlgorithm::Sha256, &hex_str).unwrap();
+            let parsed_b32 = NixHash::parse_any(HashAlgorithm::Sha256, &b32).unwrap();
+            let parsed_sri = NixHash::parse_any(HashAlgorithm::Sha256, &sri).unwrap();
+            prop_assert_eq!(&parsed_hex.digest, &digest);
+            prop_assert_eq!(&parsed_b32.digest, &digest);
+            prop_assert_eq!(&parsed_sri.digest, &digest);
+        }
+    }
 
     #[test]
     fn algorithm_roundtrip() {
