@@ -137,18 +137,27 @@ fn every_stub_apply_returns_typed_error() {
     .expect_err("substituter::apply must error when no path found");
     assert!(matches!(err, SpecError::Interp { .. }));
 
-    // gc::apply
+    // gc::apply — M3.0 has a working interpreter.  Verify it
+    // succeeds on an empty store + no roots (vacuous GC = no-op).
     let gc_algo = gc::load_named("cppnix-stop-the-world").unwrap();
-    let err = gc::apply(
+    struct EmptyGc;
+    impl gc::GcEnvironment for EmptyGc {
+        fn lock_store(&self) -> Result<(), String> { Ok(()) }
+        fn unlock_store(&self) -> Result<(), String> { Ok(()) }
+        fn collect_gc_roots(&self) -> Result<Vec<String>, String> { Ok(vec![]) }
+        fn scan_store(&self) -> Result<Vec<gc::StorePathInfo>, String> { Ok(vec![]) }
+        fn delete_path(&self, _: &str) -> Result<u64, String> { unreachable!() }
+    }
+    let _report = gc::apply(
         &gc_algo,
-        gc::GcArgs {
+        &gc::GcArgs {
             delete_older_than_days: None,
             max_freed_bytes: None,
             dry_run: false,
         },
+        &EmptyGc,
     )
-    .expect_err("gc::apply must return typed error");
-    assert!(matches!(err, SpecError::Interp { .. }));
+    .expect("vacuous GC on empty store must succeed");
 }
 
 /// The catalog is the source of truth for "what does this substrate

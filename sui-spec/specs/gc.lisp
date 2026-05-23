@@ -8,8 +8,8 @@
   :name "cppnix-stop-the-world"
   :phases ((:kind LockStore)
            (:kind CollectGcRoots      :bind "roots")
-           (:kind ComputeLiveSet      :from "roots"      :bind "live")
            (:kind ScanStore                              :bind "all-paths")
+           (:kind ComputeLiveSet      :from "roots"      :bind "live")
            (:kind ComputeDeadSet      :from "all-paths"  :bind "dead")
            (:kind FilterByAgeAndSize  :from "dead"       :bind "to-delete")
            (:kind DeleteDeadPaths     :from "to-delete")
@@ -27,8 +27,8 @@
   :name "cppnix-stop-the-world-attested"
   :phases ((:kind LockStore)
            (:kind CollectGcRoots      :bind "roots")
-           (:kind ComputeLiveSet      :from "roots"      :bind "live")
            (:kind ScanStore                              :bind "all-paths")
+           (:kind ComputeLiveSet      :from "roots"      :bind "live")
            (:kind ComputeDeadSet      :from "all-paths"  :bind "dead")
            (:kind FilterByAgeAndSize  :from "dead"       :bind "to-delete")
            (:kind DeleteDeadPaths     :from "to-delete")
