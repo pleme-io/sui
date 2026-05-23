@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1d3aec4d02ecdc03edc4220ff743b2112981475c41cb9efd749403a969899bbc # shrinks to from = "f8", to = "github:ct/tvnnzq", exact = true
+cc 68d35770066d19c85a304a158b63ca8863a7cf38b8145dc90ade7fb72fbdbe0f # shrinks to froms = ["x-f46-c-9-vg", "hq", "c5e-hlax", "zbo-dw48"]

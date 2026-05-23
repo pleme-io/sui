@@ -131,23 +131,32 @@ fn from_nix_base32(s: &str) -> Result<Vec<u8>, SpecError> {
     for (i, b) in ALPHABET.iter().enumerate() {
         idx_table[*b as usize] = i as u8;
     }
-    // Estimate output bytes: nix-base32 is 8 bits per 5 chars.
-    let n = (s.len() * 5).div_ceil(8);
+    // Output length = floor(chars * 5 / 8) — inverse of the
+    // encoder's ceil(bytes * 8 / 5).  Using ceil here over-
+    // allocates one byte for lengths where 8N % 5 != 0
+    // (sha256/32 bytes → 52 chars → would yield 33 instead of 32).
+    let n = (s.len() * 5) / 8;
     let mut bytes = vec![0u8; n];
+    // The encoder writes the highest-position char first, so
+    // reverse the iteration order to keep encode⇄decode inverse.
+    let n_chars = s.len();
     for (n_offset, c) in s.chars().enumerate() {
-        let digit = idx_table[c as usize];
-        if digit == 0xff {
+        let digit = idx_table[c as usize] as u16;
+        if (digit as u8) == 0xff {
             return Err(SpecError::Interp {
                 phase: "hash-decode".into(),
                 message: format!("char `{c}` not in nix-base32 alphabet"),
             });
         }
-        let b = n_offset * 5;
+        let encoder_n = n_chars - 1 - n_offset;
+        let b = encoder_n * 5;
         let i = b / 8;
         let j = b % 8;
-        bytes[i] |= (digit as u16).wrapping_shl(j as u32) as u8 & 0xff;
+        if i < n {
+            bytes[i] |= digit.wrapping_shl(j as u32) as u8 & 0xff;
+        }
         if j + 5 > 8 && i + 1 < n {
-            bytes[i + 1] |= (digit as u16).wrapping_shr((8 - j) as u32) as u8;
+            bytes[i + 1] |= digit.wrapping_shr((8 - j) as u32) as u8;
         }
     }
     Ok(bytes)
