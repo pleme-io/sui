@@ -236,6 +236,146 @@ pub fn box_bottom(width: usize) -> String {
     dim_fg(NORD3, &format!("└{}┘", "─".repeat(width.saturating_sub(2))))
 }
 
+// ── LabeledTable — typed builder for "kv / opt / section / list" rows ──
+//
+// Three operator-facing views in sui-spec-inventory (narinfo /
+// realisation / hash-decode) reached for the same closure-set
+// (kv + opt + section + list-item).  Third-site extraction.
+//
+// Usage:
+//
+//   LabeledTable::new(14)
+//       .kv("StorePath", &rec.store_path)
+//       .kv("URL", &rec.url)
+//       .opt("Deriver", rec.deriver.as_deref())
+//       .section("References", rec.references.len())
+//       .list_items("→", &rec.references)
+//       .render();
+//
+// Required fields render as `ident()` (Nord aurora purple).
+// Optional fields render as `info()` if Some, `muted()` if None.
+// Section headers render as `body()` with a count chip.
+// List items render with a configurable glyph + `success()`.
+
+/// Typed builder for labeled-row tables.  Renders Nord-styled
+/// `right-aligned label  value` rows + sections + nested lists.
+#[must_use]
+pub struct LabeledTable {
+    label_w: usize,
+    rows: Vec<TableRow>,
+}
+
+enum TableRow {
+    Kv { key: String, value: String },
+    Opt { key: String, value: Option<String> },
+    Section { title: String, count: Option<usize> },
+    ListItem { glyph: String, value: String },
+    Blank,
+}
+
+impl LabeledTable {
+    /// Construct a new table with the given right-aligned label
+    /// width (typically 14 across the inventory binary).
+    pub fn new(label_w: usize) -> Self {
+        Self { label_w, rows: Vec::new() }
+    }
+
+    /// Add a required key-value row.  Value renders as `ident()`.
+    pub fn kv(mut self, key: &str, value: &str) -> Self {
+        self.rows.push(TableRow::Kv {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+        self
+    }
+
+    /// Add an optional key-value row.  Present values render
+    /// as `info()`, absent as `muted("(none)")`.
+    pub fn opt(mut self, key: &str, value: Option<&str>) -> Self {
+        self.rows.push(TableRow::Opt {
+            key: key.to_string(),
+            value: value.map(String::from),
+        });
+        self
+    }
+
+    /// Add a blank line for visual grouping.
+    pub fn blank(mut self) -> Self {
+        self.rows.push(TableRow::Blank);
+        self
+    }
+
+    /// Add a section header with an optional count chip.
+    pub fn section(mut self, title: &str, count: Option<usize>) -> Self {
+        self.rows.push(TableRow::Section {
+            title: title.to_string(),
+            count,
+        });
+        self
+    }
+
+    /// Add a list of nested rows under the most recent section.
+    /// Each item is prefixed with `glyph` and styled `success()`.
+    pub fn list_items<I, S>(mut self, glyph: &str, items: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for item in items {
+            self.rows.push(TableRow::ListItem {
+                glyph: glyph.to_string(),
+                value: item.as_ref().to_string(),
+            });
+        }
+        self
+    }
+
+    /// Render every row to stdout.
+    pub fn render(self) {
+        for row in &self.rows {
+            match row {
+                TableRow::Kv { key, value } => {
+                    println!(
+                        "  {}  {}",
+                        body(&right_align(key, self.label_w)),
+                        ident(value),
+                    );
+                }
+                TableRow::Opt { key, value } => {
+                    let val_str = match value {
+                        Some(v) => info(v),
+                        None => muted("(none)"),
+                    };
+                    println!(
+                        "  {}  {}",
+                        body(&right_align(key, self.label_w)),
+                        val_str,
+                    );
+                }
+                TableRow::Section { title, count } => match count {
+                    Some(n) => println!(
+                        "  {}  {}",
+                        body(&right_align(title, self.label_w)),
+                        ident(&n.to_string()),
+                    ),
+                    None => println!(
+                        "  {}",
+                        body(&right_align(title, self.label_w)),
+                    ),
+                },
+                TableRow::ListItem { glyph, value } => {
+                    println!("    {}  {}", muted(glyph), success(value));
+                }
+                TableRow::Blank => println!(),
+            }
+        }
+    }
+}
+
+fn right_align(s: &str, w: usize) -> String {
+    format!("{:>w$}", s, w = w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +460,38 @@ mod tests {
         assert!(s.contains("┐"));
         // Title byte is in there somewhere (under ANSI escapes).
         assert!(s.contains("sui-spec"));
+    }
+
+    // ── LabeledTable tests ─────────────────────────────────────
+
+    #[test]
+    fn labeled_table_builder_is_chainable() {
+        // Compile-time proof the builder threads through chained
+        // calls without ownership issues — drop the result, just
+        // ensure construction works.
+        let _t = LabeledTable::new(14)
+            .kv("key1", "val1")
+            .kv("key2", "val2")
+            .opt("optKey", Some("optVal"))
+            .opt("absent", None)
+            .blank()
+            .section("Section", Some(3))
+            .list_items("→", ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn labeled_table_accepts_string_and_str_in_list_items() {
+        let owned: Vec<String> = vec!["a".into(), "b".into()];
+        let _ = LabeledTable::new(10)
+            .list_items("→", &owned);
+        let borrowed = ["x", "y"];
+        let _ = LabeledTable::new(10)
+            .list_items("→", borrowed);
+    }
+
+    #[test]
+    fn right_align_pads_to_width() {
+        assert_eq!(right_align("ab", 6), "    ab");
+        assert_eq!(right_align("longer", 4), "longer");
     }
 }

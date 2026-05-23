@@ -25,7 +25,7 @@ use sui_spec::realisation::{self, ParsedRealisation};
 use sui_spec::registry::{self, RegistryEntry, RegistryScope};
 use sui_spec::style::{
     self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
-    header, ident, info, muted, pending, success, warn, NORD13, NORD15, NORD3, NORD8,
+    header, ident, info, muted, pending, success, warn, LabeledTable, NORD13, NORD15, NORD3, NORD8,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -450,56 +450,30 @@ impl OperatorView for NarinfoView {
     fn subject(&self) -> &str { &self.path }
     fn header_label(&self) -> &str { "narinfo" }
     fn render_body(&self) {
-        let label_w = 14;
-        let kv = |k: &str, v: &str| {
-            println!(
-                "  {}  {}",
-                body(&format!("{:>label_w$}", k, label_w = label_w)),
-                ident(v),
-            );
-        };
-        let opt = |k: &str, v: Option<&str>| {
-            let display = v.unwrap_or("(none)");
-            let val = if v.is_some() { info(display) } else { muted(display) };
-            println!(
-                "  {}  {}",
-                body(&format!("{:>label_w$}", k, label_w = label_w)),
-                val,
-            );
-        };
+        let file_size = self.rec.file_size
+            .map(|n| format!("{n} bytes"));
 
-        kv("StorePath", &self.rec.store_path);
-        kv("URL", &self.rec.url);
-        kv("Compression", &self.rec.compression);
-        kv("NarHash", &self.rec.nar_hash);
-        kv("NarSize", &format!("{} bytes", self.rec.nar_size));
-        opt("FileHash", self.rec.file_hash.as_deref());
-        opt(
-            "FileSize",
-            self.rec.file_size
-                .map(|n| format!("{n} bytes"))
-                .as_deref(),
-        );
-        opt("Deriver", self.rec.deriver.as_deref());
-        opt("System", self.rec.system.as_deref());
-        opt("CA", self.rec.ca.as_deref());
+        LabeledTable::new(14)
+            .kv("StorePath", &self.rec.store_path)
+            .kv("URL", &self.rec.url)
+            .kv("Compression", &self.rec.compression)
+            .kv("NarHash", &self.rec.nar_hash)
+            .kv("NarSize", &format!("{} bytes", self.rec.nar_size))
+            .opt("FileHash", self.rec.file_hash.as_deref())
+            .opt("FileSize", file_size.as_deref())
+            .opt("Deriver", self.rec.deriver.as_deref())
+            .opt("System", self.rec.system.as_deref())
+            .opt("CA", self.rec.ca.as_deref())
+            .blank()
+            .section("References", Some(self.rec.references.len()))
+            .list_items("→", &self.rec.references)
+            .blank()
+            .section("Signatures", Some(self.rec.signatures.len()))
+            .render();
 
-        println!();
-        println!(
-            "  {}  {}",
-            body(&format!("{:>label_w$}", "References", label_w = label_w)),
-            ident(&self.rec.references.len().to_string()),
-        );
-        for r in &self.rec.references {
-            println!("    {}  {}", muted("→"), success(r));
-        }
-
-        println!();
-        println!(
-            "  {}  {}",
-            body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
-            ident(&self.rec.signatures.len().to_string()),
-        );
+        // Signatures render with custom key-coloring, so we do
+        // them outside the table (the LabeledTable.list_items
+        // is for plain-string items).
         for sig in &self.rec.signatures {
             match sig.split_once(':') {
                 Some((key, val)) => println!(
@@ -824,35 +798,29 @@ impl OperatorView for RealisationView {
     fn subject(&self) -> &str { &self.path }
     fn header_label(&self) -> &str { "realisation" }
     fn render_body(&self) {
-        let label_w = 14;
-        let kv = |k: &str, v: &str| {
-            println!(
-                "  {}  {}",
-                body(&format!("{:>label_w$}", k, label_w = label_w)),
-                ident(v),
-            );
-        };
-        kv("Id", &self.rec.id);
-        kv("OutPath", &self.rec.out_path);
+        // Block 1: id + outPath
+        LabeledTable::new(14)
+            .kv("Id", &self.rec.id)
+            .kv("OutPath", &self.rec.out_path)
+            .render();
 
-        // Split the id into <drv-path>!<output-name> for operator
-        // legibility — show the discriminator structure.
+        // Custom row: `[drv!out]` decomposition, outside the
+        // table's kv layout because it needs three colors.
         if let Some((drv, out)) = self.rec.id.split_once('!') {
             println!(
                 "  {}  {}{}{}",
-                body(&format!("{:>label_w$}", "[drv!out]", label_w = label_w)),
+                body(&format!("{:>14}", "[drv!out]")),
                 info(drv),
                 muted("!"),
                 success(out),
             );
         }
 
-        println!();
-        println!(
-            "  {}  {}",
-            body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
-            ident(&self.rec.signatures.len().to_string()),
-        );
+        // Block 2: signatures section + nested sig rows
+        LabeledTable::new(14)
+            .blank()
+            .section("Signatures", Some(self.rec.signatures.len()))
+            .render();
         for sig in &self.rec.signatures {
             match sig.split_once(':') {
                 Some((key, val)) => println!(
@@ -866,15 +834,12 @@ impl OperatorView for RealisationView {
             }
         }
 
-        println!();
-        println!(
-            "  {}  {}",
-            body(&format!("{:>label_w$}", "DependentRels", label_w = label_w)),
-            ident(&self.rec.dependent_realisations.len().to_string()),
-        );
-        for dep in &self.rec.dependent_realisations {
-            println!("    {}  {}", muted("→"), success(dep));
-        }
+        // Block 3: dependent realisations
+        LabeledTable::new(14)
+            .blank()
+            .section("DependentRels", Some(self.rec.dependent_realisations.len()))
+            .list_items("→", &self.rec.dependent_realisations)
+            .render();
     }
 }
 
@@ -901,36 +866,21 @@ impl OperatorView for HashDecodeView {
     fn subject(&self) -> &str { &self.input }
     fn header_label(&self) -> &str { "hash decode" }
     fn render_body(&self) {
-        let label_w = 14;
-        let kv = |k: &str, v: &str| {
-            println!(
-                "  {}  {}",
-                body(&format!("{:>label_w$}", k, label_w = label_w)),
-                ident(v),
-            );
-        };
-        kv("Algorithm", &self.algorithm);
-        kv("ByteLength", &self.bytes.len().to_string());
-        kv("BitLength", &(self.bytes.len() * 8).to_string());
+        let byte_len = self.bytes.len().to_string();
+        let bit_len = (self.bytes.len() * 8).to_string();
+        let encoding = detect_encoding(&self.input).unwrap_or("?");
 
-        // Detect encoding by inspecting the input shape.  The
-        // hash module's decode_hash dispatches internally; we
-        // present the discriminator back to the operator.
-        let encoding = detect_encoding(&self.input);
-        let enc_label = encoding.unwrap_or("?");
-        println!(
-            "  {}  {}",
-            body(&format!("{:>label_w$}", "Encoding", label_w = label_w)),
-            info(enc_label),
-        );
+        LabeledTable::new(14)
+            .kv("Algorithm", &self.algorithm)
+            .kv("ByteLength", &byte_len)
+            .kv("BitLength", &bit_len)
+            .opt("Encoding", Some(encoding))
+            .blank()
+            .section("equivalent encodings:", None)
+            .render();
 
-        // Round-trip preview: re-encode through known encodings
-        // so the operator sees equivalent forms.
-        println!();
-        println!(
-            "  {}",
-            body("equivalent encodings:"),
-        );
+        // Round-trip preview — special-formatted so it stays
+        // outside LabeledTable's standard layout.
         for target in ["base16", "sri"] {
             match hash::encode_hash(&self.algorithm, target, &self.bytes) {
                 Ok(s) => println!(

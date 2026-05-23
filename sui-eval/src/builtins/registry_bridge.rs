@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use super::*;
-use super::bridge_helpers::{as_string, attrs_required_string};
+use super::bridge_helpers::attrs_required_string;
 use sui_spec::registry::{self, RegistryEntry, RegistryScope};
 
 const NAME: &str = "builtins.sui.registry";
