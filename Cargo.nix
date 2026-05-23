@@ -19732,7 +19732,7 @@ rec {
       };
       "sui" = rec {
         crateName = "sui";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         crateBin = [
           {
@@ -19881,6 +19881,10 @@ rec {
             features = [ "env-filter" "json" ];
           }
           {
+            name = "ureq";
+            packageId = "ureq";
+          }
+          {
             name = "url";
             packageId = "url";
           }
@@ -19936,7 +19940,7 @@ rec {
       };
       "sui-build" = rec {
         crateName = "sui-build";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-build; };
         libName = "sui_build";
@@ -20006,7 +20010,7 @@ rec {
       };
       "sui-bytecode" = rec {
         crateName = "sui-bytecode";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-bytecode; };
         libName = "sui_bytecode";
@@ -20066,7 +20070,7 @@ rec {
       };
       "sui-cache" = rec {
         crateName = "sui-cache";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache; };
         libName = "sui_cache";
@@ -20174,7 +20178,7 @@ rec {
       };
       "sui-cache-eval" = rec {
         crateName = "sui-cache-eval";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache-eval; };
         libName = "sui_cache_eval";
@@ -20211,7 +20215,7 @@ rec {
       };
       "sui-compat" = rec {
         crateName = "sui-compat";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-compat; };
         libName = "sui_compat";
@@ -20265,7 +20269,7 @@ rec {
       };
       "sui-daemon" = rec {
         crateName = "sui-daemon";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-daemon; };
         libName = "sui_daemon";
@@ -20345,7 +20349,7 @@ rec {
       };
       "sui-eval" = rec {
         crateName = "sui-eval";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-eval; };
         libName = "sui_eval";
@@ -20526,7 +20530,7 @@ rec {
       };
       "sui-intern" = rec {
         crateName = "sui-intern";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-intern; };
         libName = "sui_intern";
@@ -20540,7 +20544,7 @@ rec {
       };
       "sui-orchestrate" = rec {
         crateName = "sui-orchestrate";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-orchestrate; };
         libName = "sui_orchestrate";
@@ -20616,7 +20620,7 @@ rec {
       };
       "sui-spec" = rec {
         crateName = "sui-spec";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         crateBin = [
           {
@@ -20686,7 +20690,7 @@ rec {
       };
       "sui-store" = rec {
         crateName = "sui-store";
-        version = "0.1.4";
+        version = "0.1.5";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-store; };
         libName = "sui_store";
