@@ -63,6 +63,7 @@
 //! function belongs in this crate as a spec + interpreter, not in
 //! the engine.
 
+pub mod cli;
 pub mod derivation;
 pub mod error;
 pub mod exec;

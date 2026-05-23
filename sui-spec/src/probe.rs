@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 use tatara_lisp::DeriveTataraDomain;
 
 use crate::SpecError;
+use crate::cli::{nix_cli, sui_cli};
 use crate::exec::CapturedOutput;
 use crate::parity::{default_classify, ParityCheck, ProbeContext, ProbeKind, Verdict};
 
@@ -83,23 +84,11 @@ impl ParityCheck for Probe {
     fn kind(&self) -> ProbeKind { ProbeKind::Eval }
 
     fn sui_invocation(&self, ctx: &ProbeContext, sui_bin: &Path) -> Command {
-        let mut cmd = Command::new(sui_bin);
-        let expr = ctx.substitute(&self.expr);
-        cmd.args(["eval", "--json"]);
-        cmd.arg(expr);
-        cmd
+        sui_cli::eval_expr(sui_bin, &ctx.substitute(&self.expr))
     }
 
     fn nix_invocation(&self, ctx: &ProbeContext, nix_bin: &Path) -> Command {
-        let mut cmd = Command::new(nix_bin);
-        let expr = ctx.substitute(&self.expr);
-        cmd.args([
-            "eval", "--impure", "--json",
-            "--extra-experimental-features", "nix-command flakes",
-            "--expr",
-        ]);
-        cmd.arg(expr);
-        cmd
+        nix_cli::eval_expr(nix_bin, &ctx.substitute(&self.expr))
     }
 
     fn classify(&self, sui: &CapturedOutput, nix: &CapturedOutput) -> Verdict {

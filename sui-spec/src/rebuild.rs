@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use tatara_lisp::DeriveTataraDomain;
 
 use crate::SpecError;
+use crate::cli::{nix_cli, sui_cli};
 use crate::exec::CapturedOutput;
 use crate::parity::{
     default_classify, ParityCheck, ProbeContext, ProbeKind, TargetOs, Verdict,
@@ -196,28 +197,22 @@ impl ParityCheck for RebuildProbe {
     }
 
     fn sui_invocation(&self, ctx: &ProbeContext, sui_bin: &Path) -> Command {
-        let mut cmd = Command::new(sui_bin);
         match self.stage.kind {
-            RebuildStageKind::FlakeShowKeys => {
-                cmd.args(["flake", "show", "--json", &flake_ref(ctx)]);
-            }
-            RebuildStageKind::FlakeCheckExit => {
-                cmd.args(["flake", "check", &flake_ref(ctx)]);
-            }
+            RebuildStageKind::FlakeShowKeys =>
+                sui_cli::flake_show(sui_bin, &flake_ref(ctx)),
+            RebuildStageKind::FlakeCheckExit =>
+                sui_cli::flake_check(sui_bin, &flake_ref(ctx)),
             RebuildStageKind::EvalToplevel => {
                 let attr = self.toplevel_attr(ctx);
-                cmd.args(["eval", "--json", &installable(ctx, &format!("{attr}.outPath"))]);
+                sui_cli::eval_installable(sui_bin, &installable(ctx, &format!("{attr}.outPath")))
             }
             RebuildStageKind::EvalHomeActivation => {
                 let attr = self.home_activation_attr(ctx);
-                cmd.args(["eval", "--json", &installable(ctx, &format!("{attr}.outPath"))]);
+                sui_cli::eval_installable(sui_bin, &installable(ctx, &format!("{attr}.outPath")))
             }
-            RebuildStageKind::DryRunClosure => {
+            RebuildStageKind::DryRunClosure | RebuildStageKind::ClosureReferenceGraph => {
                 let attr = self.toplevel_attr(ctx);
-                cmd.args([
-                    "build", "--dry-run", "--print-out-paths", "--no-link",
-                    &installable(ctx, &attr),
-                ]);
+                sui_cli::build_dry_run(sui_bin, &installable(ctx, &attr))
             }
             RebuildStageKind::InputLockHash => {
                 let input = self.stage.input.as_deref().unwrap_or("nixpkgs");
@@ -225,7 +220,7 @@ impl ParityCheck for RebuildProbe {
                     "(builtins.getFlake \"path:{}\").inputs.{input}.narHash",
                     ctx.flake_path.display(),
                 );
-                cmd.args(["eval", "--impure", "--json", "--expr", &expr]);
+                sui_cli::eval_expr_explicit(sui_bin, &expr)
             }
             RebuildStageKind::ClosureSize => {
                 let attr = self.toplevel_attr(ctx);
@@ -233,55 +228,28 @@ impl ParityCheck for RebuildProbe {
                     "builtins.length (builtins.attrNames ((builtins.getFlake \"path:{}\").{attr}))",
                     ctx.flake_path.display(),
                 );
-                cmd.args(["eval", "--impure", "--json", "--expr", &expr]);
-            }
-            RebuildStageKind::ClosureReferenceGraph => {
-                // The reference-graph probe requires the toplevel to
-                // build first; we approximate it for M0 by listing the
-                // store paths that `--print-out-paths --dry-run`
-                // surfaces.
-                let attr = self.toplevel_attr(ctx);
-                cmd.args([
-                    "build", "--dry-run", "--print-out-paths", "--no-link",
-                    &installable(ctx, &attr),
-                ]);
+                sui_cli::eval_expr_explicit(sui_bin, &expr)
             }
         }
-        cmd
     }
 
     fn nix_invocation(&self, ctx: &ProbeContext, nix_bin: &Path) -> Command {
-        let mut cmd = Command::new(nix_bin);
-        // cppnix needs the experimental features incantation everywhere.
-        let exp = ["--extra-experimental-features", "nix-command flakes"];
         match self.stage.kind {
-            RebuildStageKind::FlakeShowKeys => {
-                cmd.args(["flake", "show", "--json"]);
-                cmd.args(exp);
-                cmd.arg(flake_ref(ctx));
-            }
-            RebuildStageKind::FlakeCheckExit => {
-                cmd.args(["flake", "check"]);
-                cmd.args(exp);
-                cmd.arg(flake_ref(ctx));
-            }
+            RebuildStageKind::FlakeShowKeys =>
+                nix_cli::flake_show(nix_bin, &flake_ref(ctx)),
+            RebuildStageKind::FlakeCheckExit =>
+                nix_cli::flake_check(nix_bin, &flake_ref(ctx)),
             RebuildStageKind::EvalToplevel => {
                 let attr = self.toplevel_attr(ctx);
-                cmd.args(["eval", "--impure", "--json"]);
-                cmd.args(exp);
-                cmd.arg(installable(ctx, &format!("{attr}.outPath")));
+                nix_cli::eval_installable(nix_bin, &installable(ctx, &format!("{attr}.outPath")))
             }
             RebuildStageKind::EvalHomeActivation => {
                 let attr = self.home_activation_attr(ctx);
-                cmd.args(["eval", "--impure", "--json"]);
-                cmd.args(exp);
-                cmd.arg(installable(ctx, &format!("{attr}.outPath")));
+                nix_cli::eval_installable(nix_bin, &installable(ctx, &format!("{attr}.outPath")))
             }
-            RebuildStageKind::DryRunClosure => {
+            RebuildStageKind::DryRunClosure | RebuildStageKind::ClosureReferenceGraph => {
                 let attr = self.toplevel_attr(ctx);
-                cmd.args(["build", "--dry-run", "--print-out-paths", "--no-link"]);
-                cmd.args(exp);
-                cmd.arg(installable(ctx, &attr));
+                nix_cli::build_dry_run(nix_bin, &installable(ctx, &attr))
             }
             RebuildStageKind::InputLockHash => {
                 let input = self.stage.input.as_deref().unwrap_or("nixpkgs");
@@ -289,9 +257,7 @@ impl ParityCheck for RebuildProbe {
                     "(builtins.getFlake \"path:{}\").inputs.{input}.narHash",
                     ctx.flake_path.display(),
                 );
-                cmd.args(["eval", "--impure", "--json"]);
-                cmd.args(exp);
-                cmd.args(["--expr", &expr]);
+                nix_cli::eval_expr(nix_bin, &expr)
             }
             RebuildStageKind::ClosureSize => {
                 let attr = self.toplevel_attr(ctx);
@@ -299,18 +265,9 @@ impl ParityCheck for RebuildProbe {
                     "builtins.length (builtins.attrNames ((builtins.getFlake \"path:{}\").{attr}))",
                     ctx.flake_path.display(),
                 );
-                cmd.args(["eval", "--impure", "--json"]);
-                cmd.args(exp);
-                cmd.args(["--expr", &expr]);
-            }
-            RebuildStageKind::ClosureReferenceGraph => {
-                let attr = self.toplevel_attr(ctx);
-                cmd.args(["build", "--dry-run", "--print-out-paths", "--no-link"]);
-                cmd.args(exp);
-                cmd.arg(installable(ctx, &attr));
+                nix_cli::eval_expr(nix_bin, &expr)
             }
         }
-        cmd
     }
 
     fn classify(&self, sui: &CapturedOutput, nix: &CapturedOutput) -> Verdict {
