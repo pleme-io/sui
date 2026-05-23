@@ -224,16 +224,16 @@
 (defsui-command
   :name "store dump-path"
   :nix-equivalent "nix store dump-path"
-  :maturity Stub
+  :maturity Partial
   :substrate ("nar")
-  :notes "Emit NAR for a store path — not wired")
+  :notes "Streams file contents; canonical NAR encoding pending")
 
 (defsui-command
   :name "store make-content-addressed"
   :nix-equivalent "nix store make-content-addressed"
-  :maturity Stub
+  :maturity Partial
   :substrate ("realisation" "hash")
-  :notes "Convert input-addressed paths to CA — not wired")
+  :notes "Validates paths; rehash + relocate pending")
 
 (defsui-command
   :name "store add-path"
@@ -259,16 +259,16 @@
 (defsui-command
   :name "store sign"
   :nix-equivalent "nix store sign"
-  :maturity Stub
+  :maturity Working
   :substrate ("store_layout" "hash" "narinfo")
-  :notes "Ed25519-sign store paths — not wired")
+  :notes "Ed25519-signs path string with key from `<name>:<base64>` file")
 
 (defsui-command
   :name "store repair"
   :nix-equivalent "nix store repair"
-  :maturity Stub
+  :maturity Partial
   :substrate ("substituter" "store_layout")
-  :notes "Re-fetch corrupted store paths — not wired")
+  :notes "Reports each path's local existence; substituter pull pending")
 
 ;; ── flake commands ─────────────────────────────────────────────
 
@@ -310,37 +310,37 @@
 (defsui-command
   :name "flake init"
   :nix-equivalent "nix flake init"
-  :maturity Stub
+  :maturity Working
   :substrate ("flake")
-  :notes "Initialize a flake from a template — not wired")
+  :notes "Writes default template flake.nix in cwd")
 
 (defsui-command
   :name "flake new"
   :nix-equivalent "nix flake new"
-  :maturity Stub
+  :maturity Working
   :substrate ("flake")
-  :notes "Create a flake from a template at a destination — not wired")
+  :notes "Creates dest dir + writes default template")
 
 (defsui-command
   :name "flake archive"
   :nix-equivalent "nix flake archive"
-  :maturity Stub
+  :maturity Working
   :substrate ("flake" "store_layout")
-  :notes "Archive a flake + all its inputs — not wired")
+  :notes "Recursive copy of local flake source to a temp archive")
 
 (defsui-command
   :name "flake clone"
   :nix-equivalent "nix flake clone"
-  :maturity Stub
+  :maturity Working
   :substrate ("flake")
-  :notes "Clone a flake to a local destination — not wired")
+  :notes "Parses github:/git+/https:// refs; shells out to git clone --depth 1")
 
 (defsui-command
   :name "flake prefetch"
   :nix-equivalent "nix flake prefetch"
-  :maturity Stub
+  :maturity Partial
   :substrate ("flake" "fetcher")
-  :notes "Prefetch flake inputs to the store — not wired")
+  :notes "Local sources OK; remote needs fetcher transport")
 
 ;; ── system commands (sui-native + darwin/nixos rebuild) ─────────
 
@@ -488,9 +488,9 @@
 (defsui-command
   :name "derivation add"
   :nix-equivalent "nix derivation add"
-  :maturity Stub
+  :maturity Partial
   :substrate ("derivation")
-  :notes "Not wired")
+  :notes "Reads JSON; ATerm emit pending sui_compat::derivation::emit")
 
 ;; ── hash commands ───────────────────────────────────────────────
 
