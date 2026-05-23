@@ -26,9 +26,40 @@ fn sui_bin() -> std::path::PathBuf {
 }
 
 fn run(args: &[&str]) -> std::process::Output {
+    run_with_timeout(args, std::time::Duration::from_secs(90))
+}
+
+/// Spawn `sui args...`, kill if it doesn't finish within `timeout`,
+/// and return the captured output.  Panics if the subprocess hangs
+/// past the wall-clock budget — surfaces a wedged invocation as a
+/// test failure instead of a stuck CI job.
+fn run_with_timeout(
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> std::process::Output {
     let bin = sui_bin();
-    Command::new(&bin).args(args).output()
-        .unwrap_or_else(|e| panic!("spawn `{}`: {e}", bin.display()))
+    let mut child = Command::new(&bin).args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("spawn `{}`: {e}", bin.display()));
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("sui {:?} (pid={pid}) exceeded {timeout:?}", args);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => panic!("try_wait `{}`: {e}", bin.display()),
+        }
+    }
+    child.wait_with_output().expect("wait")
 }
 
 #[allow(dead_code)]
@@ -45,10 +76,14 @@ fn run_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
     child.wait_with_output().expect("wait")
 }
 
+/// Find the first `/nix/store` entry whose **name ends with** `suffix`.
+/// `ends_with` (not `contains`) so `"-source"` picks a directory,
+/// not a `*-source.drv` ATerm file — closure-walking a `.drv` whose
+/// reference set is its own outputs can spin on certain corpora.
 fn first_store_path_matching(suffix: &str) -> Option<std::path::PathBuf> {
     std::fs::read_dir("/nix/store").ok()?
         .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().contains(suffix))
+        .find(|e| e.file_name().to_string_lossy().ends_with(suffix))
         .map(|e| e.path())
 }
 

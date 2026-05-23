@@ -284,3 +284,279 @@
   :expr     "((builtins.getFlake \"path:$FLAKE\")._type or \"missing\")"
   :classify JsonEqual
   :tags     ("flake-shape" "regression"))
+
+;; ── M0 rebuild-flow expansion — added 2026-05-23 ──────────────────
+;;
+;; Forty additional probes targeting the surface a fleet rebuild
+;; actually touches.  Each captures a question the rebuild flow asks
+;; of nix that sui must mirror byte-for-byte to drive
+;; `darwin-rebuild switch` end-to-end.  Grouped by category for
+;; targeted include/exclude via `sui-sweep --tag <name>`.
+
+;; ── Module-system depth: darwinConfigurations.<host>.config ─────
+
+(defprobe
+  :name     "rebuild-darwin-systemPackages-length"
+  :expr     "builtins.length (builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.environment.systemPackages"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin"))
+
+(defprobe
+  :name     "rebuild-darwin-systemPackages-pnames"
+  :expr     "map (p: p.pname or p.name or \"unknown\") (builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.environment.systemPackages"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin"))
+
+(defprobe
+  :name     "rebuild-darwin-environment-variables-keys"
+  :expr     "builtins.attrNames (builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.environment.variables"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin"))
+
+(defprobe
+  :name     "rebuild-darwin-activationScripts-keys"
+  :expr     "builtins.attrNames (builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.system.activationScripts"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin" "activation"))
+
+(defprobe
+  :name     "rebuild-darwin-system-build-keys"
+  :expr     "builtins.attrNames (builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.system.build"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin" "build"))
+
+(defprobe
+  :name     "rebuild-darwin-launchd-daemons-keys"
+  :expr     "builtins.attrNames ((builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.launchd.daemons or {})"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin" "launchd"))
+
+(defprobe
+  :name     "rebuild-darwin-nix-package-pname"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").darwinConfigurations.$HOST.config.nix.package.pname or \"unknown\""
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "darwin"))
+
+;; ── home-manager activation depth ───────────────────────────────
+
+(defprobe
+  :name     "rebuild-hm-packages-length"
+  :expr     "builtins.length ((builtins.getFlake \"path:$FLAKE\").homeConfigurations.$USER.config.home.packages or [])"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "home-manager"))
+
+(defprobe
+  :name     "rebuild-hm-packages-pnames"
+  :expr     "map (p: p.pname or p.name or \"unknown\") ((builtins.getFlake \"path:$FLAKE\").homeConfigurations.$USER.config.home.packages or [])"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "home-manager"))
+
+(defprobe
+  :name     "rebuild-hm-sessionVariables-keys"
+  :expr     "builtins.attrNames ((builtins.getFlake \"path:$FLAKE\").homeConfigurations.$USER.config.home.sessionVariables or {})"
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "home-manager"))
+
+(defprobe
+  :name     "rebuild-hm-stateVersion"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").homeConfigurations.$USER.config.home.stateVersion or \"unknown\""
+  :classify JsonEqual
+  :tags     ("rebuild" "module-system" "home-manager"))
+
+;; ── Flake metadata depth ────────────────────────────────────────
+
+(defprobe
+  :name     "rebuild-flake-input-narHash-nixpkgs"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").inputs.nixpkgs.narHash or \"missing\""
+  :classify JsonEqual
+  :tags     ("rebuild" "flake-input" "narhash"))
+
+(defprobe
+  :name     "rebuild-flake-input-lastModified-nixpkgs"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").inputs.nixpkgs.lastModified or 0"
+  :classify JsonEqual
+  :tags     ("rebuild" "flake-input"))
+
+(defprobe
+  :name     "rebuild-flake-input-rev-nixpkgs"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").inputs.nixpkgs.rev or \"\""
+  :classify JsonEqual
+  :tags     ("rebuild" "flake-input"))
+
+(defprobe
+  :name     "rebuild-flake-self-narHash"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").inputs.self.narHash or \"missing\""
+  :classify JsonEqual
+  :tags     ("rebuild" "flake-input" "self"))
+
+(defprobe
+  :name     "rebuild-flake-self-shortRev"
+  :expr     "(builtins.getFlake \"path:$FLAKE\").inputs.self.shortRev or \"\""
+  :classify JsonEqual
+  :tags     ("rebuild" "flake-input" "self"))
+
+;; ── Derivation algorithm: outPath round-trips ───────────────────
+
+(defprobe
+  :name     "rebuild-deriv-trivial-outpath"
+  :expr     "(derivation { name = \"trivial-probe\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; args = [\"-c\" \"exit 0\"]; }).outPath"
+  :classify JsonEqual
+  :tags ("rebuild" "derivation" "outpath" "context-free"))
+
+(defprobe
+  :name     "rebuild-deriv-drv-path"
+  :expr     "(derivation { name = \"trivial-probe\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; args = [\"-c\" \"exit 0\"]; }).drvPath"
+  :classify JsonEqual
+  :tags ("rebuild" "derivation" "drvpath" "context-free"))
+
+(defprobe
+  :name     "rebuild-deriv-with-env-outpath"
+  :expr     "(derivation { name = \"env-probe\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; args = [\"-c\" \"exit 0\"]; FOO = \"bar\"; }).outPath"
+  :classify JsonEqual
+  :tags ("rebuild" "derivation" "outpath" "context-free"))
+
+(defprobe
+  :name     "rebuild-deriv-fod-outpath"
+  :expr     "(derivation { name = \"fod-probe\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; args = [\"-c\" \"exit 0\"]; outputHash = \"0000000000000000000000000000000000000000000000000000\"; outputHashAlgo = \"sha256\"; outputHashMode = \"flat\"; }).outPath"
+  :classify JsonEqual
+  :tags ("rebuild" "derivation" "fod" "outpath" "context-free"))
+
+;; ── Builtin coverage gaps the rebuild exercises ─────────────────
+
+(defprobe
+  :name     "builtin-hashString-sha256-empty"
+  :expr     "builtins.hashString \"sha256\" \"\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "hash" "context-free"))
+
+(defprobe
+  :name     "builtin-hashString-sha256-hello"
+  :expr     "builtins.hashString \"sha256\" \"hello\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "hash" "context-free"))
+
+(defprobe
+  :name     "builtin-hashString-md5-hello"
+  :expr     "builtins.hashString \"md5\" \"hello\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "hash" "context-free"))
+
+(defprobe
+  :name     "builtin-toFile-roundtrip"
+  :expr     "builtins.readFile (builtins.toFile \"x\" \"hello world\")"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "io" "context-free"))
+
+(defprobe
+  :name     "builtin-pathExists-flake-self"
+  :expr     "builtins.pathExists \"$FLAKE/flake.nix\""
+  :classify JsonEqual
+  :tags     ("rebuild" "builtin" "io"))
+
+(defprobe
+  :name     "builtin-readDir-flake-self-keys"
+  :expr     "builtins.attrNames (builtins.readDir \"$FLAKE\")"
+  :classify JsonEqual
+  :tags     ("rebuild" "builtin" "io"))
+
+(defprobe
+  :name     "builtin-baseNameOf-store-path"
+  :expr     "builtins.baseNameOf \"/nix/store/abc-foo-1.2.3\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "paths" "context-free"))
+
+(defprobe
+  :name     "builtin-substring-from-mid"
+  :expr     "builtins.substring 4 5 \"abcdefghij\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "strings" "context-free"))
+
+(defprobe
+  :name     "builtin-split-empty-string"
+  :expr     "builtins.split \"a\" \"\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "strings" "context-free"))
+
+(defprobe
+  :name     "builtin-match-named-capture"
+  :expr     "builtins.match \"(.*)@(.*)\" \"user@host\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "strings" "context-free"))
+
+(defprobe
+  :name     "builtin-replaceStrings-multi"
+  :expr     "builtins.replaceStrings [\"a\" \"b\"] [\"1\" \"2\"] \"banana\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "strings" "context-free"))
+
+(defprobe
+  :name     "builtin-removeAttrs-shape"
+  :expr     "builtins.attrNames (builtins.removeAttrs { a = 1; b = 2; c = 3; } [ \"b\" ])"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "attrs" "context-free"))
+
+(defprobe
+  :name     "builtin-intersectAttrs-shape"
+  :expr     "builtins.attrNames (builtins.intersectAttrs { a = 1; b = 2; } { a = 1; c = 3; })"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "attrs" "context-free"))
+
+(defprobe
+  :name     "builtin-mapAttrs-shape"
+  :expr     "builtins.mapAttrs (n: v: builtins.toString v) { a = 1; b = 2; }"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "attrs" "context-free"))
+
+(defprobe
+  :name     "builtin-attrValues-order"
+  :expr     "builtins.attrValues { c = 3; a = 1; b = 2; }"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "attrs" "context-free"))
+
+(defprobe
+  :name     "builtin-sort-strings"
+  :expr     "builtins.sort builtins.lessThan [ \"banana\" \"apple\" \"cherry\" ]"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "lists" "context-free"))
+
+(defprobe
+  :name     "builtin-elem-int-yes"
+  :expr     "builtins.elem 3 [ 1 2 3 4 5 ]"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "lists" "context-free"))
+
+(defprobe
+  :name     "builtin-genList-length"
+  :expr     "builtins.length (builtins.genList (n: n * 2) 10)"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "lists" "context-free"))
+
+(defprobe
+  :name     "builtin-foldlPrime-sum"
+  :expr     "builtins.foldl' (a: b: a + b) 0 [ 1 2 3 4 5 ]"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "lists" "context-free"))
+
+(defprobe
+  :name     "builtin-compareVersions-rc-vs-pre"
+  :expr     "builtins.compareVersions \"1.0-rc1\" \"1.0-pre1\""
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "versions" "context-free"))
+
+(defprobe
+  :name     "builtin-currentSystem-self"
+  :expr     "builtins.currentSystem"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "system" "impure" "context-free"))
+
+(defprobe
+  :name     "builtin-nixVersion-shape"
+  :expr     "builtins.match \"[0-9]+\\\\.[0-9]+.*\" builtins.nixVersion != null"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "system" "context-free"))
+
+(defprobe
+  :name     "builtin-storeDir-default"
+  :expr     "builtins.storeDir"
+  :classify JsonEqual
+  :tags ("rebuild" "builtin" "system" "context-free"))

@@ -179,13 +179,18 @@ mod tests {
     fn canonical_corpus_parses() {
         let probes = load_canonical().expect("canonical probes must compile");
         assert!(!probes.is_empty(), "corpus must contain at least one probe");
-        // Every probe has a non-empty name and a `$FLAKE` placeholder
-        // in the expression — that placeholder is how the runner
-        // knows where to substitute each flake path.
+        // Every probe has a non-empty name and either references the
+        // `$FLAKE` placeholder (so the runner can substitute the flake
+        // path) or is explicitly tagged "context-free" (asserting the
+        // probe doesn't depend on a flake — e.g. a builtin or pure
+        // derivation algorithm probe).
         for p in &probes {
             assert!(!p.name.is_empty(), "probe must have a name: {p:?}");
-            assert!(p.expr.contains("$FLAKE"),
-                "probe {} must contain $FLAKE placeholder", p.name);
+            let context_free =
+                p.tags.iter().any(|t| t == "context-free");
+            assert!(p.expr.contains("$FLAKE") || context_free,
+                "probe {} must contain $FLAKE placeholder OR carry the \"context-free\" tag",
+                p.name);
         }
     }
 
