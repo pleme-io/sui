@@ -79,6 +79,7 @@ pub mod lock_file;
 pub mod module_system;
 pub mod nar;
 pub mod narinfo;
+pub mod operator_view;
 pub mod parity;
 pub mod probe;
 pub mod profile;

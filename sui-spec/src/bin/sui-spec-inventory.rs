@@ -19,6 +19,7 @@
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
 use sui_spec::lock_file::{self, ParsedLockFile};
 use sui_spec::narinfo::{self, ParsedNarInfo};
+use sui_spec::operator_view::{render as render_view, OperatorView};
 use sui_spec::registry::{self, RegistryEntry, RegistryScope};
 use sui_spec::style::{
     self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
@@ -282,56 +283,62 @@ fn emit_flake_lock(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .find(|f| f.name == "cppnix-flake-lock-v7")
         .ok_or("missing cppnix-flake-lock-v7 format")?;
     let parsed = lock_file::parse(&text, &fmt)?;
-    emit_flake_lock_table(&parsed, path);
+    let view = FlakeLockView { lock: parsed, path: path.to_string() };
+    render_view(&view);
     Ok(())
 }
 
-fn emit_flake_lock_table(lock: &ParsedLockFile, path: &str) {
-    let banner = format!(
-        "{}  {}  {}  {}",
-        glyph_snowflake(),
-        header("flake.lock"),
-        muted(path),
-        ident(&format!("v{}", lock.version)),
-    );
-    println!("{banner}");
-    println!();
+struct FlakeLockView {
+    lock: ParsedLockFile,
+    path: String,
+}
 
-    // Root inputs first — the direct edges.
-    let root_inputs = match lock_file::root_inputs(lock) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{}", error(&format!("error walking root: {e:?}")));
-            return;
-        }
-    };
-    println!(
-        "{}  {}  {}",
-        glyph_arrow(),
-        body("root inputs:"),
-        ident(&root_inputs.len().to_string()),
-    );
-    for input_name in &root_inputs {
-        let row = format!(
-            "  {}  {}  {}",
-            success(input_name),
-            muted("→"),
-            describe_input(lock, input_name),
+impl OperatorView for FlakeLockView {
+    fn subject(&self) -> &str { &self.path }
+    fn header_label(&self) -> &str { "flake.lock" }
+    fn render_body(&self) {
+        // Version chip on its own line under the banner.
+        println!(
+            "  {}  {}",
+            body("version:"),
+            ident(&format!("v{}", self.lock.version)),
         );
-        println!("{row}");
-    }
-    println!();
+        println!();
 
-    // Then the full node count + a few stats.
-    let total = lock.nodes.len();
-    let transitives = total.saturating_sub(1 + root_inputs.len()); // root + direct + rest
-    println!(
-        "{}  {} nodes total  ({} direct, {} transitive)",
-        muted("∑"),
-        body(&total.to_string()),
-        ident(&root_inputs.len().to_string()),
-        info(&transitives.to_string()),
-    );
+        let root_inputs = match lock_file::root_inputs(&self.lock) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{}", error(&format!("error walking root: {e:?}")));
+                return;
+            }
+        };
+        println!(
+            "{}  {}  {}",
+            glyph_arrow(),
+            body("root inputs:"),
+            ident(&root_inputs.len().to_string()),
+        );
+        for input_name in &root_inputs {
+            println!(
+                "  {}  {}  {}",
+                success(input_name),
+                muted("→"),
+                describe_input(&self.lock, input_name),
+            );
+        }
+    }
+    fn render_summary(&self) {
+        let total = self.lock.nodes.len();
+        let direct = lock_file::root_inputs(&self.lock).map(|v| v.len()).unwrap_or(0);
+        let transitives = total.saturating_sub(1 + direct);
+        println!(
+            "{}  {} nodes total  ({} direct, {} transitive)",
+            muted("∑"),
+            body(&total.to_string()),
+            ident(&direct.to_string()),
+            info(&transitives.to_string()),
+        );
+    }
 }
 
 /// Produce a one-line description of an input node from its lock entry.
@@ -403,81 +410,81 @@ fn emit_narinfo(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .find(|f| f.name == "cppnix-narinfo-v1")
         .ok_or("missing cppnix-narinfo-v1 format")?;
     let parsed = narinfo::parse(&text, &fmt)?;
-    emit_narinfo_table(&parsed, path);
+    let view = NarinfoView { rec: parsed, path: path.to_string() };
+    render_view(&view);
     Ok(())
 }
 
-fn emit_narinfo_table(rec: &ParsedNarInfo, path: &str) {
-    let banner = format!(
-        "{}  {}  {}",
-        glyph_snowflake(),
-        header("narinfo"),
-        muted(path),
-    );
-    println!("{banner}");
-    println!();
+struct NarinfoView {
+    rec: ParsedNarInfo,
+    path: String,
+}
 
-    let label_w = 14;
-    let kv = |k: &str, v: &str| {
+impl OperatorView for NarinfoView {
+    fn subject(&self) -> &str { &self.path }
+    fn header_label(&self) -> &str { "narinfo" }
+    fn render_body(&self) {
+        let label_w = 14;
+        let kv = |k: &str, v: &str| {
+            println!(
+                "  {}  {}",
+                body(&format!("{:>label_w$}", k, label_w = label_w)),
+                ident(v),
+            );
+        };
+        let opt = |k: &str, v: Option<&str>| {
+            let display = v.unwrap_or("(none)");
+            let val = if v.is_some() { info(display) } else { muted(display) };
+            println!(
+                "  {}  {}",
+                body(&format!("{:>label_w$}", k, label_w = label_w)),
+                val,
+            );
+        };
+
+        kv("StorePath", &self.rec.store_path);
+        kv("URL", &self.rec.url);
+        kv("Compression", &self.rec.compression);
+        kv("NarHash", &self.rec.nar_hash);
+        kv("NarSize", &format!("{} bytes", self.rec.nar_size));
+        opt("FileHash", self.rec.file_hash.as_deref());
+        opt(
+            "FileSize",
+            self.rec.file_size
+                .map(|n| format!("{n} bytes"))
+                .as_deref(),
+        );
+        opt("Deriver", self.rec.deriver.as_deref());
+        opt("System", self.rec.system.as_deref());
+        opt("CA", self.rec.ca.as_deref());
+
+        println!();
         println!(
             "  {}  {}",
-            body(&format!("{:>label_w$}", k, label_w = label_w)),
-            ident(v),
+            body(&format!("{:>label_w$}", "References", label_w = label_w)),
+            ident(&self.rec.references.len().to_string()),
         );
-    };
-    let opt = |k: &str, v: Option<&str>| {
-        let display = v.unwrap_or("(none)");
-        let val = if v.is_some() { info(display) } else { muted(display) };
+        for r in &self.rec.references {
+            println!("    {}  {}", muted("→"), success(r));
+        }
+
+        println!();
         println!(
             "  {}  {}",
-            body(&format!("{:>label_w$}", k, label_w = label_w)),
-            val,
+            body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
+            ident(&self.rec.signatures.len().to_string()),
         );
-    };
-
-    kv("StorePath", &rec.store_path);
-    kv("URL", &rec.url);
-    kv("Compression", &rec.compression);
-    kv("NarHash", &rec.nar_hash);
-    kv("NarSize", &format!("{} bytes", rec.nar_size));
-    opt("FileHash", rec.file_hash.as_deref());
-    opt(
-        "FileSize",
-        rec.file_size
-            .map(|n| format!("{n} bytes"))
-            .as_deref(),
-    );
-    opt("Deriver", rec.deriver.as_deref());
-    opt("System", rec.system.as_deref());
-    opt("CA", rec.ca.as_deref());
-
-    println!();
-    println!(
-        "  {}  {}",
-        body(&format!("{:>label_w$}", "References", label_w = label_w)),
-        ident(&rec.references.len().to_string()),
-    );
-    for r in &rec.references {
-        println!("    {}  {}", muted("→"), success(r));
-    }
-
-    println!();
-    println!(
-        "  {}  {}",
-        body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
-        ident(&rec.signatures.len().to_string()),
-    );
-    for sig in &rec.signatures {
-        // Format `<key>:<base64>` — colour the key.
-        match sig.split_once(':') {
-            Some((key, val)) => println!(
-                "    {}  {}{}{}",
-                muted("⎷"),
-                info(key),
-                muted(":"),
-                muted(&truncate(val, 32)),
-            ),
-            None => println!("    {}  {}", muted("⎷"), muted(sig)),
+        for sig in &self.rec.signatures {
+            match sig.split_once(':') {
+                Some((key, val)) => println!(
+                    "    {}  {}{}{}",
+                    muted("⎷"),
+                    info(key),
+                    muted(":"),
+                    muted(&truncate(val, 32)),
+                ),
+                None => println!("    {}  {}", muted("⎷"), muted(sig)),
+            }
         }
     }
 }
@@ -492,14 +499,97 @@ fn emit_registry_resolve(flake_ref: &str) -> Result<(), Box<dyn std::error::Erro
     // when sui-spec gains `registry::load_entries_from_disk`, this
     // mode lifts off it directly (third-site pattern: lock_file,
     // narinfo, soon registry).
-    let formats = registry::load_canonical()?;
-    let mut registries: registry::Registries = demonstration_entries(flake_ref);
-
-    emit_registry_table(flake_ref, &registries, &formats);
-    // Read clippy: registries is moved into the function — re-use
-    // is fine here since it's consumed at the call site.
-    let _ = &mut registries;
+    let _formats = registry::load_canonical()?;
+    let registries: registry::Registries = demonstration_entries(flake_ref);
+    let view = RegistryResolveView {
+        flake_ref: flake_ref.to_string(),
+        registries,
+    };
+    render_view(&view);
     Ok(())
+}
+
+struct RegistryResolveView {
+    flake_ref: String,
+    registries: registry::Registries,
+}
+
+impl OperatorView for RegistryResolveView {
+    fn subject(&self) -> &str { &self.flake_ref }
+    fn header_label(&self) -> &str { "registry resolve" }
+    fn render_body(&self) {
+        let mut sorted: Vec<&(RegistryScope, Vec<RegistryEntry>)> =
+            self.registries.iter().collect();
+        sorted.sort_by_key(|(scope, _)| scope_precedence(*scope));
+
+        let winning_scope = sorted.iter().find_map(|(scope, entries)| {
+            if entries.iter().any(|e| e.from == self.flake_ref) {
+                Some(*scope)
+            } else {
+                None
+            }
+        });
+
+        let scope_w = 14;
+        println!(
+            "  {}  {}",
+            body(&format!("{:<scope_w$}", "Scope", scope_w = scope_w)),
+            body("Entry"),
+        );
+        println!("  {}", muted(&"─".repeat(60)));
+        for (scope, entries) in &sorted {
+            let name = scope_name(*scope);
+            let match_entry = entries.iter().find(|e| e.from == self.flake_ref);
+            match match_entry {
+                Some(entry) => {
+                    let wins = Some(*scope) == winning_scope;
+                    let marker = if wins { glyph_ok() } else { "·".to_string() };
+                    println!(
+                        "  {} {}  {} {} {}{}",
+                        marker,
+                        success(&format!("{:<scope_w$}", name, scope_w = scope_w - 2)),
+                        info(&entry.from),
+                        muted("→"),
+                        ident(&entry.to),
+                        if entry.exact { format!("  {}", muted("[exact]")) } else { String::new() },
+                    );
+                }
+                None => {
+                    println!(
+                        "  {} {}  {}",
+                        muted("·"),
+                        muted(&format!("{:<scope_w$}", name, scope_w = scope_w - 2)),
+                        muted("(no entry)"),
+                    );
+                }
+            }
+        }
+    }
+    fn render_summary(&self) {
+        let mut sorted: Vec<&(RegistryScope, Vec<RegistryEntry>)> =
+            self.registries.iter().collect();
+        sorted.sort_by_key(|(scope, _)| scope_precedence(*scope));
+        let resolved = sorted.iter().find_map(|(scope, entries)| {
+            entries.iter()
+                .find(|e| e.from == self.flake_ref)
+                .map(|e| (*scope, e))
+        });
+        match resolved {
+            Some((scope, entry)) => println!(
+                "  {} resolves to {} via {}",
+                glyph_arrow(),
+                success(&entry.to),
+                ident(scope_name(scope)),
+            ),
+            None => println!(
+                "  {} {} {} {}",
+                error("✘"),
+                muted("no scope maps"),
+                ident(&self.flake_ref),
+                muted("— would error: registry-unresolved"),
+            ),
+        }
+    }
 }
 
 /// Built-in demo entries so the precedence walk is visible to the
@@ -560,6 +650,7 @@ fn demonstration_entries(flake_ref: &str) -> registry::Registries {
     ]
 }
 
+#[allow(dead_code)]
 fn emit_registry_table(
     flake_ref: &str,
     registries: &registry::Registries,
