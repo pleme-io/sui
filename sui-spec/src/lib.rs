@@ -75,9 +75,12 @@ pub mod hash;
 pub mod loader;
 pub mod module_system;
 pub mod nar;
+pub mod narinfo;
 pub mod parity;
 pub mod probe;
 pub mod rebuild;
+pub mod sandbox;
+pub mod store_layout;
 pub mod substituter;
 pub mod sweep;
 
