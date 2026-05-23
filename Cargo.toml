@@ -200,6 +200,7 @@ base64.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 rand = "0.8"
+url = "2"
 
 [dev-dependencies]
 async-trait.workspace = true

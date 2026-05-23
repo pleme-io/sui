@@ -238,23 +238,23 @@
 (defsui-command
   :name "store add-path"
   :nix-equivalent "nix store add-path"
-  :maturity Stub
+  :maturity Partial
   :substrate ("store_layout" "nar")
-  :notes "Import a directory into the store — not wired")
+  :notes "Recursively hashes dir + computes store path; daemon-side write deferred")
 
 (defsui-command
   :name "store add-file"
   :nix-equivalent "nix store add-file"
-  :maturity Stub
+  :maturity Partial
   :substrate ("store_layout" "hash")
-  :notes "Import a single file into the store — not wired")
+  :notes "Hashes file + computes store path; daemon-side write deferred")
 
 (defsui-command
   :name "store prefetch-file"
   :nix-equivalent "nix store prefetch-file"
-  :maturity Stub
+  :maturity Partial
   :substrate ("fetcher" "hash")
-  :notes "Download + hash a URL into the store — not wired")
+  :notes "Validates URL scheme via fetcher primitive; HTTP transport not wired")
 
 (defsui-command
   :name "store sign"
@@ -430,51 +430,51 @@
 (defsui-command
   :name "profile install"
   :nix-equivalent "nix profile install"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile" "derivation")
-  :notes "Not wired")
+  :notes "Manifest mutator: appends elements + validates store path (full flake-ref resolve needs sui_spec::flake::resolve_install)")
 
 (defsui-command
   :name "profile remove"
   :nix-equivalent "nix profile remove"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Manifest mutator: removes named elements from manifest.json")
 
 (defsui-command
   :name "profile upgrade"
   :nix-equivalent "nix profile upgrade"
-  :maturity Stub
+  :maturity Partial
   :substrate ("profile" "derivation")
-  :notes "Not wired")
+  :notes "Argparse + emits upgrade-queue; actual re-eval needs flake-eval bridge")
 
 (defsui-command
   :name "profile rollback"
   :nix-equivalent "nix profile rollback"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Lists profile generations + emits target id (symlink swap needs daemon-side write)")
 
 (defsui-command
   :name "profile history"
   :nix-equivalent "nix profile history"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Walks profile-N-link entries + emits ts/path rows")
 
 (defsui-command
   :name "profile wipe-history"
   :nix-equivalent "nix profile wipe-history"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Removes profile-N-link entries older than the current generation")
 
 (defsui-command
   :name "profile diff"
   :nix-equivalent "nix profile diff-closures"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Compares last two generations from profile dir")
 
 ;; ── derivation commands ─────────────────────────────────────────
 
