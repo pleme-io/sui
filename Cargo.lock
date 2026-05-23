@@ -6112,6 +6112,7 @@ dependencies = [
  "base64",
  "libc",
  "proptest",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

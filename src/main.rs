@@ -241,6 +241,20 @@ enum StoreCommands {
     #[command(name = "prefetch-file")] PrefetchFile { url: String, #[arg(long)] name: Option<String>, #[arg(long)] hash: Option<String>, #[arg(long)] hash_type: Option<String>, #[arg(long)] unpack: bool },
     Sign { paths: Vec<String>, #[arg(short = 'k', long)] key_file: String },
     Repair { paths: Vec<String> },
+    /// Materialize a typed store-slice at a destination dir
+    /// using sui's NAR encoder + decoder; verify byte-perfect
+    /// equality against the source via NAR sha256.
+    Materialize {
+        /// Slice name from the canonical store-ops catalog
+        /// (`tiny-sources` / `tiny-patches` / `tiny-drvs`).
+        slice: String,
+        /// Destination directory.  Defaults to ~/.cache/sui/materialize/<slice>.
+        #[arg(long)]
+        dest: Option<std::path::PathBuf>,
+        /// Emit JSON instead of the Nord table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1119,6 +1133,115 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store materialize` — typed slice round-trip verifier ───
+
+fn store_materialize(
+    slice_name: &str,
+    dest: Option<&std::path::Path>,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_ops::{self, MaterializationOutcome};
+    use sui_spec::style::{
+        body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn,
+    };
+
+    let slices = store_ops::load_canonical_slices().map_err(|e|
+        CliError::NotImplemented(format!("materialize: load slices: {e:?}"))
+    )?;
+    let slice = slices.iter().find(|s| s.name == slice_name)
+        .ok_or_else(|| CliError::NotImplemented(format!(
+            "materialize: unknown slice `{slice_name}`; available: {}",
+            slices.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+        )))?;
+
+    let dest_root = dest.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        std::path::PathBuf::from(home).join(format!(".cache/sui/materialize/{slice_name}"))
+    });
+    std::fs::create_dir_all(&dest_root)
+        .map_err(|e| CliError::NotImplemented(format!("materialize: mkdir {}: {e}", dest_root.display())))?;
+
+    let plans = store_ops::build_materialization_plan(slice, &dest_root)
+        .map_err(|e| CliError::NotImplemented(format!("materialize: plan: {e:?}")))?;
+
+    let mut outcomes: Vec<MaterializationOutcome> = Vec::with_capacity(plans.len());
+    let mut errors: Vec<String> = Vec::new();
+    for plan in &plans {
+        match store_ops::run_materialization(plan) {
+            Ok(o)  => outcomes.push(o),
+            Err(e) => errors.push(format!("{}: {e:?}", plan.source.display())),
+        }
+    }
+
+    let total = plans.len();
+    let perfect = outcomes.iter().filter(|o| o.byte_equivalent).count();
+    let diverged = outcomes.len() - perfect;
+
+    if json {
+        let probes: Vec<serde_json::Value> = outcomes.iter().map(|o| serde_json::json!({
+            "source": o.source.display().to_string(),
+            "dest":   o.dest.display().to_string(),
+            "source_nar_sha256": o.source_nar_sha256,
+            "dest_nar_sha256":   o.dest_nar_sha256,
+            "byte_equivalent":   o.byte_equivalent,
+            "source_size":       o.source_size,
+            "file_count":        o.file_count,
+        })).collect();
+        let summary = serde_json::json!({
+            "slice":     slice_name,
+            "dest_root": dest_root.display().to_string(),
+            "total":     total,
+            "perfect":   perfect,
+            "diverged":  diverged,
+            "errors":    errors,
+            "probes":    probes,
+        });
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("{}  {}  {}  {}  {}",
+            glyph_snowflake(),
+            header("sui store materialize"),
+            muted(&format!("slice={slice_name}")),
+            muted(&format!("max-entries={}", slice.max_entries)),
+            muted(&format!("dest={}", dest_root.display())),
+        );
+        println!();
+        for o in &outcomes {
+            let glyph = if o.byte_equivalent { success("✓") } else { error("✘") };
+            let basename = o.source.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            println!("  {} {}", glyph, ident(basename));
+            println!("      {} {} bytes / {} files",
+                muted("size:"),
+                info(&o.source_size.to_string()),
+                info(&o.file_count.to_string()),
+            );
+            println!("      {} {}", muted("src nar sha256:"), body(&o.source_nar_sha256));
+            println!("      {} {}", muted("dst nar sha256:"), body(&o.dest_nar_sha256));
+        }
+        for err in &errors {
+            println!("  {} {}", warn("?"), muted(err));
+        }
+        println!();
+        println!("  {} {}/{}/{} (perfect/diverged/errored)",
+            body("∑"),
+            success(&perfect.to_string()),
+            if diverged > 0 { error(&diverged.to_string()) } else { muted("0") },
+            if errors.is_empty() { muted("0") } else { warn(&errors.len().to_string()) },
+        );
+        if perfect == total && errors.is_empty() {
+            println!("  {} byte-perfect rematerialization across {} path(s)",
+                glyph_arrow(), success(&total.to_string()));
+        }
+    }
+
+    if diverged > 0 || !errors.is_empty() {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -2208,6 +2331,9 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::Repair { paths: rp } => {
                     store_repair(&rp)?;
+                }
+                StoreCommands::Materialize { slice, dest, json } => {
+                    store_materialize(&slice, dest.as_deref(), json)?;
                 }
             }
         }

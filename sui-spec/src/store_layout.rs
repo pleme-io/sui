@@ -150,6 +150,31 @@ pub fn validate_path(layout: &StoreLayout, path: &str) -> Result<(), SpecError> 
     }
 }
 
+/// Validate a path against every canonical store layout, returning
+/// the first match.  The substrate-level abstraction over the
+/// `load_canonical().iter().find_map(parse_path)` dance that 10+
+/// commands in the sui binary all wrote inline.
+///
+/// # Errors
+///
+/// - Propagates `load_canonical` errors.
+/// - `store-path-no-layout-matches` when no layout accepts the path.
+pub fn validate_against_canonical(path: &str) -> Result<ParsedStorePath, SpecError> {
+    let layouts = load_canonical()?;
+    for layout in &layouts {
+        if let Ok(parsed) = parse_path(layout, path) {
+            return Ok(parsed);
+        }
+    }
+    Err(SpecError::Interp {
+        phase: "store-path-no-layout-matches".into(),
+        message: format!(
+            "`{path}` doesn't parse under any canonical store layout (`{}`)",
+            layouts.iter().map(|l| l.name.as_str()).collect::<Vec<_>>().join("` / `"),
+        ),
+    })
+}
+
 /// Parsed store path components.  cppnix store paths decompose
 /// into `<hash>-<name>` (HashDashName) or `<algo>:<hash>-<name>`
 /// (AlgoColonHashDashName), optionally followed by `/subpath`.

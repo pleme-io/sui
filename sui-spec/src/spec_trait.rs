@@ -270,6 +270,13 @@ impl HasName for crate::cli_coverage::SuiCommand {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::store_ops::StoreSlice {
+    const CANONICAL_LISP: &'static str = crate::store_ops::CANONICAL_STORE_OPS_LISP;
+}
+impl HasName for crate::store_ops::StoreSlice {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

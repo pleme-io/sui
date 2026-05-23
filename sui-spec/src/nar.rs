@@ -222,6 +222,233 @@ pub fn hash_path_nar(root: &std::path::Path) -> Result<[u8; 32], std::io::Error>
     Ok(digest.into())
 }
 
+// ── NAR decoder ────────────────────────────────────────────────────
+//
+// Symmetric peer of `encode`.  Reads canonical NAR bytes and
+// materializes the filesystem tree under `dest`.  Combined with
+// `encode`, gives the operator full round-trip control:
+// dump-path → materialize at a new location → hash-equality.
+
+/// Typed decoder error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NarDecodeError {
+    BadMagic { found: String },
+    BadFraming { at: usize, message: String },
+    UnknownEntryType { name: String },
+    TooShort { at: usize },
+    Io(String),
+}
+
+impl std::fmt::Display for NarDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadMagic { found }      => write!(f, "bad NAR magic: {found:?}"),
+            Self::BadFraming { at, message } => write!(f, "bad framing at {at}: {message}"),
+            Self::UnknownEntryType { name } => write!(f, "unknown entry type: {name:?}"),
+            Self::TooShort { at }         => write!(f, "input too short at {at}"),
+            Self::Io(m)                   => write!(f, "io: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for NarDecodeError {}
+
+/// Decode canonical NAR bytes and materialize the tree to `dest`.
+/// Mirrors `nix-store --restore <dest> < <nar-bytes>`.
+///
+/// # Errors
+///
+/// Returns a typed `NarDecodeError` for any malformed input or
+/// filesystem operation failure.
+pub fn decode(input: &[u8], dest: &std::path::Path) -> Result<(), NarDecodeError> {
+    let mut cur = Cursor::new(input);
+    let magic = cur.read_framed_string()?;
+    if magic != b"nix-archive-1" {
+        return Err(NarDecodeError::BadMagic {
+            found: String::from_utf8_lossy(&magic).to_string(),
+        });
+    }
+    read_node(&mut cur, dest)?;
+    Ok(())
+}
+
+/// Streaming variant — read from any `Read` source.  Buffers the
+/// whole stream first so we can validate framing; the canonical
+/// NAR is fully buffered in cppnix too, so this is symmetric.
+///
+/// # Errors
+///
+/// Propagates IO errors + decode errors.
+pub fn decode_from<R: std::io::Read>(
+    mut input: R,
+    dest: &std::path::Path,
+) -> Result<(), NarDecodeError> {
+    let mut buf = Vec::new();
+    input.read_to_end(&mut buf).map_err(|e| NarDecodeError::Io(e.to_string()))?;
+    decode(&buf, dest)
+}
+
+struct Cursor<'a> {
+    data: &'a [u8],
+    pos:  usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(data: &'a [u8]) -> Self { Self { data, pos: 0 } }
+
+    fn read_u64_le(&mut self) -> Result<u64, NarDecodeError> {
+        if self.pos + 8 > self.data.len() {
+            return Err(NarDecodeError::TooShort { at: self.pos });
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&self.data[self.pos..self.pos + 8]);
+        self.pos += 8;
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    fn read_framed_string(&mut self) -> Result<Vec<u8>, NarDecodeError> {
+        let len = self.read_u64_le()? as usize;
+        if self.pos + len > self.data.len() {
+            return Err(NarDecodeError::TooShort { at: self.pos });
+        }
+        let bytes = self.data[self.pos..self.pos + len].to_vec();
+        self.pos += len;
+        // Skip padding to next 8-byte boundary.
+        let pad = (8 - (len % 8)) % 8;
+        if self.pos + pad > self.data.len() {
+            return Err(NarDecodeError::TooShort { at: self.pos });
+        }
+        self.pos += pad;
+        Ok(bytes)
+    }
+
+    fn read_framed_str(&mut self) -> Result<String, NarDecodeError> {
+        let bytes = self.read_framed_string()?;
+        String::from_utf8(bytes).map_err(|e| NarDecodeError::BadFraming {
+            at: self.pos,
+            message: format!("invalid utf-8: {e}"),
+        })
+    }
+
+    fn expect_string(&mut self, expected: &[u8]) -> Result<(), NarDecodeError> {
+        let got = self.read_framed_string()?;
+        if got != expected {
+            return Err(NarDecodeError::BadFraming {
+                at: self.pos,
+                message: format!(
+                    "expected {:?}, got {:?}",
+                    String::from_utf8_lossy(expected),
+                    String::from_utf8_lossy(&got),
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn read_node(cur: &mut Cursor, dest: &std::path::Path) -> Result<(), NarDecodeError> {
+    cur.expect_string(b"(")?;
+    cur.expect_string(b"type")?;
+    let entry_type = cur.read_framed_str()?;
+    match entry_type.as_str() {
+        "regular"   => read_regular(cur, dest)?,
+        "directory" => read_directory(cur, dest)?,
+        "symlink"   => read_symlink(cur, dest)?,
+        other       => return Err(NarDecodeError::UnknownEntryType {
+            name: other.to_string(),
+        }),
+    }
+    cur.expect_string(b")")?;
+    Ok(())
+}
+
+fn read_regular(cur: &mut Cursor, dest: &std::path::Path) -> Result<(), NarDecodeError> {
+    let mut executable = false;
+    // Optional `executable ""` block before `contents`.
+    let tag = cur.read_framed_str()?;
+    let bytes = if tag == "executable" {
+        executable = true;
+        let _ = cur.read_framed_string()?; // empty value
+        cur.expect_string(b"contents")?;
+        cur.read_framed_string()?
+    } else if tag == "contents" {
+        cur.read_framed_string()?
+    } else {
+        return Err(NarDecodeError::BadFraming {
+            at: cur.pos,
+            message: format!("regular: expected `executable` or `contents`, got {tag:?}"),
+        });
+    };
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| NarDecodeError::Io(e.to_string()))?;
+        }
+    }
+    std::fs::write(dest, &bytes).map_err(|e| NarDecodeError::Io(e.to_string()))?;
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(dest)
+            .map_err(|e| NarDecodeError::Io(e.to_string()))?.permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(dest, perms)
+            .map_err(|e| NarDecodeError::Io(e.to_string()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(())
+}
+
+fn read_directory(cur: &mut Cursor, dest: &std::path::Path) -> Result<(), NarDecodeError> {
+    std::fs::create_dir_all(dest).map_err(|e| NarDecodeError::Io(e.to_string()))?;
+    loop {
+        // Peek at the next framed string — either "entry" (more
+        // children) or ")" (end-of-directory closer).
+        let save_pos = cur.pos;
+        let tag = cur.read_framed_string()?;
+        match tag.as_slice() {
+            b"entry" => {
+                cur.expect_string(b"(")?;
+                cur.expect_string(b"name")?;
+                let name = cur.read_framed_str()?;
+                cur.expect_string(b"node")?;
+                read_node(cur, &dest.join(&name))?;
+                cur.expect_string(b")")?;
+            }
+            b")" => {
+                // Roll back — read_node's closing `)` matches.
+                cur.pos = save_pos;
+                return Ok(());
+            }
+            other => return Err(NarDecodeError::BadFraming {
+                at: cur.pos,
+                message: format!("directory: unexpected tag {:?}", String::from_utf8_lossy(other)),
+            }),
+        }
+    }
+}
+
+fn read_symlink(cur: &mut Cursor, dest: &std::path::Path) -> Result<(), NarDecodeError> {
+    cur.expect_string(b"target")?;
+    let target = cur.read_framed_str()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs as unix_fs;
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| NarDecodeError::Io(e.to_string()))?;
+            }
+        }
+        unix_fs::symlink(target, dest)
+            .map_err(|e| NarDecodeError::Io(e.to_string()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (target, dest);
+    Ok(())
+}
+
 /// Compute the canonical store path for a NAR digest + name.
 /// Returns `"<store-root>/<32-char-nix-base32-hash-prefix>-<name>"`.
 /// Mirrors cppnix's `makeFixedOutputPath` shape.
@@ -232,6 +459,13 @@ pub fn store_path_for(store_root: &str, digest: &[u8; 32], name: &str) -> String
     let bare = hash_b32.strip_prefix("sha256:").unwrap_or(&hash_b32);
     let store_hash: String = bare.chars().take(32).collect();
     format!("{store_root}/{store_hash}-{name}")
+}
+
+/// Test/internal helper exported for store_ops's typed re-encoder.
+/// External callers should use [`encode`].
+#[doc(hidden)]
+pub fn write_string_for_test(buf: &mut Vec<u8>, s: &[u8]) {
+    write_framed(buf, s);
 }
 
 /// Write a length-prefixed string in canonical NAR padded form.
