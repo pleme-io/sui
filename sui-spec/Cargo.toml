@@ -30,5 +30,9 @@ libc = "0.2"
 name = "sui-sweep"
 path = "src/bin/sui-sweep.rs"
 
+[[bin]]
+name = "sui-spec-inventory"
+path = "src/bin/sui-spec-inventory.rs"
+
 [lints.clippy]
 pedantic = "warn"
