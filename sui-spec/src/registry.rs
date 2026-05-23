@@ -50,6 +50,57 @@ pub fn load_canonical() -> Result<Vec<RegistryFormat>, SpecError> {
     crate::loader::load_all::<RegistryFormat>(CANONICAL_REGISTRY_LISP)
 }
 
+// ── M3.0 registry resolver ─────────────────────────────────────────
+
+/// One registry entry — a `from` → `to` mapping with optional
+/// `exact` flag (cppnix lockfile semantics).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryEntry {
+    pub from: String,
+    pub to: String,
+    pub exact: bool,
+}
+
+/// Resolved registry entries grouped by scope, in precedence
+/// order (lowest first wins).
+pub type Registries = Vec<(RegistryScope, Vec<RegistryEntry>)>;
+
+/// Resolve a flake reference through the precedence chain.
+/// Returns the FIRST match (lowest-precedence scope wins per
+/// cppnix convention).
+///
+/// # Errors
+///
+/// `registry-unresolved` if no scope has a matching entry.
+pub fn resolve(
+    registries: &Registries,
+    flake_ref: &str,
+) -> Result<RegistryEntry, SpecError> {
+    let mut sorted: Vec<&(RegistryScope, Vec<RegistryEntry>)> =
+        registries.iter().collect();
+    sorted.sort_by_key(|(scope, _)| scope_precedence(*scope));
+    for (_, entries) in sorted {
+        for entry in entries {
+            if entry.from == flake_ref {
+                return Ok(entry.clone());
+            }
+        }
+    }
+    Err(SpecError::Interp {
+        phase: "registry-unresolved".into(),
+        message: format!("no registry entry for `{flake_ref}` across any scope"),
+    })
+}
+
+fn scope_precedence(scope: RegistryScope) -> u32 {
+    match scope {
+        RegistryScope::FlakeLocal => 0,
+        RegistryScope::User       => 1,
+        RegistryScope::System     => 2,
+        RegistryScope::Global     => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +139,44 @@ mod tests {
         assert!(prec(RegistryScope::FlakeLocal) < prec(RegistryScope::User));
         assert!(prec(RegistryScope::User) < prec(RegistryScope::System));
         assert!(prec(RegistryScope::System) < prec(RegistryScope::Global));
+    }
+
+    // ── M3.0 resolver tests ────────────────────────────────────
+
+    fn entry(from: &str, to: &str) -> RegistryEntry {
+        RegistryEntry { from: from.into(), to: to.into(), exact: false }
+    }
+
+    #[test]
+    fn resolve_finds_lowest_precedence_match() {
+        let registries: Registries = vec![
+            (RegistryScope::Global, vec![entry("nixpkgs", "github:NixOS/nixpkgs/global")]),
+            (RegistryScope::User,   vec![entry("nixpkgs", "github:NixOS/nixpkgs/user")]),
+            (RegistryScope::FlakeLocal, vec![entry("nixpkgs", "github:NixOS/nixpkgs/local")]),
+        ];
+        let resolved = resolve(&registries, "nixpkgs").unwrap();
+        assert_eq!(resolved.to, "github:NixOS/nixpkgs/local");
+    }
+
+    #[test]
+    fn resolve_falls_through_to_system_when_local_absent() {
+        let registries: Registries = vec![
+            (RegistryScope::User, vec![entry("home-manager", "github:nix-community/home-manager")]),
+            (RegistryScope::System, vec![entry("home-manager", "github:nix-community/system-hm")]),
+        ];
+        let resolved = resolve(&registries, "home-manager").unwrap();
+        assert_eq!(resolved.to, "github:nix-community/home-manager");
+    }
+
+    #[test]
+    fn resolve_errors_on_unknown_input() {
+        let registries: Registries = vec![
+            (RegistryScope::Global, vec![entry("known", "github:x/y")]),
+        ];
+        let err = resolve(&registries, "unknown").unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "registry-unresolved"),
+            _ => panic!("expected registry-unresolved"),
+        }
     }
 }
