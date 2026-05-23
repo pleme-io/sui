@@ -371,7 +371,19 @@ fn find_single_subdir_or_self(dir: &Path) -> PathBuf {
 ///
 /// Body limit raised to 512 MiB to accommodate large inputs like nixpkgs tarballs.
 fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
-    let mut response = ureq::get(url)
+    let mut req = ureq::get(url);
+
+    // Attach a host-appropriate auth token when one is available.
+    // CppNix consults `~/.config/nix/nix.conf` `access-tokens =
+    // github.com=<TOKEN>` etc.; we keep parity by reading the same
+    // sources plus the common `GITHUB_TOKEN` env (gh CLI, nix-darwin
+    // shell init).  Without this the operator's private flake
+    // inputs (e.g. `arnes`) 404 unauthenticated.
+    if let Some(token) = github_token_for_url(url) {
+        req = req.header("Authorization", &format!("token {token}"));
+    }
+
+    let mut response = req
         .call()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))?;
 
@@ -388,6 +400,93 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
         .limit(512 * 1024 * 1024)
         .read_to_vec()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))
+}
+
+/// Resolve a host-appropriate auth token for outgoing requests.
+///
+/// Sources, in order:
+///   1. `GITHUB_TOKEN` env var (covers gh CLI exports + CI tokens).
+///   2. `NIX_CONFIG` env var, parsed for `access-tokens` line.
+///   3. `~/.config/nix/nix.conf` parsed for `access-tokens` line.
+///   4. `~/.config/gh/hosts.yml` (`oauth_token:` field for github.com).
+///
+/// Returns `Some(token)` only for github.com URLs in this iteration —
+/// gitlab / sr.ht / private git hosts can be added when needed.
+fn github_token_for_url(url: &str) -> Option<String> {
+    if !url.starts_with("https://github.com/")
+        && !url.starts_with("https://api.github.com/")
+    {
+        return None;
+    }
+    if let Ok(t) = std::env::var("GITHUB_TOKEN") {
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    if let Ok(cfg) = std::env::var("NIX_CONFIG") {
+        if let Some(t) = parse_access_tokens(&cfg, "github.com") {
+            return Some(t);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let nix_conf = home.join(".config/nix/nix.conf");
+        if let Ok(cfg) = std::fs::read_to_string(&nix_conf) {
+            if let Some(t) = parse_access_tokens(&cfg, "github.com") {
+                return Some(t);
+            }
+        }
+        let gh_hosts = home.join(".config/gh/hosts.yml");
+        if let Ok(yml) = std::fs::read_to_string(&gh_hosts) {
+            if let Some(t) = parse_gh_hosts_token(&yml, "github.com") {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a `~/.config/nix/nix.conf`-style `access-tokens = host=TOKEN ...`
+/// line and return the token for `host` if present.
+fn parse_access_tokens(cfg: &str, host: &str) -> Option<String> {
+    for line in cfg.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("access-tokens") {
+            let rest = rest.trim_start().trim_start_matches('=').trim();
+            for pair in rest.split_whitespace() {
+                if let Some((h, t)) = pair.split_once('=') {
+                    if h == host {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse `~/.config/gh/hosts.yml` and return the `oauth_token:` value
+/// nested under the given host key.  We do this without a full YAML
+/// parser to keep sui-eval's dep footprint small — the file is a
+/// stable 5-line shape gh maintains.
+fn parse_gh_hosts_token(yml: &str, host: &str) -> Option<String> {
+    let mut in_host = false;
+    for line in yml.lines() {
+        let raw = line;
+        let trimmed = raw.trim();
+        if trimmed.starts_with(host) && trimmed.ends_with(':') {
+            in_host = true;
+            continue;
+        }
+        if !raw.starts_with(' ') && !raw.starts_with('\t') && !trimmed.is_empty() {
+            in_host = false;
+        }
+        if in_host {
+            if let Some(rest) = trimmed.strip_prefix("oauth_token:") {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Extract a `.tar.gz` archive into a destination directory.
