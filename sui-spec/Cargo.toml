@@ -16,7 +16,10 @@ thiserror.workspace = true
 sha2.workspace = true
 sui-compat.workspace = true
 
-# Needed only by the `sui-sweep` binary for SIGKILL on timeout.
+[dev-dependencies]
+tempfile.workspace = true
+
+# Needed by the dual-exec runner for SIGKILL on timeout.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

@@ -36,6 +36,27 @@
 //!   algorithms.  Was: 50 lines of imperative Rust in each of two
 //!   engines (4 bugs found this session).  Now: one `.lisp` spec
 //!   and one interpreter.
+//! - [`flake`] — top-level flake result shape policy.  Prevents the
+//!   "leak `description` / `nixConfig`" class of bug.
+//! - [`probe`] — single-expression cross-engine parity probes.
+//!   Includes the [`probe::Probe`] type, the original
+//!   `parity_probes.lisp` corpus, and the `builtin_smoke_probes.lisp`
+//!   corpus (one probe per sui builtin module).
+//! - [`rebuild`] — host-aware multi-stage rebuild parity probes.
+//!   The typed substrate that lets `sui-sweep` (and future operator
+//!   surfaces) shadow a real `fleet rebuild` end-to-end without ever
+//!   mutating the system.
+//! - [`parity`] — the [`parity::ParityCheck`] trait every typed
+//!   domain implements, plus [`parity::ShadowReport`] / [`parity::Verdict`]
+//!   / [`parity::ProbeContext`].  This is the second-site abstraction:
+//!   solve once, both [`probe::Probe`] and [`rebuild::RebuildProbe`]
+//!   ride on it, and the future `sui rebuild-shadow` subcommand
+//!   reuses the same trait without re-authoring the sweep loop.
+//! - [`exec`] — typed dual-subprocess runner.  NO SHELL.  Mandatory
+//!   timeout.  Captured output as a typed struct.
+//! - [`sweep`] — library entry point for the shadow-sweep loop.
+//!   Both the `sui-sweep` binary and the `sui rebuild-shadow`
+//!   subcommand (future) wrap [`sweep::run`].
 //!
 //! More domains will land here as we identify them.  Rule of thumb:
 //! if the body of a function is "here is what CppNix does", that
@@ -43,9 +64,15 @@
 //! the engine.
 
 pub mod derivation;
+pub mod error;
+pub mod exec;
 pub mod flake;
 pub mod loader;
-pub mod error;
+pub mod parity;
 pub mod probe;
+pub mod rebuild;
+pub mod sweep;
 
 pub use error::SpecError;
+pub use parity::{ParityCheck, ProbeContext, ProbeKind, ShadowReport, Verdict};
+pub use sweep::{Corpus, SweepConfig};

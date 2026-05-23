@@ -6069,6 +6069,7 @@ dependencies = [
  "sui-compat",
  "tatara-lisp 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
  "tatara-lisp-derive 0.2.0 (git+ssh://git@github.com/pleme-io/tatara.git)",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
