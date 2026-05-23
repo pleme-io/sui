@@ -1724,9 +1724,11 @@ fn derivation_add(path: &str) -> Result<(), CliError> {
         };
 
         // ATerm output — what cppnix would write to the store.
+        // No trailing newline — byte-identical with on-disk .drv.
         let aterm = drv.serialize();
         println!("{drv_path}");
-        eprintln!("{aterm}");
+        eprint!("{aterm}");
+        eprintln!();
         eprintln!("# (write the ATerm above to {drv_path} via daemon — sudo or worker socket)");
     }
     Ok(())
