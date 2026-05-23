@@ -97,6 +97,51 @@ pub fn load_named(name: &str) -> Result<SandboxSpec, SpecError> {
         .ok_or_else(|| SpecError::Load(format!("no (defsandbox-spec) with :name {name:?}")))
 }
 
+// ── M3.0 sandbox policy checker ────────────────────────────────────
+
+/// Check whether a path is allowed under a sandbox spec.  Used by
+/// the builder to validate any bind-mount or file-access request.
+#[must_use]
+pub fn path_allowed(spec: &SandboxSpec, path: &str) -> bool {
+    spec.allowed_paths.iter().any(|allowed| {
+        path == allowed || path.starts_with(&format!("{allowed}/"))
+    })
+}
+
+/// Check whether a build derivation's `__noSandbox` /
+/// `__sandboxAllowNetwork` setting is compatible with the
+/// declared sandbox spec.
+///
+/// # Errors
+///
+/// `sandbox-policy-violation` if the derivation requests
+/// capabilities the spec doesn't grant.
+pub fn check_drv_compat(
+    spec: &SandboxSpec,
+    requires_network: bool,
+    requires_no_sandbox: bool,
+) -> Result<(), SpecError> {
+    if requires_no_sandbox && spec.isolation_tier != IsolationTier::Off {
+        return Err(SpecError::Interp {
+            phase: "sandbox-policy-violation".into(),
+            message: format!(
+                "derivation requires no-sandbox but spec `{}` is tier {:?}",
+                spec.name, spec.isolation_tier,
+            ),
+        });
+    }
+    if requires_network && !spec.network_allowed {
+        return Err(SpecError::Interp {
+            phase: "sandbox-policy-violation".into(),
+            message: format!(
+                "derivation requires network but spec `{}` blocks it",
+                spec.name,
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +173,42 @@ mod tests {
     fn darwin_sandbox_targets_darwin() {
         let s = load_named("cppnix-darwin-strict").unwrap();
         assert_eq!(s.platform, SandboxPlatform::Darwin);
+    }
+
+    // ── M3.0 policy tests ──────────────────────────────────────
+
+    #[test]
+    fn path_allowed_matches_exact_and_descendants() {
+        let s = load_named("cppnix-linux-strict").unwrap();
+        assert!(path_allowed(&s, "/nix/store"));
+        assert!(path_allowed(&s, "/nix/store/abc-hello"));
+        assert!(!path_allowed(&s, "/etc/hosts"));
+        assert!(!path_allowed(&s, "/home/user"));
+    }
+
+    #[test]
+    fn strict_sandbox_blocks_network_drv() {
+        let s = load_named("cppnix-linux-strict").unwrap();
+        let err = check_drv_compat(&s, true, false).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "sandbox-policy-violation"),
+            _ => panic!("expected policy-violation"),
+        }
+    }
+
+    #[test]
+    fn fod_sandbox_allows_network_drv() {
+        let s = load_named("cppnix-linux-fod").unwrap();
+        check_drv_compat(&s, true, false).unwrap();
+    }
+
+    #[test]
+    fn no_sandbox_drv_blocked_by_strict_spec() {
+        let s = load_named("cppnix-linux-strict").unwrap();
+        let err = check_drv_compat(&s, false, true).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "sandbox-policy-violation"),
+            _ => panic!("expected policy-violation"),
+        }
     }
 }

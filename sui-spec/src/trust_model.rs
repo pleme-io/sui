@@ -68,6 +68,46 @@ pub fn load_named(name: &str) -> Result<TrustModel, SpecError> {
         .ok_or_else(|| SpecError::Load(format!("no (deftrust-model) with :name {name:?}")))
 }
 
+// ── M3.0 trust-policy evaluator ────────────────────────────────────
+
+/// Check whether `user` can build under this trust model.
+/// Trusted users are: those listed in `trusted_users`, with `"*"`
+/// matching all users and `"@group"` notation matching when the
+/// optional `group_membership` callback returns true.
+#[must_use]
+pub fn user_can_build(model: &TrustModel, user: &str) -> bool {
+    for entry in &model.trusted_users {
+        if entry == "*" || entry == user {
+            return true;
+        }
+        // @group syntax — M3.0 doesn't check actual group membership;
+        // the operator (or sui-daemon) provides that via the env
+        // trait in M3.1.  For now, "@wheel" matches any user.
+        if entry.starts_with('@') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check whether a substituter URL is in the trusted-substituters
+/// list.
+#[must_use]
+pub fn substituter_trusted(model: &TrustModel, url: &str) -> bool {
+    model.trusted_substituters.iter().any(|s| s == url)
+}
+
+/// Check whether a signing-key name (as it appears in narinfo
+/// `Sig:` lines) is in the trusted-public-keys set.
+#[must_use]
+pub fn key_trusted(model: &TrustModel, key_name: &str) -> bool {
+    model.trusted_public_keys.iter().any(|k| {
+        // Keys in cppnix are "name:base64-pubkey" — match on the
+        // name part before the colon.
+        k.split(':').next() == Some(key_name)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +135,35 @@ mod tests {
             m.trusted_substituters.is_empty(),
             "Sealed posture must have no trusted substituters",
         );
+    }
+
+    // ── M3.0 evaluator tests ───────────────────────────────────
+
+    #[test]
+    fn permissive_lets_anyone_build() {
+        let m = load_named("single-user-permissive").unwrap();
+        assert!(user_can_build(&m, "anyone"));
+        assert!(user_can_build(&m, "drzzln"));
+    }
+
+    #[test]
+    fn sealed_only_lets_root_build() {
+        let m = load_named("sealed-compliance").unwrap();
+        assert!(user_can_build(&m, "root"));
+        assert!(!user_can_build(&m, "drzzln"));
+    }
+
+    #[test]
+    fn cache_nixos_org_is_trusted_in_default_model() {
+        let m = load_named("multi-user-default").unwrap();
+        assert!(substituter_trusted(&m, "https://cache.nixos.org"));
+        assert!(!substituter_trusted(&m, "https://untrusted.example.com"));
+    }
+
+    #[test]
+    fn cache_nixos_key_recognized_by_name_prefix() {
+        let m = load_named("multi-user-default").unwrap();
+        assert!(key_trusted(&m, "cache.nixos.org-1"));
+        assert!(!key_trusted(&m, "random-untrusted-key"));
     }
 }

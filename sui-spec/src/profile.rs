@@ -49,6 +49,26 @@ pub fn load_canonical() -> Result<Vec<ProfileFormat>, SpecError> {
     crate::loader::load_all::<ProfileFormat>(CANONICAL_PROFILE_LISP)
 }
 
+// ── M3.0 generation-link helpers ───────────────────────────────────
+
+/// Compute the generation-link path for a profile + generation
+/// number, substituting the format's `<profile>` and `<N>`
+/// placeholders.
+#[must_use]
+pub fn generation_link(format: &ProfileFormat, profile: &str, n: u32) -> String {
+    format
+        .generation_link_pattern
+        .replace("<profile>", profile)
+        .replace("<N>", &n.to_string())
+}
+
+/// Compute the next generation link given the current generation
+/// number.  Convenience wrapper around [`generation_link`].
+#[must_use]
+pub fn next_generation(format: &ProfileFormat, profile: &str, current: u32) -> String {
+    generation_link(format, profile, current + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +77,27 @@ mod tests {
     fn canonical_profile_parses() {
         let formats = load_canonical().unwrap();
         assert!(!formats.is_empty());
+    }
+
+    // ── M3.0 generation-link tests ─────────────────────────────
+
+    fn system_fmt() -> ProfileFormat {
+        load_canonical().unwrap().into_iter()
+            .find(|f| f.name == "cppnix-system-profile").unwrap()
+    }
+
+    #[test]
+    fn generation_link_substitutes_placeholders() {
+        let f = system_fmt();
+        let link = generation_link(&f, "system", 42);
+        assert_eq!(link, "system-42-link");
+    }
+
+    #[test]
+    fn next_generation_increments() {
+        let f = system_fmt();
+        let next = next_generation(&f, "system", 41);
+        assert_eq!(next, "system-42-link");
     }
 
     #[test]
