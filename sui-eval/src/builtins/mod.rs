@@ -40,6 +40,7 @@ mod helpers;
 mod import_cache;
 mod lists;
 mod misc;
+mod module_system_bridge;
 mod nav;
 mod paths;
 mod strings;
@@ -205,6 +206,7 @@ pub fn register(env: &mut Env) {
     let mut sui_ext_set = NixAttrs::new();
     sui_ext::register(&mut sui_ext_set);
     convergence::register(&mut sui_ext_set);
+    module_system_bridge::register(&mut sui_ext_set);
     builtins_set.insert("sui".to_string(), Value::Attrs(Rc::new(sui_ext_set)));
 
     // ── builtins.builtins (self-reference) ───────────────
