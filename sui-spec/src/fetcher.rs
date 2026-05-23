@@ -142,29 +142,187 @@ pub enum FetcherPhaseKind {
     EmitNarHash,
 }
 
-// ── Spec interpreter (M3 stub) ─────────────────────────────────────
+// ── Spec interpreter (M3.0 minimal — fetchurl path) ───────────────
 
-/// Inputs to a fetcher run.  M3 implementation fills the scratchpad
-/// as phases run.
+/// Inputs to a fetcher run.
 pub struct FetchArgs {
     pub url: String,
     pub declared_hash: Option<String>,
     pub name_hint: Option<String>,
 }
 
-/// Apply the fetcher algorithm.  M3 stub — returns typed
-/// `not-yet-implemented` so any consumer surfaces the gap.
+/// Result of a fetcher run — the store path the fetched content
+/// landed at, plus its content hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchOutcome {
+    pub store_path: String,
+    pub nar_hash: String,
+}
+
+/// Abstract IO environment for the fetcher.  Tests pass a mock
+/// implementation that returns canned HTTP responses + a virtual
+/// store; production uses a real HTTP client + filesystem.
+///
+/// Per the prime directive: trait-driven IO means the interpreter
+/// is pure-logic and trivially testable.  When sui-eval consumes
+/// this layer it ships a `FetcherEnvironment` impl that wraps
+/// `ureq` (HTTP) + `sui_store::LocalStore` (the store).
+pub trait FetcherEnvironment {
+    /// Fetch bytes from a URL.  Returns the raw response body on
+    /// success.
+    ///
+    /// # Errors
+    ///
+    /// Implementations return their own error which the fetcher
+    /// converts to `SpecError::Interp { phase: "fetch-bytes" }`.
+    fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String>;
+
+    /// Compute the SHA-256 of bytes, encoded as
+    /// `sha256:<lowercase-hex>` for compatibility with the declared
+    /// hash format.  Implementations may use sha2 or the hardware
+    /// path; the spec only requires byte-exact equivalence.
+    fn hash_bytes(&self, bytes: &[u8]) -> String;
+
+    /// Persist bytes to the store at the FOD-derived path for the
+    /// given name.  Returns the full `/nix/store/...` path.
+    ///
+    /// # Errors
+    ///
+    /// As above.
+    fn write_to_store(&self, name: &str, bytes: &[u8]) -> Result<String, String>;
+
+    /// Optional cache lookup — if the bytes are already in the
+    /// store under this hash, skip fetching.  Returns
+    /// `Ok(Some(store_path))` on hit, `Ok(None)` on miss.  Default
+    /// impl always misses, which is correct but suboptimal.
+    fn cache_lookup(&self, _name: &str, _declared_hash: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+/// Apply a fetcher spec.  M3.0 implementation: supports the
+/// fetchurl transport (Http + Flat hash mode).  Other transports
+/// return a typed `not-yet-implemented` error.
 ///
 /// # Errors
 ///
-/// Always returns `SpecError::Interp { phase: "fetcher" }` until M3.
-pub fn apply(_spec: &FetcherSpec, _args: FetchArgs) -> Result<String, SpecError> {
-    Err(SpecError::Interp {
-        phase: "fetcher".into(),
-        message: "fetcher spec interpreter not yet implemented — \
-                  M3 work lifts sui-eval/src/builtins/fetchers.rs \
-                  to consume this typed spec".into(),
-    })
+/// - `SpecError::Interp { phase: "url-validate" }` for malformed URLs.
+/// - `SpecError::Interp { phase: "fetch-bytes" }` if the environment
+///   couldn't fetch.
+/// - `SpecError::Interp { phase: "hash-mismatch" }` if the declared
+///   hash doesn't match the fetched content's hash.
+/// - `SpecError::Interp { phase: "write-to-store" }` on store
+///   failure.
+/// - `SpecError::Interp { phase: "fetcher-unimplemented" }` for
+///   non-fetchurl transports (M3.1+).
+pub fn apply<E: FetcherEnvironment>(
+    spec: &FetcherSpec,
+    args: &FetchArgs,
+    env: &E,
+) -> Result<FetchOutcome, SpecError> {
+    // M3.0 only handles Http + Flat (i.e., fetchurl).  Others
+    // surface as typed "not yet" errors.
+    if spec.transport != FetchTransport::Http
+        || spec.hash_mode != FetchHashMode::Flat
+    {
+        return Err(SpecError::Interp {
+            phase: "fetcher-unimplemented".into(),
+            message: format!(
+                "fetcher `{}` (transport {:?}, hash-mode {:?}) — \
+                 M3.0 supports only Http+Flat (fetchurl).  M3.1+ \
+                 implementations land per-transport.",
+                spec.name, spec.transport, spec.hash_mode,
+            ),
+        });
+    }
+
+    let name = args.name_hint.as_deref().unwrap_or("download");
+
+    // Drive the authored phase pipeline.
+    for phase in &spec.phases {
+        match phase.kind {
+            FetcherPhaseKind::ValidateUrl => validate_url(&args.url)?,
+            FetcherPhaseKind::ResolveRegistryRef => {
+                // fetchurl doesn't take a registry ref — no-op.
+            }
+            FetcherPhaseKind::CacheLookup => {
+                if let Some(declared) = args.declared_hash.as_deref() {
+                    let hit = env
+                        .cache_lookup(name, declared)
+                        .map_err(|e| SpecError::Interp {
+                            phase: "cache-lookup".into(),
+                            message: e,
+                        })?;
+                    if let Some(path) = hit {
+                        return Ok(FetchOutcome {
+                            store_path: path,
+                            nar_hash: declared.to_string(),
+                        });
+                    }
+                }
+            }
+            FetcherPhaseKind::FetchBytes => {
+                // Handled by the FetchBytes → CheckHash → WriteToStore
+                // chain below; we run them in one block because they
+                // share the in-memory body buffer.
+            }
+            FetcherPhaseKind::Unpack => {
+                // Flat-hash fetchers don't unpack; no-op.
+            }
+            FetcherPhaseKind::CheckHash | FetcherPhaseKind::WriteToStore
+            | FetcherPhaseKind::EmitNarHash => {
+                // See block below.
+            }
+        }
+    }
+
+    // Drive the core fetch → hash → store chain.
+    let bytes = env.fetch_bytes(&args.url).map_err(|e| SpecError::Interp {
+        phase: "fetch-bytes".into(),
+        message: format!("fetching `{}`: {e}", args.url),
+    })?;
+
+    let computed = env.hash_bytes(&bytes);
+    if let Some(declared) = args.declared_hash.as_deref() {
+        if declared != computed {
+            return Err(SpecError::Interp {
+                phase: "hash-mismatch".into(),
+                message: format!(
+                    "hash mismatch for `{}`: declared {declared}, got {computed}",
+                    args.url,
+                ),
+            });
+        }
+    }
+
+    let store_path = env
+        .write_to_store(name, &bytes)
+        .map_err(|e| SpecError::Interp {
+            phase: "write-to-store".into(),
+            message: format!("writing `{name}`: {e}"),
+        })?;
+
+    Ok(FetchOutcome { store_path, nar_hash: computed })
+}
+
+fn validate_url(url: &str) -> Result<(), SpecError> {
+    if url.is_empty() {
+        return Err(SpecError::Interp {
+            phase: "url-validate".into(),
+            message: "url is empty".into(),
+        });
+    }
+    let allowed = ["http://", "https://", "file://"];
+    if !allowed.iter().any(|p| url.starts_with(p)) {
+        return Err(SpecError::Interp {
+            phase: "url-validate".into(),
+            message: format!(
+                "url `{url}` uses an unsupported scheme \
+                 (allowed: http://, https://, file://)",
+            ),
+        });
+    }
+    Ok(())
 }
 
 // ── Canonical spec ─────────────────────────────────────────────────
@@ -252,24 +410,185 @@ mod tests {
         }
     }
 
+    // ── M3.0 fetcher interpreter tests ─────────────────────────
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// Mock environment for fetcher tests.  Backed by HashMaps —
+    /// pre-load with URL→bytes pairs, then assert on what the
+    /// fetcher recorded.
+    struct MockEnv {
+        responses: HashMap<String, Vec<u8>>,
+        store: RefCell<HashMap<String, Vec<u8>>>,
+    }
+
+    impl MockEnv {
+        fn new() -> Self {
+            Self {
+                responses: HashMap::new(),
+                store: RefCell::new(HashMap::new()),
+            }
+        }
+        fn with_response(mut self, url: &str, body: &[u8]) -> Self {
+            self.responses.insert(url.into(), body.to_vec());
+            self
+        }
+    }
+
+    impl FetcherEnvironment for MockEnv {
+        fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.responses
+                .get(url)
+                .cloned()
+                .ok_or_else(|| format!("no canned response for {url}"))
+        }
+        fn hash_bytes(&self, bytes: &[u8]) -> String {
+            // Deterministic stand-in — just length-prefixed hex of
+            // the first byte.  Real env uses sha2.  Good enough to
+            // prove the fetcher routes correctly.
+            let first = bytes.first().copied().unwrap_or(0);
+            format!("sha256:test-{}-{:02x}", bytes.len(), first)
+        }
+        fn write_to_store(&self, name: &str, bytes: &[u8]) -> Result<String, String> {
+            let path = format!("/nix/store/abc-{name}");
+            self.store.borrow_mut().insert(path.clone(), bytes.to_vec());
+            Ok(path)
+        }
+    }
+
     #[test]
-    fn apply_is_typed_not_yet() {
-        let f = load_named("fetchurl").unwrap();
-        let err = apply(
-            &f,
-            FetchArgs {
-                url: "https://example.com/x.tar.gz".into(),
-                declared_hash: None,
-                name_hint: None,
-            },
-        )
-        .expect_err("apply must return error until M3");
+    fn fetchurl_happy_path() {
+        let spec = load_named("fetchurl").unwrap();
+        let env = MockEnv::new()
+            .with_response("https://example.com/hello.tar", b"hello\n");
+        let args = FetchArgs {
+            url: "https://example.com/hello.tar".into(),
+            declared_hash: None,
+            name_hint: Some("hello.tar".into()),
+        };
+        let outcome = apply(&spec, &args, &env).unwrap();
+        assert_eq!(outcome.store_path, "/nix/store/abc-hello.tar");
+        assert!(outcome.nar_hash.starts_with("sha256:"));
+        // The store recorded our bytes.
+        assert_eq!(
+            env.store.borrow().get("/nix/store/abc-hello.tar"),
+            Some(&b"hello\n".to_vec()),
+        );
+    }
+
+    #[test]
+    fn fetchurl_rejects_malformed_url() {
+        let spec = load_named("fetchurl").unwrap();
+        let env = MockEnv::new();
+        let args = FetchArgs {
+            url: "ftp://example.com/x".into(),
+            declared_hash: None,
+            name_hint: None,
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "url-validate"),
+            _ => panic!("expected url-validate error"),
+        }
+    }
+
+    #[test]
+    fn fetchurl_rejects_empty_url() {
+        let spec = load_named("fetchurl").unwrap();
+        let env = MockEnv::new();
+        let args = FetchArgs {
+            url: String::new(),
+            declared_hash: None,
+            name_hint: None,
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => assert_eq!(phase, "url-validate"),
+            _ => panic!("expected url-validate"),
+        }
+    }
+
+    #[test]
+    fn fetchurl_verifies_declared_hash() {
+        let spec = load_named("fetchurl").unwrap();
+        let env = MockEnv::new()
+            .with_response("https://example.com/x", b"hello");
+        // The mock env's hash_bytes returns "sha256:test-5-68" for "hello".
+        // Test with a deliberately wrong declared hash.
+        let args = FetchArgs {
+            url: "https://example.com/x".into(),
+            declared_hash: Some("sha256:fake-hash".into()),
+            name_hint: Some("x".into()),
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
         match err {
             SpecError::Interp { phase, message } => {
-                assert_eq!(phase, "fetcher");
-                assert!(message.contains("not yet implemented"));
+                assert_eq!(phase, "hash-mismatch");
+                assert!(message.contains("fake-hash"));
             }
-            _ => panic!("expected SpecError::Interp"),
+            _ => panic!("expected hash-mismatch"),
+        }
+    }
+
+    #[test]
+    fn fetchurl_accepts_matching_hash() {
+        let spec = load_named("fetchurl").unwrap();
+        let body = b"hello";
+        let env = MockEnv::new().with_response("https://example.com/x", body);
+        // Pre-compute the expected hash from the mock.
+        let expected = env.hash_bytes(body);
+        let args = FetchArgs {
+            url: "https://example.com/x".into(),
+            declared_hash: Some(expected.clone()),
+            name_hint: Some("x".into()),
+        };
+        let outcome = apply(&spec, &args, &env).unwrap();
+        assert_eq!(outcome.nar_hash, expected);
+    }
+
+    #[test]
+    fn cache_hit_short_circuits_fetch() {
+        struct CacheHitEnv;
+        impl FetcherEnvironment for CacheHitEnv {
+            fn fetch_bytes(&self, _: &str) -> Result<Vec<u8>, String> {
+                Err("fetch should NOT have been called on cache hit".into())
+            }
+            fn hash_bytes(&self, _: &[u8]) -> String { unreachable!() }
+            fn write_to_store(&self, _: &str, _: &[u8]) -> Result<String, String> {
+                unreachable!()
+            }
+            fn cache_lookup(&self, _: &str, h: &str) -> Result<Option<String>, String> {
+                Ok(Some(format!("/nix/store/cached-{h}")))
+            }
+        }
+        let spec = load_named("fetchurl").unwrap();
+        let args = FetchArgs {
+            url: "https://example.com/x".into(),
+            declared_hash: Some("sha256:abc".into()),
+            name_hint: Some("x".into()),
+        };
+        let outcome = apply(&spec, &args, &CacheHitEnv).unwrap();
+        assert_eq!(outcome.store_path, "/nix/store/cached-sha256:abc");
+    }
+
+    #[test]
+    fn non_fetchurl_transport_returns_typed_not_yet() {
+        // fetchGit uses Git transport — M3.0 doesn't implement.
+        let spec = load_named("fetchGit").unwrap();
+        let env = MockEnv::new();
+        let args = FetchArgs {
+            url: "https://example.com/repo.git".into(),
+            declared_hash: None,
+            name_hint: Some("repo".into()),
+        };
+        let err = apply(&spec, &args, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, message } => {
+                assert_eq!(phase, "fetcher-unimplemented");
+                assert!(message.contains("Git"));
+            }
+            _ => panic!("expected fetcher-unimplemented"),
         }
     }
 }

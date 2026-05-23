@@ -84,17 +84,30 @@ fn every_stub_apply_returns_typed_error() {
     .expect_err("activation_script::apply must return typed error");
     assert!(matches!(err, SpecError::Interp { .. }));
 
-    // fetcher::apply
-    let f = fetcher::load_named("fetchurl").unwrap();
+    // fetcher::apply — M3.0 has a working interpreter for
+    // fetchurl, so this test verifies that a non-fetchurl
+    // transport (fetchGit) still surfaces a typed not-yet error.
+    let f = fetcher::load_named("fetchGit").unwrap();
+    struct NoEnv;
+    impl fetcher::FetcherEnvironment for NoEnv {
+        fn fetch_bytes(&self, _: &str) -> Result<Vec<u8>, String> {
+            Err("unused".into())
+        }
+        fn hash_bytes(&self, _: &[u8]) -> String { "unused".into() }
+        fn write_to_store(&self, _: &str, _: &[u8]) -> Result<String, String> {
+            Err("unused".into())
+        }
+    }
     let err = fetcher::apply(
         &f,
-        fetcher::FetchArgs {
-            url: "https://example.com".into(),
+        &fetcher::FetchArgs {
+            url: "https://example.com/repo".into(),
             declared_hash: None,
             name_hint: None,
         },
+        &NoEnv,
     )
-    .expect_err("fetcher::apply must return typed error");
+    .expect_err("fetchGit must return typed error until M3.1");
     assert!(matches!(err, SpecError::Interp { .. }));
 
     // substituter::apply
