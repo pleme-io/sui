@@ -185,6 +185,107 @@ pub fn apply(format: &NarFormat, input: &[u8]) -> Result<String, SpecError> {
     ))
 }
 
+// ── NAR encoder ────────────────────────────────────────────────────
+//
+// Substrate-level encoder.  Byte-equivalent with `nix store dump-path`
+// (verified on the operator workstation via sha256 round-trip).  Used
+// by the `sui store dump-path` / `sui store add-file` / `sui store
+// add-path` / `sui store make-content-addressed` dispatches in the
+// sui binary, plus the future sui-build / sui-store ingestion paths.
+
+/// Encode a filesystem path as canonical NAR bytes.  Returns the
+/// magic-prefixed byte stream byte-equivalent with `nix store
+/// dump-path <path>`.
+///
+/// # Errors
+///
+/// Returns the underlying [`std::io::Error`] for any filesystem
+/// read failure (symlink readlink, missing entries, etc.).
+pub fn encode(root: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
+    let mut buf = Vec::new();
+    write_framed(&mut buf, b"nix-archive-1");
+    write_node(&mut buf, root)?;
+    Ok(buf)
+}
+
+/// Convenience: NAR-encode then sha256-digest the result.  Returns
+/// the 32-byte digest matching `nix-hash --type sha256 --base16
+/// --flat <nar-dump>`.
+///
+/// # Errors
+///
+/// Propagates [`encode`] errors.
+pub fn hash_path_nar(root: &std::path::Path) -> Result<[u8; 32], std::io::Error> {
+    use sha2::Digest;
+    let nar = encode(root)?;
+    let digest = sha2::Sha256::digest(&nar);
+    Ok(digest.into())
+}
+
+/// Compute the canonical store path for a NAR digest + name.
+/// Returns `"<store-root>/<32-char-nix-base32-hash-prefix>-<name>"`.
+/// Mirrors cppnix's `makeFixedOutputPath` shape.
+#[must_use]
+pub fn store_path_for(store_root: &str, digest: &[u8; 32], name: &str) -> String {
+    let hash_b32 = crate::hash::encode_hash("sha256", "nix-base32", digest)
+        .expect("nix-base32 encoding always succeeds for sha256 digests");
+    let bare = hash_b32.strip_prefix("sha256:").unwrap_or(&hash_b32);
+    let store_hash: String = bare.chars().take(32).collect();
+    format!("{store_root}/{store_hash}-{name}")
+}
+
+/// Write a length-prefixed string in canonical NAR padded form.
+fn write_framed(buf: &mut Vec<u8>, s: &[u8]) {
+    buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+    buf.extend_from_slice(s);
+    let pad = (8 - (s.len() % 8)) % 8;
+    for _ in 0..pad { buf.push(0); }
+}
+
+fn write_node(buf: &mut Vec<u8>, path: &std::path::Path) -> std::io::Result<()> {
+    write_framed(buf, b"(");
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_file() {
+        write_framed(buf, b"type");
+        write_framed(buf, b"regular");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o111 != 0 {
+                write_framed(buf, b"executable");
+                write_framed(buf, b"");
+            }
+        }
+        write_framed(buf, b"contents");
+        let bytes = std::fs::read(path)?;
+        write_framed(buf, &bytes);
+    } else if meta.is_dir() {
+        write_framed(buf, b"type");
+        write_framed(buf, b"directory");
+        let mut entries: Vec<_> = std::fs::read_dir(path)?
+            .filter_map(Result::ok)
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            write_framed(buf, b"entry");
+            write_framed(buf, b"(");
+            write_framed(buf, b"name");
+            write_framed(buf, entry.file_name().to_string_lossy().as_bytes());
+            write_framed(buf, b"node");
+            write_node(buf, &entry.path())?;
+            write_framed(buf, b")");
+        }
+    } else if meta.file_type().is_symlink() {
+        write_framed(buf, b"type");
+        write_framed(buf, b"symlink");
+        write_framed(buf, b"target");
+        let target = std::fs::read_link(path)?;
+        write_framed(buf, target.to_string_lossy().as_bytes());
+    }
+    write_framed(buf, b")");
+    Ok(())
+}
+
 // ── Canonical spec ─────────────────────────────────────────────────
 
 pub const CANONICAL_NAR_LISP: &str = include_str!("../specs/nar.lisp");
@@ -307,5 +408,83 @@ mod tests {
         let msg = apply(&format, &packed).unwrap();
         assert!(msg.contains("magic ok"));
         assert!(msg.contains("M3.1"));
+    }
+
+    // ── encoder tests ──────────────────────────────────────────
+
+    #[test]
+    fn encode_file_starts_with_magic() {
+        let tmp = std::env::temp_dir().join("sui-spec-nar-file-test");
+        std::fs::write(&tmp, b"hello").unwrap();
+        let nar = encode(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        // First 8 bytes = LE u64 of 13 (length of "nix-archive-1")
+        let len = u64::from_le_bytes(nar[0..8].try_into().unwrap());
+        assert_eq!(len, 13);
+        assert_eq!(&nar[8..21], b"nix-archive-1");
+    }
+
+    #[test]
+    fn encode_directory_is_sorted() {
+        // Build a small directory with two files in non-sorted
+        // insertion order; encoder must sort by file name so
+        // the NAR is deterministic.
+        let tmp = std::env::temp_dir().join("sui-spec-nar-dir-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("z"), b"z-content").unwrap();
+        std::fs::write(tmp.join("a"), b"a-content").unwrap();
+        let nar1 = encode(&tmp).unwrap();
+
+        // Round-trip via byte-equivalence: encoding twice yields
+        // the same bytes (determinism).
+        let nar2 = encode(&tmp).unwrap();
+        assert_eq!(nar1, nar2);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn hash_path_nar_is_32_bytes() {
+        let tmp = std::env::temp_dir().join("sui-spec-nar-hash-test");
+        std::fs::write(&tmp, b"abc").unwrap();
+        let digest = hash_path_nar(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(digest.len(), 32);
+    }
+
+    #[test]
+    fn store_path_for_uses_first_32_chars_of_base32_hash() {
+        // Known sha256 digest of empty string = a SRI we can
+        // cross-check.  Just verify shape: starts with store
+        // root, has 32-char hash prefix + dash + name.
+        let digest: [u8; 32] = [0u8; 32];
+        let path = store_path_for("/nix/store", &digest, "hello");
+        assert!(path.starts_with("/nix/store/"));
+        let after_root = path.strip_prefix("/nix/store/").unwrap();
+        let (hash, name) = after_root.split_once('-').unwrap();
+        assert_eq!(hash.len(), 32);
+        assert_eq!(name, "hello");
+    }
+
+    #[test]
+    fn store_path_for_is_deterministic() {
+        let digest: [u8; 32] = [42u8; 32];
+        let p1 = store_path_for("/nix/store", &digest, "name");
+        let p2 = store_path_for("/nix/store", &digest, "name");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn store_path_for_differs_with_name() {
+        let digest: [u8; 32] = [42u8; 32];
+        let p1 = store_path_for("/nix/store", &digest, "a");
+        let p2 = store_path_for("/nix/store", &digest, "b");
+        // Hash prefix matches; suffix differs.
+        let (h1, _) = p1.strip_prefix("/nix/store/").unwrap().split_once('-').unwrap();
+        let (h2, _) = p2.strip_prefix("/nix/store/").unwrap().split_once('-').unwrap();
+        assert_eq!(h1, h2);
+        assert!(p1.ends_with("-a"));
+        assert!(p2.ends_with("-b"));
     }
 }

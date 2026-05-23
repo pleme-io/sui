@@ -1058,41 +1058,20 @@ fn profile_diff() -> Result<(), CliError> {
     Ok(())
 }
 
-/// Compute the canonical store path for a given NAR digest +
-/// name.  Mirrors cppnix's makeFixedOutputPath shape.
-fn store_path_for(digest: &[u8], name: &str) -> Result<String, CliError> {
-    let hash_b32 = sui_spec::hash::encode_hash("sha256", "nix-base32", digest)
-        .map_err(|e| CliError::NotImplemented(format!("store-path: encode: {e:?}")))?;
-    let bare = strip_algo_prefix(&hash_b32);
-    let store_hash: String = bare.chars().take(32).collect();
-    Ok(format!("{STORE_ROOT}/{store_hash}-{name}"))
-}
-
 fn store_add_file(path: &str, name: Option<&str>) -> Result<(), CliError> {
-    use sha2::Digest;
-    let bytes = std::fs::read(path)
-        .map_err(|e| CliError::NotImplemented(format!("store add-file: read {path}: {e}")))?;
     let basename = name.unwrap_or_else(|| {
         std::path::Path::new(path).file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("source")
     });
-
-    // NAR-hash the file's content; matches cppnix's flat hash mode.
-    let mut nar = Vec::new();
-    nar_write_string(&mut nar, b"nix-archive-1");
-    nar_write_node(&mut nar, std::path::Path::new(path))
+    let nar_hash = sui_spec::nar::hash_path_nar(std::path::Path::new(path))
         .map_err(|e| CliError::NotImplemented(format!("store add-file: NAR: {e}")))?;
-    let nar_hash = sha2::Sha256::digest(&nar);
-    let store_path = store_path_for(&nar_hash, basename)?;
+    let store_path = sui_spec::nar::store_path_for(STORE_ROOT, &nar_hash, basename);
 
     if std::path::Path::new(&store_path).exists() {
-        // Path already in store — idempotent return.
         println!("{store_path}");
         return Ok(());
     }
-    // Operator-writable cache fallback when daemon is unavailable.
-    let _ = bytes;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let cache = std::path::PathBuf::from(home).join(".cache/sui/added-files");
     std::fs::create_dir_all(&cache)
@@ -1106,18 +1085,14 @@ fn store_add_file(path: &str, name: Option<&str>) -> Result<(), CliError> {
 }
 
 fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
-    use sha2::Digest;
     let basename = name.unwrap_or_else(|| {
         std::path::Path::new(path).file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("source")
     });
-    let mut nar = Vec::new();
-    nar_write_string(&mut nar, b"nix-archive-1");
-    nar_write_node(&mut nar, std::path::Path::new(path))
+    let nar_hash = sui_spec::nar::hash_path_nar(std::path::Path::new(path))
         .map_err(|e| CliError::NotImplemented(format!("store add-path: NAR: {e}")))?;
-    let nar_hash = sha2::Sha256::digest(&nar);
-    let store_path = store_path_for(&nar_hash, basename)?;
+    let store_path = sui_spec::nar::store_path_for(STORE_ROOT, &nar_hash, basename);
 
     if std::path::Path::new(&store_path).exists() {
         println!("{store_path}");
@@ -1456,10 +1431,6 @@ fn flake_prefetch(flake_ref: &str, json: bool) -> Result<(), CliError> {
 }
 
 fn store_dump_path(path: &str) -> Result<(), CliError> {
-    // Implements the NAR format per the canonical spec:
-    // https://nixos.org/nix/manual/en/architecture/file-system-object.html
-    // Format = `nix-archive-1` + node, where each node is a
-    // tagged sequence of length-prefixed strings.
     use std::io::Write;
 
     let layouts = sui_spec::store_layout::load_canonical()
@@ -1471,72 +1442,14 @@ fn store_dump_path(path: &str) -> Result<(), CliError> {
         )))?;
     let _ = parsed;
 
-    let mut buf = Vec::new();
-    nar_write_string(&mut buf, b"nix-archive-1");
-    let abs = std::path::Path::new(path);
-    nar_write_node(&mut buf, abs)
-        .map_err(|e| CliError::NotImplemented(format!("store dump-path: {e}")))?;
+    let buf = sui_spec::nar::encode(std::path::Path::new(path))
+        .map_err(|e| CliError::NotImplemented(format!("store dump-path: NAR encode: {e}")))?;
     std::io::stdout().write_all(&buf)
         .map_err(|e| CliError::NotImplemented(format!("store dump-path: stdout: {e}")))?;
     Ok(())
 }
 
-/// Write a length-prefixed string in NAR padded form.
-fn nar_write_string(buf: &mut Vec<u8>, s: &[u8]) {
-    buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
-    buf.extend_from_slice(s);
-    // Pad to 8-byte boundary.
-    let pad = (8 - (s.len() % 8)) % 8;
-    for _ in 0..pad { buf.push(0); }
-}
-
-fn nar_write_node(buf: &mut Vec<u8>, path: &std::path::Path) -> std::io::Result<()> {
-    nar_write_string(buf, b"(");
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.is_file() {
-        nar_write_string(buf, b"type");
-        nar_write_string(buf, b"regular");
-        // Executable bit (Unix only).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if meta.permissions().mode() & 0o111 != 0 {
-                nar_write_string(buf, b"executable");
-                nar_write_string(buf, b"");
-            }
-        }
-        nar_write_string(buf, b"contents");
-        let bytes = std::fs::read(path)?;
-        nar_write_string(buf, &bytes);
-    } else if meta.is_dir() {
-        nar_write_string(buf, b"type");
-        nar_write_string(buf, b"directory");
-        let mut entries: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(Result::ok)
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            nar_write_string(buf, b"entry");
-            nar_write_string(buf, b"(");
-            nar_write_string(buf, b"name");
-            nar_write_string(buf, entry.file_name().to_string_lossy().as_bytes());
-            nar_write_string(buf, b"node");
-            nar_write_node(buf, &entry.path())?;
-            nar_write_string(buf, b")");
-        }
-    } else if meta.file_type().is_symlink() {
-        nar_write_string(buf, b"type");
-        nar_write_string(buf, b"symlink");
-        nar_write_string(buf, b"target");
-        let target = std::fs::read_link(path)?;
-        nar_write_string(buf, target.to_string_lossy().as_bytes());
-    }
-    nar_write_string(buf, b")");
-    Ok(())
-}
-
 fn store_make_content_addressed(paths: &[String]) -> Result<(), CliError> {
-    use sha2::Digest;
     let layouts = sui_spec::store_layout::load_canonical()
         .map_err(|e| CliError::NotImplemented(format!("store make-content-addressed: {e:?}")))?;
     for p in paths {
@@ -1545,18 +1458,9 @@ fn store_make_content_addressed(paths: &[String]) -> Result<(), CliError> {
             .ok_or_else(|| CliError::NotImplemented(format!(
                 "store make-content-addressed: `{p}` not a recognised store path"
             )))?;
-        // Generate NAR bytes via the encoder we just built, then
-        // hash → that's the content-addressed identity.
-        let mut buf = Vec::new();
-        nar_write_string(&mut buf, b"nix-archive-1");
-        nar_write_node(&mut buf, std::path::Path::new(p))
+        let nar_hash = sui_spec::nar::hash_path_nar(std::path::Path::new(p))
             .map_err(|e| CliError::NotImplemented(format!("store make-content-addressed: NAR: {e}")))?;
-        let nar_hash = sha2::Sha256::digest(&buf);
-        let nar_hash_b32 = sui_spec::hash::encode_hash("sha256", "nix-base32", &nar_hash)
-            .map_err(|e| CliError::NotImplemented(format!("store make-content-addressed: encode: {e:?}")))?;
-        let bare = strip_algo_prefix(&nar_hash_b32);
-        let ca_hash: String = bare.chars().take(32).collect();
-        let ca_path = format!("{STORE_ROOT}/{ca_hash}-{}", parsed.name);
+        let ca_path = sui_spec::nar::store_path_for(STORE_ROOT, &nar_hash, &parsed.name);
         println!("{p}\t→\t{ca_path}");
     }
     Ok(())
