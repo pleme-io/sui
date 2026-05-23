@@ -88,6 +88,7 @@ pub mod registry;
 pub mod sandbox;
 pub mod spec_trait;
 pub mod store_layout;
+pub mod style;
 pub mod substituter;
 pub mod sweep;
 pub mod trust_model;

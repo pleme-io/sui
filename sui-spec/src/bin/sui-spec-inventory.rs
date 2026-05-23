@@ -17,6 +17,10 @@
 //! ```
 
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
+use sui_spec::style::{
+    self, body, dim_fg, error, glyph_gear, glyph_ok, glyph_snowflake, header, ident,
+    info, muted, success, NORD13, NORD15, NORD3,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
@@ -122,15 +126,42 @@ fn gate_name(gate: MaturityGate) -> String {
 
 fn emit_histogram(cat: &[SubstrateDomain]) {
     let hist = catalog::maturity_histogram().expect("histogram must compute");
-    println!("┌─────────────────┬──────┐");
-    println!("│ Gate            │ Count│");
-    println!("├─────────────────┼──────┤");
+    let width = 28;
+    println!("{}", style::box_top(width, Some("substrate maturity")));
+    println!(
+        "{} {:<15} {:>6} {}",
+        muted("│"),
+        body("Gate"),
+        body("Count"),
+        muted("│"),
+    );
+    println!("{}", style::box_mid(width));
     for (gate, count) in &hist {
-        println!("│ {:<15} │ {:>4} │", gate, count);
+        let label = match *gate {
+            "Working" => success(&format!("{:<15}", gate)),
+            "M2TypedOnly" | "M3TypedOnly" | "M4TypedOnly" => {
+                style::pending(&format!("{:<15}", gate))
+            }
+            "Informational" => info(&format!("{:<15}", gate)),
+            _ => body(&format!("{:<15}", gate)),
+        };
+        let count_str = body(&format!("{:>6}", count));
+        println!("{} {} {} {}", muted("│"), label, count_str, muted("│"));
     }
-    println!("├─────────────────┼──────┤");
-    println!("│ Total           │ {:>4} │", cat.len());
-    println!("└─────────────────┴──────┘");
+    println!("{}", style::box_mid(width));
+    let total = body(&format!("{:>6}", cat.len()));
+    let total_label = ident(&format!("{:<15}", "Total"));
+    println!("{} {} {} {}", muted("│"), total_label, total, muted("│"));
+    println!("{}", style::box_bottom(width));
+}
+
+fn gate_style(gate: MaturityGate, text: &str) -> String {
+    match gate {
+        MaturityGate::Working => success(text),
+        MaturityGate::M2TypedOnly => style::warn(text),
+        MaturityGate::M3TypedOnly | MaturityGate::M4TypedOnly => style::pending(text),
+        MaturityGate::Informational => info(text),
+    }
 }
 
 fn emit_table(domains: &[&SubstrateDomain]) {
@@ -148,12 +179,26 @@ fn emit_table(domains: &[&SubstrateDomain]) {
         .unwrap_or(20)
         .min(40);
 
-    println!(
-        "{:<name_w$}  {:<gate_w$}  {:<kw_w$}  Purpose",
-        "Domain", "Gate", "Keyword(s)",
-        name_w = name_w, gate_w = gate_w, kw_w = kw_w,
+    let banner = format!(
+        "{}  {}  ({} domains)",
+        glyph_snowflake(),
+        header("sui-spec substrate"),
+        ident(&domains.len().to_string()),
     );
-    println!("{}", "─".repeat(name_w + gate_w + kw_w + 30));
+    println!("{banner}");
+    println!();
+
+    println!(
+        "{}  {}  {}  {}",
+        body(&format!("{:<name_w$}", "Domain", name_w = name_w)),
+        body(&format!("{:<gate_w$}", "Gate", gate_w = gate_w)),
+        body(&format!("{:<kw_w$}", "Keyword(s)", kw_w = kw_w)),
+        body("Purpose"),
+    );
+    println!(
+        "{}",
+        muted(&"─".repeat(name_w + gate_w + kw_w + 30))
+    );
     for d in domains {
         let kws = d.authoring_keywords.join(", ");
         let kw_trunc = if kws.len() > kw_w {
@@ -161,10 +206,28 @@ fn emit_table(domains: &[&SubstrateDomain]) {
         } else {
             kws.clone()
         };
+        let glyph = match d.gate {
+            MaturityGate::Working => glyph_ok(),
+            _ => glyph_gear(),
+        };
+        let _ = glyph;
         println!(
-            "{:<name_w$}  {:<gate_w$}  {:<kw_w$}  {}",
-            d.name, gate_name(d.gate), kw_trunc, d.purpose,
-            name_w = name_w, gate_w = gate_w, kw_w = kw_w,
+            "{} {}  {}  {}  {}",
+            match d.gate {
+                MaturityGate::Working => glyph_ok(),
+                _ => glyph_gear(),
+            },
+            ident(&format!("{:<name_w$}", d.name, name_w = name_w - 2)),
+            gate_style(d.gate, &format!("{:<gate_w$}", gate_name(d.gate), gate_w = gate_w)),
+            dim_fg(NORD15, &format!("{:<kw_w$}", kw_trunc, kw_w = kw_w)),
+            body(&d.purpose),
         );
     }
+}
+
+// Suppress unused-import warnings for items kept available to
+// future extensions of this binary.
+#[allow(dead_code)]
+fn _unused() {
+    let _ = (error("x"), NORD13, NORD3);
 }

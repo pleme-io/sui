@@ -68,6 +68,25 @@ impl Verdict {
         }
     }
 
+    /// Nord-styled glyph for the per-probe progress line.  Used by
+    /// `sui-sweep` (and any future operator-facing sweep surface)
+    /// to color-code the verdict tide at a glance: green dots for
+    /// matches, red glyphs for divergence, yellow for timeouts.
+    #[must_use]
+    pub fn glyph_styled(self) -> String {
+        let g = self.glyph().to_string();
+        match self {
+            Verdict::Match         => crate::style::success(&g),
+            Verdict::NotApplicable => crate::style::muted(&g),
+            Verdict::Differ        => crate::style::error(&g),
+            Verdict::SuiFailOnly   => crate::style::error(&g),
+            Verdict::NixFailOnly   => crate::style::warn(&g),
+            Verdict::BothFail      => crate::style::warn(&g),
+            Verdict::SuiTimeout    => crate::style::pending(&g),
+            Verdict::NixTimeout    => crate::style::pending(&g),
+        }
+    }
+
     /// `true` iff the verdict counts as a pass — `Match` or
     /// `NotApplicable`.  Used by the top-level summary line.
     #[must_use]

@@ -125,11 +125,16 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
     let flakes = resolve_flakes(config);
 
     eprintln!(
-        "sui-sweep: corpus={} probes={} flakes={} (timeout {}s)",
-        config.corpus.name(),
-        probes.len(),
-        flakes.len(),
-        config.timeout.as_secs(),
+        "{}  {}  {}  {}  {}",
+        crate::style::glyph_snowflake(),
+        crate::style::header("sui-sweep"),
+        crate::style::muted(&format!("corpus={}", config.corpus.name())),
+        crate::style::muted(&format!("probes={}", probes.len())),
+        crate::style::muted(&format!(
+            "flakes={}  timeout={}s",
+            flakes.len(),
+            config.timeout.as_secs(),
+        )),
     );
 
     let mut records = Vec::new();
@@ -150,12 +155,15 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
                 Verdict::NotApplicable
             };
             *tally.entry(verdict.name().to_string()).or_default() += 1;
-            eprint!("{}", verdict.glyph());
+            eprint!("{}", verdict.glyph_styled());
             if config.verbose {
-                eprintln!(" {} :: {}", probe.name(), ctx.flake_label);
+                eprintln!(" {} :: {}",
+                    crate::style::ident(probe.name()),
+                    crate::style::muted(&ctx.flake_label),
+                );
             }
         }
-        eprintln!(" {}", ctx.flake_label);
+        eprintln!("  {}", crate::style::muted(&ctx.flake_label));
     }
 
     let report = ShadowReport {
@@ -179,11 +187,25 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
         eprintln!("\nreport: {}", path.display());
     }
 
+    let runs = report.records.len();
+    let diverged = report.divergence_count();
+    let passed = runs - diverged;
+    let summary_glyph = if diverged == 0 {
+        crate::style::glyph_ok()
+    } else {
+        crate::style::glyph_fail()
+    };
     println!(
-        "\nsui-sweep: {} probe-runs · {} diverged · {} passed",
-        report.records.len(),
-        report.divergence_count(),
-        report.records.len() - report.divergence_count(),
+        "\n{}  {}  {}  {}  {}",
+        summary_glyph,
+        crate::style::header("sui-sweep complete"),
+        crate::style::ident(&format!("{runs} runs")),
+        crate::style::success(&format!("{passed} passed")),
+        if diverged == 0 {
+            crate::style::muted("0 diverged")
+        } else {
+            crate::style::error(&format!("{diverged} diverged"))
+        },
     );
 
     Ok(report)
