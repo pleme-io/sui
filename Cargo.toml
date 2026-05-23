@@ -20,6 +20,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -150,7 +151,7 @@ criterion = "0.5"
 
 [package]
 name = "sui"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
