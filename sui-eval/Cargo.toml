@@ -50,11 +50,12 @@ test-case.workspace = true
 proptest.workspace = true
 criterion.workspace = true
 # tatara-lisp for Lisp-authored Nix test corpus + oracle testing.
-# Path dep — assumes the pleme-io sibling-directory layout
-# (~/code/github/pleme-io/{sui,tatara}/). This is a dev-only
-# dependency: consumers of sui-eval don't need tatara checked out.
-tatara-lisp = { path = "../../tatara/tatara-lisp" }
-tatara-lisp-derive = { path = "../../tatara/tatara-lisp-derive" }
+# Version dep against crates.io — keeps `cargo metadata` clean
+# in environments (CI, fresh checkout) where pleme-io/tatara isn't
+# laid out next to sui on disk.  Operators with the sibling repo
+# get the same version pinned here.
+tatara-lisp.workspace = true
+tatara-lisp-derive.workspace = true
 rand = "0.8"
 rand_chacha = "0.3"
 

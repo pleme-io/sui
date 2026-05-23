@@ -6061,8 +6061,8 @@ dependencies = [
  "sui-spec",
  "sui-store",
  "tar",
- "tatara-lisp 0.2.0",
- "tatara-lisp-derive 0.2.0",
+ "tatara-lisp",
+ "tatara-lisp-derive",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -6110,8 +6110,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "sui-compat",
- "tatara-lisp 0.2.1",
- "tatara-lisp-derive 0.2.1",
+ "tatara-lisp",
+ "tatara-lisp-derive",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -6225,17 +6225,6 @@ dependencies = [
 
 [[package]]
 name = "tatara-lisp"
-version = "0.2.0"
-dependencies = [
- "blake3",
- "serde",
- "serde_json",
- "tatara-lisp-derive 0.2.0",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tatara-lisp"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8e86ceb7f2fb8a742463897db3d5c78febde46cb503a9d4cb1f29f88af96d72"
@@ -6243,17 +6232,8 @@ dependencies = [
  "blake3",
  "serde",
  "serde_json",
- "tatara-lisp-derive 0.2.1",
+ "tatara-lisp-derive",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tatara-lisp-derive"
-version = "0.2.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
