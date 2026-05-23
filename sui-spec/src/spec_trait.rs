@@ -298,6 +298,13 @@ impl HasName for crate::store_recipe::StoreRecipe {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::store_query::StoreQuery {
+    const CANONICAL_LISP: &'static str = crate::store_query::CANONICAL_STORE_QUERIES_LISP;
+}
+impl HasName for crate::store_query::StoreQuery {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

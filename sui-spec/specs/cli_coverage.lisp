@@ -732,4 +732,24 @@
   :maturity SuiNative
   :substrate ()
   :notes "Diff two fingerprint manifests by hash_prefix key. Reports matching/only-A/only-B/diverged. Exits non-zero on any drift.")
+(defsui-command
+  :name "store dedupe-plan"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Compose Duplicate findings into a typed graft plan: canonical winner per hash group + N graft targets. Closes the analyze→graft loop.")
+
+(defsui-command
+  :name "store entropy"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ()
+  :notes "Shannon-entropy detector over file contents. High entropy (>7.5 bits/byte) → compressed/encrypted; low → text. Includes ascii bar.")
+
+(defsui-command
+  :name "store ascii-graph"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("derivation")
+  :notes "ASCII-render a derivation DAG via inputDrvs walk + tree connectors. Bounded by --max-depth.")
 

@@ -436,6 +436,36 @@ enum StoreCommands {
         /// Second manifest JSON.
         b: std::path::PathBuf,
     },
+    /// Generate a typed dedupe plan from observed Duplicate
+    /// findings: groups duplicate hashes + emits a per-group
+    /// canonical-path + graft-target list the operator can apply.
+    DedupePlan {
+        /// Inventory profile to analyze.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compute Shannon entropy of a store path's file contents.
+    /// High entropy (>7.5 bits/byte) → compressed/encrypted;
+    /// low entropy → text.
+    Entropy {
+        /// Store path.
+        path: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// ASCII-render a derivation graph (drv DAG).  Useful for
+    /// quick visualization in a terminal.
+    AsciiGraph {
+        /// Root .drv path.
+        path: String,
+        /// Maximum depth to render.
+        #[arg(long, default_value = "5")]
+        max_depth: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1327,6 +1357,245 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store dedupe-plan` — Findings → graft loop closure ─────
+
+fn store_dedupe_plan(profile_name: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_analyze::{self, AnalyzeConfig, Finding};
+    use sui_spec::store_inventory::{self, StoreInventory, RefIndex};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("dedupe-plan: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("dedupe-plan: unknown profile")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("dedupe-plan: walk: {e:?}")))?;
+    let idx = RefIndex::build(&inv, "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("dedupe-plan: ref index: {e:?}")))?;
+
+    let findings = store_analyze::analyze(&inv, Some(&idx), &AnalyzeConfig {
+        detect_duplicates: true,
+        detect_orphans: false,
+        high_fanout_threshold: 0,
+        detect_version_shadows: false,
+    });
+
+    // Each Duplicate finding yields one canonical winner + N graft targets.
+    // Winner: the first path (deterministic — analyzer already sorts).
+    let mut plan: Vec<(String, std::path::PathBuf, Vec<std::path::PathBuf>, u64)> = Vec::new();
+    for f in &findings {
+        if let Finding::Duplicate { hash, paths, bytes_each } = f {
+            if let Some((winner, losers)) = paths.split_first() {
+                plan.push((hash.clone(), winner.clone(), losers.to_vec(), *bytes_each));
+            }
+        }
+    }
+
+    let total_groups = plan.len();
+    let total_grafts: usize = plan.iter().map(|(_, _, losers, _)| losers.len()).sum();
+    let bytes_reclaimable: u64 = plan.iter().map(|(_, _, losers, bytes)| (losers.len() as u64) * bytes).sum();
+
+    if json {
+        let probes: Vec<serde_json::Value> = plan.iter().map(|(hash, winner, losers, bytes)| serde_json::json!({
+            "hash": hash,
+            "canonical_path": winner.display().to_string(),
+            "graft_targets":  losers.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "bytes_each":     bytes,
+            "bytes_saved":    (losers.len() as u64) * bytes,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "profile":          profile_name,
+            "duplicate_groups": total_groups,
+            "total_grafts":     total_grafts,
+            "bytes_reclaimable": bytes_reclaimable,
+            "plan":             probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store dedupe-plan"),
+            muted(&format!("profile={profile_name}")));
+        println!();
+        if plan.is_empty() {
+            println!("  {} no duplicate groups in this profile", success("✓"));
+            return Ok(());
+        }
+        println!("  {} {} duplicate group(s)", body("∑"), info(&total_groups.to_string()));
+        println!("  {} {} total graft(s) to apply", body("∑"), warn(&total_grafts.to_string()));
+        println!("  {} {} bytes reclaimable", body("∑"), success(&bytes_reclaimable.to_string()));
+        println!();
+        for (hash, winner, losers, bytes) in plan.iter().take(10) {
+            let wname = winner.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!("  {} {} ({} bytes/each)",
+                success("→"), ident(&format!("hash {}…", &hash[..16])), info(&bytes.to_string()));
+            println!("     {} canonical: {}", muted("·"), success(wname));
+            for l in losers {
+                let lname = l.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                println!("     {} graft:     {}", muted("·"), warn(lname));
+            }
+        }
+        if plan.len() > 10 {
+            println!("  {} … {} more", muted(""), muted(&(plan.len() - 10).to_string()));
+        }
+        println!();
+        println!("  {} apply: for each group, run `sui store graft <loser> <loser-hash> <canonical-hash>`",
+            glyph_arrow());
+    }
+    Ok(())
+}
+
+// ── `sui store entropy` — Shannon entropy detector ─────────────
+
+fn store_entropy(path: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let bytes = std::fs::read(path).or_else(|_| {
+        // Directory: collect all file bytes.
+        let mut buf = Vec::new();
+        fn collect(p: &std::path::Path, buf: &mut Vec<u8>) -> std::io::Result<()> {
+            let meta = std::fs::symlink_metadata(p)?;
+            if meta.is_file() {
+                buf.extend_from_slice(&std::fs::read(p)?);
+            } else if meta.is_dir() {
+                for entry in std::fs::read_dir(p)?.flatten() {
+                    collect(&entry.path(), buf)?;
+                }
+            }
+            Ok(())
+        }
+        collect(std::path::Path::new(path), &mut buf)?;
+        Ok::<_, std::io::Error>(buf)
+    }).map_err(|e| CliError::NotImplemented(format!("entropy: read {path}: {e}")))?;
+
+    // Shannon entropy over byte distribution.
+    let mut counts = [0u64; 256];
+    for b in &bytes {
+        counts[*b as usize] += 1;
+    }
+    let n = bytes.len() as f64;
+    let entropy: f64 = if n == 0.0 {
+        0.0
+    } else {
+        counts.iter()
+            .filter(|&&c| c > 0)
+            .map(|&c| {
+                let p = (c as f64) / n;
+                -p * p.log2()
+            })
+            .sum()
+    };
+    let entropy_pct = (entropy / 8.0) * 100.0;
+
+    // Classify.
+    let classification = if entropy >= 7.5 {
+        "compressed/encrypted/random"
+    } else if entropy >= 6.0 {
+        "binary/mixed"
+    } else if entropy >= 3.0 {
+        "source-like text"
+    } else {
+        "low-entropy text (repetitive)"
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "path":            path,
+            "bytes":           bytes.len(),
+            "entropy_bits":    entropy,
+            "entropy_percent": entropy_pct,
+            "classification":  classification,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store entropy"), muted(path));
+        println!();
+        println!("  {}  {}", body("bytes:          "), info(&bytes.len().to_string()));
+        println!("  {}  {:.4} bits/byte", body("entropy:        "), entropy);
+        println!("  {}  {:.1}%", body("entropy %:      "), entropy_pct);
+        let label_styled = if entropy >= 7.5 {
+            warn(classification)
+        } else if entropy >= 6.0 {
+            info(classification)
+        } else {
+            success(classification)
+        };
+        println!("  {}  {}", body("classification: "), label_styled);
+        println!();
+        // Mini ASCII bar.
+        let bar_width = 40usize;
+        let filled = ((entropy / 8.0) * bar_width as f64) as usize;
+        let bar: String = (0..bar_width)
+            .map(|i| if i < filled { '█' } else { '░' })
+            .collect();
+        let colored = if entropy >= 7.5 { warn(&bar) }
+                      else if entropy >= 6.0 { info(&bar) }
+                      else { success(&bar) };
+        println!("  {} {} of 8 bits", glyph_arrow(), colored);
+    }
+    Ok(())
+}
+
+// ── `sui store ascii-graph` — DAG terminal renderer ────────────
+
+fn store_ascii_graph(path: &str, max_depth: usize) -> Result<(), CliError> {
+    use std::collections::{BTreeSet, BTreeMap};
+    use sui_compat::derivation::Derivation;
+    use sui_spec::style::{glyph_snowflake, header, ident, info, muted, success};
+
+    fn render(
+        path: &str,
+        depth: usize,
+        max_depth: usize,
+        visited: &mut BTreeSet<String>,
+        prefix: String,
+        is_last: bool,
+    ) {
+        let bn = std::path::Path::new(path).file_name()
+            .and_then(|n| n.to_str()).unwrap_or(path);
+        let connector = if depth == 0 { "" } else if is_last { "└── " } else { "├── " };
+        let depth_color = if depth == 0 { success(bn) } else { ident(bn) };
+        println!("{prefix}{connector}{depth_color}");
+
+        if depth >= max_depth {
+            return;
+        }
+        if !visited.insert(path.to_string()) {
+            // Cycle / already rendered — print a stub.
+            let cstub_prefix = if is_last { "    " } else { "│   " };
+            println!("{prefix}{cstub_prefix}{}",  muted("(seen above)"));
+            return;
+        }
+
+        // Read the .drv and walk inputDrvs.
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b, Err(_) => return,
+        };
+        let drv = match Derivation::parse(&bytes) {
+            Ok(d) => d, Err(_) => return,
+        };
+        let inputs: Vec<String> = drv.input_derivations.keys().cloned().collect();
+        let child_prefix = if depth == 0 { String::new() } else if is_last {
+            format!("{prefix}    ")
+        } else {
+            format!("{prefix}│   ")
+        };
+        let last = inputs.len().saturating_sub(1);
+        for (i, input) in inputs.iter().enumerate() {
+            render(input, depth + 1, max_depth, visited, child_prefix.clone(), i == last);
+        }
+    }
+
+    println!("{}  {}  {}",
+        glyph_snowflake(), header("derivation graph"), muted(path));
+    println!();
+    let mut visited = BTreeSet::new();
+    render(path, 0, max_depth, &mut visited, String::new(), true);
+    println!();
+    println!("  {}  {} unique node(s) up to depth {}",
+        info("∑"), info(&visited.len().to_string()), info(&max_depth.to_string()));
+    let _ = BTreeMap::<String,String>::new();
     Ok(())
 }
 
@@ -3702,6 +3971,15 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::CompareManifests { a, b } => {
                     store_compare_manifests(&a, &b)?;
+                }
+                StoreCommands::DedupePlan { profile, json } => {
+                    store_dedupe_plan(&profile, json)?;
+                }
+                StoreCommands::Entropy { path, json } => {
+                    store_entropy(&path, json)?;
+                }
+                StoreCommands::AsciiGraph { path, max_depth } => {
+                    store_ascii_graph(&path, max_depth)?;
                 }
             }
         }

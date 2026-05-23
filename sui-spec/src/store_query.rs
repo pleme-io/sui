@@ -5,8 +5,12 @@
 //! tatara-lisp; the executor walks the inventory once and
 //! returns matching entries.
 
+use serde::{Deserialize, Serialize};
+use tatara_lisp::DeriveTataraDomain;
+
 use crate::nar;
 use crate::store_inventory::{RefIndex, StoreEntry};
+use crate::SpecError;
 
 /// Composable predicate over a `StoreEntry` (with optional
 /// `RefIndex` context for reference-aware predicates).
@@ -82,6 +86,83 @@ pub fn matches(
         StorePredicate::Any(ps) => ps.iter().any(|p| matches(entry, p, idx)),
         StorePredicate::Not(p) => !matches(entry, p, idx),
     }
+}
+
+// ── Named query — Lisp-authorable declarative form ────────────
+//
+// The full `StorePredicate` AST is too rich for the Lisp
+// surface (recursive enums + closures don't translate cleanly
+// to TataraDomain).  Instead we expose a flat-field form that
+// captures the common cases: name regex / size bracket /
+// contents regex / reference substring.  These compose with AND.
+
+/// Typed Lisp-authorable named query.  Authored as
+/// `(defstore-query :name X :description Y :name-regex ...)`.
+#[derive(DeriveTataraDomain, Serialize, Deserialize, Debug, Clone)]
+#[tatara(keyword = "defstore-query")]
+pub struct StoreQuery {
+    /// Stable name (catalog key).
+    pub name: String,
+    /// Operator-facing description.
+    pub description: String,
+    /// Name regex (empty = any name).
+    #[serde(rename = "nameRegex", default)]
+    pub name_regex: String,
+    /// Minimum size in bytes (0 = no minimum).
+    #[serde(rename = "minSize", default)]
+    pub min_size: u64,
+    /// Maximum size in bytes (0 = no maximum).
+    #[serde(rename = "maxSize", default)]
+    pub max_size: u64,
+    /// Content regex (empty = any contents).
+    #[serde(rename = "contentsRegex", default)]
+    pub contents_regex: String,
+    /// Reference substring (empty = no reference filter).
+    #[serde(rename = "hasReference", default)]
+    pub has_reference: String,
+}
+
+impl StoreQuery {
+    /// Compile the named query to a `StorePredicate` AST that
+    /// the executor consumes.  Empty fields are skipped.
+    #[must_use]
+    pub fn to_predicate(&self) -> StorePredicate {
+        let mut clauses = Vec::new();
+        if !self.name_regex.is_empty() {
+            clauses.push(StorePredicate::NameMatches(self.name_regex.clone()));
+        }
+        if self.min_size > 0 {
+            clauses.push(StorePredicate::SizeAtLeast(self.min_size));
+        }
+        if self.max_size > 0 {
+            clauses.push(StorePredicate::SizeAtMost(self.max_size));
+        }
+        if !self.contents_regex.is_empty() {
+            clauses.push(StorePredicate::ContentsMatch(self.contents_regex.clone()));
+        }
+        if !self.has_reference.is_empty() {
+            clauses.push(StorePredicate::HasReference(self.has_reference.clone()));
+        }
+        if clauses.is_empty() {
+            // Empty query matches everything (operator authored a
+            // catch-all).
+            StorePredicate::All(vec![])
+        } else {
+            StorePredicate::All(clauses)
+        }
+    }
+}
+
+pub const CANONICAL_STORE_QUERIES_LISP: &str =
+    include_str!("../specs/store_queries.lisp");
+
+/// Compile every authored query.
+///
+/// # Errors
+///
+/// Returns an error if the Lisp source can't be parsed.
+pub fn load_canonical() -> Result<Vec<StoreQuery>, SpecError> {
+    crate::loader::load_all::<StoreQuery>(CANONICAL_STORE_QUERIES_LISP)
 }
 
 #[cfg(test)]
