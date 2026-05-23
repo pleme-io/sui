@@ -2239,7 +2239,7 @@ impl fmt::Display for Value {
             Value::Null => write!(f, "null"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
+            Value::Float(n) => write!(f, "{}", sui_compat::versions::cppnix_format_float(*n)),
             Value::String(s) => write!(f, "\"{}\"", s.chars.replace('\\', "\\\\").replace('"', "\\\"")),
             Value::Path(p) => write!(f, "{p}"),
             Value::List(items) => {

@@ -380,7 +380,7 @@ impl VMValue {
             VMValue::Null => write!(f, "null"),
             VMValue::Bool(b) => write!(f, "{b}"),
             VMValue::Int(n) => write!(f, "{n}"),
-            VMValue::Float(n) => write!(f, "{n}"),
+            VMValue::Float(n) => write!(f, "{}", sui_compat::versions::cppnix_format_float(*n)),
             VMValue::String(s) => write!(f, "{s:?}"),
             VMValue::Path(p) => write!(f, "{p}"),
             VMValue::List(items) => {
@@ -509,13 +509,7 @@ impl fmt::Display for StringKeyedValue {
             StringKeyedValue::Null => write!(f, "null"),
             StringKeyedValue::Bool(b) => write!(f, "{b}"),
             StringKeyedValue::Int(n) => write!(f, "{n}"),
-            StringKeyedValue::Float(n) => {
-                if n.fract() == 0.0 {
-                    write!(f, "{n:.6}")
-                } else {
-                    write!(f, "{n}")
-                }
-            }
+            StringKeyedValue::Float(n) => write!(f, "{}", sui_compat::versions::cppnix_format_float(*n)),
             StringKeyedValue::String(s) => write!(f, "\"{s}\""),
             StringKeyedValue::Path(p) => write!(f, "{p}"),
             StringKeyedValue::List(items) => {
@@ -547,7 +541,7 @@ impl fmt::Debug for VMValue {
             VMValue::Null => write!(f, "null"),
             VMValue::Bool(b) => write!(f, "{b}"),
             VMValue::Int(n) => write!(f, "{n}"),
-            VMValue::Float(n) => write!(f, "{n}"),
+            VMValue::Float(n) => write!(f, "{}", sui_compat::versions::cppnix_format_float(*n)),
             VMValue::String(s) => write!(f, "{s:?}"),
             VMValue::Path(p) => write!(f, "{p}"),
             VMValue::List(items) => {

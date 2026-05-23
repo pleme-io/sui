@@ -67,6 +67,12 @@ pub struct NanBox(u64);
 ///
 /// Contains the non-scalar VM value types: String, Path, List, Attrs,
 /// Closure, Builtin, and Thunk.
+///
+/// `BigInt` is a special case: it holds an `i64` value that doesn't
+/// fit in NanBox's 48-bit tagged payload.  CppNix uses `int64_t` for
+/// every Nix integer; without this heap fallback NanBox::int would
+/// silently demote out-of-range values to f64, losing precision and
+/// breaking arithmetic identity.
 pub enum HeapObject {
     String(String),
     Path(String),
@@ -76,6 +82,7 @@ pub enum HeapObject {
     Builtin(VMBuiltin),
     Thunk(VMThunk),
     HigherOrderBuiltin(HigherOrderBuiltin),
+    BigInt(i64),
 }
 
 impl NanBox {
@@ -99,23 +106,26 @@ impl NanBox {
         }
     }
 
-    /// Create an integer value.
+    /// Create an integer value preserving the full `i64` range.
     ///
-    /// Only the low 48 bits are preserved. For Nix evaluation, integers
-    /// that exceed 48 bits fall back to the heap path (stored as `HeapObject`).
+    /// Values that fit in 48 bits (sign-extended) take the inline
+    /// fast path — one tagged NaN, no allocation.  Values outside
+    /// that range are boxed as [`HeapObject::BigInt`] so the full
+    /// `i64` round-trips without precision loss.
+    ///
+    /// This is the load-bearing contract for CppNix compatibility:
+    /// `i64::MAX - 1` must round-trip exactly, otherwise any flake
+    /// containing large integer literals (timestamps, byte counts,
+    /// builtins.bitAnd over wide masks) would diverge.
     #[inline(always)]
     #[must_use]
     pub fn int(n: i64) -> Self {
-        // Check if the value fits in 48 bits (sign-extended).
         let fits = (n << 16) >> 16 == n;
         if fits {
-            // Store as tagged NaN with 48-bit payload.
             let payload = (n as u64) & PAYLOAD_MASK;
             Self(TAG_INT | payload)
         } else {
-            // Large integer: this shouldn't happen often in Nix.
-            // Fall back by storing as float (lossy for >2^53).
-            Self((n as f64).to_bits())
+            Self::heap(HeapObject::BigInt(n))
         }
     }
 
@@ -217,7 +227,10 @@ impl NanBox {
     #[inline(always)]
     #[must_use]
     pub fn is_int(&self) -> bool {
-        (self.0 & TAG_MASK) == TAG_INT
+        if (self.0 & TAG_MASK) == TAG_INT {
+            return true;
+        }
+        matches!(self.as_heap(), Some(HeapObject::BigInt(_)))
     }
 
     #[inline(always)]
@@ -242,6 +255,9 @@ impl NanBox {
     }
 
     /// Extract an integer. Returns `None` if not an int.
+    ///
+    /// Handles both the inline 48-bit fast path AND the heap-boxed
+    /// `BigInt` fallback so the full `i64` range round-trips.
     #[inline(always)]
     #[must_use]
     pub fn as_int(&self) -> Option<i64> {
@@ -249,10 +265,12 @@ impl NanBox {
             // Sign-extend from 48 bits.
             let raw = (self.0 & PAYLOAD_MASK) as i64;
             let extended = (raw << 16) >> 16;
-            Some(extended)
-        } else {
-            None
+            return Some(extended);
         }
+        if let Some(HeapObject::BigInt(n)) = self.as_heap() {
+            return Some(*n);
+        }
+        None
     }
 
     /// Extract a float. Returns `None` if this is a tagged value.
@@ -300,6 +318,7 @@ impl NanBox {
                 HeapObject::Attrs(_) => "set",
                 HeapObject::Closure(_) | HeapObject::Builtin(_) | HeapObject::HigherOrderBuiltin(_) => "lambda",
                 HeapObject::Thunk(_) => "thunk",
+                HeapObject::BigInt(_) => "int",
             }
         } else {
             "unknown"
@@ -536,6 +555,7 @@ impl NanBox {
                     }
                 }
                 HeapObject::HigherOrderBuiltin(h) => VMValue::HigherOrderBuiltin(h.clone()),
+                HeapObject::BigInt(n) => VMValue::Int(*n),
             }
         } else {
             // Should not happen.
@@ -555,6 +575,7 @@ impl Clone for HeapObject {
             HeapObject::Builtin(b) => HeapObject::Builtin(b.clone()),
             HeapObject::Thunk(t) => HeapObject::Thunk(t.clone()),
             HeapObject::HigherOrderBuiltin(h) => HeapObject::HigherOrderBuiltin(h.clone()),
+            HeapObject::BigInt(n) => HeapObject::BigInt(*n),
         }
     }
 }
@@ -660,6 +681,7 @@ impl fmt::Debug for NanBox {
                 HeapObject::Builtin(b) => write!(f, "NanBox({b:?})"),
                 HeapObject::Thunk(_) => write!(f, "NanBox(<thunk>)"),
                 HeapObject::HigherOrderBuiltin(h) => write!(f, "NanBox({h:?})"),
+                HeapObject::BigInt(n) => write!(f, "NanBox(bigint:{n})"),
             }
         } else {
             write!(f, "NanBox(0x{:016x})", self.0)
@@ -695,6 +717,49 @@ mod tests {
             assert!(v.is_int(), "should be int for {n}");
             assert_eq!(v.as_int(), Some(n), "roundtrip failed for {n}");
         }
+    }
+
+    #[test]
+    fn int_roundtrip_full_i64_range() {
+        // Boundary values across the inline ↔ heap split.
+        // 48-bit signed range is [-(2^47), 2^47 - 1] = [-140737488355328, 140737488355327].
+        let boundaries: &[i64] = &[
+            i64::MAX,
+            i64::MIN,
+            i64::MAX - 1,
+            i64::MIN + 1,
+            2_i64.pow(53),       // f64 mantissa boundary — would lose precision under old impl
+            -(2_i64.pow(53)),
+            2_i64.pow(47),       // just above inline range
+            -(2_i64.pow(47)) - 1,
+            2_i64.pow(47) - 1,   // inline boundary
+            -(2_i64.pow(47)),
+            9_223_372_036_854_775_806, // canonical operator-facing literal
+            -9_223_372_036_854_775_807,
+        ];
+        for &n in boundaries {
+            let v = NanBox::int(n);
+            assert!(v.is_int(), "is_int false for boundary {n}");
+            assert_eq!(v.as_int(), Some(n), "round-trip failed for boundary {n}");
+            assert_eq!(v.type_name(), "int", "type_name wrong for boundary {n}");
+            // VMValue round-trip preserves the value.
+            match v.to_vmvalue() {
+                VMValue::Int(m) => assert_eq!(m, n, "VMValue round-trip lost precision at {n}"),
+                other => panic!("VMValue round-trip produced {other:?} for {n}"),
+            }
+        }
+    }
+
+    #[test]
+    fn int_overflow_does_not_silently_demote_to_float() {
+        // The bug this guards: previously NanBox::int(9223372036854775806)
+        // produced an f64 (lossy), then `9223372036854775806 - 1` returned
+        // 9223372036854775808.0 — wrong by 1 AND wrong type.
+        let big = 9_223_372_036_854_775_806_i64;
+        let v = NanBox::int(big);
+        assert!(!v.is_float(), "BigInt must not be classified as float");
+        assert_eq!(v.as_int(), Some(big));
+        assert_eq!(v.as_float(), None, "BigInt must not pose as float");
     }
 
     #[test]
