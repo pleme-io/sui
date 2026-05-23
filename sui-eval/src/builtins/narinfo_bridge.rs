@@ -4,20 +4,22 @@ use std::rc::Rc;
 
 use super::*;
 use super::bridge_helpers::{
-    as_string, as_attrs, attrs_optional_string, attrs_required_string,
+    as_string, as_attrs, attrs_optional_string, attrs_required_string, load_format,
 };
-use sui_spec::narinfo;
+use sui_spec::narinfo::{self, NarinfoFormat};
 
 const NAME: &str = "builtins.sui.narinfo";
+const FORMAT: &str = "cppnix-narinfo-v1";
 
 pub(crate) fn register(sui_ext: &mut NixAttrs) {
     let mut set = NixAttrs::new();
 
     register_builtin(&mut set, "parse", |args| {
-        let text = as_string(&args[0], &format!("{NAME}.parse"))?;
-        let fmt = canonical_format()?;
+        let bridge = format!("{NAME}.parse");
+        let text = as_string(&args[0], &bridge)?;
+        let fmt: NarinfoFormat = load_format(FORMAT, &bridge)?;
         let record = narinfo::parse(&text, &fmt)
-            .map_err(|e| EvalError::type_error(format!("{NAME}.parse: {e:?}")))?;
+            .map_err(|e| EvalError::type_error(format!("{bridge}: {e:?}")))?;
         Ok(record_to_value(&record))
     });
 
@@ -29,16 +31,6 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
     });
 
     sui_ext.insert("narinfo".to_string(), Value::Attrs(Rc::new(set)));
-}
-
-fn canonical_format() -> Result<narinfo::NarinfoFormat, EvalError> {
-    narinfo::load_canonical()
-        .map_err(|e| EvalError::type_error(format!("{NAME}: load: {e:?}")))?
-        .into_iter()
-        .find(|f| f.name == "cppnix-narinfo-v1")
-        .ok_or_else(|| EvalError::type_error(format!(
-            "{NAME}: missing cppnix-narinfo-v1 format",
-        )))
 }
 
 fn record_to_value(rec: &narinfo::ParsedNarInfo) -> Value {
@@ -141,7 +133,7 @@ Sig: cache.nixos.org-1:sig
 
     #[test]
     fn parse_then_emit_roundtrips() {
-        let fmt = canonical_format().unwrap();
+        let fmt: NarinfoFormat = load_format(FORMAT, "test").unwrap();
         let record = narinfo::parse(SAMPLE, &fmt).unwrap();
         let v = record_to_value(&record);
         let attrs = match v {

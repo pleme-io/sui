@@ -16,6 +16,29 @@
 use std::rc::Rc;
 
 use super::*;
+use sui_spec::{HasName, Spec};
+
+/// Load a typed sui-spec format by name with the bridge-typed
+/// error wrapper.
+///
+/// Collapses the 6-line `load_canonical → into_iter → find →
+/// ok_or` dance that repeated in 5+ bridge modules to one call.
+/// Composes `Spec::load_named` (sui-spec) with the EvalError
+/// conversion every bridge needs.
+///
+/// # Errors
+///
+/// Wraps `SpecError` with the bridge name so operators can
+/// trace `format-load` failures back to a specific
+/// `builtins.sui.*` invocation.
+pub(crate) fn load_format<F: Spec + HasName>(
+    fmt_name: &str,
+    bridge: &str,
+) -> Result<F, EvalError> {
+    F::load_named(fmt_name).map_err(|e| {
+        EvalError::type_error(format!("{bridge}: load `{fmt_name}`: {e:?}"))
+    })
+}
 
 /// Get a required string field from an attrset.
 ///
@@ -365,5 +388,54 @@ mod tests {
         let err = attrs_string_list(&a, "refs", "test").unwrap_err();
         let msg = format!("{err:?}");
         assert!(msg.contains("expected string"));
+    }
+
+    // ── load_format helper tests ────────────────────────────────
+
+    #[test]
+    fn load_format_finds_canonical_lock_file_format() {
+        use sui_spec::lock_file::LockFileFormat;
+        let fmt: LockFileFormat = load_format(
+            "cppnix-flake-lock-v7",
+            "test",
+        ).unwrap();
+        assert_eq!(fmt.name, "cppnix-flake-lock-v7");
+        assert_eq!(fmt.version, 7);
+    }
+
+    #[test]
+    fn load_format_errors_with_bridge_name_when_missing() {
+        use sui_spec::lock_file::LockFileFormat;
+        let err: EvalError = load_format::<LockFileFormat>(
+            "no-such-lockfile-format",
+            "builtins.sui.test.x",
+        ).unwrap_err();
+        let msg = format!("{err:?}");
+        // Bridge name is in the message — operator can trace it.
+        assert!(msg.contains("builtins.sui.test.x"),
+            "missing bridge name in: {msg}");
+        // The missing format name is also in the message.
+        assert!(msg.contains("no-such-lockfile-format"),
+            "missing format name in: {msg}");
+    }
+
+    #[test]
+    fn load_format_works_for_narinfo() {
+        use sui_spec::narinfo::NarinfoFormat;
+        let fmt: NarinfoFormat = load_format(
+            "cppnix-narinfo-v1",
+            "test",
+        ).unwrap();
+        assert_eq!(fmt.name, "cppnix-narinfo-v1");
+    }
+
+    #[test]
+    fn load_format_works_for_realisation() {
+        use sui_spec::realisation::RealisationFormat;
+        let fmt: RealisationFormat = load_format(
+            "cppnix-realisation-v1",
+            "test",
+        ).unwrap();
+        assert_eq!(fmt.name, "cppnix-realisation-v1");
     }
 }

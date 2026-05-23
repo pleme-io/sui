@@ -3,25 +3,21 @@
 use std::rc::Rc;
 
 use super::*;
-use super::bridge_helpers::as_string;
-use sui_spec::realisation;
+use super::bridge_helpers::{as_string, load_format};
+use sui_spec::realisation::{self, RealisationFormat};
 
 const NAME: &str = "builtins.sui.realisation";
+const FORMAT: &str = "cppnix-realisation-v1";
 
 pub(crate) fn register(sui_ext: &mut NixAttrs) {
     let mut set = NixAttrs::new();
 
     register_builtin(&mut set, "parse", |args| {
-        let text = as_string(&args[0], &format!("{NAME}.parse"))?;
-        let fmt = realisation::load_canonical()
-            .map_err(|e| EvalError::type_error(format!("{NAME}.parse: load: {e:?}")))?
-            .into_iter()
-            .find(|f| f.name == "cppnix-realisation-v1")
-            .ok_or_else(|| EvalError::type_error(format!(
-                "{NAME}.parse: missing cppnix-realisation-v1 format",
-            )))?;
+        let bridge = format!("{NAME}.parse");
+        let text = as_string(&args[0], &bridge)?;
+        let fmt: RealisationFormat = load_format(FORMAT, &bridge)?;
         let parsed = realisation::parse(&text, &fmt)
-            .map_err(|e| EvalError::type_error(format!("{NAME}.parse: {e:?}")))?;
+            .map_err(|e| EvalError::type_error(format!("{bridge}: {e:?}")))?;
 
         let mut out = NixAttrs::new();
         out.insert("id".to_string(), Value::string(parsed.id));

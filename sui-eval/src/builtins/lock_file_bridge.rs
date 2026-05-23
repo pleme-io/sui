@@ -3,25 +3,21 @@
 use std::rc::Rc;
 
 use super::*;
-use super::bridge_helpers::{as_string};
-use sui_spec::lock_file;
+use super::bridge_helpers::{as_string, load_format};
+use sui_spec::lock_file::{self, LockFileFormat};
 
 const NAME: &str = "builtins.sui.lockFile";
+const FORMAT: &str = "cppnix-flake-lock-v7";
 
 pub(crate) fn register(sui_ext: &mut NixAttrs) {
     let mut set = NixAttrs::new();
 
     register_builtin(&mut set, "parse", |args| {
-        let text = as_string(&args[0], &format!("{NAME}.parse"))?;
-        let fmt = lock_file::load_canonical()
-            .map_err(|e| EvalError::type_error(format!("{NAME}.parse: load: {e:?}")))?
-            .into_iter()
-            .find(|f| f.name == "cppnix-flake-lock-v7")
-            .ok_or_else(|| EvalError::type_error(format!(
-                "{NAME}.parse: missing cppnix-flake-lock-v7 format",
-            )))?;
+        let bridge = format!("{NAME}.parse");
+        let text = as_string(&args[0], &bridge)?;
+        let fmt: LockFileFormat = load_format(FORMAT, &bridge)?;
         let parsed = lock_file::parse(&text, &fmt)
-            .map_err(|e| EvalError::type_error(format!("{NAME}.parse: {e:?}")))?;
+            .map_err(|e| EvalError::type_error(format!("{bridge}: {e:?}")))?;
 
         let mut out = NixAttrs::new();
         out.insert("version".to_string(), Value::Int(parsed.version as i64));
@@ -35,18 +31,13 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
     });
 
     register_builtin(&mut set, "rootInputs", |args| {
-        let text = as_string(&args[0], &format!("{NAME}.rootInputs"))?;
-        let fmt = lock_file::load_canonical()
-            .map_err(|e| EvalError::type_error(format!("{NAME}.rootInputs: load: {e:?}")))?
-            .into_iter()
-            .find(|f| f.name == "cppnix-flake-lock-v7")
-            .ok_or_else(|| EvalError::type_error(format!(
-                "{NAME}.rootInputs: missing cppnix-flake-lock-v7 format",
-            )))?;
+        let bridge = format!("{NAME}.rootInputs");
+        let text = as_string(&args[0], &bridge)?;
+        let fmt: LockFileFormat = load_format(FORMAT, &bridge)?;
         let parsed = lock_file::parse(&text, &fmt)
-            .map_err(|e| EvalError::type_error(format!("{NAME}.rootInputs: {e:?}")))?;
+            .map_err(|e| EvalError::type_error(format!("{bridge}: {e:?}")))?;
         let inputs = lock_file::root_inputs(&parsed)
-            .map_err(|e| EvalError::type_error(format!("{NAME}.rootInputs: {e:?}")))?;
+            .map_err(|e| EvalError::type_error(format!("{bridge}: {e:?}")))?;
         Ok(Value::list(inputs.into_iter().map(Value::string).collect()))
     });
 
