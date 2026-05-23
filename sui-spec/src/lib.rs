@@ -82,6 +82,7 @@ pub mod nar;
 pub mod narinfo;
 pub mod operator_view;
 pub mod parity;
+pub mod store_diff;
 pub mod store_inventory;
 pub mod store_ops;
 pub mod store_transform;

@@ -292,6 +292,56 @@ enum StoreCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Diff two store paths via their typed NAR trees.  Reports
+    /// every Added / Removed / Changed / KindChanged /
+    /// ExecutableChanged / SymlinkChanged record.
+    Diff {
+        /// First (source) store path.
+        a: String,
+        /// Second (target) store path.
+        b: String,
+        /// Emit typed JSON instead of Nord summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Closure-wide graft: rewrite every reference from `<from>`
+    /// to `<to>` across every path reachable from the closure
+    /// root.  Materializes the rewritten closure at dest.  The
+    /// killer composite — atomic refactor across N referring paths.
+    Graft {
+        /// Closure root.
+        root: String,
+        /// Source hash prefix (32 chars).
+        from: String,
+        /// Target hash prefix (32 chars; must match `from` length).
+        to: String,
+        /// Destination dir; defaults to ~/.cache/sui/grafted/<basename>.
+        #[arg(long)]
+        dest: Option<std::path::PathBuf>,
+        /// Emit JSON outcome.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit a slice for secret-like patterns (dry-run redact
+    /// transform).  Reports which files match without modifying
+    /// the store.
+    AuditSecrets {
+        /// Source store path.
+        source: String,
+        /// Emit JSON outcome.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Composite typed fingerprint for a store path: NAR sha256
+    /// + size + file count + top-level entry shape.  Useful for
+    /// "is this build deterministic across machines?" probes.
+    Fingerprint {
+        /// Store path.
+        path: String,
+        /// Emit JSON instead of Nord.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -346,6 +396,19 @@ enum ProfileCommands {
 enum DerivationCommands {
     Show { paths: Vec<String>, #[arg(long)] json: bool },
     Add { path: String },
+    /// Walk every .drv reachable from this root via inputDrvs.
+    /// Emit typed JSON dependency DAG (nodes = drv paths,
+    /// edges = inputDrvs).
+    Graph {
+        /// Root .drv path.
+        path: String,
+        /// Maximum walk depth (safety net against runaway).
+        #[arg(long, default_value = "256")]
+        max_depth: usize,
+        /// Emit JSON instead of Nord.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1170,6 +1233,395 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store diff` — typed ParsedNar diff ─────────────────────
+
+fn store_diff_cmd(a: &str, b: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_diff::{diff, DiffEntry};
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::style::{body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let pa = std::path::PathBuf::from(a);
+    let pb = std::path::PathBuf::from(b);
+    let nar_a = sui_spec::nar::encode(&pa)
+        .map_err(|e| CliError::NotImplemented(format!("diff: encode {a}: {e}")))?;
+    let nar_b = sui_spec::nar::encode(&pb)
+        .map_err(|e| CliError::NotImplemented(format!("diff: encode {b}: {e}")))?;
+    let pa_tree = ParsedNar::parse(&nar_a)
+        .map_err(|e| CliError::NotImplemented(format!("diff: parse {a}: {e}")))?;
+    let pb_tree = ParsedNar::parse(&nar_b)
+        .map_err(|e| CliError::NotImplemented(format!("diff: parse {b}: {e}")))?;
+    let d = diff(&pa_tree.root, &pb_tree.root);
+    let h = d.histogram();
+
+    if json {
+        let probes: Vec<serde_json::Value> = d.entries.iter().map(|e| match e {
+            DiffEntry::AddedFile { path, size }       => serde_json::json!({"kind":"AddedFile","path":path,"size":size}),
+            DiffEntry::RemovedFile { path, size }     => serde_json::json!({"kind":"RemovedFile","path":path,"size":size}),
+            DiffEntry::ChangedFile { path, size_a, size_b } => serde_json::json!({"kind":"ChangedFile","path":path,"size_a":size_a,"size_b":size_b}),
+            DiffEntry::KindChanged { path, from, to } => serde_json::json!({"kind":"KindChanged","path":path,"from":from,"to":to}),
+            DiffEntry::SymlinkChanged { path, from, to } => serde_json::json!({"kind":"SymlinkChanged","path":path,"from":from,"to":to}),
+            DiffEntry::ExecutableChanged { path, executable_now } => serde_json::json!({"kind":"ExecutableChanged","path":path,"executable_now":executable_now}),
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "a": a, "b": b,
+            "total": h.total(),
+            "histogram": {
+                "added": h.added, "removed": h.removed, "changed": h.changed,
+                "kind_changed": h.kind_changed,
+                "symlink_changed": h.symlink_changed,
+                "executable_changed": h.executable_changed,
+            },
+            "entries": probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {} vs {}",
+            glyph_snowflake(), header("store diff"),
+            muted(a), muted(b));
+        println!();
+        if d.is_empty() {
+            println!("  {} byte-equivalent — no differences", success("✓"));
+            return Ok(());
+        }
+        println!("  {} {} differing record(s)", info("∑"), ident(&h.total().to_string()));
+        println!();
+        if h.added > 0           { println!("  {} added:    {}", success("+"), ident(&h.added.to_string())); }
+        if h.removed > 0         { println!("  {} removed:  {}", error("-"), ident(&h.removed.to_string())); }
+        if h.changed > 0         { println!("  {} changed:  {}", warn("~"), ident(&h.changed.to_string())); }
+        if h.kind_changed > 0    { println!("  {} kind:     {}", warn("⚠"), ident(&h.kind_changed.to_string())); }
+        if h.symlink_changed > 0 { println!("  {} symlink:  {}", warn("→"), ident(&h.symlink_changed.to_string())); }
+        if h.executable_changed > 0 { println!("  {} exec:     {}", warn("x"), ident(&h.executable_changed.to_string())); }
+        println!();
+        println!("  {} top entries:", body("by record:"));
+        for e in d.entries.iter().take(20) {
+            match e {
+                DiffEntry::AddedFile { path, size } =>
+                    println!("    {} {} {} {}", success("+"), success(path), muted("size"), info(&size.to_string())),
+                DiffEntry::RemovedFile { path, size } =>
+                    println!("    {} {} {} {}", error("-"), error(path), muted("size"), info(&size.to_string())),
+                DiffEntry::ChangedFile { path, size_a, size_b } =>
+                    println!("    {} {} {}→{}", warn("~"), ident(path), info(&size_a.to_string()), info(&size_b.to_string())),
+                DiffEntry::KindChanged { path, from, to } =>
+                    println!("    {} {} {}→{}", warn("⚠"), ident(path), info(from), info(to)),
+                DiffEntry::SymlinkChanged { path, from, to } =>
+                    println!("    {} {} {}→{}", warn("→"), ident(path), info(from), info(to)),
+                DiffEntry::ExecutableChanged { path, executable_now } =>
+                    println!("    {} {} executable_now={}", warn("x"), ident(path), info(&executable_now.to_string())),
+            }
+        }
+        if d.entries.len() > 20 {
+            println!("    {} … {} more", muted(""), muted(&(d.entries.len() - 20).to_string()));
+        }
+        println!();
+        println!("  {} {} record(s) total", glyph_arrow(), info(&h.total().to_string()));
+    }
+    if !d.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ── `sui store graft` — closure-wide ref rewrite ────────────────
+
+fn store_graft(
+    root: &str,
+    from: &str,
+    to: &str,
+    dest: Option<&std::path::Path>,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_inventory::Closure;
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::store_transform::{apply_one, StoreTransform, TransformKind};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    if from.len() != to.len() {
+        return Err(CliError::NotImplemented(format!(
+            "graft: from/to must be same length; got {} vs {}", from.len(), to.len(),
+        )));
+    }
+
+    let closure = Closure::walk(std::path::Path::new(root), "/nix/store")
+        .map_err(|e| CliError::NotImplemented(format!("graft: closure: {e:?}")))?;
+
+    let dest_root = dest.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let bn = std::path::Path::new(root).file_name()
+            .and_then(|n| n.to_str()).unwrap_or("graft");
+        std::path::PathBuf::from(home).join(format!(".cache/sui/grafted/{bn}"))
+    });
+    std::fs::create_dir_all(&dest_root)
+        .map_err(|e| CliError::NotImplemented(format!("graft: mkdir {}: {e}", dest_root.display())))?;
+
+    let transform = StoreTransform {
+        name: "graft".into(),
+        description: format!("rewrite {from} → {to}"),
+        match_kind: TransformKind::StorePathReference,
+        pattern: from.into(),
+        replacement: to.into(),
+    };
+
+    let mut total_refs = 0usize;
+    let mut total_paths = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    let mut per_path: Vec<(String, usize)> = Vec::new();
+
+    for path in &closure.paths {
+        match sui_spec::nar::encode(path) {
+            Ok(nar) => {
+                let mut tree = match ParsedNar::parse(&nar) {
+                    Ok(t) => t,
+                    Err(e) => { errors.push(format!("{}: parse: {e}", path.display())); continue; }
+                };
+                let outcome = match apply_one(&mut tree.root, &transform) {
+                    Ok(o) => o,
+                    Err(e) => { errors.push(format!("{}: apply: {e:?}", path.display())); continue; }
+                };
+                total_refs += outcome.ref_rewrites;
+                if outcome.ref_rewrites > 0 {
+                    per_path.push((
+                        path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string(),
+                        outcome.ref_rewrites,
+                    ));
+                    let new_nar = tree.serialize();
+                    let target = dest_root.join(path.file_name().unwrap());
+                    if target.exists() { let _ = std::fs::remove_dir_all(&target); }
+                    if let Err(e) = sui_spec::nar::decode(&new_nar, &target) {
+                        errors.push(format!("{}: decode: {e}", path.display()));
+                    }
+                }
+                total_paths += 1;
+            }
+            Err(e) => errors.push(format!("{}: encode: {e}", path.display())),
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "root":         root,
+            "from":         from,
+            "to":           to,
+            "dest_root":    dest_root.display().to_string(),
+            "closure_size": closure.paths.len(),
+            "paths_walked": total_paths,
+            "paths_with_refs": per_path.len(),
+            "total_refs":   total_refs,
+            "errors":       errors,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}→{}",
+            glyph_snowflake(), header("store graft"),
+            muted(from), muted(to));
+        println!();
+        println!("  {}  {}", body("closure root:"), ident(root));
+        println!("  {}  {}", body("closure size:"), info(&closure.paths.len().to_string()));
+        println!("  {}  {}", body("paths walked: "), info(&total_paths.to_string()));
+        println!("  {}  {}", body("paths grafted:"), success(&per_path.len().to_string()));
+        println!("  {}  {}", body("total ref rewrites:"), success(&total_refs.to_string()));
+        println!("  {}  {}", body("dest root:    "), ident(&dest_root.display().to_string()));
+        if !per_path.is_empty() {
+            println!();
+            println!("  {}", body("rewrites per path:"));
+            per_path.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            for (name, n) in per_path.iter().take(20) {
+                println!("    {} {} {} rewrites", success("→"), ident(name), info(&n.to_string()));
+            }
+        }
+        if !errors.is_empty() {
+            println!();
+            println!("  {} {} error(s):", warn("?"), errors.len());
+            for e in errors.iter().take(5) {
+                println!("    {} {}", muted("·"), muted(e));
+            }
+        }
+        println!();
+        println!("  {} grafted {} ref(s) across {} path(s)",
+            glyph_arrow(), success(&total_refs.to_string()), info(&per_path.len().to_string()));
+    }
+    Ok(())
+}
+
+// ── `sui store audit-secrets` — dry-run redact ───────────────
+
+fn store_audit_secrets(source: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::store_transform::{apply_one, StoreTransform, TransformKind};
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let nar = sui_spec::nar::encode(std::path::Path::new(source))
+        .map_err(|e| CliError::NotImplemented(format!("audit-secrets: encode: {e}")))?;
+    let mut tree = ParsedNar::parse(&nar)
+        .map_err(|e| CliError::NotImplemented(format!("audit-secrets: parse: {e}")))?;
+    let transform = StoreTransform {
+        name: "redact-base64-secrets".into(),
+        description: "audit".into(),
+        match_kind: TransformKind::FileContents,
+        pattern: "[A-Za-z0-9+/=]{40,}".into(),
+        replacement: "[redacted]".into(),
+    };
+    let outcome = apply_one(&mut tree.root, &transform)
+        .map_err(|e| CliError::NotImplemented(format!("audit-secrets: apply: {e:?}")))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "source":         source,
+            "matching_files": outcome.file_rewrites,
+            "noop":           outcome.is_noop(),
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("audit secrets"), muted(source));
+        println!();
+        if outcome.is_noop() {
+            println!("  {} no secret-like patterns found", success("✓"));
+        } else {
+            println!("  {} {} file(s) contain base64-like runs ≥40 chars",
+                warn("⚠"), info(&outcome.file_rewrites.to_string()));
+            println!("  {} run `sui store transform {} redact-base64-secrets` to materialize a redacted copy",
+                glyph_arrow(), ident(source));
+        }
+    }
+    if !outcome.is_noop() {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+// ── `sui store fingerprint` — composite typed observable ────────
+
+fn store_fingerprint(path: &str, json: bool) -> Result<(), CliError> {
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::store_inventory::Closure;
+    use sui_spec::style::{body, glyph_snowflake, header, ident, info, muted, success};
+
+    let parsed_path = sui_spec::store_layout::validate_against_canonical(path)
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint: {e:?}")))?;
+
+    let nar = sui_spec::nar::encode(std::path::Path::new(path))
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint: encode: {e}")))?;
+    use sha2::Digest;
+    let nar_hash = sha2::Sha256::digest(&nar);
+    let nar_hex: String = nar_hash.iter().map(|b| format!("{b:02x}")).collect();
+    let nar_sri = sui_spec::hash::encode_hash("sha256", "sri", &nar_hash)
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint: sri: {e:?}")))?;
+
+    let parsed = ParsedNar::parse(&nar)
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint: parse: {e}")))?;
+
+    let closure = Closure::walk(std::path::Path::new(path), "/nix/store").ok();
+
+    let top_entries: Vec<String> = match &parsed.root {
+        sui_spec::store_ops::NarNode::Directory { entries } => {
+            entries.iter().take(10).map(|(n, _)| n.clone()).collect()
+        }
+        _ => vec![],
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "path":          path,
+            "hash_prefix":   parsed_path.hash,
+            "name":          parsed_path.name,
+            "nar_sha256_hex": nar_hex,
+            "nar_sha256_sri": nar_sri,
+            "nar_size":      nar.len(),
+            "tree_size":     parsed.root.total_bytes(),
+            "file_count":    parsed.root.file_count(),
+            "top_entries":   top_entries,
+            "closure_size":  closure.as_ref().map(|c| c.len()),
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store fingerprint"), muted(path));
+        println!();
+        println!("  {}  {}", body("hash prefix:    "), success(&parsed_path.hash));
+        println!("  {}  {}", body("name:           "), ident(&parsed_path.name));
+        println!("  {}  {}", body("nar sha256 hex: "), success(&nar_hex));
+        println!("  {}  {}", body("nar sha256 sri: "), success(&nar_sri));
+        println!("  {}  {} bytes", body("nar size:       "), info(&nar.len().to_string()));
+        println!("  {}  {} bytes", body("tree size:      "), info(&parsed.root.total_bytes().to_string()));
+        println!("  {}  {}",       body("file count:     "), info(&parsed.root.file_count().to_string()));
+        if let Some(c) = &closure {
+            println!("  {}  {}", body("closure size:   "), info(&c.len().to_string()));
+        }
+        if !top_entries.is_empty() {
+            println!();
+            println!("  {}", body("top entries:"));
+            for e in &top_entries {
+                println!("    {} {}", muted("→"), success(e));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── `sui derivation graph` — typed dependency DAG ──────────────
+
+fn derivation_graph(path: &str, max_depth: usize, json: bool) -> Result<(), CliError> {
+    use std::collections::BTreeMap;
+    use sui_compat::derivation::Derivation;
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let mut nodes: BTreeMap<String, Vec<String>> = BTreeMap::new(); // node → input drvs
+    let mut srcs: BTreeMap<String, Vec<String>> = BTreeMap::new();  // node → input srcs
+    let mut queue: Vec<String> = vec![path.to_string()];
+    let mut visited: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut iters = 0usize;
+
+    while let Some(p) = queue.pop() {
+        iters += 1;
+        if iters > max_depth { break; }
+        if !visited.insert(p.clone()) { continue; }
+        let bytes = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let drv = match Derivation::parse(&bytes) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let inputs: Vec<String> = drv.input_derivations.keys().cloned().collect();
+        for i in &inputs { if !visited.contains(i) { queue.push(i.clone()); } }
+        nodes.insert(p.clone(), inputs);
+        srcs.insert(p.clone(), drv.input_sources);
+    }
+
+    if json {
+        let nodes_json: Vec<serde_json::Value> = nodes.iter().map(|(node, edges)| serde_json::json!({
+            "drv": node,
+            "input_drvs": edges,
+            "input_srcs": srcs.get(node).cloned().unwrap_or_default(),
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "root":       path,
+            "nodes":      nodes.len(),
+            "max_depth":  max_depth,
+            "graph":      nodes_json,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("derivation graph"), muted(path));
+        println!();
+        println!("  {}  {}", body("nodes:"), info(&nodes.len().to_string()));
+        let total_edges: usize = nodes.values().map(|v| v.len()).sum();
+        let total_srcs: usize = srcs.values().map(|v| v.len()).sum();
+        println!("  {}  {}", body("inputDrv edges:"), info(&total_edges.to_string()));
+        println!("  {}  {}", body("inputSrc refs: "), info(&total_srcs.to_string()));
+        println!();
+        println!("  {}", body("top drvs by fan-out:"));
+        let mut sorted: Vec<(&String, &Vec<String>)> = nodes.iter().collect();
+        sorted.sort_by_key(|(_, edges)| std::cmp::Reverse(edges.len()));
+        for (drv, edges) in sorted.iter().take(10) {
+            let bn = std::path::Path::new(drv).file_name()
+                .and_then(|n| n.to_str()).unwrap_or(drv);
+            println!("    {} {} {} inputs", success("→"), ident(bn), info(&edges.len().to_string()));
+        }
+        println!();
+        println!("  {} {} nodes / {} edges walked",
+            glyph_arrow(), info(&nodes.len().to_string()), info(&total_edges.to_string()));
+    }
     Ok(())
 }
 
@@ -2579,6 +3031,18 @@ async fn main() -> Result<(), CliError> {
                 StoreCommands::Transform { source, transform, dest, json } => {
                     store_transform(&source, &transform, dest.as_deref(), json)?;
                 }
+                StoreCommands::Diff { a, b, json } => {
+                    store_diff_cmd(&a, &b, json)?;
+                }
+                StoreCommands::Graft { root, from, to, dest, json } => {
+                    store_graft(&root, &from, &to, dest.as_deref(), json)?;
+                }
+                StoreCommands::AuditSecrets { source, json } => {
+                    store_audit_secrets(&source, json)?;
+                }
+                StoreCommands::Fingerprint { path, json } => {
+                    store_fingerprint(&path, json)?;
+                }
             }
         }
 
@@ -3134,6 +3598,9 @@ async fn main() -> Result<(), CliError> {
             }
             DerivationCommands::Add { path } => {
                 derivation_add(&path)?;
+            }
+            DerivationCommands::Graph { path, max_depth, json } => {
+                derivation_graph(&path, max_depth, json)?;
             }
         },
         Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }

@@ -651,4 +651,38 @@
   :maturity SuiNative
   :substrate ("nar" "store_layout")
   :notes "Apply a typed StoreTransform to a store path: parse NAR → typed tree → apply (FileContents/StorePathReference/EntryName) → re-encode → materialize. Transforms authored in specs/store_transforms.lisp.")
+(defsui-command
+  :name "store diff"
+  :nix-equivalent "nix store diff-closures"
+  :maturity Working
+  :substrate ("nar" "store_layout")
+  :notes "Typed ParsedNar diff with categorized records (added/removed/changed/kind-changed/symlink/executable). Exits non-zero on any divergence.")
+
+(defsui-command
+  :name "store graft"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Closure-wide StorePathReference rewrite. Walks the closure of a root path, applies hash-prefix graft to every referring path, materializes rewritten tree.")
+
+(defsui-command
+  :name "store audit-secrets"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar")
+  :notes "Dry-run secret detection: applies redact-base64-secrets transform against the source, reports matching files without writing. Exits with code 2 on any matches.")
+
+(defsui-command
+  :name "store fingerprint"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "hash" "store_layout")
+  :notes "Composite typed observable: NAR sha256 (hex + SRI) + size + file count + top-level entry shape + closure size. Useful for build-determinism probes.")
+
+(defsui-command
+  :name "derivation graph"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("derivation")
+  :notes "Walks every .drv reachable from a root via inputDrvs. Emits typed dependency DAG (nodes / inputDrv edges / inputSrc refs) as JSON or Nord. Composes against sui-compat's ATerm parser.")
 
