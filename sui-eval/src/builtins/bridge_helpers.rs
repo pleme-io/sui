@@ -100,6 +100,130 @@ pub(crate) fn as_string(value: &Value, bridge: &str) -> Result<String, EvalError
     }
 }
 
+/// Get a required int field.
+pub(crate) fn attrs_required_int(
+    attrs: &NixAttrs,
+    key: &str,
+    bridge: &str,
+) -> Result<i64, EvalError> {
+    let v = attrs.get(key).ok_or_else(|| EvalError::type_error(format!(
+        "{bridge}: missing required field `{key}`",
+    )))?;
+    match crate::eval::force_value(v)? {
+        Value::Int(n) => Ok(n),
+        other => Err(EvalError::type_error(format!(
+            "{bridge}: field `{key}` must be an int, got {}",
+            other.type_name(),
+        ))),
+    }
+}
+
+/// Get an optional int field.  Absent = `None`.
+pub(crate) fn attrs_optional_int(
+    attrs: &NixAttrs,
+    key: &str,
+    bridge: &str,
+) -> Result<Option<i64>, EvalError> {
+    match attrs.get(key) {
+        Some(v) => match crate::eval::force_value(v)? {
+            Value::Int(n) => Ok(Some(n)),
+            other => Err(EvalError::type_error(format!(
+                "{bridge}: field `{key}` must be an int, got {}",
+                other.type_name(),
+            ))),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Get a required bool field.
+pub(crate) fn attrs_required_bool(
+    attrs: &NixAttrs,
+    key: &str,
+    bridge: &str,
+) -> Result<bool, EvalError> {
+    let v = attrs.get(key).ok_or_else(|| EvalError::type_error(format!(
+        "{bridge}: missing required field `{key}`",
+    )))?;
+    match crate::eval::force_value(v)? {
+        Value::Bool(b) => Ok(b),
+        other => Err(EvalError::type_error(format!(
+            "{bridge}: field `{key}` must be a bool, got {}",
+            other.type_name(),
+        ))),
+    }
+}
+
+/// Get an optional bool field with a fallback default.
+pub(crate) fn attrs_bool_or_default(
+    attrs: &NixAttrs,
+    key: &str,
+    default: bool,
+    bridge: &str,
+) -> Result<bool, EvalError> {
+    match attrs.get(key) {
+        Some(v) => match crate::eval::force_value(v)? {
+            Value::Bool(b) => Ok(b),
+            other => Err(EvalError::type_error(format!(
+                "{bridge}: field `{key}` must be a bool, got {}",
+                other.type_name(),
+            ))),
+        },
+        None => Ok(default),
+    }
+}
+
+/// Get a required list field.
+pub(crate) fn attrs_required_list(
+    attrs: &NixAttrs,
+    key: &str,
+    bridge: &str,
+) -> Result<Rc<Vec<Value>>, EvalError> {
+    let v = attrs.get(key).ok_or_else(|| EvalError::type_error(format!(
+        "{bridge}: missing required field `{key}`",
+    )))?;
+    match crate::eval::force_value(v)? {
+        Value::List(l) => Ok(l),
+        other => Err(EvalError::type_error(format!(
+            "{bridge}: field `{key}` must be a list, got {}",
+            other.type_name(),
+        ))),
+    }
+}
+
+/// Force a value and coerce to list.
+pub(crate) fn as_list(value: &Value, bridge: &str) -> Result<Rc<Vec<Value>>, EvalError> {
+    match crate::eval::force_value(value)? {
+        Value::List(l) => Ok(l),
+        other => Err(EvalError::type_error(format!(
+            "{bridge}: expected list, got {}",
+            other.type_name(),
+        ))),
+    }
+}
+
+/// Collect a list of strings from a list-valued attrset field.
+/// Returns an empty Vec when the field is absent.
+pub(crate) fn attrs_string_list(
+    attrs: &NixAttrs,
+    key: &str,
+    bridge: &str,
+) -> Result<Vec<String>, EvalError> {
+    let Some(v) = attrs.get(key) else { return Ok(Vec::new()); };
+    let list = match crate::eval::force_value(v)? {
+        Value::List(l) => l,
+        other => return Err(EvalError::type_error(format!(
+            "{bridge}: field `{key}` must be a list, got {}",
+            other.type_name(),
+        ))),
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        out.push(as_string(item, bridge)?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +290,80 @@ mod tests {
         assert!(format!("{err:?}").contains("builtins.sui.foo"));
         let err = attrs_required_attrs(&a, "x", "builtins.sui.foo").unwrap_err();
         assert!(format!("{err:?}").contains("builtins.sui.foo"));
+    }
+
+    // ── Int / Bool / List helper tests ─────────────────────────
+
+    #[test]
+    fn required_int_finds_value() {
+        let a = attrs_of(&[("port", Value::Int(8080))]);
+        let n = attrs_required_int(&a, "port", "test").unwrap();
+        assert_eq!(n, 8080);
+    }
+
+    #[test]
+    fn required_int_wrong_type_errors() {
+        let a = attrs_of(&[("port", Value::string("8080"))]);
+        let err = attrs_required_int(&a, "port", "test").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("must be an int"));
+    }
+
+    #[test]
+    fn optional_int_returns_none_when_absent() {
+        let a = attrs_of(&[]);
+        let r = attrs_optional_int(&a, "port", "test").unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn required_bool_finds_value() {
+        let a = attrs_of(&[("enable", Value::Bool(true))]);
+        let b = attrs_required_bool(&a, "enable", "test").unwrap();
+        assert!(b);
+    }
+
+    #[test]
+    fn bool_or_default_falls_back_when_absent() {
+        let a = attrs_of(&[]);
+        let b = attrs_bool_or_default(&a, "enable", true, "test").unwrap();
+        assert!(b);
+        let b = attrs_bool_or_default(&a, "enable", false, "test").unwrap();
+        assert!(!b);
+    }
+
+    #[test]
+    fn required_list_finds_value() {
+        let a = attrs_of(&[("xs", Value::list(vec![Value::Int(1), Value::Int(2)]))]);
+        let l = attrs_required_list(&a, "xs", "test").unwrap();
+        assert_eq!(l.len(), 2);
+    }
+
+    #[test]
+    fn string_list_collects_strings() {
+        let a = attrs_of(&[("refs", Value::list(vec![
+            Value::string("a"),
+            Value::string("b"),
+        ]))]);
+        let v = attrs_string_list(&a, "refs", "test").unwrap();
+        assert_eq!(v, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn string_list_returns_empty_when_absent() {
+        let a = attrs_of(&[]);
+        let v = attrs_string_list(&a, "refs", "test").unwrap();
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn string_list_errors_on_non_string_element() {
+        let a = attrs_of(&[("refs", Value::list(vec![
+            Value::string("a"),
+            Value::Int(42),
+        ]))]);
+        let err = attrs_string_list(&a, "refs", "test").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("expected string"));
     }
 }
