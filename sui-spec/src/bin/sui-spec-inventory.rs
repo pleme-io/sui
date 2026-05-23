@@ -20,7 +20,11 @@ use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
-    let cat = catalog::load_canonical()?;
+    let cat = if args.topo {
+        catalog::topological_order()?
+    } else {
+        catalog::load_canonical()?
+    };
 
     if args.histogram {
         emit_histogram(&cat);
@@ -56,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Args {
     json: bool,
     histogram: bool,
+    topo: bool,
     gate_filter: Option<String>,
     domain_filter: Option<String>,
 }
@@ -66,6 +71,7 @@ impl Args {
         let mut out = Args {
             json: false,
             histogram: false,
+            topo: false,
             gate_filter: None,
             domain_filter: None,
         };
@@ -73,6 +79,7 @@ impl Args {
             match arg.as_str() {
                 "--json" => out.json = true,
                 "--histogram" => out.histogram = true,
+                "--topo" => out.topo = true,
                 "--gate" => out.gate_filter = Some(args.next()
                     .ok_or("--gate needs value")?),
                 "--domain" => out.domain_filter = Some(args.next()
@@ -95,6 +102,7 @@ fn print_help() {
          Options:\n  \
          --json                 Emit JSON instead of human table\n  \
          --histogram            Emit gate-count summary instead\n  \
+         --topo                 Sort topologically (leaves first; implementation order)\n  \
          --gate <name>          Filter by maturity gate (Working | M2TypedOnly | \
                                 M3TypedOnly | M4TypedOnly | Informational)\n  \
          --domain <name>        Show one domain (e.g. fetcher, derivation)\n  \

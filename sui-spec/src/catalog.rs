@@ -112,6 +112,79 @@ pub fn maturity_histogram() -> Result<std::collections::BTreeMap<&'static str, u
     Ok(h)
 }
 
+/// Topologically sort the catalog so leaves (no dependencies)
+/// come first.  This is the order an M2/M3/M4 implementer should
+/// land interpreters in — implementing `derivation` requires
+/// `hash` and `store_layout` to be working first.
+///
+/// # Errors
+///
+/// Returns `SpecError::Interp` with phase `dependency-cycle` if
+/// the substrate graph isn't a DAG.
+pub fn topological_order() -> Result<Vec<SubstrateDomain>, SpecError> {
+    let cat = load_canonical()?;
+    let by_name: std::collections::HashMap<String, SubstrateDomain> =
+        cat.iter().cloned().map(|d| (d.name.clone(), d)).collect();
+    let names: Vec<&str> = cat.iter().map(|d| d.name.as_str()).collect();
+
+    // Kahn's algorithm — start with zero-in-degree nodes, peel.
+    let mut indeg: std::collections::HashMap<&str, usize> =
+        names.iter().map(|n| (*n, 0)).collect();
+    for d in &cat {
+        for dep in &d.depends_on {
+            // d depends on dep → there's an edge dep → d, so d's
+            // in-degree increases.
+            *indeg.entry(d.name.as_str()).or_default() += 1;
+            // touch the dep so it's in the map even if no other
+            // domain depends on it
+            indeg.entry(dep.as_str()).or_default();
+        }
+    }
+
+    // Take zero-in-degree nodes, sorted by name for determinism.
+    let mut frontier: Vec<&str> = indeg
+        .iter()
+        .filter(|(_, deg)| **deg == 0)
+        .map(|(name, _)| *name)
+        .collect();
+    frontier.sort();
+
+    let mut out: Vec<SubstrateDomain> = Vec::new();
+    while let Some(name) = frontier.pop() {
+        let domain = by_name.get(name).cloned().ok_or_else(|| {
+            SpecError::Load(format!("internal: topological_order saw unknown `{name}`"))
+        })?;
+        out.push(domain);
+        // For each child that depends on `name`, decrement its
+        // in-degree; if it hits zero, add to frontier.
+        let children: Vec<&str> = cat
+            .iter()
+            .filter(|d| d.depends_on.iter().any(|x| x == name))
+            .map(|d| d.name.as_str())
+            .collect();
+        for child in children {
+            let entry = indeg.entry(child).or_default();
+            *entry = entry.saturating_sub(1);
+            if *entry == 0 {
+                frontier.push(child);
+                frontier.sort();
+            }
+        }
+    }
+
+    if out.len() != cat.len() {
+        return Err(SpecError::Interp {
+            phase: "dependency-cycle".into(),
+            message: format!(
+                "topological_order produced {} of {} entries — cycle present",
+                out.len(),
+                cat.len(),
+            ),
+        });
+    }
+    Ok(out)
+}
+
 /// Compute the transitive dependency closure of one domain (the
 /// set of all domains reachable via `depends_on` edges, including
 /// the domain itself).
@@ -294,6 +367,39 @@ mod tests {
         for d in &cat {
             let _ = transitive_dependencies(&d.name)
                 .unwrap_or_else(|e| panic!("cycle starting from `{}`: {e:?}", d.name));
+        }
+    }
+
+    #[test]
+    fn topological_order_covers_catalog() {
+        let topo = topological_order().unwrap();
+        let cat = load_canonical().unwrap();
+        assert_eq!(topo.len(), cat.len(), "topo skipped some domains");
+        let names: std::collections::HashSet<&str> =
+            topo.iter().map(|d| d.name.as_str()).collect();
+        for c in &cat {
+            assert!(names.contains(c.name.as_str()), "missing `{}` in topo", c.name);
+        }
+    }
+
+    #[test]
+    fn topological_order_respects_dependencies() {
+        let topo = topological_order().unwrap();
+        let pos: std::collections::HashMap<&str, usize> = topo
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.name.as_str(), i))
+            .collect();
+        for d in &topo {
+            for dep in &d.depends_on {
+                assert!(
+                    pos[dep.as_str()] < pos[d.name.as_str()],
+                    "topo violates: `{}` (pos {}) depends on `{dep}` (pos {})",
+                    d.name,
+                    pos[d.name.as_str()],
+                    pos[dep.as_str()],
+                );
+            }
         }
     }
 }
