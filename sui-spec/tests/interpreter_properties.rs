@@ -35,6 +35,7 @@ use sui_spec::module_system::{
 use sui_spec::narinfo;
 use sui_spec::sandbox::{self, SandboxPlatform, IsolationTier};
 use sui_spec::lock_file;
+use sui_spec::registry;
 use sui_spec::SpecError;
 
 // ── fetcher properties ────────────────────────────────────────────
@@ -389,5 +390,90 @@ proptest! {
             }
             _ => prop_assert!(false, "expected version-mismatch"),
         }
+    }
+}
+
+// ── registry::parse_entries properties ────────────────────────────
+
+proptest! {
+    /// Garbage input that isn't valid JSON always errors with the
+    /// `registry-parse` phase.  Tests robustness of the disk loader
+    /// against random byte sequences.
+    #[test]
+    fn registry_garbage_always_errors_with_parse_phase(
+        garbage in "[a-zA-Z !@#$_-]{1,80}"
+    ) {
+        // Skip the (rare) case where the garbage parses as JSON.
+        if serde_json::from_str::<serde_json::Value>(&garbage).is_ok() {
+            return Ok(());
+        }
+        let err = registry::parse_entries(&garbage).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => {
+                prop_assert_eq!(phase, "registry-parse");
+            }
+            _ => prop_assert!(false, "expected registry-parse"),
+        }
+    }
+
+    /// Any version other than 2 errors with `registry-version`.
+    /// Tests the version-discriminator invariant.
+    #[test]
+    fn registry_wrong_version_always_errors(v in 0u32..50) {
+        prop_assume!(v != 2);
+        let text = format!(r#"{{"version": {v}, "flakes": []}}"#);
+        let err = registry::parse_entries(&text).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => {
+                prop_assert_eq!(phase, "registry-version");
+            }
+            _ => prop_assert!(false, "expected registry-version"),
+        }
+    }
+
+    /// Any valid v2 document parses, even with an arbitrary number
+    /// of entries.  Tests algorithmic completeness — the parser
+    /// handles every (well-typed) input shape we can generate.
+    #[test]
+    fn registry_arbitrary_indirect_entries_parse(
+        entries in prop::collection::vec("[a-z][a-z0-9-]{0,15}", 0..16),
+    ) {
+        let flakes_json: Vec<String> = entries.iter().map(|name| {
+            format!(
+                r#"{{
+                    "from": {{"type": "indirect", "id": "{name}"}},
+                    "to":   {{"type": "github", "owner": "owner", "repo": "{name}"}}
+                }}"#
+            )
+        }).collect();
+        let text = format!(
+            r#"{{"version": 2, "flakes": [{}]}}"#,
+            flakes_json.join(",")
+        );
+        let parsed = registry::parse_entries(&text).unwrap();
+        prop_assert_eq!(parsed.len(), entries.len());
+        for (i, name) in entries.iter().enumerate() {
+            prop_assert_eq!(&parsed[i].from, name);
+            prop_assert_eq!(&parsed[i].to, &format!("github:owner/{name}"));
+        }
+    }
+
+    /// Entries with `exact: true` always round-trip the flag.
+    /// Tests that the boolean discriminator survives parsing.
+    #[test]
+    fn registry_exact_flag_roundtrips(exact in any::<bool>()) {
+        let text = format!(
+            r#"{{
+                "version": 2,
+                "flakes": [{{
+                    "from": {{"type": "indirect", "id": "x"}},
+                    "to":   {{"type": "github", "owner": "o", "repo": "r"}},
+                    "exact": {exact}
+                }}]
+            }}"#
+        );
+        let parsed = registry::parse_entries(&text).unwrap();
+        prop_assert_eq!(parsed.len(), 1);
+        prop_assert_eq!(parsed[0].exact, exact);
     }
 }

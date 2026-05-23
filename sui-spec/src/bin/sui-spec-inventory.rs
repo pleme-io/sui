@@ -17,9 +17,11 @@
 //! ```
 
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
+use sui_spec::hash;
 use sui_spec::lock_file::{self, ParsedLockFile};
 use sui_spec::narinfo::{self, ParsedNarInfo};
 use sui_spec::operator_view::{render as render_view, OperatorView};
+use sui_spec::realisation::{self, ParsedRealisation};
 use sui_spec::registry::{self, RegistryEntry, RegistryScope};
 use sui_spec::style::{
     self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
@@ -47,6 +49,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // precedence chain and shows where each scope would map the ref.
     if let Some(flake_ref) = &args.registry_resolve {
         emit_registry_resolve(flake_ref)?;
+        return Ok(());
+    }
+
+    // `--realisation <path>` mode parses a CA-derivation realisation
+    // JSON file and emits a Nord-styled record.
+    if let Some(path) = &args.realisation_path {
+        emit_realisation(path)?;
+        return Ok(());
+    }
+
+    // `--hash-decode <input>` mode classifies a hash string by
+    // algorithm + encoding and emits the decoded byte length.
+    if let Some(input) = &args.hash_decode {
+        emit_hash_decode(input)?;
         return Ok(());
     }
 
@@ -96,6 +112,8 @@ struct Args {
     flake_lock: Option<String>,
     narinfo_path: Option<String>,
     registry_resolve: Option<String>,
+    realisation_path: Option<String>,
+    hash_decode: Option<String>,
 }
 
 impl Args {
@@ -110,6 +128,8 @@ impl Args {
             flake_lock: None,
             narinfo_path: None,
             registry_resolve: None,
+            realisation_path: None,
+            hash_decode: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -126,6 +146,10 @@ impl Args {
                     .ok_or("--narinfo needs <path>")?),
                 "--registry-resolve" => out.registry_resolve = Some(args.next()
                     .ok_or("--registry-resolve needs <ref>")?),
+                "--realisation" => out.realisation_path = Some(args.next()
+                    .ok_or("--realisation needs <path>")?),
+                "--hash-decode" => out.hash_decode = Some(args.next()
+                    .ok_or("--hash-decode needs <hash-string>")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -151,6 +175,8 @@ fn print_help() {
          --flake-lock <path>    Parse a flake.lock and emit a Nord-styled input summary\n  \
          --narinfo <path>       Parse a single .narinfo and emit a Nord-styled record\n  \
          --registry-resolve <ref>   Walk registry precedence (flake-local → user → system → global) for <ref>\n  \
+         --realisation <path>   Parse a CA-derivation realisation and show its record\n  \
+         --hash-decode <hash>   Classify a hash by algorithm + encoding; decode it\n  \
          -h, --help             This message"
     );
 }
@@ -772,4 +798,187 @@ fn scope_name(scope: RegistryScope) -> &'static str {
         RegistryScope::System     => "system",
         RegistryScope::Global     => "global",
     }
+}
+
+// ── --realisation mode ─────────────────────────────────────────────
+
+fn emit_realisation(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading {path}: {e}"))?;
+    let fmt = realisation::load_canonical()?
+        .into_iter()
+        .find(|f| f.name == "cppnix-realisation-v1")
+        .ok_or("missing cppnix-realisation-v1 format")?;
+    let parsed = realisation::parse(&text, &fmt)?;
+    let view = RealisationView { rec: parsed, path: path.to_string() };
+    render_view(&view);
+    Ok(())
+}
+
+struct RealisationView {
+    rec: ParsedRealisation,
+    path: String,
+}
+
+impl OperatorView for RealisationView {
+    fn subject(&self) -> &str { &self.path }
+    fn header_label(&self) -> &str { "realisation" }
+    fn render_body(&self) {
+        let label_w = 14;
+        let kv = |k: &str, v: &str| {
+            println!(
+                "  {}  {}",
+                body(&format!("{:>label_w$}", k, label_w = label_w)),
+                ident(v),
+            );
+        };
+        kv("Id", &self.rec.id);
+        kv("OutPath", &self.rec.out_path);
+
+        // Split the id into <drv-path>!<output-name> for operator
+        // legibility — show the discriminator structure.
+        if let Some((drv, out)) = self.rec.id.split_once('!') {
+            println!(
+                "  {}  {}{}{}",
+                body(&format!("{:>label_w$}", "[drv!out]", label_w = label_w)),
+                info(drv),
+                muted("!"),
+                success(out),
+            );
+        }
+
+        println!();
+        println!(
+            "  {}  {}",
+            body(&format!("{:>label_w$}", "Signatures", label_w = label_w)),
+            ident(&self.rec.signatures.len().to_string()),
+        );
+        for sig in &self.rec.signatures {
+            match sig.split_once(':') {
+                Some((key, val)) => println!(
+                    "    {}  {}{}{}",
+                    muted("⎷"),
+                    info(key),
+                    muted(":"),
+                    muted(&truncate(val, 40)),
+                ),
+                None => println!("    {}  {}", muted("⎷"), muted(sig)),
+            }
+        }
+
+        println!();
+        println!(
+            "  {}  {}",
+            body(&format!("{:>label_w$}", "DependentRels", label_w = label_w)),
+            ident(&self.rec.dependent_realisations.len().to_string()),
+        );
+        for dep in &self.rec.dependent_realisations {
+            println!("    {}  {}", muted("→"), success(dep));
+        }
+    }
+}
+
+// ── --hash-decode mode ─────────────────────────────────────────────
+
+fn emit_hash_decode(input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (algorithm, bytes) = hash::decode_hash(input)?;
+    let view = HashDecodeView {
+        input: input.to_string(),
+        algorithm,
+        bytes,
+    };
+    render_view(&view);
+    Ok(())
+}
+
+struct HashDecodeView {
+    input: String,
+    algorithm: String,
+    bytes: Vec<u8>,
+}
+
+impl OperatorView for HashDecodeView {
+    fn subject(&self) -> &str { &self.input }
+    fn header_label(&self) -> &str { "hash decode" }
+    fn render_body(&self) {
+        let label_w = 14;
+        let kv = |k: &str, v: &str| {
+            println!(
+                "  {}  {}",
+                body(&format!("{:>label_w$}", k, label_w = label_w)),
+                ident(v),
+            );
+        };
+        kv("Algorithm", &self.algorithm);
+        kv("ByteLength", &self.bytes.len().to_string());
+        kv("BitLength", &(self.bytes.len() * 8).to_string());
+
+        // Detect encoding by inspecting the input shape.  The
+        // hash module's decode_hash dispatches internally; we
+        // present the discriminator back to the operator.
+        let encoding = detect_encoding(&self.input);
+        let enc_label = encoding.unwrap_or("?");
+        println!(
+            "  {}  {}",
+            body(&format!("{:>label_w$}", "Encoding", label_w = label_w)),
+            info(enc_label),
+        );
+
+        // Round-trip preview: re-encode through known encodings
+        // so the operator sees equivalent forms.
+        println!();
+        println!(
+            "  {}",
+            body("equivalent encodings:"),
+        );
+        for target in ["base16", "sri"] {
+            match hash::encode_hash(&self.algorithm, target, &self.bytes) {
+                Ok(s) => println!(
+                    "    {}  {}  {}",
+                    info(&format!("{target:>6}")),
+                    muted("→"),
+                    ident(&truncate(&s, 72)),
+                ),
+                Err(_) => println!(
+                    "    {}  {}",
+                    info(&format!("{target:>6}")),
+                    muted("(re-encode unsupported)"),
+                ),
+            }
+        }
+    }
+    fn render_summary(&self) {
+        println!(
+            "  {} {} {} {} bits via {}",
+            glyph_arrow(),
+            success("decoded"),
+            ident(&self.bytes.len().to_string()),
+            muted("×8 ="),
+            info(&self.algorithm),
+        );
+    }
+}
+
+fn detect_encoding(input: &str) -> Option<&'static str> {
+    // SRI: starts with `<alg>-` + base64-ish suffix.
+    if input.contains('-') && input.split_once('-').is_some_and(|(a, _)| {
+        matches!(a, "sha256" | "sha512" | "sha1" | "md5")
+    }) {
+        return Some("sri");
+    }
+    // colon-prefixed: <alg>:<hex|base32>
+    if let Some((alg, suffix)) = input.split_once(':') {
+        if matches!(alg, "sha256" | "sha512" | "sha1" | "md5") {
+            return Some(if suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+                "hex"
+            } else {
+                "nix-base32"
+            });
+        }
+    }
+    // bare-hex fallback.
+    if input.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some("hex");
+    }
+    None
 }
