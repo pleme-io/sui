@@ -17,13 +17,22 @@
 //! ```
 
 use sui_spec::catalog::{self, MaturityGate, SubstrateDomain};
+use sui_spec::lock_file::{self, ParsedLockFile};
 use sui_spec::style::{
-    self, body, dim_fg, error, glyph_gear, glyph_ok, glyph_snowflake, header, ident,
-    info, muted, success, NORD13, NORD15, NORD3,
+    self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
+    header, ident, info, muted, pending, success, warn, NORD13, NORD15, NORD3, NORD8,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
+
+    // `--flake-lock <path>` mode short-circuits the catalog
+    // listing and emits a Nord-styled flake input summary.
+    if let Some(path) = &args.flake_lock {
+        emit_flake_lock(path)?;
+        return Ok(());
+    }
+
     let cat = if args.topo {
         catalog::topological_order()?
     } else {
@@ -67,6 +76,7 @@ struct Args {
     topo: bool,
     gate_filter: Option<String>,
     domain_filter: Option<String>,
+    flake_lock: Option<String>,
 }
 
 impl Args {
@@ -78,6 +88,7 @@ impl Args {
             topo: false,
             gate_filter: None,
             domain_filter: None,
+            flake_lock: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -88,6 +99,8 @@ impl Args {
                     .ok_or("--gate needs value")?),
                 "--domain" => out.domain_filter = Some(args.next()
                     .ok_or("--domain needs value")?),
+                "--flake-lock" => out.flake_lock = Some(args.next()
+                    .ok_or("--flake-lock needs <path>")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -110,6 +123,7 @@ fn print_help() {
          --gate <name>          Filter by maturity gate (Working | M2TypedOnly | \
                                 M3TypedOnly | M4TypedOnly | Informational)\n  \
          --domain <name>        Show one domain (e.g. fetcher, derivation)\n  \
+         --flake-lock <path>    Parse a flake.lock and emit a Nord-styled input summary\n  \
          -h, --help             This message"
     );
 }
@@ -229,5 +243,126 @@ fn emit_table(domains: &[&SubstrateDomain]) {
 // future extensions of this binary.
 #[allow(dead_code)]
 fn _unused() {
-    let _ = (error("x"), NORD13, NORD3);
+    let _ = (error("x"), NORD13, NORD3, glyph_arrow(), warn("x"), pending("x"), NORD8);
+}
+
+// ── --flake-lock mode ──────────────────────────────────────────────
+
+fn emit_flake_lock(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading {path}: {e}"))?;
+    let fmt = lock_file::load_canonical()?
+        .into_iter()
+        .find(|f| f.name == "cppnix-flake-lock-v7")
+        .ok_or("missing cppnix-flake-lock-v7 format")?;
+    let parsed = lock_file::parse(&text, &fmt)?;
+    emit_flake_lock_table(&parsed, path);
+    Ok(())
+}
+
+fn emit_flake_lock_table(lock: &ParsedLockFile, path: &str) {
+    let banner = format!(
+        "{}  {}  {}  {}",
+        glyph_snowflake(),
+        header("flake.lock"),
+        muted(path),
+        ident(&format!("v{}", lock.version)),
+    );
+    println!("{banner}");
+    println!();
+
+    // Root inputs first — the direct edges.
+    let root_inputs = match lock_file::root_inputs(lock) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{}", error(&format!("error walking root: {e:?}")));
+            return;
+        }
+    };
+    println!(
+        "{}  {}  {}",
+        glyph_arrow(),
+        body("root inputs:"),
+        ident(&root_inputs.len().to_string()),
+    );
+    for input_name in &root_inputs {
+        let row = format!(
+            "  {}  {}  {}",
+            success(input_name),
+            muted("→"),
+            describe_input(lock, input_name),
+        );
+        println!("{row}");
+    }
+    println!();
+
+    // Then the full node count + a few stats.
+    let total = lock.nodes.len();
+    let transitives = total.saturating_sub(1 + root_inputs.len()); // root + direct + rest
+    println!(
+        "{}  {} nodes total  ({} direct, {} transitive)",
+        muted("∑"),
+        body(&total.to_string()),
+        ident(&root_inputs.len().to_string()),
+        info(&transitives.to_string()),
+    );
+}
+
+/// Produce a one-line description of an input node from its lock entry.
+/// Pulls `locked.type` + `locked.owner/repo/rev` when available.
+fn describe_input(lock: &ParsedLockFile, name: &str) -> String {
+    let Some(node) = lock.nodes.get(name) else {
+        return muted("(missing in nodes)").to_string();
+    };
+    let Some(locked) = node.get("locked").and_then(|v| v.as_object()) else {
+        return muted("(no locked metadata)").to_string();
+    };
+    let kind = locked.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+    let rev = locked.get("rev").and_then(|v| v.as_str());
+    let owner = locked.get("owner").and_then(|v| v.as_str());
+    let repo = locked.get("repo").and_then(|v| v.as_str());
+    let url = locked.get("url").and_then(|v| v.as_str());
+    let nar_hash = locked.get("narHash").and_then(|v| v.as_str());
+
+    match (kind, owner, repo, url) {
+        ("github", Some(o), Some(r), _) => format!(
+            "{} {}{}{}",
+            info("github:"),
+            body(&format!("{o}/{r}")),
+            rev.map(|h| format!(" @{}", &h[..8.min(h.len())])).unwrap_or_default(),
+            nar_hash.map(|h| format!(" {}", muted(&truncate(h, 28))))
+                .unwrap_or_default(),
+        ),
+        ("git", _, _, Some(u)) => format!(
+            "{} {}{}",
+            info("git:"),
+            body(u),
+            rev.map(|h| format!(" @{}", &h[..8.min(h.len())])).unwrap_or_default(),
+        ),
+        ("path", _, _, _) => format!(
+            "{} {}",
+            info("path:"),
+            nar_hash.map(|h| muted(&truncate(h, 32)).to_string())
+                .unwrap_or_else(|| muted("(no narHash)").to_string()),
+        ),
+        ("tarball", _, _, Some(u)) => format!(
+            "{} {}",
+            info("tarball:"),
+            body(u),
+        ),
+        _ => format!(
+            "{} {}",
+            info(&format!("{kind}:")),
+            nar_hash.map(|h| muted(&truncate(h, 32)).to_string())
+                .unwrap_or_else(|| muted("(no metadata)").to_string()),
+        ),
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..n.saturating_sub(1)])
+    }
 }
