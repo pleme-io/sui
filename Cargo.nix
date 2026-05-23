@@ -143,6 +143,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "sui-spec" = rec {
+      packageId = "sui-spec";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "sui-spec";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "sui-store" = rec {
       packageId = "sui-store";
       build = internal.buildRustCrateWithFeatures {
@@ -4123,7 +4133,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_UI_Shell" "Win32_Foundation" "Win32_Globalization" "Win32_System_Com" ];
           }
@@ -4429,7 +4439,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_Diagnostics_Debug" ];
           }
@@ -5519,14 +5529,9 @@ rec {
       };
       "gix" = rec {
         crateName = "gix";
-        version = "0.81.0";
+        version = "0.83.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0ry5p6q7fra7nq6lc4yhlkwc6ah41bgi2c0dbnfj99j6p40j1rbc";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
         ];
@@ -5829,7 +5834,6 @@ rec {
           "tracing" = [ "gix-features/tracing" ];
           "tracing-detail" = [ "gix-features/tracing-detail" "tracing" ];
           "tree-error" = [ "gix-error/tree-error" ];
-          "verbose-object-parsing-errors" = [ "gix-object/verbose-object-parsing-errors" ];
           "worktree-archive" = [ "gix-archive" "worktree-stream" "attributes" ];
           "worktree-mutation" = [ "attributes" "dep:gix-worktree-state" ];
           "worktree-stream" = [ "gix-worktree-stream" "attributes" ];
@@ -5842,14 +5846,9 @@ rec {
       };
       "gix-actor" = rec {
         crateName = "gix-actor";
-        version = "0.40.0";
+        version = "0.41.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1n3ygfmw35qb8d4gb3zabyqxvk7inp4g6kjxn4s4fwc37dkica97";
         libName = "gix_actor";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -5869,11 +5868,6 @@ rec {
             name = "gix-error";
             packageId = "gix-error";
           }
-          {
-            name = "winnow";
-            packageId = "winnow 1.0.1";
-            features = [ "simd" ];
-          }
         ];
         features = {
           "document-features" = [ "dep:document-features" ];
@@ -5882,14 +5876,9 @@ rec {
       };
       "gix-archive" = rec {
         crateName = "gix-archive";
-        version = "0.30.0";
+        version = "0.32.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0hlk25mkkafss6qlg5k8rizsn3bhmigf1rb0rga3hcvk9cjfq84s";
         libName = "gix_archive";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -5917,12 +5906,6 @@ rec {
             packageId = "gix-worktree-stream";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-object";
-            packageId = "gix-object";
-          }
-        ];
         features = {
           "default" = [ "tar" "tar_gz" "zip" ];
           "document-features" = [ "dep:document-features" ];
@@ -5935,14 +5918,9 @@ rec {
       };
       "gix-attributes" = rec {
         crateName = "gix-attributes";
-        version = "0.31.0";
+        version = "0.33.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "00300iwf1hxzb0x625l0c1kzzkahx8i347dafqafzwmnq2hwa5zy";
         libName = "gix_attributes";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -5994,14 +5972,9 @@ rec {
       };
       "gix-bitmap" = rec {
         crateName = "gix-bitmap";
-        version = "0.3.0";
+        version = "0.3.1";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "150qmgf9jl6sxxwjv93c7s0z4n8b95d31k0y6i72jlk8xivzrjqy";
         libName = "gix_bitmap";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6016,14 +5989,9 @@ rec {
       };
       "gix-blame" = rec {
         crateName = "gix-blame";
-        version = "0.11.0";
+        version = "0.13.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "02na0bgcpkvm1pdr8i59mzkp8wljpz1rfwzd3mkajm5b8alvknhl";
         libName = "gix_blame";
         authors = [
           "Christoph Rüßler <christoph.ruessler@mailbox.org>"
@@ -6042,7 +6010,7 @@ rec {
             name = "gix-diff";
             packageId = "gix-diff";
             usesDefaultFeatures = false;
-            features = [ "blob" "blob-experimental" ];
+            features = [ "blob" ];
           }
           {
             name = "gix-error";
@@ -6090,14 +6058,9 @@ rec {
       };
       "gix-chunk" = rec {
         crateName = "gix-chunk";
-        version = "0.7.0";
+        version = "0.7.1";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0823fs8izb9kgrr6hvvqhhylkq9b56m1yxq3vqqp5zk0kfz8iwpd";
         libName = "gix_chunk";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6112,14 +6075,9 @@ rec {
       };
       "gix-command" = rec {
         crateName = "gix-command";
-        version = "0.8.0";
+        version = "0.9.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1n44fcz36dj067hl7kgd0bi2z4wh7lglnvc6bkbl7ghsa4356cw6";
         libName = "gix_command";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6152,14 +6110,9 @@ rec {
       };
       "gix-commitgraph" = rec {
         crateName = "gix-commitgraph";
-        version = "0.35.0";
+        version = "0.37.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1srjkpy20ihq2p62246pxd9amjmgxpp9l8hx4s6046afyah5lfzy";
         libName = "gix_commitgraph";
         authors = [
           "Conor Davis <gitoxide@conor.fastmail.fm>"
@@ -6193,13 +6146,6 @@ rec {
             packageId = "nonempty";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-        ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "gix-hash/serde" "bstr/serde" ];
@@ -6209,14 +6155,9 @@ rec {
       };
       "gix-config" = rec {
         crateName = "gix-config";
-        version = "0.54.0";
+        version = "0.56.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "046l2kjif5cy7i59a0gh47grdbj6zn7dxwa1pbv6f76jxf5880cc";
         libName = "gix_config";
         authors = [
           "Edward Shen <code@eddie.sh>"
@@ -6253,10 +6194,6 @@ rec {
             packageId = "gix-sec";
           }
           {
-            name = "memchr";
-            packageId = "memchr";
-          }
-          {
             name = "smallvec";
             packageId = "smallvec";
           }
@@ -6268,11 +6205,6 @@ rec {
             name = "unicode-bom";
             packageId = "unicode-bom";
           }
-          {
-            name = "winnow";
-            packageId = "winnow 1.0.1";
-            features = [ "simd" ];
-          }
         ];
         features = {
           "document-features" = [ "dep:document-features" ];
@@ -6283,14 +6215,9 @@ rec {
       };
       "gix-config-value" = rec {
         crateName = "gix-config-value";
-        version = "0.17.1";
+        version = "0.18.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1cn42rs1hv7fgp7z00b2wpwdk640mi5vk7vz2lxhmhg4kv9rxcqk";
         libName = "gix_config_value";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6327,14 +6254,9 @@ rec {
       };
       "gix-credentials" = rec {
         crateName = "gix-credentials";
-        version = "0.37.1";
+        version = "0.38.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0q4grhwzwrb9cd8lwx2vx0hybpspdrd9947z2rxiv0bhidci3jk5";
         libName = "gix_credentials";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6383,12 +6305,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-sec";
-            packageId = "gix-sec";
-          }
-        ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "bstr/serde" "gix-sec/serde" ];
@@ -6396,14 +6312,9 @@ rec {
       };
       "gix-date" = rec {
         crateName = "gix-date";
-        version = "0.15.1";
+        version = "0.15.3";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0hqmsj3dz8mfcc9b6dmnp5dzng6h5hnsmcyrwcv423sbxgjdlk5r";
         libName = "gix_date";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6440,14 +6351,9 @@ rec {
       };
       "gix-diff" = rec {
         crateName = "gix-diff";
-        version = "0.61.0";
+        version = "0.63.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0alqll7bb0kvvq5r21703mg68ml034phbazymwj5zzwi3bxf026w";
         libName = "gix_diff";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6476,6 +6382,12 @@ rec {
           {
             name = "gix-hash";
             packageId = "gix-hash";
+          }
+          {
+            name = "gix-imara-diff";
+            packageId = "gix-imara-diff";
+            rename = "imara-diff";
+            optional = true;
           }
           {
             name = "gix-object";
@@ -6509,36 +6421,12 @@ rec {
             features = [ "attributes" ];
           }
           {
-            name = "imara-diff";
-            packageId = "imara-diff 0.1.8";
-            optional = true;
-          }
-          {
-            name = "imara-diff";
-            packageId = "imara-diff 0.2.0";
-            rename = "imara-diff-v2";
-            optional = true;
-          }
-          {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-          {
-            name = "imara-diff";
-            packageId = "imara-diff 0.2.0";
-            rename = "imara-diff-v2";
-          }
-        ];
         features = {
           "blob" = [ "dep:imara-diff" "dep:gix-filter" "dep:gix-worktree" "dep:gix-path" "dep:gix-fs" "dep:gix-command" "dep:gix-tempfile" "dep:gix-trace" "dep:gix-traverse" ];
-          "blob-experimental" = [ "dep:imara-diff-v2" ];
           "default" = [ "blob" "index" ];
           "document-features" = [ "dep:document-features" ];
           "index" = [ "dep:gix-index" "dep:gix-pathspec" "dep:gix-attributes" ];
@@ -6546,18 +6434,13 @@ rec {
           "sha1" = [ "gix-hash/sha1" ];
           "wasm" = [ "dep:getrandom" ];
         };
-        resolvedDefaultFeatures = [ "blob" "blob-experimental" "sha1" ];
+        resolvedDefaultFeatures = [ "blob" "sha1" ];
       };
       "gix-dir" = rec {
         crateName = "gix-dir";
-        version = "0.23.0";
+        version = "0.25.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0v13yn59pai70hr2ar8s8qpq43yrfrlnc4x3y35k1r71x43gr81j";
         libName = "gix_dir";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6615,12 +6498,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-fs";
-            packageId = "gix-fs";
-          }
-        ];
         features = {
           "sha1" = [ "gix-discover/sha1" "gix-index/sha1" "gix-object/sha1" "gix-worktree/sha1" ];
         };
@@ -6628,14 +6505,9 @@ rec {
       };
       "gix-discover" = rec {
         crateName = "gix-discover";
-        version = "0.49.0";
+        version = "0.51.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0d5dpicvic1qkz99z1mwana73m316xdvwkmj08bqls0ya1m2x18p";
         libName = "gix_discover";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6680,14 +6552,9 @@ rec {
       };
       "gix-error" = rec {
         crateName = "gix-error";
-        version = "0.2.1";
+        version = "0.2.3";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "04q6265dm3xasfah2jlh25378m783572xvgwrpy29dvafiqvj1z2";
         libName = "gix_error";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6707,14 +6574,9 @@ rec {
       };
       "gix-features" = rec {
         crateName = "gix-features";
-        version = "0.46.2";
+        version = "0.48.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0kywgwq14b74997g52wf9zikik4wpqn5nk3bqsid0cskmn9mcdxg";
         libName = "gix_features";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6795,14 +6657,9 @@ rec {
       };
       "gix-filter" = rec {
         crateName = "gix-filter";
-        version = "0.28.0";
+        version = "0.30.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "021srvpgvnd9aysf3jahjxvvsrd30wcvk394bmhrng35x7digjfs";
         libName = "gix_filter";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6864,17 +6721,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-          {
-            name = "gix-quote";
-            packageId = "gix-quote";
-          }
-        ];
         features = {
           "sha1" = [ "gix-hash/sha1" "gix-object/sha1" ];
         };
@@ -6882,14 +6728,9 @@ rec {
       };
       "gix-fs" = rec {
         crateName = "gix-fs";
-        version = "0.19.2";
+        version = "0.21.1";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "11kcadm2igs9h9vmkxa7ff4imp6agg2z1bn28xy7aj4qmkd6f68y";
         libName = "gix_fs";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6929,14 +6770,9 @@ rec {
       };
       "gix-glob" = rec {
         crateName = "gix-glob";
-        version = "0.24.0";
+        version = "0.26.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1363wadnnwi7cpb4i8qf696i6yzkjw4zhr2rgx8g56q6k8j2kgq8";
         libName = "gix_glob";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -6968,14 +6804,9 @@ rec {
       };
       "gix-hash" = rec {
         crateName = "gix-hash";
-        version = "0.23.0";
+        version = "0.25.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1lh3ww6l52z3kjrm8ydbivjyqr8qnzmviy30cg8ywdr34lg0vxxw";
         libName = "gix_hash";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7013,14 +6844,9 @@ rec {
       };
       "gix-hashtable" = rec {
         crateName = "gix-hashtable";
-        version = "0.13.0";
+        version = "0.15.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "12xhs0gjlk2xyn717q9xcn5bzz6ss8w7pg7f5qxnvhdk0xg4afyk";
         libName = "gix_hashtable";
         authors = [
           "Pascal Kuthe <pascal.kuthe@semimod.de>"
@@ -7041,13 +6867,6 @@ rec {
             packageId = "parking_lot";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-        ];
         features = {
           "sha1" = [ "gix-hash/sha1" ];
         };
@@ -7055,14 +6874,9 @@ rec {
       };
       "gix-ignore" = rec {
         crateName = "gix-ignore";
-        version = "0.19.1";
+        version = "0.21.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1idybfi8y8cgvh64s35gzi9a9xnxvy4cq7xna8z99vmgxsxkzcbb";
         libName = "gix_ignore";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7096,16 +6910,38 @@ rec {
           "serde" = [ "dep:serde" "bstr/serde" "gix-glob/serde" ];
         };
       };
+      "gix-imara-diff" = rec {
+        crateName = "gix-imara-diff";
+        version = "0.2.1";
+        edition = "2021";
+        sha256 = "10lc700nx081rid6pcqmnziimpgs92g9asnf08ybhk2yw4ihdsrr";
+        libName = "gix_imara_diff";
+        authors = [
+          "pascalkuthe <pascalkuthe@pm.me>"
+          "Sebastian Thiel <sebastian.thiel@icloud.com>"
+        ];
+        dependencies = [
+          {
+            name = "bstr";
+            packageId = "bstr";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "hashbrown";
+            packageId = "hashbrown 0.16.1";
+            usesDefaultFeatures = false;
+            features = [ "default-hasher" "inline-more" ];
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
       "gix-index" = rec {
         crateName = "gix-index";
-        version = "0.49.0";
+        version = "0.51.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1nwi27adjmj3vnylhvcpdcy9wszd7zb6n8m64x1iw4h8mnbyzhsl";
         libName = "gix_index";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7198,13 +7034,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-        ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "smallvec/serde" "gix-hash/serde" ];
@@ -7214,14 +7043,9 @@ rec {
       };
       "gix-lock" = rec {
         crateName = "gix-lock";
-        version = "21.0.2";
+        version = "23.0.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1hc6l6jbnbqps09fhv9gfi9lm04mknwrmk9d91xh48sp9q3vrcq9";
         libName = "gix_lock";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7246,14 +7070,9 @@ rec {
       };
       "gix-merge" = rec {
         crateName = "gix-merge";
-        version = "0.14.0";
+        version = "0.16.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "10d8kvczjnkk7r8dj04gwipgbz6hz7gj9c2il7q342mpab6cvfvl";
         libName = "gix_merge";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7285,6 +7104,11 @@ rec {
           {
             name = "gix-hash";
             packageId = "gix-hash";
+          }
+          {
+            name = "gix-imara-diff";
+            packageId = "gix-imara-diff";
+            rename = "imara-diff";
           }
           {
             name = "gix-index";
@@ -7327,10 +7151,6 @@ rec {
             features = [ "attributes" ];
           }
           {
-            name = "imara-diff";
-            packageId = "imara-diff 0.1.8";
-          }
-          {
             name = "nonempty";
             packageId = "nonempty";
           }
@@ -7348,14 +7168,9 @@ rec {
       };
       "gix-negotiate" = rec {
         crateName = "gix-negotiate";
-        version = "0.29.0";
+        version = "0.31.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "033q1pr3zaid5hml54ldb3763m6sgc936n80lmnakf71mnzl4g8h";
         libName = "gix_negotiate";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7386,13 +7201,6 @@ rec {
             packageId = "gix-revwalk";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-        ];
         features = {
           "sha1" = [ "gix-commitgraph/sha1" "gix-hash/sha1" "gix-object/sha1" "gix-revwalk/sha1" ];
         };
@@ -7400,14 +7208,9 @@ rec {
       };
       "gix-object" = rec {
         crateName = "gix-object";
-        version = "0.58.0";
+        version = "0.60.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1mxljfzkynpmlwh42yi0a9llbh96f1hjrrrqzn5dzibwbnlpb053";
         libName = "gix_object";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7461,30 +7264,19 @@ rec {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
-          {
-            name = "winnow";
-            packageId = "winnow 1.0.1";
-            features = [ "simd" ];
-          }
         ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "bstr/serde" "smallvec/serde" "gix-hash/serde" "gix-actor/serde" ];
           "sha1" = [ "gix-hash/sha1" ];
-          "verbose-object-parsing-errors" = [ "winnow/std" ];
         };
         resolvedDefaultFeatures = [ "sha1" ];
       };
       "gix-odb" = rec {
         crateName = "gix-odb";
-        version = "0.78.0";
+        version = "0.80.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1fhn2wrq3a826ixy802pww5spvh61ljw3kayfcc084k3jqma3vdf";
         libName = "gix_odb";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7529,6 +7321,10 @@ rec {
             packageId = "gix-quote";
           }
           {
+            name = "memmap2";
+            packageId = "memmap2";
+          }
+          {
             name = "parking_lot";
             packageId = "parking_lot";
           }
@@ -7541,13 +7337,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-        ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "gix-hash/serde" "gix-object/serde" "gix-pack/serde" ];
@@ -7557,14 +7346,9 @@ rec {
       };
       "gix-pack" = rec {
         crateName = "gix-pack";
-        version = "0.68.0";
+        version = "0.70.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1yml0a8b8hcrr4fhk1j0v9m8a54v1ps4alpar5ls01wgbipjxw6s";
         libName = "gix_pack";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7654,14 +7438,9 @@ rec {
       };
       "gix-packetline" = rec {
         crateName = "gix-packetline";
-        version = "0.21.2";
+        version = "0.21.3";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1rjnas71kr4mpqi44wxngm3wwvka03vwnr06kxlr3rhf8kglc8in";
         libName = "gix_packetline";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7698,14 +7477,9 @@ rec {
       };
       "gix-path" = rec {
         crateName = "gix-path";
-        version = "0.11.2";
+        version = "0.12.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0vilxvz5w8pgb4cznxh80rp958zgki4iciz20vsbghd4x1cn06k7";
         libName = "gix_path";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7734,14 +7508,9 @@ rec {
       };
       "gix-pathspec" = rec {
         crateName = "gix-pathspec";
-        version = "0.16.1";
+        version = "0.18.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0mc8gvy324zzsr4mqw0wmbdg43frlspi6zipyi4znw6xhgqa911a";
         libName = "gix_pathspec";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7782,14 +7551,9 @@ rec {
       };
       "gix-prompt" = rec {
         crateName = "gix-prompt";
-        version = "0.14.1";
+        version = "0.15.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1vhs4m91y69dg4908hhz7fx4yi8fipd81pzw2x0rxdjcqqkachg0";
         libName = "gix_prompt";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7823,14 +7587,9 @@ rec {
       };
       "gix-protocol" = rec {
         crateName = "gix-protocol";
-        version = "0.59.0";
+        version = "0.61.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1zf44r524ws331baad1zz9aw2rzl3kkzlvmrjrcn7v33vf1fwjxa";
         libName = "gix_protocol";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7918,18 +7677,6 @@ rec {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
-          {
-            name = "winnow";
-            packageId = "winnow 1.0.1";
-            features = [ "simd" ];
-          }
-        ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
         ];
         features = {
           "async-client" = [ "gix-transport/async-client" "dep:async-trait" "dep:futures-io" "futures-lite" "handshake" "fetch" ];
@@ -7945,14 +7692,9 @@ rec {
       };
       "gix-quote" = rec {
         crateName = "gix-quote";
-        version = "0.7.0";
+        version = "0.7.1";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1gpqp9yplb4m3knpdf2hfzwiaq8ka7jv7ifjgpxc0jx6j4vvg5vf";
         libName = "gix_quote";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -7977,14 +7719,9 @@ rec {
       };
       "gix-ref" = rec {
         crateName = "gix-ref";
-        version = "0.61.0";
+        version = "0.63.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0rv1f8xb9fwbf7lzsa08crck9j2y1w9q76rlk562g2smbz0rrfnq";
         libName = "gix_ref";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8040,36 +7777,20 @@ rec {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
-          {
-            name = "winnow";
-            packageId = "winnow 1.0.1";
-            features = [ "simd" ];
-          }
-        ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
         ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "serde" = [ "dep:serde" "gix-hash/serde" "gix-actor/serde" "gix-object/serde" ];
           "sha1" = [ "gix-hash/sha1" ];
+          "sha256" = [ "gix-hash/sha256" ];
         };
         resolvedDefaultFeatures = [ "sha1" ];
       };
       "gix-refspec" = rec {
         crateName = "gix-refspec";
-        version = "0.39.0";
+        version = "0.41.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0qdplsr9xnpybf6yv89dq3jai32lc663qndil508kp3yslkmnxb1";
         libName = "gix_refspec";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8111,13 +7832,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-        ];
         features = {
           "sha1" = [ "gix-hash/sha1" ];
         };
@@ -8125,14 +7839,9 @@ rec {
       };
       "gix-revision" = rec {
         crateName = "gix-revision";
-        version = "0.43.0";
+        version = "0.45.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1s5pdbyrqaa2nf6f28pl0a63nx3qig1rxfp2wjikwvbhmj7jid8z";
         libName = "gix_revision";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8200,14 +7909,9 @@ rec {
       };
       "gix-revwalk" = rec {
         crateName = "gix-revwalk";
-        version = "0.29.0";
+        version = "0.31.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1w39a1q28iqi40cppjgvgjncs1357szrca4vgzzi4fh7ddq16f1i";
         libName = "gix_revwalk";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8246,13 +7950,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" "sha256" ];
-          }
-        ];
         features = {
           "sha1" = [ "gix-commitgraph/sha1" "gix-hash/sha1" "gix-hashtable/sha1" "gix-object/sha1" ];
         };
@@ -8260,14 +7957,9 @@ rec {
       };
       "gix-sec" = rec {
         crateName = "gix-sec";
-        version = "0.13.2";
+        version = "0.14.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1ih76iirh15zfjcylr7al2324998q2k4drjicw9ki8h4wp9s58zm";
         libName = "gix_sec";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8301,14 +7993,9 @@ rec {
       };
       "gix-shallow" = rec {
         crateName = "gix-shallow";
-        version = "0.10.0";
+        version = "0.12.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "09wch2jvmc8kscyyd99rpm5bg7zsvclap16jxx5czyhva82p6619";
         libName = "gix_shallow";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8344,14 +8031,9 @@ rec {
       };
       "gix-status" = rec {
         crateName = "gix-status";
-        version = "0.28.0";
+        version = "0.30.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0rabkb1gsab1mc8cl9nqgjiqndyiws18q9kyzq2s5zr1qnld5ik8";
         libName = "gix_status";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8428,13 +8110,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-        ];
         features = {
           "document-features" = [ "dep:document-features" ];
           "sha1" = [ "gix-hash/sha1" ];
@@ -8444,14 +8119,9 @@ rec {
       };
       "gix-submodule" = rec {
         crateName = "gix-submodule";
-        version = "0.28.0";
+        version = "0.30.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "14adxgiy3rmxvspfmi42m874dy34qga0ym3fb4ddf2w9ja3grmcz";
         libName = "gix_submodule";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8494,14 +8164,9 @@ rec {
       };
       "gix-tempfile" = rec {
         crateName = "gix-tempfile";
-        version = "21.0.2";
+        version = "23.0.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1yzp1a7rv4r3qwmm3kradg28550d3jfyq1a7s3afgirm2kis27k9";
         libName = "gix_tempfile";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8541,14 +8206,9 @@ rec {
       };
       "gix-trace" = rec {
         crateName = "gix-trace";
-        version = "0.1.18";
+        version = "0.1.19";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "03i7s9zj3z1ybsmfwff435y2mmd76jbknd8phsaszzzjang5c8vg";
         libName = "gix_trace";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8561,14 +8221,9 @@ rec {
       };
       "gix-transport" = rec {
         crateName = "gix-transport";
-        version = "0.55.1";
+        version = "0.57.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "061h180sr76aj1h7p6fwkv3dw5a408sjjassbynlwbdrfv3abmpz";
         libName = "gix_transport";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8653,14 +8308,9 @@ rec {
       };
       "gix-traverse" = rec {
         crateName = "gix-traverse";
-        version = "0.55.0";
+        version = "0.57.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0p6fn8cqg6dkdgn5qav4dqqyiy7hszkzvz3i7v07crkqq1970jx1";
         libName = "gix_traverse";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8703,13 +8353,6 @@ rec {
             packageId = "thiserror 2.0.18";
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-        ];
         features = {
           "sha1" = [ "gix-hash/sha1" ];
         };
@@ -8717,14 +8360,9 @@ rec {
       };
       "gix-url" = rec {
         crateName = "gix-url";
-        version = "0.35.2";
+        version = "0.36.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1khyfa3rh9aj550pm6zp7nf18wh5cza8i7jjp9mnygw1kq4jv11m";
         libName = "gix_url";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8756,14 +8394,9 @@ rec {
       };
       "gix-utils" = rec {
         crateName = "gix-utils";
-        version = "0.3.1";
+        version = "0.3.2";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0b6v9awxa410jfcz2w0dqq1rg582h62kricilx5xms560x7pnisf";
         libName = "gix_utils";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8793,14 +8426,9 @@ rec {
       };
       "gix-validate" = rec {
         crateName = "gix-validate";
-        version = "0.11.0";
+        version = "0.11.1";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1mfsh2nh3icgxzgcqr4z7hm1ci0r6k9q22snl3fdzsj35dhc4sp2";
         libName = "gix_validate";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8817,14 +8445,9 @@ rec {
       };
       "gix-worktree" = rec {
         crateName = "gix-worktree";
-        version = "0.50.0";
+        version = "0.52.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "1z86sj7wbzjynph3g4jpvpd03vlyh15rchfhi0pq6419bvmmb6fn";
         libName = "gix_worktree";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8874,13 +8497,6 @@ rec {
             optional = true;
           }
         ];
-        devDependencies = [
-          {
-            name = "gix-hash";
-            packageId = "gix-hash";
-            features = [ "sha1" ];
-          }
-        ];
         features = {
           "attributes" = [ "dep:gix-attributes" "dep:gix-validate" ];
           "default" = [ "attributes" ];
@@ -8892,14 +8508,9 @@ rec {
       };
       "gix-worktree-state" = rec {
         crateName = "gix-worktree-state";
-        version = "0.28.0";
+        version = "0.30.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "0008sz3grvj1ymv14cf1j7kb5swkv846xw2m3hly13wyrz5xr5la";
         libName = "gix_worktree_state";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -8956,14 +8567,9 @@ rec {
       };
       "gix-worktree-stream" = rec {
         crateName = "gix-worktree-stream";
-        version = "0.30.0";
+        version = "0.32.0";
         edition = "2021";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/gitoxide";
-          rev = "e840680cf824c54d9c4babff7124236aafc52b01";
-          sha256 = "172dc40lh3hz8s5xx2jcnlkvk4p828a2ix4bih8w4fp5a9k3wnwd";
-        };
+        sha256 = "04s2b4z644h3wl0j4qxjpfhh203357dcwgkzr6hf2qj6xnw4914s";
         libName = "gix_worktree_stream";
         authors = [
           "Sebastian Thiel <sebastian.thiel@icloud.com>"
@@ -10575,54 +10181,6 @@ rec {
           "serde" = [ "dep:serde" ];
         };
       };
-      "imara-diff 0.1.8" = rec {
-        crateName = "imara-diff";
-        version = "0.1.8";
-        edition = "2021";
-        sha256 = "1lmk5dpha2fhahrnsrgavxn1qz6ydp1w8jz8fpvlb28p89ylplqp";
-        libName = "imara_diff";
-        authors = [
-          "pascalkuthe <pascalkuthe@pm.me>"
-        ];
-        dependencies = [
-          {
-            name = "hashbrown";
-            packageId = "hashbrown 0.15.5";
-            usesDefaultFeatures = false;
-            features = [ "default-hasher" "inline-more" ];
-          }
-        ];
-        features = {
-          "default" = [ "unified_diff" ];
-        };
-        resolvedDefaultFeatures = [ "default" "unified_diff" ];
-      };
-      "imara-diff 0.2.0" = rec {
-        crateName = "imara-diff";
-        version = "0.2.0";
-        edition = "2021";
-        sha256 = "0p2wmak4pbqfa93fihply18kq8q0nxg6zl0dhampipv6yxid809g";
-        libName = "imara_diff";
-        authors = [
-          "pascalkuthe <pascalkuthe@pm.me>"
-        ];
-        dependencies = [
-          {
-            name = "hashbrown";
-            packageId = "hashbrown 0.15.5";
-            usesDefaultFeatures = false;
-            features = [ "default-hasher" "inline-more" ];
-          }
-          {
-            name = "memchr";
-            packageId = "memchr";
-          }
-        ];
-        features = {
-          "default" = [ "unified_diff" ];
-        };
-        resolvedDefaultFeatures = [ "default" "unified_diff" ];
-      };
       "indexmap 1.9.3" = rec {
         crateName = "indexmap";
         version = "1.9.3";
@@ -10889,7 +10447,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Storage_FileSystem" "Win32_System_Console" ];
           }
@@ -11035,7 +10593,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             optional = true;
             usesDefaultFeatures = false;
             target = { target, features }: (target."windows" or false);
@@ -11829,6 +11387,7 @@ rec {
           "oid" = [ "digest/oid" ];
           "std" = [ "digest/std" ];
         };
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "memchr" = rec {
         crateName = "memchr";
@@ -12425,7 +11984,7 @@ rec {
         dependencies = [
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             rename = "windows";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_Console" "Win32_Storage_FileSystem" "Win32_Security" ];
@@ -14723,7 +14282,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.60.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_System_IO" "Win32_Networking_WinSock" ];
           }
@@ -14902,7 +14461,7 @@ rec {
           "serde1" = [ "serde" ];
           "std" = [ "ppv-lite86/std" ];
         };
-        resolvedDefaultFeatures = [ "std" ];
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "rand_chacha 0.9.0" = rec {
         crateName = "rand_chacha";
@@ -16530,7 +16089,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Networking_WinSock" ];
           }
@@ -16855,7 +16414,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             usesDefaultFeatures = false;
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Security_Cryptography" ];
@@ -18541,12 +18100,7 @@ rec {
         crateName = "shikumi";
         version = "0.1.0";
         edition = "2024";
-        workspace_member = null;
-        src = pkgs.fetchgit {
-          url = "https://github.com/pleme-io/shikumi";
-          rev = "15c4e5484d80717ff2256f098378baaeab18b971";
-          sha256 = "1w4hk7mfcgnjjcm5zk9lsivbj36rwk56a92h69wsa51f0by270pa";
-        };
+        sha256 = "1ac9fx48rfg4f6l7jgj8wlzj4yc52z1g8cs6nbc6cckl7cbrn1ls";
         dependencies = [
           {
             name = "arc-swap";
@@ -20178,7 +19732,7 @@ rec {
       };
       "sui" = rec {
         crateName = "sui";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         crateBin = [
           {
@@ -20215,11 +19769,6 @@ rec {
             name = "clap";
             packageId = "clap";
             features = [ "derive" ];
-          }
-          {
-            name = "figment";
-            packageId = "figment";
-            features = [ "yaml" "toml" "env" ];
           }
           {
             name = "futures-core";
@@ -20268,8 +19817,16 @@ rec {
             packageId = "sui-eval";
           }
           {
+            name = "sui-intern";
+            packageId = "sui-intern";
+          }
+          {
             name = "sui-orchestrate";
             packageId = "sui-orchestrate";
+          }
+          {
+            name = "sui-spec";
+            packageId = "sui-spec";
           }
           {
             name = "sui-store";
@@ -20362,7 +19919,7 @@ rec {
       };
       "sui-build" = rec {
         crateName = "sui-build";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-build; };
         libName = "sui_build";
@@ -20374,6 +19931,10 @@ rec {
           {
             name = "async-trait";
             packageId = "async-trait";
+          }
+          {
+            name = "blake3";
+            packageId = "blake3";
           }
           {
             name = "sha2";
@@ -20428,7 +19989,7 @@ rec {
       };
       "sui-bytecode" = rec {
         crateName = "sui-bytecode";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-bytecode; };
         libName = "sui_bytecode";
@@ -20458,6 +20019,10 @@ rec {
             packageId = "sui-intern";
           }
           {
+            name = "sui-spec";
+            packageId = "sui-spec";
+          }
+          {
             name = "thiserror";
             packageId = "thiserror 2.0.18";
           }
@@ -20484,7 +20049,7 @@ rec {
       };
       "sui-cache" = rec {
         crateName = "sui-cache";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache; };
         libName = "sui_cache";
@@ -20592,7 +20157,7 @@ rec {
       };
       "sui-cache-eval" = rec {
         crateName = "sui-cache-eval";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-cache-eval; };
         libName = "sui_cache_eval";
@@ -20629,7 +20194,7 @@ rec {
       };
       "sui-compat" = rec {
         crateName = "sui-compat";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-compat; };
         libName = "sui_compat";
@@ -20683,7 +20248,7 @@ rec {
       };
       "sui-daemon" = rec {
         crateName = "sui-daemon";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-daemon; };
         libName = "sui_daemon";
@@ -20748,12 +20313,22 @@ rec {
             name = "tempfile";
             packageId = "tempfile";
           }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "full" "full" "test-util" "process" ];
+          }
+          {
+            name = "tracing-subscriber";
+            packageId = "tracing-subscriber";
+            features = [ "env-filter" ];
+          }
         ];
 
       };
       "sui-eval" = rec {
         crateName = "sui-eval";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-eval; };
         libName = "sui_eval";
@@ -20783,6 +20358,10 @@ rec {
           {
             name = "im-rc";
             packageId = "im-rc";
+          }
+          {
+            name = "md-5";
+            packageId = "md-5";
           }
           {
             name = "redb";
@@ -20818,6 +20397,10 @@ rec {
             packageId = "serde_yaml_ng";
           }
           {
+            name = "sha1";
+            packageId = "sha1";
+          }
+          {
             name = "sha2";
             packageId = "sha2";
           }
@@ -20849,6 +20432,10 @@ rec {
           {
             name = "sui-intern";
             packageId = "sui-intern";
+          }
+          {
+            name = "sui-spec";
+            packageId = "sui-spec";
           }
           {
             name = "sui-store";
@@ -20894,6 +20481,22 @@ rec {
             packageId = "proptest";
           }
           {
+            name = "rand";
+            packageId = "rand 0.8.5";
+          }
+          {
+            name = "rand_chacha";
+            packageId = "rand_chacha 0.3.1";
+          }
+          {
+            name = "tatara-lisp";
+            packageId = "tatara-lisp";
+          }
+          {
+            name = "tatara-lisp-derive";
+            packageId = "tatara-lisp-derive";
+          }
+          {
             name = "tempfile";
             packageId = "tempfile";
           }
@@ -20906,7 +20509,7 @@ rec {
       };
       "sui-intern" = rec {
         crateName = "sui-intern";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-intern; };
         libName = "sui_intern";
@@ -20920,7 +20523,7 @@ rec {
       };
       "sui-orchestrate" = rec {
         crateName = "sui-orchestrate";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-orchestrate; };
         libName = "sui_orchestrate";
@@ -20994,9 +20597,75 @@ rec {
         ];
 
       };
+      "sui-spec" = rec {
+        crateName = "sui-spec";
+        version = "0.1.1";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "sui-spec-inventory";
+            path = "src/bin/sui-spec-inventory.rs";
+            requiredFeatures = [ ];
+          }
+          {
+            name = "sui-sweep";
+            path = "src/bin/sui-sweep.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-spec; };
+        libName = "sui_spec";
+        dependencies = [
+          {
+            name = "libc";
+            packageId = "libc";
+            target = { target, features }: (target."unix" or false);
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2";
+          }
+          {
+            name = "sui-compat";
+            packageId = "sui-compat";
+          }
+          {
+            name = "tatara-lisp";
+            packageId = "tatara-lisp";
+          }
+          {
+            name = "tatara-lisp-derive";
+            packageId = "tatara-lisp-derive";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "proptest";
+            packageId = "proptest";
+          }
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+        ];
+
+      };
       "sui-store" = rec {
         crateName = "sui-store";
-        version = "0.1.0";
+        version = "0.1.1";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ./sui-store; };
         libName = "sui_store";
@@ -21290,6 +20959,69 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "xattr" ];
       };
+      "tatara-lisp" = rec {
+        crateName = "tatara-lisp";
+        version = "0.2.1";
+        edition = "2021";
+        sha256 = "0wkdz65gha8zrgaaj0xmdkjbvzkqbhyxp5rq8r1agf1ggzmnrs58";
+        libName = "tatara_lisp";
+        authors = [
+          "Pleme.io <engineering@pleme.io>"
+        ];
+        dependencies = [
+          {
+            name = "blake3";
+            packageId = "blake3";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "tatara-lisp-derive";
+            packageId = "tatara-lisp-derive";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.18";
+          }
+        ];
+        features = {
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
+      "tatara-lisp-derive" = rec {
+        crateName = "tatara-lisp-derive";
+        version = "0.2.1";
+        edition = "2021";
+        sha256 = "1m1mk7r4rbw0yf9wv1wycxz29k22r6r6yry6v3zazm2g8n3mq5aa";
+        procMacro = true;
+        libName = "tatara_lisp_derive";
+        authors = [
+          "Pleme.io <engineering@pleme.io>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.117";
+            features = [ "full" ];
+          }
+        ];
+
+      };
       "tempfile" = rec {
         crateName = "tempfile";
         version = "3.27.0";
@@ -21327,7 +21059,7 @@ rec {
           }
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.59.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Storage_FileSystem" "Win32_Foundation" ];
           }
@@ -24985,7 +24717,7 @@ rec {
         dependencies = [
           {
             name = "windows-sys";
-            packageId = "windows-sys 0.48.0";
+            packageId = "windows-sys 0.61.2";
             target = { target, features }: (target."windows" or false);
             features = [ "Win32_Foundation" "Win32_Storage_FileSystem" "Win32_System_Console" "Win32_System_SystemInformation" ];
           }
@@ -25748,7 +25480,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_System_SystemInformation" "Win32_UI" "Win32_UI_Shell" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_UI" "Win32_UI_Shell" "default" ];
       };
       "windows-sys 0.52.0" = rec {
         crateName = "windows-sys";
@@ -26255,7 +25987,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Globalization" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Security_Cryptography" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Com" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_Memory" "Win32_System_Threading" "Win32_System_Time" "Win32_UI" "Win32_UI_Shell" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_System" "Win32_System_Memory" "Win32_System_Threading" "default" ];
       };
       "windows-sys 0.60.2" = rec {
         crateName = "windows-sys";
@@ -26520,7 +26252,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_IO" "Win32_System_Threading" "Win32_System_WindowsProgramming" "default" ];
+        resolvedDefaultFeatures = [ "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_IO" "Win32_System_Threading" "Win32_System_WindowsProgramming" "default" ];
       };
       "windows-sys 0.61.2" = rec {
         crateName = "windows-sys";
@@ -26782,7 +26514,7 @@ rec {
           "Win32_Web" = [ "Win32" ];
           "Win32_Web_InternetExplorer" = [ "Win32_Web" ];
         };
-        resolvedDefaultFeatures = [ "Wdk" "Wdk_Foundation" "Wdk_Storage" "Wdk_Storage_FileSystem" "Wdk_System" "Wdk_System_IO" "Win32" "Win32_Foundation" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Security_Authentication" "Win32_Security_Authentication_Identity" "Win32_Security_Authorization" "Win32_Security_Credentials" "Win32_Security_Cryptography" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Com" "Win32_System_Console" "Win32_System_IO" "Win32_System_LibraryLoader" "Win32_System_Memory" "Win32_System_Pipes" "Win32_System_SystemInformation" "Win32_System_SystemServices" "Win32_System_Threading" "Win32_System_WindowsProgramming" "Win32_UI" "Win32_UI_Shell" "default" ];
+        resolvedDefaultFeatures = [ "Wdk" "Wdk_Foundation" "Wdk_Storage" "Wdk_Storage_FileSystem" "Wdk_System" "Wdk_System_IO" "Win32" "Win32_Foundation" "Win32_Globalization" "Win32_Networking" "Win32_Networking_WinSock" "Win32_Security" "Win32_Security_Authentication" "Win32_Security_Authentication_Identity" "Win32_Security_Authorization" "Win32_Security_Credentials" "Win32_Security_Cryptography" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Com" "Win32_System_Console" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_LibraryLoader" "Win32_System_Memory" "Win32_System_Pipes" "Win32_System_SystemInformation" "Win32_System_SystemServices" "Win32_System_Threading" "Win32_System_Time" "Win32_System_WindowsProgramming" "Win32_UI" "Win32_UI_Shell" "default" ];
       };
       "windows-targets 0.42.2" = rec {
         crateName = "windows-targets";
@@ -27335,7 +27067,7 @@ rec {
           "unstable-doc" = [ "alloc" "std" "ascii" "binary" "simd" "unstable-recover" ];
           "unstable-recover" = [ "parser" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "ascii" "binary" "default" "parser" "simd" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "ascii" "binary" "default" "parser" "std" ];
       };
       "wit-bindgen" = rec {
         crateName = "wit-bindgen";
