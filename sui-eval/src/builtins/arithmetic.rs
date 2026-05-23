@@ -27,28 +27,28 @@ macro_rules! register_bitwise {
 }
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
+    // Every arithmetic op flows through one macro that handles
+    // Int+Int, Float+Float, and the two mixed Int+Float cases.
+    // Previously sub/mul/div were int-only and diverged from
+    // cppnix on mixed-type arithmetic (e.g. `builtins.div 10.0 3.0`
+    // errored with "expected ints" instead of returning 3.33333…).
     register_numeric_binop!(builtins, "add", |a: i64, b: i64| a + b, |a: f64, b: f64| a + b);
+    register_numeric_binop!(builtins, "sub", |a: i64, b: i64| a - b, |a: f64, b: f64| a - b);
+    register_numeric_binop!(builtins, "mul", |a: i64, b: i64| a * b, |a: f64, b: f64| a * b);
 
-    // sub/mul/div only support Int in the current implementation.
-    register_curried(builtins, "sub", |a, b| {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
-            _ => Err(EvalError::TypeError("sub: expected ints".to_string())),
-        }
-    });
-    register_curried(builtins, "mul", |a, b| {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
-            _ => Err(EvalError::TypeError("mul: expected ints".to_string())),
-        }
-    });
+    // div is its own beast: integer division must trap on /0 with
+    // a typed error, whereas float division returns inf/NaN per
+    // IEEE 754 (cppnix mirrors this).
     register_curried(builtins, "div", |a, b| {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => {
                 if *y == 0 { return Err(EvalError::DivisionByZero); }
                 Ok(Value::Int(x / y))
             }
-            _ => Err(EvalError::TypeError("div: expected ints".to_string())),
+            (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
+            (Value::Int(x), Value::Float(y)) => Ok(Value::Float(*x as f64 / *y)),
+            (Value::Float(x), Value::Int(y)) => Ok(Value::Float(*x / *y as f64)),
+            _ => Err(EvalError::builtin_type("div", "numbers", "non-numeric")),
         }
     });
 

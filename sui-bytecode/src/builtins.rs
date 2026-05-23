@@ -750,14 +750,14 @@ impl BuiltinRegistry {
             }))
         });
 
+        // sub/mul/div accept mixed Int+Float operands (CppNix
+        // semantics).  Previously int-only, which diverged on
+        // `builtins.div 10.0 3.0` and similar mixed expressions.
         self.register("sub", 1, |args| {
             let a = args[0].clone();
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "sub<partial>",
-                func: Rc::new(move |args2| match (&a, &args2[0]) {
-                    (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(x - y)),
-                    _ => Err(VMError::Throw("sub: expected ints".to_string())),
-                }),
+                func: Rc::new(move |args2| vm_numeric_binop("sub", &a, &args2[0], |x, y| x - y, |x, y| x - y)),
                 arity: 1,
             }))
         });
@@ -766,10 +766,7 @@ impl BuiltinRegistry {
             let a = args[0].clone();
             Ok(VMValue::Builtin(VMBuiltin {
                 name: "mul<partial>",
-                func: Rc::new(move |args2| match (&a, &args2[0]) {
-                    (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(x * y)),
-                    _ => Err(VMError::Throw("mul: expected ints".to_string())),
-                }),
+                func: Rc::new(move |args2| vm_numeric_binop("mul", &a, &args2[0], |x, y| x * y, |x, y| x * y)),
                 arity: 1,
             }))
         });
@@ -781,7 +778,10 @@ impl BuiltinRegistry {
                 func: Rc::new(move |args2| match (&a, &args2[0]) {
                     (VMValue::Int(_), VMValue::Int(0)) => Err(VMError::DivisionByZero),
                     (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(x / y)),
-                    _ => Err(VMError::Throw("div: expected ints".to_string())),
+                    (VMValue::Float(x), VMValue::Float(y)) => Ok(VMValue::Float(x / y)),
+                    (VMValue::Int(x), VMValue::Float(y)) => Ok(VMValue::Float(*x as f64 / *y)),
+                    (VMValue::Float(x), VMValue::Int(y)) => Ok(VMValue::Float(*x / *y as f64)),
+                    _ => Err(VMError::Throw("div: expected numbers".to_string())),
                 }),
                 arity: 1,
             }))
@@ -1383,6 +1383,25 @@ impl BuiltinRegistry {
 ///
 /// Converts `VMValue` args to `StringKeyedValue`, calls the bridge,
 /// and converts the result back. Returns an error if no bridge is set.
+/// Apply a curried numeric binop with CppNix mixed-type semantics:
+/// Int+Int → Int, Float+Float → Float, mixed → Float.  Used by
+/// sub / mul (div has its own /0 trap).
+fn vm_numeric_binop(
+    name: &'static str,
+    a: &VMValue,
+    b: &VMValue,
+    int_op: impl Fn(i64, i64) -> i64,
+    float_op: impl Fn(f64, f64) -> f64,
+) -> Result<VMValue, VMError> {
+    match (a, b) {
+        (VMValue::Int(x), VMValue::Int(y)) => Ok(VMValue::Int(int_op(*x, *y))),
+        (VMValue::Float(x), VMValue::Float(y)) => Ok(VMValue::Float(float_op(*x, *y))),
+        (VMValue::Int(x), VMValue::Float(y)) => Ok(VMValue::Float(float_op(*x as f64, *y))),
+        (VMValue::Float(x), VMValue::Int(y)) => Ok(VMValue::Float(float_op(*x, *y as f64))),
+        _ => Err(VMError::Throw(format!("{name}: expected numbers"))),
+    }
+}
+
 fn bridge_call(name: &str, args: Vec<VMValue>) -> Result<VMValue, VMError> {
     use crate::intern::Interner;
     // Convert VMValue args to StringKeyedValue (interner-free).
