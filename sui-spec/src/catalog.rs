@@ -37,6 +37,13 @@ pub struct SubstrateDomain {
     /// Which cppnix subsystem the domain mirrors.
     #[serde(rename = "cppnixMirror")]
     pub cppnix_mirror: String,
+    /// Other domains this one depends on (by name).  Forms the
+    /// substrate dependency graph — `activation_script` depends
+    /// on `module_system`; `fetcher` depends on `derivation` (FOD
+    /// variant); etc.  Adding a new domain means declaring its
+    /// dependencies here.
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<String>,
 }
 
 /// Implementation maturity level.
@@ -103,6 +110,47 @@ pub fn maturity_histogram() -> Result<std::collections::BTreeMap<&'static str, u
         *h.entry(key).or_default() += 1;
     }
     Ok(h)
+}
+
+/// Compute the transitive dependency closure of one domain (the
+/// set of all domains reachable via `depends_on` edges, including
+/// the domain itself).
+///
+/// # Errors
+///
+/// Returns `SpecError::Load` if the catalog fails to parse or
+/// `name` is missing.  Returns `SpecError::Interp` with phase
+/// `dependency-cycle` if the graph contains a cycle.
+pub fn transitive_dependencies(name: &str) -> Result<std::collections::BTreeSet<String>, SpecError> {
+    let cat = load_canonical()?;
+    let by_name: std::collections::HashMap<&str, &SubstrateDomain> =
+        cat.iter().map(|d| (d.name.as_str(), d)).collect();
+    if !by_name.contains_key(name) {
+        return Err(SpecError::Load(format!("domain `{name}` not in catalog")));
+    }
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut stack: Vec<String> = vec![name.to_string()];
+    let mut in_path: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    while let Some(current) = stack.pop() {
+        if !seen.insert(current.clone()) {
+            continue;
+        }
+        if !in_path.insert(current.clone()) {
+            return Err(SpecError::Interp {
+                phase: "dependency-cycle".into(),
+                message: format!("cycle detected involving `{current}`"),
+            });
+        }
+        let Some(domain) = by_name.get(current.as_str()) else {
+            return Err(SpecError::Load(format!(
+                "domain `{current}` referenced but not in catalog",
+            )));
+        };
+        for dep in &domain.depends_on {
+            stack.push(dep.clone());
+        }
+    }
+    Ok(seen)
 }
 
 #[cfg(test)]
@@ -193,6 +241,59 @@ mod tests {
         match err {
             SpecError::Load(msg) => assert!(msg.contains("nonexistent-domain")),
             _ => panic!("expected SpecError::Load"),
+        }
+    }
+
+    #[test]
+    fn transitive_dependencies_of_activation_includes_module_system() {
+        let deps = transitive_dependencies("activation_script").unwrap();
+        // activation_script depends on module_system (M2 gate) +
+        // derivation; derivation depends on hash + store_layout.
+        // Closure must contain all five.
+        for required in [
+            "activation_script", // self
+            "module_system",
+            "derivation",
+            "hash",
+            "store_layout",
+        ] {
+            assert!(
+                deps.contains(required),
+                "transitive deps missing `{required}`: {deps:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn transitive_dependencies_of_hash_is_just_itself() {
+        let deps = transitive_dependencies("hash").unwrap();
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains("hash"));
+    }
+
+    #[test]
+    fn every_declared_dependency_exists_in_catalog() {
+        let cat = load_canonical().unwrap();
+        let names: std::collections::HashSet<&str> =
+            cat.iter().map(|d| d.name.as_str()).collect();
+        for d in &cat {
+            for dep in &d.depends_on {
+                assert!(
+                    names.contains(dep.as_str()),
+                    "domain `{}` declares dependency on `{dep}`, \
+                     which is not in the catalog",
+                    d.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn substrate_graph_has_no_cycles() {
+        let cat = load_canonical().unwrap();
+        for d in &cat {
+            let _ = transitive_dependencies(&d.name)
+                .unwrap_or_else(|e| panic!("cycle starting from `{}`: {e:?}", d.name));
         }
     }
 }
