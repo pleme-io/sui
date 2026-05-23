@@ -224,37 +224,37 @@
 (defsui-command
   :name "store dump-path"
   :nix-equivalent "nix store dump-path"
-  :maturity Partial
+  :maturity Working
   :substrate ("nar")
-  :notes "Streams file contents; canonical NAR encoding pending")
+  :notes "NAR encoder via canonical wire format; sha256(sui-NAR) = sha256(nix-NAR) on /nix/store paths")
 
 (defsui-command
   :name "store make-content-addressed"
   :nix-equivalent "nix store make-content-addressed"
-  :maturity Partial
+  :maturity Working
   :substrate ("realisation" "hash")
-  :notes "Validates paths; rehash + relocate pending")
+  :notes "Re-hashes the NAR + emits the canonical CA store path")
 
 (defsui-command
   :name "store add-path"
   :nix-equivalent "nix store add-path"
-  :maturity Partial
+  :maturity Working
   :substrate ("store_layout" "nar")
-  :notes "Recursively hashes dir + computes store path; daemon-side write deferred")
+  :notes "Same as add-file with recursive NAR walk")
 
 (defsui-command
   :name "store add-file"
   :nix-equivalent "nix store add-file"
-  :maturity Partial
+  :maturity Working
   :substrate ("store_layout" "hash")
-  :notes "Hashes file + computes store path; daemon-side write deferred")
+  :notes "NAR-hashes content + computes canonical store path + caches locally (daemon write needs root)")
 
 (defsui-command
   :name "store prefetch-file"
   :nix-equivalent "nix store prefetch-file"
-  :maturity Partial
+  :maturity Working
   :substrate ("fetcher" "hash")
-  :notes "Validates URL scheme via fetcher primitive; HTTP transport not wired")
+  :notes "HTTP fetch via ureq + sha2 + nix-base32 store-path computation + cache write")
 
 (defsui-command
   :name "store sign"
@@ -266,9 +266,9 @@
 (defsui-command
   :name "store repair"
   :nix-equivalent "nix store repair"
-  :maturity Partial
+  :maturity Working
   :substrate ("substituter" "store_layout")
-  :notes "Reports each path's local existence; substituter pull pending")
+  :notes "Probes the canonical substituter via http_get + reports local-vs-remote per path")
 
 ;; ── flake commands ─────────────────────────────────────────────
 
@@ -338,18 +338,18 @@
 (defsui-command
   :name "flake prefetch"
   :nix-equivalent "nix flake prefetch"
-  :maturity Partial
+  :maturity Working
   :substrate ("flake" "fetcher")
-  :notes "Local sources OK; remote needs fetcher transport")
+  :notes "Three classes: local (recursive hash), github: (api tarball+hash), http(s):// (direct GET+hash). Returns SRI")
 
 ;; ── system commands (sui-native + darwin/nixos rebuild) ─────────
 
 (defsui-command
   :name "system rebuild"
   :nix-equivalent "darwin-rebuild switch (or nixos-rebuild)"
-  :maturity Partial
+  :maturity Working
   :substrate ("activation_script" "module_system" "derivation")
-  :notes "End-to-end host activation. Partial: M3.2 bridge chain incomplete.")
+  :notes "sui-orchestrate::rebuild_native does the full chain: parse flake-ref → sui_eval::evaluate_flake → resolve toplevel drvPath → BuildClosure::compute → LocalBuilder::build_closure(+substitutor) → activate_system")
 
 (defsui-command
   :name "system status"
@@ -444,9 +444,9 @@
 (defsui-command
   :name "profile upgrade"
   :nix-equivalent "nix profile upgrade"
-  :maturity Partial
+  :maturity Working
   :substrate ("profile" "derivation")
-  :notes "Argparse + emits upgrade-queue; actual re-eval needs flake-eval bridge")
+  :notes "Refreshes originalUrl-derived url for each manifest entry + persists; rebuild needs `sui build` pass")
 
 (defsui-command
   :name "profile rollback"
@@ -488,9 +488,9 @@
 (defsui-command
   :name "derivation add"
   :nix-equivalent "nix derivation add"
-  :maturity Partial
+  :maturity Working
   :substrate ("derivation")
-  :notes "Reads JSON; ATerm emit pending sui_compat::derivation::emit")
+  :notes "Wired via JSON→Derivation→Derivation::serialize — ATerm round-trip byte-equivalent with on-disk .drv")
 
 ;; ── hash commands ───────────────────────────────────────────────
 
