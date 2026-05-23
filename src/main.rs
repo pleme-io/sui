@@ -166,6 +166,19 @@ enum Commands {
         attrs: Vec<String>,
     },
     Doctor,
+    /// Continuous nix-vs-sui parity sweep across a canonical
+    /// corpus of byte-equivalent surfaces (hash conversions, NAR
+    /// dump, ATerm round-trip).  Emits a Nord-styled green/red
+    /// matrix.  Exits non-zero on any divergence so CI/operators
+    /// can react.  Sui-native — no nix equivalent.
+    Parity {
+        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
+        #[arg(long, default_value = "nix")]
+        nix: std::path::PathBuf,
+        /// Emit machine-readable JSON instead of the Nord table.
+        #[arg(long)]
+        json: bool,
+    },
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
     /// Run differential parity probes (sui vs cppnix) and write a typed
@@ -1109,31 +1122,332 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
-fn http_get(url: &str) -> Result<Vec<u8>, CliError> {
-    // Minimal blocking HTTP GET for substrate fetch operations.
-    // Used by store prefetch-file, flake prefetch, store repair.
-    let parsed = url::Url::parse(url)
-        .map_err(|e| CliError::NotImplemented(format!("http: bad URL `{url}`: {e}")))?;
-    match parsed.scheme() {
-        "file" => {
-            let path = parsed.to_file_path()
-                .map_err(|_| CliError::NotImplemented(format!("http: bad file URL `{url}`")))?;
-            std::fs::read(path)
-                .map_err(|e| CliError::NotImplemented(format!("http: file read: {e}")))
+// ── `sui parity` — operator-facing nix-vs-sui validator ─────────
+
+/// One probe in the parity sweep: name + sui invocation + nix
+/// invocation + verdict.
+struct ParityProbe {
+    name: &'static str,
+    description: &'static str,
+}
+
+/// Outcome of running one probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParityVerdict {
+    Match,
+    Diverge { sui: String, nix: String },
+    SuiError(String),
+    NixError(String),
+    Skipped(String),
+}
+
+impl ParityVerdict {
+    fn glyph(&self) -> &'static str {
+        match self {
+            Self::Match        => "✓",
+            Self::Diverge { .. } => "✘",
+            Self::SuiError(_)  => "✘",
+            Self::NixError(_)  => "?",
+            Self::Skipped(_)   => "·",
         }
-        "http" | "https" => {
-            let resp = ureq::get(url).call()
-                .map_err(|e| CliError::NotImplemented(format!("http: GET {url}: {e}")))?;
-            let mut body = Vec::new();
-            use std::io::Read;
-            resp.into_body().as_reader().read_to_end(&mut body)
-                .map_err(|e| CliError::NotImplemented(format!("http: body read: {e}")))?;
-            Ok(body)
-        }
-        other => Err(CliError::NotImplemented(format!(
-            "http: unsupported scheme `{other}` (http/https/file only)"
-        ))),
     }
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Match        => "match",
+            Self::Diverge { .. } => "diverge",
+            Self::SuiError(_)  => "sui-err",
+            Self::NixError(_)  => "nix-err",
+            Self::Skipped(_)   => "skip",
+        }
+    }
+}
+
+fn run_capture(bin: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    use std::process::Command;
+    let out = Command::new(bin).args(args).output()
+        .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+fn run_bytes(bin: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    use std::process::Command;
+    let out = Command::new(bin).args(args).output()
+        .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+    }
+    Ok(out.stdout)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let d = sha2::Sha256::digest(bytes);
+    let mut s = String::with_capacity(64);
+    for b in d { s.push_str(&format!("{b:02x}")); }
+    s
+}
+
+fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
+    use sui_spec::style::{
+        body, error, glyph_snowflake, header, ident, info, muted, success, warn,
+    };
+
+    let sui_bin = std::env::current_exe()
+        .map_err(|e| CliError::NotImplemented(format!("parity: own exe: {e}")))?;
+
+    let sample_hash =
+        "sha256:5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
+
+    // Prepare /tmp/h fixture for hash file probe.
+    let h_fixture = std::env::temp_dir().join("sui-parity-h");
+    std::fs::write(&h_fixture, b"hello\n").ok();
+
+    // Pick representative store paths for NAR + drv probes.
+    let source_path = first_store_path_matching("-source");
+    let drv_path = first_store_path_matching(".drv");
+
+    // Definitive corpus.
+    let probes: Vec<(ParityProbe, Box<dyn Fn() -> ParityVerdict>)> = vec![
+        (ParityProbe { name: "hash to-base16", description: "byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            Box::new(move || diff_text(
+                run_capture(&sui, &["hash", "to-base16", sample_hash]),
+                run_capture(&nix, &["hash", "to-base16", "--type", "sha256", sample_hash]),
+            ))
+        }),
+        (ParityProbe { name: "hash to-base32", description: "byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            Box::new(move || diff_text(
+                run_capture(&sui, &["hash", "to-base32", sample_hash]),
+                run_capture(&nix, &["hash", "to-base32", "--type", "sha256", sample_hash]),
+            ))
+        }),
+        (ParityProbe { name: "hash to-base64", description: "byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            Box::new(move || diff_text(
+                run_capture(&sui, &["hash", "to-base64", sample_hash]),
+                run_capture(&nix, &["hash", "to-base64", "--type", "sha256", sample_hash]),
+            ))
+        }),
+        (ParityProbe { name: "hash to-sri", description: "byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            Box::new(move || diff_text(
+                run_capture(&sui, &["hash", "to-sri", sample_hash]),
+                run_capture(&nix, &["hash", "to-sri", "--type", "sha256", sample_hash]),
+            ))
+        }),
+        (ParityProbe { name: "hash file", description: "SRI byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            let h = h_fixture.clone();
+            Box::new(move || diff_text(
+                run_capture(&sui, &["hash", "file", h.to_str().unwrap(), "--base", "sri"]),
+                run_capture(&nix, &["hash", "file", h.to_str().unwrap()]),
+            ))
+        }),
+        (ParityProbe { name: "store dump-path", description: "NAR sha256 byte-equivalent" }, {
+            let sui = sui_bin.clone();
+            let nix = nix.to_path_buf();
+            let sp = source_path.clone();
+            Box::new(move || match &sp {
+                None => ParityVerdict::Skipped("no /nix/store/*-source path on this host".into()),
+                Some(sp) => {
+                    let n = run_bytes(&nix, &["--extra-experimental-features", "nix-command",
+                                              "store", "dump-path", sp.to_str().unwrap()]);
+                    let s = run_bytes(&sui, &["store", "dump-path", sp.to_str().unwrap()]);
+                    match (n, s) {
+                        (Ok(nbytes), Ok(sbytes)) => {
+                            let nh = sha256_hex(&nbytes);
+                            let sh = sha256_hex(&sbytes);
+                            if nh == sh { ParityVerdict::Match }
+                            else { ParityVerdict::Diverge { sui: sh, nix: nh } }
+                        }
+                        (Err(e), _)  => ParityVerdict::NixError(e),
+                        (_, Err(e))  => ParityVerdict::SuiError(e),
+                    }
+                }
+            })
+        }),
+        (ParityProbe { name: "derivation show→add", description: "ATerm round-trip" }, {
+            let sui = sui_bin.clone();
+            let drv = drv_path.clone();
+            Box::new(move || match &drv {
+                None => ParityVerdict::Skipped("no .drv in /nix/store".into()),
+                Some(drv) => {
+                    let original = std::fs::read_to_string(drv).unwrap_or_default();
+                    let json = match run_capture(&sui, &["derivation", "show", drv.to_str().unwrap()]) {
+                        Ok(s) => s,
+                        Err(e) => return ParityVerdict::SuiError(e),
+                    };
+                    let tmp = std::env::temp_dir().join("sui-parity-drv.json");
+                    std::fs::write(&tmp, &json).ok();
+                    let out = std::process::Command::new(&sui)
+                        .args(["derivation", "add", tmp.to_str().unwrap()])
+                        .output();
+                    let _ = std::fs::remove_file(&tmp);
+                    match out {
+                        Err(e) => ParityVerdict::SuiError(e.to_string()),
+                        Ok(o) => {
+                            let stderr = String::from_utf8_lossy(&o.stderr);
+                            let aterm: String = stderr.lines()
+                                .filter(|l| !l.starts_with('#'))
+                                .collect::<Vec<_>>().join("\n");
+                            let aterm = aterm.trim_end_matches('\n');
+                            if aterm == original.trim_end_matches('\n') { ParityVerdict::Match }
+                            else { ParityVerdict::Diverge {
+                                sui: format!("{} bytes", aterm.len()),
+                                nix: format!("{} bytes", original.len()),
+                            }}
+                        }
+                    }
+                }
+            })
+        }),
+    ];
+
+    // Run + collect.
+    let mut results: Vec<(String, String, ParityVerdict)> = Vec::new();
+    for (probe, run) in &probes {
+        let verdict = run();
+        results.push((probe.name.to_string(), probe.description.to_string(), verdict));
+    }
+    let _ = std::fs::remove_file(&h_fixture);
+
+    let total = results.len();
+    let matches = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Match)).count();
+    let diverged = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Diverge { .. })).count();
+    let skipped = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Skipped(_))).count();
+    let errored = results.iter().filter(|(_, _, v)|
+        matches!(v, ParityVerdict::SuiError(_) | ParityVerdict::NixError(_))).count();
+
+    if json {
+        let probes_json: Vec<serde_json::Value> = results.iter().map(|(n, d, v)| {
+            let (label, detail) = match v {
+                ParityVerdict::Match              => ("match",   serde_json::Value::Null),
+                ParityVerdict::Diverge { sui, nix } => ("diverge", serde_json::json!({"sui": sui, "nix": nix})),
+                ParityVerdict::SuiError(e)        => ("sui-err", serde_json::Value::String(e.clone())),
+                ParityVerdict::NixError(e)        => ("nix-err", serde_json::Value::String(e.clone())),
+                ParityVerdict::Skipped(r)         => ("skip",    serde_json::Value::String(r.clone())),
+            };
+            serde_json::json!({"name": n, "description": d, "verdict": label, "detail": detail})
+        }).collect();
+        let summary = serde_json::json!({
+            "total": total,
+            "match": matches,
+            "diverged": diverged,
+            "skipped": skipped,
+            "errored": errored,
+            "probes": probes_json,
+        });
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("{}  {}  ({} probes vs `{}`)",
+            glyph_snowflake(), header("sui-vs-nix parity"),
+            ident(&total.to_string()), muted(&nix.display().to_string()));
+        println!();
+        let name_w = results.iter().map(|(n, _, _)| n.len()).max().unwrap_or(20);
+        for (name, desc, v) in &results {
+            let glyph = match v {
+                ParityVerdict::Match           => success(v.glyph()),
+                ParityVerdict::Diverge { .. } => error(v.glyph()),
+                ParityVerdict::SuiError(_)    => error(v.glyph()),
+                ParityVerdict::NixError(_)    => warn(v.glyph()),
+                ParityVerdict::Skipped(_)     => muted(v.glyph()),
+            };
+            let verdict_label = match v {
+                ParityVerdict::Match           => success(v.label()),
+                ParityVerdict::Diverge { .. } => error(v.label()),
+                ParityVerdict::SuiError(_)    => error(v.label()),
+                ParityVerdict::NixError(_)    => warn(v.label()),
+                ParityVerdict::Skipped(_)     => muted(v.label()),
+            };
+            println!("  {} {}  {}  {}",
+                glyph,
+                ident(&format!("{:<name_w$}", name, name_w = name_w)),
+                info(desc),
+                verdict_label,
+            );
+            if let ParityVerdict::Diverge { sui, nix } = v {
+                println!("      {}  sui={}", muted("✘"), sui);
+                println!("      {}  nix={}", muted("✘"), nix);
+            }
+            if let ParityVerdict::Skipped(reason) = v {
+                println!("      {}  {}", muted("·"), muted(reason));
+            }
+        }
+        println!();
+        println!("  {} {}/{}/{}/{}/{} (match/diverge/sui-err/nix-err/skip)",
+            body("∑"),
+            success(&matches.to_string()),
+            if diverged > 0 { error(&diverged.to_string()) } else { muted("0") },
+            if errored > 0 { warn(&errored.to_string()) } else { muted("0") },
+            muted("0"),
+            muted(&skipped.to_string()),
+        );
+    }
+
+    if diverged > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Diff two text outputs and classify the result.
+fn diff_text(sui: Result<String, String>, nix: Result<String, String>) -> ParityVerdict {
+    match (sui, nix) {
+        (Ok(s), Ok(n)) if s == n => ParityVerdict::Match,
+        (Ok(s), Ok(n))           => ParityVerdict::Diverge { sui: s, nix: n },
+        (Err(e), _)              => ParityVerdict::SuiError(e),
+        (_, Err(e))              => ParityVerdict::NixError(e),
+    }
+}
+
+/// Locate the first `/nix/store/*` entry whose name contains the
+/// pattern.  Used by the parity probes that need a real store
+/// path on the operator workstation.
+fn first_store_path_matching(pattern: &str) -> Option<std::path::PathBuf> {
+    let store = std::path::Path::new("/nix/store");
+    if !store.exists() { return None; }
+    std::fs::read_dir(store).ok()?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().contains(pattern))
+        .map(|e| e.path())
+}
+
+/// Concrete ureq-backed transport — implements the substrate's
+/// `HttpTransport` trait for the production sui binary.  Tests
+/// can swap in `MockTransport` to avoid network access.
+struct UreqTransport;
+
+impl sui_spec::fetcher::HttpTransport for UreqTransport {
+    fn get(&self, url: &str) -> Result<Vec<u8>, sui_spec::fetcher::HttpError> {
+        use sui_spec::fetcher::HttpError;
+        let resp = ureq::get(url).call()
+            .map_err(|e| HttpError::NetworkFailure(e.to_string()))?;
+        let mut body = Vec::new();
+        use std::io::Read;
+        resp.into_body().as_reader().read_to_end(&mut body)
+            .map_err(|e| HttpError::BodyReadFailure(e.to_string()))?;
+        Ok(body)
+    }
+}
+
+/// Blocking HTTP GET — routes `file://` through the substrate's
+/// FsTransport, everything else through ureq.  Converts the
+/// typed HttpError into the binary's CliError.
+fn http_get(url: &str) -> Result<Vec<u8>, CliError> {
+    use sui_spec::fetcher::HttpTransport;
+    let router = sui_spec::fetcher::SchemeRouter::new(UreqTransport);
+    router.get(url).map_err(|e| {
+        CliError::NotImplemented(format!("http GET {url}: {e}"))
+    })
 }
 
 fn store_prefetch_file(
@@ -2558,6 +2872,9 @@ async fn main() -> Result<(), CliError> {
             println!("Cache now has {entries} entries at {}", drv_cache::DrvCache::default_path().display());
         }
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
+        Commands::Parity { nix, json } => {
+            cmd_parity(&nix, json)?;
+        }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
         Commands::RebuildShadow {

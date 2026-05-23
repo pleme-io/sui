@@ -618,3 +618,10 @@
   :maturity SuiNative
   :substrate ()
   :notes "Run parity probes vs cppnix; emit typed ShadowReport")
+
+(defsui-command
+  :name "parity"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("hash" "nar")
+  :notes "Operator-facing continuous nix-vs-sui parity sweep: 7 byte-equivalent probes (hash conv x4, hash file, NAR sha256, ATerm round-trip). Exits non-zero on divergence. JSON or Nord output.")

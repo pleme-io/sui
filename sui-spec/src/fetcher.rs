@@ -200,6 +200,121 @@ pub trait FetcherEnvironment {
     }
 }
 
+// ── HttpTransport — typed blocking-HTTP boundary ────────────────────
+//
+// Lifted from `sui/src/main.rs` after three call sites consumed
+// the same inline `http_get` helper.  The trait separates the
+// IO boundary from the dispatch logic so tests can substitute a
+// `MockTransport` while production wires the `UreqTransport`.
+
+/// Typed blocking-HTTP boundary.  Consumers parse / hash the
+/// returned bytes themselves; the transport handles only the
+/// network round-trip.
+pub trait HttpTransport {
+    /// Fetch the bytes at `url`.  Returns the full body on
+    /// success, a typed error otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Implementations return their own error category; the
+    /// fetcher wraps with `SpecError::Interp { phase: "http-get" }`
+    /// when adapting.
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError>;
+}
+
+/// Typed transport error.  Constructors at the impl boundary
+/// classify the failure so callers can branch on category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpError {
+    BadUrl(String),
+    UnsupportedScheme(String),
+    NetworkFailure(String),
+    NotFound(String),
+    Forbidden(String),
+    BodyReadFailure(String),
+    IoError(String),
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadUrl(m)            => write!(f, "bad URL: {m}"),
+            Self::UnsupportedScheme(s) => write!(f, "unsupported scheme `{s}`"),
+            Self::NetworkFailure(m)    => write!(f, "network: {m}"),
+            Self::NotFound(m)          => write!(f, "not found: {m}"),
+            Self::Forbidden(m)         => write!(f, "forbidden: {m}"),
+            Self::BodyReadFailure(m)   => write!(f, "body read: {m}"),
+            Self::IoError(m)           => write!(f, "io: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for HttpError {}
+
+/// Filesystem-backed transport — resolves `file://` URLs.
+/// Always available; no dependency on a network stack.
+pub struct FsTransport;
+
+impl HttpTransport for FsTransport {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        let parsed = url::Url::parse(url).map_err(|e| HttpError::BadUrl(e.to_string()))?;
+        if parsed.scheme() != "file" {
+            return Err(HttpError::UnsupportedScheme(parsed.scheme().to_string()));
+        }
+        let path = parsed.to_file_path()
+            .map_err(|_| HttpError::BadUrl(format!("non-file URL `{url}`")))?;
+        std::fs::read(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => HttpError::NotFound(path.display().to_string()),
+            std::io::ErrorKind::PermissionDenied => HttpError::Forbidden(path.display().to_string()),
+            _ => HttpError::IoError(e.to_string()),
+        })
+    }
+}
+
+/// Mock transport for tests — yields canned responses keyed by URL.
+/// Lookup misses produce `NotFound`.
+#[derive(Default)]
+pub struct MockTransport {
+    pub responses: std::collections::HashMap<String, Vec<u8>>,
+}
+
+impl MockTransport {
+    /// Add a canned response for `url`.
+    pub fn with(mut self, url: &str, bytes: Vec<u8>) -> Self {
+        self.responses.insert(url.to_string(), bytes);
+        self
+    }
+}
+
+impl HttpTransport for MockTransport {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        self.responses.get(url).cloned()
+            .ok_or_else(|| HttpError::NotFound(url.to_string()))
+    }
+}
+
+/// A dispatcher that picks the right transport based on the
+/// URL scheme — `file://` → [`FsTransport`], everything else
+/// → the provided remote transport.
+pub struct SchemeRouter<R: HttpTransport> {
+    pub remote: R,
+}
+
+impl<R: HttpTransport> SchemeRouter<R> {
+    pub fn new(remote: R) -> Self { Self { remote } }
+}
+
+impl<R: HttpTransport> HttpTransport for SchemeRouter<R> {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        let parsed = url::Url::parse(url).map_err(|e| HttpError::BadUrl(e.to_string()))?;
+        match parsed.scheme() {
+            "file" => FsTransport.get(url),
+            "http" | "https" => self.remote.get(url),
+            other => Err(HttpError::UnsupportedScheme(other.to_string())),
+        }
+    }
+}
+
 /// Apply a fetcher spec.  M3.0 implementation: supports the
 /// fetchurl transport (Http + Flat hash mode).  Other transports
 /// return a typed `not-yet-implemented` error.
