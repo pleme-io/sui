@@ -87,6 +87,7 @@ pub mod store_diff;
 pub mod store_inventory;
 pub mod store_ops;
 pub mod store_query;
+pub mod store_recipe;
 pub mod store_transform;
 pub mod probe;
 pub mod profile;

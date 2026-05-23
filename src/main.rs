@@ -404,6 +404,38 @@ enum StoreCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Run a typed declarative recipe (slice → transforms →
+    /// materialize) authored in specs/store_recipes.lisp.
+    Recipe {
+        /// Recipe name (e.g. `redacted-sources`).
+        name: String,
+        /// Override default dest-root base (~/.cache/sui/recipes).
+        #[arg(long)]
+        dest_base: Option<std::path::PathBuf>,
+        /// Emit JSON outcome.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fingerprint every entry in an inventory profile and emit
+    /// a manifest JSON.  Run on machine A + B + diff the
+    /// manifests = byte-level determinism proof.
+    FingerprintMany {
+        /// Inventory profile.
+        #[arg(default_value = "tiny")]
+        profile: String,
+        /// Output JSON file (defaults to stdout).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Compare two fingerprint manifests (produced by
+    /// `fingerprint-many`).  Reports differences entry-by-entry;
+    /// exit code 1 on any drift.
+    CompareManifests {
+        /// First manifest JSON.
+        a: std::path::PathBuf,
+        /// Second manifest JSON.
+        b: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1295,6 +1327,218 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store recipe` — declarative pipeline runner ───────────
+
+fn store_recipe(
+    name: &str,
+    dest_base: Option<&std::path::Path>,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_recipe;
+    use sui_spec::style::{body, glyph_arrow, glyph_snowflake, header, ident, info, muted, success};
+
+    let recipes = store_recipe::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("recipe: load: {e:?}")))?;
+    let recipe = recipes.iter().find(|r| r.name == name)
+        .ok_or_else(|| CliError::NotImplemented(format!(
+            "recipe: unknown `{name}`; available: {}",
+            recipes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
+        )))?;
+
+    let base = dest_base.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        std::path::PathBuf::from(home).join(".cache/sui/recipes")
+    });
+
+    let outcome = store_recipe::run(recipe, &base)
+        .map_err(|e| CliError::NotImplemented(format!("recipe: run: {e:?}")))?;
+
+    if json {
+        let probes: Vec<serde_json::Value> = outcome.entries.iter().map(|e| serde_json::json!({
+            "source": e.source.display().to_string(),
+            "dest":   e.dest.display().to_string(),
+            "total_rewrites": e.total_rewrites,
+            "noop":   e.noop,
+        })).collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "recipe":         outcome.recipe,
+            "slice":          outcome.slice,
+            "transforms":     outcome.transforms,
+            "dest_root":      outcome.dest_root.display().to_string(),
+            "entries":        outcome.entries.len(),
+            "modified":       outcome.modified_count(),
+            "total_rewrites": outcome.total_rewrites(),
+            "results":        probes,
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(), header("store recipe"), muted(&format!("`{name}`")));
+        println!();
+        println!("  {}  {}", body("slice:           "), ident(&outcome.slice));
+        println!("  {}  {}", body("transforms:      "),
+            if outcome.transforms.is_empty() {
+                muted("(none — pure rematerialize)").to_string()
+            } else {
+                info(&outcome.transforms.join(" → ")).to_string()
+            });
+        println!("  {}  {}", body("dest root:       "), ident(&outcome.dest_root.display().to_string()));
+        println!("  {}  {}", body("entries processed:"), info(&outcome.entries.len().to_string()));
+        println!("  {}  {}", body("modified entries:"), success(&outcome.modified_count().to_string()));
+        println!("  {}  {}", body("total rewrites:  "), success(&outcome.total_rewrites().to_string()));
+        println!();
+        for e in &outcome.entries {
+            let glyph = if e.noop { muted("·").to_string() } else { success("✓").to_string() };
+            let bn = e.source.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!("  {} {} {} rewrite(s)", glyph, ident(bn),
+                info(&e.total_rewrites.to_string()));
+        }
+        println!();
+        println!("  {} recipe `{}` materialized at {}", glyph_arrow(),
+            success(&outcome.recipe), ident(&outcome.dest_root.display().to_string()));
+    }
+    Ok(())
+}
+
+// ── `sui store fingerprint-many` — slice manifest emitter ──────
+
+fn store_fingerprint_many(
+    profile_name: &str,
+    out: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    use sui_spec::store_inventory::{self, StoreInventory};
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::nar;
+    use sha2::Digest;
+
+    let profiles = store_inventory::load_canonical_profiles()
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint-many: {e:?}")))?;
+    let profile = profiles.iter().find(|p| p.name == profile_name)
+        .ok_or_else(|| CliError::NotImplemented(format!("fingerprint-many: unknown profile")))?;
+    let inv = StoreInventory::walk(profile)
+        .map_err(|e| CliError::NotImplemented(format!("fingerprint-many: walk: {e:?}")))?;
+
+    let mut probes: Vec<serde_json::Value> = Vec::with_capacity(inv.entries.len());
+    for entry in inv.entries.values() {
+        let nar_bytes = match nar::encode(&entry.path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let digest = sha2::Sha256::digest(&nar_bytes);
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let parsed = ParsedNar::parse(&nar_bytes).ok();
+        probes.push(serde_json::json!({
+            "name":        entry.parsed.name,
+            "hash_prefix": entry.parsed.hash,
+            "nar_sha256":  hex,
+            "nar_size":    nar_bytes.len(),
+            "tree_size":   parsed.as_ref().map(|p| p.root.total_bytes()).unwrap_or(0),
+            "file_count":  parsed.as_ref().map(|p| p.root.file_count()).unwrap_or(0),
+        }));
+    }
+
+    let host = std::env::var("HOST")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "unknown".into());
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let manifest = serde_json::json!({
+        "schema":  "sui.fingerprint-manifest.v1",
+        "profile": profile_name,
+        "host":    host,
+        "user":    user,
+        "system":  std::env::consts::ARCH,
+        "entries": probes,
+    });
+    let body = serde_json::to_string_pretty(&manifest).unwrap();
+    match out {
+        Some(path) => {
+            std::fs::write(path, &body)
+                .map_err(|e| CliError::NotImplemented(format!("fingerprint-many: write {}: {e}", path.display())))?;
+            eprintln!("manifest written: {}  ({} entries, {} bytes)",
+                path.display(), inv.entries.len(), body.len());
+        }
+        None => println!("{body}"),
+    }
+    Ok(())
+}
+
+// ── `sui store compare-manifests` — drift detector ─────────────
+
+fn store_compare_manifests(
+    a: &std::path::Path,
+    b: &std::path::Path,
+) -> Result<(), CliError> {
+    use sui_spec::style::{body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success, warn};
+
+    let text_a = std::fs::read_to_string(a)
+        .map_err(|e| CliError::NotImplemented(format!("compare: read {}: {e}", a.display())))?;
+    let text_b = std::fs::read_to_string(b)
+        .map_err(|e| CliError::NotImplemented(format!("compare: read {}: {e}", b.display())))?;
+    let doc_a: serde_json::Value = serde_json::from_str(&text_a)
+        .map_err(|e| CliError::NotImplemented(format!("compare: parse a: {e}")))?;
+    let doc_b: serde_json::Value = serde_json::from_str(&text_b)
+        .map_err(|e| CliError::NotImplemented(format!("compare: parse b: {e}")))?;
+
+    let entries_a = doc_a["entries"].as_array().cloned().unwrap_or_default();
+    let entries_b = doc_b["entries"].as_array().cloned().unwrap_or_default();
+
+    // Key by hash_prefix (typed identity).
+    let by_hash_a: std::collections::HashMap<String, serde_json::Value> = entries_a.iter()
+        .filter_map(|e| e["hash_prefix"].as_str().map(|h| (h.to_string(), e.clone())))
+        .collect();
+    let by_hash_b: std::collections::HashMap<String, serde_json::Value> = entries_b.iter()
+        .filter_map(|e| e["hash_prefix"].as_str().map(|h| (h.to_string(), e.clone())))
+        .collect();
+
+    let mut only_a: Vec<String> = Vec::new();
+    let mut only_b: Vec<String> = Vec::new();
+    let mut diverged: Vec<(String, String, String)> = Vec::new();
+    let mut matching: usize = 0;
+
+    for (hash, entry_a) in &by_hash_a {
+        match by_hash_b.get(hash) {
+            None => only_a.push(hash.clone()),
+            Some(entry_b) => {
+                let sha_a = entry_a["nar_sha256"].as_str().unwrap_or("");
+                let sha_b = entry_b["nar_sha256"].as_str().unwrap_or("");
+                if sha_a == sha_b { matching += 1; }
+                else { diverged.push((hash.clone(), sha_a.to_string(), sha_b.to_string())); }
+            }
+        }
+    }
+    for (hash, _) in &by_hash_b {
+        if !by_hash_a.contains_key(hash) { only_b.push(hash.clone()); }
+    }
+
+    println!("{}  {}",
+        glyph_snowflake(), header("compare fingerprint manifests"));
+    println!();
+    println!("  {} {}  vs  {}", body("manifests:"), ident(&a.display().to_string()), ident(&b.display().to_string()));
+    println!("  {}  matching: {}", body("∑"), success(&matching.to_string()));
+    println!("  {}  only in A: {}", body("∑"),
+        if only_a.is_empty() { muted("0").to_string() } else { warn(&only_a.len().to_string()).to_string() });
+    println!("  {}  only in B: {}", body("∑"),
+        if only_b.is_empty() { muted("0").to_string() } else { warn(&only_b.len().to_string()).to_string() });
+    println!("  {}  diverged:  {}", body("∑"),
+        if diverged.is_empty() { success("0").to_string() } else { error(&diverged.len().to_string()).to_string() });
+    println!();
+    for (hash, sa, sb) in diverged.iter().take(10) {
+        println!("  {} {} sha={} ≠ sha={}",
+            error("✘"), ident(&hash[..16.min(hash.len())]),
+            muted(&sa[..16.min(sa.len())]),
+            muted(&sb[..16.min(sb.len())]));
+    }
+    let total_drift = only_a.len() + only_b.len() + diverged.len();
+    println!();
+    println!("  {} {} total drift record(s) across {} matching entries",
+        glyph_arrow(),
+        if total_drift > 0 { error(&total_drift.to_string()).to_string() } else { success("0").to_string() },
+        info(&matching.to_string()));
+    if total_drift > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -3449,6 +3693,15 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::UpgradePaths { profile, json } => {
                     store_upgrade_paths(&profile, json)?;
+                }
+                StoreCommands::Recipe { name, dest_base, json } => {
+                    store_recipe(&name, dest_base.as_deref(), json)?;
+                }
+                StoreCommands::FingerprintMany { profile, out } => {
+                    store_fingerprint_many(&profile, out.as_deref())?;
+                }
+                StoreCommands::CompareManifests { a, b } => {
+                    store_compare_manifests(&a, &b)?;
                 }
             }
         }

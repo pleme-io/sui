@@ -712,4 +712,24 @@
   :maturity SuiNative
   :substrate ("store_layout")
   :notes "Mine upgrade-shadow pairs from observed store + RefIndex blast-radius. Sorted typed recommendations.")
+(defsui-command
+  :name "store recipe"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Run a declarative (defstore-recipe …) pipeline: slice → transforms → materialize. Composes against existing slice + transform catalogs.")
+
+(defsui-command
+  :name "store fingerprint-many"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "hash" "store_layout")
+  :notes "Walk inventory profile + emit JSON manifest with NAR sha256 + sizes. Used for cross-machine determinism probes.")
+
+(defsui-command
+  :name "store compare-manifests"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ()
+  :notes "Diff two fingerprint manifests by hash_prefix key. Reports matching/only-A/only-B/diverged. Exits non-zero on any drift.")
 

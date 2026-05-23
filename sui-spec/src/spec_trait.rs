@@ -291,6 +291,13 @@ impl HasName for crate::store_transform::StoreTransform {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::store_recipe::StoreRecipe {
+    const CANONICAL_LISP: &'static str = crate::store_recipe::CANONICAL_STORE_RECIPES_LISP;
+}
+impl HasName for crate::store_recipe::StoreRecipe {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
