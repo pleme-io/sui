@@ -34,6 +34,7 @@ use sui_spec::module_system::{
 };
 use sui_spec::narinfo;
 use sui_spec::sandbox::{self, SandboxPlatform, IsolationTier};
+use sui_spec::catalog;
 use sui_spec::lock_file;
 use sui_spec::registry;
 use sui_spec::SpecError;
@@ -475,5 +476,89 @@ proptest! {
         let parsed = registry::parse_entries(&text).unwrap();
         prop_assert_eq!(parsed.len(), 1);
         prop_assert_eq!(parsed[0].exact, exact);
+    }
+}
+
+// ── catalog topological-order substrate-wide invariants ───────────
+//
+// These aren't proptest properties strictly speaking — they're
+// substrate-wide invariants exercised once.  They live in this
+// test file because they belong with the rest of the
+// substrate-spanning checks, and they're the third site for
+// "load catalog, verify property" structure (per-domain
+// invariants + bridge contract + this one).
+
+#[test]
+fn catalog_has_no_cycles() {
+    // topological_order errors with `catalog-cycle` if a cycle
+    // exists.  If load succeeds, the substrate's DAG is acyclic.
+    let topo = catalog::topological_order().expect("substrate catalog must be acyclic");
+    let canonical = catalog::load_canonical().unwrap();
+    // Same length — topo includes every domain.
+    assert_eq!(topo.len(), canonical.len(),
+        "topological order must include every catalog entry");
+}
+
+#[test]
+fn catalog_topological_order_is_dependency_consistent() {
+    // For every domain D, every D.depends_on must appear earlier
+    // in the topological order than D itself.  This is the
+    // defining invariant of a topological sort.
+    let topo = catalog::topological_order().unwrap();
+    let position: std::collections::HashMap<String, usize> = topo
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.name.clone(), i))
+        .collect();
+    for d in &topo {
+        let my_pos = position[&d.name];
+        for dep in &d.depends_on {
+            let dep_pos = position.get(dep).copied().unwrap_or(usize::MAX);
+            assert!(
+                dep_pos < my_pos,
+                "domain `{}` depends on `{}` but appears AT or AFTER it in topo order",
+                d.name, dep,
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_every_dep_edge_points_to_real_domain() {
+    // Cross-reference invariant: every `depends_on` entry must
+    // name a domain that actually exists in the catalog.  Catches
+    // typos at substrate-build time, not at downstream-consumer
+    // time.
+    let cat = catalog::load_canonical().unwrap();
+    let names: std::collections::HashSet<String> = cat
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+    for d in &cat {
+        for dep in &d.depends_on {
+            assert!(
+                names.contains(dep),
+                "domain `{}` depends on `{}` but no catalog entry has that name",
+                d.name, dep,
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_transitive_dependencies_match_dfs() {
+    // For each domain, `transitive_dependencies(name)` must be a
+    // superset of every directly-declared depends_on edge.  Tests
+    // that the transitive walker doesn't drop edges.
+    let cat = catalog::load_canonical().unwrap();
+    for d in &cat {
+        let transitive = catalog::transitive_dependencies(&d.name).unwrap();
+        for direct in &d.depends_on {
+            assert!(
+                transitive.contains(direct),
+                "domain `{}`: transitive deps {:?} missing direct dep `{}`",
+                d.name, transitive, direct,
+            );
+        }
     }
 }

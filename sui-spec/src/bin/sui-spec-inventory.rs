@@ -23,6 +23,7 @@ use sui_spec::narinfo::{self, ParsedNarInfo};
 use sui_spec::operator_view::{render as render_view, OperatorView};
 use sui_spec::realisation::{self, ParsedRealisation};
 use sui_spec::registry::{self, RegistryEntry, RegistryScope};
+use sui_spec::store_layout::{self, ParsedStorePath};
 use sui_spec::style::{
     self, body, dim_fg, error, glyph_arrow, glyph_gear, glyph_ok, glyph_snowflake,
     header, ident, info, muted, pending, success, warn, LabeledTable, NORD13, NORD15, NORD3, NORD8,
@@ -63,6 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // algorithm + encoding and emits the decoded byte length.
     if let Some(input) = &args.hash_decode {
         emit_hash_decode(input)?;
+        return Ok(());
+    }
+
+    // `--store-path <path>` decomposes a /nix/store path into
+    // its typed components via store_layout::parse_path.
+    if let Some(path) = &args.store_path {
+        emit_store_path(path)?;
         return Ok(());
     }
 
@@ -114,6 +122,7 @@ struct Args {
     registry_resolve: Option<String>,
     realisation_path: Option<String>,
     hash_decode: Option<String>,
+    store_path: Option<String>,
 }
 
 impl Args {
@@ -130,6 +139,7 @@ impl Args {
             registry_resolve: None,
             realisation_path: None,
             hash_decode: None,
+            store_path: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -150,6 +160,8 @@ impl Args {
                     .ok_or("--realisation needs <path>")?),
                 "--hash-decode" => out.hash_decode = Some(args.next()
                     .ok_or("--hash-decode needs <hash-string>")?),
+                "--store-path" => out.store_path = Some(args.next()
+                    .ok_or("--store-path needs </nix/store/...>")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
@@ -177,6 +189,7 @@ fn print_help() {
          --registry-resolve <ref>   Walk registry precedence (flake-local → user → system → global) for <ref>\n  \
          --realisation <path>   Parse a CA-derivation realisation and show its record\n  \
          --hash-decode <hash>   Classify a hash by algorithm + encoding; decode it\n  \
+         --store-path <path>    Decompose a /nix/store path into typed components\n  \
          -h, --help             This message"
     );
 }
@@ -931,4 +944,95 @@ fn detect_encoding(input: &str) -> Option<&'static str> {
         return Some("hex");
     }
     None
+}
+
+// ── --store-path mode ──────────────────────────────────────────────
+
+fn emit_store_path(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Try each canonical store layout; the first match wins.
+    let layouts = store_layout::load_canonical()?;
+    let mut last_err = None;
+    for layout in &layouts {
+        match store_layout::parse_path(layout, path) {
+            Ok(parsed) => {
+                let view = StorePathView {
+                    path: path.to_string(),
+                    layout_name: layout.name.clone(),
+                    parsed,
+                };
+                render_view(&view);
+                return Ok(());
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(format!(
+        "no canonical store layout parsed `{path}`: {:?}",
+        last_err,
+    ).into())
+}
+
+struct StorePathView {
+    path: String,
+    layout_name: String,
+    parsed: ParsedStorePath,
+}
+
+impl OperatorView for StorePathView {
+    fn subject(&self) -> &str { &self.path }
+    fn header_label(&self) -> &str { "store path" }
+    fn render_body(&self) {
+        LabeledTable::new(14)
+            .kv("Layout", &self.layout_name)
+            .opt("Algorithm", self.parsed.algorithm.as_deref())
+            .kv("Hash", &self.parsed.hash)
+            .kv("Name", &self.parsed.name)
+            .opt("SubPath", self.parsed.sub_path.as_deref())
+            .render();
+
+        // Highlight the hash length — operators want to see at a
+        // glance whether this is a 32-char nix-base32 (cppnix)
+        // or something else.
+        let hash_len = self.parsed.hash.len();
+        let len_note = if hash_len == 32 {
+            success("32-char nix-base32 (cppnix)")
+        } else {
+            warn(&format!("{hash_len}-char (non-standard)"))
+        };
+        println!(
+            "  {}  {}",
+            body(&format!("{:>14}", "(hash check)")),
+            len_note,
+        );
+    }
+    fn render_summary(&self) {
+        let parts = match (
+            self.parsed.algorithm.as_deref(),
+            self.parsed.sub_path.as_deref(),
+        ) {
+            (Some(a), Some(s)) => format!(
+                "{}{}{} {} {} {} {}",
+                info(a), muted(":"), success(&self.parsed.hash),
+                muted("+"), ident(&self.parsed.name),
+                muted("/"), ident(s),
+            ),
+            (Some(a), None) => format!(
+                "{}{}{} {} {}",
+                info(a), muted(":"), success(&self.parsed.hash),
+                muted("+"), ident(&self.parsed.name),
+            ),
+            (None, Some(s)) => format!(
+                "{} {} {} {} {}",
+                success(&self.parsed.hash),
+                muted("+"), ident(&self.parsed.name),
+                muted("/"), ident(s),
+            ),
+            (None, None) => format!(
+                "{} {} {}",
+                success(&self.parsed.hash),
+                muted("+"), ident(&self.parsed.name),
+            ),
+        };
+        println!("  {} {}", glyph_arrow(), parts);
+    }
 }

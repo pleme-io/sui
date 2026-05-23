@@ -150,6 +150,106 @@ pub fn validate_path(layout: &StoreLayout, path: &str) -> Result<(), SpecError> 
     }
 }
 
+/// Parsed store path components.  cppnix store paths decompose
+/// into `<hash>-<name>` (HashDashName) or `<algo>:<hash>-<name>`
+/// (AlgoColonHashDashName), optionally followed by `/subpath`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedStorePath {
+    /// Optional algorithm prefix (`sha256` etc.) — only set when
+    /// the layout's path_format is AlgoColonHashDashName.
+    pub algorithm: Option<String>,
+    /// The hash component (cppnix: 32-char nix-base32).
+    pub hash: String,
+    /// The name component (everything after the hash separator
+    /// up to a possible `/subpath`).
+    pub name: String,
+    /// Optional sub-path beneath the top-level store entry.
+    /// `/nix/store/<hash>-<name>/bin/hello` → `bin/hello`.
+    pub sub_path: Option<String>,
+}
+
+/// Decompose a store path into its typed components.
+///
+/// Sibling of [`validate_path`] — `validate_path` returns Ok/Err;
+/// `parse_path` returns the actual structure so operators and
+/// downstream tooling can inspect it.
+///
+/// # Errors
+///
+/// Returns the same typed errors `validate_path` does
+/// (`store-path-not-rooted`, `store-path-bad-format`).
+pub fn parse_path(layout: &StoreLayout, path: &str) -> Result<ParsedStorePath, SpecError> {
+    let prefix = format!("{}/", layout.store_root);
+    let Some(entry) = path.strip_prefix(&prefix) else {
+        return Err(SpecError::Interp {
+            phase: "store-path-not-rooted".into(),
+            message: format!(
+                "path `{path}` doesn't live under store root `{}`",
+                layout.store_root,
+            ),
+        });
+    };
+
+    // Split top-level entry from optional sub-path.
+    let (top, sub_path) = match entry.split_once('/') {
+        Some((t, rest)) => (t, Some(rest.to_string())),
+        None => (entry, None),
+    };
+
+    match layout.path_format {
+        StorePathFormat::HashDashName => {
+            // <hash>-<name>
+            let Some(dash) = top.find('-') else {
+                return Err(SpecError::Interp {
+                    phase: "store-path-bad-format".into(),
+                    message: format!(
+                        "entry `{top}` missing `-` separator (HashDashName)",
+                    ),
+                });
+            };
+            if dash != 32 {
+                return Err(SpecError::Interp {
+                    phase: "store-path-bad-format".into(),
+                    message: format!(
+                        "entry `{top}` has hash component of length {dash}, expected 32",
+                    ),
+                });
+            }
+            Ok(ParsedStorePath {
+                algorithm: None,
+                hash: top[..dash].to_string(),
+                name: top[dash + 1..].to_string(),
+                sub_path,
+            })
+        }
+        StorePathFormat::AlgoColonHashDashName => {
+            // <algo>:<hash>-<name>
+            let Some(colon) = top.find(':') else {
+                return Err(SpecError::Interp {
+                    phase: "store-path-bad-format".into(),
+                    message: format!(
+                        "entry `{top}` missing `:` separator (AlgoColonHashDashName)",
+                    ),
+                });
+            };
+            let (algo, rest) = top.split_at(colon);
+            let rest = &rest[1..]; // skip ':'
+            let Some(dash) = rest.find('-') else {
+                return Err(SpecError::Interp {
+                    phase: "store-path-bad-format".into(),
+                    message: format!("entry `{top}` missing `-` after algo prefix"),
+                });
+            };
+            Ok(ParsedStorePath {
+                algorithm: Some(algo.to_string()),
+                hash: rest[..dash].to_string(),
+                name: rest[dash + 1..].to_string(),
+                sub_path,
+            })
+        }
+    }
+}
+
 /// Compute the absolute path of an auxiliary directory inside the
 /// layout's state root.  Returns `None` if the layout doesn't
 /// declare the requested purpose.
@@ -196,6 +296,71 @@ mod tests {
         let layout = cppnix();
         validate_path(&layout, "/nix/store/0000000000000000000000000000abcd-hello").unwrap();
         validate_path(&layout, "/nix/store/0000000000000000000000000000abcd-hello/bin/hello").unwrap();
+    }
+
+    // ── parse_path tests ────────────────────────────────────────
+
+    #[test]
+    fn parse_path_decomposes_hash_dash_name() {
+        let layout = cppnix();
+        let parsed = parse_path(
+            &layout,
+            "/nix/store/0000000000000000000000000000abcd-hello-2.12",
+        ).unwrap();
+        assert_eq!(parsed.algorithm, None);
+        assert_eq!(parsed.hash, "0000000000000000000000000000abcd");
+        assert_eq!(parsed.name, "hello-2.12");
+        assert_eq!(parsed.sub_path, None);
+    }
+
+    #[test]
+    fn parse_path_captures_sub_path() {
+        let layout = cppnix();
+        let parsed = parse_path(
+            &layout,
+            "/nix/store/0000000000000000000000000000abcd-hello/bin/hello",
+        ).unwrap();
+        assert_eq!(parsed.sub_path.as_deref(), Some("bin/hello"));
+    }
+
+    #[test]
+    fn parse_path_errors_for_unrooted() {
+        let layout = cppnix();
+        let err = parse_path(&layout, "/tmp/not-in-store").unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => {
+                assert_eq!(phase, "store-path-not-rooted");
+            }
+            _ => panic!("expected Interp error"),
+        }
+    }
+
+    #[test]
+    fn parse_path_errors_for_short_hash() {
+        let layout = cppnix();
+        let err = parse_path(&layout, "/nix/store/short-hello").unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => {
+                assert_eq!(phase, "store-path-bad-format");
+            }
+            _ => panic!("expected Interp error"),
+        }
+    }
+
+    #[test]
+    fn parse_path_errors_when_dash_missing() {
+        let layout = cppnix();
+        // 32 chars, no dash.
+        let err = parse_path(
+            &layout,
+            "/nix/store/00000000000000000000000000000000",
+        ).unwrap_err();
+        match err {
+            SpecError::Interp { phase, .. } => {
+                assert_eq!(phase, "store-path-bad-format");
+            }
+            _ => panic!("expected Interp error"),
+        }
     }
 
     #[test]
