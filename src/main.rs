@@ -308,6 +308,53 @@ enum RegistryCommands {
     Pin { entry: String },
 }
 
+/// Strip the leading `<algo>:` from a substrate-typed hash string
+/// to match nix CLI's bare-output form for `to-baseN`.
+fn strip_algo_prefix(s: &str) -> &str {
+    s.split_once(':').map(|(_, rest)| rest).unwrap_or(s)
+}
+
+/// Compute the digest of a single file, then encode it per the
+/// requested base.  Mirrors `nix hash file <path> --type X --base Y`.
+fn hash_file(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| CliError::NotImplemented(format!("hash file: reading {path}: {e}")))?;
+
+    let digest: Vec<u8> = match hash_type {
+        "sha256" => {
+            use sha2::Digest;
+            sha2::Sha256::digest(&bytes).to_vec()
+        }
+        "sha512" => {
+            use sha2::Digest;
+            sha2::Sha512::digest(&bytes).to_vec()
+        }
+        other => {
+            return Err(CliError::NotImplemented(format!(
+                "hash file: unsupported --type `{other}` (sha256 / sha512)"
+            )));
+        }
+    };
+
+    // Map nix's `--base` flag to substrate encoding names.  Nix
+    // accepts `base16` / `base32` / `base64` / `sri`; substrate
+    // uses `nix-base32` for the historical Nix variant.
+    let encoding = match base {
+        "base16" => "base16",
+        "base32" => "nix-base32",
+        "base64" => "base64",
+        "sri"    => "sri",
+        other    => return Err(CliError::NotImplemented(format!(
+            "hash file: unknown --base `{other}` (base16 | base32 | base64 | sri)"
+        ))),
+    };
+
+    let out = sui_spec::hash::encode_hash(hash_type, encoding, &digest)
+        .map_err(|e| CliError::NotImplemented(format!("hash file: encode: {e:?}")))?;
+    println!("{out}");
+    Ok(())
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), CliError> {
@@ -954,12 +1001,47 @@ async fn main() -> Result<(), CliError> {
         },
         Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }
         Commands::Hash { command } => match command {
-            HashCommands::File { path, r#type, base } => { return Err(CliError::NotImplemented(format!("hash file {path} --type {type} --base {base}"))); }
-            HashCommands::Path { path, r#type, base } => { return Err(CliError::NotImplemented(format!("hash path {path} --type {type} --base {base}"))); }
-            HashCommands::ToBase16 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base16 {hash}"))); }
-            HashCommands::ToBase32 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base32 {hash}"))); }
-            HashCommands::ToBase64 { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-base64 {hash}"))); }
-            HashCommands::ToSri { hash, .. } => { return Err(CliError::NotImplemented(format!("hash to-sri {hash}"))); }
+            HashCommands::File { path, r#type, base } => {
+                hash_file(&path, &r#type, &base)?;
+            }
+            HashCommands::Path { path, r#type, base } => {
+                // `nix hash path` runs a NAR walk; substrate
+                // doesn't expose that yet — typed error pointing
+                // at the gap.
+                return Err(CliError::NotImplemented(format!(
+                    "hash path {path} --type {type} --base {base} — needs sui_spec::nar::hash_path"
+                )));
+            }
+            HashCommands::ToBase16 { hash, r#type: _ } => {
+                // `nix hash to-base16` outputs bare hex (no `<algo>:`
+                // prefix); substrate's base16 encoding already
+                // returns the bare form.
+                let out = sui_spec::hash::apply_conversion("auto", "base16", &hash)
+                    .map_err(|e| CliError::NotImplemented(format!("hash to-base16: {e:?}")))?;
+                println!("{out}");
+            }
+            HashCommands::ToBase32 { hash, r#type: _ } => {
+                // `nix hash to-base32` outputs bare nix-base32 (no
+                // `<algo>:` prefix); substrate's encoder prepends
+                // the algo for storage purposes, so strip it.
+                let out = sui_spec::hash::apply_conversion("auto", "nix-base32", &hash)
+                    .map_err(|e| CliError::NotImplemented(format!("hash to-base32: {e:?}")))?;
+                println!("{}", strip_algo_prefix(&out));
+            }
+            HashCommands::ToBase64 { hash, r#type: _ } => {
+                // Same as to-base32 — strip the prefix for nix
+                // CLI byte-equivalence.
+                let out = sui_spec::hash::apply_conversion("auto", "base64", &hash)
+                    .map_err(|e| CliError::NotImplemented(format!("hash to-base64: {e:?}")))?;
+                println!("{}", strip_algo_prefix(&out));
+            }
+            HashCommands::ToSri { hash, r#type: _ } => {
+                // SRI form keeps the `<algo>-<base64>` shape; no
+                // prefix stripping.
+                let out = sui_spec::hash::apply_conversion("auto", "sri", &hash)
+                    .map_err(|e| CliError::NotImplemented(format!("hash to-sri: {e:?}")))?;
+                println!("{out}");
+            }
         },
         Commands::Key { command } => match command {
             KeyCommands::GenerateSecret { key_name } => { return Err(CliError::NotImplemented(format!("key generate-secret --key-name {key_name}"))); }

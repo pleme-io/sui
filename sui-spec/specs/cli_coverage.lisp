@@ -497,9 +497,9 @@
 (defsui-command
   :name "hash file"
   :nix-equivalent "nix hash file"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash")
-  :notes "Not wired (sui-spec-inventory --hash-decode covers reverse direction)")
+  :notes "Wired via sha2::Digest + hash::encode_hash — byte-equivalent with --base sri")
 
 (defsui-command
   :name "hash path"
@@ -511,30 +511,30 @@
 (defsui-command
   :name "hash to-base16"
   :nix-equivalent "nix hash to-base16"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash")
-  :notes "Not wired")
+  :notes "Wired via hash::apply_conversion — byte-equivalent with nix")
 
 (defsui-command
   :name "hash to-base32"
   :nix-equivalent "nix hash to-base32"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash")
-  :notes "Not wired")
+  :notes "Wired via hash::apply_conversion + algo-prefix strip — byte-equivalent with nix")
 
 (defsui-command
   :name "hash to-base64"
   :nix-equivalent "nix hash to-base64"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash")
-  :notes "Not wired")
+  :notes "Wired via hash::apply_conversion + algo-prefix strip — byte-equivalent with nix")
 
 (defsui-command
   :name "hash to-sri"
   :nix-equivalent "nix hash to-sri"
-  :maturity Stub
+  :maturity Working
   :substrate ("hash")
-  :notes "Not wired")
+  :notes "Wired via hash::apply_conversion — byte-equivalent with nix")
 
 ;; ── key commands ────────────────────────────────────────────────
 
