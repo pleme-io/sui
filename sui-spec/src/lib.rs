@@ -84,6 +84,7 @@ pub mod operator_view;
 pub mod parity;
 pub mod store_inventory;
 pub mod store_ops;
+pub mod store_transform;
 pub mod probe;
 pub mod profile;
 pub mod realisation;

@@ -645,4 +645,10 @@
   :maturity SuiNative
   :substrate ("nar" "store_layout")
   :notes "NAR encode + decode round-trip rematerializer; proves byte-perfect copy via NAR sha256 over named slice (tiny-sources/tiny-patches/tiny-drvs).")
+(defsui-command
+  :name "store transform"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("nar" "store_layout")
+  :notes "Apply a typed StoreTransform to a store path: parse NAR → typed tree → apply (FileContents/StorePathReference/EntryName) → re-encode → materialize. Transforms authored in specs/store_transforms.lisp.")
 

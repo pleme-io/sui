@@ -284,6 +284,13 @@ impl HasName for crate::store_inventory::StoreInventoryProfile {
     fn name(&self) -> &str { &self.name }
 }
 
+impl Spec for crate::store_transform::StoreTransform {
+    const CANONICAL_LISP: &'static str = crate::store_transform::CANONICAL_STORE_TRANSFORMS_LISP;
+}
+impl HasName for crate::store_transform::StoreTransform {
+    fn name(&self) -> &str { &self.name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

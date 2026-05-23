@@ -275,6 +275,23 @@ enum StoreCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Apply a typed store-transform to a source store path.
+    /// Reads NAR, parses to typed tree, applies the transform,
+    /// re-encodes, materializes at dest.  Reports the # of
+    /// rewrites.
+    Transform {
+        /// Source store path.
+        source: String,
+        /// Transform name from specs/store_transforms.lisp
+        /// (e.g. `redact-base64-secrets`, `strip-shell-comments`).
+        transform: String,
+        /// Destination dir; defaults to ~/.cache/sui/transformed/<basename>.
+        #[arg(long)]
+        dest: Option<std::path::PathBuf>,
+        /// Emit JSON outcome.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1153,6 +1170,104 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
     eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    Ok(())
+}
+
+// ── `sui store transform` — typed graft/redact applier ─────────
+
+fn store_transform(
+    source: &str,
+    transform_name: &str,
+    dest: Option<&std::path::Path>,
+    json: bool,
+) -> Result<(), CliError> {
+    use sui_spec::store_ops::ParsedNar;
+    use sui_spec::store_transform::{self, apply_one};
+    use sui_spec::style::{
+        body, error, glyph_arrow, glyph_snowflake, header, ident, info, muted, success,
+    };
+
+    let xforms = store_transform::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("transform: load: {e:?}")))?;
+    let xform = xforms.iter().find(|t| t.name == transform_name)
+        .ok_or_else(|| CliError::NotImplemented(format!(
+            "transform: unknown name `{transform_name}`; available: {}",
+            xforms.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+        )))?;
+
+    let source_path = std::path::PathBuf::from(source);
+    let _ = sui_spec::store_layout::validate_against_canonical(source)
+        .map_err(|e| CliError::NotImplemented(format!("transform: source `{source}`: {e:?}")))?;
+
+    let dest_root = dest.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let basename = source_path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
+        std::path::PathBuf::from(home).join(format!(".cache/sui/transformed/{basename}"))
+    });
+    if let Some(parent) = dest_root.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CliError::NotImplemented(format!("transform: mkdir {}: {e}", parent.display())))?;
+    }
+
+    let nar = sui_spec::nar::encode(&source_path)
+        .map_err(|e| CliError::NotImplemented(format!("transform: encode: {e}")))?;
+    let mut tree = ParsedNar::parse(&nar)
+        .map_err(|e| CliError::NotImplemented(format!("transform: parse: {e}")))?;
+
+    let outcome = apply_one(&mut tree.root, xform)
+        .map_err(|e| CliError::NotImplemented(format!("transform: apply: {e:?}")))?;
+
+    let new_nar = tree.serialize();
+    if dest_root.exists() {
+        std::fs::remove_dir_all(&dest_root).ok();
+    }
+    sui_spec::nar::decode(&new_nar, &dest_root)
+        .map_err(|e| CliError::NotImplemented(format!("transform: decode: {e}")))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "source":          source_path.display().to_string(),
+            "dest":            dest_root.display().to_string(),
+            "transform_name":  outcome.transform_name,
+            "file_rewrites":   outcome.file_rewrites,
+            "ref_rewrites":    outcome.ref_rewrites,
+            "entries_renamed": outcome.entries_renamed,
+            "noop":            outcome.is_noop(),
+        })).unwrap());
+    } else {
+        println!("{}  {}  {}",
+            glyph_snowflake(),
+            header("store transform"),
+            muted(&format!("`{transform_name}` ← `{}`", source_path.display())),
+        );
+        println!();
+        println!("  {}  {}", body("file rewrites:  "), info(&outcome.file_rewrites.to_string()));
+        println!("  {}  {}", body("ref rewrites:   "), info(&outcome.ref_rewrites.to_string()));
+        println!("  {}  {}", body("entries renamed:"), info(&outcome.entries_renamed.to_string()));
+        println!();
+        if outcome.is_noop() {
+            println!("  {} no-op (transform produced no changes — dest mirrors source)",
+                muted("·"));
+        } else {
+            println!("  {} {} byte(s) → {}",
+                glyph_arrow(),
+                success(&new_nar.len().to_string()),
+                ident(&dest_root.display().to_string()),
+            );
+        }
+        if outcome.is_noop() {
+            // Confirm noop produces byte-equivalent NAR.
+            let dest_nar = sui_spec::nar::encode(&dest_root)
+                .map_err(|e| CliError::NotImplemented(format!("transform: verify-encode: {e}")))?;
+            if dest_nar == nar {
+                println!("  {} noop verified: source NAR == dest NAR byte-equal",
+                    success("✓"));
+            } else {
+                println!("  {} noop but NAR differs — substrate bug?",
+                    error("✘"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2460,6 +2575,9 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::Closure { path, json } => {
                     store_closure(&path, json)?;
+                }
+                StoreCommands::Transform { source, transform, dest, json } => {
+                    store_transform(&source, &transform, dest.as_deref(), json)?;
                 }
             }
         }
