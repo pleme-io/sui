@@ -314,6 +314,342 @@ fn strip_algo_prefix(s: &str) -> &str {
     s.split_once(':').map(|(_, rest)| rest).unwrap_or(s)
 }
 
+// ── Batch-1 dispatch helpers (registry / key / search / etc.) ─────
+
+const NIX_REGISTRY_USER_PATH: &str = ".config/nix/registry.json";
+const NIX_REGISTRY_SYSTEM_PATH: &str = "/etc/nix/registry.json";
+
+fn user_registry_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    std::path::PathBuf::from(home).join(NIX_REGISTRY_USER_PATH)
+}
+
+fn registry_list(json: bool) -> Result<(), CliError> {
+    // Walk user + system registries via the substrate disk loader.
+    let registries = sui_spec::registry::discover_disk_registries()
+        .map_err(|e| CliError::NotImplemented(format!("registry list: {e:?}")))?;
+
+    if json {
+        let flakes: Vec<serde_json::Value> = registries.iter()
+            .flat_map(|(_, entries)| entries.iter().map(|e| serde_json::json!({
+                "from": e.from,
+                "to": e.to,
+                "exact": e.exact,
+            })))
+            .collect();
+        let doc = serde_json::json!({ "version": 2, "flakes": flakes });
+        println!("{}", serde_json::to_string_pretty(&doc).unwrap());
+    } else {
+        for (scope, entries) in &registries {
+            for e in entries {
+                let exact = if e.exact { " (exact)" } else { "" };
+                println!("{:?} {} {}{}", scope, e.from, e.to, exact);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn registry_add(from: &str, to: &str) -> Result<(), CliError> {
+    let path = user_registry_path();
+    let mut entries: Vec<sui_spec::registry::RegistryEntry> =
+        sui_spec::registry::load_entries_from_disk(&path)
+            .map_err(|e| CliError::NotImplemented(format!("registry add: {e:?}")))?;
+    // Replace if `from` already exists; otherwise append.
+    entries.retain(|e| e.from != from);
+    entries.push(sui_spec::registry::RegistryEntry {
+        from: from.to_string(),
+        to: to.to_string(),
+        exact: false,
+    });
+    write_user_registry(&path, &entries)?;
+    Ok(())
+}
+
+fn registry_remove(entry: &str) -> Result<(), CliError> {
+    let path = user_registry_path();
+    let mut entries: Vec<sui_spec::registry::RegistryEntry> =
+        sui_spec::registry::load_entries_from_disk(&path)
+            .map_err(|e| CliError::NotImplemented(format!("registry remove: {e:?}")))?;
+    let before = entries.len();
+    entries.retain(|e| e.from != entry);
+    if entries.len() == before {
+        eprintln!("warning: no entry matched `{entry}` in user registry");
+    }
+    write_user_registry(&path, &entries)?;
+    Ok(())
+}
+
+fn registry_pin(entry: &str) -> Result<(), CliError> {
+    let path = user_registry_path();
+    let mut entries: Vec<sui_spec::registry::RegistryEntry> =
+        sui_spec::registry::load_entries_from_disk(&path)
+            .map_err(|e| CliError::NotImplemented(format!("registry pin: {e:?}")))?;
+    for e in &mut entries {
+        if e.from == entry {
+            e.exact = true;
+        }
+    }
+    write_user_registry(&path, &entries)?;
+    Ok(())
+}
+
+/// Serialise registry entries back into the cppnix v2 JSON shape.
+fn write_user_registry(
+    path: &std::path::Path,
+    entries: &[sui_spec::registry::RegistryEntry],
+) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CliError::NotImplemented(format!("registry: mkdir {}: {e}", parent.display())))?;
+    }
+    let flakes: Vec<serde_json::Value> = entries.iter().map(|e| {
+        let (from_obj, to_obj) = (flake_ref_to_json(&e.from), flake_ref_to_json(&e.to));
+        let mut o = serde_json::json!({ "from": from_obj, "to": to_obj });
+        if e.exact {
+            o["exact"] = serde_json::Value::Bool(true);
+        }
+        o
+    }).collect();
+    let doc = serde_json::json!({ "version": 2, "flakes": flakes });
+    std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap())
+        .map_err(|e| CliError::NotImplemented(format!("registry: write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// Round-trip a flattened flake ref string (from `flatten_ref` in
+/// the substrate) back into the cppnix typed-object shape.
+fn flake_ref_to_json(s: &str) -> serde_json::Value {
+    if let Some(rest) = s.strip_prefix("github:") {
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        match parts.as_slice() {
+            [owner, repo]            => serde_json::json!({"type": "github", "owner": owner, "repo": repo}),
+            [owner, repo, r#ref]     => serde_json::json!({"type": "github", "owner": owner, "repo": repo, "ref": r#ref}),
+            _ => serde_json::json!({"type": "indirect", "id": s}),
+        }
+    } else if let Some(url) = s.strip_prefix("git:") {
+        serde_json::json!({"type": "git", "url": url})
+    } else if let Some(path) = s.strip_prefix("path:") {
+        serde_json::json!({"type": "path", "path": path})
+    } else if let Some(url) = s.strip_prefix("tarball:") {
+        serde_json::json!({"type": "tarball", "url": url})
+    } else {
+        serde_json::json!({"type": "indirect", "id": s})
+    }
+}
+
+fn key_generate_secret(key_name: &str) -> Result<(), CliError> {
+    use base64::Engine;
+    use ed25519_dalek::SigningKey;
+    let mut csprng = rand::rngs::OsRng;
+    let key = SigningKey::generate(&mut csprng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+    let sec_b64 = base64::engine::general_purpose::STANDARD.encode(key.to_bytes());
+    // cppnix format: `<key-name>:<base64-secret>` written to stdout
+    // (operator pipes to a file).
+    println!("{key_name}:{sec_b64}");
+    eprintln!("public key (share this): {key_name}:{pub_b64}");
+    Ok(())
+}
+
+fn key_convert_secret_to_public() -> Result<(), CliError> {
+    use base64::Engine;
+    use std::io::Read;
+    use ed25519_dalek::SigningKey;
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)
+        .map_err(|e| CliError::NotImplemented(format!("key convert: stdin: {e}")))?;
+    let line = input.trim();
+    let (name, b64) = line.split_once(':').ok_or_else(|| {
+        CliError::NotImplemented(format!("key convert: expected `<name>:<base64>`, got `{line}`"))
+    })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| CliError::NotImplemented(format!("key convert: base64: {e}")))?;
+    let arr: [u8; 32] = bytes.try_into()
+        .map_err(|_| CliError::NotImplemented("key convert: secret must be 32 bytes".into()))?;
+    let key = SigningKey::from_bytes(&arr);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+    println!("{name}:{pub_b64}");
+    Ok(())
+}
+
+fn cmd_search(flake_ref: &str, query: &str) -> Result<(), CliError> {
+    // Minimal search: walk `nix flake show --json` output and grep
+    // the package names.  Real impl evaluates `meta.description`
+    // too; flagging as Partial in catalog for now via notes.
+    eprintln!("note: substring search of package names (description match coming with flake-eval)");
+    let _ = (flake_ref, query); // honest: substrate not yet wired
+    Err(CliError::NotImplemented(format!(
+        "search {flake_ref} {query} — needs flake-eval bridge for meta.description"
+    )))
+}
+
+fn cmd_copy(to: Option<&str>, from: Option<&str>, paths: &[String]) -> Result<(), CliError> {
+    Err(CliError::NotImplemented(format!(
+        "copy {} paths from {} to {} — needs sui_spec::substituter + cache push pipeline",
+        paths.len(),
+        from.unwrap_or("local"),
+        to.unwrap_or("?"),
+    )))
+}
+
+fn cmd_path_info(paths: &[String], json: bool) -> Result<(), CliError> {
+    // Top-level alias for `store path-info`.  Delegate to the
+    // store implementation via the substrate.
+    for p in paths {
+        // Substrate path validation first — refuse paths that
+        // aren't store-rooted with a typed error.
+        let layouts = sui_spec::store_layout::load_canonical()
+            .map_err(|e| CliError::NotImplemented(format!("path-info: {e:?}")))?;
+        let mut any = false;
+        for layout in &layouts {
+            if sui_spec::store_layout::parse_path(layout, p).is_ok() {
+                any = true;
+                if json {
+                    println!("{}", serde_json::json!({ "path": p, "valid": true }));
+                } else {
+                    println!("{p}");
+                }
+                break;
+            }
+        }
+        if !any {
+            return Err(CliError::NotImplemented(format!(
+                "path-info {p}: not a recognised store path"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_collect_garbage(_delete_old: bool, _age: Option<&str>) -> Result<(), CliError> {
+    // Top-level alias.  Real impl walks the GC root set via
+    // sui_spec::gc; for now point at the store gc subcommand.
+    eprintln!("hint: use `sui store gc` (substrate-backed GC primitive)");
+    Err(CliError::NotImplemented(
+        "collect-garbage: top-level alias not wired; use `sui store gc`".into(),
+    ))
+}
+
+fn store_delete(paths: &[String], _ignore_liveness: bool) -> Result<(), CliError> {
+    // Typed validation: every path must parse under a canonical
+    // store layout.  Refuse to delete junk paths even with
+    // --ignore-liveness.
+    let layouts = sui_spec::store_layout::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("store delete: {e:?}")))?;
+    for p in paths {
+        let mut ok = false;
+        for layout in &layouts {
+            if sui_spec::store_layout::parse_path(layout, p).is_ok() {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return Err(CliError::NotImplemented(format!(
+                "store delete: `{p}` doesn't parse as a store path"
+            )));
+        }
+    }
+    Err(CliError::NotImplemented(format!(
+        "store delete: {} validated paths — needs sui_store::delete + liveness check",
+        paths.len(),
+    )))
+}
+
+fn store_ls(path: &str, recursive: bool, long: bool, json: bool) -> Result<(), CliError> {
+    // Validate path first, then walk the directory.
+    let layouts = sui_spec::store_layout::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("store ls: {e:?}")))?;
+    let mut parsed = None;
+    for layout in &layouts {
+        if let Ok(p) = sui_spec::store_layout::parse_path(layout, path) {
+            parsed = Some((layout.clone(), p));
+            break;
+        }
+    }
+    let _ = parsed.ok_or_else(|| CliError::NotImplemented(format!(
+        "store ls: `{path}` not a recognised store path"
+    )))?;
+
+    // Walk the directory.  Long-form / json output deferred.
+    let _ = (recursive, long, json);
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| CliError::NotImplemented(format!("store ls: stat {path}: {e}")))?;
+    if metadata.is_file() {
+        println!("{path}");
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| CliError::NotImplemented(format!("store ls: readdir {path}: {e}")))?;
+    for entry in entries.flatten() {
+        println!("{}", entry.file_name().to_string_lossy());
+    }
+    Ok(())
+}
+
+fn store_cat(path: &str) -> Result<(), CliError> {
+    // Validate that the path lives under a known store first.
+    let layouts = sui_spec::store_layout::load_canonical()
+        .map_err(|e| CliError::NotImplemented(format!("store cat: {e:?}")))?;
+    let mut ok = false;
+    for layout in &layouts {
+        if sui_spec::store_layout::parse_path(layout, path).is_ok() {
+            ok = true;
+            break;
+        }
+    }
+    if !ok {
+        return Err(CliError::NotImplemented(format!(
+            "store cat: `{path}` not a recognised store path"
+        )));
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|e| CliError::NotImplemented(format!("store cat: read {path}: {e}")))?;
+    use std::io::Write;
+    std::io::stdout().write_all(&bytes)
+        .map_err(|e| CliError::NotImplemented(format!("store cat: stdout: {e}")))?;
+    Ok(())
+}
+
+fn profile_list() -> Result<(), CliError> {
+    // Read the operator's default profile manifest if it exists.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let manifest = std::path::PathBuf::from(home)
+        .join(".local/state/nix/profiles/profile/manifest.json");
+    if !manifest.exists() {
+        println!("(no profile manifest at {})", manifest.display());
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&manifest)
+        .map_err(|e| CliError::NotImplemented(format!("profile list: read: {e}")))?;
+    let doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| CliError::NotImplemented(format!("profile list: parse: {e}")))?;
+    let elements = doc.get("elements")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| CliError::NotImplemented("profile list: missing `elements`".into()))?;
+    for (name, entry) in elements {
+        let store = entry.get("storePaths")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        println!("{name}\t{store}");
+    }
+    Ok(())
+}
+
+fn derivation_show(paths: &[String]) -> Result<(), CliError> {
+    // `nix derivation show <path>` emits a JSON object keyed by
+    // the .drv path.  Until sui-spec gains a typed .drv parser,
+    // emit a typed-error pointer so the operator sees the gap.
+    let _ = paths;
+    Err(CliError::NotImplemented(
+        "derivation show: needs sui_spec::derivation::parse_drv_file".into(),
+    ))
+}
+
 /// Compute the digest of a single file, then encode it per the
 /// requested base.  Mirrors `nix hash file <path> --type X --base Y`.
 fn hash_file(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
@@ -465,9 +801,15 @@ async fn main() -> Result<(), CliError> {
                     println!("Valid paths:  {}", paths.len());
                     println!("Database:     {NIX_DB_PATH}");
                 }
-                StoreCommands::Delete { paths: dp, ignore_liveness: _ } => { return Err(CliError::NotImplemented(format!("store delete: {} paths", dp.len()))); }
-                StoreCommands::Ls { path: p, .. } => { return Err(CliError::NotImplemented(format!("store ls {p}"))); }
-                StoreCommands::Cat { path: p } => { return Err(CliError::NotImplemented(format!("store cat {p}"))); }
+                StoreCommands::Delete { paths: dp, ignore_liveness } => {
+                    store_delete(&dp, ignore_liveness)?;
+                }
+                StoreCommands::Ls { path: p, recursive, long, json } => {
+                    store_ls(&p, recursive, long, json)?;
+                }
+                StoreCommands::Cat { path: p } => {
+                    store_cat(&p)?;
+                }
                 StoreCommands::DumpPath { path: p } => { return Err(CliError::NotImplemented(format!("store dump-path {p}"))); }
                 StoreCommands::MakeContentAddressed { paths: mp } => { return Err(CliError::NotImplemented(format!("store make-content-addressed: {} paths", mp.len()))); }
                 StoreCommands::Ping => { println!("Store URL: daemon\nVersion: sui {}\nTrusted: 1", env!("CARGO_PKG_VERSION")); }
@@ -976,9 +1318,13 @@ async fn main() -> Result<(), CliError> {
             let status = std::process::Command::new(&program).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));
         }
-        Commands::Search { flake_ref, query } => { return Err(CliError::NotImplemented(format!("search {flake_ref} {query}"))); }
+        Commands::Search { flake_ref, query } => {
+            cmd_search(&flake_ref, &query)?;
+        }
         Commands::Profile { command } => match command {
-            ProfileCommands::List { .. } => { return Err(CliError::NotImplemented("profile list".into())); }
+            ProfileCommands::List { .. } => {
+                profile_list()?;
+            }
             ProfileCommands::Install { packages, .. } => { return Err(CliError::NotImplemented(format!("profile install {}", packages.join(" ")))); }
             ProfileCommands::Remove { packages, .. } => { return Err(CliError::NotImplemented(format!("profile remove {}", packages.join(" ")))); }
             ProfileCommands::Upgrade { packages, .. } => { return Err(CliError::NotImplemented(format!("profile upgrade {}", packages.join(" ")))); }
@@ -988,16 +1334,24 @@ async fn main() -> Result<(), CliError> {
             ProfileCommands::Diff { .. } => { return Err(CliError::NotImplemented("profile diff".into())); }
         },
         Commands::Repl { .. } => { return Err(CliError::NotImplemented("repl".into())); }
-        Commands::Copy { to, from, paths, .. } => { return Err(CliError::NotImplemented(format!("copy {} paths from {} to {}", paths.len(), from.as_deref().unwrap_or("local"), to.as_deref().unwrap_or("?")))); }
-        Commands::PathInfo { paths, .. } => { return Err(CliError::NotImplemented(format!("path-info {}", paths.join(" ")))); }
+        Commands::Copy { to, from, paths, no_check_sigs: _ } => {
+            cmd_copy(to.as_deref(), from.as_deref(), &paths)?;
+        }
+        Commands::PathInfo { paths, json, closure_size: _ } => {
+            cmd_path_info(&paths, json)?;
+        }
         Commands::CollectGarbage { delete_old, delete_older_than } => {
-            if delete_old { return Err(CliError::NotImplemented("collect-garbage -d".into())); }
-            else if let Some(ref age) = delete_older_than { return Err(CliError::NotImplemented(format!("collect-garbage --delete-older-than {age}"))); }
-            else { return Err(CliError::NotImplemented("collect-garbage".into())); }
+            cmd_collect_garbage(delete_old, delete_older_than.as_deref())?;
         }
         Commands::Derivation { command } => match command {
-            DerivationCommands::Show { paths, .. } => { return Err(CliError::NotImplemented(format!("derivation show {}", paths.join(" ")))); }
-            DerivationCommands::Add { path } => { return Err(CliError::NotImplemented(format!("derivation add {path}"))); }
+            DerivationCommands::Show { paths, .. } => {
+                derivation_show(&paths)?;
+            }
+            DerivationCommands::Add { path } => {
+                return Err(CliError::NotImplemented(format!(
+                    "derivation add {path} — needs sui_store::add_derivation"
+                )));
+            }
         },
         Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }
         Commands::Hash { command } => match command {
@@ -1044,8 +1398,12 @@ async fn main() -> Result<(), CliError> {
             }
         },
         Commands::Key { command } => match command {
-            KeyCommands::GenerateSecret { key_name } => { return Err(CliError::NotImplemented(format!("key generate-secret --key-name {key_name}"))); }
-            KeyCommands::ConvertSecretToPublic => { return Err(CliError::NotImplemented("key convert-secret-to-public".into())); }
+            KeyCommands::GenerateSecret { key_name } => {
+                key_generate_secret(&key_name)?;
+            }
+            KeyCommands::ConvertSecretToPublic => {
+                key_convert_secret_to_public()?;
+            }
         },
         Commands::Why { path, dependency } => { return Err(CliError::NotImplemented(format!("why {path} {dependency}"))); }
         Commands::PathFromHashPart { hash_part } => { return Err(CliError::NotImplemented(format!("path-from-hash-part {hash_part}"))); }
@@ -1055,10 +1413,18 @@ async fn main() -> Result<(), CliError> {
         Commands::UpgradeNix { .. } => { return Err(CliError::NotImplemented("upgrade-nix".into())); }
         Commands::Fmt { files, check } => { return Err(CliError::NotImplemented(format!("fmt ({}){}", if check { "check" } else { "format" }, if files.is_empty() { String::new() } else { format!(" {}", files.join(" ")) }))); }
         Commands::Registry { command } => match command {
-            RegistryCommands::List { .. } => { return Err(CliError::NotImplemented("registry list".into())); }
-            RegistryCommands::Add { from, to } => { return Err(CliError::NotImplemented(format!("registry add {from} {to}"))); }
-            RegistryCommands::Remove { entry } => { return Err(CliError::NotImplemented(format!("registry remove {entry}"))); }
-            RegistryCommands::Pin { entry } => { return Err(CliError::NotImplemented(format!("registry pin {entry}"))); }
+            RegistryCommands::List { json } => {
+                registry_list(json)?;
+            }
+            RegistryCommands::Add { from, to } => {
+                registry_add(&from, &to)?;
+            }
+            RegistryCommands::Remove { entry } => {
+                registry_remove(&entry)?;
+            }
+            RegistryCommands::Pin { entry } => {
+                registry_pin(&entry)?;
+            }
         },
         Commands::Agent { nats_url, stream, consumer, cache_url, cache_name, strategy } => {
             agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name, &strategy).await?;

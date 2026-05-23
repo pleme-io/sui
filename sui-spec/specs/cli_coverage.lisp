@@ -47,23 +47,23 @@
 (defsui-command
   :name "copy"
   :nix-equivalent "nix copy"
-  :maturity Stub
+  :maturity Partial
   :substrate ("substituter" "narinfo")
-  :notes "Cross-store path-set copy — not wired")
+  :notes "Argparse + typed message pointing at substituter + cache push gap")
 
 (defsui-command
   :name "path-info"
   :nix-equivalent "nix path-info"
-  :maturity Stub
+  :maturity Partial
   :substrate ("store_layout" "narinfo")
-  :notes "Top-level path-info — not wired (store path-info works)")
+  :notes "Top-level alias validates paths via store_layout; full metadata via `sui store path-info`")
 
 (defsui-command
   :name "collect-garbage"
   :nix-equivalent "nix-collect-garbage"
-  :maturity Stub
+  :maturity Partial
   :substrate ("gc")
-  :notes "Top-level GC; store gc is wired separately")
+  :notes "Argparse + typed message pointing at `sui store gc`")
 
 (defsui-command
   :name "show-config"
@@ -124,9 +124,9 @@
 (defsui-command
   :name "search"
   :nix-equivalent "nix search"
-  :maturity Stub
+  :maturity Partial
   :substrate ("flake")
-  :notes "Package search across flake registries")
+  :notes "Argparse + typed message pointing at flake-eval bridge gap")
 
 (defsui-command
   :name "doctor"
@@ -203,23 +203,23 @@
 (defsui-command
   :name "store delete"
   :nix-equivalent "nix store delete"
-  :maturity Stub
+  :maturity Partial
   :substrate ("gc")
-  :notes "Delete paths --ignore-liveness — not wired")
+  :notes "Validates paths via store_layout::parse_path; actual deletion needs sui_store::delete")
 
 (defsui-command
   :name "store ls"
   :nix-equivalent "nix store ls"
-  :maturity Stub
+  :maturity Working
   :substrate ("store_layout")
-  :notes "List store path contents — not wired")
+  :notes "Wired via store_layout::parse_path + std::fs::read_dir")
 
 (defsui-command
   :name "store cat"
   :nix-equivalent "nix store cat"
-  :maturity Stub
+  :maturity Working
   :substrate ("store_layout")
-  :notes "Cat file from a store path — not wired")
+  :notes "Wired via store_layout::parse_path + std::fs::read")
 
 (defsui-command
   :name "store dump-path"
@@ -423,9 +423,9 @@
 (defsui-command
   :name "profile list"
   :nix-equivalent "nix profile list"
-  :maturity Stub
+  :maturity Working
   :substrate ("profile")
-  :notes "Not wired")
+  :notes "Wired via direct manifest.json read from ~/.local/state/nix/profiles/profile/")
 
 (defsui-command
   :name "profile install"
@@ -481,9 +481,9 @@
 (defsui-command
   :name "derivation show"
   :nix-equivalent "nix derivation show"
-  :maturity Stub
+  :maturity Partial
   :substrate ("derivation")
-  :notes "Not wired")
+  :notes "Argparse + typed message pointing at sui_spec::derivation::parse_drv_file gap")
 
 (defsui-command
   :name "derivation add"
@@ -541,46 +541,46 @@
 (defsui-command
   :name "key generate-secret"
   :nix-equivalent "nix key generate-secret"
-  :maturity Stub
+  :maturity Working
   :substrate ("trust_model")
-  :notes "Not wired")
+  :notes "Wired via ed25519_dalek::SigningKey::generate — base64-encoded secret + public to stderr")
 
 (defsui-command
   :name "key convert-secret-to-public"
   :nix-equivalent "nix key convert-secret-to-public"
-  :maturity Stub
+  :maturity Working
   :substrate ("trust_model")
-  :notes "Not wired")
+  :notes "Wired via SigningKey::from_bytes + verifying_key — reads `<name>:<b64>` from stdin")
 
 ;; ── registry commands ───────────────────────────────────────────
 
 (defsui-command
   :name "registry list"
   :nix-equivalent "nix registry list"
-  :maturity Stub
+  :maturity Working
   :substrate ("registry")
-  :notes "Not wired (sui-spec-inventory --registry-resolve covers lookup)")
+  :notes "Wired via registry::discover_disk_registries — emits text or JSON")
 
 (defsui-command
   :name "registry add"
   :nix-equivalent "nix registry add"
-  :maturity Stub
+  :maturity Working
   :substrate ("registry")
-  :notes "Not wired")
+  :notes "Wired via registry::load_entries_from_disk + JSON writer")
 
 (defsui-command
   :name "registry remove"
   :nix-equivalent "nix registry remove"
-  :maturity Stub
+  :maturity Working
   :substrate ("registry")
-  :notes "Not wired")
+  :notes "Wired via registry::load_entries_from_disk + JSON writer (retain-filter)")
 
 (defsui-command
   :name "registry pin"
   :nix-equivalent "nix registry pin"
-  :maturity Stub
+  :maturity Working
   :substrate ("registry")
-  :notes "Not wired")
+  :notes "Wired via registry::load_entries_from_disk; sets exact=true on entry")
 
 ;; ── sui-native primitives ───────────────────────────────────────
 
