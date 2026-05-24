@@ -2545,12 +2545,22 @@ impl<'a> VM<'a> {
         };
         let (drv_path, out_paths, mut drv) = if is_fod {
             let raw_output_hash = get_str(&attrs, self.interner, "outputHash")?;
-            let output_hash_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
-                .unwrap_or_else(|| "sha256".to_string());
+            let raw_algo = get_str_opt(&attrs, self.interner, "outputHashAlgo")?
+                .unwrap_or_default();
             let output_hash_mode = get_str_opt(&attrs, self.interner, "outputHashMode")?
                 .unwrap_or_else(|| "flat".to_string());
             let is_recursive =
                 output_hash_mode == "recursive" || output_hash_mode == "nar";
+            // Empty outputHashAlgo: infer from SRI prefix (cppnix
+            // semantics), else default to sha256.
+            let output_hash_algo = if raw_algo.is_empty() {
+                ["sha256", "sha512", "sha1", "md5"].iter()
+                    .find(|a| raw_output_hash.starts_with(&format!("{a}-")))
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| "sha256".to_string())
+            } else {
+                raw_algo
+            };
             // Normalize hex/nix-base32/SRI → lowercase hex before
             // building the fixed:out:<algo>:<hex>: fingerprint.  See
             // sui-compat::hash::NixHash::parse_any for the contract.

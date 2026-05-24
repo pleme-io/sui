@@ -152,11 +152,20 @@ fn compute_derivation_outputs(
 
     if is_fod {
         let raw_output_hash = force_attr_string(input, "outputHash")?;
-        let output_hash_algo = optional_attr_string(input, "outputHashAlgo")?
-            .unwrap_or_else(|| "sha256".to_string());
+        let raw_algo = optional_attr_string(input, "outputHashAlgo")?
+            .unwrap_or_default();
         let output_hash_mode = optional_attr_string(input, "outputHashMode")?
             .unwrap_or_else(|| "flat".to_string());
         let is_recursive = output_hash_mode == "recursive" || output_hash_mode == "nar";
+
+        // CppNix accepts empty `outputHashAlgo` when the hash is
+        // in SRI format — the algo is inferred from the `<algo>-`
+        // prefix.  Fall back to the SRI prefix; otherwise sha256.
+        let output_hash_algo = if raw_algo.is_empty() {
+            infer_algo_from_hash(&raw_output_hash).unwrap_or_else(|| "sha256".to_string())
+        } else {
+            raw_algo
+        };
 
         // Normalize user-supplied hash (hex / nix-base32 / SRI) to
         // lowercase hex — `compute_fixed_output_hash` documents
@@ -215,6 +224,18 @@ fn compute_derivation_outputs(
 }
 
 /// Parse the optional `outputs` attribute (defaults to `["out"]`).
+/// Infer the hash algorithm from an SRI-formatted hash string
+/// (`<algo>-<base64>`).  Returns `None` for hex / nix-base32 input
+/// since those don't carry algo metadata.
+fn infer_algo_from_hash(hash: &str) -> Option<String> {
+    for algo in ["sha256", "sha512", "sha1", "md5"] {
+        if hash.starts_with(&format!("{algo}-")) {
+            return Some(algo.to_string());
+        }
+    }
+    None
+}
+
 fn parse_outputs_list(input: &NixAttrs) -> Result<Vec<String>, EvalError> {
     if let Some(o) = input.get("outputs") {
         let forced_o = crate::eval::force_value(o)?;
