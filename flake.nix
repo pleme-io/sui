@@ -105,5 +105,11 @@
       };
       nixosModules.default = import ./module/nixos.nix;
       darwinModules.default = import ./module/darwin.nix;
+      # nix-wrap migration-bridge: routes Working/SuiNative `nix`
+      # commands to sui, falls back to cppnix for the rest.
+      # `imports = [ inputs.sui.darwinModules.nix-wrap ]` +
+      # `services.sui-nix-wrap.enable = true;` is the operator's
+      # one-line opt-in.
+      darwinModules.nix-wrap = import ./module/nix-wrap.nix;
     };
 }
