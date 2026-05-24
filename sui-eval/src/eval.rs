@@ -1179,7 +1179,7 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                 ))
             }
         }
-        TraverseResult::NotAttrs(_) => {
+        TraverseResult::NotAttrs(forced) => {
             // CppNix: `expr.a.b or default` falls back to default for
             // ANY error in the path — including intermediate values
             // that aren't attrsets (e.g., null). The module system
@@ -1188,6 +1188,18 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
             } else {
+                if std::env::var("SUI_DEBUG_SELECT").is_ok() {
+                    let path: Vec<String> = sel.attrpath().map(|ap|
+                        ap.attrs().filter_map(|a| match a {
+                            ast::Attr::Ident(i) => Some(i.to_string()),
+                            ast::Attr::Str(s) => Some(format!("\"{}\"", s.syntax().text())),
+                            ast::Attr::Dynamic(_) => Some("<dyn>".into()),
+                        }).collect()
+                    ).unwrap_or_default();
+                    let dbg = format!("{:?}", forced);
+                    let truncated = if dbg.len() > 200 { format!("{}…", &dbg[..200]) } else { dbg };
+                    eprintln!("[SUI_DEBUG_SELECT] base_type={base_type} path={path:?} base={truncated}{}", eval_file_ctx());
+                }
                 Err(attach_trace(EvalError::type_error(
                     format!("cannot select from {base_type}"),
                 )))
