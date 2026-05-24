@@ -159,31 +159,115 @@ fn parse_subcommand_path(args: &[String]) -> Vec<&str> {
         .collect()
 }
 
+/// Routing mode — controls whether the wrapper falls back to
+/// cppnix when sui fails on a Working/SuiNative command.
+///
+/// The default `Auto` mode achieves functional 100% compatibility
+/// by retrying with cppnix on sui failures (e.g. unimplemented
+/// edge cases in catalog-Working commands like the M2.6 module-
+/// system fixpoint recursion that blocks `nix build` against the
+/// operator's actual nix-darwin flake).
+///
+/// `SuiOnly` is for substrate-development sessions where the
+/// operator WANTS sui failures to surface (so M2.X+ bugs don't
+/// hide behind cppnix).
+///
+/// `CppnixOnly` is the rollback mode — always uses cppnix, never
+/// sui.  For when sui regressed and the operator needs a stable
+/// rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Auto,
+    SuiOnly,
+    CppnixOnly,
+}
+
+impl Mode {
+    fn from_env() -> Self {
+        match std::env::var("NIX_WRAP_MODE").as_deref() {
+            Ok("sui-only") => Mode::SuiOnly,
+            Ok("cppnix-only") => Mode::CppnixOnly,
+            _ => Mode::Auto,
+        }
+    }
+}
+
+/// Spawn a child for the given binary + args, return its exit
+/// code (Ok) or the IO error (Err).
+fn spawn_and_wait(bin: &std::path::Path, args: &[String]) -> Result<i32, std::io::Error> {
+    Command::new(bin).args(args).status().map(|s| s.code().unwrap_or(1))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let argv_subcommand = parse_subcommand_path(&args);
-    let route = route_for(&argv_subcommand);
+    let initial_route = route_for(&argv_subcommand);
+    let mode = Mode::from_env();
+
+    // Mode override may force a route different from catalog
+    // resolution.  Auto mode honors catalog routing for the first
+    // attempt; CppnixOnly forces cppnix; SuiOnly forces sui.
+    let route = match mode {
+        Mode::Auto => initial_route,
+        Mode::SuiOnly => Route::Sui,
+        Mode::CppnixOnly => Route::Cppnix,
+    };
     log_decision(route, &args);
 
     let bin = match route {
         Route::Sui => sui_path(),
         Route::Cppnix => cppnix_path(),
     };
+    let result = spawn_and_wait(&bin, &args);
 
-    let status = Command::new(&bin)
-        .args(&args)
-        .status();
-
-    match status {
-        Ok(s) => {
-            let code = s.code().unwrap_or(1);
-            ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1))
+    // Auto-mode fallback: if sui exited non-zero AND we have
+    // cppnix available, retry with cppnix.  This is the
+    // functional-100% guarantee — any command catalog-routed to
+    // sui that fails will be re-attempted on cppnix transparently.
+    if mode == Mode::Auto
+        && route == Route::Sui
+        && matches!(result, Ok(c) if c != 0)
+    {
+        let cppnix = cppnix_path();
+        if cppnix.exists() || cppnix == std::path::PathBuf::from("cppnix") {
+            log_decision_fallback(&args);
+            return match spawn_and_wait(&cppnix, &args) {
+                Ok(c) => ExitCode::from(u8::try_from(c & 0xff).unwrap_or(1)),
+                Err(e) => {
+                    eprintln!("nix-wrap: cppnix fallback failed: {e}");
+                    ExitCode::from(127)
+                }
+            };
         }
+    }
+
+    match result {
+        Ok(code) => ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1)),
         Err(e) => {
             eprintln!("nix-wrap: cannot exec {} ({route:?}): {e}", bin.display());
             ExitCode::from(127)
         }
     }
+}
+
+/// Log a sui-failed → cppnix-fallback decision.
+fn log_decision_fallback(argv: &[String]) {
+    use std::io::Write;
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let log_dir = home.join(".cache/sui");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true).open(log_dir.join("nix-wrap.log"))
+    else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(f, "{ts}\t→cppnix-fallback\t{}", argv.join(" "));
 }
 
 #[cfg(test)]

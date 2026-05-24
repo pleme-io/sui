@@ -14,5 +14,8 @@ path = "src/main.rs"
 [dependencies]
 sui-spec.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints.clippy]
 pedantic = "warn"
