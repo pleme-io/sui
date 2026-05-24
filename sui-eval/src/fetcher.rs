@@ -567,7 +567,7 @@ mod tests {
             url: None,
             git_ref: None,
             dir: None,
-        host: None,
+            host: None,
             extra: BTreeMap::new(),
         }
     }
