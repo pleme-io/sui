@@ -1,0 +1,18 @@
+[package]
+name = "sui-nix-wrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Migration-bridge nix wrapper — routes Working/SuiNative commands to sui, falls back to cppnix for the rest"
+
+[[bin]]
+name = "nix-wrap"
+path = "src/main.rs"
+
+[dependencies]
+sui-spec.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

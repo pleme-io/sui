@@ -16,6 +16,13 @@ members = [
     # engine. Rust provides typed borders; Lisp is the free-middle
     # surface; the pair generates each other.
     "sui-spec",
+    # The migration-bridge wrapper.  Exposes a `nix` binary that
+    # consults sui-spec's CLI coverage catalog at runtime and routes
+    # Working/SuiNative commands to sui; everything else falls back
+    # to real cppnix.  Operators install this at /run/current-system
+    # /sw/bin/nix to immediately gain sui's typed surface while M2.6+
+    # work brings the rest of the cppnix surface to byte-identity.
+    "sui-nix-wrap",
 ]
 resolver = "3"
 
