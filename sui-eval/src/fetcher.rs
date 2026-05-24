@@ -691,8 +691,16 @@ mod tests {
     #[test]
     fn gitlab_archive_url_is_well_formed() {
         assert_eq!(
-            InputFetcher::gitlab_archive_url("group", "proj", "abc123"),
+            InputFetcher::gitlab_archive_url(None, "group", "proj", "abc123"),
             "https://gitlab.com/group/proj/-/archive/abc123/proj-abc123.tar.gz"
+        );
+    }
+
+    #[test]
+    fn gitlab_archive_url_honors_custom_host() {
+        assert_eq!(
+            InputFetcher::gitlab_archive_url(Some("gitlab.gnome.org"), "GNOME", "gnome-shell", "abc"),
+            "https://gitlab.gnome.org/GNOME/gnome-shell/-/archive/abc/gnome-shell-abc.tar.gz"
         );
     }
 
