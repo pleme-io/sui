@@ -107,6 +107,11 @@ pub struct LockedInput {
     /// Git directory (subdir within repo).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
+    /// Custom host for `github` / `gitlab` / `sourcehut` inputs
+    /// (e.g. `gitlab.gnome.org`, `git.example.com`).  When absent,
+    /// the platform default is used (gitlab.com etc).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// Any other fields nix decides to add in the future (e.g.
     /// `revCount`, `submodules`, `shallow`). Flattened so they
     /// round-trip without losing data.

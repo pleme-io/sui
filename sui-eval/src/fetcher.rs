@@ -103,13 +103,16 @@ impl InputFetcher {
         format!("https://github.com/{owner}/{repo}/archive/{rev}.tar.gz")
     }
 
-    /// GitLab archive URL. Shape differs from GitHub — the file name
-    /// embeds the repo + rev and lives under `/-/archive/{rev}/`.
-    /// We target gitlab.com; custom `host` is not yet honored.
+    /// GitLab archive URL.  Shape differs from GitHub — the file
+    /// name embeds the repo + rev and lives under `/-/archive/{rev}/`.
+    /// Honors `host` so self-hosted gitlab instances (e.g.
+    /// `gitlab.gnome.org`, `git.example.com`) work; defaults to
+    /// `gitlab.com` when host is None.
     #[must_use]
-    pub fn gitlab_archive_url(owner: &str, repo: &str, rev: &str) -> String {
+    pub fn gitlab_archive_url(host: Option<&str>, owner: &str, repo: &str, rev: &str) -> String {
+        let host = host.unwrap_or("gitlab.com");
         format!(
-            "https://gitlab.com/{owner}/{repo}/-/archive/{rev}/{repo}-{rev}.tar.gz"
+            "https://{host}/{owner}/{repo}/-/archive/{rev}/{repo}-{rev}.tar.gz"
         )
     }
 
@@ -183,8 +186,10 @@ impl InputFetcher {
         let owner = locked.owner.as_deref().ok_or(FetchError::MissingField("owner"))?;
         let repo = locked.repo.as_deref().ok_or(FetchError::MissingField("repo"))?;
         let rev = locked.rev.as_deref().ok_or(FetchError::MissingField("rev"))?;
-        let url = Self::gitlab_archive_url(owner, repo, rev);
-        self.fetch_archive(locked, &url, &format!("gitlab-{owner}-{repo}-{rev}"))
+        let host = locked.host.as_deref();
+        let url = Self::gitlab_archive_url(host, owner, repo, rev);
+        let host_tag = host.unwrap_or("gitlab.com").replace('.', "_");
+        self.fetch_archive(locked, &url, &format!("gitlab-{host_tag}-{owner}-{repo}-{rev}"))
     }
 
     fn fetch_sourcehut(&self, locked: &LockedInput) -> Result<PathBuf, FetchError> {
@@ -562,6 +567,7 @@ mod tests {
             url: None,
             git_ref: None,
             dir: None,
+        host: None,
             extra: BTreeMap::new(),
         }
     }

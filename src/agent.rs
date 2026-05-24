@@ -517,6 +517,7 @@ fn fetch_flake_source(flake_url: &str) -> Result<std::path::PathBuf, sui_eval::f
         url: None,
         git_ref: None,
         dir: None,
+        host: None,
         extra: std::collections::BTreeMap::new(),
     };
     fetcher.fetch(&locked)

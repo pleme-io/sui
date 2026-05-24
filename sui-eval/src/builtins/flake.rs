@@ -159,6 +159,7 @@ fn attrs_to_locked_input(
         url: str_field("url"),
         git_ref: str_field("ref"),
         dir: str_field("dir"),
+        host: None,
         extra: std::collections::BTreeMap::new(),
     })
 }

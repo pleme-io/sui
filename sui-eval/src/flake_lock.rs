@@ -290,6 +290,7 @@ fn resolve_github(
         url: None,
         git_ref: original.git_ref.clone(),
         dir: original.dir.clone(),
+        host: None,
         extra: std::collections::BTreeMap::new(),
     })
 }
@@ -318,6 +319,7 @@ fn resolve_git(
         url: Some(url.to_string()),
         git_ref: original.git_ref.clone(),
         dir: original.dir.clone(),
+        host: None,
         extra: std::collections::BTreeMap::new(),
     })
 }
