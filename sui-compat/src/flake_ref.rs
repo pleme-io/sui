@@ -40,7 +40,13 @@ impl FlakeRef {
                 std::env::current_dir()
                     .map_err(|e| FlakeRefError::InvalidPath(e.to_string()))?
             } else {
-                PathBuf::from(path_part)
+                // Strip the explicit `path:` scheme — both forms are
+                // valid CLI input (`nix build path:/dir#attr` and
+                // `nix build /dir#attr` mean the same thing).  Without
+                // this, `PathBuf::from("path:/dir")` produces a literal
+                // `path:/dir/flake.nix` join target that doesn't exist.
+                let raw = path_part.strip_prefix("path:").unwrap_or(path_part);
+                PathBuf::from(raw)
             };
             Ok(Self {
                 flake_dir: dir,
@@ -114,6 +120,20 @@ mod tests {
         let fr = FlakeRef::parse("/nix#darwinConfigurations.cid.system").unwrap();
         assert_eq!(fr.flake_dir, PathBuf::from("/nix"));
         assert_eq!(fr.attribute, "darwinConfigurations.cid.system");
+    }
+
+    #[test]
+    fn parse_strips_path_scheme() {
+        let fr = FlakeRef::parse("path:/etc/nixos#nixosConfigurations.rio").unwrap();
+        assert_eq!(fr.flake_dir, PathBuf::from("/etc/nixos"));
+        assert_eq!(fr.attribute, "nixosConfigurations.rio");
+    }
+
+    #[test]
+    fn parse_strips_path_scheme_relative() {
+        let fr = FlakeRef::parse("path:./config#attr").unwrap();
+        assert_eq!(fr.flake_dir, PathBuf::from("./config"));
+        assert_eq!(fr.attribute, "attr");
     }
 
     #[test]

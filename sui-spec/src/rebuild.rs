@@ -316,9 +316,14 @@ fn compare_outputs(
         RebuildCompare::ExitCode => sui_out.success == nix_out.success,
         RebuildCompare::JsonEqual => sui == nix,
         RebuildCompare::AttrNamesEqual => {
-            let sui_v: Option<Vec<String>> = serde_json::from_str(sui).ok();
-            let nix_v: Option<Vec<String>> = serde_json::from_str(nix).ok();
-            match (sui_v, nix_v) {
+            // `nix flake show --json` emits a JSON OBJECT keyed by
+            // output name (e.g. `{"nixosConfigurations":{...}}`);
+            // the parity test is over the top-level key set.  We also
+            // accept the flat `["k1","k2"]` shape for back-compat with
+            // older callers that pre-extracted the names.
+            let sui_keys = top_level_keys(sui);
+            let nix_keys = top_level_keys(nix);
+            match (sui_keys, nix_keys) {
                 (Some(mut a), Some(mut b)) => {
                     a.sort();
                     b.sort();
@@ -345,6 +350,20 @@ fn compare_outputs(
             matches!((sn, nn), (Some(a), Some(b)) if a == b)
         }
     }
+}
+
+/// Extract the top-level attribute names from one of cppnix's
+/// `--json` outputs.  Accepts both:
+///   - `{"k1": ..., "k2": ...}`  → `["k1", "k2"]`
+///   - `["k1", "k2"]`            → `["k1", "k2"]`
+/// Returns `None` for any other JSON shape (number, string, etc.).
+fn top_level_keys(s: &str) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    if let Some(arr) = v.as_array() {
+        return arr.iter().map(|x| x.as_str().map(String::from)).collect();
+    }
+    let obj = v.as_object()?;
+    Some(obj.keys().cloned().collect())
 }
 
 // ── Canonical corpus, compiled in ──────────────────────────────────
@@ -500,6 +519,42 @@ mod tests {
         nix_diff.stdout = "43".into();
         assert!(compare_outputs(RebuildCompare::IntegerEqual, "42", "42", &sui, &nix));
         assert!(!compare_outputs(RebuildCompare::IntegerEqual, "42", "43", &sui, &nix_diff));
+    }
+
+    #[test]
+    fn attr_names_equal_matches_objects_with_same_keys() {
+        let sui = r#"{"nixosConfigurations":{"rio":{"type":"nixos-configuration"}}}"#;
+        let nix = r#"{"nixosConfigurations":{"rio":{"type":"nixos-configuration"}}}"#;
+        let dummy = CapturedOutput {
+            exit_code: Some(0), success: true,
+            stdout: String::new(), stderr: String::new(),
+            duration: std::time::Duration::ZERO, timed_out: false,
+        };
+        assert!(compare_outputs(RebuildCompare::AttrNamesEqual, sui, nix, &dummy, &dummy));
+    }
+
+    #[test]
+    fn attr_names_equal_diverges_on_extra_key() {
+        let sui = r#"{"nixosConfigurations":{},"darwinConfigurations":{}}"#;
+        let nix = r#"{"nixosConfigurations":{}}"#;
+        let dummy = CapturedOutput {
+            exit_code: Some(0), success: true,
+            stdout: String::new(), stderr: String::new(),
+            duration: std::time::Duration::ZERO, timed_out: false,
+        };
+        assert!(!compare_outputs(RebuildCompare::AttrNamesEqual, sui, nix, &dummy, &dummy));
+    }
+
+    #[test]
+    fn attr_names_equal_accepts_legacy_array_shape() {
+        let sui = r#"["nixosConfigurations"]"#;
+        let nix = r#"{"nixosConfigurations":{}}"#;
+        let dummy = CapturedOutput {
+            exit_code: Some(0), success: true,
+            stdout: String::new(), stderr: String::new(),
+            duration: std::time::Duration::ZERO, timed_out: false,
+        };
+        assert!(compare_outputs(RebuildCompare::AttrNamesEqual, sui, nix, &dummy, &dummy));
     }
 
     #[test]

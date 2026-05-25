@@ -527,9 +527,17 @@ enum StoreCommands {
 
 #[derive(Subcommand)]
 enum FlakeCommands {
-    Show { flake_ref: Option<String> },
+    Show {
+        flake_ref: Option<String>,
+        /// Emit a JSON object whose top-level keys are the flake's
+        /// output attribute names (matches `nix flake show --json`).
+        #[arg(long)] json: bool,
+    },
     Update { input: Option<String> },
-    Check { #[arg(long)] no_build: bool },
+    Check {
+        flake_ref: Option<String>,
+        #[arg(long)] no_build: bool,
+    },
     Lock,
     Metadata { flake_ref: Option<String>, #[arg(long)] json: bool },
     Init { #[arg(short = 't', long)] template: Option<String> },
@@ -4419,8 +4427,26 @@ async fn main() -> Result<(), CliError> {
         }
 
         Commands::Eval { expression, json, raw: _, expr_flag, max_force_depth, no_eval_cache: _, apply: _, file_flag: _ } => {
-            let expr = expr_flag.or(expression)
-                .ok_or_else(|| CliError::MissingArgument("no expression provided".into()))?;
+            // Two input shapes (mirrors `nix eval`):
+            //  - `--expr "EXPR"`   → raw Nix expression
+            //  - positional INSTALLABLE (`flake-ref#attr.path`) → desugars to
+            //    `(builtins.getFlake "<flake-ref>").attr.path`
+            // `expr_flag` always wins; positional only desugars when it
+            // contains a `#`, otherwise we treat it as a raw expression
+            // for backwards compatibility with `sui eval '1 + 2'`.
+            let expr = match (expr_flag, expression) {
+                (Some(raw), _) => raw,
+                (None, Some(s)) => match s.split_once('#') {
+                    Some((flake, attr)) => format!(
+                        "(builtins.getFlake \"{}\").{}",
+                        normalize_flake_ref(flake),
+                        attr,
+                    ),
+                    None => s,
+                },
+                (None, None) =>
+                    return Err(CliError::MissingArgument("no expression provided".into())),
+            };
             if max_force_depth > 0 {
                 sui_eval::trace::set_max_force_depth(max_force_depth);
             }
@@ -4629,14 +4655,18 @@ async fn main() -> Result<(), CliError> {
         }
 
         Commands::Flake { command } => match command {
-            FlakeCommands::Show { flake_ref } => {
+            FlakeCommands::Show { flake_ref, json } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
                 let outputs = sui_eval::builtins::evaluate_flake(&flake_dir)
                     .map_err(|e| CliError::Orchestrate {
                         operation: "flake show",
                         message: format!("eval: {e}"),
                     })?;
-                print_flake_tree(&outputs);
+                if json {
+                    println!("{}", serde_json::to_string(&flake_show_json(&outputs))?);
+                } else {
+                    print_flake_tree(&outputs);
+                }
             }
             FlakeCommands::Update { input } => {
                 let flake_dir = std::env::current_dir()?;
@@ -4663,8 +4693,8 @@ async fn main() -> Result<(), CliError> {
                     );
                 }
             }
-            FlakeCommands::Check { no_build: _ } => {
-                let flake_dir = std::env::current_dir()?;
+            FlakeCommands::Check { flake_ref, no_build: _ } => {
+                let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
                 let result =
                     sui_eval::flake_lock::check_flake(&flake_dir).map_err(|e| {
                         CliError::Orchestrate {
@@ -5254,26 +5284,47 @@ async fn open_store() -> Result<LocalStore, CliError> {
 
 /// Resolve a flake directory from an optional CLI argument.
 ///
-/// If `None` or `"."`, returns the current working directory.
-/// Otherwise treats the argument as a path.
+/// Accepts the surface `nix` does:
+///   - `None`, `""`, `"."`         → current working directory
+///   - `path:/abs/dir[#attr]`      → `/abs/dir`
+///   - `/abs/dir[#attr]`           → `/abs/dir`
+///   - `./rel/dir[#attr]`          → resolved against cwd
+///
+/// Anything else (remote scheme like `github:` / `https:` / `git+`)
+/// is currently out of scope for local-dir resolution.
 fn resolve_flake_dir(flake_ref: Option<&str>) -> Result<std::path::PathBuf, CliError> {
-    match flake_ref {
-        None | Some("") | Some(".") => Ok(std::env::current_dir()?),
-        Some(path) => {
-            let p = std::path::PathBuf::from(path);
-            if p.is_dir() {
-                Ok(p)
-            } else {
-                // Maybe it has a # attribute — extract dir part.
-                let dir_part = path.split('#').next().unwrap_or(".");
-                let d = std::path::PathBuf::from(dir_part);
-                if d.is_dir() {
-                    Ok(d)
-                } else {
-                    Ok(std::env::current_dir()?)
-                }
-            }
-        }
+    let raw = match flake_ref {
+        None | Some("") | Some(".") => return Ok(std::env::current_dir()?),
+        Some(s) => s,
+    };
+    // Strip any installable attr suffix.
+    let head = raw.split('#').next().unwrap_or(raw);
+    // Strip the `path:` scheme if present (sui-spec probes emit this form).
+    let head = head.strip_prefix("path:").unwrap_or(head);
+    let p = std::path::PathBuf::from(head);
+    if p.is_dir() {
+        Ok(p)
+    } else {
+        Ok(std::env::current_dir()?)
+    }
+}
+
+/// Normalize a `nix eval`-style installable flake-ref into the string
+/// `builtins.getFlake` accepts.
+///
+/// - `.`, `./...`, `../...` → `path:` + canonicalized absolute path
+/// - `/abs/path`            → `path:/abs/path`
+/// - `path:...`, `github:...`, `git+...`, `https://...`, `tarball:...`
+///   → returned verbatim (the scheme is already explicit).
+fn normalize_flake_ref(s: &str) -> String {
+    if s == "." || s.starts_with("./") || s.starts_with("../") {
+        let canon =
+            std::fs::canonicalize(s).unwrap_or_else(|_| std::path::PathBuf::from(s));
+        format!("path:{}", canon.display())
+    } else if s.starts_with('/') {
+        format!("path:{s}")
+    } else {
+        s.to_string()
     }
 }
 
@@ -5382,6 +5433,107 @@ fn classify_output(key: &str, value: &sui_eval::Value) -> Option<String> {
         sui_eval::Value::Int(n) => Some(format!("{n}")),
         _ => Some(value.type_name().to_string()),
     }
+}
+
+// ── flake show --json ───────────────────────────────────────────
+
+/// Serialize a flake's evaluated outputs in the structured JSON shape
+/// `nix flake show --json` produces.
+///
+/// Cppnix labels every leaf with a `{"type":"..."}` marker drawn from
+/// the flake-output schema (e.g. `nixosConfigurations.<host>` →
+/// `nixos-configuration`, `apps.<system>.<name>` → `app`).  We walk one
+/// or two levels into each well-known group to enumerate names, but
+/// never force the leaf values — forcing a `nixosConfiguration`'s
+/// `config` would diverge in the module-system fixpoint (M2.6 work
+/// per sui/README.md `Status` section).
+fn flake_show_json(outputs: &sui_eval::Value) -> serde_json::Value {
+    let sui_eval::Value::Attrs(top) = outputs else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let mut root = serde_json::Map::new();
+    for key in top.keys() {
+        if is_flake_internal_key(&key) {
+            continue;
+        }
+        let Some(child) = top.get(&key) else { continue };
+        root.insert(key.clone(), flake_show_group_json(&key, child));
+    }
+    serde_json::Value::Object(root)
+}
+
+/// Flake-output keys cppnix omits from `nix flake show --json` — these
+/// are the metadata that lands on the flake itself (provenance, hash,
+/// inputs, sourceInfo) rather than user-declared outputs.
+fn is_flake_internal_key(key: &str) -> bool {
+    if key.starts_with('_') {
+        return true;
+    }
+    matches!(key,
+        "description" | "inputs"
+        | "narHash" | "outPath" | "outputs"
+        | "sourceInfo" | "lastModified" | "lastModifiedDate"
+        | "rev" | "shortRev" | "revCount"
+        | "submodules" | "lockedRef" | "originalRef"
+    )
+}
+
+/// One well-known flake-output group → typed JSON tree.
+fn flake_show_group_json(top_key: &str, value: &sui_eval::Value) -> serde_json::Value {
+    let named_leaf = match top_key {
+        "nixosConfigurations"  => Some("nixos-configuration"),
+        "darwinConfigurations" => Some("darwin-configuration"),
+        "homeConfigurations"   => Some("home-manager-configuration"),
+        "nixosModules" | "darwinModules" | "homeModules" => Some("nixos-module"),
+        "overlays"             => Some("nixpkgs-overlay"),
+        _ => None,
+    };
+    let per_system_leaf = match top_key {
+        "apps"      => Some("app"),
+        "packages" | "devShells" | "checks" | "formatter" | "legacyPackages"
+                    => Some("derivation"),
+        _ => None,
+    };
+    let Ok(forced) = sui_eval::eval::force_value(value) else {
+        return type_marker_json("unknown");
+    };
+    let sui_eval::Value::Attrs(attrs) = &forced else {
+        return type_marker_json("unknown");
+    };
+    if let Some(t) = named_leaf {
+        let mut m = serde_json::Map::new();
+        for k in attrs.keys() {
+            m.insert(k, type_marker_json(t));
+        }
+        return serde_json::Value::Object(m);
+    }
+    if let Some(leaf) = per_system_leaf {
+        let mut m = serde_json::Map::new();
+        for sys in attrs.keys() {
+            let Some(sys_val) = attrs.get(&sys) else { continue };
+            let Ok(sys_forced) = sui_eval::eval::force_value(sys_val) else {
+                m.insert(sys, type_marker_json("unknown"));
+                continue;
+            };
+            let sui_eval::Value::Attrs(inner) = &sys_forced else {
+                m.insert(sys, type_marker_json("unknown"));
+                continue;
+            };
+            let mut leaves = serde_json::Map::new();
+            for name in inner.keys() {
+                leaves.insert(name, type_marker_json(leaf));
+            }
+            m.insert(sys, serde_json::Value::Object(leaves));
+        }
+        return serde_json::Value::Object(m);
+    }
+    type_marker_json("unknown")
+}
+
+fn type_marker_json(t: &str) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    m.insert("type".to_string(), serde_json::Value::String(t.to_string()));
+    serde_json::Value::Object(m)
 }
 
 // ── flake metadata ──────────────────────────────────────────────
