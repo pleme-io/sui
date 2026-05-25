@@ -756,7 +756,6 @@
     "fenix": {
       "inputs": {
         "nixpkgs": [
-          "forge",
           "nixpkgs"
         ],
         "rust-analyzer-src": "rust-analyzer-src"
@@ -778,7 +777,7 @@
     "fenix_2": {
       "inputs": {
         "nixpkgs": [
-          "substrate",
+          "forge",
           "nixpkgs"
         ],
         "rust-analyzer-src": "rust-analyzer-src_2"
@@ -1253,7 +1252,7 @@
       "inputs": {
         "crate2nix": "crate2nix_2",
         "devenv": "devenv",
-        "fenix": "fenix",
+        "fenix": "fenix_2",
         "flake-parts": "flake-parts_4",
         "nixpkgs": [
           "nixpkgs"
@@ -2743,6 +2742,7 @@
     "root": {
       "inputs": {
         "crate2nix": "crate2nix",
+        "fenix": "fenix",
         "flake-utils": "flake-utils",
         "forge": "forge",
         "nixpkgs": "nixpkgs_9",
@@ -2882,7 +2882,9 @@
       "inputs": {
         "crate2nix": "crate2nix_6",
         "devenv": "devenv_3",
-        "fenix": "fenix_2",
+        "fenix": [
+          "fenix"
+        ],
         "flake-parts": "flake-parts_12",
         "nixpkgs": [
           "nixpkgs"

@@ -35,7 +35,7 @@ repository = "https://github.com/pleme-io/sui"
 
 [workspace.dependencies]
 # Internal crates
-sui-intern = { path = "sui-intern" }
+sui-intern = { path = "sui-intern", version = "0.1.9" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.9" }
 sui-cache = { path = "sui-cache", version = "0.1.9" }
 sui-compat = { path = "sui-compat", version = "0.1.9" }

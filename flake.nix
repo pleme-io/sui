@@ -5,9 +5,18 @@
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     crate2nix.url = "github:nix-community/crate2nix";
     flake-utils.url = "github:numtide/flake-utils";
+    # Prebuilt Rust toolchain. Threading this into the substrate release
+    # builder lets static-musl targets cross-compile with a prebuilt
+    # rust-std instead of building rustc + LLVM from source under
+    # pkgsStatic (which hits a static-link bug on nixos-unstable's LLVM).
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     substrate = {
       url = "github:pleme-io/substrate";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.fenix.follows = "fenix";
     };
     forge = {
       url = "github:pleme-io/forge";
@@ -15,10 +24,10 @@
     };
   };
 
-  outputs = { self, nixpkgs, crate2nix, flake-utils, substrate, forge, ... }: let
+  outputs = { self, nixpkgs, crate2nix, flake-utils, substrate, forge, fenix, ... }: let
     # CLI tool release (4-target GitHub releases)
     toolOutputs = (import "${substrate}/lib/rust-workspace-release-flake.nix" {
-      inherit nixpkgs crate2nix flake-utils;
+      inherit nixpkgs crate2nix flake-utils fenix;
     }) {
       toolName = "sui";
       packageName = "sui";
