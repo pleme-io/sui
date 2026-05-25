@@ -200,3 +200,52 @@ fn nix_repo_cid_drv_path() {
         Err(e) => println!("force drvPath: {e}"),
     }
 }
+
+// ── M2.6 regression — `lib.nixosSystem` infinite recursion ───────────
+//
+// Pins the operator-blocking failure documented in
+// `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.  `lib.nixosSystem` with empty
+// user modules diverges in the `_module.args.pkgs` ↔ `matchedOptions`
+// fix-point bootstrap.  When M2.6 closes, remove the `#[ignore]` and
+// the assertion flips: success becomes mandatory.
+//
+// Marked `#[ignore]` so `cargo test` is green on main while M2.6 is
+// open; `cargo test --ignored` (or the rebuild sweep) reports it.
+
+/// M2.6 — `lib.nixosSystem { modules = []; }` must terminate.
+///
+/// Today it raises `InfiniteRecursion`.  When sui-eval's option-merge
+/// stops forcing the `content` of `lib.mkOverride` wrappers while
+/// resolving priority (the suspected root cause per the M2.6 doc),
+/// this test should produce a short string like `"nixos"` and pass.
+#[test]
+#[ignore = "M2.6 — lib.nixosSystem fix-point diverges; remove ignore when fixed"]
+fn nixos_system_empty_modules_terminates() {
+    if common::skip_if_offline("m2_6_regression") {
+        return;
+    }
+    let nixpkgs_dir = std::path::Path::new(
+        "/home/drzzln/.cache/sui/inputs/github-NixOS-nixpkgs-b77b3de/nixpkgs-b77b3de8775677f84492abe84635f87b0e153f0f",
+    );
+    if !nixpkgs_dir.exists() {
+        println!("skip: pinned nixpkgs source not in sui input cache");
+        return;
+    }
+    let expr = format!(
+        "let nixpkgs = builtins.getFlake \"path:{}\"; \
+         in (nixpkgs.lib.nixosSystem {{ system = \"x86_64-linux\"; modules = []; }}) \
+            .config.system.name",
+        nixpkgs_dir.display(),
+    );
+    let result = sui_eval::eval(&expr);
+    let value = result.expect("nixosSystem must evaluate without InfiniteRecursion");
+    let forced = sui_eval::eval::force_value(&value)
+        .expect("system.name forces to a concrete value");
+    match forced {
+        sui_eval::value::Value::String(s) => {
+            assert!(!s.as_str().is_empty(), "system.name must not be empty");
+            println!("nixosSystem returned system.name = {:?}", s.as_str());
+        }
+        other => panic!("expected system.name string, got {}", other.type_name()),
+    }
+}
