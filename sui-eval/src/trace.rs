@@ -80,28 +80,47 @@ impl std::fmt::Display for ForceChain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "infinite recursion detected")?;
         writeln!(f, "force chain ({} frames):", self.0.len())?;
+        // Dedup adjacent identical descriptions to keep the chain
+        // readable when the same expression text repeats (mutual
+        // recursion through a single call site).  Empty descriptions
+        // bypass dedup — they're the "cheap" non-tracing form where
+        // every frame is a distinct thunk so collapsing them would
+        // misrepresent the cycle.  Set `SUI_TRACE_EVAL=verbose` for
+        // the rich per-frame descriptions.
         let mut prev_desc: Option<&str> = None;
         let mut repeat = 0u32;
         for (i, frame) in self.0.iter().enumerate() {
-            if prev_desc == Some(&frame.description) {
+            let has_desc = !frame.description.is_empty();
+            if has_desc && prev_desc == Some(&frame.description) {
                 repeat += 1;
                 continue;
             }
             if repeat > 0 {
                 writeln!(f, "    ... repeated {repeat} more times")?;
+                repeat = 0;
             }
-            repeat = 0;
             let loc = frame
                 .defined_in
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "<eval>".into());
             let arrow = if i == 0 { "\u{2192}" } else { "\u{2192}" };
-            writeln!(f, "  {arrow} {} ({})", frame.description, loc)?;
-            prev_desc = Some(&frame.description);
+            let desc = if has_desc {
+                frame.description.as_str()
+            } else {
+                "<thunk>"
+            };
+            writeln!(f, "  {arrow} {desc} ({loc})")?;
+            prev_desc = if has_desc { Some(&frame.description) } else { None };
         }
         if repeat > 0 {
             writeln!(f, "    ... repeated {repeat} more times")?;
+        }
+        if self.0.iter().any(|fr| fr.description.is_empty()) {
+            writeln!(
+                f,
+                "  hint: set SUI_TRACE_EVAL=verbose for per-frame source text"
+            )?;
         }
         Ok(())
     }
@@ -306,6 +325,23 @@ mod tests {
         assert!(s.contains("1 frames"));
         assert!(s.contains("/test.nix"));
         assert!(s.contains("x"));
+    }
+
+    #[test]
+    fn force_chain_display_empty_descriptions_show_one_per_frame() {
+        // Empty descriptions (cheap non-tracing path) bypass dedup so
+        // the cycle length isn't visually collapsed to "repeated".
+        let frames: Vec<ForceFrame> = (0..3)
+            .map(|i| ForceFrame {
+                defined_in: Some(PathBuf::from(format!("/m{i}.nix"))),
+                description: String::new(),
+                thunk_id: i,
+            })
+            .collect();
+        let s = ForceChain(frames).to_string();
+        assert!(s.contains("3 frames"));
+        assert_eq!(s.matches("<thunk>").count(), 3);
+        assert!(s.contains("SUI_TRACE_EVAL=verbose"));
     }
 
     #[test]

@@ -847,19 +847,24 @@ impl Thunk {
                 crate::perf::inc(crate::perf::Counter::ThunkForce);
                 crate::trace::inc_thunks_forced_unique();
                 let tracing = crate::trace::trace_enabled();
+                // Always push a force frame — `pop_force` is matched in every
+                // exit path below.  This keeps the cycle chain on
+                // `EvalError::InfiniteRecursion` populated WITHOUT requiring
+                // the operator to set `SUI_TRACE_EVAL=verbose` first.  In
+                // tracing mode we also capture the (expensive) source-text
+                // description; otherwise we keep the frame cheap (just the
+                // file + thunk id) so the always-on overhead stays bounded.
+                let desc: String = if tracing {
+                    expr.syntax().text().to_string().chars().take(60).collect()
+                } else {
+                    String::new()
+                };
+                crate::trace::push_force(crate::trace::ForceFrame {
+                    defined_in: env.eval_file().cloned(),
+                    description: desc.clone(),
+                    thunk_id,
+                });
                 if tracing {
-                    let desc: String = expr
-                        .syntax()
-                        .text()
-                        .to_string()
-                        .chars()
-                        .take(60)
-                        .collect();
-                    crate::trace::push_force(crate::trace::ForceFrame {
-                        defined_in: env.eval_file().cloned(),
-                        description: desc.clone(),
-                        thunk_id,
-                    });
                     crate::trace::trace_force_enter(
                         env.eval_file().map(|p| p.as_path()),
                         &desc,
@@ -901,32 +906,28 @@ impl Thunk {
                         if !matches!(value, Value::Thunk(_)) {
                             if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
-                        if tracing {
-                            crate::trace::pop_force();
-                            crate::trace::trace_force_exit();
-                        }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Suspended { expr, env };
-                        if tracing {
-                            crate::trace::dump_trace_on_error();
-                            crate::trace::pop_force();
-                            crate::trace::trace_force_exit();
-                        }
+                        if tracing { crate::trace::dump_trace_on_error(); }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Err(e)
                     }
                 }
             }
             ThunkRepr::InheritSelect { source_thunk, name } => {
                 let tracing = crate::trace::trace_enabled();
+                let desc = if tracing { format!("inherit (..) {name}") } else { String::new() };
+                crate::trace::push_force(crate::trace::ForceFrame {
+                    defined_in: None,
+                    description: desc.clone(),
+                    thunk_id,
+                });
                 if tracing {
-                    let desc = format!("inherit (..) {name}");
-                    crate::trace::push_force(crate::trace::ForceFrame {
-                        defined_in: None,
-                        description: desc.clone(),
-                        thunk_id,
-                    });
                     crate::trace::trace_force_enter(None, &desc);
                 }
                 crate::trace::inc_thunks_forced_unique();
@@ -971,28 +972,27 @@ impl Thunk {
                         if !matches!(value, Value::Thunk(_)) {
                             if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
-                        if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::InheritSelect { source_thunk, name };
-                        if tracing {
-                            crate::trace::dump_trace_on_error();
-                            crate::trace::pop_force();
-                            crate::trace::trace_force_exit();
-                        }
+                        if tracing { crate::trace::dump_trace_on_error(); }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Err(e)
                     }
                 }
             }
             ThunkRepr::Native(f) => {
                 let tracing = crate::trace::trace_enabled();
+                crate::trace::push_force(crate::trace::ForceFrame {
+                    defined_in: None,
+                    description: if tracing { "<native-thunk>".into() } else { String::new() },
+                    thunk_id,
+                });
                 if tracing {
-                    crate::trace::push_force(crate::trace::ForceFrame {
-                        defined_in: None,
-                        description: "<native-thunk>".into(),
-                        thunk_id,
-                    });
                     crate::trace::trace_force_enter(None, "<native-thunk>");
                 }
                 crate::trace::inc_thunks_forced_unique();
@@ -1010,17 +1010,16 @@ impl Thunk {
                         if !matches!(value, Value::Thunk(_)) {
                             if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
                         }
-                        if tracing { crate::trace::pop_force(); crate::trace::trace_force_exit(); }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
                     }
                     Err(e) => {
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
                         let _ = self.0.cache.set(Box::new(Concrete::Null));
-                        if tracing {
-                            crate::trace::dump_trace_on_error();
-                            crate::trace::pop_force();
-                            crate::trace::trace_force_exit();
-                        }
+                        if tracing { crate::trace::dump_trace_on_error(); }
+                        crate::trace::pop_force();
+                        if tracing { crate::trace::trace_force_exit(); }
                         Err(e)
                     }
                 }
