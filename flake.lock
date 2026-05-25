@@ -1261,11 +1261,11 @@
         "substrate": "substrate"
       },
       "locked": {
-        "lastModified": 1779680649,
-        "narHash": "sha256-zL9ig3ieSsQLncQOn3QWgtOkS97/QZOUT9GYbvLmOo0=",
+        "lastModified": 1779684374,
+        "narHash": "sha256-9n4ueozpBvnQ2eC0F6aPyYRyFXivZqBSLroMAidL/sc=",
         "owner": "pleme-io",
         "repo": "forge",
-        "rev": "f8366820c9eaa94720ef2dfd1269370a5b3bc491",
+        "rev": "de6d2130741c4174aecdfacb1591f03f0c2f71e9",
         "type": "github"
       },
       "original": {
