@@ -3,7 +3,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use sui::{CliError, NIX_DB_PATH};
 
 mod agent;
@@ -541,9 +541,40 @@ enum FlakeCommands {
 
 #[derive(Subcommand)]
 enum SystemCommands {
-    Rebuild { #[arg(long)] flake: Option<String> },
+    Rebuild {
+        /// One of: switch | boot | test | build (mirrors nixos-rebuild).
+        #[arg(value_enum, default_value_t = CliRebuildAction::Switch)]
+        action: CliRebuildAction,
+        #[arg(long)] flake: Option<String>,
+    },
     Status,
     Rollback,
+}
+
+/// CLI-facing wrapper for [`sui_orchestrate::RebuildAction`].
+///
+/// Lives in the CLI crate so `sui-orchestrate` stays clap-free
+/// (orchestrate is consumed by daemons and non-CLI surfaces).
+/// The `From` is exhaustive — if the upstream enum gains a variant
+/// the compiler forces this wrapper to track it.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum CliRebuildAction { Switch, Boot, Test, Build }
+
+impl std::fmt::Display for CliRebuildAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        sui_orchestrate::RebuildAction::from(*self).fmt(f)
+    }
+}
+
+impl From<CliRebuildAction> for sui_orchestrate::RebuildAction {
+    fn from(v: CliRebuildAction) -> Self {
+        match v {
+            CliRebuildAction::Switch => Self::Switch,
+            CliRebuildAction::Boot   => Self::Boot,
+            CliRebuildAction::Test   => Self::Test,
+            CliRebuildAction::Build  => Self::Build,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -4700,8 +4731,8 @@ async fn main() -> Result<(), CliError> {
                 }
             })?;
             match command {
-                SystemCommands::Rebuild { flake } => {
-                    let action = sui_orchestrate::RebuildAction::Switch;
+                SystemCommands::Rebuild { action, flake } => {
+                    let action: sui_orchestrate::RebuildAction = action.into();
                     let flake_ref = flake.unwrap_or_else(|| ".".to_string());
                     let result = sys.rebuild_native(&flake_ref, action).await.map_err(|e| {
                         CliError::Orchestrate {
