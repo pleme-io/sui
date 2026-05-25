@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use sui::{CliError, NIX_DB_PATH};
 
 mod agent;
+mod legacy;
 use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};
 
@@ -4228,7 +4229,20 @@ async fn main() -> Result<(), CliError> {
     // hits; also amortizes the interner's initial resize cost.
     sui_intern::prewarm();
 
-    let cli = Cli::parse();
+    // argv[0] dispatch: when the binary is symlinked to a legacy
+    // `nix-*` name (`nix-build`, `nix-store`, …) the legacy CLI surface
+    // is rewritten to the modern `sui <subcommand>` form before clap
+    // sees it.  The unsymlinked `sui` (or `nix`) invocation falls
+    // through to the normal parse.
+    let cli = if let Some(cmd) = legacy::LegacyCmd::detect() {
+        let raw: Vec<String> = std::env::args().skip(1).collect();
+        let translated = legacy::translate_legacy_argv(cmd, &raw);
+        let synthetic: Vec<String> =
+            std::iter::once("sui".to_string()).chain(translated).collect();
+        Cli::parse_from(&synthetic)
+    } else {
+        Cli::parse()
+    };
 
     match cli.command {
         Commands::Serve { listen, grpc_listen } => {
@@ -5156,86 +5170,6 @@ async fn main() -> Result<(), CliError> {
         }
     }
 
-    Ok(())
-}
-
-/// Handle legacy nix-* commands dispatched by argv[0].
-async fn handle_legacy_command(name: &str) -> Result<(), CliError> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match name {
-        "nix-build" => {
-            let mut attr = None;
-            let mut path = ".".to_string();
-            let mut i = 0;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "-A" | "--attr" => { i += 1; if i < args.len() { attr = Some(args[i].clone()); } }
-                    s if !s.starts_with('-') => { path = s.to_string(); }
-                    _ => {}
-                }
-                i += 1;
-            }
-            let inst = if let Some(a) = attr { format!("{path}#{a}") } else { path };
-            eprintln!("nix-build → sui build {inst}: not yet fully implemented");
-        }
-        "nix-store" => {
-            if args.iter().any(|a| a == "--gc") { eprintln!("nix-store --gc → sui store gc"); }
-            else if args.iter().any(|a| a == "--optimise") { eprintln!("nix-store --optimise → sui store optimise"); }
-            else if args.iter().any(|a| a == "--verify") { eprintln!("nix-store --verify → sui store verify"); }
-            else if args.iter().any(|a| a == "-q" || a == "--query") { eprintln!("nix-store --query → sui store path-info"); }
-            else if args.iter().any(|a| a == "--delete") { eprintln!("nix-store --delete → sui store delete"); }
-            else if args.iter().any(|a| a == "--realise" || a == "-r") { eprintln!("nix-store --realise → sui build"); }
-            else { eprintln!("nix-store: unrecognized flags {:?}", args); }
-        }
-        "nix-instantiate" => {
-            let has_eval = args.iter().any(|a| a == "--eval");
-            let has_json = args.iter().any(|a| a == "--json");
-            let mut expr = None;
-            let mut i = 0;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "-E" | "--expr" => { i += 1; if i < args.len() { expr = Some(args[i].clone()); } }
-                    "--eval" | "--json" | "--strict" => {}
-                    s if !s.starts_with('-') => { expr = Some(s.to_string()); }
-                    _ => {}
-                }
-                i += 1;
-            }
-            if has_eval {
-                if let Some(e) = expr {
-                    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::new("warn")).init();
-                    let value = sui_eval::eval(&e)?;
-                    if has_json { println!("{}", serde_json::to_string(&value.to_json())?); }
-                    else { println!("{value}"); }
-                } else {
-                    eprintln!("nix-instantiate --eval: no expression provided");
-                    std::process::exit(1);
-                }
-            } else { return Err(CliError::NotImplemented("nix-instantiate (instantiate mode)".into())); }
-        }
-        "nix-env" => {
-            if args.iter().any(|a| a == "--list-generations") { eprintln!("nix-env --list-generations → sui profile history"); }
-            else if args.iter().any(|a| a == "-i" || a == "--install") { eprintln!("nix-env -i → sui profile install"); }
-            else if args.iter().any(|a| a == "-e" || a == "--uninstall") { eprintln!("nix-env -e → sui profile remove"); }
-            else if args.iter().any(|a| a == "-u" || a == "--upgrade") { eprintln!("nix-env -u → sui profile upgrade"); }
-            else if args.iter().any(|a| a == "-q" || a == "--query") { eprintln!("nix-env -q → sui profile list"); }
-            else { eprintln!("nix-env: unrecognized flags {:?}", args); }
-        }
-        "nix-shell" => {
-            if args.iter().any(|a| a == "-p" || a == "--packages") { eprintln!("nix-shell -p → sui develop"); }
-            else if args.iter().any(|a| a == "--run" || a == "--command") { eprintln!("nix-shell --run → sui develop --command"); }
-            else { eprintln!("nix-shell → sui develop"); }
-        }
-        "nix-collect-garbage" => {
-            if args.iter().any(|a| a == "-d" || a == "--delete-old") { eprintln!("nix-collect-garbage -d → sui collect-garbage -d"); }
-            else { eprintln!("nix-collect-garbage → sui store gc"); }
-        }
-        "nix-channel" => { return Err(CliError::NotImplemented("nix-channel".into())); }
-        "nix-hash" => { return Err(CliError::NotImplemented("nix-hash → sui hash".into())); }
-        "nix-copy-closure" => { return Err(CliError::NotImplemented("nix-copy-closure → sui copy".into())); }
-        "nix-prefetch-url" => { return Err(CliError::NotImplemented("nix-prefetch-url → sui store prefetch-file".into())); }
-        _ => { eprintln!("unknown legacy command: {name}"); }
-    }
     Ok(())
 }
 
