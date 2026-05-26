@@ -1184,12 +1184,24 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
+    // M2.6 bridge: when the blackhole-bridge sentinels are active,
+    // an attribute lookup that misses (`AttrNotFound`) or hits a
+    // non-attrset intermediate (`NotAttrs`) on the bridge's empty
+    // sentinel value gets resolved to `null` instead of erroring.
+    // cppnix's partial attrset would have CARRIED the keys (with
+    // their lazy values), so the lookup would succeed; null is the
+    // cheapest sentinel that propagates through downstream code
+    // without further type errors.
+    let bridge_active = std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some()
+        || std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some();
     let traversal = traverse_attrpath(base, &attrpath, env);
     match traversal {
         Ok(TraverseResult::Found(v)) => Ok(v),
         Ok(TraverseResult::Missing(key)) => {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
+            } else if bridge_active {
+                Ok(Value::Null)
             } else {
                 Err(EvalError::AttrNotFound(
                     format!("'{key}'{}", eval_file_ctx()),
@@ -1204,6 +1216,8 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
             // return null when x.options is null, not throw.
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
+            } else if bridge_active {
+                return Ok(Value::Null);
             } else {
                 if std::env::var("SUI_DEBUG_SELECT").is_ok() {
                     let path: Vec<String> = sel.attrpath().map(|ap|
