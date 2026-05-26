@@ -1066,20 +1066,35 @@ impl Thunk {
             ThunkRepr::Blackhole => {
                 // M2.6 bridge: when an inner force re-enters a thunk
                 // that's currently being evaluated, cppnix's effective
-                // behavior is to expose the not-yet-complete value;
-                // sui can't produce that without a "partial promise"
-                // thunk variant (the proper fix — see
-                // docs/M2.6-MODULE-SYSTEM-FIXPOINT.md).  As a bridge,
-                // `SUI_BLACKHOLE_AS_NULL=1` returns `Value::Null` on
-                // re-entrance instead of `InfiniteRecursion`.  Combined
-                // with `expr.path or default` falling back on NotAttrs,
-                // this lets the operator's nixosSystem evaluation
-                // converge to a result that uses `specialArgs` for the
-                // missing `_module.args` values — operationally close
-                // to cppnix.  Default-off because masking re-entrance
-                // as null silently hides real bugs in user code.
+                // behavior is to expose the not-yet-complete value
+                // (typically a partial attrset).  Without the proper
+                // `Promise(NixAttrs)` thunk variant (see
+                // docs/M2.6-MODULE-SYSTEM-FIXPOINT.md::Genuine fix),
+                // we approximate by returning a sentinel of the
+                // operator's choice:
+                //
+                //   SUI_BLACKHOLE_AS_NULL=1         → Value::Null
+                //   SUI_BLACKHOLE_AS_EMPTY_ATTRS=1  → Value::Attrs({})
+                //   SUI_BLACKHOLE_AS_EMPTY_LIST=1   → Value::List([])
+                //
+                // `EMPTY_ATTRS` is the closest approximation for the
+                // NixOS module-system fix-point because the cppnix
+                // partial is itself an attrset — downstream
+                // `mapAttrs`/`attrNames`/`concatMap` on the sentinel
+                // see "no keys to map" rather than a type error.
+                //
+                // Default-off for all variants because each silently
+                // hides legitimate cycles in user code (`let r = r;
+                // in r.x` would return missing-attr or 0 instead of
+                // erroring).
                 if std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some() {
                     return Ok(Value::Null);
+                }
+                if std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_LIST").is_some() {
+                    return Ok(Value::List(Rc::new(Vec::new())));
+                }
+                if std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some() {
+                    return Ok(Value::Attrs(Rc::new(NixAttrs::new())));
                 }
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();
