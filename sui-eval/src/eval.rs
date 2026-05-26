@@ -521,6 +521,39 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// bound in this scope (i.e. earlier bindings). Idents referencing these
 /// are backward references and can be resolved directly without thunking.
 /// Forward references (names not yet defined) must still be thunked.
+/// Detect whether `value_expr`'s source structurally references
+/// the identifier `name` — the signal that this let-binding is a
+/// self-recursive fix-point (`let x = f x; in x` or
+/// `let x = { a = 1; b = x.a; }; in x`).  Used at let-binding
+/// thunking time to pick `Thunk::new_suspended_recursive` over the
+/// classic `Thunk::new_suspended`, so inner re-entrance during
+/// force returns the partial value via `ThunkRepr::Promise`
+/// instead of erroring with `InfiniteRecursion`.
+///
+/// Implementation walks the value-expr's rnix syntax tree looking
+/// for `TOKEN_IDENT` whose text equals `name`.  This is a
+/// conservative over-approximation:
+/// - shadowing (e.g. `let x = let x = 1; in x; in x`) marks the
+///   outer thunk recursive even though no real cycle exists;
+/// - the resulting Promise behaviour is a strict superset of
+///   Blackhole for non-cyclic forces (the body runs to completion
+///   and the cell gets the final value), so false positives are
+///   semantically safe — they cost only the extra `Rc<RefCell>`
+///   allocation per recursive let-binding.
+///
+/// False negatives (e.g. the bound name appears only inside an
+/// inherit-from-source clause) leave the existing
+/// `InfiniteRecursion` behaviour intact, which is the conservative
+/// fallback.
+fn is_self_recursive_binding(value_expr: &ast::Expr, name: &str) -> bool {
+    use rnix::SyntaxKind;
+    value_expr.syntax().descendants_with_tokens().any(|elem| {
+        elem.as_token().is_some_and(|t| {
+            t.kind() == SyntaxKind::TOKEN_IDENT && t.text() == name
+        })
+    })
+}
+
 fn maybe_thunk(
     expr: &ast::Expr,
     env: &Env,
@@ -943,6 +976,36 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // sibling let-bindings (the let scope is recursive in Nix).
             let mut dotted_attrs: NixAttrs = NixAttrs::new();
 
+            // Pre-pass: collect every binding name in this let-scope
+            // (single-key bindings + top-level keys of dotted paths +
+            // names from inherit clauses).  Used by the recursive-thunk
+            // detector below — a binding is part of the mutual fix-point
+            // if its RHS references ANY of these names.
+            let let_scope_names: HashSet<String> = {
+                let mut s = HashSet::new();
+                for entry in letin.entries() {
+                    match entry {
+                        ast::Entry::AttrpathValue(apv) => {
+                            if let Some(attrpath) = apv.attrpath() {
+                                if let Some(first) = attrpath.attrs().next() {
+                                    if let Ok(name) = eval_attr(&first, env) {
+                                        s.insert(name);
+                                    }
+                                }
+                            }
+                        }
+                        ast::Entry::Inherit(inherit) => {
+                            for attr in inherit.attrs() {
+                                if let Ok(name) = eval_attr(&attr, env) {
+                                    s.insert(name);
+                                }
+                            }
+                        }
+                    }
+                }
+                s
+            };
+
             for entry in letin.entries() {
                 match entry {
                     ast::Entry::AttrpathValue(ref apv) => {
@@ -958,11 +1021,34 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             .collect::<Result<_, _>>()?;
                         if path_keys.len() == 1 {
                             let key = path_keys.pop().unwrap();
-                            // maybeThunk: skip thunk for trivial exprs.
-                            // is_rec=true because let-in is mutually
-                            // recursive — forward refs possible.
-                            // Pass defined_so_far so backward refs resolve directly.
-                            let value = maybe_thunk(&value_expr, env, true, Some(&defined_so_far));
+                            // Self/mutual-recursive detection: any binding
+                            // whose RHS references its own name OR any
+                            // SIBLING let-scope name is part of the let's
+                            // mutual fix-point.  Mark as recursive so
+                            // inner re-entrance during force returns a
+                            // Promise sentinel instead of erroring with
+                            // InfiniteRecursion.  This is the M2.6
+                            // module-system fix path (cppnix's
+                            // lib/modules.nix uses a deep let-scope with
+                            // declaredConfig / options / matchedOptions /
+                            // resultsByName / modules all transitively
+                            // cycling through each other).
+                            //
+                            // `let_scope_names` is collected upfront in a
+                            // pre-pass so each binding sees every other
+                            // binding name (not just earlier ones).
+                            let in_mutual_cycle = is_self_recursive_binding(&value_expr, &key)
+                                || let_scope_names
+                                    .iter()
+                                    .any(|n| n != &key && is_self_recursive_binding(&value_expr, n));
+                            let value = if in_mutual_cycle {
+                                Value::Thunk(Thunk::new_suspended_recursive(
+                                    value_expr.clone(),
+                                    env.clone(),
+                                ))
+                            } else {
+                                maybe_thunk(&value_expr, env, true, Some(&defined_so_far))
+                            };
                             new_env.bind(key.clone(), value.clone());
                             if let Value::Thunk(t) = &value {
                                 thunks.push((key.clone(), t.clone()));
@@ -1193,7 +1279,12 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     // cheapest sentinel that propagates through downstream code
     // without further type errors.
     let bridge_active = std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some()
-        || std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some();
+        || std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some()
+        // The Promise variant's empty-attrset sentinel hits the same
+        // downstream "key not found / can't select from {}" patterns
+        // as the env-gated bridges.  When we're inside a Promise body
+        // (any layer deep), apply the same soft-fallback semantics.
+        || crate::value::in_promise_eval();
     let traversal = traverse_attrpath(base, &attrpath, env);
     match traversal {
         Ok(TraverseResult::Found(v)) => Ok(v),
@@ -1404,11 +1495,37 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     if path_keys.is_empty() { continue; }
                     if path_keys.len() == 1 {
                         let key = path_keys.pop().unwrap();
-                        // maybeThunk: skip thunk for trivial exprs.
-                        // is_rec=true because rec attrset bindings
-                        // can reference each other.
-                        // Pass defined_so_far so backward refs resolve directly.
-                        let value = maybe_thunk(&value_expr, env, true, Some(&defined_so_far));
+                        // Self-recursive detection in a `rec { … }` scope:
+                        // any binding whose value-expr references the
+                        // bound name OR any sibling key declared in this
+                        // rec scope is potentially self-recursive (the
+                        // siblings' thunks share the rec_env via Phase 2).
+                        // Mark as recursive so inner re-entrance during
+                        // force returns a Promise sentinel instead of
+                        // erroring with InfiniteRecursion.
+                        //
+                        // For simplicity we check `key` and all already-
+                        // defined siblings; siblings defined later are
+                        // covered when THEIR thunks force (they reference
+                        // back into this rec scope via Phase 2's env update).
+                        let is_recursive_binding =
+                            is_self_recursive_binding(&value_expr, &key)
+                            || defined_so_far
+                                .iter()
+                                .any(|n| is_self_recursive_binding(&value_expr, n));
+                        let value = if is_recursive_binding {
+                            Value::Thunk(Thunk::new_suspended_recursive(
+                                value_expr.clone(),
+                                env.clone(),
+                            ))
+                        } else {
+                            // maybeThunk: skip thunk for trivial exprs.
+                            // is_rec=true because rec attrset bindings
+                            // can reference each other.
+                            // Pass defined_so_far so backward refs
+                            // resolve directly.
+                            maybe_thunk(&value_expr, env, true, Some(&defined_so_far))
+                        };
                         rec_env.bind(key.clone(), value.clone());
                         attrs.insert(key.clone(), value.clone());
                         if let Value::Thunk(t) = &value {

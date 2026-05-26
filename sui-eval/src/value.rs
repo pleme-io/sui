@@ -587,6 +587,24 @@ impl Value {
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Value>() <= 16);
 
+thread_local! {
+    /// Depth counter for "currently evaluating the body of a Promise-state
+    /// thunk".  Incremented before the body of a `ThunkRepr::Promise`
+    /// runs, decremented after.  Used by `eval_select` to treat missing
+    /// attribute lookups on the Promise's sentinel value as `null`
+    /// instead of erroring with `AttrNotFound`.  Scoped to Promise
+    /// evaluation so unrelated user code retains cppnix-strict semantics.
+    pub(crate) static IN_PROMISE_EVAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// `true` if the evaluator is currently inside the body of a
+/// `ThunkRepr::Promise` (used by `eval_select` to relax
+/// `AttrNotFound` errors during fix-point construction).
+#[inline(always)]
+pub fn in_promise_eval() -> bool {
+    IN_PROMISE_EVAL.with(|c| c.get() > 0)
+}
+
 /// Internal representation of a thunk's state machine.
 ///
 /// Transitions: `Suspended` → `Blackhole` → `Evaluated` (on success),
@@ -646,6 +664,19 @@ pub enum ThunkRepr {
     },
     /// Currently being evaluated -- detects infinite recursion.
     Blackhole,
+    /// Currently being evaluated, but the thunk is known to be
+    /// self-recursive (its RHS references the bound name).  Inner
+    /// re-entrance returns the partial value from the cell instead
+    /// of erroring with `InfiniteRecursion` — matches cppnix's
+    /// `let x = f x; in x` semantics where inner accesses to `x`
+    /// see the not-yet-complete attrset under construction.
+    ///
+    /// The cell starts as `Value::Attrs(empty)` (the cheapest
+    /// sentinel that propagates through `mapAttrs` / `attrNames` /
+    /// `concatMap` without further type errors).  When the body
+    /// completes, the cell is replaced with the final value and
+    /// the repr transitions to `Evaluated`.
+    Promise(Rc<RefCell<Value>>),
     /// Already evaluated and memoized.
     Evaluated(Box<Value>),
 }
@@ -665,6 +696,13 @@ struct ThunkInner {
     cache: OnceCell<Box<Concrete>>,
     /// Full state machine for the thunk lifecycle.
     repr: UnsafeCell<ThunkRepr>,
+    /// `true` when the thunk's RHS references its own bound name
+    /// (a fix-point pattern like `let x = f x; in x`).  On force,
+    /// transitions to `ThunkRepr::Promise` instead of `Blackhole`
+    /// so inner re-entrance sees the partial value rather than
+    /// erroring.  Detected at thunk-construction time via AST
+    /// text search.
+    recursive: bool,
 }
 
 /// A lazy value with memoization and blackhole detection.
@@ -678,6 +716,22 @@ impl Thunk {
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::Suspended { expr, env }),
+            recursive: false,
+        }))
+    }
+
+    /// Like [`new_suspended`] but marks the thunk as self-recursive.
+    /// On force, inner re-entrance returns the partial value from the
+    /// promise cell instead of erroring with `InfiniteRecursion`,
+    /// matching cppnix's `let x = f x; in x` semantics.  Use this for
+    /// let-bindings whose RHS textually references the bound name
+    /// (see `eval::is_self_recursive_binding`).
+    pub fn new_suspended_recursive(expr: rnix::ast::Expr, env: Env) -> Self {
+        crate::trace::inc_thunks_created();
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: UnsafeCell::new(ThunkRepr::Suspended { expr, env }),
+            recursive: true,
         }))
     }
 
@@ -696,6 +750,7 @@ impl Thunk {
                 source_thunk,
                 name: name.into(),
             }),
+            recursive: false,
         }))
     }
 
@@ -717,6 +772,7 @@ impl Thunk {
                 scope_value,
                 env,
             }),
+            recursive: false,
         }))
     }
 
@@ -728,6 +784,7 @@ impl Thunk {
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::Native(Box::new(f))),
+            recursive: false,
         }))
     }
 
@@ -743,6 +800,7 @@ impl Thunk {
         Self(Rc::new(ThunkInner {
             cache,
             repr: UnsafeCell::new(ThunkRepr::Evaluated(Box::new(value))),
+            recursive: false,
         }))
     }
 
@@ -837,10 +895,39 @@ impl Thunk {
 
         let thunk_id = Rc::as_ptr(&self.0) as usize;
 
-        // Take the current repr, replacing with Blackhole.
+        // Promise fast-path: if this thunk is currently in `Promise`
+        // state (a self-recursive fix-point whose outer body is still
+        // running, and *this* call is an inner re-entrance), return
+        // the cell's current partial value without consuming the
+        // repr.  Matches cppnix's `let x = f x; in x` semantics:
+        // inner accesses to `x` during f's evaluation see the not-
+        // yet-complete value instead of erroring with
+        // `InfiniteRecursion`.
+        //
+        // SAFETY: Single-threaded evaluator. The immutable borrow
+        // is scoped to this `if let` block; the early return exits
+        // before any further access to `repr`.
+        if let ThunkRepr::Promise(cell) = unsafe { &*self.0.repr.get() } {
+            return Ok(cell.borrow().clone());
+        }
+
+        // Take the current repr.  Replace with `Promise(cell)` if the
+        // thunk is self-recursive (so inner re-entrance during body
+        // evaluation hits the fast-path above), otherwise classic
+        // `Blackhole` (so inner re-entrance errors with
+        // `InfiniteRecursion`, which is the correct behaviour for
+        // non-recursive bindings like `let r = r; in r`).
         // SAFETY: Single-threaded evaluator. State machine ensures no
-        // overlapping mutable access: Suspended->Blackhole->Evaluated.
-        let repr = std::mem::replace(unsafe { &mut *self.0.repr.get() }, ThunkRepr::Blackhole);
+        // overlapping mutable access: Suspended->Blackhole/Promise->Evaluated.
+        let new_repr_on_force = if self.0.recursive {
+            ThunkRepr::Promise(Rc::new(RefCell::new(
+                Value::Attrs(Rc::new(NixAttrs::new())),
+            )))
+        } else {
+            ThunkRepr::Blackhole
+        };
+        let is_promise = self.0.recursive;
+        let repr = std::mem::replace(unsafe { &mut *self.0.repr.get() }, new_repr_on_force);
 
         match repr {
             ThunkRepr::Suspended { expr, env } => {
@@ -886,8 +973,31 @@ impl Thunk {
                 // *defined*, not where it is forced from. The RAII guard
                 // pops on drop (including on error paths).
                 let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
-                match evaluator(&expr, &env) {
+                // M2.6 Promise scope: bump the thread-local counter so
+                // downstream `eval_select` can soften `AttrNotFound`
+                // errors on the Promise's sentinel value to `null`.
+                // Scoped strictly to Promise-thunk body evaluation;
+                // non-recursive thunks retain cppnix-strict semantics.
+                if is_promise {
+                    IN_PROMISE_EVAL.with(|c| c.set(c.get() + 1));
+                }
+                let result = evaluator(&expr, &env);
+                if is_promise {
+                    IN_PROMISE_EVAL.with(|c| c.set(c.get().saturating_sub(1)));
+                }
+                match result {
                     Ok(mut value) => {
+                        // M2.6 Promise update: if this thunk transitioned
+                        // through Promise(cell), populate the cell with the
+                        // final value BEFORE setting Evaluated.  Any
+                        // outstanding Rc clones of the cell (held by inner
+                        // thunks whose bodies haven't yet run) will see the
+                        // complete value when they later force.
+                        if is_promise {
+                            if let ThunkRepr::Promise(cell) = unsafe { &*self.0.repr.get() } {
+                                *cell.borrow_mut() = value.clone();
+                            }
+                        }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
                             if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
@@ -1100,6 +1210,17 @@ impl Thunk {
                 crate::trace::dump_trace_on_error();
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
             }
+            ThunkRepr::Promise(cell) => {
+                // Inner re-entrance into a self-recursive thunk that's
+                // currently being evaluated.  Return the partial value
+                // the body has constructed so far (the cell starts as
+                // `Value::Attrs(empty)` and gets updated on body return).
+                // This is sui's cppnix-equivalent for `let x = f x; in x`
+                // — the inner reference to `x` during f's evaluation
+                // sees a partial attrset instead of the original cycle's
+                // `InfiniteRecursion`.
+                Ok(cell.borrow().clone())
+            }
             ThunkRepr::Evaluated(v) => {
                 // Reached when OnceCell wasn't populated (value was a thunk
                 // when first evaluated). Cache only concrete values — caching
@@ -1125,6 +1246,7 @@ impl fmt::Debug for Thunk {
             ThunkRepr::Native(_) => write!(f, "<native-thunk>"),
             ThunkRepr::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
+            ThunkRepr::Promise(_) => write!(f, "<promise>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
         }
     }
