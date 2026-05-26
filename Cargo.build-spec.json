@@ -850,7 +850,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "async_trait",
@@ -1095,7 +1095,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "async_trait",
@@ -6421,7 +6421,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(unix)"
         },
         {
           "name": "num_traits",
@@ -6450,7 +6450,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(unix)"
         },
         {
           "name": "num_traits",
@@ -10325,7 +10325,7 @@
           "features": [],
           "uses_default_features": false,
           "optional": false,
-          "target": "cfg(target_os = \"hermit\")"
+          "target": "cfg(unix)"
         }
       ],
       "runtime_dependencies": [
@@ -10336,7 +10336,7 @@
           "features": [],
           "uses_default_features": false,
           "optional": false,
-          "target": "cfg(target_os = \"hermit\")"
+          "target": "cfg(unix)"
         }
       ],
       "build_dependencies": [],
@@ -19305,7 +19305,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "memmap2",
@@ -19424,7 +19424,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "memmap2",
@@ -26234,7 +26234,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         },
         {
           "name": "tokio",
@@ -26384,7 +26384,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         },
         {
           "name": "tokio",
@@ -26484,7 +26484,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         }
       ],
       "runtime_dependencies": [
@@ -26495,7 +26495,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         }
       ],
       "build_dependencies": [],
@@ -28430,7 +28430,7 @@
         {
           "name": "pkg_config",
           "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
+          "kind": "build",
           "features": [],
           "uses_default_features": true,
           "optional": false,
@@ -28446,17 +28446,7 @@
           "target": null
         }
       ],
-      "runtime_dependencies": [
-        {
-          "name": "pkg_config",
-          "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        }
-      ],
+      "runtime_dependencies": [],
       "build_dependencies": [
         {
           "name": "cc",
@@ -28465,6 +28455,15 @@
           "features": [],
           "uses_default_features": true,
           "optional": true,
+          "target": null
+        },
+        {
+          "name": "pkg_config",
+          "package_key": "pkg-config-0.3.33",
+          "kind": "build",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
           "target": null
         },
         {
@@ -28613,7 +28612,7 @@
         {
           "name": "pkg_config",
           "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
+          "kind": "build",
           "features": [],
           "uses_default_features": true,
           "optional": false,
@@ -28629,21 +28628,21 @@
           "uses_default_features": true,
           "optional": false,
           "target": null
-        },
-        {
-          "name": "pkg_config",
-          "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
         }
       ],
       "build_dependencies": [
         {
           "name": "cc",
           "package_key": "cc-1.2.62",
+          "kind": "build",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "pkg_config",
+          "package_key": "pkg-config-0.3.33",
           "kind": "build",
           "features": [],
           "uses_default_features": true,
@@ -29472,7 +29471,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         },
         {
           "name": "security_framework_sys",
@@ -29481,7 +29480,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         },
         {
           "name": "tempfile",
@@ -29510,7 +29509,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         },
         {
           "name": "security_framework_sys",
@@ -29519,7 +29518,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_vendor = \"apple\")"
         },
         {
           "name": "tempfile",
@@ -29974,7 +29973,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         },
         {
           "name": "libc",
@@ -30030,7 +30029,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         },
         {
           "name": "libc",
@@ -36162,7 +36161,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "http_body_util",
@@ -36171,7 +36170,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper",
@@ -36192,7 +36191,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper_tls",
@@ -36201,7 +36200,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper_util",
@@ -36210,7 +36209,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "log",
@@ -36237,7 +36236,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "percent_encoding",
@@ -36246,7 +36245,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "pin_project_lite",
@@ -36255,7 +36254,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "quinn",
@@ -36288,7 +36287,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "rustls_pki_types",
@@ -36297,7 +36296,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "serde",
@@ -36356,7 +36355,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tokio_rustls",
@@ -36365,7 +36364,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tokio_util",
@@ -36374,7 +36373,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tower",
@@ -36396,7 +36395,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tower_service",
@@ -36405,7 +36404,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "url",
@@ -36423,7 +36422,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         }
       ],
       "runtime_dependencies": [
@@ -36497,7 +36496,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "http_body_util",
@@ -36506,7 +36505,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper",
@@ -36527,7 +36526,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper_tls",
@@ -36536,7 +36535,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "hyper_util",
@@ -36545,7 +36544,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "log",
@@ -36572,7 +36571,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "percent_encoding",
@@ -36581,7 +36580,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "pin_project_lite",
@@ -36590,7 +36589,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "quinn",
@@ -36623,7 +36622,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "rustls_pki_types",
@@ -36632,7 +36631,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "serde",
@@ -36691,7 +36690,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tokio_rustls",
@@ -36700,7 +36699,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tokio_util",
@@ -36709,7 +36708,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tower",
@@ -36731,7 +36730,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "tower_service",
@@ -36740,7 +36739,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         },
         {
           "name": "url",
@@ -36758,7 +36757,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(target_arch = \"wasm32\"))"
         }
       ],
       "build_dependencies": [],
@@ -36928,7 +36927,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "futures_core",
@@ -36973,7 +36972,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "http_body_util",
@@ -36982,7 +36981,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "hyper",
@@ -37003,7 +37002,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "hyper_util",
@@ -37012,7 +37011,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "log",
@@ -37039,7 +37038,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "pin_project_lite",
@@ -37048,7 +37047,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "quinn",
@@ -37080,7 +37079,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "rustls_platform_verifier",
@@ -37089,7 +37088,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "sync_wrapper",
@@ -37121,7 +37120,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "tower",
@@ -37143,7 +37142,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "tower_service",
@@ -37152,7 +37151,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "url",
@@ -37199,7 +37198,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "futures_core",
@@ -37244,7 +37243,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "http_body_util",
@@ -37253,7 +37252,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "hyper",
@@ -37274,7 +37273,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "hyper_util",
@@ -37283,7 +37282,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "log",
@@ -37310,7 +37309,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "pin_project_lite",
@@ -37319,7 +37318,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "quinn",
@@ -37351,7 +37350,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "rustls_platform_verifier",
@@ -37360,7 +37359,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "sync_wrapper",
@@ -37392,7 +37391,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "tower",
@@ -37414,7 +37413,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "tower_service",
@@ -37423,7 +37422,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(not(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\"))))"
         },
         {
           "name": "url",
@@ -38966,7 +38965,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         }
       ],
       "runtime_dependencies": [
@@ -38995,7 +38994,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         }
       ],
       "build_dependencies": [],
@@ -39049,7 +39048,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         }
       ],
       "runtime_dependencies": [
@@ -39069,7 +39068,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(target_os = \"macos\")"
         }
       ],
       "build_dependencies": [],
@@ -39198,7 +39197,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "core_foundation_sys",
@@ -39207,7 +39206,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "log",
@@ -39236,7 +39235,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "security_framework_sys",
@@ -39245,7 +39244,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         }
       ],
       "runtime_dependencies": [
@@ -39256,7 +39255,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "core_foundation_sys",
@@ -39265,7 +39264,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "log",
@@ -39294,7 +39293,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         },
         {
           "name": "security_framework_sys",
@@ -39303,7 +39302,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(any(target_vendor = \"apple\"))"
         }
       ],
       "build_dependencies": [],
@@ -47882,15 +47881,6 @@
       "proc_macro": false,
       "dependencies": [
         {
-          "name": "assert_cmd",
-          "package_key": "assert_cmd-2.2.2",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "async_graphql",
           "package_key": "async-graphql-7.2.1",
           "kind": "normal",
@@ -47911,15 +47901,6 @@
         {
           "name": "async_nats",
           "package_key": "async-nats-0.38.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "async_trait",
-          "package_key": "async-trait-0.1.89",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -47976,29 +47957,11 @@
           "target": null
         },
         {
-          "name": "http_body_util",
-          "package_key": "http-body-util-0.1.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "mimalloc",
           "package_key": "mimalloc-0.1.52",
           "kind": "normal",
           "features": [],
           "uses_default_features": false,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "predicates",
-          "package_key": "predicates-3.1.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
           "optional": false,
           "target": null
         },
@@ -48243,15 +48206,6 @@
       ],
       "runtime_dependencies": [
         {
-          "name": "assert_cmd",
-          "package_key": "assert_cmd-2.2.2",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "async_graphql",
           "package_key": "async-graphql-7.2.1",
           "kind": "normal",
@@ -48272,15 +48226,6 @@
         {
           "name": "async_nats",
           "package_key": "async-nats-0.38.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "async_trait",
-          "package_key": "async-trait-0.1.89",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48337,29 +48282,11 @@
           "target": null
         },
         {
-          "name": "http_body_util",
-          "package_key": "http-body-util-0.1.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "mimalloc",
           "package_key": "mimalloc-0.1.52",
           "kind": "normal",
           "features": [],
           "uses_default_features": false,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "predicates",
-          "package_key": "predicates-3.1.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
           "optional": false,
           "target": null
         },
@@ -48622,12 +48549,6 @@
             "rename": "async_nats"
           }
         ],
-        "async-trait": [
-          {
-            "version": "0.1.89",
-            "rename": "async_trait"
-          }
-        ],
         "ed25519-dalek": [
           {
             "version": "2.2.0",
@@ -48638,12 +48559,6 @@
           {
             "version": "0.3.32",
             "rename": "futures_core"
-          }
-        ],
-        "http-body-util": [
-          {
-            "version": "0.1.3",
-            "rename": "http_body_util"
           }
         ],
         "sui-build": [
@@ -48765,15 +48680,6 @@
           "target": null
         },
         {
-          "name": "serde_json",
-          "package_key": "serde_json-1.0.150",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "sha2",
           "package_key": "sha2-0.10.9",
           "kind": "normal",
@@ -48794,15 +48700,6 @@
         {
           "name": "sui_store",
           "package_key": "sui-store-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48868,15 +48765,6 @@
           "target": null
         },
         {
-          "name": "serde_json",
-          "package_key": "serde_json-1.0.150",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "sha2",
           "package_key": "sha2-0.10.9",
           "kind": "normal",
@@ -48897,15 +48785,6 @@
         {
           "name": "sui_store",
           "package_key": "sui-store-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48982,24 +48861,6 @@
       "proc_macro": false,
       "dependencies": [
         {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "pretty_assertions",
-          "package_key": "pretty_assertions-1.4.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "rnix",
           "package_key": "rnix-0.14.0",
           "kind": "normal",
@@ -49045,15 +48906,6 @@
           "target": null
         },
         {
-          "name": "sui_eval",
-          "package_key": "sui-eval-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "sui_intern",
           "package_key": "sui-intern-0.1.10",
           "kind": "normal",
@@ -49065,15 +48917,6 @@
         {
           "name": "sui_spec",
           "package_key": "sui-spec-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49092,24 +48935,6 @@
       ],
       "runtime_dependencies": [
         {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "pretty_assertions",
-          "package_key": "pretty_assertions-1.4.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "rnix",
           "package_key": "rnix-0.14.0",
           "kind": "normal",
@@ -49155,15 +48980,6 @@
           "target": null
         },
         {
-          "name": "sui_eval",
-          "package_key": "sui-eval-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "sui_intern",
           "package_key": "sui-intern-0.1.10",
           "kind": "normal",
@@ -49175,15 +48991,6 @@
         {
           "name": "sui_spec",
           "package_key": "sui-spec-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49206,12 +49013,6 @@
           {
             "version": "0.1.10",
             "rename": "sui_compat"
-          }
-        ],
-        "sui-eval": [
-          {
-            "version": "0.1.10",
-            "rename": "sui_eval"
           }
         ],
         "sui-intern": [
@@ -49296,15 +49097,6 @@
           "target": null
         },
         {
-          "name": "http_body_util",
-          "package_key": "http-body-util-0.1.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "object_store",
           "package_key": "object_store-0.12.5",
           "kind": "normal",
@@ -49329,15 +49121,6 @@
         {
           "name": "redb",
           "package_key": "redb-2.6.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "reqwest",
-          "package_key": "reqwest-0.12.28",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49383,15 +49166,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -49407,15 +49181,6 @@
           "features": [
             "full"
           ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tower",
-          "package_key": "tower-0.5.3",
-          "kind": "normal",
-          "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null
@@ -49497,15 +49262,6 @@
           "target": null
         },
         {
-          "name": "http_body_util",
-          "package_key": "http-body-util-0.1.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "object_store",
           "package_key": "object_store-0.12.5",
           "kind": "normal",
@@ -49530,15 +49286,6 @@
         {
           "name": "redb",
           "package_key": "redb-2.6.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "reqwest",
-          "package_key": "reqwest-0.12.28",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49584,15 +49331,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -49608,15 +49346,6 @@
           "features": [
             "full"
           ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tower",
-          "package_key": "tower-0.5.3",
-          "kind": "normal",
-          "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null
@@ -49652,12 +49381,6 @@
           {
             "version": "2.2.0",
             "rename": "ed25519_dalek"
-          }
-        ],
-        "http-body-util": [
-          {
-            "version": "0.1.3",
-            "rename": "http_body_util"
           }
         ],
         "sui-compat": [
@@ -49718,15 +49441,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -49776,15 +49490,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -49825,15 +49530,6 @@
           "target": null
         },
         {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "ed25519_dalek",
           "package_key": "ed25519-dalek-2.2.0",
           "kind": "normal",
@@ -49845,15 +49541,6 @@
         {
           "name": "nix_nar",
           "package_key": "nix-nar-0.3.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49883,15 +49570,6 @@
         {
           "name": "sha2",
           "package_key": "sha2-0.10.9",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49919,15 +49597,6 @@
           "target": null
         },
         {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "ed25519_dalek",
           "package_key": "ed25519-dalek-2.2.0",
           "kind": "normal",
@@ -49939,15 +49608,6 @@
         {
           "name": "nix_nar",
           "package_key": "nix-nar-0.3.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49977,15 +49637,6 @@
         {
           "name": "sha2",
           "package_key": "sha2-0.10.9",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50113,15 +49764,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -50144,15 +49786,6 @@
         {
           "name": "tracing",
           "package_key": "tracing-0.1.44",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tracing_subscriber",
-          "package_key": "tracing-subscriber-0.3.23",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50254,15 +49887,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -50285,15 +49909,6 @@
         {
           "name": "tracing",
           "package_key": "tracing-0.1.44",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tracing_subscriber",
-          "package_key": "tracing-subscriber-0.3.23",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50341,12 +49956,6 @@
             "version": "0.1.10",
             "rename": "sui_store"
           }
-        ],
-        "tracing-subscriber": [
-          {
-            "version": "0.3.23",
-            "rename": "tracing_subscriber"
-          }
         ]
       }
     },
@@ -50373,15 +49982,6 @@
         {
           "name": "blake3",
           "package_key": "blake3-1.8.5",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50434,42 +50034,6 @@
         {
           "name": "md5",
           "package_key": "md-5-0.10.6",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "pretty_assertions",
-          "package_key": "pretty_assertions-1.4.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "rand",
-          "package_key": "rand-0.8.6",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "rand_chacha",
-          "package_key": "rand_chacha-0.3.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50654,42 +50218,6 @@
         {
           "name": "tar",
           "package_key": "tar-0.4.46",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tatara_lisp",
-          "package_key": "tatara-lisp-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tatara_lisp_derive",
-          "package_key": "tatara-lisp-derive-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "test_case",
-          "package_key": "test-case-3.3.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50764,15 +50292,6 @@
           "target": null
         },
         {
-          "name": "criterion",
-          "package_key": "criterion-0.5.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "data_encoding",
           "package_key": "data-encoding-2.11.0",
           "kind": "normal",
@@ -50818,42 +50337,6 @@
         {
           "name": "md5",
           "package_key": "md-5-0.10.6",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "pretty_assertions",
-          "package_key": "pretty_assertions-1.4.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "rand",
-          "package_key": "rand-0.8.6",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "rand_chacha",
-          "package_key": "rand_chacha-0.3.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51038,42 +50521,6 @@
         {
           "name": "tar",
           "package_key": "tar-0.4.46",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tatara_lisp",
-          "package_key": "tatara-lisp-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tatara_lisp_derive",
-          "package_key": "tatara-lisp-derive-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "test_case",
-          "package_key": "test-case-3.3.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51183,24 +50630,6 @@
             "version": "0.1.10",
             "rename": "sui_store"
           }
-        ],
-        "tatara-lisp": [
-          {
-            "version": "0.2.1",
-            "rename": "tatara_lisp"
-          }
-        ],
-        "tatara-lisp-derive": [
-          {
-            "version": "0.2.1",
-            "rename": "tatara_lisp_derive"
-          }
-        ],
-        "test-case": [
-          {
-            "version": "3.3.1",
-            "rename": "test_case"
-          }
         ]
       }
     },
@@ -51265,30 +50694,12 @@
           "uses_default_features": true,
           "optional": false,
           "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
         }
       ],
       "runtime_dependencies": [
         {
           "name": "sui_spec",
           "package_key": "sui-spec-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51340,15 +50751,6 @@
         {
           "name": "libc",
           "package_key": "libc-0.2.186",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51418,15 +50820,6 @@
         {
           "name": "sui_store",
           "package_key": "sui-store-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51495,15 +50888,6 @@
           "target": null
         },
         {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "reqwest",
           "package_key": "reqwest-0.12.28",
           "kind": "normal",
@@ -51566,15 +50950,6 @@
         {
           "name": "sui_store",
           "package_key": "sui-store-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51676,15 +51051,6 @@
           "target": "cfg(unix)"
         },
         {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "regex",
           "package_key": "regex-1.12.3",
           "kind": "normal",
@@ -51743,15 +51109,6 @@
         {
           "name": "tatara_lisp_derive",
           "package_key": "tatara-lisp-derive-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51797,15 +51154,6 @@
           "target": "cfg(unix)"
         },
         {
-          "name": "proptest",
-          "package_key": "proptest-1.11.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "regex",
           "package_key": "regex-1.12.3",
           "kind": "normal",
@@ -51864,15 +51212,6 @@
         {
           "name": "tatara_lisp_derive",
           "package_key": "tatara-lisp-derive-0.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52019,15 +51358,6 @@
           "target": null
         },
         {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
           "name": "thiserror",
           "package_key": "thiserror-2.0.18",
           "kind": "normal",
@@ -52157,15 +51487,6 @@
         {
           "name": "sui_compat",
           "package_key": "sui-compat-0.1.10",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        },
-        {
-          "name": "tempfile",
-          "package_key": "tempfile-3.27.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -54276,7 +53597,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(unix)"
         },
         {
           "name": "socket2",
@@ -54352,7 +53673,7 @@
           "features": [],
           "uses_default_features": true,
           "optional": false,
-          "target": null
+          "target": "cfg(unix)"
         },
         {
           "name": "socket2",
@@ -60417,24 +59738,14 @@
         {
           "name": "pkg_config",
           "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
+          "kind": "build",
           "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null
         }
       ],
-      "runtime_dependencies": [
-        {
-          "name": "pkg_config",
-          "package_key": "pkg-config-0.3.33",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null
-        }
-      ],
+      "runtime_dependencies": [],
       "build_dependencies": [
         {
           "name": "cc",
@@ -60443,6 +59754,15 @@
           "features": [
             "parallel"
           ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null
+        },
+        {
+          "name": "pkg_config",
+          "package_key": "pkg-config-0.3.33",
+          "kind": "build",
+          "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null
