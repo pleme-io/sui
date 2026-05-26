@@ -697,6 +697,17 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                 scope_value,
                                 env.clone(),
                             )))
+                        } else if crate::value::in_promise_eval() {
+                            // M2.6 Promise softening: an undefined
+                            // identifier inside Promise body evaluation
+                            // typically means a `with` block sourced
+                            // from the empty-attrset sentinel didn't
+                            // populate the with-scope.  Returning null
+                            // lets the eval proceed; the result is
+                            // wrong-but-bounded (no further forces
+                            // happen on null until something downstream
+                            // demands a real value).
+                            Ok(Value::Null)
                         } else {
                             Err(EvalError::UndefinedVar(
                                 format!("'{name}'{}", eval_file_ctx()),
@@ -715,6 +726,11 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     env.with_scope_count(),
                                 );
                             }
+                        }
+                        if crate::value::in_promise_eval() {
+                            // Same Promise softening as the with-scope
+                            // branch above.
+                            return Ok(Value::Null);
                         }
                         Err(EvalError::UndefinedVar(
                             format!("'{name}'{}", eval_file_ctx()),
@@ -2050,11 +2066,24 @@ fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
                 // __functor protocol: (functor self) arg
                 let partial = apply(functor, func.clone())?;
                 apply(partial, arg)
+            } else if crate::value::in_promise_eval() {
+                // M2.6 Promise softening: an attrset without __functor
+                // being called as a function — typically the empty-
+                // attrset sentinel inside a fix-point body.  Return
+                // null so eval can proceed.
+                Ok(Value::Null)
             } else {
                 Err(EvalError::type_error(
                     format!("cannot call {} (missing __functor){}", func.type_name(), eval_file_ctx()),
                 ))
             }
+        }
+        _ if crate::value::in_promise_eval() => {
+            // M2.6 Promise softening: calling null / int / string / list
+            // as a function inside a Promise body is the sentinel
+            // cascade landing somewhere it doesn't belong.  Return null
+            // so the fix-point continues instead of erroring.
+            Ok(Value::Null)
         }
         _ => Err(EvalError::type_error(
             format!("cannot call {}{}", func.type_name(), eval_file_ctx()),

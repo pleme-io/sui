@@ -1165,10 +1165,18 @@ impl Thunk {
                         }
                     }
                 }
-                // Name not in with-scope — fall back to full env lookup
-                let result = env.lookup(&name).ok_or_else(|| {
-                    EvalError::UndefinedVar(format!("'{name}'"))
-                })?;
+                // Name not in with-scope — fall back to full env lookup.
+                // Inside a Promise body (M2.6 fix-point evaluation), an
+                // unresolved with-scope ident typically means the
+                // with-source was the empty-attrset sentinel; return
+                // null so eval can proceed rather than erroring.
+                let result = match env.lookup(&name) {
+                    Some(v) => v,
+                    None if in_promise_eval() => Value::Null,
+                    None => {
+                        return Err(EvalError::UndefinedVar(format!("'{name}'")));
+                    }
+                };
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(result.clone()));
                 if !matches!(result, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(result.clone().demand_unchecked())); }
                 Ok(result)
