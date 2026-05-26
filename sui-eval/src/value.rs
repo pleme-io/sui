@@ -1064,6 +1064,23 @@ impl Thunk {
                 Ok(result)
             }
             ThunkRepr::Blackhole => {
+                // M2.6 bridge: when an inner force re-enters a thunk
+                // that's currently being evaluated, cppnix's effective
+                // behavior is to expose the not-yet-complete value;
+                // sui can't produce that without a "partial promise"
+                // thunk variant (the proper fix — see
+                // docs/M2.6-MODULE-SYSTEM-FIXPOINT.md).  As a bridge,
+                // `SUI_BLACKHOLE_AS_NULL=1` returns `Value::Null` on
+                // re-entrance instead of `InfiniteRecursion`.  Combined
+                // with `expr.path or default` falling back on NotAttrs,
+                // this lets the operator's nixosSystem evaluation
+                // converge to a result that uses `specialArgs` for the
+                // missing `_module.args` values — operationally close
+                // to cppnix.  Default-off because masking re-entrance
+                // as null silently hides real bugs in user code.
+                if std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some() {
+                    return Ok(Value::Null);
+                }
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
