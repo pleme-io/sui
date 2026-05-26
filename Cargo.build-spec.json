@@ -70,6 +70,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -87,6 +88,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -104,6 +106,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "getrandom",
@@ -186,6 +189,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -226,6 +230,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -245,6 +250,7 @@
         "alloc"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -264,6 +270,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -285,6 +292,7 @@
         "wincon"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "anstyle",
@@ -428,6 +436,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -448,6 +457,7 @@
         "utf8"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "utf8parse",
@@ -485,6 +495,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -505,6 +516,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -522,6 +534,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "object",
@@ -565,6 +578,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rustversion",
@@ -602,6 +616,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -621,6 +636,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -638,6 +654,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -655,6 +672,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "anstyle",
@@ -815,6 +833,7 @@
         "tempfile"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_graphql_derive",
@@ -1375,6 +1394,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_graphql",
@@ -1599,6 +1619,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "inflector",
@@ -1817,6 +1838,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_graphql_value",
@@ -1919,6 +1941,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -2022,6 +2045,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "autocfg",
@@ -2241,6 +2265,7 @@
         "server_2_10"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -2851,6 +2876,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_stream_impl",
@@ -2943,6 +2969,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -3029,6 +3056,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -3123,6 +3151,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -3194,6 +3223,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_traits",
@@ -3238,6 +3268,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -3255,6 +3286,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -3275,6 +3307,7 @@
         "prebuilt-nasm"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "aws_lc_sys",
@@ -3339,6 +3372,7 @@
         "prebuilt-nasm"
       ],
       "proc_macro": false,
+      "build_script": "builder/main.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -3434,6 +3468,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -3867,6 +3902,7 @@
         "ws"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "axum_core",
@@ -4487,6 +4523,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -4767,6 +4804,7 @@
         "tracing"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -5023,6 +5061,7 @@
         "default"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -5115,6 +5154,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -5134,6 +5174,7 @@
         "alloc"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -5155,6 +5196,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "autocfg",
@@ -5305,6 +5347,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bit_vec",
@@ -5352,6 +5395,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -5373,6 +5417,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde_core",
@@ -5413,6 +5458,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "typenum",
@@ -5452,6 +5498,7 @@
         "alloc"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "funty",
@@ -5546,6 +5593,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "arrayref",
@@ -5663,6 +5711,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "generic_array",
@@ -5712,6 +5761,7 @@
         "unstable__schema"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "borsh_derive",
@@ -5796,6 +5846,7 @@
         "schema"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "once_cell",
@@ -5929,6 +5980,7 @@
         "unicode"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -6012,6 +6064,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bytecheck_derive",
@@ -6087,6 +6140,7 @@
         "std"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -6169,6 +6223,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6190,6 +6245,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -6231,6 +6287,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6248,6 +6305,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6267,6 +6325,7 @@
         "parallel"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "find_msvc_tools",
@@ -6365,6 +6424,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6382,6 +6442,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6413,6 +6474,7 @@
         "windows-link"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "iana_time_zone",
@@ -6502,6 +6564,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ciborium_io",
@@ -6597,6 +6660,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6614,6 +6678,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ciborium_io",
@@ -6686,6 +6751,7 @@
         "usage"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "clap_builder",
@@ -6749,6 +6815,7 @@
         "usage"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "anstream",
@@ -6842,6 +6909,7 @@
         "default"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -6944,6 +7012,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -6961,6 +7030,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "hashbrown",
@@ -6998,6 +7068,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cc",
@@ -7035,6 +7106,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7055,6 +7127,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crossbeam_utils",
@@ -7099,6 +7172,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7118,6 +7192,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7138,6 +7213,7 @@
         "link"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "core_foundation_sys",
@@ -7203,6 +7279,7 @@
         "link"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "core_foundation_sys",
@@ -7268,6 +7345,7 @@
         "link"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7285,6 +7363,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7302,6 +7381,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -7339,6 +7419,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crc_catalog",
@@ -7383,6 +7464,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -7403,6 +7485,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_if",
@@ -7452,6 +7535,7 @@
         "rayon"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "anes",
@@ -7830,6 +7914,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cast",
@@ -7888,6 +7973,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crossbeam_epoch",
@@ -7959,6 +8045,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crossbeam_utils",
@@ -8007,6 +8094,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crossbeam_utils",
@@ -8054,6 +8142,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -8073,6 +8162,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "generic_array",
@@ -8140,6 +8230,7 @@
         "zeroize"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_if",
@@ -8260,6 +8351,7 @@
         "suggestions"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling_core",
@@ -8318,6 +8410,7 @@
         "suggestions"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling_core",
@@ -8376,6 +8469,7 @@
         "suggestions"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "fnv",
@@ -8519,6 +8613,7 @@
         "suggestions"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ident_case",
@@ -8641,6 +8736,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling_core",
@@ -8714,6 +8810,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling_core",
@@ -8787,6 +8884,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -8935,6 +9033,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -8958,6 +9057,7 @@
         "zeroize"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "const_oid",
@@ -9048,6 +9148,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "powerfmt",
@@ -9106,6 +9207,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "derive_builder_macro",
@@ -9145,6 +9247,7 @@
         "lib_has_std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling",
@@ -9251,6 +9354,7 @@
         "lib_has_std"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "derive_builder_core",
@@ -9316,6 +9420,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "derive_more_impl",
@@ -9363,6 +9468,7 @@
         "default"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -9486,6 +9592,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -9503,6 +9610,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -9530,6 +9638,7 @@
         "subtle"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "block_buffer",
@@ -9640,6 +9749,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "dirs_sys",
@@ -9684,6 +9794,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -9752,6 +9863,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -9814,6 +9926,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -9851,6 +9964,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -9931,6 +10045,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -9948,6 +10063,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -9968,6 +10084,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pkcs8",
@@ -10032,6 +10149,7 @@
         "zeroize"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "curve25519_dalek",
@@ -10207,6 +10325,7 @@
         "use_std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -10253,6 +10372,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -10297,6 +10417,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -10317,6 +10438,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -10358,6 +10480,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "concurrent_queue",
@@ -10444,6 +10567,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ascii_utils",
@@ -10484,6 +10608,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heapless",
@@ -10543,6 +10668,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -10567,6 +10693,7 @@
         "yaml"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "pear",
@@ -10695,6 +10822,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -10757,6 +10885,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -10779,6 +10908,7 @@
         "rust_backend"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "crc32fast",
@@ -10844,6 +10974,7 @@
         "ratio"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_traits",
@@ -10892,6 +11023,7 @@
         "futures-sink"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -10991,6 +11123,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11008,6 +11141,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11025,6 +11159,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11046,6 +11181,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "percent_encoding",
@@ -11090,6 +11226,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11107,6 +11244,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -11144,6 +11282,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11168,6 +11307,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_channel",
@@ -11362,6 +11502,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -11434,6 +11575,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11454,6 +11596,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -11551,6 +11694,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -11634,6 +11778,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11651,6 +11796,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -11719,6 +11865,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -11807,6 +11954,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11827,6 +11975,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -11859,6 +12008,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_channel",
@@ -12085,6 +12235,7 @@
         "more_lengths"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "typenum",
@@ -12147,6 +12298,7 @@
         "wasm-bindgen"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -12212,6 +12364,7 @@
         "wasm_js"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_if",
@@ -12274,6 +12427,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_if",
@@ -12349,6 +12503,7 @@
         "worktree-mutation"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_actor",
@@ -13599,6 +13754,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -13693,6 +13849,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -13827,6 +13984,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -14045,6 +14203,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_error",
@@ -14091,6 +14250,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_commitgraph",
@@ -14387,6 +14547,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_error",
@@ -14431,6 +14592,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -14573,6 +14735,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -14725,6 +14888,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -14971,6 +15135,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -15091,6 +15256,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -15343,6 +15509,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -15470,6 +15637,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -15792,6 +15960,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -16090,6 +16259,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -16248,6 +16418,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -16299,6 +16470,7 @@
         "zlib"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -16543,6 +16715,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -16855,6 +17028,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -17005,6 +17179,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -17116,6 +17291,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "faster_hex",
@@ -17228,6 +17404,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_hash",
@@ -17312,6 +17489,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -17454,6 +17632,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -17517,6 +17696,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -17957,6 +18137,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_tempfile",
@@ -18045,6 +18226,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -18481,6 +18663,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -18641,6 +18824,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -18913,6 +19097,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "arc_swap",
@@ -19225,6 +19410,7 @@
         "streaming-input"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "clru",
@@ -19530,6 +19716,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -19638,6 +19825,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -19746,6 +19934,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -19920,6 +20109,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_command",
@@ -20051,6 +20241,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -20491,6 +20682,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -20583,6 +20775,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_actor",
@@ -20881,6 +21074,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -21083,6 +21277,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -21355,6 +21550,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_commitgraph",
@@ -21555,6 +21751,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -21612,6 +21809,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -21737,6 +21935,7 @@
         "worktree-rewrites"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -22077,6 +22276,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -22256,6 +22456,7 @@
         "hp-hashmap"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "dashmap",
@@ -22374,6 +22575,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -22400,6 +22602,7 @@
         "reqwest"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -22676,6 +22879,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -22894,6 +23098,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -23004,6 +23209,7 @@
         "bstr"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -23088,6 +23294,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -23132,6 +23339,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -23388,6 +23596,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bstr",
@@ -23638,6 +23847,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "gix_attributes",
@@ -23892,6 +24102,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -23909,6 +24120,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "atomic_waker",
@@ -24163,6 +24375,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -24233,6 +24446,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "derive_builder",
@@ -24403,6 +24617,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "byteorder",
@@ -24445,6 +24660,7 @@
         "raw"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ahash",
@@ -24485,6 +24701,7 @@
         "raw"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24509,6 +24726,7 @@
         "raw-entry"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "allocator_api2",
@@ -24596,6 +24814,7 @@
         "raw-entry"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "allocator_api2",
@@ -24676,6 +24895,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24693,6 +24913,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "hashbrown",
@@ -24736,6 +24957,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "hash32",
@@ -24793,6 +25015,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24810,6 +25033,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24831,6 +25055,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24848,6 +25073,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "hmac",
@@ -24887,6 +25113,7 @@
         "reset"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "digest",
@@ -24928,6 +25155,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -24948,6 +25176,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -25003,6 +25232,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -25060,6 +25290,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -25191,6 +25422,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -25208,6 +25440,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -25225,6 +25458,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -25248,6 +25482,7 @@
         "server"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "atomic_waker",
@@ -25570,6 +25805,7 @@
         "webpki-tokio"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "http",
@@ -25782,6 +26018,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "hyper",
@@ -25910,6 +26147,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -26116,6 +26354,7 @@
         "tokio"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -26476,6 +26715,7 @@
         "fallback"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "core_foundation_sys",
@@ -26520,6 +26760,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "displaydoc",
@@ -26667,6 +26908,7 @@
         "zerovec"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "displaydoc",
@@ -26778,6 +27020,7 @@
         "compiled_data"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "icu_collections",
@@ -26905,6 +27148,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -26924,6 +27168,7 @@
         "compiled_data"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "icu_collections",
@@ -27067,6 +27312,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27086,6 +27332,7 @@
         "baked"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "displaydoc",
@@ -27243,6 +27490,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27264,6 +27512,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "idna_adapter",
@@ -27343,6 +27592,7 @@
         "compiled_data"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "icu_normalizer",
@@ -27398,6 +27648,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bitmaps",
@@ -27533,6 +27784,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "autocfg",
@@ -27597,6 +27849,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "equivalent",
@@ -27670,6 +27923,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -27754,6 +28008,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27771,6 +28026,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -27811,6 +28067,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27828,6 +28085,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -27865,6 +28123,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27884,6 +28143,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -27905,6 +28165,7 @@
         "use_std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "either",
@@ -27946,6 +28207,7 @@
         "use_std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "either",
@@ -27983,6 +28245,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28010,6 +28273,7 @@
         "tzdb-zoneinfo"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "jiff_static",
@@ -28093,6 +28357,7 @@
         "tz-fat"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -28173,6 +28438,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -28210,6 +28476,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cpufeatures",
@@ -28251,6 +28518,7 @@
         "unsafe"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "static_assertions",
@@ -28291,6 +28559,7 @@
         "spin_no_std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "spin",
@@ -28336,6 +28605,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28356,6 +28626,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28373,6 +28644,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -28417,6 +28689,7 @@
         "vcpkg"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -28497,6 +28770,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28517,6 +28791,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "scopeguard",
@@ -28556,6 +28831,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28573,6 +28849,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28590,6 +28867,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -28673,6 +28951,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "nix",
@@ -28736,6 +29015,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "regex_automata",
@@ -28782,6 +29062,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28801,6 +29082,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28821,6 +29103,7 @@
         "is_sync"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -28910,6 +29193,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -28976,6 +29260,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -28993,6 +29278,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -29032,6 +29318,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "autocfg",
@@ -29069,6 +29356,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libmimalloc_sys",
@@ -29113,6 +29401,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -29134,6 +29423,7 @@
         "with-alloc"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "adler2",
@@ -29202,6 +29492,7 @@
         "os-poll"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -29259,6 +29550,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bytes",
@@ -29454,6 +29746,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "libc",
@@ -29563,6 +29856,7 @@
         "socket"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bitflags",
@@ -29684,6 +29978,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "camino",
@@ -29775,6 +30070,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "data_encoding",
@@ -29918,6 +30214,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -29935,6 +30232,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -29956,6 +30254,7 @@
         "macos_fsevent"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -30096,6 +30395,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -30136,6 +30436,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -30153,6 +30454,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rand",
@@ -30193,6 +30495,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_integer",
@@ -30267,6 +30570,7 @@
         "zeroize"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "lazy_static",
@@ -30453,6 +30757,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -30473,6 +30778,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_traits",
@@ -30517,6 +30823,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "autocfg",
@@ -30604,6 +30911,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -30623,6 +30931,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_modular",
@@ -30672,6 +30981,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "autocfg",
@@ -30739,6 +31049,7 @@
         "xcoff"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "memchr",
@@ -30794,6 +31105,7 @@
         "walkdir"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -31363,6 +31675,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -31380,6 +31693,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -31397,6 +31711,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -31414,6 +31729,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_traits",
@@ -31458,6 +31774,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aliasable",
@@ -31531,6 +31848,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -31657,6 +31975,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -31676,6 +31995,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "lock_api",
@@ -31731,6 +32051,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_if",
@@ -31815,6 +32136,7 @@
         "yansi"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "inlinable_string",
@@ -31888,6 +32210,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -32002,6 +32325,7 @@
         "alloc"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64ct",
@@ -32043,6 +32367,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -32064,6 +32389,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -32129,6 +32455,7 @@
         "std"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pest",
@@ -32186,6 +32513,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pest",
@@ -32304,6 +32632,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pest",
@@ -32362,6 +32691,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -32403,6 +32733,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pin_project_internal",
@@ -32447,6 +32778,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -32541,6 +32873,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -32564,6 +32897,7 @@
         "zeroize"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "der",
@@ -32645,6 +32979,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "der",
@@ -32704,6 +33039,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -32726,6 +33062,7 @@
         "svg_backend"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_traits",
@@ -32818,6 +33155,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -32835,6 +33173,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "plotters_backend",
@@ -32879,6 +33218,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -32959,6 +33299,7 @@
         "require-cas"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -32978,6 +33319,7 @@
         "zerovec"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "zerovec",
@@ -33015,6 +33357,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -33035,6 +33378,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "zerocopy",
@@ -33083,6 +33427,7 @@
         "regex"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "anstyle",
@@ -33229,6 +33574,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -33246,6 +33592,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "predicates_core",
@@ -33311,6 +33658,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "diff",
@@ -33366,6 +33714,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "toml_edit",
@@ -33407,6 +33756,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -33472,6 +33822,7 @@
         "syn-error"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro_error_attr2",
@@ -33579,6 +33930,7 @@
         "proc-macro"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "unicode_ident",
@@ -33627,6 +33979,7 @@
         "yansi"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -33748,6 +34101,7 @@
         "progress-tree"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "parking_lot",
@@ -33794,6 +34148,7 @@
         "timeout"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bit_set",
@@ -34050,6 +34405,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -34112,6 +34468,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "anyhow",
@@ -34232,6 +34589,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "ar_archive_writer",
@@ -34289,6 +34647,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ptr_meta_derive",
@@ -34326,6 +34685,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -34410,6 +34770,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -34432,6 +34793,7 @@
         "serialize"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -34494,6 +34856,7 @@
         "rustls-ring"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bytes",
@@ -34758,6 +35121,7 @@
         "rustls-ring"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aws_lc_rs",
@@ -35010,6 +35374,7 @@
         "tracing"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cfg_aliases",
@@ -35109,6 +35474,7 @@
         "proc-macro"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -35153,6 +35519,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -35179,6 +35546,7 @@
         "std_rng"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -35260,6 +35628,7 @@
         "thread_rng"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rand_chacha",
@@ -35318,6 +35687,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ppv_lite86",
@@ -35382,6 +35752,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ppv_lite86",
@@ -35448,6 +35819,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "getrandom",
@@ -35488,6 +35860,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "getrandom",
@@ -35525,6 +35898,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rand_core",
@@ -35562,6 +35936,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rand_core",
@@ -35599,6 +35974,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "either",
@@ -35661,6 +36037,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "crossbeam_deque",
@@ -35729,6 +36106,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "libc",
@@ -35784,6 +36162,7 @@
         "unicode-segment"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aho_corasick",
@@ -35919,6 +36298,7 @@
         "unicode-word-boundary"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aho_corasick",
@@ -36016,6 +36396,7 @@
         "unicode-segment"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -36036,6 +36417,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bytecheck",
@@ -36090,6 +36472,7 @@
         "system-proxy"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -36892,6 +37275,7 @@
         "rustls"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -37540,6 +37924,7 @@
         "wasm32_unknown_unknown_js"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -37662,6 +38047,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bitvec",
@@ -37863,6 +38249,7 @@
         "default"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -37943,6 +38330,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rowan",
@@ -37980,6 +38368,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "countme",
@@ -38093,6 +38482,7 @@
         "u64_digit"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "const_oid",
@@ -38389,6 +38779,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "arrayvec",
@@ -38574,6 +38965,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -38594,6 +38986,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -38611,6 +39004,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "semver",
@@ -38659,6 +39053,7 @@
         "time"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "bitflags",
@@ -38747,6 +39142,7 @@
         "tls12"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "aws_lc_rs",
@@ -38939,6 +39335,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rustls_pemfile",
@@ -39031,6 +39428,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pki_types",
@@ -39102,6 +39500,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pki_types",
@@ -39152,6 +39551,7 @@
         "web-time"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "zeroize",
@@ -39189,6 +39589,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "core_foundation",
@@ -39350,6 +39751,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "ring",
@@ -39435,6 +39837,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aws_lc_rs",
@@ -39539,6 +39942,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": "build/build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -39559,6 +39963,7 @@
         "wait-timeout"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "fnv",
@@ -39663,6 +40068,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -39680,6 +40086,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -39697,6 +40104,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -39714,6 +40122,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -39863,6 +40272,7 @@
         "with-uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_stream",
@@ -40347,6 +40757,7 @@
         "dotenvy"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "chrono",
@@ -40531,6 +40942,7 @@
         "strum"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -40693,6 +41105,7 @@
         "sea-orm-cli"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -40918,6 +41331,7 @@
         "with-uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bigdecimal",
@@ -41141,6 +41555,7 @@
         "with-uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bigdecimal",
@@ -41325,6 +41740,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "darling",
@@ -41477,6 +41893,7 @@
         "writer"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures",
@@ -41567,6 +41984,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -41677,6 +42095,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -41700,6 +42119,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -41833,6 +42253,7 @@
         "session-tickets"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -41968,6 +42389,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "core_foundation_sys",
@@ -42033,6 +42455,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -42057,6 +42480,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "serde_core",
@@ -42122,6 +42546,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -42141,6 +42566,7 @@
         "default"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -42241,6 +42667,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "itoa",
@@ -42332,6 +42759,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -42369,6 +42797,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "itoa",
@@ -42428,6 +42857,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -42510,6 +42940,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -42547,6 +42978,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "form_urlencoded",
@@ -42638,6 +43070,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "indexmap",
@@ -42754,6 +43187,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "indexmap",
@@ -42874,6 +43308,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -42954,6 +43389,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "digest",
@@ -43016,6 +43452,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -43099,6 +43536,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "digest",
@@ -43154,6 +43592,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "lazy_static",
@@ -43194,6 +43633,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -43211,6 +43651,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "arc_swap",
@@ -43360,6 +43801,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -43377,6 +43819,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "errno",
@@ -43435,6 +43878,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pkcs8",
@@ -43537,6 +43981,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "digest",
@@ -43592,6 +44037,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -43611,6 +44057,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -43631,6 +44078,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitmaps",
@@ -43689,6 +44137,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -43712,6 +44161,7 @@
         "write"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -43752,6 +44202,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "borsh",
@@ -43809,6 +44260,7 @@
         "all"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -43848,6 +44300,7 @@
         "all"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -43895,6 +44348,7 @@
         "spin_mutex"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "lock_api_crate",
@@ -43943,6 +44397,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64ct",
@@ -44017,6 +44472,7 @@
         "uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "sqlx_core",
@@ -44179,6 +44635,7 @@
         "webpki-roots"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -44912,6 +45369,7 @@
         "uuid"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -45060,6 +45518,7 @@
         "uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "dotenvy",
@@ -45456,6 +45915,7 @@
         "uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "atoi",
@@ -46279,6 +46739,7 @@
         "uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "atoi",
@@ -47008,6 +47469,7 @@
         "uuid"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "atoi",
@@ -47444,6 +47906,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47461,6 +47924,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
@@ -47560,6 +48024,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47577,6 +48042,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47594,6 +48060,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "unicode_bidi",
@@ -47686,6 +48153,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47703,6 +48171,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47725,6 +48194,7 @@
         "strum_macros"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "strum_macros",
@@ -47762,6 +48232,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "heck",
@@ -47864,6 +48335,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -47879,6 +48351,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_graphql",
@@ -48651,6 +49124,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "aho_corasick",
@@ -48859,6 +49333,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rnix",
@@ -49039,6 +49514,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -49401,6 +49877,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "blake3",
@@ -49519,6 +49996,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -49679,6 +50157,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -49969,6 +50448,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -50643,6 +51123,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rustc_hash",
@@ -50685,6 +51166,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "sui_spec",
@@ -50727,6 +51209,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -51031,6 +51514,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -51269,6 +51753,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_trait",
@@ -51587,6 +52072,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -51613,6 +52099,7 @@
         "quote"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -51711,6 +52198,7 @@
         "visit-mut"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -51800,6 +52288,7 @@
         "futures-core"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -51847,6 +52336,7 @@
         "proc-macro"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -51941,6 +52431,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -52027,6 +52518,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "core_foundation_sys",
@@ -52089,6 +52581,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -52109,6 +52602,7 @@
         "xattr"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "filetime",
@@ -52184,6 +52678,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "blake3",
@@ -52304,6 +52799,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -52391,6 +52887,7 @@
         "getrandom"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "fastrand",
@@ -52490,6 +52987,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -52507,6 +53005,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "test_case_macros",
@@ -52551,6 +53050,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -52661,6 +53161,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -52773,6 +53274,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -52790,6 +53292,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "thiserror_impl",
@@ -52837,6 +53340,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "thiserror_impl",
@@ -52881,6 +53385,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -52961,6 +53466,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -53041,6 +53547,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "cfg_if",
@@ -53094,6 +53601,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "deranged",
@@ -53262,6 +53770,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -53283,6 +53792,7 @@
         "serde"
       ],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "num_conv",
@@ -53353,6 +53863,7 @@
         "zerovec"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "displaydoc",
@@ -53408,6 +53919,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -53467,6 +53979,7 @@
         "tinyvec_macros"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "tinyvec_macros",
@@ -53504,6 +54017,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -53544,6 +54058,7 @@
         "windows-sys"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -53730,6 +54245,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -53814,6 +54330,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "native_tls",
@@ -53881,6 +54398,7 @@
         "tls12"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rustls",
@@ -53945,6 +54463,7 @@
         "time"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -54040,6 +54559,7 @@
         "stream"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_util",
@@ -54148,6 +54668,7 @@
         "io"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -54309,6 +54830,7 @@
         "rustls-native-roots"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -54613,6 +55135,7 @@
         "parse"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -54718,6 +55241,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -54759,6 +55283,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde_core",
@@ -54800,6 +55325,7 @@
         "serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "indexmap",
@@ -54937,6 +55463,7 @@
         "parse"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "indexmap",
@@ -55036,6 +55563,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "winnow",
@@ -55077,6 +55605,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -55102,6 +55631,7 @@
         "transport"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "async_stream",
@@ -55618,6 +56148,7 @@
         "util"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -55920,6 +56451,7 @@
         "util"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "futures_core",
@@ -56126,6 +56658,7 @@
         "tracing"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bitflags",
@@ -56374,6 +56907,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -56391,6 +56925,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -56414,6 +56949,7 @@
         "tracing-attributes"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "log",
@@ -56524,6 +57060,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -56624,6 +57161,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "once_cell",
@@ -56664,6 +57202,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "log",
@@ -56744,6 +57283,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde",
@@ -56826,6 +57366,7 @@
         "tracing-serde"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "matchers",
@@ -57116,6 +57657,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57133,6 +57675,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pin_project_lite",
@@ -57209,6 +57752,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "dirs",
@@ -57362,6 +57906,7 @@
         "sha1"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "bytes",
@@ -57532,6 +58077,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57551,6 +58097,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57568,6 +58115,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57588,6 +58136,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "version_check",
@@ -57629,6 +58178,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57646,6 +58196,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57663,6 +58214,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57683,6 +58235,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "tinyvec",
@@ -57728,6 +58281,7 @@
         "general-category"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57747,6 +58301,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57764,6 +58319,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57781,6 +58337,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -57807,6 +58364,7 @@
         "rustls-webpki-roots"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -58029,6 +58587,7 @@
         "client"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "base64",
@@ -58131,6 +58690,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "form_urlencoded",
@@ -58242,6 +58802,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58259,6 +58820,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58278,6 +58840,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58299,6 +58862,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "serde_core",
@@ -58336,6 +58900,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58353,6 +58918,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58370,6 +58936,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "libc",
@@ -58407,6 +58974,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "same_file",
@@ -58451,6 +59019,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "try_lock",
@@ -58495,6 +59064,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "parent",
@@ -58539,6 +59109,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "pki_types",
@@ -58583,6 +59154,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58604,6 +59176,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -58648,6 +59221,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "memchr",
@@ -58685,6 +59259,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58702,6 +59277,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "tap",
@@ -58742,6 +59318,7 @@
         "unsupported"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "rustix",
@@ -58785,6 +59362,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "lzma_sys",
@@ -58833,6 +59411,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -58853,6 +59432,7 @@
         "zerofrom"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "stable_deref_trait",
@@ -58933,6 +59513,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -59039,6 +59620,7 @@
         "zerocopy-derive"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "zerocopy_derive",
@@ -59083,6 +59665,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -59169,6 +59752,7 @@
         "derive"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "zerofrom_derive",
@@ -59213,6 +59797,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -59318,6 +59903,7 @@
         "default"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -59338,6 +59924,7 @@
         "zerofrom"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "displaydoc",
@@ -59418,6 +60005,7 @@
         "yoke"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "yoke",
@@ -59498,6 +60086,7 @@
       },
       "features": [],
       "proc_macro": true,
+      "build_script": null,
       "dependencies": [
         {
           "name": "proc_macro2",
@@ -59587,6 +60176,7 @@
         "std"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -59604,6 +60194,7 @@
       },
       "features": [],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [],
       "runtime_dependencies": [],
       "build_dependencies": [],
@@ -59626,6 +60217,7 @@
         "zdict_builder"
       ],
       "proc_macro": false,
+      "build_script": null,
       "dependencies": [
         {
           "name": "zstd_safe",
@@ -59675,6 +60267,7 @@
         "zdict_builder"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "zstd_sys",
@@ -59723,6 +60316,7 @@
         "zdict_builder"
       ],
       "proc_macro": false,
+      "build_script": "build.rs",
       "dependencies": [
         {
           "name": "cc",
