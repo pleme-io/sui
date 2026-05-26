@@ -1163,14 +1163,31 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     let base_expr = sel.expr().ok_or_else(|| {
         EvalError::ParseError("select missing expression".to_string())
     })?;
-    let base = force_concrete(&eval_expr(&base_expr, env)?)?.into_value();
+    // M2.6 bridge: in `expr.path or default`, an `InfiniteRecursion`
+    // hit while forcing the LEFT side falls back to the default —
+    // operationally matches cppnix, which avoids the cycle entirely
+    // via lazy attribute access during fix-point evaluation.  Without
+    // a default, the recursion propagates as a real error.  Other
+    // error kinds (Throw, TypeError, …) always propagate so user
+    // bugs aren't masked.  Removed when the underlying fix-point /
+    // lazy-access semantics land — see docs/M2.6-MODULE-SYSTEM-FIXPOINT.md.
+    let base_result = eval_expr(&base_expr, env)
+        .and_then(|v| force_concrete(&v).map(Concrete::into_value));
+    let base = match base_result {
+        Ok(v) => v,
+        Err(EvalError::InfiniteRecursion(_)) if sel.default_expr().is_some() => {
+            return eval_expr(&sel.default_expr().expect("checked"), env);
+        }
+        Err(e) => return Err(e),
+    };
     let base_type = base.type_name();
     let attrpath = sel.attrpath().ok_or_else(|| {
         EvalError::ParseError("select missing attrpath".to_string())
     })?;
-    match traverse_attrpath(base, &attrpath, env)? {
-        TraverseResult::Found(v) => Ok(v),
-        TraverseResult::Missing(key) => {
+    let traversal = traverse_attrpath(base, &attrpath, env);
+    match traversal {
+        Ok(TraverseResult::Found(v)) => Ok(v),
+        Ok(TraverseResult::Missing(key)) => {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
             } else {
@@ -1179,7 +1196,7 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                 ))
             }
         }
-        TraverseResult::NotAttrs(forced) => {
+        Ok(TraverseResult::NotAttrs(forced)) => {
             // CppNix: `expr.a.b or default` falls back to default for
             // ANY error in the path — including intermediate values
             // that aren't attrsets (e.g., null). The module system
@@ -1205,6 +1222,14 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                 )))
             }
         }
+        // Same M2.6 bridge as on the base force above: if an
+        // intermediate step in the attrpath traversal raises
+        // InfiniteRecursion and `or default` was supplied, the
+        // default is the operationally-correct value.
+        Err(EvalError::InfiniteRecursion(_)) if sel.default_expr().is_some() => {
+            eval_expr(&sel.default_expr().expect("checked"), env)
+        }
+        Err(e) => Err(e),
     }
 }
 
