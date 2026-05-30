@@ -77,6 +77,7 @@ pub mod gc;
 pub mod hash;
 pub mod loader;
 pub mod lock_file;
+pub mod lockfile_graph;
 pub mod module_system;
 pub mod nar;
 pub mod narinfo;

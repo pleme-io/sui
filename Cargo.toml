@@ -23,6 +23,11 @@ members = [
     # /sw/bin/nix to immediately gain sui's typed surface while M2.6+
     # work brings the rest of the cppnix surface to byte-identity.
     "sui-nix-wrap",
+    # L1 substrate — content-addressed graph store. Owns the redb
+    # index + rkyv-archived blobs on a ZFS-friendly layout. Replaces
+    # the SeaORM/SQLite path for lockfile / AST / module-graph
+    # persistence with mmap-and-cast zero-copy reads.
+    "sui-graph-store",
 ]
 resolver = "3"
 
@@ -46,6 +51,7 @@ sui-daemon = { path = "sui-daemon", version = "0.1.10" }
 sui-orchestrate = { path = "sui-orchestrate", version = "0.1.10" }
 sui-cache-eval = { path = "sui-cache-eval", version = "0.1.10" }
 sui-spec = { path = "sui-spec", version = "0.1.10" }
+sui-graph-store = { path = "sui-graph-store", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
@@ -147,6 +153,20 @@ data-encoding = "2"
 redb = "2"
 regex = "1"
 toml = "0.8"
+
+# Zero-copy archive format (L1). Wire format frozen on 0.8.x (Sep 2024),
+# stable for the lifetime of the 0.8 series. mmap-and-cast reads (~20 ns
+# deserialize), deterministic bytes → stable BLAKE3 content addressing.
+# Validation via `bytecheck` is on for substituter-pulled archives;
+# skipped for locally-written ones whose BLAKE3 was just verified.
+rkyv = { version = "0.8", default-features = false, features = ["std", "bytecheck", "alloc"] }
+bytecheck = "0.8"
+
+# Persistent functional structures for the bytecode VM (L3 env).
+# imbl = bodil/im fork, Arc-backed HAMT + RRB-Vector, Send+Sync out
+# of the box — mandatory for Rayon worker fanout. bodil/im is
+# unmaintained; rpds is slower on the attrset-merge-heavy workload.
+imbl = "5"
 
 # Testing
 proptest = "1"

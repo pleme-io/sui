@@ -1,0 +1,28 @@
+[package]
+name = "sui-graph-store"
+description = "L1 content-addressed graph store for sui — redb index + rkyv-archived blobs on a ZFS-friendly layout. Replaces the SeaORM/SQLite path with mmap-and-cast zero-copy reads."
+keywords = ["nix", "content-addressed", "rkyv", "redb", "blake3"]
+categories = ["caching", "database-implementations", "filesystem"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+redb.workspace = true
+rkyv.workspace = true
+bytecheck.workspace = true
+blake3.workspace = true
+data-encoding.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+pretty_assertions.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

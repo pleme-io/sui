@@ -21,9 +21,16 @@ sui-compat.workspace = true
 url = "2"
 regex.workspace = true
 
+# L1 substrate — rkyv archives + BLAKE3 content addressing for the
+# typed graph forms (lockfile_graph today; ast_graph + module_graph next).
+rkyv.workspace = true
+bytecheck.workspace = true
+blake3.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+pretty_assertions.workspace = true
 
 # Needed by the dual-exec runner for SIGKILL on timeout.
 [target.'cfg(unix)'.dependencies]
