@@ -64,6 +64,7 @@
 //! the engine.
 
 pub mod activation_script;
+pub mod ast_evaluator;
 pub mod ast_graph;
 pub mod catalog;
 pub mod cli;

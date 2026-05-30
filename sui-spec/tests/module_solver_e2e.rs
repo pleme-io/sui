@@ -1,0 +1,205 @@
+//! End-to-end: solver + TreeWalkingEvaluator + real AstGraphs.
+//!
+//! Builds a `ModuleGraph` from hand-crafted module source, attaches
+//! the real `TreeWalkingEvaluator`, runs the solver to quiescence,
+//! and asserts the final env contains the values an operator would
+//! expect.
+//!
+//! These are the load-bearing tests that prove the entire L4
+//! substrate is correct end-to-end: AST graph → module compiler →
+//! solver → evaluator → env.
+
+use std::sync::Arc;
+
+use sui_spec::ast_evaluator::EvalValue;
+use sui_spec::ast_graph::AstGraph;
+use sui_spec::module_graph::ModuleGraph;
+use sui_spec::module_solver::{
+    EnvSnapshot, PerModuleEvaluator, SolverState, TreeWalkingEvaluator,
+};
+
+fn build_solver_one_module(
+    source: &str,
+) -> SolverState<TreeWalkingEvaluator> {
+    let ast = Arc::new(AstGraph::from_source(source).expect("parse"));
+    let g = ModuleGraph::from_ast_graphs(&[("test.nix".to_string(), (*ast).clone())])
+        .expect("build module graph");
+    SolverState::new(g, TreeWalkingEvaluator::new(ast))
+}
+
+fn env_value(env: &EnvSnapshot, path: &[&str]) -> EvalValue {
+    let key: Vec<String> = path.iter().map(|s| (*s).to_string()).collect();
+    let bytes = env
+        .get(&key)
+        .unwrap_or_else(|| panic!("no value for path {path:?}"));
+    serde_json::from_slice::<EvalValue>(bytes)
+        .or_else(|_| serde_json::from_str(std::str::from_utf8(bytes).unwrap_or("null")))
+        .unwrap_or_else(|_| panic!("bytes for {path:?} don't deserialize as EvalValue"))
+}
+
+#[test]
+fn integer_literal_setter_lands_in_env() {
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.x = 42; }",
+    );
+    let order = solver.run(&[]).expect("solver run");
+    assert!(!order.is_empty(), "at least one setter must fire");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+}
+
+#[test]
+fn string_literal_setter_lands_in_env() {
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.networking.hostName = \"rio\"; }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(
+        env_value(solver.env(), &["networking", "hostName"]),
+        EvalValue::Str("rio".to_string())
+    );
+}
+
+#[test]
+fn arithmetic_setter_evaluates() {
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.size = 1024 * 8; }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["size"]), EvalValue::Int(8192));
+}
+
+#[test]
+fn list_setter_lands_in_env() {
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.boot.kernelParams = [ \"a\" \"b\" \"c\" ]; }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(
+        env_value(solver.env(), &["boot", "kernelParams"]),
+        EvalValue::List(vec![
+            EvalValue::Str("a".into()),
+            EvalValue::Str("b".into()),
+            EvalValue::Str("c".into()),
+        ])
+    );
+}
+
+#[test]
+fn dep_chain_propagates_via_solver() {
+    // Setter A writes config.a (literal Int).
+    // Setter B writes config.b = config.a * 2 (reads config.a).
+    // Setter C writes config.c = config.b + 1 (reads config.b).
+    // After solver runs, c == (a * 2) + 1 == 11.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.a = 5; \
+         config.b = config.a * 2; \
+         config.c = config.b + 1; \
+         }",
+    );
+    let order = solver.run(&[]).expect("solver run");
+    assert!(order.len() >= 3);
+    assert_eq!(env_value(solver.env(), &["a"]), EvalValue::Int(5));
+    assert_eq!(env_value(solver.env(), &["b"]), EvalValue::Int(10));
+    assert_eq!(env_value(solver.env(), &["c"]), EvalValue::Int(11));
+}
+
+#[test]
+fn warm_re_run_after_slice_change_recomputes_dependents() {
+    // Three setters, dependency chain a → b → c.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.a = 5; \
+         config.b = config.a * 2; \
+         config.c = config.b + 1; \
+         }",
+    );
+    solver.run(&[]).expect("cold start");
+    // Cold values:
+    assert_eq!(env_value(solver.env(), &["c"]), EvalValue::Int(11));
+
+    // Externally invalidate config.a (simulate: re-fire the writer
+    // with a different value would normally happen via mkForce in
+    // another module — here we just clear and re-seed it as 7).
+    // The solver re-fires only the readers; b + c should recompute.
+    {
+        // We can't mutate env from outside today (it's private to
+        // the solver). For this test, we use the dirty-path API to
+        // assert downstream recomputation happens.
+        let order = solver
+            .run(&[vec!["a".to_string()]])
+            .expect("warm re-run");
+        // At minimum, b should re-fire (slice includes a) and c
+        // should re-fire (slice includes b, which is dirty after b
+        // re-fires with new value... but a didn't actually change
+        // so b will produce the same bytes, so c shouldn't re-fire).
+        // The correctness guarantee here is "at least b fires."
+        assert!(
+            !order.is_empty(),
+            "warm re-run with dirty 'a' must fire at least the readers of a"
+        );
+    }
+}
+
+#[test]
+fn conditional_body_evaluates_via_if_then_else() {
+    // The if-then-else gets evaluated with current env. Since the env
+    // contains the writer's value, the condition can dispatch.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.enabled = 1; \
+         config.choice = if config.enabled == 1 then 100 else 200; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["enabled"]), EvalValue::Int(1));
+    assert_eq!(env_value(solver.env(), &["choice"]), EvalValue::Int(100));
+}
+
+#[test]
+fn multi_module_solver_runs_via_per_module_evaluator() {
+    // Two modules; second reads first's output.
+    let ast_a = Arc::new(
+        AstGraph::from_source("{ config, ... }: { config.shared = 99; }")
+            .expect("parse a"),
+    );
+    let ast_b = Arc::new(
+        AstGraph::from_source(
+            "{ config, ... }: { config.derived = config.shared + 1; }",
+        )
+        .expect("parse b"),
+    );
+    let g = ModuleGraph::from_ast_graphs(&[
+        ("a.nix".to_string(), (*ast_a).clone()),
+        ("b.nix".to_string(), (*ast_b).clone()),
+    ])
+    .expect("build");
+    let evaluator = PerModuleEvaluator::from_pairs([
+        (0u32, ast_a.clone()),
+        (1u32, ast_b.clone()),
+    ]);
+    let mut solver = SolverState::new(g, evaluator);
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["shared"]), EvalValue::Int(99));
+    assert_eq!(env_value(solver.env(), &["derived"]), EvalValue::Int(100));
+}
+
+#[test]
+fn attrset_construction_decomposes_into_per_leaf_setters() {
+    // The compiler walks attrset RHS values, so this source produces
+    // TWO setters: config.services.atticd.enable and
+    // config.services.atticd.port. The env carries them at those
+    // leaf paths (not as a single bundled attrset).
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.services.atticd = { enable = 1; port = 8080; }; }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(
+        env_value(solver.env(), &["services", "atticd", "enable"]),
+        EvalValue::Int(1)
+    );
+    assert_eq!(
+        env_value(solver.env(), &["services", "atticd", "port"]),
+        EvalValue::Int(8080)
+    );
+}

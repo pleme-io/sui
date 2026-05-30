@@ -53,7 +53,10 @@
 //! visible to operators.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
+use crate::ast_evaluator::{eval_node, EvalEnv, EvalValue};
+use crate::ast_graph::AstGraph;
 use crate::module_graph::{ConfigSetter, ModuleGraph, ModuleId, SetterId};
 
 /// A canonical config path, e.g. `["services", "atticd", "enable"]`.
@@ -86,10 +89,23 @@ pub enum SolverError {
 /// bodies. Carried in the solver state so the dependency-tracking core
 /// can be exercised under stub evaluators in tests without dragging
 /// sui-eval into sui-spec.
+///
+/// **Today**: [`TreeWalkingEvaluator`] is the production implementation
+/// — a minimum-viable AST tree-walker over the setter's `body_ast_root`
+/// in its containing module's [`AstGraph`]. Handles literals,
+/// arithmetic, comparisons, if-then-else, attrset construction +
+/// select, list concat, and Select chains rooted at `config`. Returns
+/// [`EvalValue::Opaque`] for the long tail (Apply / Lambda / LetIn /
+/// With) — those are picked up by the future sui-eval bytecode VM
+/// integration that replaces this minimum-viable engine.
 pub trait BodyEvaluator {
     /// Evaluate the setter's body in the given environment and return
-    /// the resulting value as canonical bytes (rkyv-encoded for
-    /// content-addressing). Stubs return deterministic placeholders.
+    /// the resulting value as canonical bytes (JSON today; rkyv when
+    /// the typed value lattice is finalized).
+    ///
+    /// `gid` identifies the setter's containing module so multi-module
+    /// evaluators (`PerModuleEvaluator`) route the body to the right
+    /// `AstGraph`. Single-module evaluators ignore it.
     ///
     /// # Errors
     ///
@@ -98,9 +114,143 @@ pub trait BodyEvaluator {
     /// [`SolverError::BodyEval`].
     fn evaluate(
         &self,
+        gid: GlobalSetterId,
         setter: &ConfigSetter,
         env_snapshot: &EnvSnapshot,
     ) -> Result<Vec<u8>, String>;
+}
+
+/// Production [`BodyEvaluator`] backed by [`crate::ast_evaluator`] —
+/// the minimum-viable tree-walker over the typed [`AstGraph`].
+///
+/// One evaluator per module (the AST graph owns its node table, so the
+/// evaluator needs the matching graph to look up `body_ast_root`).
+/// The solver's [`SolverState::new`] takes a single evaluator; for
+/// multi-module setups (the common case), wrap a slice of per-module
+/// evaluators in a [`PerModuleEvaluator`] (helper below).
+///
+/// Setter bodies that touch unsupported AST kinds (function calls,
+/// closures) bubble up as `Opaque` from the tree walker, which the
+/// evaluator surfaces as the literal JSON string `"<opaque:Apply>"` —
+/// the eventual sui-eval integration recognizes the sentinel and
+/// recomputes the body through the real VM.
+pub struct TreeWalkingEvaluator {
+    graph: Arc<AstGraph>,
+}
+
+impl TreeWalkingEvaluator {
+    /// Build an evaluator that resolves every setter body via `graph`.
+    /// One evaluator per module's AST.
+    #[must_use]
+    pub fn new(graph: Arc<AstGraph>) -> Self {
+        Self { graph }
+    }
+}
+
+impl BodyEvaluator for TreeWalkingEvaluator {
+    fn evaluate(
+        &self,
+        _gid: GlobalSetterId,
+        setter: &ConfigSetter,
+        env_snapshot: &EnvSnapshot,
+    ) -> Result<Vec<u8>, String> {
+        let env = env_snapshot_to_eval_env(env_snapshot);
+        let value = eval_node(&self.graph, setter.body_ast_root, &env)
+            .map_err(|e| format!("ast eval: {e}"))?;
+        serde_json::to_vec(&value)
+            .map_err(|e| format!("value→bytes: {e}"))
+    }
+}
+
+/// Multi-module evaluator that routes each setter to the AstGraph of
+/// its containing module. Used in tests + by callers that build a
+/// ModuleGraph from multiple AstGraphs.
+pub struct PerModuleEvaluator {
+    /// Module-id → AstGraph for that module. The solver passes setters
+    /// with `body_ast_root` indexing into the correct one via the
+    /// setter's containing module id.
+    pub graphs: BTreeMap<ModuleId, Arc<AstGraph>>,
+}
+
+impl PerModuleEvaluator {
+    /// Build from a `(module_id, graph)` iterator.
+    #[must_use]
+    pub fn from_pairs<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = (ModuleId, Arc<AstGraph>)>,
+    {
+        Self {
+            graphs: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl BodyEvaluator for PerModuleEvaluator {
+    fn evaluate(
+        &self,
+        gid: GlobalSetterId,
+        setter: &ConfigSetter,
+        env_snapshot: &EnvSnapshot,
+    ) -> Result<Vec<u8>, String> {
+        let graph = self.graphs.get(&gid.module).ok_or_else(|| {
+            format!(
+                "no AstGraph registered for module id {} (setter writing {:?})",
+                gid.module, setter.assigns_path
+            )
+        })?;
+        let env = env_snapshot_to_eval_env(env_snapshot);
+        let value = eval_node(graph, setter.body_ast_root, &env)
+            .map_err(|e| format!("ast eval: {e}"))?;
+        serde_json::to_vec(&value).map_err(|e| format!("value→bytes: {e}"))
+    }
+}
+
+/// Project [`EnvSnapshot`] into an [`EvalEnv`] with a single
+/// `config` binding (an AttrSet built from every path-bytes entry).
+/// The tree walker then resolves `config.x.y.z` selects via this
+/// AttrSet.
+fn env_snapshot_to_eval_env(snapshot: &EnvSnapshot) -> EvalEnv {
+    let mut root = BTreeMap::<String, EvalValue>::new();
+    for (path, bytes) in &snapshot.config {
+        // Try to deserialize the stored bytes back to an EvalValue.
+        // Bytes were written via `serde_json::to_vec(&EvalValue)` by
+        // a prior `TreeWalkingEvaluator::evaluate` call. Going through
+        // `from_str` over an owned String forces full-ownership on
+        // the deserialized value (no borrowed lifetimes from `bytes`).
+        let value: EvalValue = match std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|s| serde_json::from_str(s).ok())
+        {
+            Some(v) => v,
+            None => EvalValue::Str(
+                String::from_utf8(bytes.clone()).unwrap_or_default(),
+            ),
+        };
+        insert_path(&mut root, path, value);
+    }
+    EvalEnv::new().with_binding("config", EvalValue::AttrSet(root))
+}
+
+fn insert_path(
+    out: &mut BTreeMap<String, EvalValue>,
+    path: &[String],
+    value: EvalValue,
+) {
+    if path.is_empty() {
+        return;
+    }
+    if path.len() == 1 {
+        out.insert(path[0].clone(), value);
+        return;
+    }
+    let head = &path[0];
+    let tail = &path[1..];
+    let entry = out
+        .entry(head.clone())
+        .or_insert_with(|| EvalValue::AttrSet(BTreeMap::new()));
+    if let EvalValue::AttrSet(inner) = entry {
+        insert_path(inner, tail, value);
+    }
 }
 
 /// A read-only snapshot of the current config attrset, projected as
@@ -318,7 +468,7 @@ impl<E: BodyEvaluator> SolverState<E> {
         let setter = self.get_setter(gid).clone();
         let bytes = self
             .evaluator
-            .evaluate(&setter, &self.env)
+            .evaluate(gid, &setter, &self.env)
             .map_err(|reason| SolverError::BodyEval { id: gid, reason })?;
         self.env.config.insert(setter.assigns_path.clone(), bytes);
         self.fired.insert(gid);
@@ -437,6 +587,7 @@ mod tests {
     impl BodyEvaluator for PathBytesEvaluator {
         fn evaluate(
             &self,
+            _gid: GlobalSetterId,
             setter: &ConfigSetter,
             _env: &EnvSnapshot,
         ) -> Result<Vec<u8>, String> {

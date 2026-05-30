@@ -85,8 +85,15 @@
   :name "module-solver"
   :category EvalEngine
   :status InProgress
-  :owns "sui-spec::module_solver"
-  :notes "Slice-keyed re-firing fixed-point solver. Topological order via Kahn's, dirty-path propagation, BodyEvaluator trait seam for the eval engine. Today: dependency math + scheduling — proven against stub evaluators (9 unit tests including slice-keyed re-firing semantics + cold-start + warm-run + cycle detection). Queued: real bytecode-VM-driven BodyEvaluator, Rayon-per-SCC parallelism, defunctionalization transform, NbE structural-equality canonicalization for cache keys.")
+  :owns "sui-spec::module_solver + sui-spec::ast_evaluator"
+  :notes "Slice-keyed re-firing fixed-point solver with TreeWalkingEvaluator (minimum-viable AST walker). End-to-end: AstGraph → module compiler → solver → ast_evaluator → typed EvalValue → env. 9 e2e tests verify integer/string/list/arithmetic literals, dep chains (a→b→c propagating math), if-then-else dispatch on env values, multi-module routing via PerModuleEvaluator, attrset decomposition. Queued: sui-eval bytecode-VM BodyEvaluator (for Apply/Lambda/LetIn/With surface — Opaque sentinel today), Rayon-per-SCC parallelism, defunctionalization transform, NbE structural-equality canonicalization for cache keys.")
+
+(defnix-replacement-surface
+  :name "ast-evaluator"
+  :category EvalEngine
+  :status InProgress
+  :owns "sui-spec::ast_evaluator"
+  :notes "Minimum-viable AstGraph tree-walker. Handles literals, Ident env lookup, Select (config.x.y), HasAttr, BinOp (==, !=, +, -, *, /, <, <=, >, >=, &&, ||, ++, //), UnaryOp, List, AttrSet, IfThenElse. Returns typed EvalValue (Int/Float/Bool/Null/Str/Path/List/AttrSet) with Opaque sentinel for Apply/Lambda/LetIn/With. 18 unit tests. Queued: full sui-eval bytecode-VM integration replaces this minimum-viable engine for the Apply/Lambda/LetIn/With surface.")
 
 (defnix-replacement-surface
   :name "derivation-graph"
