@@ -72,7 +72,14 @@
   :category SubstrateL1
   :status InProgress
   :owns "sui-spec::module_graph"
-  :notes "Typed module-system IR. Today: types + builder skeleton. Queued: worker/wrapper synthesis, defunctionalization, slice-keyed re-firing, NbE execution.")
+  :notes "Typed module-system IR. Today: types + builder + compiler (sui-spec::module_compiler extracts options/setters/imports/slices from real NixOS modules — verified against 5 pleme-io modules, 100 options + 153 setters extracted in <10ms). Queued: worker/wrapper synthesis, defunctionalization, slice-keyed re-firing, NbE execution.")
+
+(defnix-replacement-surface
+  :name "module-compiler"
+  :category SubstrateL1
+  :status InProgress
+  :owns "sui-spec::module_compiler"
+  :notes "AST→ModuleNode lowering pass. Recognizes options.x = mkOption {...}, config.x = value, config = mkMerge [...], mkIf cond value, mkForce/mkVMOverride priority overrides, imports = [...]. Slice analysis collects every config.* read inside setter bodies. Today: pattern recognizer + standalone slice walker. Queued: full slice attribution into ConfigSetter at emit time, plus import-target resolution.")
 
 (defnix-replacement-surface
   :name "derivation-graph"

@@ -226,6 +226,11 @@ pub enum ModuleGraphError {
     Archive(String),
     #[error("module {label:?} declared an import path that didn't resolve")]
     UnresolvedImport { label: String },
+    #[error("module compiler failed: {source}")]
+    Compiler {
+        #[from]
+        source: crate::module_compiler::ModuleCompilerError,
+    },
 }
 
 impl ModuleGraph {
@@ -261,33 +266,29 @@ impl ModuleGraph {
     /// Build a `ModuleGraph` from a slice of `(label, AstGraph)` pairs.
     /// The first pair becomes the root.
     ///
-    /// Today this is a **scaffold** builder: it discovers modules by
-    /// label, hashes each one's AST, and emits a `ModuleNode` for each
-    /// — but the option-decl / setter / slice extraction is left to
-    /// the next ship (those need an AST visitor that recognizes the
-    /// `options.foo = mkOption {...}` and `config = mkMerge [...]`
-    /// patterns).
-    ///
-    /// The IR shape is final; the compiler that fills the IR is the
-    /// next focused piece of work.
+    /// Each module is run through [`crate::module_compiler::compile_module`]
+    /// to extract its typed surface (option declarations, config setters
+    /// with slice metadata, import edges). Caller-order is preserved —
+    /// full BFS-from-root topological discovery + import-target
+    /// resolution lands when import paths get typed in a follow-up
+    /// ship (today, [`ImportEdge::target`] is the `u32::MAX` sentinel
+    /// for unresolved edges).
     ///
     /// # Errors
     ///
-    /// [`ModuleGraphError::Archive`] on rkyv failure.
+    /// - [`ModuleGraphError::Archive`] on rkyv failure during
+    ///   subsequent `archive_and_hash` calls.
+    /// - Module-compiler errors are surfaced as `ModuleGraphError`
+    ///   variants — a module with an unrecognizable root shape causes
+    ///   the whole build to fail rather than silently emit a partial
+    ///   graph (operators should see the offending file).
     pub fn from_ast_graphs(modules: &[(String, AstGraph)]) -> Result<Self, ModuleGraphError> {
         let mut g = Self::new();
-        // BFS-style discovery would resolve `imports`. For the scaffold
-        // we accept the caller's order verbatim.
         let mut label_to_id: BTreeMap<String, ModuleId> = BTreeMap::new();
         for (label, ast) in modules {
-            let node = ModuleNode {
-                id: 0, // assigned by push_module
-                label: label.clone(),
-                ast_graph_hash: ast.canonical_hash.bytes,
-                option_decls: Vec::new(),
-                setters: Vec::new(),
-                imports: Vec::new(),
-            };
+            let next_id = g.modules.len() as ModuleId;
+            let node = crate::module_compiler::compile_module(label, ast, next_id)
+                .map_err(|e| ModuleGraphError::Compiler { source: e })?;
             let id = g.push_module(node);
             label_to_id.insert(label.clone(), id);
         }
