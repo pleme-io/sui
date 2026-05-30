@@ -8,3 +8,4 @@ result-*
 generated/
 .worktrees/
 .claude/worktrees/
+Cargo.build-spec.json
