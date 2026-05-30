@@ -1,0 +1,36 @@
+[package]
+name = "sui-protocol"
+description = "Single source of truth for every wire type in the sui system: rkyv-over-UDS for daemon ↔ local CLI (zero-copy hot path), tonic + protobuf for cross-host (REAPI-shaped for fleet work-stealing, tvix-castore-shaped for substituter), async-nats for fleet pub/sub. Drift between client and daemon is a compile error."
+keywords = ["sui", "protocol", "ipc", "rkyv", "tonic"]
+categories = ["network-programming", "encoding"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# rkyv 0.8 — local UDS wire format. Zero-copy reads via mmap-and-cast.
+# Wire frozen on the 0.8 series; schema evolution via explicit
+# `enum WireFrame { V1(…), V2(…), … }` envelopes (`protoss` is not
+# production-ready; don't bet on it).
+rkyv.workspace = true
+bytecheck.workspace = true
+
+# BLAKE3 — content addressing for blob references inside the protocol.
+blake3.workspace = true
+
+# Typed errors.
+thiserror.workspace = true
+
+# L1 substrate — protocol carries GraphHash references and GraphKind
+# discriminators across the wire. Keeping the dep here means a future
+# refactor of one of those types lights up every wire site at compile.
+sui-graph-store.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+pretty_assertions.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

@@ -22,10 +22,15 @@ url = "2"
 regex.workspace = true
 
 # L1 substrate — rkyv archives + BLAKE3 content addressing for the
-# typed graph forms (lockfile_graph today; ast_graph + module_graph next).
+# typed graph forms (lockfile_graph + ast_graph today; module_graph next).
 rkyv.workspace = true
 bytecheck.workspace = true
 blake3.workspace = true
+
+# rnix typed AST + rowan CST — used by the ast_graph bridge that lowers
+# parsed Nix expressions into the content-addressed L1 form.
+rnix.workspace = true
+rowan.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -20,11 +20,30 @@
 use std::fmt;
 use std::str::FromStr;
 
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+
 use crate::error::Error;
 
 /// 32-byte BLAKE3 content hash. The canonical identity of every graph
 /// in the store.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// Carries rkyv `Archive` derives so wire types in `sui-protocol`
+/// (and any future archived form referring to a stored blob) can embed
+/// it cheaply. The archived form is a fixed-32-byte fixed-layout, so
+/// zero-copy reads of a `GraphHash` are a literal pointer offset.
+#[derive(
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
 pub struct GraphHash(pub [u8; 32]);
 
 impl GraphHash {

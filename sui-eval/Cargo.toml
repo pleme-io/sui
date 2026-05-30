@@ -15,6 +15,11 @@ sui-compat.workspace = true
 sui-intern.workspace = true
 sui-store.workspace = true
 sui-spec.workspace = true
+# L1 substrate — optional cross-process / fleet-shared eval-cache tier.
+# Existing in-memory + JSON-file tiers are preserved; GraphStore tier
+# stacks on top, selected via `EvalCache::with_graph_store` or
+# `with_all_tiers`. See `eval_cache.rs` for the tier-ordering contract.
+sui-graph-store.workspace = true
 rnix.workspace = true
 rowan.workspace = true
 tokio.workspace = true

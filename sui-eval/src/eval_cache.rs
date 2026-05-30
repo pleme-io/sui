@@ -3,10 +3,28 @@
 //! Maps `(source_hash, lock_hash)` pairs to previously evaluated results,
 //! skipping redundant evaluation when inputs haven't changed.
 //!
-//! The cache operates in two tiers:
-//!   1. **In-memory** (`HashMap`) for the current session — instant lookups.
-//!   2. **Persistent** (JSON file at `~/.cache/sui/eval-cache.json`) — survives
-//!      across invocations.
+//! ## Tier model (additive — every tier is optional, all may stack)
+//!
+//! 1. **In-memory** (`HashMap`) for the current session — instant
+//!    lookups. Always present.
+//! 2. **JSON file** at `~/.cache/sui/eval-cache.json` — survives
+//!    across invocations. Optional; enabled by `with_persistent`.
+//! 3. **GraphStore** (`sui-graph-store`, redb + rkyv on a ZFS-friendly
+//!    blob layout) — fleet-shared / cross-process tier. Optional;
+//!    enabled by `with_graph_store`. When set, the eval cache's
+//!    entries become first-class blobs in `GraphKind::EvalCacheEntry`,
+//!    which means a peer with the same GraphStore root (e.g. via
+//!    `zfs send | zfs recv` or a future substituter push) gets every
+//!    cached eval for free. Lookup-order on `get`: memory → graph_store
+//!    (warm on disk via mmap, hits sub-200 µs); on a hit from the
+//!    graph_store tier the result is promoted into memory so the next
+//!    same-process lookup is sub-microsecond.
+//!
+//! All three tiers honor the same `enabled` flag (set by the CLI flag
+//! that disables caching entirely) and the same key shape (`CacheKey`).
+//! Adding a tier never removes an older one — `with_all_tiers` enables
+//! all three at once; individual `with_*` constructors stack them
+//! incrementally.
 //!
 //! Only JSON-serializable values are cached (no lambdas, no thunks).
 
@@ -14,6 +32,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use sui_graph_store::{GraphHash, GraphKind, GraphStore};
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -50,6 +69,10 @@ pub struct EvalCache {
     memory: HashMap<CacheKey, CachedValue>,
     /// Path to the persistent cache file (JSON).
     db_path: Option<PathBuf>,
+    /// Optional GraphStore tier — fleet-shared / cross-process cache.
+    /// When set, entries are mirrored as `GraphKind::EvalCacheEntry`
+    /// blobs and a `get` miss in memory falls through here next.
+    graph_store: Option<GraphStore>,
     /// Whether this cache is enabled (can be disabled via CLI flag).
     enabled: bool,
 }
@@ -60,6 +83,7 @@ impl EvalCache {
         Self {
             memory: HashMap::new(),
             db_path: None,
+            graph_store: None,
             enabled: true,
         }
     }
@@ -71,6 +95,7 @@ impl EvalCache {
         Self {
             memory,
             db_path: Some(db_path),
+            graph_store: None,
             enabled: true,
         }
     }
@@ -88,8 +113,28 @@ impl EvalCache {
         Self {
             memory: HashMap::new(),
             db_path: None,
+            graph_store: None,
             enabled: false,
         }
+    }
+
+    /// Stack a `GraphStore` tier on this cache. Existing tiers
+    /// (in-memory + optional JSON file) are preserved verbatim. Calls
+    /// this builder-style: `EvalCache::default_persistent().with_graph_store(gs)`.
+    #[must_use]
+    pub fn with_graph_store(mut self, store: GraphStore) -> Self {
+        self.graph_store = Some(store);
+        self
+    }
+
+    /// Construct an `EvalCache` with all three tiers enabled.
+    ///
+    /// * In-memory — always.
+    /// * JSON file — at `db_path` (also loaded on construction).
+    /// * GraphStore — using `store`.
+    #[must_use]
+    pub fn with_all_tiers(db_path: PathBuf, store: GraphStore) -> Self {
+        Self::with_persistent(db_path).with_graph_store(store)
     }
 
     /// Whether the cache is enabled.
@@ -97,23 +142,63 @@ impl EvalCache {
         self.enabled
     }
 
-    /// Look up a cached result.
-    pub fn get(&self, key: &CacheKey) -> Option<&CachedValue> {
+    /// True iff the GraphStore tier is wired.
+    pub fn has_graph_store(&self) -> bool {
+        self.graph_store.is_some()
+    }
+
+    /// Look up a cached result. Tier order: memory → graph_store.
+    /// **Behavior contract**: a hit from the graph_store tier is
+    /// promoted into the memory tier so the next same-process lookup
+    /// is sub-microsecond. The promotion is the only mutation `get`
+    /// performs.
+    pub fn get(&mut self, key: &CacheKey) -> Option<&CachedValue> {
         if !self.enabled {
             return None;
         }
-        self.memory.get(key)
+        // Tier 1: in-memory (sub-microsecond).
+        if self.memory.contains_key(key) {
+            return self.memory.get(key);
+        }
+        // Tier 3: GraphStore (sub-200 µs warm via mmap).
+        if let Some(store) = &self.graph_store {
+            let gh = graph_hash_for_key(key);
+            if let Ok(blob) = store.get(GraphKind::EvalCacheEntry, gh) {
+                if let Ok(value) = serde_json::from_slice::<CachedValue>(&blob) {
+                    self.memory.insert(key.clone(), value);
+                    return self.memory.get(key);
+                }
+            }
+        }
+        None
     }
 
-    /// Store a result in the cache.
+    /// Store a result in the cache. Writes to memory unconditionally
+    /// and to every wired persistence tier (JSON + GraphStore)
+    /// best-effort. Tier writes never fail loudly — eval-cache puts
+    /// are advisory; a failed write doesn't change the correctness of
+    /// the eval, just the chance of a future hit.
     pub fn put(&mut self, key: CacheKey, value: CachedValue) {
         if !self.enabled {
             return;
         }
-        self.memory.insert(key, value);
-        // Best-effort persist to disk.
+        // Tier 1: memory (mandatory).
+        self.memory.insert(key.clone(), value.clone());
+        // Tier 2: JSON file (legacy persistent path).
         if let Some(ref path) = self.db_path {
             let _ = Self::save_to_disk(path, &self.memory);
+        }
+        // Tier 3: GraphStore (fleet-shared). Keyed by a deterministic
+        // BLAKE3 of the cache key (NOT by content hash) — the eval
+        // cache wants query-derived lookup, so this uses
+        // `put_unchecked`. Domain-separated with the `"evalcache::v1::"`
+        // prefix to keep query-derived hashes disjoint from CAS hashes
+        // in the same GraphKind.
+        if let Some(store) = &self.graph_store {
+            if let Ok(blob) = serde_json::to_vec(&value) {
+                let lookup_hash = graph_hash_for_key(&key);
+                let _ = store.put_unchecked(GraphKind::EvalCacheEntry, lookup_hash, &blob);
+            }
         }
     }
 
@@ -188,6 +273,24 @@ impl Default for EvalCache {
 
 // ── Helpers ────────────────────────────────────────────────────
 
+/// Derive a deterministic `GraphHash` from an eval-cache `CacheKey`,
+/// domain-separated so it can't collide with content-addressed entries
+/// stored under the same `GraphKind`. The serialization is canonical
+/// because we control both fields: `(source_hash, lock_hash)` are
+/// already SHA-256 hex digests with stable ordering.
+fn graph_hash_for_key(key: &CacheKey) -> GraphHash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"evalcache::v1::");
+    hasher.update(key.source_hash.as_bytes());
+    hasher.update(b"::");
+    if let Some(lock) = &key.lock_hash {
+        hasher.update(lock.as_bytes());
+    } else {
+        hasher.update(b"<no-lock>");
+    }
+    GraphHash(hasher.finalize().into())
+}
+
 /// SHA-256 hex digest of a byte slice.
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -253,7 +356,7 @@ mod tests {
 
     #[test]
     fn cache_miss_returns_none() {
-        let cache = EvalCache::new();
+        let mut cache = EvalCache::new();
         let key = CacheKey {
             source_hash: "nonexistent".to_string(),
             lock_hash: None,
@@ -378,7 +481,7 @@ mod tests {
 
         // Read back
         {
-            let c = EvalCache::with_persistent(db.clone());
+            let mut c = EvalCache::with_persistent(db.clone());
             let key = CacheKey {
                 source_hash: "h1".to_string(),
                 lock_hash: None,
@@ -389,6 +492,143 @@ mod tests {
 
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── GraphStore tier — additive integration tests ───────────────
+
+    fn temp_graph_store() -> (tempfile::TempDir, GraphStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GraphStore::open(dir.path().to_path_buf()).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn graph_store_tier_round_trips_a_value() {
+        let (_dir, store) = temp_graph_store();
+        let mut cache = EvalCache::new().with_graph_store(store);
+        assert!(cache.has_graph_store());
+
+        let key = CacheKey {
+            source_hash: sha256_hex(b"some source"),
+            lock_hash: Some(sha256_hex(b"some lock")),
+        };
+        let value = CachedValue {
+            value_json: r#"{"answer":42}"#.to_string(),
+            timestamp: 1_700_000_000,
+        };
+
+        cache.put(key.clone(), value.clone());
+        let got = cache.get(&key).expect("memory tier hits");
+        assert_eq!(got.value_json, value.value_json);
+    }
+
+    #[test]
+    fn graph_store_tier_survives_fresh_cache_instance() {
+        let (_dir, store) = temp_graph_store();
+        let key = CacheKey {
+            source_hash: sha256_hex(b"persist me"),
+            lock_hash: None,
+        };
+        let value = CachedValue {
+            value_json: r#""persisted""#.to_string(),
+            timestamp: 42,
+        };
+
+        // First cache writes; drops.
+        {
+            let mut c = EvalCache::new().with_graph_store(store.clone());
+            c.put(key.clone(), value.clone());
+        }
+
+        // Fresh cache, same GraphStore — must promote on first read.
+        let mut c2 = EvalCache::new().with_graph_store(store);
+        let got = c2.get(&key).expect("graph_store tier hits");
+        assert_eq!(got.value_json, value.value_json);
+        // Promotion: next lookup must hit memory (no GraphStore round-trip).
+        let again = c2.get(&key).expect("memory promotion");
+        assert_eq!(again.value_json, value.value_json);
+    }
+
+    #[test]
+    fn graph_store_tier_isolates_by_cache_key() {
+        let (_dir, store) = temp_graph_store();
+        let mut cache = EvalCache::new().with_graph_store(store);
+
+        let k_a = CacheKey {
+            source_hash: sha256_hex(b"file a"),
+            lock_hash: None,
+        };
+        let k_b = CacheKey {
+            source_hash: sha256_hex(b"file b"),
+            lock_hash: None,
+        };
+
+        cache.put(
+            k_a.clone(),
+            CachedValue {
+                value_json: "A".to_string(),
+                timestamp: 1,
+            },
+        );
+
+        // Second key must miss — domain-separated lookup hash must
+        // not collide.
+        assert!(cache.get(&k_b).is_none());
+        assert!(cache.get(&k_a).is_some());
+    }
+
+    #[test]
+    fn graph_store_tier_disabled_when_cache_disabled() {
+        let (_dir, store) = temp_graph_store();
+        let mut cache = EvalCache::disabled().with_graph_store(store);
+        let key = CacheKey {
+            source_hash: "x".to_string(),
+            lock_hash: None,
+        };
+        cache.put(
+            key.clone(),
+            CachedValue {
+                value_json: "y".to_string(),
+                timestamp: 0,
+            },
+        );
+        assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn all_three_tiers_stack_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("eval-cache.json");
+        let (_gdir, store) = temp_graph_store();
+
+        let key = CacheKey {
+            source_hash: sha256_hex(b"triple-tier source"),
+            lock_hash: None,
+        };
+        let value = CachedValue {
+            value_json: r#""triple-tier""#.to_string(),
+            timestamp: 99,
+        };
+
+        // First cache writes through all three tiers.
+        {
+            let mut c = EvalCache::with_all_tiers(db_path.clone(), store.clone());
+            c.put(key.clone(), value.clone());
+        }
+
+        // Fresh cache pointed at the same JSON file (no GraphStore)
+        // must still hit (Tier 2 — JSON persistence preserved).
+        {
+            let mut c = EvalCache::with_persistent(db_path.clone());
+            assert!(c.get(&key).is_some(), "tier 2 (JSON) must still serve");
+        }
+
+        // Fresh cache pointed at the GraphStore only must also hit
+        // (Tier 3 — fleet-shared persistence preserved).
+        {
+            let mut c = EvalCache::new().with_graph_store(store);
+            assert!(c.get(&key).is_some(), "tier 3 (GraphStore) must still serve");
+        }
     }
 
     #[test]

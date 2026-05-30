@@ -184,6 +184,55 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Write a blob under a **query-derived lookup key** (not the
+    /// BLAKE3 of the bytes). Skips the content-hash validation that
+    /// [`Self::put`] enforces.
+    ///
+    /// Use only when the caller has a deterministic mapping from a
+    /// non-content query (e.g. an eval-cache `(source_hash, lock_hash)`
+    /// tuple) to a lookup hash, and the stored bytes are themselves
+    /// not the BLAKE3 preimage of that hash. The lookup-hash space
+    /// shares the same redb table as content-addressed entries, so
+    /// callers MUST ensure their query-derived hashes can't collide
+    /// with arbitrary content (the usual trick: domain-separate by
+    /// hashing `"my-tier::v1::" + serialized_query`).
+    ///
+    /// Most callers should prefer [`Self::put`].
+    pub fn put_unchecked(
+        &self,
+        kind: GraphKind,
+        lookup_hash: GraphHash,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let final_path = self.layout.blob_path(kind, lookup_hash);
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+
+        let tmp_path = final_path.with_extension("rkyv.tmp");
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .map_err(|e| Error::io(&tmp_path, e))?;
+            f.write_all(bytes).map_err(|e| Error::io(&tmp_path, e))?;
+            f.sync_all().map_err(|e| Error::io(&tmp_path, e))?;
+        }
+        fs::rename(&tmp_path, &final_path).map_err(|e| Error::io(&final_path, e))?;
+        self.upsert_index(kind, lookup_hash, bytes.len() as u64)?;
+
+        debug!(
+            target: "sui-graph-store",
+            kind = %kind,
+            lookup = %lookup_hash,
+            len = bytes.len(),
+            "stored blob via put_unchecked"
+        );
+        Ok(())
+    }
+
     fn upsert_index(&self, kind: GraphKind, hash: GraphHash, blob_len: u64) -> Result<()> {
         let entry = IndexEntry {
             blob_len,

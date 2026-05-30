@@ -28,6 +28,13 @@ members = [
     # the SeaORM/SQLite path for lockfile / AST / module-graph
     # persistence with mmap-and-cast zero-copy reads.
     "sui-graph-store",
+    # L7/L8 substrate — single source of truth for wire types across
+    # every IPC link in the system: daemon ↔ local CLI (rkyv-over-UDS,
+    # zero-copy), daemon ↔ remote-daemon (tonic + REAPI-shaped),
+    # daemon ↔ remote-atticd (tonic + tvix-castore-shaped),
+    # fleet pub/sub (NATS). Drift between client and daemon is a
+    # compile error, not a runtime mystery.
+    "sui-protocol",
 ]
 resolver = "3"
 
@@ -52,6 +59,7 @@ sui-orchestrate = { path = "sui-orchestrate", version = "0.1.10" }
 sui-cache-eval = { path = "sui-cache-eval", version = "0.1.10" }
 sui-spec = { path = "sui-spec", version = "0.1.10" }
 sui-graph-store = { path = "sui-graph-store", version = "0.1.10" }
+sui-protocol = { path = "sui-protocol", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.

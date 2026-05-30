@@ -6171,6 +6171,7 @@ dependencies = [
  "stacker",
  "sui-bytecode",
  "sui-compat",
+ "sui-graph-store",
  "sui-intern",
  "sui-spec",
  "sui-store",
@@ -6240,6 +6241,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-protocol"
+version = "0.1.10"
+dependencies = [
+ "blake3",
+ "bytecheck 0.8.2",
+ "pretty_assertions",
+ "proptest",
+ "rkyv 0.8.16",
+ "sui-graph-store",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sui-spec"
 version = "0.1.10"
 dependencies = [
@@ -6251,6 +6265,8 @@ dependencies = [
  "proptest",
  "regex",
  "rkyv 0.8.16",
+ "rnix",
+ "rowan",
  "serde",
  "serde_json",
  "sha2",
