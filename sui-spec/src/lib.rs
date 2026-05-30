@@ -81,6 +81,7 @@ pub mod lock_file;
 pub mod lockfile_graph;
 pub mod module_compiler;
 pub mod module_graph;
+pub mod module_solver;
 pub mod module_system;
 pub mod nix_replacement_coverage;
 pub mod nar;

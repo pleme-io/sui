@@ -79,7 +79,14 @@
   :category SubstrateL1
   :status InProgress
   :owns "sui-spec::module_compiler"
-  :notes "AST→ModuleNode lowering pass. Recognizes options.x = mkOption {...}, config.x = value, config = mkMerge [...], mkIf cond value, mkForce/mkVMOverride priority overrides, imports = [...]. Slice analysis collects every config.* read inside setter bodies. Today: pattern recognizer + standalone slice walker. Queued: full slice attribution into ConfigSetter at emit time, plus import-target resolution.")
+  :notes "AST→ModuleNode lowering pass. Recognizes options.x = mkOption {...}, config.x = value, config = mkMerge [...], mkIf cond value, mkForce/mkVMOverride priority overrides, imports = [...]. Slice analysis emits config.* reads (body + mkIf condition) directly into ConfigSetter.slice at emit time. Queued: import-target resolution + defunctionalization of higher-order setters.")
+
+(defnix-replacement-surface
+  :name "module-solver"
+  :category EvalEngine
+  :status InProgress
+  :owns "sui-spec::module_solver"
+  :notes "Slice-keyed re-firing fixed-point solver. Topological order via Kahn's, dirty-path propagation, BodyEvaluator trait seam for the eval engine. Today: dependency math + scheduling — proven against stub evaluators (9 unit tests including slice-keyed re-firing semantics + cold-start + warm-run + cycle detection). Queued: real bytecode-VM-driven BodyEvaluator, Rayon-per-SCC parallelism, defunctionalization transform, NbE structural-equality canonicalization for cache keys.")
 
 (defnix-replacement-surface
   :name "derivation-graph"

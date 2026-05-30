@@ -356,7 +356,7 @@ fn harvest_config(
             }
             // Default: treat as a leaf assignment whose RHS is this
             // Apply expression.
-            emit_setter(node, path, value, condition, priority);
+            emit_setter(ast, node, path, value, condition, priority);
         }
         AstNodeKind::AttrSet { entries, .. } => {
             // Walk every child as a deeper path.
@@ -368,7 +368,7 @@ fn harvest_config(
         }
         _ => {
             // Leaf assignment.
-            emit_setter(node, path, value, condition, priority);
+            emit_setter(ast, node, path, value, condition, priority);
         }
     }
 }
@@ -389,6 +389,7 @@ fn split_mkif_args(
 }
 
 fn emit_setter(
+    ast: &AstGraph,
     node: &mut ModuleNode,
     path: &[String],
     body_ast_root: AstNodeId,
@@ -396,7 +397,17 @@ fn emit_setter(
     priority: u32,
 ) {
     let id = node.setters.len() as SetterId;
-    let slice = collect_slice_via_walk(node, body_ast_root);
+    // Slice = every config.* path read inside the body (the worker/
+    // wrapper-split's input projection). Plus every config.* path
+    // read inside the mkIf condition, because the condition is part of
+    // what determines whether the setter fires.
+    let mut slice = collect_config_read_slice(ast, body_ast_root);
+    if let Some(cond_id) = condition_ast_root {
+        let cond_slice = collect_config_read_slice(ast, cond_id);
+        slice.extend(cond_slice);
+        slice.sort();
+        slice.dedup();
+    }
     node.setters.push(ConfigSetter {
         id,
         assigns_path: path.to_vec(),
@@ -405,29 +416,6 @@ fn emit_setter(
         condition_ast_root,
         priority,
     });
-}
-
-/// Slice analysis — collect every `Select(config, .a.b.c)` reference
-/// that appears under `body_ast_root`. The slice is the worker/wrapper
-/// split's "input projection": the fixed-point solver re-fires this
-/// setter only when one of these paths changes.
-///
-/// This is the read-set, not the assigns-set. A leaf with no reads
-/// (e.g. `config.foo = "rio";`) returns an empty slice — the setter
-/// is fired exactly once unless its own source hash changes.
-///
-/// The walk is structural: it stops at `with` / `let` boundaries
-/// (re-binding might mask `config`) and reports only the paths that
-/// are syntactically rooted at the identifier `config`. False
-/// negatives possible (sophisticated bindings like
-/// `let cfg = config.services.foo; in ...`) — the conservative path is
-/// captured today, the precise analysis lands with the eval-engine
-/// integration.
-fn collect_slice_via_walk(_node: &ModuleNode, body_ast_root: AstNodeId) -> Vec<Vec<String>> {
-    // Stand-in: real walker below. We park the implementation here
-    // (taking a `&AstGraph` requires plumbing into emit_setter).
-    let _ = body_ast_root;
-    Vec::new()
 }
 
 /// Public slice analysis entry — caller passes the AST + a body node id;
@@ -699,12 +687,44 @@ mod tests {
         );
         let m = compile_module("slice.nix", &g, 0).unwrap();
         assert_eq!(m.setters.len(), 1);
-        let slice =
-            collect_config_read_slice(&g, m.setters[0].body_ast_root);
-        // The setter body reads config.networking.hostName.
+        // The slice should now be populated on the setter itself —
+        // no need to re-walk via the standalone helper.
         assert!(
-            slice.iter().any(|p| p == &vec!["networking", "hostName"]),
-            "expected slice to contain networking.hostName; got {slice:?}"
+            m.setters[0]
+                .slice
+                .iter()
+                .any(|p| p == &vec!["networking", "hostName"]),
+            "expected setter.slice to contain networking.hostName; got {:?}",
+            m.setters[0].slice
+        );
+        // The standalone walker remains useful and returns the same
+        // result (idempotent — both paths converge on the same set).
+        let walker_slice =
+            collect_config_read_slice(&g, m.setters[0].body_ast_root);
+        assert!(walker_slice
+            .iter()
+            .any(|p| p == &vec!["networking", "hostName"]));
+    }
+
+    #[test]
+    fn slice_includes_mkif_condition_reads() {
+        // The mkIf condition reads `config.services.atticd.enable`;
+        // even though the body is a constant, the slice must include
+        // the condition's reads so the solver fires when atticd's
+        // enable flag changes.
+        let g = ast(
+            "{ config, ... }: { config.boot.kernelParams = \
+             mkIf config.services.atticd.enable [ \"foo\" ]; }",
+        );
+        let m = compile_module("slice_cond.nix", &g, 0).unwrap();
+        assert_eq!(m.setters.len(), 1);
+        assert!(
+            m.setters[0]
+                .slice
+                .iter()
+                .any(|p| p == &vec!["services", "atticd", "enable"]),
+            "expected slice to include condition's reads; got {:?}",
+            m.setters[0].slice
         );
     }
 
