@@ -1,0 +1,24 @@
+[package]
+name = "sui-daemon-frame"
+description = "Async frame codec for the rkyv-over-UDS local protocol. Reads/writes `[magic 4B][len u32 LE][rkyv body]` over any tokio AsyncRead+AsyncWrite. Reusable by server, client, tests, future tools."
+keywords = ["sui", "codec", "rkyv", "tokio", "ipc"]
+categories = ["network-programming", "encoding", "asynchronous"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sui-protocol.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+rkyv.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+pretty_assertions.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

@@ -44,7 +44,7 @@ pub mod local;
 pub mod version;
 
 pub use local::{
-    Heartbeat, LocalError, LocalRequest, LocalResponse, RequestId, WireFrame,
-    FRAME_MAGIC,
+    ErrorCode, Heartbeat, LocalError, LocalRequest, LocalResponse, RequestId, StatsSnapshot,
+    WireFrame, FRAME_MAGIC,
 };
 pub use version::{NegotiatedVersion, VersionHandshake, MAX_LOCAL_PROTOCOL_VERSION, MIN_LOCAL_PROTOCOL_VERSION};

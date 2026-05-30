@@ -3475,6 +3475,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
+name = "lru"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+dependencies = [
+ "hashbrown 0.15.5",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6123,13 +6132,21 @@ name = "sui-daemon"
 version = "0.1.10"
 dependencies = [
  "async-trait",
+ "blake3",
+ "bytes",
  "libc",
+ "lru",
+ "pretty_assertions",
  "serde",
  "serde_yaml_ng",
  "shikumi",
  "sui-build",
  "sui-compat",
+ "sui-daemon-client",
+ "sui-daemon-frame",
  "sui-eval",
+ "sui-graph-store",
+ "sui-protocol",
  "sui-store",
  "tempfile",
  "thiserror 2.0.18",
@@ -6137,6 +6154,32 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tsunagu",
+]
+
+[[package]]
+name = "sui-daemon-client"
+version = "0.1.10"
+dependencies = [
+ "pretty_assertions",
+ "sui-daemon-frame",
+ "sui-graph-store",
+ "sui-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sui-daemon-frame"
+version = "0.1.10"
+dependencies = [
+ "pretty_assertions",
+ "rkyv 0.8.16",
+ "sui-protocol",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

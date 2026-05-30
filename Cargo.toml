@@ -35,6 +35,14 @@ members = [
     # fleet pub/sub (NATS). Drift between client and daemon is a
     # compile error, not a runtime mystery.
     "sui-protocol",
+    # L7 transport — async frame codec for the rkyv-over-UDS local
+    # protocol. Reads/writes `[magic 4B][len u32 LE][rkyv body]` over
+    # any tokio AsyncRead+AsyncWrite. Reusable by server, client, tests.
+    "sui-daemon-frame",
+    # L7 client — typed multiplexed client for the graph protocol.
+    # Wraps the frame codec + offers ping/get/put/stats. Reusable by
+    # sui CLI, tend, future ops tools.
+    "sui-daemon-client",
 ]
 resolver = "3"
 
@@ -60,6 +68,8 @@ sui-cache-eval = { path = "sui-cache-eval", version = "0.1.10" }
 sui-spec = { path = "sui-spec", version = "0.1.10" }
 sui-graph-store = { path = "sui-graph-store", version = "0.1.10" }
 sui-protocol = { path = "sui-protocol", version = "0.1.10" }
+sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.10" }
+sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
@@ -175,6 +185,14 @@ bytecheck = "0.8"
 # of the box — mandatory for Rayon worker fanout. bodil/im is
 # unmaintained; rpds is slower on the attrset-merge-heavy workload.
 imbl = "5"
+
+# Daemon hot cache — bounded LRU keyed by `GraphHash`. Used by
+# graph_server to keep N most-recently-touched blobs hot in RAM so
+# repeat lookups bypass the mmap path.
+lru = "0.12"
+
+# Cheap byte ownership for daemon ↔ codec ↔ store handoff.
+bytes = "1"
 
 # Testing
 proptest = "1"

@@ -14,6 +14,13 @@ sui-compat.workspace = true
 sui-store.workspace = true
 sui-build.workspace = true
 sui-eval.workspace = true
+# L1 substrate — the graph_server module serves blobs out of a
+# GraphStore. The existing cppnix-worker-protocol server doesn't touch it.
+sui-graph-store.workspace = true
+# L7 protocol — wire types + frame codec for graph_server. Additive
+# alongside the existing cppnix worker protocol path.
+sui-protocol.workspace = true
+sui-daemon-frame.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true
@@ -23,8 +30,16 @@ async-trait.workspace = true
 libc = "0.2"
 tsunagu = "0.1"
 shikumi = "0.1"
+# Bounded LRU for the hot in-RAM blob cache layered on top of GraphStore.
+lru.workspace = true
+# Shared bytes ownership across codec ↔ store ↔ cache handoffs.
+bytes.workspace = true
+# Stable build-id derivation in graph_handler.
+blake3.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["full", "test-util", "process"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sui-daemon-client.workspace = true
+pretty_assertions.workspace = true
