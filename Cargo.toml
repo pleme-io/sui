@@ -43,6 +43,11 @@ members = [
     # Wraps the frame codec + offers ping/get/put/stats. Reusable by
     # sui CLI, tend, future ops tools.
     "sui-daemon-client",
+    # L7 runtime — sui-daemon-graph binary. Wires GraphServer +
+    # tsunagu Shutdown handler into a systemd-installable service.
+    # Ships separately from sui-daemon (the library) so the binary's
+    # CLI/argv surface doesn't pollute the lib's API.
+    "sui-daemon-graph",
 ]
 resolver = "3"
 

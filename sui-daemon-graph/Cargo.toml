@@ -1,0 +1,28 @@
+[package]
+name = "sui-daemon-graph"
+description = "Binary that runs the sui graph-server: GraphServer over UDS + GraphStore + LruHotCache, with tsunagu shutdown handling. Installable as a systemd service via the matching nixos-sui-daemon-graph profile in pleme-io/nix."
+keywords = ["sui", "daemon", "graph-store", "service"]
+categories = ["command-line-utilities", "filesystem"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sui-daemon-graph"
+path = "src/main.rs"
+
+[dependencies]
+sui-daemon.workspace = true
+sui-daemon-frame.workspace = true
+sui-graph-store.workspace = true
+tsunagu = "0.1"
+tokio = { workspace = true, features = ["full", "signal"] }
+clap = { workspace = true, features = ["derive", "env"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

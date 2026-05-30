@@ -89,6 +89,45 @@ pub struct AstGraphHash {
     pub bytes: [u8; 32],
 }
 
+/// Which surface dialect a parsed [`AstGraph`] came from. The IR
+/// itself is dialect-agnostic — this discriminator anchors the
+/// bidirectional render pipeline + lets transformation passes preserve
+/// (or change) the source dialect.
+///
+/// Sui's stance: both dialects produce the **same** typed IR. The
+/// downstream pipeline (eval cache, derivation builder, module-graph
+/// compiler, daemon hot cache) never branches on dialect. Only the
+/// surface (parse + render) cares.
+#[derive(
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+)]
+#[rkyv(derive(Debug))]
+pub enum SourceDialect {
+    /// `.nix` source via the rnix parser. Production today.
+    Nix,
+    /// `.tlisp` source via the tatara-lisp parser. Queued — the
+    /// parser + lowering exist as a typed seam (see
+    /// [`AstGraph::from_tlisp_source`]) but the full lowering of every
+    /// `AstNodeKind` variant is a focused follow-up ship.
+    Tlisp,
+    /// A graph stitched together from BOTH dialects (e.g. a `.nix`
+    /// flake importing a `.tlisp` module, or a `.tlisp` overlay
+    /// transforming a `.nix` config). Rendering this requires keeping
+    /// per-node provenance — `AstNodeForm` gains an optional
+    /// `dialect_origin` field in a later ship.
+    Mixed,
+}
+
 /// The AST graph proper. `nodes[0]` is always the root expression.
 #[derive(
     DeriveTataraDomain,
@@ -104,6 +143,15 @@ pub struct AstGraphHash {
 #[tatara(keyword = "defast-graph")]
 #[rkyv(derive(Debug))]
 pub struct AstGraph {
+    /// Which surface dialect this graph was lowered from. Today only
+    /// `Nix` is implemented; `Tlisp` is reserved so the typed IR is
+    /// stable across the future dialect-lowering work. **The IR
+    /// downstream of this field is dialect-agnostic** — every
+    /// consumer (eval cache, module-graph compiler, derivation
+    /// builder) reads `AstGraph` without knowing which dialect
+    /// produced it. Bidirectional rendering (back to `.nix` /
+    /// `.tlisp` source text) hangs off this discriminator.
+    pub dialect: SourceDialect,
     /// rnix grammar version the source was parsed against. Today this
     /// is locked to the bundled rnix major (0.14). Bumping is a
     /// migration boundary.
@@ -416,6 +464,8 @@ pub enum AstGraphError {
     NoRoot,
     #[error("rkyv archive of canonical AST graph failed: {0}")]
     Archive(String),
+    #[error("{what} (not yet implemented; tracked in the dialect-rendering ship)")]
+    Unimplemented { what: &'static str },
 }
 
 impl AstGraph {
@@ -448,10 +498,71 @@ impl AstGraph {
         debug_assert_eq!(root_id as usize + 1, builder.nodes.len());
 
         Ok(Self {
+            dialect: SourceDialect::Nix,
             grammar_version: RNIX_GRAMMAR_VERSION,
             root_id,
             nodes: builder.nodes,
             canonical_hash: AstGraphHash { bytes: [0u8; 32] },
+        })
+    }
+
+    /// Parse + lower a tatara-lisp source into the universal IR.
+    ///
+    /// **Status**: typed seam only. Today this returns an `Unknown`-
+    /// kinded root with the source preserved verbatim so callers can
+    /// already exercise the dialect-aware downstream pipeline. The
+    /// real lowering — mapping each `defast-node` Lisp form to the
+    /// matching [`AstNodeKind`] variant — lands in the focused
+    /// `.tlisp` dialect ship.
+    ///
+    /// # Errors
+    ///
+    /// Always succeeds today (every input is captured as `Unknown`).
+    /// Future versions will return [`AstGraphError::Parse`] when the
+    /// tatara-lisp reader rejects the input.
+    pub fn from_tlisp_source(source: &str) -> Result<Self, AstGraphError> {
+        let mut nodes = Vec::with_capacity(1);
+        nodes.push(AstNodeForm {
+            id: 0,
+            kind: AstNodeKind::Unknown {
+                kind: "tlisp-source-pending-lowering".to_string(),
+                source_text: source.to_string(),
+            },
+        });
+        Ok(Self {
+            dialect: SourceDialect::Tlisp,
+            grammar_version: TLISP_GRAMMAR_VERSION,
+            root_id: 0,
+            nodes,
+            canonical_hash: AstGraphHash { bytes: [0u8; 32] },
+        })
+    }
+
+    /// Render this graph back into Nix source text.
+    ///
+    /// **Status**: API seam only. The renderer that emits canonical
+    /// `.nix` syntax for every [`AstNodeKind`] variant lands in the
+    /// dialect-rendering ship.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`AstGraphError::Unimplemented`] today.
+    pub fn to_nix_source(&self) -> Result<String, AstGraphError> {
+        Err(AstGraphError::Unimplemented {
+            what: "AstGraph::to_nix_source — queued",
+        })
+    }
+
+    /// Render this graph as tatara-lisp source text.
+    ///
+    /// **Status**: API seam only. See [`Self::to_nix_source`].
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`AstGraphError::Unimplemented`] today.
+    pub fn to_tlisp_source(&self) -> Result<String, AstGraphError> {
+        Err(AstGraphError::Unimplemented {
+            what: "AstGraph::to_tlisp_source — queued",
         })
     }
 
@@ -478,6 +589,10 @@ impl AstGraph {
 /// changes natively; this version is for cases like "renamed an
 /// existing variant" where blobs need to be invalidated.
 pub const RNIX_GRAMMAR_VERSION: u32 = 1;
+
+/// Bumped when the tatara-lisp dialect's lowering schema changes in
+/// a way that requires re-parsing. Today: 1 (the stub).
+pub const TLISP_GRAMMAR_VERSION: u32 = 1;
 
 // ── Builder ──────────────────────────────────────────────────────
 
@@ -997,6 +1112,41 @@ mod tests {
         assert!(names.contains(&"literal-int"));
         assert!(names.contains(&"let-in-with-binop"));
         assert!(names.contains(&"nixos-module-skeleton"));
+    }
+
+    #[test]
+    fn nix_source_marks_dialect_as_nix() {
+        let g = AstGraph::from_source("42").unwrap();
+        assert!(matches!(g.dialect, SourceDialect::Nix));
+        assert_eq!(g.grammar_version, RNIX_GRAMMAR_VERSION);
+    }
+
+    #[test]
+    fn tlisp_source_stub_marks_dialect_as_tlisp() {
+        let g = AstGraph::from_tlisp_source("(+ 1 2)").unwrap();
+        assert!(matches!(g.dialect, SourceDialect::Tlisp));
+        assert_eq!(g.grammar_version, TLISP_GRAMMAR_VERSION);
+        assert_eq!(g.nodes.len(), 1);
+        match &g.nodes[0].kind {
+            AstNodeKind::Unknown { kind, source_text } => {
+                assert!(kind.contains("tlisp"));
+                assert_eq!(source_text, "(+ 1 2)");
+            }
+            other => panic!("expected Unknown stub, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_seams_return_unimplemented_today() {
+        let g = AstGraph::from_source("42").unwrap();
+        assert!(matches!(
+            g.to_nix_source(),
+            Err(AstGraphError::Unimplemented { .. })
+        ));
+        assert!(matches!(
+            g.to_tlisp_source(),
+            Err(AstGraphError::Unimplemented { .. })
+        ));
     }
 
     #[test]

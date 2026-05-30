@@ -6183,6 +6183,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-daemon-graph"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sui-daemon",
+ "sui-daemon-frame",
+ "sui-graph-store",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tsunagu",
+]
+
+[[package]]
 name = "sui-eval"
 version = "0.1.10"
 dependencies = [
