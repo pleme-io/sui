@@ -185,6 +185,130 @@ fn multi_module_solver_runs_via_per_module_evaluator() {
 }
 
 #[test]
+fn setter_body_with_inline_let_in_evaluates() {
+    // The compiler unwraps the module's wrapping let-in (so its
+    // bindings aren't visible to setter bodies — that's a compiler
+    // limitation tracked separately). Inline let-in INSIDE a setter
+    // body is what the evaluator handles today: bindings are scoped
+    // to that body.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.kernelParams = let p = \"amd_pstate=active\"; q = \"iommu=pt\"; in [ p q ]; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(
+        env_value(solver.env(), &["kernelParams"]),
+        EvalValue::List(vec![
+            EvalValue::Str("amd_pstate=active".into()),
+            EvalValue::Str("iommu=pt".into()),
+        ])
+    );
+}
+
+#[test]
+fn mkforce_captured_as_priority_not_wrapper() {
+    // The compiler recognizes mkForce at the top level of a setter
+    // value and captures it as priority=50 on the setter itself
+    // (so downstream merge sorts by priority). The setter's body
+    // becomes the inner expression — when evaluated, it's just 42,
+    // NOT a mkForce-wrapped Builtin. The Builtin sentinel only
+    // appears when mkForce nests INSIDE another expression.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.x = mkForce 42; }",
+    );
+    solver.run(&[]).expect("solver run");
+    // The env value is the inner integer — priority is in the IR,
+    // not the env.
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+    // And the IR has the correct priority.
+    let setter = &solver.graph().modules[0].setters[0];
+    assert_eq!(setter.priority, 50);
+}
+
+#[test]
+fn mkif_captured_as_condition_not_wrapper() {
+    // Like mkForce, mkIf at the top level of a setter value is
+    // captured as condition_ast_root on the setter. The body
+    // becomes the inner expression. When evaluated, the body is
+    // the list itself (no Builtin wrapper). The condition is
+    // separately evaluable; the solver doesn't yet conditionally
+    // skip firing based on it (that's the merge-layer's job).
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.enabled = 1; \
+         config.kernelParams = mkIf (config.enabled == 1) [\"yes\"]; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(
+        env_value(solver.env(), &["kernelParams"]),
+        EvalValue::List(vec![EvalValue::Str("yes".into())])
+    );
+    // The setter carries the captured condition for the future
+    // merge-layer to act on.
+    let setter = solver
+        .graph()
+        .modules[0]
+        .setters
+        .iter()
+        .find(|s| s.assigns_path == vec!["kernelParams"])
+        .unwrap();
+    assert!(setter.condition_ast_root.is_some());
+}
+
+#[test]
+fn nested_mkif_inside_body_yields_builtin_sentinel() {
+    // When mkIf is NESTED inside another expression (not at the
+    // top-level of a setter value), the compiler doesn't strip it —
+    // the runtime evaluator handles it and produces the Builtin
+    // sentinel so downstream code can introspect.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.x = [ (mkIf true 99) ]; }",
+    );
+    solver.run(&[]).expect("solver run");
+    let v = env_value(solver.env(), &["x"]);
+    match v {
+        EvalValue::List(items) => {
+            assert_eq!(items.len(), 1);
+            match &items[0] {
+                EvalValue::Builtin { kind, payload } => {
+                    assert_eq!(kind, "mkIf");
+                    assert_eq!(**payload, EvalValue::Int(99));
+                }
+                other => panic!("expected Builtin inside list, got {other:?}"),
+            }
+        }
+        other => panic!("expected List, got {other:?}"),
+    }
+}
+
+#[test]
+fn setter_body_with_inline_with_scope() {
+    // `with { ... }; expr` makes the attrset's attrs visible as
+    // top-level identifiers in `expr`. The walker handles this
+    // structurally.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.x = with { a = 10; b = 32; }; a + b; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+}
+
+#[test]
+fn closure_application_inside_body_evaluates() {
+    // Inline closure + application. The walker handles Lambda →
+    // Closure → Apply end-to-end.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { config.x = (n: n + 1) 41; }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+}
+
+#[test]
 fn attrset_construction_decomposes_into_per_leaf_setters() {
     // The compiler walks attrset RHS values, so this source produces
     // TWO setters: config.services.atticd.enable and

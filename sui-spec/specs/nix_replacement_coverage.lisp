@@ -93,7 +93,7 @@
   :category EvalEngine
   :status InProgress
   :owns "sui-spec::ast_evaluator"
-  :notes "Minimum-viable AstGraph tree-walker. Handles literals, Ident env lookup, Select (config.x.y), HasAttr, BinOp (==, !=, +, -, *, /, <, <=, >, >=, &&, ||, ++, //), UnaryOp, List, AttrSet, IfThenElse. Returns typed EvalValue (Int/Float/Bool/Null/Str/Path/List/AttrSet) with Opaque sentinel for Apply/Lambda/LetIn/With. 18 unit tests. Queued: full sui-eval bytecode-VM integration replaces this minimum-viable engine for the Apply/Lambda/LetIn/With surface.")
+  :notes "AstGraph tree-walker — substantial subset of Nix surface. Literals (incl. true/false/null Ident-recognized), Ident env lookup, Select (config.x.y), HasAttr, BinOp (==, !=, +, -, *, /, <, <=, >, >=, &&, ||, ++, //, ->), UnaryOp, List, AttrSet (dotted entries + inherits), IfThenElse, LetIn (sequential bindings + inherits), With (push attrset scope), Lambda (Ident param → Closure value capturing env), Apply (curried + built-in dispatch). BuiltinRegistry handles mkIf/mkForce/mkVMOverride/mkDefault/mkOverride/mkMerge/mkOption with typed payloads — `lib.mkIf` style also dispatches via last-segment match. 27 unit tests. Queued: full sui-eval bytecode-VM integration for the long tail (formal-args Pattern lambdas, full nixpkgs lib surface, builtins.toString and friends).")
 
 (defnix-replacement-surface
   :name "derivation-graph"

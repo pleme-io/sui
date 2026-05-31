@@ -61,11 +61,34 @@ pub enum EvalValue {
     Path(String),
     List(Vec<EvalValue>),
     AttrSet(BTreeMap<String, EvalValue>),
-    /// Fallback for kinds we don't model yet (Apply, Lambda, LetIn,
-    /// With, complex Select chains). Carries the original AST node id
-    /// so the eventual VM-backed re-evaluation can pick up where we
-    /// left off. `kind` is the [`AstNodeKind`] variant name (`"Apply"`,
-    /// `"Lambda"`, …) — owned so EvalValue is `DeserializeOwned`.
+    /// Closure value — produced by evaluating a `Lambda` node.
+    /// Captures the param name + body AST id + closure env at
+    /// construction time. Applied later via `Apply` evaluation.
+    /// Note: closures are *not* meaningfully serializable across
+    /// processes (the body_node_id is only valid for the originating
+    /// AstGraph). When persisted via `serde_json::to_vec`, they
+    /// round-trip as opaque sentinels — the original closure is lost.
+    /// That's acceptable today because closures don't normally land
+    /// in `EnvSnapshot.config`; they're invoked to produce a primitive
+    /// value before reaching env.
+    Closure {
+        param: String,
+        body_node_id: NodeId,
+        /// Snapshot of the env at closure creation. Stored as a
+        /// flat map; reapplied at call time as the closure scope.
+        captured_env: BTreeMap<String, EvalValue>,
+    },
+    /// Marker for a value built by a recognized built-in (`mkIf`,
+    /// `mkOption`, etc.) — carries the built-in tag + the typed
+    /// payload the built-in produced. Lets downstream pattern
+    /// recognizers introspect (e.g. "is this an mkOption descriptor?").
+    Builtin {
+        kind: String,
+        payload: Box<EvalValue>,
+    },
+    /// Fallback for kinds we don't model yet. Carries the original
+    /// AST node id so the eventual VM-backed re-evaluation can pick
+    /// up where we left off.
     Opaque {
         kind: String,
         node_id: NodeId,
@@ -157,10 +180,21 @@ fn eval_at(
         AstNodeKind::Str { segments } | AstNodeKind::IndentedStr { segments } => {
             eval_string_segments(ast, segments, env, depth + 1, id)
         }
-        AstNodeKind::Ident(name) => env
-            .get(name)
-            .cloned()
-            .ok_or_else(|| EvalError::UndefinedIdent(name.clone())),
+        AstNodeKind::Ident(name) => {
+            // rnix parses `true`, `false`, `null` as plain
+            // identifiers. Recognize them as typed-value literals
+            // at the Ident level so callers don't have to seed them
+            // in every env.
+            match name.as_str() {
+                "true" => return Ok(EvalValue::Bool(true)),
+                "false" => return Ok(EvalValue::Bool(false)),
+                "null" => return Ok(EvalValue::Null),
+                _ => {}
+            }
+            env.get(name)
+                .cloned()
+                .ok_or_else(|| EvalError::UndefinedIdent(name.clone()))
+        }
         AstNodeKind::Select {
             target,
             path,
@@ -209,24 +243,77 @@ fn eval_at(
             let v = eval_at(ast, *operand, env, depth + 1)?;
             eval_unaryop(*op, v)
         }
-        // Kinds we don't fully model yet — surface as Opaque carrying
-        // the AST node id so the future VM-backed evaluator can pick up.
-        AstNodeKind::Apply { .. } => Ok(EvalValue::Opaque {
-            kind: "Apply".to_string(),
-            node_id: id,
-        }),
-        AstNodeKind::Lambda { .. } => Ok(EvalValue::Opaque {
-            kind: "Lambda".to_string(),
-            node_id: id,
-        }),
-        AstNodeKind::LetIn { .. } => Ok(EvalValue::Opaque {
-            kind: "LetIn".to_string(),
-            node_id: id,
-        }),
-        AstNodeKind::With { .. } => Ok(EvalValue::Opaque {
-            kind: "With".to_string(),
-            node_id: id,
-        }),
+        AstNodeKind::Apply { function, argument } => {
+            eval_apply(ast, *function, *argument, env, depth + 1)
+        }
+        AstNodeKind::Lambda { param, body } => {
+            // Capture the env in a flat map. Pattern-args (full
+            // formal-args destructuring `{a, b, ...}: ...`) aren't
+            // typed as a single `param` name — they only land here
+            // when the lambda's wrapping isn't NixOS-module-shaped.
+            // For those, we surface Opaque so the future VM
+            // integration handles the long tail.
+            match param {
+                crate::ast_graph::LambdaParam::Ident(name) => {
+                    Ok(EvalValue::Closure {
+                        param: name.clone(),
+                        body_node_id: *body,
+                        captured_env: env.bindings.clone(),
+                    })
+                }
+                crate::ast_graph::LambdaParam::Pattern { .. } => {
+                    Ok(EvalValue::Opaque {
+                        kind: "Lambda-Pattern".to_string(),
+                        node_id: id,
+                    })
+                }
+            }
+        }
+        AstNodeKind::LetIn { bindings, inherits, body } => {
+            let mut env = env.clone();
+            // Bindings: evaluate each value in the OUTER env first,
+            // then bind. Cppnix actually allows recursive let-bindings
+            // (each value sees the others); for now we use the simpler
+            // sequential semantics — covers the common cases.
+            for entry in bindings {
+                if entry.path.len() == 1 {
+                    let value = eval_at(ast, entry.value, &env, depth + 1)?;
+                    env.bindings.insert(entry.path[0].clone(), value);
+                }
+                // Multi-level dotted paths in let bindings are rare;
+                // skip for now (forward-compat).
+            }
+            // Inherits: pull each named attr from its source attrset.
+            for inherit in inherits {
+                if let Some(source_id) = inherit.source {
+                    let source_val = eval_at(ast, source_id, &env, depth + 1)?;
+                    if let EvalValue::AttrSet(map) = source_val {
+                        for attr in &inherit.attrs {
+                            if let Some(v) = map.get(attr) {
+                                env.bindings.insert(attr.clone(), v.clone());
+                            }
+                        }
+                    }
+                } else {
+                    // `inherit attr1 attr2;` (no source) pulls from the
+                    // outer scope — already in env, so it's a no-op.
+                }
+            }
+            eval_at(ast, *body, &env, depth + 1)
+        }
+        AstNodeKind::With { env: scope_expr, body } => {
+            let scope_value = eval_at(ast, *scope_expr, env, depth + 1)?;
+            let mut extended = env.clone();
+            if let EvalValue::AttrSet(map) = scope_value {
+                // `with X; body` makes every attr of X visible as a
+                // top-level identifier in `body`. Lowest-precedence —
+                // existing env bindings shadow.
+                for (k, v) in map {
+                    extended.bindings.entry(k).or_insert(v);
+                }
+            }
+            eval_at(ast, *body, &extended, depth + 1)
+        }
         AstNodeKind::Assert { body, .. } => {
             // Assertion: ignored today (would need to evaluate the
             // condition and throw on false). Just evaluate the body.
@@ -236,6 +323,200 @@ fn eval_at(
             kind: kind.clone(),
             node_id: id,
         }),
+    }
+}
+
+/// Evaluate `Apply(function, argument)`.
+///
+/// Dispatch order:
+/// 1. If `function` is an `Ident` or `Select` resolving to a known
+///    builtin name (`mkIf`, `mkForce`, etc.), call the builtin.
+/// 2. If `function` evaluates to a `Closure`, bind its param + run
+///    its body in the captured env.
+/// 3. Curried builtins: `function` might itself be an `Apply`
+///    (e.g. `mkIf cond` is one Apply, `(mkIf cond) body` is another).
+///    Walk through until we resolve to a builtin name + collect args.
+/// 4. Anything else → Opaque sentinel.
+fn eval_apply(
+    ast: &AstGraph,
+    function: NodeId,
+    argument: NodeId,
+    env: &EvalEnv,
+    depth: u32,
+) -> Result<EvalValue, EvalError> {
+    // Collect chained applies into a (root_function, args) form.
+    // `(mkIf cond) body` → root_function = mkIf, args = [cond, body].
+    let mut args: Vec<NodeId> = vec![argument];
+    let mut cursor = function;
+    loop {
+        let node = &ast.nodes[cursor as usize];
+        match &node.kind {
+            AstNodeKind::Apply { function: f, argument: a } => {
+                args.push(*a);
+                cursor = *f;
+            }
+            _ => break,
+        }
+    }
+    args.reverse();
+
+    let root_node = &ast.nodes[cursor as usize];
+
+    // Builtin name dispatch.
+    let builtin_name = match &root_node.kind {
+        AstNodeKind::Ident(name) => Some(name.clone()),
+        AstNodeKind::Select { path, .. } => path.last().cloned(),
+        _ => None,
+    };
+
+    if let Some(name) = builtin_name.as_deref() {
+        if let Some(result) = try_dispatch_builtin(ast, name, &args, env, depth)? {
+            return Ok(result);
+        }
+    }
+
+    // Closure invocation.
+    let func_value = eval_at(ast, cursor, env, depth + 1);
+    if let Ok(EvalValue::Closure {
+        param,
+        body_node_id,
+        captured_env,
+    }) = func_value
+    {
+        // Apply each argument in sequence (curried).
+        let mut arg_iter = args.into_iter();
+        let first_arg = match arg_iter.next() {
+            Some(a) => eval_at(ast, a, env, depth + 1)?,
+            None => return Ok(EvalValue::Null),
+        };
+        let mut call_env = EvalEnv {
+            bindings: captured_env,
+        };
+        call_env.bindings.insert(param, first_arg);
+        let mut result = eval_at(ast, body_node_id, &call_env, depth + 1)?;
+        // Process remaining args (curried application).
+        for next_arg in arg_iter {
+            let arg_val = eval_at(ast, next_arg, env, depth + 1)?;
+            match result {
+                EvalValue::Closure {
+                    param,
+                    body_node_id,
+                    captured_env,
+                } => {
+                    let mut next_env = EvalEnv {
+                        bindings: captured_env,
+                    };
+                    next_env.bindings.insert(param, arg_val);
+                    result = eval_at(ast, body_node_id, &next_env, depth + 1)?;
+                }
+                _ => {
+                    return Ok(EvalValue::Opaque {
+                        kind: "Apply-non-callable-result".to_string(),
+                        node_id: function,
+                    });
+                }
+            }
+        }
+        return Ok(result);
+    }
+
+    Ok(EvalValue::Opaque {
+        kind: "Apply".to_string(),
+        node_id: function,
+    })
+}
+
+/// Try to dispatch to a built-in by name. Returns `Ok(None)` when
+/// the name isn't a known builtin — caller falls back to closure
+/// invocation or Opaque.
+fn try_dispatch_builtin(
+    ast: &AstGraph,
+    name: &str,
+    args: &[NodeId],
+    env: &EvalEnv,
+    depth: u32,
+) -> Result<Option<EvalValue>, EvalError> {
+    let arg = |i: usize| -> Result<EvalValue, EvalError> {
+        eval_at(ast, args[i], env, depth + 1)
+    };
+    match name {
+        "mkIf" if args.len() == 2 => {
+            let cond = arg(0)?;
+            match cond {
+                EvalValue::Bool(true) => {
+                    let body = arg(1)?;
+                    Ok(Some(EvalValue::Builtin {
+                        kind: "mkIf".to_string(),
+                        payload: Box::new(body),
+                    }))
+                }
+                EvalValue::Bool(false) => {
+                    // Conditionally-disabled — the contribution is
+                    // empty. Module merge layer treats this as a no-op
+                    // for the destination path.
+                    Ok(Some(EvalValue::Builtin {
+                        kind: "mkIf-disabled".to_string(),
+                        payload: Box::new(EvalValue::Null),
+                    }))
+                }
+                other => Err(EvalError::TypeMismatch {
+                    context: "mkIf condition",
+                    expected: "bool",
+                    got: value_kind(&other),
+                }),
+            }
+        }
+        "mkForce" if args.len() == 1 => Ok(Some(EvalValue::Builtin {
+            kind: "mkForce".to_string(),
+            payload: Box::new(arg(0)?),
+        })),
+        "mkVMOverride" if args.len() == 1 => Ok(Some(EvalValue::Builtin {
+            kind: "mkVMOverride".to_string(),
+            payload: Box::new(arg(0)?),
+        })),
+        "mkDefault" if args.len() == 1 => Ok(Some(EvalValue::Builtin {
+            kind: "mkDefault".to_string(),
+            payload: Box::new(arg(0)?),
+        })),
+        "mkOverride" if args.len() == 2 => {
+            // Priority + value. We carry the priority in the kind tag
+            // so downstream merge can use it.
+            let prio = arg(0)?;
+            let value = arg(1)?;
+            let kind = match prio {
+                EvalValue::Int(p) => format!("mkOverride-{p}"),
+                _ => "mkOverride-bad-priority".to_string(),
+            };
+            Ok(Some(EvalValue::Builtin {
+                kind,
+                payload: Box::new(value),
+            }))
+        }
+        "mkMerge" if args.len() == 1 => {
+            let list = arg(0)?;
+            match list {
+                EvalValue::List(items) => Ok(Some(EvalValue::Builtin {
+                    kind: "mkMerge".to_string(),
+                    payload: Box::new(EvalValue::List(items)),
+                })),
+                _ => Err(EvalError::TypeMismatch {
+                    context: "mkMerge arg",
+                    expected: "list",
+                    got: "non-list",
+                }),
+            }
+        }
+        "mkOption" if args.len() == 1 => {
+            // Pass the descriptor attrset through verbatim.
+            Ok(Some(EvalValue::Builtin {
+                kind: "mkOption".to_string(),
+                payload: Box::new(arg(0)?),
+            }))
+        }
+        // builtins.toString, toJSON, etc. — small surface, real
+        // implementations are tractable but not in scope for the
+        // module-body subset. Land them when first needed.
+        _ => Ok(None),
     }
 }
 
@@ -425,6 +706,8 @@ fn value_kind(v: &EvalValue) -> &'static str {
         EvalValue::Path(_) => "Path",
         EvalValue::List(_) => "List",
         EvalValue::AttrSet(_) => "AttrSet",
+        EvalValue::Closure { .. } => "Closure",
+        EvalValue::Builtin { .. } => "Builtin",
         EvalValue::Opaque { .. } => "Opaque",
     }
 }
@@ -461,10 +744,31 @@ mod tests {
     // boolean values explicitly via `EvalEnv::with_binding`.
 
     #[test]
-    fn undefined_ident_errors() {
+    fn special_idents_resolve_to_typed_literals() {
+        // rnix parses `true`/`false`/`null` as Idents. Recognized
+        // as typed literals by the evaluator.
         let g = AstGraph::from_source("true").expect("parse");
+        assert_eq!(
+            eval_node(&g, g.root_id, &EvalEnv::new()).unwrap(),
+            EvalValue::Bool(true)
+        );
+        let g = AstGraph::from_source("false").expect("parse");
+        assert_eq!(
+            eval_node(&g, g.root_id, &EvalEnv::new()).unwrap(),
+            EvalValue::Bool(false)
+        );
+        let g = AstGraph::from_source("null").expect("parse");
+        assert_eq!(
+            eval_node(&g, g.root_id, &EvalEnv::new()).unwrap(),
+            EvalValue::Null
+        );
+    }
+
+    #[test]
+    fn undefined_ident_errors() {
+        let g = AstGraph::from_source("notDefined").expect("parse");
         let err = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap_err();
-        assert!(matches!(err, EvalError::UndefinedIdent(ref n) if n == "true"));
+        assert!(matches!(err, EvalError::UndefinedIdent(ref n) if n == "notDefined"));
     }
 
     #[test]
@@ -617,8 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_is_opaque() {
-        // f x → Apply variant → Opaque sentinel
+    fn apply_with_non_callable_function_is_opaque() {
+        // f x where f is an Int → not callable → Opaque
         let g = AstGraph::from_source("f x").expect("parse");
         let env = EvalEnv::new()
             .with_binding("f", EvalValue::Int(1))
@@ -631,12 +935,124 @@ mod tests {
     }
 
     #[test]
-    fn lambda_is_opaque() {
+    fn lambda_evaluates_to_closure() {
         let g = AstGraph::from_source("x: x + 1").expect("parse");
         let v = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap();
         match v {
-            EvalValue::Opaque { ref kind, .. } => assert_eq!(kind, "Lambda"),
-            other => panic!("expected Opaque, got {other:?}"),
+            EvalValue::Closure { ref param, .. } => assert_eq!(param, "x"),
+            other => panic!("expected Closure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_a_closure_evaluates_body() {
+        // (x: x + 1) 5 → 6
+        let g = AstGraph::from_source("(x: x + 1) 5").expect("parse");
+        let v = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap();
+        assert_eq!(v, EvalValue::Int(6));
+    }
+
+    #[test]
+    fn let_in_binds_locals() {
+        let g = AstGraph::from_source("let a = 3; b = 4; in a + b").expect("parse");
+        let v = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap();
+        assert_eq!(v, EvalValue::Int(7));
+    }
+
+    #[test]
+    fn with_pushes_attrset_scope() {
+        let g = AstGraph::from_source("with pkgs; foo + bar").expect("parse");
+        let env = EvalEnv::new().with_binding(
+            "pkgs",
+            EvalValue::AttrSet(BTreeMap::from([
+                ("foo".to_string(), EvalValue::Int(10)),
+                ("bar".to_string(), EvalValue::Int(32)),
+            ])),
+        );
+        let v = eval_node(&g, g.root_id, &env).unwrap();
+        assert_eq!(v, EvalValue::Int(42));
+    }
+
+    #[test]
+    fn mkif_true_yields_builtin_with_payload() {
+        let g = AstGraph::from_source("mkIf c body").expect("parse");
+        let env = EvalEnv::new()
+            .with_binding("c", EvalValue::Bool(true))
+            .with_binding("body", EvalValue::Str("yes".into()));
+        let v = eval_node(&g, g.root_id, &env).unwrap();
+        match v {
+            EvalValue::Builtin { kind, payload } => {
+                assert_eq!(kind, "mkIf");
+                assert_eq!(*payload, EvalValue::Str("yes".into()));
+            }
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mkif_false_yields_disabled_builtin() {
+        let g = AstGraph::from_source("mkIf c body").expect("parse");
+        let env = EvalEnv::new()
+            .with_binding("c", EvalValue::Bool(false))
+            .with_binding("body", EvalValue::Str("nope".into()));
+        let v = eval_node(&g, g.root_id, &env).unwrap();
+        match v {
+            EvalValue::Builtin { kind, payload } => {
+                assert_eq!(kind, "mkIf-disabled");
+                assert_eq!(*payload, EvalValue::Null);
+            }
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mkforce_wraps_value() {
+        let g = AstGraph::from_source("mkForce 42").expect("parse");
+        let v = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap();
+        match v {
+            EvalValue::Builtin { kind, payload } => {
+                assert_eq!(kind, "mkForce");
+                assert_eq!(*payload, EvalValue::Int(42));
+            }
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mkmerge_wraps_list() {
+        let g = AstGraph::from_source("mkMerge [ a b ]").expect("parse");
+        let env = EvalEnv::new()
+            .with_binding("a", EvalValue::Int(1))
+            .with_binding("b", EvalValue::Int(2));
+        let v = eval_node(&g, g.root_id, &env).unwrap();
+        match v {
+            EvalValue::Builtin { kind, payload } => {
+                assert_eq!(kind, "mkMerge");
+                assert_eq!(*payload, EvalValue::List(vec![EvalValue::Int(1), EvalValue::Int(2)]));
+            }
+            other => panic!("expected Builtin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lib_qualified_call_dispatches_via_last_segment() {
+        // `lib.mkIf cond body` — Select(lib, [mkIf]) applied. Should
+        // route to the mkIf builtin via the last path segment.
+        let g = AstGraph::from_source("lib.mkIf c body").expect("parse");
+        let env = EvalEnv::new()
+            .with_binding(
+                "lib",
+                EvalValue::AttrSet(BTreeMap::new()),
+            )
+            .with_binding("c", EvalValue::Bool(true))
+            .with_binding("body", EvalValue::Int(7));
+        let v = eval_node(&g, g.root_id, &env).unwrap();
+        match v {
+            EvalValue::Builtin { kind, payload } => {
+                assert_eq!(kind, "mkIf");
+                assert_eq!(*payload, EvalValue::Int(7));
+            }
+            other => panic!("expected Builtin from lib.mkIf, got {other:?}"),
         }
     }
 
