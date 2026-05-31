@@ -513,10 +513,306 @@ fn try_dispatch_builtin(
                 payload: Box::new(arg(0)?),
             }))
         }
-        // builtins.toString, toJSON, etc. — small surface, real
-        // implementations are tractable but not in scope for the
-        // module-body subset. Land them when first needed.
+
+        // ── builtins.* primitives (close the most common Opaque gaps) ──
+        "toString" if args.len() == 1 => Ok(Some(builtin_to_string(arg(0)?))),
+        "isString" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::Str(_)))))
+        }
+        "isInt" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::Int(_)))))
+        }
+        "isFloat" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::Float(_)))))
+        }
+        "isBool" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::Bool(_)))))
+        }
+        "isNull" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::Null))))
+        }
+        "isList" if args.len() == 1 => {
+            Ok(Some(EvalValue::Bool(matches!(arg(0)?, EvalValue::List(_)))))
+        }
+        "isAttrs" if args.len() == 1 => Ok(Some(EvalValue::Bool(matches!(
+            arg(0)?,
+            EvalValue::AttrSet(_)
+        )))),
+        "isFunction" if args.len() == 1 => Ok(Some(EvalValue::Bool(matches!(
+            arg(0)?,
+            EvalValue::Closure { .. }
+        )))),
+        "length" if args.len() == 1 => match arg(0)? {
+            EvalValue::List(items) => Ok(Some(EvalValue::Int(items.len() as i64))),
+            EvalValue::Str(s) => Ok(Some(EvalValue::Int(s.len() as i64))),
+            other => Err(EvalError::TypeMismatch {
+                context: "length arg",
+                expected: "list or string",
+                got: value_kind(&other),
+            }),
+        },
+        "head" if args.len() == 1 => match arg(0)? {
+            EvalValue::List(items) if !items.is_empty() => Ok(Some(items[0].clone())),
+            EvalValue::List(_) => Err(EvalError::TypeMismatch {
+                context: "head arg",
+                expected: "non-empty list",
+                got: "empty list",
+            }),
+            other => Err(EvalError::TypeMismatch {
+                context: "head arg",
+                expected: "list",
+                got: value_kind(&other),
+            }),
+        },
+        "tail" if args.len() == 1 => match arg(0)? {
+            EvalValue::List(items) if !items.is_empty() => {
+                Ok(Some(EvalValue::List(items[1..].to_vec())))
+            }
+            EvalValue::List(_) => Err(EvalError::TypeMismatch {
+                context: "tail arg",
+                expected: "non-empty list",
+                got: "empty list",
+            }),
+            other => Err(EvalError::TypeMismatch {
+                context: "tail arg",
+                expected: "list",
+                got: value_kind(&other),
+            }),
+        },
+        "elem" if args.len() == 2 => {
+            let needle = arg(0)?;
+            match arg(1)? {
+                EvalValue::List(items) => {
+                    Ok(Some(EvalValue::Bool(items.iter().any(|v| v == &needle))))
+                }
+                other => Err(EvalError::TypeMismatch {
+                    context: "elem second arg",
+                    expected: "list",
+                    got: value_kind(&other),
+                }),
+            }
+        }
+        "attrNames" if args.len() == 1 => match arg(0)? {
+            EvalValue::AttrSet(map) => Ok(Some(EvalValue::List(
+                map.keys().map(|k| EvalValue::Str(k.clone())).collect(),
+            ))),
+            other => Err(EvalError::TypeMismatch {
+                context: "attrNames arg",
+                expected: "attrset",
+                got: value_kind(&other),
+            }),
+        },
+        "attrValues" if args.len() == 1 => match arg(0)? {
+            EvalValue::AttrSet(map) => {
+                Ok(Some(EvalValue::List(map.into_values().collect())))
+            }
+            other => Err(EvalError::TypeMismatch {
+                context: "attrValues arg",
+                expected: "attrset",
+                got: value_kind(&other),
+            }),
+        },
+        "hasAttr" if args.len() == 2 => {
+            let name = match arg(0)? {
+                EvalValue::Str(s) => s,
+                other => {
+                    return Err(EvalError::TypeMismatch {
+                        context: "hasAttr first arg",
+                        expected: "string",
+                        got: value_kind(&other),
+                    })
+                }
+            };
+            match arg(1)? {
+                EvalValue::AttrSet(map) => {
+                    Ok(Some(EvalValue::Bool(map.contains_key(&name))))
+                }
+                other => Err(EvalError::TypeMismatch {
+                    context: "hasAttr second arg",
+                    expected: "attrset",
+                    got: value_kind(&other),
+                }),
+            }
+        }
+        "getAttr" if args.len() == 2 => {
+            let name = match arg(0)? {
+                EvalValue::Str(s) => s,
+                other => {
+                    return Err(EvalError::TypeMismatch {
+                        context: "getAttr first arg",
+                        expected: "string",
+                        got: value_kind(&other),
+                    })
+                }
+            };
+            match arg(1)? {
+                EvalValue::AttrSet(map) => map
+                    .get(&name)
+                    .cloned()
+                    .map(Some)
+                    .ok_or(EvalError::ConfigMiss { path: vec![name] }),
+                other => Err(EvalError::TypeMismatch {
+                    context: "getAttr second arg",
+                    expected: "attrset",
+                    got: value_kind(&other),
+                }),
+            }
+        }
+        "concatLists" if args.len() == 1 => match arg(0)? {
+            EvalValue::List(items) => {
+                let mut out = Vec::new();
+                for item in items {
+                    match item {
+                        EvalValue::List(inner) => out.extend(inner),
+                        other => {
+                            return Err(EvalError::TypeMismatch {
+                                context: "concatLists element",
+                                expected: "list",
+                                got: value_kind(&other),
+                            })
+                        }
+                    }
+                }
+                Ok(Some(EvalValue::List(out)))
+            }
+            other => Err(EvalError::TypeMismatch {
+                context: "concatLists arg",
+                expected: "list of lists",
+                got: value_kind(&other),
+            }),
+        },
+        "concatStringsSep" if args.len() == 2 => {
+            let sep = match arg(0)? {
+                EvalValue::Str(s) => s,
+                other => {
+                    return Err(EvalError::TypeMismatch {
+                        context: "concatStringsSep first arg",
+                        expected: "string",
+                        got: value_kind(&other),
+                    })
+                }
+            };
+            match arg(1)? {
+                EvalValue::List(items) => {
+                    let strs: Result<Vec<String>, _> = items
+                        .into_iter()
+                        .map(|v| match v {
+                            EvalValue::Str(s) => Ok(s),
+                            other => Err(EvalError::TypeMismatch {
+                                context: "concatStringsSep list element",
+                                expected: "string",
+                                got: value_kind(&other),
+                            }),
+                        })
+                        .collect();
+                    Ok(Some(EvalValue::Str(strs?.join(&sep))))
+                }
+                other => Err(EvalError::TypeMismatch {
+                    context: "concatStringsSep second arg",
+                    expected: "list",
+                    got: value_kind(&other),
+                }),
+            }
+        }
+        "throw" if args.len() == 1 => match arg(0)? {
+            EvalValue::Str(s) => Err(EvalError::UndefinedIdent(format!("throw: {s}"))),
+            other => Err(EvalError::TypeMismatch {
+                context: "throw arg",
+                expected: "string",
+                got: value_kind(&other),
+            }),
+        },
+        "abort" if args.len() == 1 => match arg(0)? {
+            EvalValue::Str(s) => Err(EvalError::UndefinedIdent(format!("abort: {s}"))),
+            other => Err(EvalError::TypeMismatch {
+                context: "abort arg",
+                expected: "string",
+                got: value_kind(&other),
+            }),
+        },
+
+        // ── lib.* wrappers — common module idioms ──
+        // `lib.optional cond x` → if cond then [x] else []
+        "optional" if args.len() == 2 => match arg(0)? {
+            EvalValue::Bool(true) => Ok(Some(EvalValue::List(vec![arg(1)?]))),
+            EvalValue::Bool(false) => Ok(Some(EvalValue::List(Vec::new()))),
+            other => Err(EvalError::TypeMismatch {
+                context: "optional first arg",
+                expected: "bool",
+                got: value_kind(&other),
+            }),
+        },
+        // `lib.optionals cond xs` → if cond then xs else []
+        "optionals" if args.len() == 2 => match arg(0)? {
+            EvalValue::Bool(true) => match arg(1)? {
+                v @ EvalValue::List(_) => Ok(Some(v)),
+                other => Err(EvalError::TypeMismatch {
+                    context: "optionals second arg",
+                    expected: "list",
+                    got: value_kind(&other),
+                }),
+            },
+            EvalValue::Bool(false) => Ok(Some(EvalValue::List(Vec::new()))),
+            other => Err(EvalError::TypeMismatch {
+                context: "optionals first arg",
+                expected: "bool",
+                got: value_kind(&other),
+            }),
+        },
+        // `lib.optionalAttrs cond attrs` → if cond then attrs else {}
+        "optionalAttrs" if args.len() == 2 => match arg(0)? {
+            EvalValue::Bool(true) => match arg(1)? {
+                v @ EvalValue::AttrSet(_) => Ok(Some(v)),
+                other => Err(EvalError::TypeMismatch {
+                    context: "optionalAttrs second arg",
+                    expected: "attrset",
+                    got: value_kind(&other),
+                }),
+            },
+            EvalValue::Bool(false) => {
+                Ok(Some(EvalValue::AttrSet(std::collections::BTreeMap::new())))
+            }
+            other => Err(EvalError::TypeMismatch {
+                context: "optionalAttrs first arg",
+                expected: "bool",
+                got: value_kind(&other),
+            }),
+        },
+        // `lib.id` — identity. Common in default-value position.
+        "id" if args.len() == 1 => Ok(Some(arg(0)?)),
+        // `lib.const x` — a function-of-one-arg that always returns x.
+        // We're called with two args (const x y) → return x.
+        "const" if args.len() == 2 => Ok(Some(arg(0)?)),
+
         _ => Ok(None),
+    }
+}
+
+/// builtins.toString: stringify any value per cppnix's coercion rules.
+fn builtin_to_string(v: EvalValue) -> EvalValue {
+    match v {
+        EvalValue::Str(s) => EvalValue::Str(s),
+        EvalValue::Int(n) => EvalValue::Str(n.to_string()),
+        EvalValue::Float(f) => EvalValue::Str(f.to_string()),
+        EvalValue::Bool(b) => EvalValue::Str(if b { "1" } else { "" }.to_string()),
+        EvalValue::Null => EvalValue::Str(String::new()),
+        EvalValue::Path(p) => EvalValue::Str(p),
+        EvalValue::List(items) => {
+            let parts: Vec<String> = items
+                .into_iter()
+                .map(|i| match builtin_to_string(i) {
+                    EvalValue::Str(s) => s,
+                    _ => String::new(),
+                })
+                .collect();
+            EvalValue::Str(parts.join(" "))
+        }
+        // Cppnix's toString on attrsets calls the `__toString` field if
+        // present; otherwise errors. We approximate: empty string.
+        EvalValue::AttrSet(_) | EvalValue::Closure { .. }
+        | EvalValue::Builtin { .. } | EvalValue::Opaque { .. } => {
+            EvalValue::Str(String::new())
+        }
     }
 }
 
@@ -1053,6 +1349,152 @@ mod tests {
                 assert_eq!(*payload, EvalValue::Int(7));
             }
             other => panic!("expected Builtin from lib.mkIf, got {other:?}"),
+        }
+    }
+
+    // ── builtins.* primitive coverage ──
+
+    fn eval_env(src: &str, env: EvalEnv) -> EvalValue {
+        let g = AstGraph::from_source(src).expect("parse");
+        eval_node(&g, g.root_id, &env).expect("eval")
+    }
+
+    #[test]
+    fn builtin_to_string_covers_typed_lattice() {
+        assert_eq!(eval("toString 42"), EvalValue::Str("42".into()));
+        assert_eq!(eval("toString 3.5"), EvalValue::Str("3.5".into()));
+        assert_eq!(eval("toString true"), EvalValue::Str("1".into()));
+        assert_eq!(eval("toString false"), EvalValue::Str("".into()));
+        assert_eq!(eval("toString null"), EvalValue::Str("".into()));
+        assert_eq!(eval("toString \"hello\""), EvalValue::Str("hello".into()));
+        assert_eq!(eval("toString [1 2 3]"), EvalValue::Str("1 2 3".into()));
+    }
+
+    #[test]
+    fn builtin_type_predicates() {
+        assert_eq!(eval("isString \"x\""), EvalValue::Bool(true));
+        assert_eq!(eval("isString 42"), EvalValue::Bool(false));
+        assert_eq!(eval("isInt 42"), EvalValue::Bool(true));
+        assert_eq!(eval("isFloat 3.14"), EvalValue::Bool(true));
+        assert_eq!(eval("isBool true"), EvalValue::Bool(true));
+        assert_eq!(eval("isNull null"), EvalValue::Bool(true));
+        assert_eq!(eval("isList [1 2]"), EvalValue::Bool(true));
+        assert_eq!(eval("isAttrs {a=1;}"), EvalValue::Bool(true));
+        assert_eq!(eval("isFunction (x: x)"), EvalValue::Bool(true));
+    }
+
+    #[test]
+    fn builtin_list_ops() {
+        assert_eq!(eval("length [1 2 3 4]"), EvalValue::Int(4));
+        assert_eq!(eval("length \"hello\""), EvalValue::Int(5));
+        assert_eq!(eval("head [10 20 30]"), EvalValue::Int(10));
+        assert_eq!(
+            eval("tail [10 20 30]"),
+            EvalValue::List(vec![EvalValue::Int(20), EvalValue::Int(30)])
+        );
+        assert_eq!(eval("elem 2 [1 2 3]"), EvalValue::Bool(true));
+        assert_eq!(eval("elem 5 [1 2 3]"), EvalValue::Bool(false));
+    }
+
+    #[test]
+    fn builtin_attrset_ops() {
+        let attrs = EvalValue::AttrSet(BTreeMap::from([
+            ("a".to_string(), EvalValue::Int(1)),
+            ("b".to_string(), EvalValue::Int(2)),
+        ]));
+        let env = EvalEnv::new().with_binding("x", attrs.clone());
+        assert_eq!(
+            eval_env("attrNames x", env.clone()),
+            EvalValue::List(vec![
+                EvalValue::Str("a".into()),
+                EvalValue::Str("b".into())
+            ])
+        );
+        assert_eq!(
+            eval_env("attrValues x", env.clone()),
+            EvalValue::List(vec![EvalValue::Int(1), EvalValue::Int(2)])
+        );
+        assert_eq!(
+            eval_env("hasAttr \"a\" x", env.clone()),
+            EvalValue::Bool(true)
+        );
+        assert_eq!(
+            eval_env("hasAttr \"z\" x", env.clone()),
+            EvalValue::Bool(false)
+        );
+        assert_eq!(
+            eval_env("getAttr \"a\" x", env),
+            EvalValue::Int(1)
+        );
+    }
+
+    #[test]
+    fn builtin_concat_ops() {
+        assert_eq!(
+            eval("concatLists [[1 2] [3 4]]"),
+            EvalValue::List(vec![
+                EvalValue::Int(1),
+                EvalValue::Int(2),
+                EvalValue::Int(3),
+                EvalValue::Int(4),
+            ])
+        );
+        assert_eq!(
+            eval("concatStringsSep \", \" [\"a\" \"b\" \"c\"]"),
+            EvalValue::Str("a, b, c".into())
+        );
+    }
+
+    #[test]
+    fn lib_optional_branches_on_condition() {
+        assert_eq!(
+            eval("optional true 99"),
+            EvalValue::List(vec![EvalValue::Int(99)])
+        );
+        assert_eq!(eval("optional false 99"), EvalValue::List(Vec::new()));
+        assert_eq!(
+            eval("optionals true [1 2 3]"),
+            EvalValue::List(vec![EvalValue::Int(1), EvalValue::Int(2), EvalValue::Int(3)])
+        );
+        assert_eq!(
+            eval("optionals false [1 2 3]"),
+            EvalValue::List(Vec::new())
+        );
+        assert_eq!(
+            eval("optionalAttrs true { a = 1; }"),
+            EvalValue::AttrSet(BTreeMap::from([("a".to_string(), EvalValue::Int(1))]))
+        );
+        assert_eq!(
+            eval("optionalAttrs false { a = 1; }"),
+            EvalValue::AttrSet(BTreeMap::new())
+        );
+    }
+
+    #[test]
+    fn lib_id_and_const() {
+        assert_eq!(eval("id 42"), EvalValue::Int(42));
+        assert_eq!(eval("const 7 99"), EvalValue::Int(7));
+    }
+
+    #[test]
+    fn lib_qualified_concatStringsSep_dispatches() {
+        let g = AstGraph::from_source("lib.concatStringsSep \"-\" [\"a\" \"b\"]").expect("parse");
+        let env = EvalEnv::new().with_binding("lib", EvalValue::AttrSet(BTreeMap::new()));
+        assert_eq!(
+            eval_node(&g, g.root_id, &env).unwrap(),
+            EvalValue::Str("a-b".into())
+        );
+    }
+
+    #[test]
+    fn throw_surfaces_as_typed_error() {
+        let g = AstGraph::from_source("throw \"explicit failure\"").expect("parse");
+        let err = eval_node(&g, g.root_id, &EvalEnv::new()).unwrap_err();
+        match err {
+            EvalError::UndefinedIdent(msg) => {
+                assert!(msg.contains("throw: explicit failure"))
+            }
+            other => panic!("expected typed throw error, got {other:?}"),
         }
     }
 

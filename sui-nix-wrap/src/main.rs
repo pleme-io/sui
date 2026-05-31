@@ -1,26 +1,28 @@
-//! `nix-wrap` — migration-bridge wrapper around sui + cppnix.
+//! `nix-wrap` — sui-only `nix` shim. **No cppnix fallback ever.**
 //!
-//! The operator installs this binary as `/run/current-system/sw/bin/nix`
-//! during the sui-as-nix migration window.  Every `nix <cmd> ...`
-//! invocation hits this wrapper, which:
+//! The operator installs this binary as `/run/current-system/sw/bin/nix`.
+//! Every `nix <cmd> ...` invocation hits this wrapper, which:
 //!
 //! 1. Parses the subcommand path from `argv[1..]` (handles nested
 //!    cases: `nix store dump-path`, `nix flake show`, etc).
 //! 2. Looks up the matching entry in
 //!    [`sui_spec::cli_coverage`]'s typed catalog.
 //! 3. Routes to **sui** when the entry is `Working` or `SuiNative`.
-//!    Routes to **real cppnix** (the path the operator configures
-//!    via `NIX_WRAP_CPPNIX_BIN` or `~/.config/sui/nix-wrap.toml`)
-//!    for every other case.
-//! 4. Logs the routing decision to `~/.cache/sui/nix-wrap.log` so
-//!    the operator can see exactly which commands are running on
-//!    which engine.
+//! 4. **For any other case** — `Partial` / `Stub` / `Missing`
+//!    catalog entries, or commands absent from the catalog entirely
+//!    — exits with a typed `coverage-gap` error message + nonzero
+//!    status. **There is no cppnix fallback.** The gap surfaces
+//!    immediately so the operator (and the compounding-directive
+//!    "solve once" discipline) knows exactly what to close.
+//! 5. Logs every routing decision to `~/.cache/sui/nix-wrap.log`
+//!    so the operator can see which commands fired on sui and
+//!    which raised coverage-gap errors.
 //!
-//! This is the **typed bridge** between sui's current capability
-//! (~85% of the cppnix surface byte-identical) and full alias
-//! readiness.  Replaces nothing — both engines stay installed.
-//! Once M2.6+ ship and sui hits 100%, the wrapper can be removed
-//! (or kept as a routing diagnostic).
+//! **Why no fallback:** sui replaces nix completely in Rust. Silent
+//! cppnix retries would let the substrate degrade without anyone
+//! noticing. Erroring loudly is the only way the gap-closure work
+//! happens in measurable increments. Per the pleme-io directive:
+//! "no fallback ever."
 //!
 //! Per pleme-io's NO SHELL law: every dispatch path is typed Rust.
 //! No bash wrappers, no shell glue beyond the operator's
@@ -28,32 +30,6 @@
 //! lives on PATH).
 
 use std::process::{Command, ExitCode};
-
-/// Lookup the configured cppnix fallback binary path.
-///
-/// Resolution order (typed precedence):
-/// 1. `NIX_WRAP_CPPNIX_BIN` env var — explicit operator override.
-/// 2. `/run/current-system/sw/bin/cppnix` — Nix-managed install
-///    location for the renamed-aside cppnix.
-/// 3. `/nix/var/nix/profiles/default/bin/nix` — default nix profile.
-/// 4. `cppnix` on PATH — last-resort PATH search.
-fn cppnix_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("NIX_WRAP_CPPNIX_BIN") {
-        if !p.is_empty() {
-            return std::path::PathBuf::from(p);
-        }
-    }
-    for candidate in [
-        "/run/current-system/sw/bin/cppnix",
-        "/nix/var/nix/profiles/default/bin/nix",
-    ] {
-        let p = std::path::Path::new(candidate);
-        if p.exists() {
-            return p.to_path_buf();
-        }
-    }
-    std::path::PathBuf::from("cppnix")
-}
 
 /// Lookup the configured sui binary path.
 ///
@@ -75,38 +51,44 @@ fn sui_path() -> std::path::PathBuf {
 }
 
 /// Routing decision for one invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Route {
     /// Run on sui — command is `Working` or `SuiNative` per catalog.
     Sui,
-    /// Run on cppnix — command is `Stub`, `Partial`, `Missing`, or
-    /// not in catalog at all.
-    Cppnix,
+    /// Coverage gap — command is `Stub`, `Partial`, `Missing`, or
+    /// absent from the catalog. Errors out with a typed message;
+    /// no fallback.
+    Gap {
+        /// The longest argv prefix that landed on the catalog (empty
+        /// if no entry matched at all).
+        matched_name: String,
+        /// Catalog maturity if a name matched; "absent" otherwise.
+        maturity: &'static str,
+    },
 }
 
 impl Route {
-    fn glyph(self) -> &'static str {
+    fn glyph(&self) -> &'static str {
         match self {
             Route::Sui => "→sui",
-            Route::Cppnix => "→cppnix",
+            Route::Gap { .. } => "✘gap",
         }
     }
 }
 
 /// Match a parsed command-path against the typed catalog.
 ///
-/// The catalog stores entries as space-separated names like
-/// `"store dump-path"` / `"flake show"` / `"hash to-sri"`.  We try
-/// the longest match first (so `nix store dump-path` matches the
-/// 2-token entry, not the 1-token `store` entry).
-///
-/// Returns the routing decision: `Sui` for Working/SuiNative
-/// matches, `Cppnix` for any other catalog state OR no match.
+/// Longest match first (so `nix store dump-path` hits the 2-token
+/// catalog entry, not the 1-token `store`). Returns `Sui` for
+/// Working/SuiNative entries; `Gap` for everything else (including
+/// commands absent from the catalog).
 fn route_for(argv_subcommand: &[&str]) -> Route {
     let Ok(catalog) = sui_spec::cli_coverage::load_canonical() else {
-        return Route::Cppnix;
+        return Route::Gap {
+            matched_name: argv_subcommand.join(" "),
+            maturity: "catalog-load-failed",
+        };
     };
-    // Longest-match first.
     for take in (1..=argv_subcommand.len()).rev() {
         let candidate = argv_subcommand[..take].join(" ");
         for entry in &catalog {
@@ -114,20 +96,34 @@ fn route_for(argv_subcommand: &[&str]) -> Route {
                 use sui_spec::cli_coverage::SuiCommandMaturity::*;
                 return match entry.maturity {
                     Working | SuiNative => Route::Sui,
-                    _ => Route::Cppnix,
+                    Partial => Route::Gap {
+                        matched_name: candidate,
+                        maturity: "Partial",
+                    },
+                    Stub => Route::Gap {
+                        matched_name: candidate,
+                        maturity: "Stub",
+                    },
+                    Missing => Route::Gap {
+                        matched_name: candidate,
+                        maturity: "Missing",
+                    },
                 };
             }
         }
     }
-    Route::Cppnix
+    Route::Gap {
+        matched_name: argv_subcommand.join(" "),
+        maturity: "absent",
+    }
 }
 
 /// Append one routing decision to the operator-facing log.
 ///
 /// Best-effort: any I/O error is silently dropped (the wrapper
 /// must not fail an invocation because the log directory wasn't
-/// writable).  Log lines are typed: timestamp + route + argv.
-fn log_decision(route: Route, argv: &[String]) {
+/// writable).
+fn log_decision(route: &Route, argv: &[String]) {
     use std::io::Write;
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
         return;
@@ -137,7 +133,9 @@ fn log_decision(route: Route, argv: &[String]) {
         return;
     }
     let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true).append(true).open(log_dir.join("nix-wrap.log"))
+        .create(true)
+        .append(true)
+        .open(log_dir.join("nix-wrap.log"))
     else {
         return;
     };
@@ -149,7 +147,7 @@ fn log_decision(route: Route, argv: &[String]) {
 }
 
 /// Strip leading flag arguments to find the first real subcommand
-/// token.  e.g. `--show-trace store dump-path /nix/store/...` →
+/// token. e.g. `--show-trace store dump-path /nix/store/...` →
 /// `["store", "dump-path", "/nix/store/..."]`.
 fn parse_subcommand_path(args: &[String]) -> Vec<&str> {
     args.iter()
@@ -159,115 +157,58 @@ fn parse_subcommand_path(args: &[String]) -> Vec<&str> {
         .collect()
 }
 
-/// Routing mode — controls whether the wrapper falls back to
-/// cppnix when sui fails on a Working/SuiNative command.
-///
-/// The default `Auto` mode achieves functional 100% compatibility
-/// by retrying with cppnix on sui failures (e.g. unimplemented
-/// edge cases in catalog-Working commands like the M2.6 module-
-/// system fixpoint recursion that blocks `nix build` against the
-/// operator's actual nix-darwin flake).
-///
-/// `SuiOnly` is for substrate-development sessions where the
-/// operator WANTS sui failures to surface (so M2.X+ bugs don't
-/// hide behind cppnix).
-///
-/// `CppnixOnly` is the rollback mode — always uses cppnix, never
-/// sui.  For when sui regressed and the operator needs a stable
-/// rebuild.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Auto,
-    SuiOnly,
-    CppnixOnly,
+/// Spawn the configured sui binary with the operator's argv and
+/// wait for it. Returns the child's exit code or the IO error.
+fn spawn_sui(args: &[String]) -> Result<i32, std::io::Error> {
+    let bin = sui_path();
+    Command::new(&bin)
+        .args(args)
+        .status()
+        .map(|s| s.code().unwrap_or(1))
 }
 
-impl Mode {
-    fn from_env() -> Self {
-        match std::env::var("NIX_WRAP_MODE").as_deref() {
-            Ok("sui-only") => Mode::SuiOnly,
-            Ok("cppnix-only") => Mode::CppnixOnly,
-            _ => Mode::Auto,
-        }
-    }
-}
-
-/// Spawn a child for the given binary + args, return its exit
-/// code (Ok) or the IO error (Err).
-fn spawn_and_wait(bin: &std::path::Path, args: &[String]) -> Result<i32, std::io::Error> {
-    Command::new(bin).args(args).status().map(|s| s.code().unwrap_or(1))
+/// Print the typed coverage-gap message + exit nonzero. The message
+/// format is stable; operators and tooling parse `coverage-gap:` as
+/// the prefix.
+fn print_gap_message(matched_name: &str, maturity: &str, argv: &[String]) {
+    eprintln!(
+        "nix-wrap: coverage-gap: '{cmd}' is {status} in sui's CLI catalog",
+        cmd = if matched_name.is_empty() { "(unknown)" } else { matched_name },
+        status = maturity,
+    );
+    eprintln!("  invocation : nix {}", argv.join(" "));
+    eprintln!("  catalog    : sui-spec/specs/cli_coverage.lisp");
+    eprintln!(
+        "  closure    : implement the command natively in sui; bump catalog \
+         entry to Working; add the matching parity probe."
+    );
+    eprintln!(
+        "  rationale  : sui replaces nix completely in Rust. No cppnix \
+         fallback — every gap is a measurable closure target."
+    );
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let argv_subcommand = parse_subcommand_path(&args);
-    let initial_route = route_for(&argv_subcommand);
-    let mode = Mode::from_env();
+    let route = route_for(&argv_subcommand);
+    log_decision(&route, &args);
 
-    // Mode override may force a route different from catalog
-    // resolution.  Auto mode honors catalog routing for the first
-    // attempt; CppnixOnly forces cppnix; SuiOnly forces sui.
-    let route = match mode {
-        Mode::Auto => initial_route,
-        Mode::SuiOnly => Route::Sui,
-        Mode::CppnixOnly => Route::Cppnix,
-    };
-    log_decision(route, &args);
-
-    let bin = match route {
-        Route::Sui => sui_path(),
-        Route::Cppnix => cppnix_path(),
-    };
-    let result = spawn_and_wait(&bin, &args);
-
-    // Auto-mode fallback: if sui exited non-zero AND we have
-    // cppnix available, retry with cppnix.  This is the
-    // functional-100% guarantee — any command catalog-routed to
-    // sui that fails will be re-attempted on cppnix transparently.
-    if mode == Mode::Auto
-        && route == Route::Sui
-        && matches!(result, Ok(c) if c != 0)
-    {
-        let cppnix = cppnix_path();
-        if cppnix.exists() || cppnix == std::path::PathBuf::from("cppnix") {
-            log_decision_fallback(&args);
-            return match spawn_and_wait(&cppnix, &args) {
-                Ok(c) => ExitCode::from(u8::try_from(c & 0xff).unwrap_or(1)),
-                Err(e) => {
-                    eprintln!("nix-wrap: cppnix fallback failed: {e}");
-                    ExitCode::from(127)
-                }
-            };
+    match &route {
+        Route::Sui => match spawn_sui(&args) {
+            Ok(code) => ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1)),
+            Err(e) => {
+                eprintln!("nix-wrap: cannot exec sui ({}): {e}", sui_path().display());
+                ExitCode::from(127)
+            }
+        },
+        Route::Gap { matched_name, maturity } => {
+            print_gap_message(matched_name, maturity, &args);
+            // Stable exit code so wrapper scripts / CI gates can
+            // detect coverage-gap exits specifically.
+            ExitCode::from(78)
         }
     }
-
-    match result {
-        Ok(code) => ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1)),
-        Err(e) => {
-            eprintln!("nix-wrap: cannot exec {} ({route:?}): {e}", bin.display());
-            ExitCode::from(127)
-        }
-    }
-}
-
-/// Log a sui-failed → cppnix-fallback decision.
-fn log_decision_fallback(argv: &[String]) {
-    use std::io::Write;
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return;
-    };
-    let log_dir = home.join(".cache/sui");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true).append(true).open(log_dir.join("nix-wrap.log"))
-    else {
-        return;
-    };
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let _ = writeln!(f, "{ts}\t→cppnix-fallback\t{}", argv.join(" "));
 }
 
 #[cfg(test)]
@@ -284,10 +225,6 @@ mod tests {
             "/nix/store/x".to_string(),
         ];
         let sub = parse_subcommand_path(&argv);
-        // --option's value would actually be a positional but the
-        // simple parser stops at the first flag again.  Sufficient
-        // for the routing decision since "store dump-path" is the
-        // longest prefix that matches the catalog.
         assert_eq!(sub, vec!["store", "dump-path", "/nix/store/x"]);
     }
 
@@ -299,9 +236,15 @@ mod tests {
     }
 
     #[test]
-    fn route_unknown_command_falls_back_to_cppnix() {
+    fn route_unknown_command_is_typed_gap_not_fallback() {
         let argv = ["totally-not-a-command"];
-        assert_eq!(route_for(&argv), Route::Cppnix);
+        match route_for(&argv) {
+            Route::Gap { matched_name, maturity } => {
+                assert_eq!(matched_name, "totally-not-a-command");
+                assert_eq!(maturity, "absent");
+            }
+            other => panic!("expected coverage-gap, got {other:?}"),
+        }
     }
 
     #[test]
@@ -314,11 +257,19 @@ mod tests {
     #[test]
     fn route_longest_prefix_wins() {
         // `store dump-path` (2 tokens) is in catalog; `store`
-        // alone (1 token) is also a subcommand group but the
-        // longest-match should pick the more-specific entry.
+        // alone is the prefix. The longest match should pick the
+        // more-specific entry.
         let argv = ["store", "dump-path", "/nix/store/x"];
-        // Both entries route to sui in current catalog; this test
-        // just ensures we don't panic on the lookup.
-        let _ = route_for(&argv);
+        let _ = route_for(&argv); // both Working → both → Sui; just don't panic
+    }
+
+    #[test]
+    fn glyph_marks_gap_distinctly_from_sui() {
+        assert_eq!(Route::Sui.glyph(), "→sui");
+        let gap = Route::Gap {
+            matched_name: "x".into(),
+            maturity: "absent",
+        };
+        assert_eq!(gap.glyph(), "✘gap");
     }
 }
