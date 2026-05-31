@@ -32,6 +32,14 @@ blake3.workspace = true
 rnix.workspace = true
 rowan.workspace = true
 
+# Real-fetcher runtime — ureq is the blocking-HTTP transport, tar +
+# flate2 handle on-the-wire tarball unpack inside `builtins.fetchTarball`
+# / `builtins.fetchTree`.  Pure-Rust everywhere — no openssl, no
+# libgit2 — to keep the static-link story clean.
+ureq.workspace = true
+tar.workspace = true
+flate2.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true

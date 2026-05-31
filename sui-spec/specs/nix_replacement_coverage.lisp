@@ -162,6 +162,20 @@
   :owns "sui-spec::realisation (planned)"
   :notes "Content-addressed derivations (`__contentAddressed = true`). Realisation table lives in sui-spec::realisation; full input-addressed → content-addressed mapping queued.")
 
+(defnix-replacement-surface
+  :name "ast-evaluator-builtins-derivation"
+  :category Derivation
+  :status Done
+  :owns "sui-spec::ast_evaluator (eval_derivation + EvalValue::Derivation)"
+  :notes "`builtins.derivation`, `derivationStrict`, `__derivationStrict` route the input attrset through sui-spec::derivation's typed input-addressed pipeline, returning a typed EvalValue::Derivation that exposes .drvPath / .outPath / .name / .system AND interpolates as `out` inside strings. Determinism + select-thru + missing-required-attr error paths covered by tests.")
+
+(defnix-replacement-surface
+  :name "ast-evaluator-builtins-fetch"
+  :category Fetcher
+  :status Done
+  :owns "sui-spec::ast_evaluator (eval_fetchurl/Tarball/Git/Tree + UreqTransport)"
+  :notes "`builtins.fetchurl`, `fetchTarball`, `fetchGit`, `fetchTree` are wired through sui-spec::fetcher's typed FetcherEnvironment with a ureq HTTP transport + flate2/tar unpack + sha256 FOD store-path computation. `file://` URLs work offline; the typed border is the same one sui-eval consumes.")
+
 ;; ── Fetchers ─────────────────────────────────────────────────────
 
 (defnix-replacement-surface

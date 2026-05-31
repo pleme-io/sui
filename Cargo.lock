@@ -6318,6 +6318,7 @@ dependencies = [
  "base64",
  "blake3",
  "bytecheck 0.8.2",
+ "flate2",
  "libc",
  "pretty_assertions",
  "proptest",
@@ -6329,10 +6330,12 @@ dependencies = [
  "serde_json",
  "sha2",
  "sui-compat",
+ "tar",
  "tatara-lisp",
  "tatara-lisp-derive",
  "tempfile",
  "thiserror 2.0.18",
+ "ureq",
  "url",
 ]
 
