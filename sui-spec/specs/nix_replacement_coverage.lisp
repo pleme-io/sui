@@ -79,7 +79,7 @@
   :category SubstrateL1
   :status InProgress
   :owns "sui-spec::module_compiler"
-  :notes "AST→ModuleNode lowering pass. Recognizes options.x = mkOption {...}, config.x = value, config = mkMerge [...], mkIf cond value, mkForce/mkVMOverride priority overrides, imports = [...]. Slice analysis emits config.* reads (body + mkIf condition) directly into ConfigSetter.slice at emit time. Queued: import-target resolution + defunctionalization of higher-order setters.")
+  :notes "AST→ModuleNode lowering pass. Recognizes options.x = mkOption {...}, config.x = value, config = mkMerge [...], mkIf cond value, mkForce/mkVMOverride priority overrides, imports = [...]. Slice analysis emits config.* reads (body + mkIf condition) directly into ConfigSetter.slice at emit time. Module-level env-prefix capture: outer `let foo = …; in BODY` bindings and `with X; BODY` scopes are captured as ModuleNode.body_env_prefix and the evaluator re-applies them before every setter body — so `let cfg = config.foo; in { config.x = cfg.bar; }` works end-to-end. Queued: import-target resolution + defunctionalization of higher-order setters.")
 
 (defnix-replacement-surface
   :name "module-solver"

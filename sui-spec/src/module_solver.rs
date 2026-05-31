@@ -57,7 +57,9 @@ use std::sync::Arc;
 
 use crate::ast_evaluator::{eval_node, EvalEnv, EvalValue};
 use crate::ast_graph::AstGraph;
-use crate::module_graph::{ConfigSetter, ModuleGraph, ModuleId, SetterId};
+use crate::module_graph::{
+    ConfigSetter, EnvPrefixBinding, EnvPrefixKind, ModuleGraph, ModuleId, ModuleNode, SetterId,
+};
 
 /// A canonical config path, e.g. `["services", "atticd", "enable"]`.
 pub type ConfigPath = Vec<String>;
@@ -107,6 +109,11 @@ pub trait BodyEvaluator {
     /// evaluators (`PerModuleEvaluator`) route the body to the right
     /// `AstGraph`. Single-module evaluators ignore it.
     ///
+    /// `module` carries the [`ModuleNode::body_env_prefix`] the
+    /// evaluator must apply BEFORE the per-setter body — that's how
+    /// `let cfg = config.foo; in BODY` bindings flow into setter
+    /// evaluation. Modules with no prefix have an empty list.
+    ///
     /// # Errors
     ///
     /// Returns a free-form reason string when the body can't be
@@ -115,6 +122,7 @@ pub trait BodyEvaluator {
     fn evaluate(
         &self,
         gid: GlobalSetterId,
+        module: &ModuleNode,
         setter: &ConfigSetter,
         env_snapshot: &EnvSnapshot,
     ) -> Result<Vec<u8>, String>;
@@ -151,10 +159,11 @@ impl BodyEvaluator for TreeWalkingEvaluator {
     fn evaluate(
         &self,
         _gid: GlobalSetterId,
+        module: &ModuleNode,
         setter: &ConfigSetter,
         env_snapshot: &EnvSnapshot,
     ) -> Result<Vec<u8>, String> {
-        let env = env_snapshot_to_eval_env(env_snapshot);
+        let env = build_eval_env_with_prefix(&self.graph, env_snapshot, &module.body_env_prefix)?;
         let value = eval_node(&self.graph, setter.body_ast_root, &env)
             .map_err(|e| format!("ast eval: {e}"))?;
         serde_json::to_vec(&value)
@@ -189,6 +198,7 @@ impl BodyEvaluator for PerModuleEvaluator {
     fn evaluate(
         &self,
         gid: GlobalSetterId,
+        module: &ModuleNode,
         setter: &ConfigSetter,
         env_snapshot: &EnvSnapshot,
     ) -> Result<Vec<u8>, String> {
@@ -198,11 +208,49 @@ impl BodyEvaluator for PerModuleEvaluator {
                 gid.module, setter.assigns_path
             )
         })?;
-        let env = env_snapshot_to_eval_env(env_snapshot);
+        let env = build_eval_env_with_prefix(graph, env_snapshot, &module.body_env_prefix)?;
         let value = eval_node(graph, setter.body_ast_root, &env)
             .map_err(|e| format!("ast eval: {e}"))?;
         serde_json::to_vec(&value).map_err(|e| format!("value→bytes: {e}"))
     }
+}
+
+/// Build the full evaluation env for a setter: start from
+/// [`env_snapshot_to_eval_env`] (which seeds `config`), then layer in
+/// every binding from `prefix` so let-bound names + with-scope attrs
+/// from the module's outer wrapping resolve correctly.
+///
+/// Each prefix entry's `value_node_id` is evaluated against the env
+/// built so far (so later prefix entries can reference earlier ones).
+/// With-kind entries' values are expected to evaluate to an
+/// AttrSet — its attrs unpack as top-level bindings (existing names
+/// shadow; matches cppnix's `with` precedence).
+fn build_eval_env_with_prefix(
+    graph: &AstGraph,
+    snapshot: &EnvSnapshot,
+    prefix: &[EnvPrefixBinding],
+) -> Result<EvalEnv, String> {
+    let mut env = env_snapshot_to_eval_env(snapshot);
+    for binding in prefix {
+        let value = eval_node(graph, binding.value_node_id, &env)
+            .map_err(|e| format!("evaluating env-prefix '{}': {e}", binding.name))?;
+        match binding.kind {
+            EnvPrefixKind::Let => {
+                env.bindings.insert(binding.name.clone(), value);
+            }
+            EnvPrefixKind::With => {
+                if let EvalValue::AttrSet(map) = value {
+                    for (k, v) in map {
+                        env.bindings.entry(k).or_insert(v);
+                    }
+                }
+                // If the with-scope didn't evaluate to an AttrSet,
+                // silently skip — matches cppnix's "with non-attrset
+                // is a no-op" tolerance.
+            }
+        }
+    }
+    Ok(env)
 }
 
 /// Project [`EnvSnapshot`] into an [`EvalEnv`] with a single
@@ -465,10 +513,17 @@ impl<E: BodyEvaluator> SolverState<E> {
     ///
     /// [`SolverError::BodyEval`] when the body evaluator rejects.
     pub fn fire(&mut self, gid: GlobalSetterId) -> Result<ConfigPath, SolverError> {
+        let module = self
+            .graph
+            .modules
+            .iter()
+            .find(|m| m.id == gid.module)
+            .expect("module id resolved")
+            .clone();
         let setter = self.get_setter(gid).clone();
         let bytes = self
             .evaluator
-            .evaluate(gid, &setter, &self.env)
+            .evaluate(gid, &module, &setter, &self.env)
             .map_err(|reason| SolverError::BodyEval { id: gid, reason })?;
         self.env.config.insert(setter.assigns_path.clone(), bytes);
         self.fired.insert(gid);
@@ -588,6 +643,7 @@ mod tests {
         fn evaluate(
             &self,
             _gid: GlobalSetterId,
+            _module: &ModuleNode,
             setter: &ConfigSetter,
             _env: &EnvSnapshot,
         ) -> Result<Vec<u8>, String> {

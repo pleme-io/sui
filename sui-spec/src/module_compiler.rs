@@ -50,7 +50,8 @@
 
 use crate::ast_graph::{AstGraph, AstNodeForm, AstNodeKind, AttrEntry, NodeId as AstNodeId};
 use crate::module_graph::{
-    ConfigSetter, ImportEdge, ModuleId, ModuleNode, OptionDecl, SetterId,
+    ConfigSetter, EnvPrefixBinding, EnvPrefixKind, ImportEdge, ModuleId, ModuleNode, OptionDecl,
+    SetterId,
 };
 
 /// Errors from the compiler.
@@ -88,10 +89,16 @@ pub fn compile_module(
         option_decls: Vec::new(),
         setters: Vec::new(),
         imports: Vec::new(),
+        body_env_prefix: Vec::new(),
     };
 
     // Step into the lambda body if the root is `{ config, lib, pkgs, ... }: ...`.
-    let body_id = match resolve_module_body(ast)? {
+    // The walker also captures every let-binding and with-scope it
+    // unwraps, baking them into node.body_env_prefix so the evaluator
+    // can re-seed each setter's env.
+    let (body_id_opt, prefix) = resolve_module_body_with_prefix(ast)?;
+    node.body_env_prefix = prefix;
+    let body_id = match body_id_opt {
         Some(id) => id,
         None => return Ok(node), // empty body, partial module — return partial node
     };
@@ -118,20 +125,29 @@ fn node_at(ast: &AstGraph, id: AstNodeId) -> &AstNodeForm {
 }
 
 /// Resolve the "module body" — the attrset that holds options /
-/// config / imports. Unwraps the common shells the body is wrapped in:
+/// config / imports — AND capture the env-prefix bindings from the
+/// outer wrappers along the way.
 ///
-/// * `Lambda { … }: BODY` — formal-args wrapper (`{ config, lib, ... }`).
-/// * `let … in BODY` — local bindings (very common in real modules).
-/// * `with pkgs; BODY` — module-wide `with`.
-/// * `assert cond; BODY` — sanity preconditions.
+/// Unwraps the common shells:
+/// * `Lambda { … }: BODY` — formal-args wrapper. Args (`config`,
+///   `lib`, `pkgs`) come from the evaluator's caller; nothing to
+///   capture here.
+/// * `let foo = …; in BODY` — captures each single-segment binding
+///   as `EnvPrefixKind::Let`.
+/// * `with X; BODY` — captures `X`'s AST id as a synthetic
+///   `__with_N` binding tagged `EnvPrefixKind::With`. The evaluator
+///   unpacks X's attrset attrs as top-level idents when it
+///   re-applies the prefix.
+/// * `assert cond; BODY` — ignored for prefix purposes.
 ///
-/// Stops at the first `AttrSet`. Bounded loop depth so a pathological
-/// or hand-crafted input can't spin forever. Returns `None` if we
-/// can't reach an attrset within the bound — caller emits a partial
-/// node so the operator can still see the file via its hash.
-fn resolve_module_body(ast: &AstGraph) -> Result<Option<AstNodeId>, ModuleCompilerError> {
+/// Stops at the first `AttrSet`. Bounded loop depth. Returns
+/// `(None, prefix)` if we can't reach an attrset within the bound.
+fn resolve_module_body_with_prefix(
+    ast: &AstGraph,
+) -> Result<(Option<AstNodeId>, Vec<EnvPrefixBinding>), ModuleCompilerError> {
     let mut cursor = ast.root_id;
-    // Bound the loop in case of pathological inputs.
+    let mut prefix: Vec<EnvPrefixBinding> = Vec::new();
+    let mut with_depth = 0u32;
     for _ in 0..32 {
         let node = node_at(ast, cursor);
         match &node.kind {
@@ -139,11 +155,26 @@ fn resolve_module_body(ast: &AstGraph) -> Result<Option<AstNodeId>, ModuleCompil
                 cursor = *body;
                 continue;
             }
-            AstNodeKind::LetIn { body, .. } => {
+            AstNodeKind::LetIn { bindings, body, .. } => {
+                for entry in bindings {
+                    if entry.path.len() == 1 {
+                        prefix.push(EnvPrefixBinding {
+                            name: entry.path[0].clone(),
+                            value_node_id: entry.value,
+                            kind: EnvPrefixKind::Let,
+                        });
+                    }
+                }
                 cursor = *body;
                 continue;
             }
-            AstNodeKind::With { body, .. } => {
+            AstNodeKind::With { env: scope, body } => {
+                prefix.push(EnvPrefixBinding {
+                    name: format!("__with_{with_depth}"),
+                    value_node_id: *scope,
+                    kind: EnvPrefixKind::With,
+                });
+                with_depth += 1;
                 cursor = *body;
                 continue;
             }
@@ -151,11 +182,13 @@ fn resolve_module_body(ast: &AstGraph) -> Result<Option<AstNodeId>, ModuleCompil
                 cursor = *body;
                 continue;
             }
-            AstNodeKind::AttrSet { .. } => return Ok(Some(cursor)),
+            AstNodeKind::AttrSet { .. } => return Ok((Some(cursor), prefix)),
             // Forward-compat: anything else means we don't recognize
             // the module shape. Return None so the caller emits a
             // partial node rather than a hard error.
-            AstNodeKind::Unknown { .. } | AstNodeKind::Null => return Ok(None),
+            AstNodeKind::Unknown { .. } | AstNodeKind::Null => {
+                return Ok((None, prefix));
+            }
             other => {
                 return Err(ModuleCompilerError::UnexpectedRootShape {
                     kind: kind_name(other),
@@ -163,7 +196,7 @@ fn resolve_module_body(ast: &AstGraph) -> Result<Option<AstNodeId>, ModuleCompil
             }
         }
     }
-    Ok(None)
+    Ok((None, prefix))
 }
 
 fn kind_name(k: &AstNodeKind) -> &'static str {

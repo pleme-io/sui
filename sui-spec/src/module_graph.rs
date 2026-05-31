@@ -137,6 +137,70 @@ pub struct ModuleNode {
     /// Import edges: which other modules this one pulls into the
     /// system. Resolved at parse time so the runtime view is flat.
     pub imports: Vec<ImportEdge>,
+    /// Env-prefix bindings captured from the module's outer wrappers
+    /// (let-in bindings, with-scope attrsets). Each entry maps an
+    /// identifier name to the AST node id whose evaluation produces
+    /// the binding's value. The evaluator seeds each setter's
+    /// evaluation env with these BEFORE adding `config` — so a setter
+    /// body that references `cfg` (bound by an outer `let cfg =
+    /// config.foo;`) resolves correctly.
+    ///
+    /// Two entry kinds today:
+    ///   * Named bindings from outer `let ... in BODY` clauses.
+    ///   * Synthetic `__with_<n>` entries for each outer `with X;`
+    ///     scope, where X's evaluation result is unpacked into the
+    ///     env (its attrset attrs become top-level idents).
+    ///     `__with_<n>` itself is never directly referenced; it's
+    ///     a placeholder so the evaluator knows to unpack the value.
+    pub body_env_prefix: Vec<EnvPrefixBinding>,
+}
+
+/// One env-prefix binding captured from a module's outer wrapping.
+/// See [`ModuleNode::body_env_prefix`].
+#[derive(
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Debug,
+    Clone,
+    PartialEq,
+)]
+#[rkyv(derive(Debug))]
+pub struct EnvPrefixBinding {
+    /// Identifier name this binding is reachable under. For synthetic
+    /// `with X;` entries, this is `"__with_N"` where N is the unwrap
+    /// depth — uniquely identifies which scope the entry came from.
+    pub name: String,
+    /// AST node id whose evaluation produces the binding's value.
+    pub value_node_id: super::ast_graph::NodeId,
+    /// Kind of binding — let-bound name, or `with`-scope attrset to
+    /// be unpacked.
+    pub kind: EnvPrefixKind,
+}
+
+/// Distinguishes let-bindings (just bind name=value) from
+/// with-clauses (unpack the value's attrset attrs as top-level
+/// names in the env).
+#[derive(
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+)]
+#[rkyv(derive(Debug))]
+pub enum EnvPrefixKind {
+    /// Bound by name: `let foo = …; in BODY`.
+    Let,
+    /// Unpacked attrset: `with foo; BODY`.
+    With,
 }
 
 /// One `options.foo.bar = mkOption { ... }` declaration.
@@ -378,6 +442,7 @@ mod tests {
             option_decls: Vec::new(),
             setters: Vec::new(),
             imports: Vec::new(),
+            body_env_prefix: Vec::new(),
         });
         let id1 = g.push_module(ModuleNode {
             id: 99,
@@ -386,6 +451,7 @@ mod tests {
             option_decls: Vec::new(),
             setters: Vec::new(),
             imports: Vec::new(),
+            body_env_prefix: Vec::new(),
         });
         assert_eq!(id0, 0);
         assert_eq!(id1, 1);
@@ -418,6 +484,7 @@ mod tests {
             option_decls: Vec::new(),
             setters: Vec::new(),
             imports: Vec::new(),
+            body_env_prefix: Vec::new(),
         });
         assert_eq!(g.canonical_hash.bytes, [0u8; 32]);
         let (stamped, bytes) = g.archive_and_hash().unwrap();
@@ -436,6 +503,7 @@ mod tests {
                 option_decls: Vec::new(),
                 setters: Vec::new(),
                 imports: Vec::new(),
+            body_env_prefix: Vec::new(),
             });
             g
         };
@@ -467,6 +535,7 @@ mod tests {
                 priority: 100,
             }],
             imports: Vec::new(),
+            body_env_prefix: Vec::new(),
         });
         let (_, bytes) = g.archive_and_hash().unwrap();
         let archived =

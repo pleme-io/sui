@@ -297,6 +297,74 @@ fn setter_body_with_inline_with_scope() {
     assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
 }
 
+// ── env-prefix propagation: module-level let / with bindings ──────
+
+#[test]
+fn module_level_let_propagates_to_setter_bodies() {
+    // The canonical real-world pattern: outer let-binding gives a
+    // short alias for a deep config path, then the body uses it.
+    // Before the env-prefix work, this raised UndefinedIdent because
+    // the compiler unwrapped the `let` but dropped the bindings.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: \
+         let answer = 42; in { \
+         config.x = answer; \
+         config.y = answer * 2; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+    assert_eq!(env_value(solver.env(), &["y"]), EvalValue::Int(84));
+}
+
+#[test]
+fn module_level_with_propagates_attrset_attrs_as_idents() {
+    // `with lib; { config.x = mkIf-renamed-to-just-mkIf cond body; }` —
+    // the with-scope attrset's attrs become top-level idents in
+    // every setter body. The walker unpacks via the env-prefix.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: \
+         with { localHelper = 7; otherHelper = 8; }; { \
+         config.x = localHelper + otherHelper; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(15));
+}
+
+#[test]
+fn nested_let_and_with_compose() {
+    // let outer; with attrs; let inner; in BODY — both layers of
+    // bindings flow through.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: \
+         let base = 100; in \
+         with { multiplier = 2; }; \
+         let bonus = 5; in { \
+         config.total = base * multiplier + bonus; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["total"]), EvalValue::Int(205));
+}
+
+#[test]
+fn module_level_let_binding_referencing_config_resolves() {
+    // The truly canonical NixOS pattern:
+    //   let cfg = config.services.atticd; in { config.x = cfg.foo; }
+    // Requires the env-prefix binding to evaluate against an env
+    // where `config` is already populated.
+    let mut solver = build_solver_one_module(
+        "{ config, ... }: { \
+         config.services.atticd.enable = 1; \
+         config.services.atticd.foo = 42; \
+         config.x = config.services.atticd.foo; \
+         }",
+    );
+    solver.run(&[]).expect("solver run");
+    assert_eq!(env_value(solver.env(), &["x"]), EvalValue::Int(42));
+}
+
 #[test]
 fn closure_application_inside_body_evaluates() {
     // Inline closure + application. The walker handles Lambda →
