@@ -1296,11 +1296,11 @@
         "substrate": "substrate"
       },
       "locked": {
-        "lastModified": 1780458847,
-        "narHash": "sha256-MqBZYU+LqkSho6LqJUdLti+TJ0Q8/sMkMXiEmN6KGKE=",
+        "lastModified": 1780465774,
+        "narHash": "sha256-kxg0Ht6VKL0/+Pi/krRPK916AFFvay3Oj0oMfHHchV0=",
         "owner": "pleme-io",
         "repo": "forge",
-        "rev": "36d90b620ae5d251ca6bd5a91bc9e2c9284fdd95",
+        "rev": "f40dae7620e8c3345d1ec8cc37ffc6cc48d1e727",
         "type": "github"
       },
       "original": {
