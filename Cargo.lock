@@ -6423,8 +6423,13 @@ dependencies = [
 name = "sui-supercacheci"
 version = "0.1.13"
 dependencies = [
+ "async-trait",
  "serde",
  "shikumi",
+ "sui-cache",
+ "sui-store",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

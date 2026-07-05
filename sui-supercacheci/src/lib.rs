@@ -73,6 +73,17 @@ use shikumi::TieredConfig;
 /// coordinator (a named DESIGN/LiveTODO), not a forked controller.
 pub mod memory;
 
+/// The always-fresh cache + Redis/Postgres always-warm tuning surface — the
+/// evict/warm/GC maintenance pass (elements 3 + 4 of the memory-first core)
+/// lifted into a typed pass that **composes the real sui crates**: the shipped
+/// `sui_cache::gc::collect_garbage` root-set GC over `sui_cache::StorageBackend`,
+/// and the `sui_store` durable GC contract. The per-entry freshness verdict is
+/// pure (in [`memory`]); this module aggregates it and drives it against a
+/// mockable [`freshness::CacheMaintenance`] environment (the pleme-io default
+/// delivery method). The coordinator that *schedules* the pass is autorevivy's
+/// active-cache-maintenance loop — a named LiveTODO, never forked here.
+pub mod freshness;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)

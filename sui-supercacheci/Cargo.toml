@@ -16,6 +16,21 @@ repository.workspace = true
 shikumi = "0.1"
 serde.workspace = true
 
+# The freshness maintenance pass COMPOSES the real sui crates (never forks):
+# sui-cache's shipped root-set GC (gc::collect_garbage) over its StorageBackend
+# trait, and sui-store's durable Store GC contract (GcOptions/GcResult). The
+# async CacheMaintenance environment seam uses async-trait; errors are typed via
+# thiserror.
+sui-cache.workspace = true
+sui-store.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Async freshness-pass tests + the in-memory sui_cache::StorageBackend double
+# (proves composition of the real collect_garbage with zero disk).
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
 # LiveTODO(lisp): the `(defsupercacheci ...)` authoring surface (Rust + Lisp
 # primary pattern, `#[derive(DeriveTataraDomain)]`) is intentionally NOT wired
 # here. The sui workspace's tatara-lisp is currently locked at a mismatched
