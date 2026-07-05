@@ -195,6 +195,66 @@ pub fn plan_precarve(forecast: &MemoryForecast, band: &MemoryBand) -> PreCarve {
     }
 }
 
+/// The typed breathe carve **request** a [`PreCarve`] lifts into — the
+/// composition border to breathe's `MemoryBand` + shadow gate. [`plan_precarve`]
+/// decides *how much* to reserve; this names *which band* to carve and maps the
+/// decision onto breathe's real actuator contract:
+/// [`shadow_only`](PrecarveRequest::shadow_only) is breathe-core's
+/// `ReconcileInput.dry_run` (observe `ShadowWouldApply` before mutating),
+/// [`escalate`](PrecarveRequest::escalate) drives the on-demand ladder
+/// (never-stuck), and [`carve_mib`](PrecarveRequest::carve_mib) is the
+/// pre-build reservation (breathe-core `ReconcileInput.force` — a bounded,
+/// through-the-gate carve). Authored `(defprecarverequest …)` at the
+/// destination.
+///
+/// **Composes breathe, does not fork it:** this is the typed *input* the
+/// [`autorevivy`] `breathe_bands` coordinator submits to `breathe-core`; the
+/// actual submission is a named **LiveTODO** (the Observe/Act loop), never a
+/// second controller.
+///
+/// [`autorevivy`]: https://github.com/pleme-io/autorevivy
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PrecarveRequest {
+    /// The breathe band to pre-carve (composes `BreatheCfg.band_ref` /
+    /// `CacheCfg.memory_band` from the config surface).
+    pub band_ref: String,
+    /// The RAM to reserve ahead of the build, MiB (from [`PreCarve::carve_mib`]).
+    pub carve_mib: u32,
+    /// Shadow-first: maps to breathe-core `ReconcileInput.dry_run` — observe
+    /// `ShadowWouldApply` before flipping the band LIVE.
+    pub shadow_only: bool,
+    /// The forecast overflows the band ceiling — climb the on-demand ladder for
+    /// the overflow rather than wedging (never-stuck).
+    pub escalate: bool,
+    /// How the forecast was produced (provenance — a wrong pre-carve is
+    /// attributable, never a silent guess).
+    pub basis: ForecastBasis,
+}
+
+/// Lift a forecast + band into the typed breathe carve request — **element 1**,
+/// the composition border. Pure/deterministic: runs [`plan_precarve`] and maps
+/// its decision onto breathe's `MemoryBand` + shadow-gate contract, tagging the
+/// target band. This is `predict → shadow → confirm → allocate` expressed *over
+/// breathe*, ready for the [`autorevivy`] `breathe_bands` coordinator to submit
+/// (the submission is the LiveTODO loop, not built here).
+///
+/// [`autorevivy`]: https://github.com/pleme-io/autorevivy
+#[must_use]
+pub fn precarve_request(
+    forecast: &MemoryForecast,
+    band: &MemoryBand,
+    band_ref: &str,
+) -> PrecarveRequest {
+    let pc = plan_precarve(forecast, band);
+    PrecarveRequest {
+        band_ref: band_ref.to_string(),
+        carve_mib: pc.carve_mib,
+        shadow_only: pc.shadow_only,
+        escalate: pc.needs_escalation,
+        basis: forecast.basis,
+    }
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Element 2 — Memory-tuned 100%-spot AUCTION (breathe leilao, memory axis)
 // ───────────────────────────────────────────────────────────────────────────
@@ -251,6 +311,107 @@ pub fn rank_memory_bids(candidates: &[SpotCandidate]) -> Vec<MemoryBid> {
     let mut bids: Vec<MemoryBid> = candidates.iter().map(score_memory_bid).collect();
     bids.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.family.cmp(&b.family)));
     bids
+}
+
+/// The **memory-tuned auction config** — the typed 100%-spot posture *on the
+/// memory axis* (element 2's config half; the flat `spot_families: Vec<String>`
+/// on `ArchAsg` carries none of it). breathe's leiloeiro (`BandLeiloeiro`)
+/// diversifies 100%-spot capacity; this **constrains + biases** that
+/// diversification toward memory, because super-cache-ci is memory-bound
+/// (RAMDISK ⇒ MiB is the buy, never vCPU). Authored `(defmemoryauction …)` at
+/// the destination.
+///
+/// Every field has a real behavioral effect in [`plan_memory_auction`] (no
+/// vestigial knob): [`min_mib`](MemoryAuctionCfg::min_mib) is the memory floor,
+/// [`max_interrupt_rate`](MemoryAuctionCfg::max_interrupt_rate) the reclaim
+/// ceiling, [`diversify_top_n`](MemoryAuctionCfg::diversify_top_n) the
+/// never-single-family cap. The *memory axis itself* is structural — the plan
+/// ranks via [`rank_memory_bids`], which scores MiB-per-dollar and ignores vCPU
+/// by construction — so it is not a togglable flag.
+///
+/// **Composes breathe-auction, does not fork it:** [`plan_memory_auction`]
+/// produces the ranked, filtered candidate set the `BandLeiloeiro` consumes as
+/// its memory-tuned input; the auction (diversification, grant allocation) stays
+/// breathe's.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryAuctionCfg {
+    /// The minimum RAM (MiB) a candidate must offer to be bid on — a
+    /// memory-starved instance is never bid (memory is the resource). `0`
+    /// disables the floor.
+    pub min_mib: u32,
+    /// The maximum reclaim-frequency bucket (`0..=100`) a family may carry — a
+    /// churnier family is rejected, because a mid-build reclaim throws away the
+    /// whole in-RAM build.
+    pub max_interrupt_rate: u8,
+    /// How many top-ranked families 100%-spot diversifies across — never a
+    /// single family (a whole-fleet reclaim of one family must not stall the
+    /// build). `0` disables the cap (rank all survivors).
+    pub diversify_top_n: u8,
+}
+
+impl MemoryAuctionCfg {
+    /// The memory-blind floor (no auction opinion) — the `bare()` tier. No
+    /// floor, no reclaim ceiling, no diversification cap.
+    #[must_use]
+    pub fn unset() -> Self {
+        Self {
+            min_mib: 0,
+            max_interrupt_rate: 100,
+            diversify_top_n: 0,
+        }
+    }
+
+    /// The prescribed camelot memory-tuned posture: reject a candidate below
+    /// 8 GiB or churnier than 20%, and diversify 100%-spot across the top 3
+    /// memory-ranked families.
+    #[must_use]
+    pub fn camelot() -> Self {
+        Self {
+            min_mib: 8192,
+            max_interrupt_rate: 20,
+            diversify_top_n: 3,
+        }
+    }
+}
+
+/// The memory-tuned auction plan — the diversified, memory-ranked spot set the
+/// breathe leiloeiro consumes, plus the never-stuck escalation flag.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MemoryAuctionPlan {
+    /// The ranked, constraint-filtered, top-N diversified memory bids — the
+    /// memory-tuned input to breathe's `BandLeiloeiro`.
+    pub bids: Vec<MemoryBid>,
+    /// Every candidate was filtered out (all too small / too churny) — the
+    /// leiloeiro has nothing to bid, so climb the on-demand ladder rather than
+    /// wedging (never-stuck).
+    pub needs_escalation: bool,
+}
+
+/// Plan the memory-tuned 100%-spot auction — **element 2**, the config half.
+/// Pure/deterministic: filter candidates by the config's memory floor + reclaim
+/// ceiling, rank the survivors on the memory axis ([`rank_memory_bids`]), and
+/// diversify across the top-N families. If the constraints empty the field,
+/// [`MemoryAuctionPlan::needs_escalation`] is set (climb the on-demand ladder;
+/// never wedge). This is the memory-tuned *input* breathe's `BandLeiloeiro`
+/// diversifies — the auction is composed, not forked.
+#[must_use]
+pub fn plan_memory_auction(
+    cfg: &MemoryAuctionCfg,
+    candidates: &[SpotCandidate],
+) -> MemoryAuctionPlan {
+    let survivors: Vec<SpotCandidate> = candidates
+        .iter()
+        .filter(|c| c.mib >= cfg.min_mib && c.interrupt_rate <= cfg.max_interrupt_rate)
+        .cloned()
+        .collect();
+    let mut bids = rank_memory_bids(&survivors);
+    if cfg.diversify_top_n > 0 {
+        bids.truncate(cfg.diversify_top_n as usize);
+    }
+    MemoryAuctionPlan {
+        needs_escalation: bids.is_empty(),
+        bids,
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -645,13 +806,15 @@ pub const CONTROLLER_ELEMENTS: [ControllerElement; 6] = [
 /// [`SuperCacheCiConfig`](crate::SuperCacheCiConfig). Naming the keyword without
 /// a compiling derive is the honest tier — not a rounded-up "Lisp surface
 /// works".
-pub const AUTHORING_KEYWORDS: [&str; 6] = [
-    "defmemoryforecast",  // element 1 — MemoryForecast / PreCarve
-    "defmemorybid",       // element 2 — SpotCandidate / MemoryBid
-    "defcachetuning",     // element 3 — RedisTuning / PgTuning
+pub const AUTHORING_KEYWORDS: [&str; 8] = [
+    "defmemoryforecast",   // element 1 — MemoryForecast / PreCarve
+    "defprecarverequest",  // element 1 — PrecarveRequest (breathe carve border)
+    "defmemorybid",        // element 2 — SpotCandidate / MemoryBid
+    "defmemoryauction",    // element 2 — MemoryAuctionCfg / MemoryAuctionPlan
+    "defcachetuning",      // element 3 — RedisTuning / PgTuning
     "deffreshnessverdict", // element 4 — EntryStat / FreshnessVerdict
     "defpresentationplan", // element 5 — PresentationInput / PresentationVerdict
-    "defefficiencytune",  // element 6 — TuneProposal / TuneOutcome
+    "defefficiencytune",   // element 6 — TuneProposal / TuneOutcome
 ];
 
 #[cfg(test)]
@@ -707,6 +870,32 @@ mod tests {
         assert_eq!(f.predicted_tail_mib, 1024, "cold-start tail is 2x peak");
     }
 
+    #[test]
+    fn precarve_request_maps_shadow_to_dry_run_and_tags_the_band() {
+        let f = MemoryForecast::cold_start("abc", 1000); // tail 2000
+        let b = band(80, 20, 8192, true); // dry_run band = shadow gate
+        let req = precarve_request(&f, &b, "super-cache-ci");
+        assert_eq!(req.band_ref, "super-cache-ci", "the carve request tags the band");
+        // tail 2000 grossed up by 20% headroom = 2400, under the 8192 ceiling.
+        assert_eq!(req.carve_mib, 2400);
+        assert!(
+            req.shadow_only,
+            "a dry-run band => shadow_only (breathe ReconcileInput.dry_run) — observe before mutating"
+        );
+        assert!(!req.escalate);
+        assert_eq!(req.basis, ForecastBasis::ColdStart, "provenance is carried, never a silent guess");
+    }
+
+    #[test]
+    fn precarve_request_escalates_over_ceiling_never_wedges() {
+        let f = MemoryForecast::cold_start("big", 5000); // tail 10000 > 8192
+        let b = band(80, 20, 8192, false);
+        let req = precarve_request(&f, &b, "super-cache-ci");
+        assert!(req.escalate, "over-ceiling climbs the on-demand ladder, never wedges");
+        assert_eq!(req.carve_mib, 8192, "carve what the band can, escalate the rest");
+        assert!(!req.shadow_only, "non-dry-run band carves LIVE");
+    }
+
     // ── Element 2 ──────────────────────────────────────────────────────────
 
     #[test]
@@ -736,6 +925,67 @@ mod tests {
         // equal-score tie broken by family name ascending.
         assert_eq!(ranked[1].family, "a");
         assert_eq!(ranked[2].family, "z");
+    }
+
+    #[test]
+    fn auction_filters_below_the_memory_floor() {
+        let cfg = MemoryAuctionCfg::camelot(); // min 8192 MiB
+        let cands = vec![
+            SpotCandidate { family: "small".into(), mib: 4096, vcpu: 4, price_milli: 200, interrupt_rate: 0 },
+            SpotCandidate { family: "big".into(), mib: 32768, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
+        ];
+        let plan = plan_memory_auction(&cfg, &cands);
+        assert_eq!(plan.bids.len(), 1, "the sub-floor family is filtered out (memory is the resource)");
+        assert_eq!(plan.bids[0].family, "big");
+        assert!(!plan.needs_escalation);
+    }
+
+    #[test]
+    fn auction_rejects_churny_families_and_escalates_when_empty() {
+        let cfg = MemoryAuctionCfg::camelot(); // max_interrupt 20
+        let cands = vec![SpotCandidate {
+            family: "churny".into(),
+            mib: 16384,
+            vcpu: 4,
+            price_milli: 400,
+            interrupt_rate: 50, // over the 20 ceiling — a mid-build reclaim wastes the whole in-RAM build
+        }];
+        let plan = plan_memory_auction(&cfg, &cands);
+        assert!(plan.bids.is_empty(), "a family churnier than the ceiling is rejected");
+        assert!(
+            plan.needs_escalation,
+            "all candidates filtered => escalate to on-demand, never wedge (never-stuck)"
+        );
+    }
+
+    #[test]
+    fn auction_diversifies_across_top_n_never_single_family() {
+        let cfg = MemoryAuctionCfg::camelot(); // top 3
+        let cands = vec![
+            SpotCandidate { family: "a".into(), mib: 32768, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
+            SpotCandidate { family: "b".into(), mib: 16384, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
+            SpotCandidate { family: "c".into(), mib: 12288, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
+            SpotCandidate { family: "d".into(), mib: 10240, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
+        ];
+        let plan = plan_memory_auction(&cfg, &cands);
+        assert_eq!(plan.bids.len(), 3, "diversify across the top 3, not all 4 (100%-spot resilience)");
+        assert_eq!(plan.bids[0].family, "a", "top family is the biggest MiB-per-dollar");
+    }
+
+    #[test]
+    fn auction_unset_floor_keeps_all_survivors() {
+        let cfg = MemoryAuctionCfg::unset();
+        let cands = vec![SpotCandidate {
+            family: "tiny".into(),
+            mib: 512,
+            vcpu: 1,
+            price_milli: 100,
+            interrupt_rate: 90,
+        }];
+        let plan = plan_memory_auction(&cfg, &cands);
+        // unset floor (0) + max_interrupt 100 + no top-N cap keeps even a tiny churny candidate.
+        assert_eq!(plan.bids.len(), 1);
+        assert!(!plan.needs_escalation);
     }
 
     // ── Element 3 ──────────────────────────────────────────────────────────

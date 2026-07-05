@@ -284,8 +284,17 @@ pub struct ArchAsg {
     pub max: u32,
     /// Percent of capacity on spot (camelot posture is `100`).
     pub spot_pct: u8,
-    /// The spot instance families the auction diversifies across.
+    /// The spot instance families the auction diversifies across (the flat
+    /// family-name list; the *memory-axis* posture over them lives in
+    /// [`memory_auction`](ArchAsg::memory_auction)).
     pub spot_families: Vec<String>,
+    /// The **memory-tuned auction config** — the typed 100%-spot posture on the
+    /// memory axis (floor, reclaim ceiling, diversification cap) that
+    /// [`memory::plan_memory_auction`] runs over the live spot candidates to
+    /// produce the memory-ranked input breathe's `BandLeiloeiro` consumes.
+    /// super-cache-ci is memory-bound (RAMDISK ⇒ MiB is the buy), so the
+    /// auction bids on MiB-per-dollar, never vCPU.
+    pub memory_auction: memory::MemoryAuctionCfg,
     /// Wake capacity on demand via cordel (JIT builder wake).
     pub cordel_wake: bool,
 }
@@ -491,6 +500,8 @@ impl TieredConfig for SuperCacheCiConfig {
                             "m7i".to_string(),
                             "r6i".to_string(),
                         ],
+                        // Memory-tuned: reject <8 GiB / >20% reclaim, diversify top 3.
+                        memory_auction: memory::MemoryAuctionCfg::camelot(),
                         cordel_wake: true,
                     },
                     ArchAsg {
@@ -499,6 +510,7 @@ impl TieredConfig for SuperCacheCiConfig {
                         max: 5,
                         spot_pct: 100,
                         spot_families: vec!["c7g".to_string(), "m7g".to_string()],
+                        memory_auction: memory::MemoryAuctionCfg::camelot(),
                         cordel_wake: true,
                     },
                 ],
@@ -604,6 +616,29 @@ mod tests {
         for a in &p.builders.arches {
             assert_eq!(a.spot_pct, 100, "camelot posture is 100% spot");
             assert_eq!(a.min, 0, "scale-to-zero: min replicas 0");
+        }
+    }
+
+    #[test]
+    fn camelot_auction_is_memory_tuned_on_every_arch() {
+        // The 100%-spot posture is refined ON THE MEMORY AXIS per arch — a
+        // memory floor, a reclaim ceiling, and a never-single-family cap. This
+        // guard FAILS if an arch ships the memory-blind `unset()` auction.
+        let p = SuperCacheCiConfig::prescribed_default();
+        for a in &p.builders.arches {
+            assert_eq!(a.memory_auction, crate::memory::MemoryAuctionCfg::camelot());
+            assert!(
+                a.memory_auction.min_mib > 0,
+                "memory floor: never bid a starved instance (memory is the resource)"
+            );
+            assert!(
+                a.memory_auction.max_interrupt_rate < 100,
+                "reclaim ceiling: reject churny families (a reclaim wastes the in-RAM build)"
+            );
+            assert!(
+                a.memory_auction.diversify_top_n >= 2,
+                "100%-spot never rides a single family"
+            );
         }
     }
 }
