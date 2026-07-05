@@ -84,6 +84,17 @@ pub mod memory;
 /// active-cache-maintenance loop — a named LiveTODO, never forked here.
 pub mod freshness;
 
+/// The **whole-set** guardrail-like optimal in-memory presentation guard
+/// (element 5) + the **whole-stream** lapidar continuous self-tune (element 6).
+/// Lifts [`memory`]'s per-entry [`present`](memory::present) and
+/// [`evaluate_tune`](memory::evaluate_tune) to the level the build layer
+/// consumes — organizing the whole derivation set into the optimal RAMDISK
+/// presentation within a finite budget, validating it with a `guardrail`-shaped
+/// `Rule → Decision` engine, and folding a stream of shadow-measured tune
+/// proposals into a monotone-non-regressing self-tune. Composes both primitives,
+/// forks neither.
+pub mod presentation;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)
