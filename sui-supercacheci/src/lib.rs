@@ -95,6 +95,19 @@ pub mod freshness;
 /// forks neither.
 pub mod presentation;
 
+/// **Element 7 — the controller SKELETON.** The one reconcile loop that folds
+/// all six built decision cores into a single per-tick [`TickPlan`](controller::TickPlan),
+/// expressed against a [`Controller`](controller::Controller) contract
+/// *shape-identical* to `engenho_controllers::Controller`. Tier-honest: the pure
+/// Classify/Decide brain ([`decide`](controller::decide)) + the reconcile
+/// contract ship + are tested; the Act beat is **shadow**
+/// ([`ShadowEnvironment`](controller::ShadowEnvironment) mutates nothing) until
+/// the LiveTODO actuator binds to autorevivy's coordinator + the real backends.
+/// The live `impl engenho_controllers::Controller` is a thin adapter that must
+/// land in engenho (`engenho → sui` is the legal edge; the reverse is a cycle) —
+/// a named LiveTODO, never a forked second controller.
+pub mod controller;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)
