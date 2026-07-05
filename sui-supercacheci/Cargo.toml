@@ -1,0 +1,26 @@
+[package]
+name = "sui-supercacheci"
+description = "Typed shikumi config schema for /super-cache-ci — service-level sui (Postgres store, Redis cache, RAM/tmpfs build sandbox) as the never-touch-durable-disk convergence. Schema + tier model only; backend + daemon wiring are named LiveTODOs."
+keywords = ["nix", "sui", "cache", "shikumi", "config"]
+categories = ["config", "development-tools::build-utils"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Fleet-standard tiered config surface (default <- discovered <- override,
+# hot-reload). SuperCacheCiConfig impls shikumi::TieredConfig so /super-cache-ci
+# is configured exactly like every other operator-facing pleme-io tool.
+shikumi = "0.1"
+serde.workspace = true
+
+# LiveTODO(lisp): the `(defsupercacheci ...)` authoring surface (Rust + Lisp
+# primary pattern, `#[derive(DeriveTataraDomain)]`) is intentionally NOT wired
+# here. The sui workspace's tatara-lisp is currently locked at a mismatched
+# lib/derive pair (`tatara-lisp 0.2.4` + `tatara-lisp-derive 0.2.107`) that does
+# not compile — a pre-existing skew, unrelated to this crate. Re-attaching the
+# derive is a one-line change (see the commented shape in src/lib.rs) once that
+# workspace pin is fixed; keeping the dep out here keeps the config schema + its
+# tests green in isolation rather than rounding the Lisp surface up to "working".

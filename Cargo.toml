@@ -48,6 +48,11 @@ members = [
     # Ships separately from sui-daemon (the library) so the binary's
     # CLI/argv surface doesn't pollute the lib's API.
     "sui-daemon-graph",
+    # /super-cache-ci config surface — the typed shikumi::TieredConfig schema
+    # for service-level sui (Postgres store + Redis cache + RAM/tmpfs sandbox,
+    # never-touch-durable-disk). Schema + tier model only; backend + daemon
+    # wiring are named LiveTODOs in the crate docs.
+    "sui-supercacheci",
 ]
 resolver = "3"
 
