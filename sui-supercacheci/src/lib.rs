@@ -63,6 +63,16 @@
 use serde::{Deserialize, Serialize};
 use shikumi::TieredConfig;
 
+/// The memory-first core behavior — the pure, deterministic per-tick decision
+/// core for the seven memory-first elements of `/super-cache-ci` (preemptive
+/// memory via breathe shadowing, memory-tuned spot auction, Redis+PG tuning,
+/// always-fresh cache, guardrail-optimal presentation, continuous efficiency,
+/// and the tier-honest controller ledger). RAMDISK ⇒ memory is THE resource;
+/// every function here optimizes memory + the in-memory cache. Side-effect-free
+/// by construction; the Observe/Act loop that drives it is autorevivy's
+/// coordinator (a named DESIGN/LiveTODO), not a forked controller.
+pub mod memory;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)
