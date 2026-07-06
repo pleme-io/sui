@@ -6195,6 +6195,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "sui-compat",
  "tempfile",
  "thiserror 2.0.18",

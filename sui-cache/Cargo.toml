@@ -32,11 +32,19 @@ futures = "0.3"
 # mock (the RedisConn Environment seam); the real ConnectionManager transport
 # compiles only under `--features redis-client`.
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+# L2 durable-cache-tier transport (Postgres). Optional, same rationale as redis:
+# the PgStorageBackend core is proven against an in-memory mock (the PgCacheConn
+# Environment seam); the real sqlx pool compiles only under `--features postgres`.
+# Runtime query API only (no `query!` macro) so it builds offline without a
+# DATABASE_URL — matching sui-store's `PgStore` adapter.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"], optional = true }
 
 [features]
 default = []
 # Enable the production Redis transport (`RedisConnectionManager`).
 redis-client = ["dep:redis"]
+# Enable the production Postgres L2 transport (`SqlxPgCacheConn`).
+postgres = ["dep:sqlx"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

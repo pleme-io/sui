@@ -4853,8 +4853,16 @@ async fn main() -> Result<(), CliError> {
                     priority,
                     ..sui_cache::CacheConfig::default()
                 };
-                let storage: Arc<dyn sui_cache::StorageBackend> =
-                    Arc::new(sui_cache::LocalStorage::new(&store_path));
+                // Config-select: the storage backend is whatever `config.backend`
+                // names — disk today via the CLI flags, but a tiered/redis/pg
+                // config dispatches identically through the same typed factory.
+                // Never a silent hard-coded constructor.
+                let storage = sui_cache::build_backend(&config.backend)
+                    .await
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "cache serve",
+                        message: e.to_string(),
+                    })?;
                 sui_cache::serve(config, storage).await.map_err(|e| {
                     CliError::Orchestrate {
                         operation: "cache serve",
