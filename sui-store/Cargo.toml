@@ -11,6 +11,7 @@ categories = ["database-implementations", "filesystem"]
 
 [dependencies]
 sui-compat.workspace = true
+sui-graph-store.workspace = true
 sea-orm.workspace = true
 sea-orm-migration.workspace = true
 tokio.workspace = true
@@ -24,6 +25,18 @@ sha2.workspace = true
 xz2 = "0.1"
 zstd = "0.13"
 ed25519-dalek.workspace = true
+# The real Postgres adapter for `PgStore` (durable, content-addressed store).
+# Runtime query API only (no `query!` macro) so it builds offline without a
+# DATABASE_URL. Off by default — the mockable `PgBackend` core needs no driver.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+], optional = true }
+
+[features]
+default = []
+# Enable the live `SqlxPgBackend` Postgres adapter for `PgStore`.
+postgres = ["dep:sqlx"]
 
 [dev-dependencies]
 tempfile.workspace = true

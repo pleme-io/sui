@@ -23,6 +23,7 @@ pub mod entity;
 pub mod http;
 pub mod local;
 pub mod nar;
+pub mod pg;
 pub mod profile;
 pub mod substitute;
 pub mod traits;
@@ -31,6 +32,9 @@ pub use binary_cache::{BinaryCacheError, BinaryCacheStore, BinaryCacheStoreBuild
 pub use http::{HttpClient, HttpError, HttpResponse, ReqwestHttpClient};
 pub use local::{LocalStore, LocalStoreMode};
 pub use nar::decompress_nar;
+pub use pg::{
+    InMemoryPgBackend, PgBackend, PgBlob, PgError, PgPathRow, PgStore, PgStoreTier, PGSTORE_TIER,
+};
 pub use profile::{Generation, ProfileError, ProfileManager};
 pub use substitute::{SubstituteResult, Substitutor};
 pub use local::find_gc_roots;
