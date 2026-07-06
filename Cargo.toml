@@ -85,8 +85,21 @@ sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
 # S-expression reader + derive macro, both published on crates.io.
 # Version-pinned to keep the workspace reproducible; bump in lockstep
 # when adding a new domain to sui-spec.
-tatara-lisp = "0.2.1"
-tatara-lisp-derive = "0.2.1"
+#
+# INTERIM PIN (destination = upstream reconcile): tatara-lisp-derive
+# version-drifts independently of tatara-lisp on crates.io. Caret ranges
+# resolve derive to a 0.2.77+ line that emits calls to
+# `tatara_lisp::domain::parse_kwargs_strict`, a runtime symbol NO
+# published tatara-lisp exports (0.2.4 only exports `parse_kwargs`).
+# tatara-lisp 0.2.4 itself declares derive "0.2.2" — the intended
+# pairing. Exact-pin the derive to that last matching release so the
+# emitted code references a symbol the runtime actually ships. sui uses
+# only `#[tatara(keyword = "…")]`, fully supported by 0.2.2. The
+# load-bearing fix is upstream (publish a tatara-lisp exporting
+# parse_kwargs_strict, or yank the divergent derive line); the pin is
+# the correct interim until that reconcile lands.
+tatara-lisp = "0.2.4"
+tatara-lisp-derive = "=0.2.2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

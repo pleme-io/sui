@@ -6582,9 +6582,9 @@ dependencies = [
 
 [[package]]
 name = "tatara-lisp-derive"
-version = "0.2.107"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d70e7b7c71d21dfcfda1199e9e7669b9e153da260f6d004546b8b76168cdb76"
+checksum = "aca2ea9795bfcae07e78500cd16f50b84ced1d14a666be71619e545fbd3c47e3"
 dependencies = [
  "proc-macro2",
  "quote",
