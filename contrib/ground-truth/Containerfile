@@ -14,7 +14,14 @@
 # transport arms compile in (root [features] passthrough → sui-cache/redis-client
 # + sui-cache/postgres + sui-store/postgres).
 
-FROM rust:1-slim AS build
+# Pin the build base to bookworm so its glibc (2.36) MATCHES the
+# debian:bookworm-slim runtime stage below. The floating `rust:1-slim` tag now
+# resolves to Debian trixie (glibc 2.41), which links GLIBC_2.39 symbols the
+# bookworm runtime lacks → `version GLIBC_2.39 not found` at boot. Matching the
+# two bases on one Debian release makes the glibc skew unrepresentable.
+# (The fleet DESTINATION is the flake's dockerImage-<arch> — no glibc-skew class
+# at all, since Nix pins the full closure.)
+FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 # Postgres + Redis client crates need pkg-config + openssl + libpq headers.
 RUN apt-get update && apt-get install -y --no-install-recommends \

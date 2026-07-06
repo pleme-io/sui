@@ -41,7 +41,12 @@ POD=sui-ground-truth
 PG_IMAGE=postgres:17-alpine
 REDIS_IMAGE=redis:7-alpine
 SUI_IMAGE=${SUI_IMAGE:-sui-ground-truth:local}   # built by `build_sui_image` below
-LISTEN_PORT=5000
+LISTEN_PORT=5000                # the daemon's IN-CONTAINER listen port (Nix cache proto)
+# HOST publish port. Defaults to 5555 because macOS reserves :5000 for the
+# AirPlay Receiver (ControlCenter binds *:commplex-main) — a pod publishing
+# :5000 fails infra-container start with `bind: address already in use`.
+# Override with HOST_PORT if 5555 is taken. VERIFIED on the aarch64 podman VM.
+HOST_PORT=${HOST_PORT:-5555}
 PG_PASSWORD=sui                 # tiered-backend.toml: postgres://sui:sui@…/sui
 REDIS_MAXMEM=2gb                # == supercache-config.toml [cache.memory_band].max_mib
 TMPFS_SIZE=3g                   # == [sandbox.tmpfs_band].max_mib (3072 MiB)
@@ -77,9 +82,9 @@ build_sui_image() {
 
 up() {
   build_sui_image
-  log "creating pod $POD (shared localhost, publish :$LISTEN_PORT)"
+  log "creating pod $POD (shared localhost, publish host :$HOST_PORT → container :$LISTEN_PORT)"
   podman pod exists "$POD" || \
-    podman pod create --name "$POD" --publish "$LISTEN_PORT:$LISTEN_PORT"
+    podman pod create --name "$POD" --publish "$HOST_PORT:$LISTEN_PORT"
 
   log "starting Postgres L2 ($PG_IMAGE) — role/db 'sui'"
   podman container exists "$POD-pg" || podman run -d \
@@ -117,7 +122,7 @@ up() {
       --listen "0.0.0.0:$LISTEN_PORT" \
       --backend-config /etc/sui/tiered-backend.toml
 
-  log "up. daemon on localhost:$LISTEN_PORT (Redis L1 → Postgres L2, RAMDISK sandbox)."
+  log "up. daemon on localhost:$HOST_PORT (Redis L1 → Postgres L2, RAMDISK sandbox)."
   log "smoke:  contrib/ground-truth/run.sh smoke"
 }
 
@@ -135,8 +140,8 @@ status() {
 smoke() {
   # The Nix binary cache protocol serves /nix-cache-info; a 200 proves the
   # tiered daemon is up and answering (Redis L1 fronting Postgres L2).
-  log "GET http://localhost:$LISTEN_PORT/nix-cache-info"
-  curl -fsS "http://localhost:$LISTEN_PORT/nix-cache-info" && echo
+  log "GET http://localhost:$HOST_PORT/nix-cache-info"
+  curl -fsS "http://localhost:$HOST_PORT/nix-cache-info" && echo
   log "(a real ground-truth build: sui build a small drv against this cache-url —"
   log " the output lands in Postgres via the Redis-fronted tiered path, sandbox on tmpfs.)"
 }
