@@ -108,6 +108,15 @@ pub mod presentation;
 /// a named LiveTODO, never a forked second controller.
 pub mod controller;
 
+/// The pure `SuperCacheCiConfig -> sui_cache::BackendConfig` translation — the
+/// load-bearing map that turns the typed store/cache posture into the concrete
+/// tiered [`sui_cache::BackendConfig`] the `sui cache serve` daemon dispatches.
+/// Closes the config-select axis of `LiveTODO(tiered)`: the schema now
+/// *produces* the runnable backend, not merely *describes* it. I/O-free and
+/// unit-tested against every tier arm; the live-cluster proof is the
+/// ground-truth recipe.
+pub mod backend;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)

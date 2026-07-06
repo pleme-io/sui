@@ -1,0 +1,34 @@
+# INTERIM ground-truth build image for the sui daemon (linux, tiered features).
+#
+# DESTINATION (Pillar 8 — Nix only, no Dockerfiles): the fleet image is the
+# flake's `dockerImage-<arch>` dockerTools output (built on a native-arch runner,
+# AUTOBUMP exact-tagged, pushed to ghcr.io/pleme-io/sui). This Containerfile
+# exists ONLY to stand up the SINGLE-NODE ground-truth run inside the already-
+# running podman VM without first bringing up a nix linux builder — it is
+# explicitly named INTERIM, never the shipped path. When a linux nix build is
+# available, prefer:
+#     nix build .#dockerImage-arm64 && podman load < result
+# and set SUI_IMAGE to the loaded tag; then this Containerfile is unused.
+#
+# It builds `sui` with `--features tiered` so the Redis L1 + Postgres L2
+# transport arms compile in (root [features] passthrough → sui-cache/redis-client
+# + sui-cache/postgres + sui-store/postgres).
+
+FROM rust:1-slim AS build
+WORKDIR /src
+# Postgres + Redis client crates need pkg-config + openssl + libpq headers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pkg-config libssl-dev libpq-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY . .
+# Tiered features on: Redis L1 + Postgres L2 arms.
+RUN cargo build --release --bin sui --features tiered
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libssl3 libpq5 ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/sui /usr/local/bin/sui
+# The build sandbox writes here; the run recipe mounts a tmpfs at /build.
+ENV SUI_BUILD_DIR=/build
+ENTRYPOINT ["/usr/local/bin/sui"]

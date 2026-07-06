@@ -1,0 +1,31 @@
+# The raw `sui_cache::BackendConfig` for the single-node ground-truth run —
+# the DIRECT `--backend-config` path (one fewer translation hop than
+# `--supercache-config supercache-config.toml`; identical runtime shape).
+#
+# This is exactly what `SuperCacheCiConfig::to_backend_config` produces for the
+# localhost posture in `supercache-config.toml`:
+#   L1 = Redis (127.0.0.1:6379, band-bounded LRU, no wall-clock TTL)
+#   L2 = Postgres (127.0.0.1:5432, 8-conn pool)
+#   L3 = Local floor (no S3 provisioned on the ground-truth node)
+#   write-through: a write reaches L2 (+L3) before warming L1, so a crash never
+#                  strands data in the hot tier alone.
+#
+# Consumed by:  sui cache serve --features tiered --backend-config <this>
+
+type = "tiered"
+write_policy = "write-through"
+
+  [l1]
+  type = "redis"
+  url = "redis://127.0.0.1:6379"
+  # ttl_secs omitted → None → the hot set is bounded by Redis --maxmemory LRU
+  # (the cache.memory_band ceiling), not wall-clock age.
+
+  [l2]
+  type = "pg"
+  url = "postgres://sui:sui@127.0.0.1:5432/sui"
+  max_conns = 8
+
+  [l3]
+  type = "local"
+  path = "/var/cache/sui-l3"

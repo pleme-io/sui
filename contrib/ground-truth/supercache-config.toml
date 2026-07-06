@@ -1,0 +1,106 @@
+# /super-cache-ci — the SINGLE-NODE ground-truth posture (podman VM, localhost)
+#
+# This is a `sui_supercacheci::SuperCacheCiConfig` (the shikumi TieredConfig
+# schema). It is the DESTINATION posture (Postgres store L2 + Redis cache L1 +
+# tmpfs RAMDISK sandbox, never_touch_disk = true) narrowed to ONE local node:
+# localhost endpoints, bands sized for the 8 GiB podman VM, and the fleet-only
+# surfaces (multi-arch camelot runners, akeyless co-opt) left empty because a
+# single node cannot exercise them (tier-honest — do not fabricate a fleet).
+#
+# Consumed by:   sui cache serve --features tiered --supercache-config <this>
+# Translated by: SuperCacheCiConfig::to_backend_config → BackendConfig::Tiered
+#                { l1: Redis(127.0.0.1:6379), l2: Pg(127.0.0.1:5432),
+#                  l3: Local (no S3 provisioned on the ground-truth node),
+#                  write_policy: write-through }
+#
+# The raw translated backend is also committed as `tiered-backend.toml` for the
+# `--backend-config` path (identical runtime shape, one fewer translation hop).
+
+# ── STORE = Postgres L2 (durable, content-addressed) ───────────────────────────
+[store]
+backend = "postgres"
+pg_pool = 8                       # 8 conns is plenty for a single-node ground truth
+
+  [store.pg]
+  host = "127.0.0.1"
+  port = 5432
+
+  # No L3 object store on the ground-truth node — the durable pair
+  # (Redis L1 + Postgres L2) is the whole store. `to_backend_config` maps a
+  # `none` L3 to a local floor so the tiered resolver always has a bottom tier;
+  # on a never-touch-disk single node it is only reached on an L1+L2 miss, which
+  # this node's own writes never hit.
+  [store.l3]
+  kind = "none"
+  bucket = ""
+  # endpoint omitted (None)
+
+# ── CACHE = Redis L1 (hot, sub-ms, LRU at the band ceiling) ─────────────────────
+[cache]
+backend = "redis"
+rdb_persist = true                # RDB/AOF → warm restart (L1 loss re-warms from L2)
+
+  [cache.redis]
+  host = "127.0.0.1"
+  port = 6379
+
+  # The band that sizes the hot set + drives LRU eviction. 8 GiB VM shared across
+  # pg + redis + sui + tmpfs → cap Redis at 2 GiB. dry_run = true is breathe's
+  # shadow-first gate (observe ShadowWouldApply before a band ever flips LIVE);
+  # on a single local node with no breathe controller the band is a STATIC
+  # ceiling applied by the redis --maxmemory in the run recipe, not a live
+  # reconcile (tier-honest — see the recipe's breathe note).
+  [cache.memory_band]
+  target_pct = 80
+  headroom_pct = 20
+  max_mib = 2048
+  dry_run = true
+
+# ── SANDBOX = tmpfs RAMDISK (never touch durable disk) ─────────────────────────
+[sandbox]
+# THE invariant: eval + build stages live in RAM (the container --tmpfs /build).
+# Realized on this node by the tmpfs mount in the run recipe; the durable store
+# is the DB, not disk.
+never_touch_disk = true
+
+  # tmpfs sized for the 8 GiB VM: 3 GiB build RAM, leaving headroom for pg +
+  # redis + the daemon. dry_run = true — static ceiling via --tmpfs …:size=3g
+  # on this node (no breathe controller locally).
+  [sandbox.tmpfs_band]
+  target_pct = 90
+  headroom_pct = 10
+  max_mib = 3072
+  dry_run = true
+
+# ── gen (typed build encoders) — only the shipped Cargo domain ─────────────────
+[gen_domains]
+domains = ["cargo"]               # absorb-all-languages is M3; only Cargo ships
+ci_stale_check = true
+
+# ── builders — EMPTY: no camelot runner fleet on a single local node ───────────
+# (The 100%-spot multi-arch ASG posture needs the cluster; a single podman VM
+#  cannot exercise it — leaving it empty is the honest floor, not a stub.)
+[builders]
+arches = []
+
+# ── breathe — single-node floor: no cluster band, no escalation ────────────────
+# On the fleet this registers the workload under a breathe MemoryBand + the
+# on-demand escalation ladder. Locally there is no breathe controller, so the
+# band ref is empty and escalation is off. The dryRun-first breathe MemoryBand CR
+# for the ONE node (when it joins a breathe-managed cluster) is committed
+# alongside as `breathe-memoryband.yaml`.
+[breathe]
+band_ref = ""
+idle_scale_zero_secs = 0
+
+  [breathe.escalation]
+  enabled = false
+  max_ondemand = 0
+
+# ── coopt — OFF (M4; the akeyless-nix-images co-optimization loop is unwired) ───
+[coopt]
+enabled = false
+images = []
+rebuild_on = []
+lapidar = false
+# promessa_ref omitted (None)

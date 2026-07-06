@@ -80,6 +80,7 @@ sui-graph-store = { path = "sui-graph-store", version = "0.1.10" }
 sui-protocol = { path = "sui-protocol", version = "0.1.10" }
 sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.10" }
 sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
+sui-supercacheci = { path = "sui-supercacheci", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
@@ -254,6 +255,11 @@ sui-daemon.workspace = true
 sui-intern.workspace = true
 sui-orchestrate.workspace = true
 sui-spec.workspace = true
+# The typed shikumi config schema for /super-cache-ci + its pure
+# `SuperCacheCiConfig::to_backend_config` translation. `cache serve
+# --backend-config` reads this to config-select the tiered backend instead of
+# the hard-coded disk path.
+sui-supercacheci.workspace = true
 tokio.workspace = true
 axum.workspace = true
 async-graphql.workspace = true
@@ -279,6 +285,23 @@ rand = "0.8"
 url = "2"
 ureq = "3"
 regex.workspace = true
+# Parse the operator's `cache serve --backend-config <file.toml>` /
+# `--supercache-config <file.toml>` into a typed config (never a stringly path).
+toml.workspace = true
+
+[features]
+# The root `sui` binary has no features today, so it cannot turn on the
+# sui-cache/sui-store production transports — `cache serve` with a tiered/redis/pg
+# config then returns CacheError::NotImplemented (never a silent disk fallback).
+# These passthroughs let `cargo build --bin sui --features tiered` compile in the
+# Redis + Postgres arms so a tiered daemon is runnable.
+default = []
+# Enable the Postgres L2 durable transport (cache backend + durable Store).
+postgres = ["sui-cache/postgres", "sui-store/postgres"]
+# Enable the Redis L1 hot-cache transport.
+redis-client = ["sui-cache/redis-client"]
+# The full super-cache-ci posture: Redis L1 + Postgres L2 tiered backend.
+tiered = ["postgres", "redis-client"]
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -1,0 +1,57 @@
+# breathe MemoryBand — SHADOW (dryRun-first) enrollment for the ONE sui
+# ground-truth daemon.
+#
+# TIER-HONEST — WHERE THIS APPLIES:
+#   A breathe MemoryBand is reconciled by the breathe controller, which runs in a
+#   Kubernetes cluster (rio / camelot). On the single LOCAL podman VM the
+#   ground-truth run uses (see run.sh), there is NO breathe controller — the
+#   sui daemon's memory ceiling is a STATIC cap applied by hand (the container
+#   `--memory` / redis `--maxmemory` / `--tmpfs …:size=` in the recipe), i.e. the
+#   band setpoint applied ONCE, not a live reconcile.
+#
+#   This CR is the enrollment for WHEN the sui daemon runs as a Deployment on a
+#   breathe-managed cluster (the fleet path — same posture, now live-reconciled).
+#   It ships `mode: shadow` — the strictest dryRun-first gate: the band OBSERVES
+#   utilization and COMPUTES the carve it WOULD apply (ShadowWouldApply in
+#   status), attests it, and writes NOTHING to resources.limits. Promote to a
+#   carving band only after the shadow decisions look right, by either:
+#     - `mode: shadowConfirmEffect` (auto-promote after a clean-observation window), or
+#     - `mode: effect`             (carve immediately),
+#   the same ladder the rio pangea-database + pangea-operator bands followed.
+#
+# The band mirrors `supercache-config.toml`'s `[cache.memory_band]` posture
+# (80/20 setpoint/headroom) lifted to the daemon Deployment. floor = the
+# workload's memory REQUEST; ceiling = the 8 GiB-VM-safe cap (2 GiB), so the
+# daemon + Redis + Postgres + tmpfs all fit.
+---
+apiVersion: breathe.pleme.io/v1
+kind: MemoryBand
+metadata:
+  name: sui-ground-truth
+  # The namespace the sui daemon Deployment runs in on the fleet. `super-cache-ci`
+  # matches supercache-config.toml's prescribed `.svc` names; change to the real
+  # namespace when the daemon is deployed.
+  namespace: super-cache-ci
+  annotations:
+    # Human note: this is the ground-truth daemon's shadow enrollment.
+    breathe.pleme.io/note: "sui super-cache-ci ground-truth daemon — dryRun-first shadow"
+spec:
+  targetRef:
+    kind: Deployment
+    name: sui-cache-serve        # the `sui cache serve --features tiered` daemon
+    apiVersion: apps/v1
+  # 80/20 band = supercache-config.toml [cache.memory_band] target_pct/headroom_pct.
+  setpoint: 0.80                 # hold RSS at 80% of the ceiling
+  growAbove: 0.85                # carve up when util crosses 85%
+  shrinkBelow: 0.70              # carve down when util drops below 70%
+  growFactor: 1.25
+  shrinkFactor: 0.90
+  # floor = the daemon's steady memory request; ceiling = the 8 GiB-VM-safe cap.
+  floor: "256Mi"
+  ceiling: "2Gi"                 # == [cache.memory_band].max_mib (2048 MiB)
+  cooldownSeconds: 300
+  maxStalenessSeconds: 120
+  # SHADOW = dryRun-first: observe + attest ShadowWouldApply, write NOTHING.
+  # Promote to shadowConfirmEffect / effect only after the shadow window holds.
+  mode: shadow
+  disruptionPolicy: restartFreeOnly

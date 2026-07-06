@@ -595,7 +595,20 @@ enum FleetCommands {
 
 #[derive(Subcommand)]
 enum CacheCommands {
-    Serve { #[arg(long, default_value = "0.0.0.0:5000")] listen: String, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long, default_value = "40")] priority: u32 },
+    Serve {
+        #[arg(long, default_value = "0.0.0.0:5000")] listen: String,
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+        #[arg(long, default_value = "40")] priority: u32,
+        /// Config-select the storage backend from a raw `BackendConfig` TOML/JSON
+        /// file (the `{ type = "tiered", l1 = …, l2 = …, l3 = … }` shape). Takes
+        /// precedence over `--supercache-config` and the `--store-path` disk floor.
+        #[arg(long)] backend_config: Option<String>,
+        /// Config-select the storage backend from a `SuperCacheCiConfig`
+        /// TOML/JSON file (the shikumi store/cache/sandbox posture); the
+        /// `to_backend_config` translation produces the tiered backend. Falls
+        /// through to the `--store-path` disk floor when absent.
+        #[arg(long)] supercache_config: Option<String>,
+    },
     Push { paths: Vec<String>, #[arg(long)] cache_url: Option<String>, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] signing_key: Option<String> },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
     Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
@@ -660,6 +673,65 @@ enum RegistryCommands {
 /// to match nix CLI's bare-output form for `to-baseN`.
 fn strip_algo_prefix(s: &str) -> &str {
     s.split_once(':').map(|(_, rest)| rest).unwrap_or(s)
+}
+
+/// Resolve the `cache serve` storage backend from config, in precedence order:
+///
+/// 1. `--backend-config <file>` — a raw [`sui_cache::BackendConfig`] TOML/JSON
+///    file (any tier shape, e.g. `{ type = "tiered", l1 = …, l2 = …, l3 = … }`).
+/// 2. `--supercache-config <file>` — a [`sui_supercacheci::SuperCacheCiConfig`]
+///    posture (store/cache/sandbox); [`SuperCacheCiConfig::to_backend_config`]
+///    translates it to the tiered backend.
+/// 3. neither — the `--store-path` disk floor (default; the shipped behavior).
+///
+/// Every path returns a typed [`sui_cache::BackendConfig`] that `build_backend`
+/// dispatches. A malformed file or an untranslatable posture surfaces as a typed
+/// [`CliError`] — never a silent disk fallback.
+fn resolve_serve_backend(
+    backend_config: Option<&str>,
+    supercache_config: Option<&str>,
+    store_path: &str,
+) -> Result<sui_cache::BackendConfig, CliError> {
+    if let Some(path) = backend_config {
+        return parse_config_file(path, "backend-config");
+    }
+    if let Some(path) = supercache_config {
+        let cfg: sui_supercacheci::SuperCacheCiConfig =
+            parse_config_file(path, "supercache-config")?;
+        return cfg.to_backend_config().map_err(|e| CliError::Orchestrate {
+            operation: "cache serve",
+            message: format!("supercache-config → backend: {e}"),
+        });
+    }
+    Ok(sui_cache::BackendConfig::Local {
+        path: std::path::PathBuf::from(store_path),
+    })
+}
+
+/// Parse a `--*-config` file as TOML first, then JSON, into any
+/// `DeserializeOwned` config type. Both encodings are accepted so the operator
+/// can hand-write TOML or emit JSON.
+fn parse_config_file<T: serde::de::DeserializeOwned>(
+    path: &str,
+    flag: &'static str,
+) -> Result<T, CliError> {
+    let text = std::fs::read_to_string(path).map_err(|e| CliError::Orchestrate {
+        operation: "cache serve",
+        message: format!("read --{flag} {path}: {e}"),
+    })?;
+    // TOML is the operator-authored default; fall through to JSON on a TOML
+    // parse error so a generator-emitted JSON file also loads.
+    match toml::from_str::<T>(&text) {
+        Ok(cfg) => Ok(cfg),
+        Err(toml_err) => serde_json::from_str::<T>(&text).map_err(|json_err| {
+            CliError::Orchestrate {
+                operation: "cache serve",
+                message: format!(
+                    "parse --{flag} {path}: not valid TOML ({toml_err}) nor JSON ({json_err})"
+                ),
+            }
+        }),
+    }
 }
 
 // ── Batch-1 dispatch helpers (registry / key / search / etc.) ─────
@@ -4844,19 +4916,26 @@ async fn main() -> Result<(), CliError> {
         },
 
         Commands::Cache { command } => match command {
-            CacheCommands::Serve { listen, store_path, priority } => {
+            CacheCommands::Serve { listen, store_path, priority, backend_config, supercache_config } => {
+                // Config-select the storage backend, in precedence order:
+                //   1. --backend-config  → a raw BackendConfig file (any tier shape)
+                //   2. --supercache-config → a SuperCacheCiConfig posture, translated
+                //   3. --store-path      → the disk floor (default; unchanged behavior)
+                // The chosen BackendConfig dispatches through the SAME typed
+                // `build_backend` factory — never a silent hard-coded constructor,
+                // never a silent disk fallback (a tiered/redis/pg arm whose feature
+                // is off returns CacheError::NotImplemented).
+                let backend = resolve_serve_backend(
+                    backend_config.as_deref(),
+                    supercache_config.as_deref(),
+                    &store_path,
+                )?;
                 let config = sui_cache::CacheConfig {
                     listen,
-                    backend: sui_cache::BackendConfig::Local {
-                        path: std::path::PathBuf::from(&store_path),
-                    },
+                    backend,
                     priority,
                     ..sui_cache::CacheConfig::default()
                 };
-                // Config-select: the storage backend is whatever `config.backend`
-                // names — disk today via the CLI flags, but a tiered/redis/pg
-                // config dispatches identically through the same typed factory.
-                // Never a silent hard-coded constructor.
                 let storage = sui_cache::build_backend(&config.backend)
                     .await
                     .map_err(|e| CliError::Orchestrate {
