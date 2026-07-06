@@ -5,15 +5,21 @@
 //!
 //! - [`LocalStorage`] — local filesystem (default)
 //! - [`S3Storage`] — S3-compatible object storage (AWS, MinIO, R2, RustFS)
+//! - [`RedisBackend`] — Redis L1 hot cache (sub-ms, TTL/eviction-aware)
 //! - [`StorageIndex`] — redb ephemeral metadata index (accelerates S3 lookups)
 
 pub mod index;
 pub mod local;
+pub mod redis;
 pub mod s3;
 
 pub use index::StorageIndex;
 pub use local::LocalStorage;
+pub use redis::{RedisBackend, RedisConn};
 pub use s3::S3Storage;
+
+#[cfg(feature = "redis-client")]
+pub use redis::RedisConnectionManager;
 
 use async_trait::async_trait;
 

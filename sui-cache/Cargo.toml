@@ -27,6 +27,16 @@ object_store = { version = "0.12", features = ["aws"] }
 redb = "2"
 bytes = "1"
 futures = "0.3"
+# L1 hot-cache transport. Optional so the default build + unit tests pull zero
+# redis dependency surface — the RedisBackend core is proven against an in-memory
+# mock (the RedisConn Environment seam); the real ConnectionManager transport
+# compiles only under `--features redis-client`.
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+
+[features]
+default = []
+# Enable the production Redis transport (`RedisConnectionManager`).
+redis-client = ["dep:redis"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

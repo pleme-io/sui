@@ -24,7 +24,7 @@ pub use gc::GcResult;
 pub use push::PushResult;
 pub use server::{build_router, serve, AppState};
 pub use signing::{verify_narinfo_signature, CacheSigner};
-pub use storage::{LocalStorage, S3Storage, StorageBackend, StorageIndex};
+pub use storage::{LocalStorage, RedisBackend, RedisConn, S3Storage, StorageBackend, StorageIndex};
 
 /// Errors from cache operations.
 #[derive(Debug, thiserror::Error)]
