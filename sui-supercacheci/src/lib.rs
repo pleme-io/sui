@@ -117,6 +117,21 @@ pub mod controller;
 /// ground-truth recipe.
 pub mod backend;
 
+/// The **perpetual cache-warming** decision core — the pure brain that keeps the
+/// sui super-cache HOT so a build substitutes pre-built closures (warm) instead
+/// of cold-compiling. Answers WHEN to re-warm (cold-start / tracked-input change
+/// / cadence), WHICH closures (one [`preheat::WarmTarget`] per dep/service), and
+/// HOW to spin the 100%-spot scale-to-zero builder floor **only while warming**
+/// ([`preheat::plan_floor`]). Carries the Viggy `(defpromessa)` "cache stays
+/// warm" as a typed [`preheat::WarmthPromessa`]. Shadow-first
+/// ([`PreheatCfg::dry_run`]); the tick loop that drives it is autorevivy's CLEAN
+/// coordinator (a named LiveTODO) with the `camelot-cache-warm` workflow as the
+/// running interim — this module ships the brain both derive from, never a
+/// second controller.
+pub mod preheat;
+
+pub use preheat::PreheatCfg;
+
 /// Which durable-store backend realizes the Nix store.
 ///
 /// The prescribed destination is [`Postgres`](StoreBackendKind::Postgres)
@@ -431,6 +446,11 @@ pub struct SuperCacheCiConfig {
     pub breathe: BreatheCfg,
     /// The akeyless co-optimization toggles.
     pub coopt: CooptCfg,
+    /// The **perpetual cache-warming** posture — keeps the super-cache HOT so a
+    /// build substitutes warm instead of cold-compiling (re-warm on
+    /// tracked-input change or cadence, spinning the builder floor only while
+    /// warming). Shadow-first. See [`preheat`].
+    pub preheat: PreheatCfg,
 }
 
 impl TieredConfig for SuperCacheCiConfig {
@@ -482,6 +502,8 @@ impl TieredConfig for SuperCacheCiConfig {
                 lapidar: false,
                 promessa_ref: None,
             },
+            // Honest floor: no perpetual warming.
+            preheat: preheat::PreheatCfg::off(),
         }
     }
 
@@ -575,6 +597,14 @@ impl TieredConfig for SuperCacheCiConfig {
                 lapidar: false,
                 promessa_ref: None,
             },
+            // Perpetual cache-warming: ENABLED (the cache must stay warm) but
+            // SHADOW-FIRST (dry_run = true) — the plan is computed + observed;
+            // the builder floor is not spun and nothing is warmed until the
+            // operator flips the band LIVE. 6 h cadence, 99% warm-fraction
+            // objective, scale-to-zero at rest. Targets are supplied by the
+            // chart values / discovered tier — an empty set yields an honest
+            // empty plan, never a claimed-warm cache.
+            preheat: preheat::PreheatCfg::camelot(),
         }
     }
 }
@@ -651,6 +681,27 @@ mod tests {
         let p = SuperCacheCiConfig::prescribed_default();
         assert!(!p.coopt.enabled);
         assert!(!p.coopt.lapidar);
+    }
+
+    #[test]
+    fn preheat_is_off_in_the_bare_floor() {
+        let b = SuperCacheCiConfig::bare();
+        assert!(!b.preheat.enabled, "bare() must not claim perpetual warming");
+        assert!(b.preheat.targets.is_empty());
+    }
+
+    #[test]
+    fn preheat_is_enabled_but_shadow_first_in_the_destination() {
+        let p = SuperCacheCiConfig::prescribed_default();
+        assert!(p.preheat.enabled, "the destination keeps the cache warm");
+        assert!(
+            p.preheat.dry_run,
+            "perpetual warming is SHADOW-first (observe before spinning the fleet)"
+        );
+        // scale-to-zero at rest — cost at rest is zero.
+        assert_eq!(p.preheat.floor_spin.idle_floor, 0);
+        // 6 h cadence matches the camelot-cache-warm workflow.
+        assert_eq!(p.preheat.cadence_secs, 21_600);
     }
 
     #[test]

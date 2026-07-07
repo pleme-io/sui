@@ -754,7 +754,7 @@ pub struct ControllerElement {
 /// verdict this encodes: **the pure decision core is legit to build now (done);
 /// the reconciler loop is autorevivy's coordinator (design-stage) — do not
 /// invent a competing controller.**
-pub const CONTROLLER_ELEMENTS: [ControllerElement; 6] = [
+pub const CONTROLLER_ELEMENTS: [ControllerElement; 7] = [
     ControllerElement {
         element: "preemptive-memory",
         decision_fn: "plan_precarve",
@@ -796,6 +796,18 @@ pub const CONTROLLER_ELEMENTS: [ControllerElement; 6] = [
         pure_core_shipped: true,
         loop_tier: LoopTier::DesignLiveTodo,
         composes: "lapidar self-tune + autorevivy escalating-by-discoverability ladder",
+    },
+    ControllerElement {
+        // Element 8 — the perpetual cache-warming core (crate::preheat): keep the
+        // super-cache HOT so a build substitutes warm instead of cold-compiling.
+        // The pure classify/plan/floor/promessa brain ships + is tested; the tick
+        // LOOP is autorevivy's CLEAN face (superCacheCiRef), with the
+        // camelot-cache-warm workflow as the running interim actuator.
+        element: "perpetual-cache-warming",
+        decision_fn: "plan_preheat / classify_target / plan_floor",
+        pure_core_shipped: true,
+        loop_tier: LoopTier::DesignLiveTodo,
+        composes: "camelot-cache-warm workflow (interim) + autorevivy CLEAN (superCacheCiRef) + breathe floor spin",
     },
 ];
 

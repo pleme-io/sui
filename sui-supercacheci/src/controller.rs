@@ -72,7 +72,7 @@ use crate::memory::{
 use crate::presentation::{
     self, Presentation, PresentationBudget, PresentationDecision, TuneRun,
 };
-use crate::{Arch, SuperCacheCiConfig};
+use crate::{preheat, Arch, SuperCacheCiConfig};
 
 /// The default tick interval — how often the coordinator re-optimizes the whole
 /// in-memory cache. `Requeue(this)` keeps the loop live; a controller never
@@ -231,6 +231,11 @@ pub struct CacheObservation {
     pub efficiency: Option<EfficiencyReading>,
     /// Shadow-measured tune proposals to fold (element 6).
     pub tune_proposals: Vec<TuneProposal>,
+    /// The measured warm-state of each perpetual-warming target (element 8).
+    /// **LiveTODO(observe-feed):** L1/L2 presence (sui Redis + Postgres), the
+    /// tracked-input hashes (git), the last-warm timestamps. Empty ⇒ every
+    /// target is treated cold (never invents warmth it did not measure).
+    pub preheat_targets: Vec<preheat::TargetObservation>,
 }
 
 /// What the Act beat applied. **Shadow-first:** a shadow tick returns
@@ -346,6 +351,10 @@ pub struct TickPlan {
     pub presentation_ok: PresentationDecision,
     /// Element 6 — the continuous self-tune over this tick's proposals.
     pub self_tune: TuneRun,
+    /// Element 8 — the perpetual cache-warming plan (WHEN/WHICH to warm + the
+    /// spin-the-floor-only-while-warming builder-floor plan). Keeps the cache
+    /// HOT so a build substitutes warm instead of cold-compiling.
+    pub preheat: preheat::PreheatPlan,
     /// Shadow-first: any band `dry_run` ⇒ the tick is shadow (Act applies nothing).
     pub shadow: bool,
     /// Never-stuck signals — pre-carve/auction escalations off spot/over-ceiling.
@@ -367,6 +376,7 @@ impl TickPlan {
             + self.presentation.l3.len()
             + self.presentation.cold.len()
             + self.self_tune.considered as usize
+            + self.preheat.decision_count()
     }
 }
 
@@ -381,7 +391,7 @@ impl fmt::Display for TickSummary<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} precarve={} auction={} warm={} evict={} gc={} l1={} tune_accepted={} escalations={} applied={}",
+            "{} precarve={} auction={} promote={} evict={} gc={} l1={} tune_accepted={} preheat_warm={} preheat_pct={} escalations={} applied={}",
             if self.plan.shadow { "shadow" } else { "live" },
             self.plan.precarves.len(),
             self.plan.auctions.len(),
@@ -390,6 +400,8 @@ impl fmt::Display for TickSummary<'_> {
             self.plan.maintenance.collect.len(),
             self.plan.presentation.l1.len(),
             self.plan.self_tune.accepted.len(),
+            self.plan.preheat.to_warm,
+            self.plan.preheat.warm_fraction_pct,
             self.plan.escalations,
             self.act.applied_total(),
         )
@@ -461,8 +473,26 @@ pub fn decide(cfg: &SuperCacheCiConfig, obs: &CacheObservation) -> TickPlan {
     });
     let self_tune = presentation::run_self_tune(baseline, &obs.tune_proposals);
 
-    // Shadow-first: either band in dry-run makes the whole tick shadow.
-    let shadow = cfg.cache.memory_band.dry_run || cfg.sandbox.tmpfs_band.dry_run;
+    // Element 8 — the perpetual cache-warming plan: WHEN/WHICH to re-warm + the
+    // spin-the-floor-only-while-warming builder-floor plan (its own dry_run gate).
+    let preheat = preheat::plan_preheat(&cfg.preheat, &obs.preheat_targets);
+    if preheat.floors.iter().any(|f| f.reason == preheat::FloorReason::WarmingRaise) {
+        // A warm that must raise the 100%-spot floor off scale-to-zero is a
+        // never-stuck escalation signal (the fleet must wake to warm).
+        escalations += u32::try_from(
+            preheat
+                .floors
+                .iter()
+                .filter(|f| f.reason == preheat::FloorReason::WarmingRaise)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+    }
+
+    // Shadow-first: any band in dry-run — including the preheat band — makes the
+    // whole tick shadow.
+    let shadow =
+        cfg.cache.memory_band.dry_run || cfg.sandbox.tmpfs_band.dry_run || cfg.preheat.dry_run;
 
     TickPlan {
         precarves,
@@ -472,6 +502,7 @@ pub fn decide(cfg: &SuperCacheCiConfig, obs: &CacheObservation) -> TickPlan {
         presentation,
         presentation_ok,
         self_tune,
+        preheat,
         shadow,
         escalations,
     }
@@ -622,6 +653,9 @@ mod tests {
                 ram_waste_mib: 200,
             }),
             tune_proposals: Vec::new(),
+            // Perpetual-warming observe-feed (empty here — the prescribed config
+            // has no targets; a dedicated test exercises a populated set).
+            preheat_targets: Vec::new(),
         }
     }
 
@@ -731,6 +765,52 @@ mod tests {
     }
 
     // ── the honest gate ─────────────────────────────────────────────────────
+
+    #[test]
+    fn decide_folds_perpetual_warming_plan() {
+        // A config with two warm targets: one cold (warms → floor raised) + one
+        // fresh (already warm → arch idle). decide() must fold the preheat plan.
+        let mut cfg = SuperCacheCiConfig::prescribed_default();
+        cfg.preheat.targets = vec![
+            preheat::WarmTarget::flake("auth", Arch::Amd64),
+            preheat::WarmTarget::flake("gw", Arch::Arm64),
+        ];
+        let mut obs = obs_with_work();
+        obs.preheat_targets = vec![
+            preheat::TargetObservation {
+                name: "auth".into(),
+                present_l1: false,
+                present_l2: false,
+                current_input_hash: "h1".into(),
+                warmed_input_hash: String::new(),
+                secs_since_warm: 0,
+            },
+            preheat::TargetObservation {
+                name: "gw".into(),
+                present_l1: true,
+                present_l2: true,
+                current_input_hash: "h1".into(),
+                warmed_input_hash: "h1".into(),
+                secs_since_warm: 60,
+            },
+        ];
+        let plan = decide(&cfg, &obs);
+        assert_eq!(plan.preheat.to_warm, 1, "the cold target warms");
+        assert_eq!(plan.preheat.already_warm, 1, "the fresh target stays warm");
+        // The amd64 floor is raised (auth warming); the arm64 floor stays 0.
+        let amd = plan
+            .preheat
+            .floors
+            .iter()
+            .find(|f| f.arch == Arch::Amd64)
+            .unwrap();
+        assert_eq!(amd.reason, preheat::FloorReason::WarmingRaise);
+        // Shadow-first: the prescribed preheat band is dry-run ⇒ the tick is shadow.
+        assert!(plan.shadow);
+        // The preheat decisions are counted in the tick's examined set.
+        assert!(plan.decision_count() >= plan.preheat.decision_count());
+        assert!(plan.preheat.decision_count() > 0);
+    }
 
     #[test]
     fn honest_gate_controller_is_a_shadow_skeleton_not_a_live_controller() {
