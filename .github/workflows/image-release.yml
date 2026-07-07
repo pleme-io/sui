@@ -1,0 +1,46 @@
+name: image-release
+
+# sui ships TWO artifacts: the published crate workspace (crates.io, via
+# auto-release.yml) AND a Nix-built `dockerTools` image — the super-cache /
+# `cache serve` daemon the lareira-sui chart runs. This workflow is the ★★
+# AUTO-RELEASE / AUTOBUMP path for the IMAGE (crates ship separately in
+# auto-release.yml; the two never conflict — image-push does not bump/tag).
+#
+# The `sui` binary is built with `default = ["tiered"]`, so `dockerImage-amd64`
+# compiles the Redis L1 + Postgres L2 tiered arms and can serve
+# `cache serve --backend-config <toml>` against the TieredBackend.
+#
+# Runner: the substrate default `ubuntu-24.04` (GitHub's FREE hosted x86_64 =
+# NATIVE amd64, so `dockerImage-amd64` — an x86_64-linux derivation — is built
+# on-target, no cross-arch `exec format error`). sui is public/open-source, so
+# per the ★★ TOOL DISTRIBUTION rule it must NOT couple its build to private rio
+# infra (mirrors hanabi/armazem). The build is heavy (nix evaluator + bytecode
+# VM); if a hosted runner OOMs/disk-fills, add `buildCores: 2` + `maxJobs: 1`
+# and/or an `extraSubstituters` attic cache below.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  image-amd64:
+    name: sui amd64 image → ghcr.io
+    # Skip the crates-bump commit auto-release.yml pushes as
+    # github-actions[bot] (avoids a redundant second image build per merge).
+    if: github.actor != 'github-actions[bot]'
+    uses: pleme-io/substrate/.github/workflows/image-push.yml@main
+    with:
+      imageAttr: dockerImage-amd64
+      imageName: pleme-io/sui
+      # AUTOBUMP-friendly: `r<run_number>` makes the tag numerically SORTABLE so
+      # Flux ImagePolicy (the env-subscription side) can auto-track the newest
+      # build; the sha keeps it traceable. Same shape as hanabi / pangea-operator.
+      tag: amd64-r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: amd64-latest
+    secrets: inherit
