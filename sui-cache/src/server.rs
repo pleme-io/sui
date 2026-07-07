@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -35,6 +35,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/nix-cache-info", get(cache_info))
         .route("/{hash_narinfo}", get(get_narinfo).put(put_narinfo))
         .route("/nar/{*path}", get(get_nar).put(put_nar))
+        // Real Nix NARs routinely exceed axum's default 2 MiB body limit
+        // (Go binaries, dockerTools image layers). Disable it so
+        // `nix copy --to http://<sui>` write-through stores large NARs
+        // instead of returning HTTP 413. (Closes ground-truth Gap B.)
+        .layer(DefaultBodyLimit::disable())
         .with_state(state)
 }
 
