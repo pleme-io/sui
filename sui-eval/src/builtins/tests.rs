@@ -896,7 +896,7 @@ fn make_drv_temp_dir(label: &str) -> std::path::PathBuf {
 
 #[test]
 fn drv_write_creates_file_on_disk() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("create");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation { name = "hello"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
@@ -914,7 +914,7 @@ fn drv_write_creates_file_on_disk() {
 
 #[test]
 fn drv_write_roundtrips_through_parse() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("roundtrip");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation { name = "roundtrip"; system = "x86_64-linux"; builder = "/bin/sh"; args = ["-c" "echo hi"]; }"#,
@@ -937,7 +937,7 @@ fn drv_write_roundtrips_through_parse() {
 
 #[test]
 fn drv_write_is_idempotent() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("idem");
 
     unsafe { std::env::set_var("SUI_STORE_DIR", &store_dir) };
@@ -961,7 +961,7 @@ fn drv_write_is_idempotent() {
 
 #[test]
 fn drv_write_path_matches_filename() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("pathcheck");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation { name = "pathcheck"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
@@ -988,14 +988,14 @@ fn drv_write_path_matches_filename() {
 
 #[test]
 fn drv_write_fixed_output_creates_file() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("fod");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation {
             name = "fod";
             system = "x86_64-linux";
             builder = "/bin/curl";
-            outputHash = "abc123";
+            outputHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
             outputHashAlgo = "sha256";
             outputHashMode = "flat";
         }"#,
@@ -1011,7 +1011,10 @@ fn drv_write_fixed_output_creates_file() {
     let content = std::fs::read(p).unwrap();
     let parsed = sui_compat::derivation::Derivation::parse(&content).unwrap();
     let out = parsed.outputs.get("out").unwrap();
-    assert_eq!(out.hash, "abc123");
+    assert_eq!(
+        out.hash,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
     assert_eq!(out.hash_algo, "sha256");
 
     let _ = std::fs::remove_dir_all(&store_dir);
@@ -1019,7 +1022,7 @@ fn drv_write_fixed_output_creates_file() {
 
 #[test]
 fn drv_write_env_contains_output_paths() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("envtest");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation { name = "envtest"; system = "x86_64-linux"; builder = "/bin/sh"; }"#,
@@ -1041,7 +1044,7 @@ fn drv_write_env_contains_output_paths() {
 
 #[test]
 fn drv_write_multiple_outputs_all_in_env() {
-    let _g = DRV_WRITE_LOCK.lock().unwrap();
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let store_dir = make_drv_temp_dir("multi-env");
     let v = eval_drv_in_temp_store_inner(
         r#"builtins.derivation {
