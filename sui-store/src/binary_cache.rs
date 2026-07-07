@@ -228,15 +228,17 @@ impl BinaryCacheStore {
             return Ok(false);
         }
 
-        // Build the sorted references for the fingerprint.
-        let mut sorted_refs: Vec<String> = narinfo.references.clone();
-        sorted_refs.sort();
-
+        // `compute_fingerprint` sorts references into Nix's canonical order
+        // internally, so we pass them through as-is — the signer used the
+        // same canonical fingerprint. (This previously sorted here while the
+        // signer did not, which broke verification of any path whose
+        // references were not already sorted; the ordering now lives in one
+        // place — `compute_fingerprint`.)
         let fingerprint = compute_fingerprint(
             &narinfo.store_path,
             &narinfo.nar_hash,
             narinfo.nar_size,
-            &sorted_refs,
+            &narinfo.references,
         );
 
         // Build a map of key_name -> public_key_bytes from trusted keys.
@@ -1869,6 +1871,40 @@ References:
         assert!(!result);
     }
 
+    /// The poisoned-write-rejected proof: a validly-signed narinfo whose
+    /// content is then TAMPERED (an attacker who wrote to Redis/PG mutates
+    /// `nar_size` but reuses the honest `Sig:`) is REJECTED by the consumer,
+    /// because the signature is over the fingerprint of the original bytes.
+    /// This is the trust-of-a-poisoned-write closing on the consume side.
+    #[test]
+    fn verify_narinfo_signatures_tampered_content_rejected() {
+        let (mut narinfo, trusted_key) = make_signed_narinfo();
+
+        // Sanity: the untampered signed narinfo verifies.
+        assert!(
+            BinaryCacheStore::verify_narinfo_signatures(&narinfo, &[trusted_key.clone()]).unwrap(),
+            "control: honest signed narinfo must verify",
+        );
+
+        // Attacker mutates the size (points the path at different bytes) but
+        // cannot forge a new signature without the secret key, so reuses the
+        // old one.
+        narinfo.nar_size = 999_999;
+        let result =
+            BinaryCacheStore::verify_narinfo_signatures(&narinfo, &[trusted_key]).unwrap();
+        assert!(!result, "a tampered signed narinfo must be REJECTED");
+    }
+
+    /// Same, but tampering the store path (the identity itself).
+    #[test]
+    fn verify_narinfo_signatures_tampered_store_path_rejected() {
+        let (mut narinfo, trusted_key) = make_signed_narinfo();
+        narinfo.store_path = "/nix/store/evil-swapped".to_string();
+        let result =
+            BinaryCacheStore::verify_narinfo_signatures(&narinfo, &[trusted_key]).unwrap();
+        assert!(!result, "a store-path-swapped narinfo must be REJECTED");
+    }
+
     #[test]
     fn verify_narinfo_signatures_with_references() {
         use ed25519_dalek::{Signer, SigningKey};
@@ -1919,6 +1955,66 @@ References:
         )
         .unwrap();
         assert!(result);
+    }
+
+    /// Regression for the ref-ordering bug (design §1.4 #5): a signature made
+    /// over the references in the order they appear in the narinfo — WITHOUT
+    /// pre-sorting — must still verify through the consumer path, because
+    /// `compute_fingerprint` now canonicalizes the order on both sides. This
+    /// mirrors what `sui_cache::CacheSigner` does at ingest (it passes
+    /// `info.references` through unsorted). Before the fix this asserted
+    /// `false`.
+    #[test]
+    fn verify_narinfo_signatures_unsorted_references_at_sign_time() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        // References deliberately NOT in sorted order.
+        let refs = vec![
+            "/nix/store/zzz-late".to_string(),
+            "/nix/store/aaa-early".to_string(),
+            "/nix/store/mmm-mid".to_string(),
+        ];
+
+        let narinfo = NarInfo {
+            store_path: "/nix/store/xyz-pkg".to_string(),
+            url: "nar/xyz.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:fff".to_string(),
+            file_size: 2000,
+            nar_hash: "sha256:eee".to_string(),
+            nar_size: 3000,
+            references: refs.clone(),
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        };
+
+        // Sign the fingerprint of the UNSORTED references exactly as the
+        // sui daemon signer does (it passes info.references verbatim).
+        let fingerprint = compute_fingerprint(
+            &narinfo.store_path,
+            &narinfo.nar_hash,
+            narinfo.nar_size,
+            &refs,
+        );
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        let sig_str = format!("k:{}", base64_encode(&sig.to_bytes()));
+        let trusted_key = format!("k:{}", base64_encode(verifying_key.as_bytes()));
+
+        let mut signed = narinfo;
+        signed.signatures = vec![sig_str];
+
+        let result = BinaryCacheStore::verify_narinfo_signatures(
+            &signed,
+            &[trusted_key],
+        )
+        .unwrap();
+        assert!(result, "an unsorted-reference signature must verify");
     }
 
     // ── Auth header tests ────────────────────────────────────────

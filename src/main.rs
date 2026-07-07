@@ -155,6 +155,11 @@ enum Commands {
         ///   nix      — shell out to nix build (requires nix in container)
         #[arg(long, default_value = "lockfile")]
         strategy: String,
+        /// Path to the ed25519 signing secret key file (cofre/ESO-materialized
+        /// Secret mount). When set, the embedded cache server signs every
+        /// ingested narinfo. When absent the cache serves unsigned.
+        #[arg(long)]
+        signing_key: Option<String>,
     },
     /// Pre-warm the derivation path cache for a flake.
     /// Run on a machine with enough RAM, then ship drv-cache.redb to K8s pods.
@@ -608,6 +613,11 @@ enum CacheCommands {
         /// `to_backend_config` translation produces the tiered backend. Falls
         /// through to the `--store-path` disk floor when absent.
         #[arg(long)] supercache_config: Option<String>,
+        /// Path to the ed25519 signing secret key file (cofre/ESO-materialized
+        /// Secret mount). When set, the daemon signs every ingested narinfo so
+        /// consumers can verify integrity; when absent the cache serves
+        /// unsigned (legacy fail-open).
+        #[arg(long)] signing_key: Option<String>,
     },
     Push { paths: Vec<String>, #[arg(long)] cache_url: Option<String>, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] signing_key: Option<String> },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
@@ -4916,7 +4926,7 @@ async fn main() -> Result<(), CliError> {
         },
 
         Commands::Cache { command } => match command {
-            CacheCommands::Serve { listen, store_path, priority, backend_config, supercache_config } => {
+            CacheCommands::Serve { listen, store_path, priority, backend_config, supercache_config, signing_key } => {
                 // Config-select the storage backend, in precedence order:
                 //   1. --backend-config  → a raw BackendConfig file (any tier shape)
                 //   2. --supercache-config → a SuperCacheCiConfig posture, translated
@@ -4930,10 +4940,15 @@ async fn main() -> Result<(), CliError> {
                     supercache_config.as_deref(),
                     &store_path,
                 )?;
+                // A serving cache that has a signing key advertises the
+                // fail-closed posture to its consumers.
+                let config_require_sigs = signing_key.is_some();
                 let config = sui_cache::CacheConfig {
                     listen,
                     backend,
                     priority,
+                    signing_key: signing_key.map(std::path::PathBuf::from),
+                    require_sigs: config_require_sigs,
                     ..sui_cache::CacheConfig::default()
                 };
                 let storage = sui_cache::build_backend(&config.backend)
@@ -5174,8 +5189,8 @@ async fn main() -> Result<(), CliError> {
                 registry_pin(&entry)?;
             }
         },
-        Commands::Agent { nats_url, stream, consumer, cache_url, cache_name, strategy } => {
-            agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name, &strategy).await?;
+        Commands::Agent { nats_url, stream, consumer, cache_url, cache_name, strategy, signing_key } => {
+            agent::run_agent(&nats_url, &stream, &consumer, &cache_url, &cache_name, &strategy, signing_key.as_deref()).await?;
         }
         Commands::CacheWarm { flake_ref, attrs } => {
             use sui_eval::drv_cache;

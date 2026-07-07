@@ -189,10 +189,21 @@ pub trait SubstituterEnvironment {
 
     /// Verify the narinfo's signatures against the substituter's
     /// trusted-keys set.  Returns true iff at least one signature
-    /// validates.  Default impl trusts everything — production
-    /// must override.
+    /// validates.
+    ///
+    /// The default impl is **fail-closed**: it returns `Ok(false)`
+    /// (reject) so a `Trusted` / `TrustedUsersOnly` substituter whose
+    /// environment forgot to override it REJECTS the path rather than
+    /// blindly trusting it. A production `SubstituterEnvironment` MUST
+    /// override this with the real ed25519 verify (the `sui-compat`
+    /// `verify_narinfo_signatures` path). This closes the previous
+    /// trust-everything default that silently returned `Ok(true)` —
+    /// the TYPED-SPEC-TRIPLET "no stub returning placeholder Ok" rule.
+    /// (`Untrusted` substituters skip this phase entirely in `apply`,
+    /// so the fail-closed default only bites the trusted arms, which is
+    /// exactly where a forgotten override must not silently pass.)
     fn verify_signatures(&self, _record: &NarInfoRecord) -> Result<bool, String> {
-        Ok(true)
+        Ok(false)
     }
 
     /// Decompress NAR bytes per the `compression` field.  Returns

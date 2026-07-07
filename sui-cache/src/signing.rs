@@ -308,6 +308,28 @@ mod tests {
         assert!(verify_narinfo_signature(&info, &sig, &pk).unwrap());
     }
 
+    /// Regression for the ref-ordering bug: a narinfo whose references are
+    /// NOT in canonical (sorted) order must still sign-then-verify, because
+    /// `compute_fingerprint` canonicalizes the order for both sides. Before
+    /// the fix the signer left them unsorted while the store-side verifier
+    /// sorted, so this path failed verification.
+    #[test]
+    fn sign_verify_unsorted_references_roundtrips() {
+        let signer = CacheSigner::generate("order-key".to_string());
+        let mut info = make_test_narinfo();
+        info.references = vec![
+            "/nix/store/zzz-last".to_string(),
+            "/nix/store/aaa-first".to_string(),
+            "/nix/store/mmm-mid".to_string(),
+        ];
+        let sig = signer.sign_narinfo(&info);
+        let pk = signer.public_key_string();
+        assert!(
+            verify_narinfo_signature(&info, &sig, &pk).unwrap(),
+            "unsorted references must verify",
+        );
+    }
+
     #[test]
     fn verify_bad_signature_string() {
         let info = make_test_narinfo();

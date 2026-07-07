@@ -111,6 +111,7 @@ pub async fn run_agent(
     _cache_url: &str,
     _cache_name: &str,
     strategy_str: &str,
+    signing_key: Option<&str>,
 ) -> Result<(), CliError> {
     let strategy = Strategy::from_str(strategy_str);
     info!(
@@ -124,18 +125,24 @@ pub async fn run_agent(
         sui_cache::LocalStorage::new(std::path::PathBuf::from("/var/lib/sui/cache")),
     );
 
-    // Cache server in background (serves /nix-cache-info for health probes)
+    // Cache server in background (serves /nix-cache-info for health probes
+    // and the binary-cache protocol). When a signing key is provided it is
+    // sourced from a file path — a cofre/ESO-materialized Secret mount in
+    // production — and every ingested narinfo is signed.
     let cache_storage = Arc::clone(&storage);
+    let signing_key_path = signing_key.map(std::path::PathBuf::from);
+    let require_sigs = signing_key_path.is_some();
     tokio::spawn(async move {
         let config = sui_cache::CacheConfig {
             listen: "0.0.0.0:5000".to_string(),
             backend: sui_cache::BackendConfig::Local {
                 path: std::path::PathBuf::from("/var/lib/sui/cache"),
             },
-            signing_key: None,
+            signing_key: signing_key_path,
             priority: 40,
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
+            require_sigs,
         };
         if let Err(e) = sui_cache::serve(config, cache_storage).await {
             error!(error = %e, "Cache server exited with error");

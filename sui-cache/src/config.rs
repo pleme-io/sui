@@ -14,6 +14,10 @@ pub struct CacheConfig {
     /// Storage backend configuration.
     pub backend: BackendConfig,
     /// Path to the ed25519 signing secret key file.
+    ///
+    /// In production this path is a cofre/ESO-materialized Kubernetes Secret
+    /// mount, never a plaintext literal. When set, the daemon signs every
+    /// ingested narinfo (see [`serve`](crate::server::serve)).
     pub signing_key: Option<PathBuf>,
     /// Cache priority (lower = preferred). Reported in nix-cache-info.
     pub priority: u32,
@@ -21,6 +25,17 @@ pub struct CacheConfig {
     pub want_mass_query: bool,
     /// The Nix store directory (almost always `/nix/store`).
     pub store_dir: String,
+    /// Whether this cache's consumers should require a valid signature.
+    ///
+    /// This is a serving-side advertisement of the fail-closed posture: a
+    /// signing cache SHOULD publish `require_sigs = true` so operators know
+    /// the served paths are signed and consumers must verify. It does not by
+    /// itself change what the daemon serves (signing is driven by
+    /// `signing_key`); it is the typed knob a consuming config reads to know
+    /// the cache is trustworthy fail-closed. Defaults to `false` to preserve
+    /// legacy behavior for caches that have not yet been given a key.
+    #[serde(default)]
+    pub require_sigs: bool,
 }
 
 impl Default for CacheConfig {
@@ -32,6 +47,7 @@ impl Default for CacheConfig {
             priority: 40,
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
+            require_sigs: false,
         }
     }
 }
@@ -134,13 +150,31 @@ mod tests {
             priority: 30,
             want_mass_query: false,
             store_dir: "/nix/store".to_string(),
+            require_sigs: true,
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: CacheConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.listen, "127.0.0.1:8080");
         assert_eq!(parsed.priority, 30);
         assert!(!parsed.want_mass_query);
+        assert!(parsed.require_sigs);
         assert!(matches!(parsed.backend, BackendConfig::S3 { .. }));
+    }
+
+    #[test]
+    fn require_sigs_defaults_to_false_when_absent() {
+        // A config JSON that omits require_sigs deserializes to false
+        // (the serde default) — legacy configs keep working.
+        let json = r#"{
+            "listen": "0.0.0.0:5000",
+            "backend": { "type": "local", "path": "/var/cache/sui" },
+            "signing_key": null,
+            "priority": 40,
+            "want_mass_query": true,
+            "store_dir": "/nix/store"
+        }"#;
+        let parsed: CacheConfig = serde_json::from_str(json).unwrap();
+        assert!(!parsed.require_sigs);
     }
 
     #[test]

@@ -17,7 +17,9 @@ use axum::routing::get;
 use axum::Router;
 
 use crate::config::CacheConfig;
+use crate::signing::CacheSigner;
 use crate::storage::StorageBackend;
+use sui_compat::narinfo::NarInfo;
 
 /// Shared application state for all handlers.
 #[derive(Clone)]
@@ -26,6 +28,15 @@ pub struct AppState {
     pub storage: Arc<dyn StorageBackend>,
     /// Cache configuration.
     pub config: CacheConfig,
+    /// The ed25519 signer, loaded from `config.signing_key` at startup.
+    ///
+    /// When present, every narinfo is signed at ingest (`put_narinfo`) so
+    /// the durable tier carries a `Sig:` field and every serving tier
+    /// inherits it — the signature is content-addressed with the store path
+    /// (the fingerprint is over the path), so it deduplicates for free. When
+    /// `None`, the cache serves narinfo bytes verbatim (the legacy
+    /// pass-through, fail-open behavior).
+    pub signer: Option<Arc<CacheSigner>>,
 }
 
 /// Build the axum router for the binary cache server.
@@ -50,9 +61,38 @@ pub fn build_router(state: AppState) -> Router {
 /// Returns an error if binding or serving fails.
 pub async fn serve(config: CacheConfig, storage: Arc<dyn StorageBackend>) -> Result<(), crate::CacheError> {
     let listen = config.listen.clone();
+
+    // Load the ed25519 signing key (if configured) at startup. The key is
+    // sourced from a file path — in production that path is a cofre/ESO-
+    // materialized Kubernetes Secret mount, never a plaintext literal. When
+    // no key is configured the daemon serves unsigned (the legacy behavior);
+    // a warning is logged so the fail-open posture is never silent.
+    let signer = match &config.signing_key {
+        Some(path) => {
+            let key_str = std::fs::read_to_string(path).map_err(crate::CacheError::Io)?;
+            let signer = CacheSigner::from_secret_key_string(key_str.trim())?;
+            tracing::info!(
+                key_name = signer.key_name(),
+                public_key = %signer.public_key_string(),
+                "sui-cache signing ENABLED — every ingested narinfo is signed; \
+                 distribute the public key to consumers as a trusted-public-key",
+            );
+            Some(Arc::new(signer))
+        }
+        None => {
+            tracing::warn!(
+                "sui-cache signing DISABLED (no signing_key configured) — narinfo \
+                 served unsigned; consumers cannot verify integrity. Set a \
+                 cofre/ESO-backed signing key to close the poisoned-write hole.",
+            );
+            None
+        }
+    };
+
     let state = AppState {
         storage,
         config,
+        signer,
     };
     let app = build_router(state);
 
@@ -64,6 +104,32 @@ pub async fn serve(config: CacheConfig, storage: Arc<dyn StorageBackend>) -> Res
         .await
         .map_err(crate::CacheError::Io)?;
     Ok(())
+}
+
+/// Sign narinfo text at ingest, returning the signed text.
+///
+/// Idempotent: if the narinfo already carries a signature under this
+/// signer's key name, the text is returned unchanged (so a re-`put` of an
+/// already-signed path does not double-sign). Otherwise the signer's
+/// `keyname:base64sig` is appended and the narinfo re-serialized.
+///
+/// # Errors
+///
+/// Returns [`CacheError::NarInfo`](crate::CacheError::NarInfo) if the text
+/// cannot be parsed as a narinfo.
+fn sign_narinfo_text(signer: &CacheSigner, content: &str) -> Result<String, crate::CacheError> {
+    let mut info = NarInfo::parse(content)
+        .map_err(|e| crate::CacheError::NarInfo(e.to_string()))?;
+
+    let key_prefix = format!("{}:", signer.key_name());
+    if info.signatures.iter().any(|s| s.starts_with(&key_prefix)) {
+        // Already signed by us — do not double-sign; return as-is.
+        return Ok(content.to_string());
+    }
+
+    let sig = signer.sign_narinfo(&info);
+    info.signatures.push(sig);
+    Ok(info.serialize())
 }
 
 /// `GET /nix-cache-info` — returns cache metadata.
@@ -120,7 +186,20 @@ async fn put_narinfo(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    match state.storage.put_narinfo(hash, &content).await {
+    // Sign at ingest when a signer is configured, so the durable tier stores
+    // the signed narinfo and every serving tier inherits the `Sig:`.
+    let to_store = match &state.signer {
+        Some(signer) => match sign_narinfo_text(signer, &content) {
+            Ok(signed) => signed,
+            Err(e) => {
+                tracing::error!("put_narinfo signing error: {e}");
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+        },
+        None => content,
+    };
+
+    match state.storage.put_narinfo(hash, &to_store).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!("put_narinfo error: {e}");
@@ -192,8 +271,9 @@ mod tests {
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
             signing_key: None,
+            require_sigs: false,
         };
-        build_router(AppState { storage, config })
+        build_router(AppState { storage, config, signer: None })
     }
 
     async fn body_string(response: axum::http::Response<Body>) -> String {
@@ -372,6 +452,7 @@ mod tests {
         let app = build_router(AppState {
             storage,
             config,
+            signer: None,
         });
 
         let req = axum::http::Request::builder()
@@ -383,6 +464,111 @@ mod tests {
         let body = body_string(resp).await;
         assert!(body.contains("Priority: 10"));
         assert!(body.contains("WantMassQuery: 0"));
+    }
+
+    /// Sign-on-ingest proof: with a signer configured, a `PUT`-then-`GET`
+    /// narinfo comes back carrying a `Sig:` that verifies against the
+    /// signer's public key. This exercises the exact serve-path wiring
+    /// (`put_narinfo` → `sign_narinfo_text`), not just the library.
+    #[tokio::test]
+    async fn put_narinfo_signs_at_ingest_and_get_returns_verifiable_sig() {
+        use crate::signing::{verify_narinfo_signature, CacheSigner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
+        let signer = Arc::new(CacheSigner::generate("ingest-key".to_string()));
+        let pk = signer.public_key_string();
+        let config = CacheConfig {
+            listen: "127.0.0.1:0".to_string(),
+            backend: BackendConfig::Local { path: dir.path().to_path_buf() },
+            priority: 40,
+            want_mass_query: true,
+            store_dir: "/nix/store".to_string(),
+            signing_key: None,
+            require_sigs: false,
+        };
+        let app = build_router(AppState { storage, config, signer: Some(signer.clone()) });
+
+        // Unsigned narinfo (references deliberately unsorted).
+        let narinfo = "StorePath: /nix/store/abc-hello\n\
+                       URL: nar/abc.nar.xz\n\
+                       Compression: xz\n\
+                       FileHash: sha256:aaa\n\
+                       FileSize: 100\n\
+                       NarHash: sha256:bbb\n\
+                       NarSize: 200\n\
+                       References: zzz-b aaa-a\n";
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/abc.narinfo")
+            .body(Body::from(narinfo))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let req = axum::http::Request::builder()
+            .uri("/abc.narinfo")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+
+        let parsed = NarInfo::parse(&body).unwrap();
+        assert_eq!(parsed.signatures.len(), 1, "GET must return a signed narinfo");
+        assert!(parsed.signatures[0].starts_with("ingest-key:"));
+        assert!(
+            verify_narinfo_signature(&parsed, &parsed.signatures[0], &pk).unwrap(),
+            "the ingest signature must verify against the signer public key",
+        );
+    }
+
+    /// Re-`PUT` of an already-signed narinfo does not double-sign.
+    #[tokio::test]
+    async fn put_narinfo_is_idempotent_under_our_key() {
+        use crate::signing::CacheSigner;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
+        let signer = Arc::new(CacheSigner::generate("dedupe-key".to_string()));
+        let config = CacheConfig {
+            listen: "127.0.0.1:0".to_string(),
+            backend: BackendConfig::Local { path: dir.path().to_path_buf() },
+            priority: 40,
+            want_mass_query: true,
+            store_dir: "/nix/store".to_string(),
+            signing_key: None,
+            require_sigs: false,
+        };
+        let app = build_router(AppState { storage, config, signer: Some(signer) });
+
+        let narinfo = "StorePath: /nix/store/def-x\n\
+                       URL: nar/def.nar.xz\n\
+                       Compression: xz\n\
+                       FileHash: sha256:a\n\
+                       FileSize: 1\n\
+                       NarHash: sha256:b\n\
+                       NarSize: 2\n\
+                       References: \n";
+
+        // First PUT (signs), GET the signed text, PUT it back.
+        for uri in ["/def.narinfo"] {
+            let req = axum::http::Request::builder()
+                .method("PUT").uri(uri).body(Body::from(narinfo)).unwrap();
+            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+        }
+        let req = axum::http::Request::builder().uri("/def.narinfo").body(Body::empty()).unwrap();
+        let signed = body_string(app.clone().oneshot(req).await.unwrap()).await;
+
+        let req = axum::http::Request::builder()
+            .method("PUT").uri("/def.narinfo").body(Body::from(signed.clone())).unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+        let req = axum::http::Request::builder().uri("/def.narinfo").body(Body::empty()).unwrap();
+        let final_text = body_string(app.oneshot(req).await.unwrap()).await;
+        let parsed = NarInfo::parse(&final_text).unwrap();
+        assert_eq!(parsed.signatures.len(), 1, "must not double-sign on re-PUT");
     }
 
     #[tokio::test]

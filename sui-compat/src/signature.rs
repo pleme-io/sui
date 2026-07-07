@@ -105,7 +105,23 @@ impl std::fmt::Display for StorePathSignature {
 
 /// Compute the fingerprint string that Nix signs.
 ///
-/// Format: `1;{storePath};{narHash};{narSize};{sortedReferences}`
+/// Format: `1;{storePath};{narHash};{narSize};{sortedReferences}`.
+///
+/// The references are sorted into Nix's canonical (lexicographic) order
+/// **inside** this function, so every caller — signer and verifier alike —
+/// fingerprints the same bytes regardless of the order it happens to hold
+/// the references in. This is the single canonical fingerprint: a signer
+/// that passes references in arbitrary order and a verifier that passes
+/// them in a different order compute the identical string, so a valid
+/// signature always verifies. (Nix itself sorts references before signing;
+/// matching that here is what makes sui-signed paths verifiable by any Nix
+/// consumer and vice versa.)
+///
+/// Historically this function did *not* sort, while
+/// `BinaryCacheStore::verify_narinfo_signatures` sorted before calling it —
+/// so a sui-signed path whose references were not already in canonical
+/// order failed its own verifier. Sorting here closes that mismatch at the
+/// one place the order is decided.
 #[must_use]
 pub fn compute_fingerprint(
     store_path: &str,
@@ -113,7 +129,9 @@ pub fn compute_fingerprint(
     nar_size: u64,
     references: &[String],
 ) -> String {
-    let refs = references.join(",");
+    let mut sorted_refs: Vec<&str> = references.iter().map(String::as_str).collect();
+    sorted_refs.sort_unstable();
+    let refs = sorted_refs.join(",");
     format!("1;{store_path};{nar_hash};{nar_size};{refs}")
 }
 
@@ -530,6 +548,41 @@ mod tests {
         let refs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let fp = compute_fingerprint("/p", "h", 1, &refs);
         assert!(fp.ends_with(";a,b,c"));
+    }
+
+    // ── Ref-ordering canonicalization (the latent-bug fix) ──────
+
+    #[test]
+    fn fingerprint_sorts_unsorted_references() {
+        // Unsorted input must produce the SAME canonical fingerprint as the
+        // sorted input — this is the property the signer and verifier rely on.
+        let unsorted = vec!["c".to_string(), "a".to_string(), "b".to_string()];
+        let fp = compute_fingerprint("/p", "h", 1, &unsorted);
+        assert!(fp.ends_with(";a,b,c"), "references must be sorted, got {fp}");
+    }
+
+    #[test]
+    fn fingerprint_order_independent() {
+        // Any permutation of the same references yields the identical
+        // fingerprint — so a signature made over one order verifies against
+        // any other order.
+        let a = compute_fingerprint("/p", "h", 1, &["z".into(), "a".into(), "m".into()]);
+        let b = compute_fingerprint("/p", "h", 1, &["a".into(), "m".into(), "z".into()]);
+        let c = compute_fingerprint("/p", "h", 1, &["m".into(), "z".into(), "a".into()]);
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+    }
+
+    #[test]
+    fn fingerprint_sorts_full_store_paths() {
+        // Real references are full /nix/store paths; canonical order is
+        // lexicographic over the full string.
+        let refs = vec![
+            "/nix/store/zzz-b".to_string(),
+            "/nix/store/aaa-a".to_string(),
+        ];
+        let fp = compute_fingerprint("/nix/store/x-pkg", "sha256:h", 1, &refs);
+        assert!(fp.ends_with(";/nix/store/aaa-a,/nix/store/zzz-b"), "got {fp}");
     }
 
     // ── Ed25519Verifier trait method tests ───────────────
