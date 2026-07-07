@@ -8,4 +8,7 @@ result-*
 generated/
 .worktrees/
 .claude/worktrees/
-Cargo.build-spec.json
+# Cargo.build-spec.json is COMMITTED (tracked), not gitignored: the slim
+# Cargo.gen.lock delta reconstruction mis-assigns the workspace root crate for a
+# root-`[package]` binary (drops `sui`, points root_crate at the first member),
+# so sui pins the full, correct build-spec until that delta bug is fixed upstream.

@@ -290,12 +290,17 @@ regex.workspace = true
 toml.workspace = true
 
 [features]
-# The root `sui` binary has no features today, so it cannot turn on the
-# sui-cache/sui-store production transports — `cache serve` with a tiered/redis/pg
-# config then returns CacheError::NotImplemented (never a silent disk fallback).
-# These passthroughs let `cargo build --bin sui --features tiered` compile in the
-# Redis + Postgres arms so a tiered daemon is runnable.
-default = []
+# The `sui` binary IS the super-cache / cache-serve daemon, so its default build
+# turns ON the sui-cache/sui-store production transports (Redis L1 + Postgres L2).
+# Without them `cache serve` with a tiered/redis/pg config returns
+# CacheError::NotImplemented (never a silent disk fallback) — so a default-built
+# image could NOT serve the TieredBackend. `default = ["tiered"]` compiles the
+# Redis + Postgres arms into the shipped binary + the dockerTools image (which is
+# gen/lockfile-builder-built from cargo's DEFAULT feature resolution — there is no
+# `--features` hook on that path, so the tiered arms MUST be default to reach the
+# image). Scoped to the root binary only: sui-cache/sui-store keep `default = []`
+# so library consumers stay lean and pull zero redis/sqlx surface.
+default = ["tiered"]
 # Enable the Postgres L2 durable transport (cache backend + durable Store).
 postgres = ["sui-cache/postgres", "sui-store/postgres"]
 # Enable the Redis L1 hot-cache transport.

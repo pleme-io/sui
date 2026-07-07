@@ -35,7 +35,14 @@
       repo = "pleme-io/sui";
     };
 
-    # Docker image (substrate pattern — crate2nix, per-crate caching)
+    # Docker image (substrate pattern — gen / lockfile-builder path).
+    # `Cargo.nix` was dropped (367354b — "lockfile-builder is the canonical
+    # path"), so the image build MUST use `genBuild = true` (the same
+    # gen/lockfile-builder route the release binary already uses) instead of the
+    # now-missing crate2nix `Cargo.nix`. The build resolves cargo's DEFAULT
+    # features, so the `sui` crate's `default = ["tiered"]` is what compiles the
+    # Redis L1 + Postgres L2 arms into `dockerImage-amd64` — the tiered
+    # `cache serve --backend-config` daemon the lareira-sui chart runs.
     imageOutputs = (import "${substrate}/lib/rust-tool-image-flake.nix" {
       inherit nixpkgs crate2nix flake-utils forge;
     }) {
@@ -43,6 +50,7 @@
       packageName = "sui";
       src = self;
       repo = "pleme-io/sui";
+      genBuild = true;
       architectures = [ "amd64" ];
       env = [
         "RUST_LOG=info"
