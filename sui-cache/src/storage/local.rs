@@ -123,6 +123,18 @@ impl StorageBackend for LocalStorage {
         }
         Ok(hashes)
     }
+
+    /// Complete L3 wipe: remove the entire cache directory (narinfos + the `nar/`
+    /// blob subtree), reclaiming NAR bytes a per-hash `delete` cannot reach. The
+    /// directory is re-created lazily on the next `put`. Returns the narinfo
+    /// count removed.
+    async fn wipe_all(&self) -> Result<usize, CacheError> {
+        let n = self.list_narinfos().await?.len();
+        if self.root.exists() {
+            fs::remove_dir_all(&self.root).await.map_err(CacheError::Io)?;
+        }
+        Ok(n)
+    }
 }
 
 #[cfg(test)]

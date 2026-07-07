@@ -247,6 +247,22 @@ impl StorageBackend for TieredBackend {
         set.extend(self.l3.list_narinfos().await?);
         Ok(set.into_iter().collect())
     }
+
+    /// Fan the wipe out to EVERY tier (L1 hot + L2/L3 durable), so a cache-wipe
+    /// clears all three at once. Best-effort per tier (mirrors `delete`): one
+    /// tier's failure is logged, never aborting the others — the whole point is
+    /// to return the store to cold. Reports the largest per-tier narinfo count
+    /// removed (the authoritative tiers' full set).
+    async fn wipe_all(&self) -> Result<usize, CacheError> {
+        let mut cleared = 0usize;
+        for (name, tier) in [("l1", &self.l1), ("l2", &self.l2), ("l3", &self.l3)] {
+            match tier.wipe_all().await {
+                Ok(n) => cleared = cleared.max(n),
+                Err(e) => warn!(tier = name, error = %e, "tiered: best-effort wipe failed"),
+            }
+        }
+        Ok(cleared)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +501,28 @@ mod tests {
             assert!(!t.has_narinfo("h"));
             assert!(!t.has_nar("nar/h.nar.xz"));
         }
+    }
+
+    #[tokio::test]
+    async fn wipe_all_clears_every_tier() {
+        let (l1, l2, l3, tiered) = mocks();
+        // write-through seeds all three tiers.
+        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
+        // a durable-only key proves the list-driven clear, not just the hot one.
+        l2.put_narinfo("only2", "x").await.unwrap();
+
+        let removed = tiered.wipe_all().await.unwrap();
+        assert!(removed >= 1, "wipe reported nothing cleared");
+
+        for t in [&l1, &l2, &l3] {
+            assert!(t.list_narinfos().await.unwrap().is_empty(), "a tier survived the wipe");
+            assert!(!t.has_narinfo("h"));
+            assert!(!t.has_nar("nar/h.nar.xz"));
+        }
+        assert!(tiered.list_narinfos().await.unwrap().is_empty(), "cache not cold after wipe");
+        // and the cache is genuinely cold — a fresh get misses.
+        assert!(tiered.get_narinfo("h").await.unwrap().is_none());
     }
 
     #[tokio::test]

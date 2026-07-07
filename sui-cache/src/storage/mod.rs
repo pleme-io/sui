@@ -66,6 +66,33 @@ pub trait StorageBackend: Send + Sync {
 
     /// List all stored narinfo hashes.
     async fn list_narinfos(&self) -> Result<Vec<String>, CacheError>;
+
+    /// Clear EVERY narinfo and NAR blob from this backend (all tiers, for a
+    /// [`TieredBackend`]). Returns the number of narinfos removed.
+    ///
+    /// This is the inverse of a warm push: the cache is regenerable by
+    /// construction — a wipe merely forces the next build to run COLD — so it is
+    /// a safe GC-class operation, never a correctness one. Its purpose is a clean
+    /// cold baseline for repeatable cold/warm benchmarking (the operator's
+    /// cache-wipe lever, the enjulho inverse of pre-warm).
+    ///
+    /// The default lists every narinfo and best-effort `delete`s it (mirroring
+    /// [`delete`](StorageBackend::delete)). Because NAR blobs are keyed by
+    /// *narhash* (from the narinfo `URL:`), not the store-path hash, per-hash
+    /// delete cannot reach the NAR bytes — so a **complete** wipe requires a
+    /// whole-store clear. The concrete durable tiers override this with a real
+    /// truncation (Postgres `DELETE FROM`, Redis prefix-scan, local-dir removal)
+    /// that reclaims the NAR bytes as well; the default remains an honest
+    /// narinfo-only clear (which still forces a cold miss, since Nix asks for the
+    /// narinfo first) for backends without one.
+    async fn wipe_all(&self) -> Result<usize, CacheError> {
+        let hashes = self.list_narinfos().await?;
+        let n = hashes.len();
+        for hash in hashes {
+            self.delete(&hash).await?;
+        }
+        Ok(n)
+    }
 }
 
 /// Config-select factory: build the concrete [`StorageBackend`] a

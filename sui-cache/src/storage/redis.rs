@@ -158,6 +158,21 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
             .filter_map(|k| k.strip_prefix(NARINFO_PREFIX).map(str::to_string))
             .collect())
     }
+
+    /// Complete L1 wipe: `DEL` every key under BOTH the narinfo and NAR prefixes
+    /// (a scoped clear — never `FLUSHDB`, which would blow away an unrelated
+    /// co-tenant of the same Redis db). Returns the narinfo key count removed.
+    async fn wipe_all(&self) -> Result<usize, CacheError> {
+        let narinfos = self.conn.keys_with_prefix(NARINFO_PREFIX).await?;
+        let n = narinfos.len();
+        for key in &narinfos {
+            self.conn.del(key).await?;
+        }
+        for key in self.conn.keys_with_prefix(NAR_PREFIX).await? {
+            self.conn.del(&key).await?;
+        }
+        Ok(n)
+    }
 }
 
 // ---------------------------------------------------------------------------

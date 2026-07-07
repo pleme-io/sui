@@ -622,6 +622,18 @@ enum CacheCommands {
     Push { paths: Vec<String>, #[arg(long)] cache_url: Option<String>, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] signing_key: Option<String> },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
     Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
+    /// Clear the ENTIRE cache — every narinfo + NAR across all tiers (Redis L1,
+    /// Postgres L2, object/local L3). The inverse of a warm push: the cache is
+    /// regenerable by construction, so a wipe merely forces the next build COLD
+    /// — the operator's clean-cold-baseline lever for repeatable cold/warm
+    /// benchmarking. Emits a JSON receipt.
+    Wipe {
+        /// Config-select the tiered backend (the same `backend.toml` the daemon
+        /// serves), so the wipe reaches every tier the daemon writes.
+        #[arg(long)] backend_config: Option<String>,
+        /// Fallback local store dir when no `--backend-config` is given.
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5036,6 +5048,32 @@ async fn main() -> Result<(), CliError> {
                 })?;
                 println!("Cache dir:   {store_path}");
                 println!("Paths:       {}", hashes.len());
+            }
+            CacheCommands::Wipe { backend_config, store_path } => {
+                // Config-select the SAME backend the daemon serves, so a wipe
+                // fans out to every tier (Redis L1 + Postgres L2 + object/local
+                // L3) via the typed `StorageBackend::wipe_all`.
+                let backend =
+                    resolve_serve_backend(backend_config.as_deref(), None, &store_path)?;
+                let storage = sui_cache::build_backend(&backend).await.map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache wipe",
+                        message: e.to_string(),
+                    }
+                })?;
+                let cleared = storage.wipe_all().await.map_err(|e| CliError::Orchestrate {
+                    operation: "cache wipe",
+                    message: e.to_string(),
+                })?;
+                // Keyway-shaped receipt: JSON out, exit 0. The typed value IS the
+                // render surface (serde_json), never a hand-built string.
+                let receipt = serde_json::json!({
+                    "op": "cache-wipe",
+                    "wiped": true,
+                    "narinfos_cleared": cleared,
+                    "source": backend_config.as_deref().unwrap_or(store_path.as_str()),
+                });
+                println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
             }
         },
 

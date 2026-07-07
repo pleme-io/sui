@@ -85,6 +85,11 @@ pub trait PgCacheConn: Send + Sync {
     /// `SELECT key FROM <table>` — the **authoritative** full key set (this is a
     /// durable tier, not a partial hot cache).
     async fn keys(&self, table: PgTable) -> Result<Vec<String>, CacheError>;
+
+    /// `DELETE FROM <table>` — clear the whole table, returning the row count
+    /// removed. The typed whole-store wipe primitive (the inverse of a warm
+    /// push); reaches NAR rows a per-key `delete` cannot.
+    async fn clear(&self, table: PgTable) -> Result<u64, CacheError>;
 }
 
 /// L2 durable cache tier: content-addressed key → value over Postgres, shared
@@ -149,6 +154,15 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
     async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
         self.conn.keys(PgTable::Narinfo).await
     }
+
+    /// Complete L2 wipe: truncate BOTH the narinfo and NAR tables. Unlike the
+    /// per-hash `delete`, this reclaims NAR rows (keyed by narhash, unreachable
+    /// from a store-path hash). Returns the narinfo row count removed.
+    async fn wipe_all(&self) -> Result<usize, CacheError> {
+        let narinfos = self.conn.clear(PgTable::Narinfo).await? as usize;
+        self.conn.clear(PgTable::Nar).await?;
+        Ok(narinfos)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +220,13 @@ mod sqlx_conn {
             match self {
                 PgTable::Narinfo => "DELETE FROM sui_cache_narinfo WHERE key = $1",
                 PgTable::Nar => "DELETE FROM sui_cache_nar WHERE key = $1",
+            }
+        }
+
+        const fn clear_sql(self) -> &'static str {
+            match self {
+                PgTable::Narinfo => "DELETE FROM sui_cache_narinfo",
+                PgTable::Nar => "DELETE FROM sui_cache_nar",
             }
         }
 
@@ -294,6 +315,14 @@ mod sqlx_conn {
                 .map(|r| r.try_get::<String, _>("key").map_err(to_cache_err))
                 .collect()
         }
+
+        async fn clear(&self, table: PgTable) -> Result<u64, CacheError> {
+            let res = sqlx::query(table.clear_sql())
+                .execute(&self.pool)
+                .await
+                .map_err(to_cache_err)?;
+            Ok(res.rows_affected())
+        }
     }
 
     impl PgStorageBackend<SqlxPgCacheConn> {
@@ -359,6 +388,13 @@ mod tests {
         async fn keys(&self, table: PgTable) -> Result<Vec<String>, CacheError> {
             Ok(self.table(table).lock().unwrap().keys().cloned().collect())
         }
+
+        async fn clear(&self, table: PgTable) -> Result<u64, CacheError> {
+            let mut m = self.table(table).lock().unwrap();
+            let n = m.len() as u64;
+            m.clear();
+            Ok(n)
+        }
     }
 
     const NARINFO: &str = "StorePath: /nix/store/abc-hello\nURL: nar/abc.nar.xz\nCompression: xz\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
@@ -414,6 +450,29 @@ mod tests {
         assert!(backend.get_nar("nar/xyz.nar.xz").await.unwrap().is_none());
         assert!(backend.get_nar("nar/xyz.nar.zst").await.unwrap().is_none());
         assert!(backend.get_nar("nar/xyz.nar").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn wipe_all_truncates_both_tables_incl_narhash_keyed_nar() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        // Real keying: narinfo by store-hash, NAR by a DIFFERENT narhash — the
+        // orphan class a per-hash `delete` cannot reach.
+        backend.put_narinfo("storehash", NARINFO).await.unwrap();
+        backend.put_nar("nar/0narhashXXXXXXXXXXXXXXXXXXXXXXXXXX.nar", b"blob").await.unwrap();
+        backend.put_narinfo("other", NARINFO).await.unwrap();
+
+        let removed = backend.wipe_all().await.unwrap();
+        assert_eq!(removed, 2, "wipe_all should report the narinfo count");
+
+        // Both tables fully cleared — including the narhash-keyed NAR.
+        assert!(backend.list_narinfos().await.unwrap().is_empty());
+        assert!(backend.get_narinfo("storehash").await.unwrap().is_none());
+        assert!(backend.get_narinfo("other").await.unwrap().is_none());
+        assert!(backend
+            .get_nar("nar/0narhashXXXXXXXXXXXXXXXXXXXXXXXXXX.nar")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
