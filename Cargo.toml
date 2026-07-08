@@ -59,6 +59,11 @@ members = [
     # either materializes a cache hit or shells out to real `docker build`
     # on any miss (never a partial cache splice — see the crate docs).
     "sui-dockerfile-wrapper",
+    # Phase 3 of supa-charge-akeyless-ci: the standing pre-warming
+    # service that polls watched public Dockerfiles for new commits and
+    # invokes sui-dockerfile-wrapper in cache-miss mode to keep the
+    # cache warm ahead of any real build.
+    "sui-dockerfile-prewarmer",
 ]
 resolver = "3"
 
@@ -88,6 +93,7 @@ sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.10" }
 sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
 sui-supercacheci = { path = "sui-supercacheci", version = "0.1.10" }
 sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.10" }
+sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.

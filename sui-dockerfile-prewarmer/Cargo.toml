@@ -1,0 +1,37 @@
+[package]
+name = "sui-dockerfile-prewarmer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standing pre-warming service — polls watched public Dockerfiles for new commits and keeps sui's cache warm via sui-dockerfile-wrapper (supa-charge-akeyless-ci Phase 3)"
+keywords = ["nix", "docker", "cache", "ci"]
+categories = ["caching"]
+
+[[bin]]
+name = "sui-dockerfile-prewarmer"
+path = "src/main.rs"
+
+[dependencies]
+sui-spec.workspace = true
+sui-cache.workspace = true
+sui-dockerfile-wrapper.workspace = true
+shikumi = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "time", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints.clippy]
+pedantic = "warn"

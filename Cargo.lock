@@ -6306,6 +6306,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-dockerfile-prewarmer"
+version = "0.1.15"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "shikumi",
+ "sui-cache",
+ "sui-dockerfile-wrapper",
+ "sui-spec",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sui-dockerfile-wrapper"
 version = "0.1.15"
 dependencies = [
