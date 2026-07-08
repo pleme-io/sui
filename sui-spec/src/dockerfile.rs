@@ -33,7 +33,7 @@
 //!   :source-text "FROM debian:bookworm-slim\nRUN ...\nCMD [...]\n")
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tatara_lisp::DeriveTataraDomain;
@@ -320,6 +320,7 @@ pub fn apply<E: DockerfileEnvironment>(
     })?;
 
     let mut resolved_args: BTreeMap<String, String> = BTreeMap::new();
+    let mut declared_envs: BTreeSet<String> = BTreeSet::new();
     let mut nodes = Vec::new();
     let mut parent_hash: Option<String> = None;
 
@@ -329,7 +330,7 @@ pub fn apply<E: DockerfileEnvironment>(
             continue;
         }
 
-        let instruction = parse_instruction(line, line_no + 1, &resolved_args, env)?;
+        let instruction = parse_instruction(line, line_no + 1, &resolved_args, &declared_envs, env)?;
 
         if let DockerfileInstruction::Arg { name, default_value } = &instruction {
             let value = env
@@ -338,6 +339,10 @@ pub fn apply<E: DockerfileEnvironment>(
             if let Some(v) = value {
                 resolved_args.insert(name.clone(), v);
             }
+        }
+
+        if let DockerfileInstruction::Env { name, .. } = &instruction {
+            declared_envs.insert(name.clone());
         }
 
         let node = hash_node(instruction, parent_hash.as_deref(), &resolved_args);
@@ -401,13 +406,54 @@ fn hash_node(
     }
 }
 
-/// Substitute `$NAME` / `${NAME}` references in `text` against
-/// `resolved_args`.  A reference to a name that resolves to nothing
-/// (never declared via `ARG`, or declared with no default and never
-/// supplied) is a typed error — never silently passed through.
+/// Standard environment variables present in virtually every base
+/// image (inherited from the image's own `ENV`/shell setup) — a
+/// reference to one of these is never a build-`ARG` and always
+/// resolves without error.
+const WELL_KNOWN_ENV_VARS: &[&str] = &["PATH", "HOME", "TERM"];
+
+/// Which class a `$NAME` reference in an instruction's value belongs
+/// to. `Arg` references must resolve via a declared `ARG`'s default or
+/// a passed build-arg — unresolved is a typed error. `Env` and
+/// `WellKnownEnv` references are standard `ENV`-expansion (a prior
+/// `ENV NAME=value` in the same file, or a name every base image
+/// already carries) and always resolve — their literal `$NAME` text is
+/// passed through unchanged, since sui-spec has no base-image runtime
+/// to read the actual value from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VariableKind {
+    Arg,
+    Env,
+    WellKnownEnv,
+}
+
+impl VariableKind {
+    fn classify(name: &str, resolved_args: &BTreeMap<String, String>, declared_envs: &BTreeSet<String>) -> Self {
+        if resolved_args.contains_key(name) {
+            Self::Arg
+        } else if declared_envs.contains(name) {
+            Self::Env
+        } else if WELL_KNOWN_ENV_VARS.contains(&name) {
+            Self::WellKnownEnv
+        } else {
+            Self::Arg
+        }
+    }
+}
+
+/// Substitute `$NAME` / `${NAME}` references in `text`. An `ARG`-class
+/// reference (declared via `ARG`, not a prior `ENV` or well-known env
+/// var) that resolves to nothing (never declared, or declared with no
+/// default and never supplied) is a typed error — never silently
+/// passed through. An `ENV`-class reference (a name declared by a
+/// prior `ENV` in the same file, or a well-known env var like `PATH`)
+/// is left as literal `$NAME` text — standard `ENV`-expansion sui-spec
+/// has no base-image runtime to resolve, but which is never a build-arg
+/// gap either.
 fn substitute_arg_refs(
     text: &str,
     resolved_args: &BTreeMap<String, String>,
+    declared_envs: &BTreeSet<String>,
 ) -> Result<String, SpecError> {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
@@ -431,16 +477,21 @@ fn substitute_arg_refs(
                 i += 1;
                 continue;
             }
-            match resolved_args.get(&name) {
-                Some(v) => out.push_str(v),
-                None => {
-                    return Err(SpecError::Interp {
-                        phase: "unresolved-arg-reference".into(),
-                        message: format!(
-                            "`${name}` referenced but never resolved by ARG default or build-arg",
-                        ),
-                    });
+            match VariableKind::classify(&name, resolved_args, declared_envs) {
+                VariableKind::Env | VariableKind::WellKnownEnv => {
+                    out.push_str(&text[i..i + consumed]);
                 }
+                VariableKind::Arg => match resolved_args.get(&name) {
+                    Some(v) => out.push_str(v),
+                    None => {
+                        return Err(SpecError::Interp {
+                            phase: "unresolved-arg-reference".into(),
+                            message: format!(
+                                "`${name}` referenced but never resolved by ARG default or build-arg",
+                            ),
+                        });
+                    }
+                },
             }
             i += consumed;
         } else {
@@ -455,6 +506,7 @@ fn parse_instruction<E: DockerfileEnvironment>(
     line: &str,
     line_no: usize,
     resolved_args: &BTreeMap<String, String>,
+    declared_envs: &BTreeSet<String>,
     _env: &E,
 ) -> Result<DockerfileInstruction, SpecError> {
     let (keyword, rest) = split_keyword(line).ok_or_else(|| SpecError::Interp {
@@ -464,10 +516,10 @@ fn parse_instruction<E: DockerfileEnvironment>(
 
     match keyword.to_ascii_uppercase().as_str() {
         "FROM" => parse_from(rest, line_no),
-        "RUN" => parse_run(rest, line_no, resolved_args),
+        "RUN" => parse_run(rest, line_no, resolved_args, declared_envs),
         "COPY" => parse_copy(rest, line_no),
         "ARG" => parse_arg(rest, line_no),
-        "ENV" => parse_env(rest, line_no, resolved_args),
+        "ENV" => parse_env(rest, line_no, resolved_args, declared_envs),
         "WORKDIR" => Ok(DockerfileInstruction::Workdir { path: rest.trim().to_string() }),
         "CMD" => Ok(DockerfileInstruction::Cmd { argv: parse_argv(rest) }),
         "ENTRYPOINT" => Ok(DockerfileInstruction::Entrypoint { argv: parse_argv(rest) }),
@@ -506,6 +558,7 @@ fn parse_run(
     rest: &str,
     line_no: usize,
     resolved_args: &BTreeMap<String, String>,
+    declared_envs: &BTreeSet<String>,
 ) -> Result<DockerfileInstruction, SpecError> {
     let (flags, command) = split_flags(rest);
     let mut mount_bind_source = None;
@@ -527,7 +580,7 @@ fn parse_run(
             message: format!("line {line_no}: RUN with no command"),
         });
     }
-    let command = substitute_arg_refs(command.trim(), resolved_args)?;
+    let command = substitute_arg_refs(command.trim(), resolved_args, declared_envs)?;
     Ok(DockerfileInstruction::Run { command, mount_bind_source, mount_bind_target })
 }
 
@@ -577,13 +630,14 @@ fn parse_env(
     rest: &str,
     line_no: usize,
     resolved_args: &BTreeMap<String, String>,
+    declared_envs: &BTreeSet<String>,
 ) -> Result<DockerfileInstruction, SpecError> {
     let rest = rest.trim();
     let (name, value) = rest.split_once('=').ok_or_else(|| SpecError::Interp {
         phase: "parse-line".into(),
         message: format!("line {line_no}: ENV requires `NAME=value`, got `{rest}`"),
     })?;
-    let value = substitute_arg_refs(value.trim().trim_matches('"'), resolved_args)?;
+    let value = substitute_arg_refs(value.trim().trim_matches('"'), resolved_args, declared_envs)?;
     Ok(DockerfileInstruction::Env { name: name.trim().to_string(), value })
 }
 
@@ -911,6 +965,50 @@ mod tests {
     }
 
     #[test]
+    fn env_path_prepend_self_reference_resolves() {
+        let env = MockDockerfileEnvironment::default().with_dockerfile(
+            "p",
+            "FROM ubuntu:24.04\nENV VIRTUAL_ENV=/opt/venv\nENV PATH=\"/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}\"\n",
+        );
+        let graph = apply(&DockerfileArgs { path: "p".into() }, &env).unwrap();
+        assert_eq!(graph.nodes.len(), 3);
+        match &graph.nodes[2].instruction {
+            DockerfileInstruction::Env { name, value } => {
+                assert_eq!(name, "PATH");
+                assert!(value.contains("${PATH}"), "PATH self-reference should be left literal: {value}");
+            }
+            _ => panic!("expected ENV"),
+        }
+    }
+
+    #[test]
+    fn env_referencing_prior_env_resolves() {
+        let env = MockDockerfileEnvironment::default().with_dockerfile(
+            "p",
+            "FROM x\nENV FOO=bar\nENV BAZ=\"$FOO/baz\"\n",
+        );
+        let graph = apply(&DockerfileArgs { path: "p".into() }, &env).unwrap();
+        match &graph.nodes[2].instruction {
+            DockerfileInstruction::Env { name, value } => {
+                assert_eq!(name, "BAZ");
+                assert!(value.contains("$FOO"), "prior-ENV reference should be left literal: {value}");
+            }
+            _ => panic!("expected ENV"),
+        }
+    }
+
+    #[test]
+    fn env_well_known_var_does_not_trigger_arg_driven_hash_variance() {
+        let env = MockDockerfileEnvironment::default().with_dockerfile(
+            "p",
+            "FROM x\nENV PATH=\"/custom/bin:$PATH\"\n",
+        );
+        let g1 = apply(&DockerfileArgs { path: "p".into() }, &env).unwrap();
+        let g2 = apply(&DockerfileArgs { path: "p".into() }, &env).unwrap();
+        assert_eq!(g1.nodes[1].content_hash, g2.nodes[1].content_hash);
+    }
+
+    #[test]
     fn empty_volume_is_a_typed_error() {
         let env = MockDockerfileEnvironment::default()
             .with_dockerfile("bad", "FROM x\nVOLUME\n");
@@ -954,6 +1052,33 @@ mod tests {
                 assert_eq!(paths, &vec!["/var/log/akeyless/".to_string()]);
             }
             _ => panic!("expected VOLUME"),
+        }
+    }
+
+    /// Regression fixture: the real `ENV PATH` prepend line from
+    /// akeyless's base image Dockerfile (akeylesslabs/akeyless-main-repo,
+    /// `supa-charge-proof` branch,
+    /// `tools/deployment/docker/base/Dockerfile`, fetched 2026-07-08 via
+    /// the GitHub contents API) — `$PATH` here refers to the environment's
+    /// own inherited PATH, not a build ARG; this exact shape surfaced the
+    /// ARG-vs-ENV gap during the supa-charge-akeyless-ci Phase 5 proof run.
+    #[test]
+    fn real_akeyless_base_dockerfile_env_path_prepend_regression() {
+        let env = MockDockerfileEnvironment::default().with_dockerfile(
+            "akeyless-base",
+            "FROM ubuntu:24.04\n\
+             RUN mkdir /akeyless/bin\n\
+             ENV VIRTUAL_ENV=/opt/venv\n\
+             ENV PATH=\"/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}\"\n",
+        );
+        let graph = apply(&DockerfileArgs { path: "akeyless-base".into() }, &env).unwrap();
+        assert_eq!(graph.nodes.len(), 4);
+        match &graph.nodes[3].instruction {
+            DockerfileInstruction::Env { name, value } => {
+                assert_eq!(name, "PATH");
+                assert_eq!(value, "/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}");
+            }
+            _ => panic!("expected ENV"),
         }
     }
 }
