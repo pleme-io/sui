@@ -60,6 +60,23 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 
 static STYLING: OnceLock<bool> = OnceLock::new();
 
+// Test-only styling override.  The process-global `STYLING` OnceLock
+// caches the NO_COLOR/TTY decision on first read and cannot be reset;
+// under `cargo test` an unrelated test can initialize it to `false`
+// (stdout is not a TTY) before a styling test runs, which made the
+// color/glyph tests order-dependent.  A test build carries an explicit
+// override that `styling_enabled()` consults first, so tests inject a
+// deterministic gate state.  This block is `#[cfg(test)]` — it is not
+// compiled into the runtime binary, so runtime behavior is unchanged.
+#[cfg(test)]
+static STYLING_TEST_OVERRIDE: std::sync::atomic::AtomicI8 =
+    std::sync::atomic::AtomicI8::new(-1); // -1 = unset, 0 = off, 1 = on
+
+#[cfg(test)]
+fn set_styling_override(on: bool) {
+    STYLING_TEST_OVERRIDE.store(i8::from(on), std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Whether styling is active.  Cached on first call so subsequent
 /// invocations are zero-cost.  Set by environment:
 ///
@@ -68,6 +85,17 @@ static STYLING: OnceLock<bool> = OnceLock::new();
 /// - otherwise → styling on
 #[must_use]
 pub fn styling_enabled() -> bool {
+    // Test-only deterministic override (see `STYLING_TEST_OVERRIDE`).
+    // Excluded from the runtime build via `#[cfg(test)]`, so the
+    // NO_COLOR/TTY decision below is the sole path in production.
+    #[cfg(test)]
+    {
+        match STYLING_TEST_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => return false,
+            1 => return true,
+            _ => {}
+        }
+    }
     *STYLING.get_or_init(|| {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return false;
@@ -381,11 +409,11 @@ mod tests {
     use super::*;
 
     fn ensure_styling_on() {
-        // OnceLock can't be reset; we set SUI_FORCE_COLOR before
-        // any test queries STYLING.  Run with --test-threads=1 if
-        // tests interact.  For these tests we set the env var
-        // statically.
-        unsafe { std::env::set_var("SUI_FORCE_COLOR", "1"); }
+        // Inject the test-only styling override so these assertions are
+        // deterministic regardless of the ambient NO_COLOR/TTY state and
+        // regardless of whether another (parallel) test already primed
+        // the un-resettable `STYLING` OnceLock to `false`.
+        set_styling_override(true);
     }
 
     #[test]
