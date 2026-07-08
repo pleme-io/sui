@@ -120,6 +120,10 @@ pub mod mock {
             Self::default()
         }
 
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic in
+        /// another thread — expected only in test code.
         #[must_use]
         pub fn with_sha(self, owner: &str, repo: &str, git_ref: &str, path: &str, sha: &str) -> Self {
             self.shas.lock().unwrap().insert(
@@ -129,6 +133,10 @@ pub mod mock {
             self
         }
 
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic in
+        /// another thread — expected only in test code.
         #[must_use]
         pub fn with_content(self, owner: &str, repo: &str, sha: &str, path: &str, content: &str) -> Self {
             self.contents.lock().unwrap().insert(
@@ -140,6 +148,11 @@ pub mod mock {
 
         /// Every `latest_commit_sha` call recorded, in order — used to
         /// assert the poll loop queried exactly the watched entries.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic in
+        /// another thread — expected only in test code.
         #[must_use]
         pub fn recorded_sha_lookups(&self) -> Vec<ShaKey> {
             self.calls.lock().unwrap().clone()

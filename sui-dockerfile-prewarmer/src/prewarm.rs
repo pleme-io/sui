@@ -86,6 +86,10 @@ pub mod mock {
             Self::default()
         }
 
+        /// # Panics
+        ///
+        /// Panics if the internal mutex is poisoned by a prior panic in
+        /// another thread — expected only in test code.
         #[must_use]
         pub fn recorded(&self) -> Vec<RecordedPrewarmCall> {
             self.calls.lock().unwrap().clone()

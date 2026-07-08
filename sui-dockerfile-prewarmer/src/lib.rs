@@ -229,7 +229,7 @@ mod tests {
         let prewarm_runner = RecordingPrewarmRunner::new();
         let mut state = PollState::new();
 
-        let reports = run_cycle(&api, &prewarm_runner, &mut state, &[entry.clone()]).await;
+        let reports = run_cycle(&api, &prewarm_runner, &mut state, std::slice::from_ref(&entry)).await;
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].prewarm, Some(PrewarmOutcome::Prewarmed));
@@ -250,7 +250,7 @@ mod tests {
         let mut state = PollState::new();
         state.record(&entry, "sha1".to_string());
 
-        let reports = run_cycle(&api, &prewarm_runner, &mut state, &[entry.clone()]).await;
+        let reports = run_cycle(&api, &prewarm_runner, &mut state, std::slice::from_ref(&entry)).await;
 
         assert_eq!(reports[0].prewarm, None);
         assert!(prewarm_runner.recorded().is_empty());
@@ -285,7 +285,7 @@ mod tests {
         let prewarm_runner = RecordingPrewarmRunner::new();
         let mut state = PollState::new();
 
-        let reports = run_cycle(&api, &prewarm_runner, &mut state, &[entry.clone()]).await;
+        let reports = run_cycle(&api, &prewarm_runner, &mut state, std::slice::from_ref(&entry)).await;
 
         assert!(matches!(reports[0].prewarm, Some(PrewarmOutcome::GithubError(_))));
         assert!(prewarm_runner.recorded().is_empty());
@@ -300,7 +300,7 @@ mod tests {
         let prewarm_runner = RecordingPrewarmRunner::new();
         let mut state = PollState::new();
 
-        let reports = run_cycle(&api, &prewarm_runner, &mut state, &[entry.clone()]).await;
+        let reports = run_cycle(&api, &prewarm_runner, &mut state, std::slice::from_ref(&entry)).await;
 
         assert!(matches!(reports[0].prewarm, Some(PrewarmOutcome::GithubError(_))));
         assert_eq!(state.last_seen(&entry), None);
