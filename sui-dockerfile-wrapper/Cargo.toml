@@ -1,0 +1,27 @@
+[package]
+name = "sui-dockerfile-wrapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Intercept/resolve/fall-through wrapper around `docker build` — cache-first via sui-cache, falling through to real docker on any miss (supa-charge-akeyless-ci Phase 2)"
+keywords = ["nix", "docker", "cache", "ci"]
+categories = ["caching"]
+
+[dependencies]
+sui-spec.workspace = true
+sui-cache.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

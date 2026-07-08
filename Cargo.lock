@@ -6306,6 +6306,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-dockerfile-wrapper"
+version = "0.1.15"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sui-cache",
+ "sui-spec",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sui-eval"
 version = "0.1.15"
 dependencies = [

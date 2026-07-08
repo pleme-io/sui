@@ -53,6 +53,12 @@ members = [
     # never-touch-durable-disk). Schema + tier model only; backend + daemon
     # wiring are named LiveTODOs in the crate docs.
     "sui-supercacheci",
+    # supa-charge-akeyless-ci Phase 2 — the intercept/resolve/fall-through
+    # wrapper around plain `docker build`.  Computes a sui-spec
+    # DockerfileGraph, checks sui-cache's StorageBackend for each node, and
+    # either materializes a cache hit or shells out to real `docker build`
+    # on any miss (never a partial cache splice — see the crate docs).
+    "sui-dockerfile-wrapper",
 ]
 resolver = "3"
 
@@ -81,6 +87,7 @@ sui-protocol = { path = "sui-protocol", version = "0.1.10" }
 sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.10" }
 sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
 sui-supercacheci = { path = "sui-supercacheci", version = "0.1.10" }
+sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
