@@ -164,3 +164,13 @@
   :purpose            "Signature + substituter + user trust matrix (Permissive/MultiUser/Sealed)"
   :cppnix-mirror      "libstore/local-store.cc#trust handling"
   :depends-on         ("substituter"))
+
+;; ── Working (dockerfile digestion — no dependency on other domains) ──
+
+(defsubstrate-domain
+  :name               "dockerfile"
+  :authoring-keywords ("defdockerfile-graph")
+  :gate               Working
+  :purpose            "Digest a plain BuildKit Dockerfile (not a Nix derivation) into a content-addressed instruction graph"
+  :cppnix-mirror      "n/a — novel to sui, no cppnix equivalent (Dockerfiles are foreign to Nix's own build model)"
+  :depends-on         ())

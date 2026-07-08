@@ -267,6 +267,7 @@ mod tests {
             "profile",
             "trust_model",
             "worker_protocol",
+            "dockerfile",
         ] {
             assert!(
                 names.contains(required),

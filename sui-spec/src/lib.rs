@@ -70,6 +70,7 @@ pub mod catalog;
 pub mod cli;
 pub mod cli_coverage;
 pub mod derivation;
+pub mod dockerfile;
 pub mod error;
 pub mod eval_cache;
 pub mod exec;
