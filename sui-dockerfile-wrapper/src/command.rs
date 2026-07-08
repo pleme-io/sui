@@ -59,6 +59,58 @@ impl DockerBuildInvocation {
         }
     }
 
+    /// Build a `docker history --no-trunc --format '{{.CreatedBy}}'
+    /// <image>` invocation — one `CreatedBy` line per layer, newest
+    /// first, used by the equivalence checker to compare layer
+    /// count/order without the fragile fixed-column table format.
+    #[must_use]
+    pub fn history(image_ref: &str) -> Self {
+        Self {
+            program: "docker".to_string(),
+            args: vec![
+                "history".to_string(),
+                "--no-trunc".to_string(),
+                "--format".to_string(),
+                "{{.CreatedBy}}".to_string(),
+                image_ref.to_string(),
+            ],
+        }
+    }
+
+    /// Build a `docker save -o <output_path> <image_ref>` invocation —
+    /// used by the equivalence checker to obtain a tarball it can
+    /// inspect layer-by-layer without needing a registry.
+    #[must_use]
+    pub fn save(image_ref: &str, output_path: &Path) -> Self {
+        Self {
+            program: "docker".to_string(),
+            args: vec![
+                "save".to_string(),
+                "-o".to_string(),
+                output_path.display().to_string(),
+                image_ref.to_string(),
+            ],
+        }
+    }
+
+    /// Build a `docker push <image_ref>` invocation — used by the
+    /// warmth benchmark to publish a real image to a local registry so
+    /// the cache-hit path's `docker pull` is a genuine network op, not
+    /// a simulated one.
+    #[must_use]
+    pub fn push(image_ref: &str) -> Self {
+        Self { program: "docker".to_string(), args: vec!["push".to_string(), image_ref.to_string()] }
+    }
+
+    /// Build a `docker tag <source_ref> <target_ref>` invocation.
+    #[must_use]
+    pub fn tag(source_ref: &str, target_ref: &str) -> Self {
+        Self {
+            program: "docker".to_string(),
+            args: vec!["tag".to_string(), source_ref.to_string(), target_ref.to_string()],
+        }
+    }
+
     /// Convert to a real [`Command`], ready to `.output()`.
     #[must_use]
     pub fn to_std_command(&self) -> Command {
@@ -156,6 +208,11 @@ impl MockCommandRunner {
     }
 
     /// Snapshot of every invocation recorded so far.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal mutex is poisoned (a prior panic
+    /// while holding the lock) — never in normal test use.
     #[must_use]
     pub fn recorded(&self) -> Vec<DockerBuildInvocation> {
         self.invocations.lock().expect("mock mutex poisoned").clone()

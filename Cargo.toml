@@ -64,6 +64,11 @@ members = [
     # invokes sui-dockerfile-wrapper in cache-miss mode to keep the
     # cache warm ahead of any real build.
     "sui-dockerfile-prewarmer",
+    # Phase 4 of supa-charge-akeyless-ci: the build equivalence checker.
+    # Compares two built images' `docker history` layer sequence + final
+    # filesystem content (modulo a typed volatile-path allowlist), driven
+    # through sui-dockerfile-wrapper's CommandRunner seam.
+    "sui-dockerfile-verify",
 ]
 resolver = "3"
 
@@ -94,6 +99,7 @@ sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
 sui-supercacheci = { path = "sui-supercacheci", version = "0.1.10" }
 sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.10" }
 sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.10" }
+sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.

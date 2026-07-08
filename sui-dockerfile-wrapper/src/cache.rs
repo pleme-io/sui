@@ -36,6 +36,11 @@ impl MockCacheBackend {
 
     /// Pre-populate a cache entry — the constructor tests use to set up a
     /// full or partial cache-hit fixture.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal mutex is poisoned (a prior panic
+    /// while holding the lock) — never in normal test use.
     #[must_use]
     pub fn with_entry(self, hash: &str, image_ref: &str) -> Self {
         self.narinfos

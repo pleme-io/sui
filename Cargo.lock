@@ -6327,6 +6327,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-dockerfile-verify"
+version = "0.1.15"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "sui-dockerfile-wrapper",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sui-dockerfile-wrapper"
 version = "0.1.15"
 dependencies = [

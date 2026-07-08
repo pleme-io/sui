@@ -1,0 +1,24 @@
+[package]
+name = "sui-dockerfile-verify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dockerfile build equivalence checker — compares two built images' `docker history` layer sequence + final filesystem content modulo a typed volatile-path allowlist (supa-charge-akeyless-ci Phase 4)"
+keywords = ["nix", "docker", "cache", "ci"]
+categories = ["caching"]
+
+[dependencies]
+sui-dockerfile-wrapper.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tar.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.clippy]
+pedantic = "warn"
