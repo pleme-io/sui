@@ -15,7 +15,8 @@
 //!
 //! Supported instructions: `FROM`, `RUN` (incl. `--mount=type=bind`),
 //! `COPY` (incl. `--from=<stage>`), `ARG` (incl. default values),
-//! `ENV`, `WORKDIR`, `CMD`, `ENTRYPOINT`.  `ARG TARGETARCH` is
+//! `ENV`, `WORKDIR`, `CMD`, `ENTRYPOINT`, `VOLUME` (plain or
+//! JSON-array form).  `ARG TARGETARCH` is
 //! resolved from the environment's build-arg map like any other
 //! `ARG`.  Multi-stage `FROM ... AS <alias>` aliasing beyond the
 //! `--from=` reference on `COPY`, full `BuildKit` heredoc syntax, and
@@ -92,6 +93,9 @@ pub enum DockerfileInstruction {
     Entrypoint {
         argv: Vec<String>,
     },
+    Volume {
+        paths: Vec<String>,
+    },
 }
 
 /// Which instruction kind a node represents — the coarse key used in
@@ -106,6 +110,7 @@ pub enum InstructionKind {
     Workdir,
     Cmd,
     Entrypoint,
+    Volume,
 }
 
 impl DockerfileInstruction {
@@ -119,6 +124,7 @@ impl DockerfileInstruction {
             Self::Workdir { .. } => InstructionKind::Workdir,
             Self::Cmd { .. } => InstructionKind::Cmd,
             Self::Entrypoint { .. } => InstructionKind::Entrypoint,
+            Self::Volume { .. } => InstructionKind::Volume,
         }
     }
 
@@ -174,6 +180,12 @@ impl DockerfileInstruction {
             Self::Cmd { argv } | Self::Entrypoint { argv } => {
                 for a in argv {
                     buf.extend_from_slice(a.as_bytes());
+                    buf.push(0);
+                }
+            }
+            Self::Volume { paths } => {
+                for p in paths {
+                    buf.extend_from_slice(p.as_bytes());
                     buf.push(0);
                 }
             }
@@ -459,11 +471,12 @@ fn parse_instruction<E: DockerfileEnvironment>(
         "WORKDIR" => Ok(DockerfileInstruction::Workdir { path: rest.trim().to_string() }),
         "CMD" => Ok(DockerfileInstruction::Cmd { argv: parse_argv(rest) }),
         "ENTRYPOINT" => Ok(DockerfileInstruction::Entrypoint { argv: parse_argv(rest) }),
+        "VOLUME" => parse_volume(rest, line_no),
         other => Err(SpecError::Interp {
             phase: "parse-line".into(),
             message: format!(
                 "line {line_no}: unsupported instruction `{other}` — this scoped \
-                 parser handles FROM/RUN/COPY/ARG/ENV/WORKDIR/CMD/ENTRYPOINT only",
+                 parser handles FROM/RUN/COPY/ARG/ENV/WORKDIR/CMD/ENTRYPOINT/VOLUME only",
             ),
         }),
     }
@@ -588,6 +601,33 @@ fn parse_argv(rest: &str) -> Vec<String> {
     } else {
         vec![rest.to_string()]
     }
+}
+
+/// Parse a `VOLUME` body — either JSON-array form (`["/a", "/b"]`, same
+/// shape as [`parse_argv`]) or plain whitespace-separated paths
+/// (`VOLUME /a /b`). At least one path is required; a bare `VOLUME`
+/// with nothing after it is a typed error rather than a silently
+/// empty declaration.
+fn parse_volume(rest: &str, line_no: usize) -> Result<DockerfileInstruction, SpecError> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Err(SpecError::Interp {
+            phase: "parse-line".into(),
+            message: format!("line {line_no}: VOLUME with no paths"),
+        });
+    }
+    let paths = if trimmed.starts_with('[') {
+        parse_argv(trimmed)
+    } else {
+        trimmed.split_whitespace().map(ToString::to_string).collect()
+    };
+    if paths.is_empty() {
+        return Err(SpecError::Interp {
+            phase: "parse-line".into(),
+            message: format!("line {line_no}: VOLUME with no paths"),
+        });
+    }
+    Ok(DockerfileInstruction::Volume { paths })
 }
 
 /// Split leading `--flag` / `--flag=value` tokens from the remainder
@@ -819,6 +859,101 @@ mod tests {
                 assert!(command.contains("apt-get install"));
             }
             _ => panic!("expected RUN"),
+        }
+    }
+
+    #[test]
+    fn volume_plain_form_is_parsed() {
+        let env = MockDockerfileEnvironment::default()
+            .with_dockerfile("v", "FROM x\nVOLUME /data\n");
+        let graph = apply(&DockerfileArgs { path: "v".into() }, &env).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        match &graph.nodes[1].instruction {
+            DockerfileInstruction::Volume { paths } => {
+                assert_eq!(paths, &vec!["/data".to_string()]);
+            }
+            _ => panic!("expected VOLUME"),
+        }
+        assert_eq!(graph.nodes[1].kind, InstructionKind::Volume);
+    }
+
+    #[test]
+    fn volume_json_array_form_is_parsed() {
+        let env = MockDockerfileEnvironment::default()
+            .with_dockerfile("v", "FROM x\nVOLUME [\"/data\", \"/logs\"]\n");
+        let graph = apply(&DockerfileArgs { path: "v".into() }, &env).unwrap();
+        match &graph.nodes[1].instruction {
+            DockerfileInstruction::Volume { paths } => {
+                assert_eq!(paths, &vec!["/data".to_string(), "/logs".to_string()]);
+            }
+            _ => panic!("expected VOLUME"),
+        }
+    }
+
+    #[test]
+    fn volume_produces_a_graph_node() {
+        let env = MockDockerfileEnvironment::default()
+            .with_dockerfile("v", "FROM x\nVOLUME /data /logs\n");
+        let graph = apply(&DockerfileArgs { path: "v".into() }, &env).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[1].kind, InstructionKind::Volume);
+        assert!(graph.nodes[1].parent_hash.is_some());
+    }
+
+    #[test]
+    fn volume_hashing_is_deterministic() {
+        let env = MockDockerfileEnvironment::default()
+            .with_dockerfile("v", "FROM x\nVOLUME /data /logs\n");
+        let g1 = apply(&DockerfileArgs { path: "v".into() }, &env).unwrap();
+        let g2 = apply(&DockerfileArgs { path: "v".into() }, &env).unwrap();
+        assert_eq!(g1, g2);
+        assert_eq!(g1.nodes[1].content_hash, g2.nodes[1].content_hash);
+    }
+
+    #[test]
+    fn empty_volume_is_a_typed_error() {
+        let env = MockDockerfileEnvironment::default()
+            .with_dockerfile("bad", "FROM x\nVOLUME\n");
+        let err = apply(&DockerfileArgs { path: "bad".into() }, &env).unwrap_err();
+        match err {
+            SpecError::Interp { phase, message } => {
+                assert_eq!(phase, "parse-line");
+                assert!(message.contains("VOLUME"));
+            }
+            _ => panic!("expected parse-line error"),
+        }
+    }
+
+    /// Regression fixture: the real `VOLUME` lines from akeyless's base
+    /// image Dockerfile (akeylesslabs/akeyless-main-repo,
+    /// `supa-charge-proof` branch,
+    /// `tools/deployment/docker/base/Dockerfile`, fetched 2026-07-08 via
+    /// the GitHub contents API) — this exact declarative shape (two
+    /// separate plain-form `VOLUME` lines with a trailing slash) is what
+    /// surfaced the gap during the supa-charge-akeyless-ci Phase 5 proof
+    /// run.
+    #[test]
+    fn real_akeyless_base_dockerfile_volume_lines_regression() {
+        let env = MockDockerfileEnvironment::default().with_dockerfile(
+            "akeyless-base",
+            "FROM ubuntu:24.04\n\
+             VOLUME /akeyless_shared_vol/\n\
+             # External shared volume to save log files\n\
+             VOLUME /var/log/akeyless/\n",
+        );
+        let graph = apply(&DockerfileArgs { path: "akeyless-base".into() }, &env).unwrap();
+        assert_eq!(graph.nodes.len(), 3);
+        match &graph.nodes[1].instruction {
+            DockerfileInstruction::Volume { paths } => {
+                assert_eq!(paths, &vec!["/akeyless_shared_vol/".to_string()]);
+            }
+            _ => panic!("expected VOLUME"),
+        }
+        match &graph.nodes[2].instruction {
+            DockerfileInstruction::Volume { paths } => {
+                assert_eq!(paths, &vec!["/var/log/akeyless/".to_string()]);
+            }
+            _ => panic!("expected VOLUME"),
         }
     }
 }
