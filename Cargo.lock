@@ -6144,6 +6144,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-bigorna"
+version = "0.1.15"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sui-cache",
+ "sui-dockerfile-wrapper",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sui-build"
 version = "0.1.16"
 dependencies = [

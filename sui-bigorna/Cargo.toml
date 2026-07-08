@@ -1,0 +1,29 @@
+[package]
+name = "sui-bigorna"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed buildx-native-multi-arch primitive: register native per-arch build nodes as buildx nodes (no QEMU) with a store-backed cache front, on one builder config"
+keywords = ["docker", "buildx", "multi-arch", "cache", "ci"]
+categories = ["development-tools::build-utils"]
+
+[dependencies]
+# Reused seams — the mockable command runner + typed docker invocation, and the
+# sui storage-backend config the cache front bridges from.
+sui-dockerfile-wrapper.workspace = true
+sui-cache.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+
+[[bin]]
+name = "bigorna"
+path = "src/bin/bigorna.rs"
+
+[lints.clippy]
+pedantic = "warn"

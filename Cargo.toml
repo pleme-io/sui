@@ -73,6 +73,14 @@ members = [
     # daemon. One instance per k8s node (DaemonSet), UDS protocol,
     # falls through to sui-cache's remote StorageBackend on local miss.
     "sui-dockerfile-node-cache-daemon",
+    # The typed buildx-native-multi-arch primitive. Registers native
+    # per-arch build nodes AS buildx nodes (no QEMU) with a store-backed
+    # cache front on the SAME builder config, so an unchanged
+    # `docker buildx build --platform amd64,arm64` dispatches to native
+    # metal. Reuses sui-dockerfile-wrapper's CommandRunner seam +
+    # sui-cache's storage-backend config; owns only the native-node guard
+    # + topology + cache-front + keyway driver.
+    "sui-bigorna",
 ]
 resolver = "3"
 
@@ -105,6 +113,7 @@ sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.10" }
 sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.10" }
 sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.10" }
 sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.10" }
+sui-bigorna = { path = "sui-bigorna", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.
