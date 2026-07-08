@@ -1,0 +1,26 @@
+[package]
+name = "sui-dockerfile-node-cache-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Node-local L0 disk cache daemon for supa-charge-akeyless-ci (Phase 3b) — one instance per k8s node, falls through to sui-cache's remote StorageBackend on local miss"
+keywords = ["nix", "docker", "cache", "ci", "daemon"]
+categories = ["caching"]
+
+[dependencies]
+sui-cache.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

@@ -151,6 +151,7 @@ async fn warmth_benchmark_cold_vs_warm_vs_partial_invalidation() {
         context_dir: dir.path().to_path_buf(),
         build_args,
         image_tag: "sui-warmth-bench:v1".to_string(),
+        daemon_socket_path: None,
     };
 
     // (a) COLD — empty cache, real `docker build`.

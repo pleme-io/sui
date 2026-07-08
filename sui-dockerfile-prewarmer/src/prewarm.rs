@@ -50,6 +50,7 @@ impl PrewarmRunner for RealPrewarmRunner {
             context_dir: self.context_dir.clone(),
             build_args: std::collections::BTreeMap::new(),
             image_tag: image_tag.to_string(),
+            daemon_socket_path: None,
         };
         let runner = sui_dockerfile_wrapper::command::RealCommandRunner;
         sui_dockerfile_wrapper::run_wrapper(&config, &env, &self.cache, &runner).await

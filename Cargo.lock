@@ -6306,6 +6306,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-dockerfile-node-cache-daemon"
+version = "0.1.15"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sui-cache",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sui-dockerfile-prewarmer"
 version = "0.1.15"
 dependencies = [
@@ -6348,6 +6363,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sui-cache",
+ "sui-dockerfile-node-cache-daemon",
  "sui-spec",
  "tempfile",
  "thiserror 2.0.18",

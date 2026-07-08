@@ -12,12 +12,13 @@ categories = ["caching"]
 [dependencies]
 sui-spec.workspace = true
 sui-cache.workspace = true
+sui-dockerfile-node-cache-daemon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "time", "net", "io-util"] }
 tracing.workspace = true
 
 [dev-dependencies]

@@ -26,6 +26,7 @@
 
 pub mod cache;
 pub mod command;
+pub mod daemon_client;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ use sui_spec::dockerfile::{self, DockerfileArgs, DockerfileEnvironment, Dockerfi
 
 pub use command::{CommandOutcome, CommandRunError, CommandRunner, DockerBuildInvocation, MockCommandRunner, RealCommandRunner};
 pub use cache::MockCacheBackend;
+pub use daemon_client::DaemonAwareCacheClient;
 
 /// Typed, `serde`-deserializable input to a wrapper run — the keyway-shaped
 /// "YAML/JSON in" half of the contract.
@@ -52,6 +54,16 @@ pub struct WrapperConfig {
     pub build_args: BTreeMap<String, String>,
     /// The image tag to build/pull (mirrors `docker build -t <tag>`).
     pub image_tag: String,
+    /// Optional path to a node-local `sui-dockerfile-node-cache-daemon`
+    /// Unix domain socket (Phase 3b). Absent by default, which keeps
+    /// this config byte-for-byte identical to Phase 2's original
+    /// shape. This field is read by whoever *constructs* the
+    /// `Arc<dyn StorageBackend>` passed to [`run_wrapper`] (e.g. the
+    /// GHA entrypoint) to decide whether to wrap the remote backend in
+    /// a [`crate::DaemonAwareCacheClient`] — `run_wrapper` itself never
+    /// reads this field, so its behavior is unaffected either way.
+    #[serde(default)]
+    pub daemon_socket_path: Option<PathBuf>,
 }
 
 /// Per-node cache status in the receipt — one row per
@@ -260,6 +272,7 @@ mod tests {
             context_dir: PathBuf::from("."),
             build_args: BTreeMap::new(),
             image_tag: "example/image:test".to_string(),
+            daemon_socket_path: None,
         }
     }
 
@@ -464,6 +477,7 @@ mod tests {
             context_dir: dir.path().to_path_buf(),
             build_args: BTreeMap::new(),
             image_tag: "sui-dockerfile-wrapper-test:latest".to_string(),
+            daemon_socket_path: None,
         };
 
         let receipt = run_wrapper(&cfg, &env, &cache, &runner).await.unwrap();
