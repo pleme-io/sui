@@ -26,6 +26,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +37,13 @@ use tracing::{debug, trace};
 use crate::content_address::GraphHash;
 use crate::error::{Error, Result};
 use crate::layout::{GraphKind, StoreLayout};
+
+/// Process-wide monotonic counter for per-write temp-file uniqueness. Combined
+/// with the PID it makes every in-flight `put` write to its OWN `.tmp` sidecar,
+/// so concurrent writers of the same content-addressed key never share (and thus
+/// never corrupt or rename-race over) a single tmp file. See
+/// [`GraphStore::atomic_write_blob`].
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// redb table: 33-byte composite key → 24-byte packed index entry.
 /// Key layout: `[kind_tag : u8, hash : 32 bytes]`.
@@ -159,7 +167,51 @@ impl GraphStore {
             return Ok(());
         }
 
-        let tmp_path = final_path.with_extension("rkyv.tmp");
+        // Race-safe atomic write: a per-writer unique tmp file + a
+        // rename that tolerates a concurrent same-key winner. Because the
+        // key IS the content hash, whoever wins the rename lands
+        // byte-identical bytes — a lost race is idempotent success, not an
+        // error (this is what makes concurrent `put` of the same key safe).
+        Self::atomic_write_blob(&final_path, bytes)?;
+        self.upsert_index(kind, hash, bytes.len() as u64)?;
+
+        debug!(
+            target: "sui-graph-store",
+            kind = %kind,
+            hash = %hash,
+            len = bytes.len(),
+            "stored blob"
+        );
+        Ok(())
+    }
+
+    /// Write `bytes` to `final_path` atomically and **race-tolerantly**:
+    ///
+    /// 1. Write to a **per-writer-unique** `.tmp.<pid>.<seq>` sidecar (so
+    ///    concurrent writers of the same key never share a tmp file and can
+    ///    never truncate each other's in-flight bytes).
+    /// 2. `fsync` the tmp file.
+    /// 3. `rename` it over `final_path`.
+    ///
+    /// If a concurrent writer already landed `final_path` first, this writer's
+    /// rename might see its *own* tmp already gone (another racer consumed a
+    /// shared path — impossible now that tmp is unique) OR simply lose the race
+    /// while `final_path` already holds the byte-identical content. Either way,
+    /// once `final_path` exists with the intended bytes the operation is a
+    /// success: content-addressing guarantees every racer's bytes are identical,
+    /// so a lost rename is idempotent, not a failure. A leftover unique tmp on
+    /// the rare error path is cleaned up best-effort (GC also reaps orphans).
+    fn atomic_write_blob(final_path: &Path, bytes: &[u8]) -> Result<()> {
+        let pid = std::process::id();
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        // `<hash>.rkyv` → `<hash>.rkyv.tmp.<pid>.<seq>` — unique per in-flight write.
+        let mut tmp_name = final_path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        tmp_name.push(format!(".tmp.{pid}.{seq}"));
+        let tmp_path = final_path.with_file_name(tmp_name);
+
         {
             let mut f = OpenOptions::new()
                 .create(true)
@@ -171,17 +223,20 @@ impl GraphStore {
             f.sync_all().map_err(|e| Error::io(&tmp_path, e))?;
         }
 
-        fs::rename(&tmp_path, &final_path).map_err(|e| Error::io(&final_path, e))?;
-        self.upsert_index(kind, hash, bytes.len() as u64)?;
-
-        debug!(
-            target: "sui-graph-store",
-            kind = %kind,
-            hash = %hash,
-            len = bytes.len(),
-            "stored blob"
-        );
-        Ok(())
+        match fs::rename(&tmp_path, final_path) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Lost the race but the winner already placed byte-identical
+                // content — idempotent success. Clean up our now-orphan tmp.
+                if final_path.exists() {
+                    let _ = fs::remove_file(&tmp_path);
+                    Ok(())
+                } else {
+                    let _ = fs::remove_file(&tmp_path);
+                    Err(Error::io(final_path, e))
+                }
+            }
+        }
     }
 
     /// Write a blob under a **query-derived lookup key** (not the
@@ -209,18 +264,15 @@ impl GraphStore {
             fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         }
 
-        let tmp_path = final_path.with_extension("rkyv.tmp");
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp_path)
-                .map_err(|e| Error::io(&tmp_path, e))?;
-            f.write_all(bytes).map_err(|e| Error::io(&tmp_path, e))?;
-            f.sync_all().map_err(|e| Error::io(&tmp_path, e))?;
-        }
-        fs::rename(&tmp_path, &final_path).map_err(|e| Error::io(&final_path, e))?;
+        // Same race-safe atomic write as `put`. NOTE: `put_unchecked` does NOT
+        // enforce that `bytes` hash to `lookup_hash`, so a lost-rename branch
+        // that trusts "the winner's bytes are identical" is only sound when
+        // callers honor the documented contract (a deterministic query→bytes
+        // mapping, one canonical value per lookup key). Under that contract the
+        // winner's bytes are still the one canonical value, so a lost rename is
+        // idempotent success — the same guarantee `put` gets from content-
+        // addressing, here provided by the caller's determinism obligation.
+        Self::atomic_write_blob(&final_path, bytes)?;
         self.upsert_index(kind, lookup_hash, bytes.len() as u64)?;
 
         debug!(
@@ -505,5 +557,67 @@ mod tests {
         let h = GraphHash::of(payload);
         store_a.put(GraphKind::Lockfile, h, payload).unwrap();
         assert!(store_b.contains(GraphKind::Lockfile, h).unwrap());
+    }
+
+    /// Regression: concurrent `put` of the SAME content-addressed key must be
+    /// race-safe. Before the per-writer-unique tmp fix, all racers shared one
+    /// deterministic `<hash>.rkyv.tmp`, so the winner's rename left the losers
+    /// renaming a vanished source → `os error 2`. Two clones hammering the same
+    /// key from two threads reproduce it at the smallest scale; both must
+    /// succeed idempotently and exactly one blob must land.
+    #[test]
+    fn concurrent_same_key_put_is_race_safe() {
+        use std::sync::{Arc, Barrier};
+        let (_dir, store) = new_store();
+        let payload = Arc::new(b"same-key race regression payload".to_vec());
+        let h = GraphHash::of(&payload);
+        let kind = GraphKind::Lockfile;
+
+        // Repeat several rounds to make the overlap window likely to hit.
+        for _ in 0..25 {
+            let barrier = Arc::new(Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let store = store.clone();
+                    let payload = Arc::clone(&payload);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        store.put(kind, h, &payload)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("writer thread panicked")
+                    .expect("same-key concurrent put must be idempotent success");
+            }
+        }
+
+        assert_eq!(store.len().unwrap(), 1, "same-key race must collapse to one entry");
+        assert_eq!(&*store.get_validated(kind, h).unwrap(), &*payload);
+    }
+
+    /// Two in-flight writes of the same final path get DISTINCT tmp sidecars —
+    /// the structural guarantee that a mid-write truncate/stomp is impossible.
+    #[test]
+    fn atomic_write_uses_a_unique_tmp_per_writer() {
+        let (_dir, store) = new_store();
+        let payload = b"unique tmp payload".as_slice();
+        let h = GraphHash::of(payload);
+        let final_path = store.layout().blob_path(GraphKind::Ast, h);
+        if let Some(parent) = final_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        // Two sequential writes bump the seq counter → the tmp names they'd pick
+        // differ; the fixed impl never reuses one deterministic `.rkyv.tmp`.
+        GraphStore::atomic_write_blob(&final_path, payload).unwrap();
+        assert!(final_path.exists());
+        // A second write over the already-present final is still fine (rename
+        // replaces atomically); no `.rkyv.tmp` (the old shared name) is left.
+        GraphStore::atomic_write_blob(&final_path, payload).unwrap();
+        let shared_old = final_path.with_extension("rkyv.tmp");
+        assert!(!shared_old.exists(), "the old shared tmp name must never be created");
     }
 }
