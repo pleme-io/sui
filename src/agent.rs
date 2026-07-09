@@ -21,13 +21,78 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::CliError;
-use sui_cache::StorageBackend;
+use sui_cache::{BackendConfig, StorageBackend};
 use sui_compat::flake::FlakeLock;
 use sui_eval::fetcher::InputFetcher;
 use sui_store::BinaryCacheStore;
 
 /// Default upstream binary caches to check for substitutes.
 const DEFAULT_UPSTREAM_CACHES: &[&str] = &["https://cache.nixos.org"];
+
+/// Environment variable holding the JSON-encoded [`BackendConfig`] the serve
+/// daemon fronts. This is the seam the `super-cache-ci` chart writes: the
+/// canonical super-cache posture is `SUI_CACHE_BACKEND_CONFIG` = a
+/// `{"type":"tiered","l1":{redis},"l2":{pg},"l3":{...}}` document naming the
+/// in-cluster `redis.super-cache-ci.svc` / `postgres.super-cache-ci.svc`
+/// endpoints. Unset ⇒ the daemon falls back to the local-disk backend (the
+/// legacy single-node posture) — never a silent Redis/Pg no-op.
+const BACKEND_CONFIG_ENV: &str = "SUI_CACHE_BACKEND_CONFIG";
+
+/// The local-disk fallback path used when `SUI_CACHE_BACKEND_CONFIG` is unset.
+const DEFAULT_LOCAL_CACHE_DIR: &str = "/var/lib/sui/cache";
+
+/// Stable, low-cardinality label for a resolved [`BackendConfig`] — used as a
+/// tracing field so operators see which tier the daemon actually fronts
+/// without logging endpoint URLs (which may carry credentials). Returns a
+/// `&'static str` (no string building), keeping the typed-emission surface
+/// clean.
+fn describe_backend(config: &BackendConfig) -> &'static str {
+    match config {
+        BackendConfig::Local { .. } => "local",
+        BackendConfig::S3 { .. } => "s3",
+        BackendConfig::Redis { .. } => "redis",
+        BackendConfig::Pg { .. } => "pg",
+        BackendConfig::Tiered { .. } => "tiered",
+    }
+}
+
+/// Resolve the [`BackendConfig`] the serve daemon fronts from the environment.
+///
+/// Reads [`BACKEND_CONFIG_ENV`]. When set, its value MUST be a valid
+/// [`BackendConfig`] JSON document (the typed border between the chart and the
+/// daemon) — a parse failure is a hard, typed error, never a silent disk
+/// fallback (that would mask a mis-authored config as a healthy local cache).
+/// When unset, returns the local-disk backend so the single-node posture keeps
+/// working unchanged.
+///
+/// Note this only *selects* the backend shape; a Redis/Pg/Tiered selection is
+/// materialized by [`sui_cache::build_backend`], which returns a typed
+/// `CacheError::NotImplemented` if the binary was built without the
+/// `redis-client` / `postgres` features (the root `sui` binary enables both via
+/// its default `tiered` feature).
+fn resolve_backend_config() -> Result<BackendConfig, CliError> {
+    parse_backend_config(std::env::var(BACKEND_CONFIG_ENV).ok().as_deref())
+}
+
+/// Pure core of [`resolve_backend_config`] — decides the backend from an
+/// optional raw config string, with no environment access (so it is
+/// deterministically testable). `None` / empty ⇒ local-disk fallback; a
+/// non-empty value MUST parse as [`BackendConfig`] JSON or it is a typed error.
+fn parse_backend_config(raw: Option<&str>) -> Result<BackendConfig, CliError> {
+    match raw {
+        Some(raw) if !raw.trim().is_empty() => {
+            let cfg: BackendConfig = serde_json::from_str(raw).map_err(|e| {
+                CliError::Deploy(format!(
+                    "{BACKEND_CONFIG_ENV} is not a valid BackendConfig JSON document: {e}"
+                ))
+            })?;
+            Ok(cfg)
+        }
+        _ => Ok(BackendConfig::Local {
+            path: std::path::PathBuf::from(DEFAULT_LOCAL_CACHE_DIR),
+        }),
+    }
+}
 
 /// Trusted public keys for signature verification.
 const NIXOS_CACHE_KEY: &str =
@@ -120,24 +185,32 @@ pub async fn run_agent(
     );
     info!(nats = %nats_url, stream = %stream_name, consumer = %consumer_name);
 
-    // Shared storage backend for both cache server and build pipeline
-    let storage: Arc<dyn StorageBackend> = Arc::new(
-        sui_cache::LocalStorage::new(std::path::PathBuf::from("/var/lib/sui/cache")),
-    );
+    // Resolve the storage backend the daemon fronts from config (the seam the
+    // super-cache-ci chart writes). Materialize it ONCE via the typed
+    // config-select factory and share it between the cache server and the build
+    // pipeline — a Redis/Pg/Tiered selection in a binary without the transport
+    // features fails loudly here (typed NotImplemented), never a silent disk
+    // fallback.
+    let backend_config = resolve_backend_config()?;
+    info!(backend = %describe_backend(&backend_config), "Resolved cache backend from config");
+    let storage: Arc<dyn StorageBackend> = sui_cache::build_backend(&backend_config)
+        .await
+        .map_err(|e| CliError::Deploy(format!("cache backend init failed: {e}")))?;
 
     // Cache server in background (serves /nix-cache-info for health probes
     // and the binary-cache protocol). When a signing key is provided it is
     // sourced from a file path — a cofre/ESO-materialized Secret mount in
-    // production — and every ingested narinfo is signed.
+    // production — and every ingested narinfo is signed. The served config
+    // names the SAME resolved backend so nix-cache-info and the serving tier
+    // agree with the build pipeline's tier.
     let cache_storage = Arc::clone(&storage);
     let signing_key_path = signing_key.map(std::path::PathBuf::from);
     let require_sigs = signing_key_path.is_some();
+    let served_backend = backend_config.clone();
     tokio::spawn(async move {
         let config = sui_cache::CacheConfig {
             listen: "0.0.0.0:5000".to_string(),
-            backend: sui_cache::BackendConfig::Local {
-                path: std::path::PathBuf::from("/var/lib/sui/cache"),
-            },
+            backend: served_backend,
             signing_key: signing_key_path,
             priority: 40,
             want_mass_query: true,
@@ -679,5 +752,92 @@ fn describe_input(locked: &sui_compat::flake::LockedInput) -> String {
             format!("git:{url}")
         }
         other => format!("{other}:?"),
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unset_config_falls_back_to_local() {
+        let cfg = parse_backend_config(None).expect("None resolves");
+        match cfg {
+            BackendConfig::Local { path } => {
+                assert_eq!(path, std::path::PathBuf::from(DEFAULT_LOCAL_CACHE_DIR));
+            }
+            other => panic!("expected local fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blank_config_falls_back_to_local() {
+        // A whitespace-only value is treated as unset — the chart never leaves
+        // a half-populated env behind, but be defensive.
+        let cfg = parse_backend_config(Some("   ")).expect("blank resolves");
+        assert!(matches!(cfg, BackendConfig::Local { .. }));
+    }
+
+    #[test]
+    fn tiered_super_cache_config_parses() {
+        // The exact document shape the super-cache-ci chart emits.
+        let raw = r#"{
+            "type": "tiered",
+            "l1": { "type": "redis", "url": "redis://redis.super-cache-ci.svc:6379" },
+            "l2": { "type": "pg", "url": "postgres://sui@postgres.super-cache-ci.svc:5432/sui", "max_conns": 8 },
+            "l3": { "type": "s3", "bucket": "sui-super-cache", "region": "us-east-1" },
+            "write_policy": "write-through"
+        }"#;
+        let cfg = parse_backend_config(Some(raw)).expect("tiered doc parses");
+        match cfg {
+            BackendConfig::Tiered { l1, l2, l3, .. } => {
+                assert!(matches!(*l1, BackendConfig::Redis { .. }));
+                assert!(matches!(*l2, BackendConfig::Pg { .. }));
+                assert!(matches!(*l3, BackendConfig::S3 { .. }));
+            }
+            other => panic!("expected tiered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_config_is_a_typed_error_not_a_silent_local() {
+        // A mis-authored config must fail loudly, never masquerade as a healthy
+        // local cache (that would hide the operator's mistake).
+        let err = parse_backend_config(Some("{not json")).expect_err("must error");
+        let msg = err.to_string();
+        assert!(msg.contains(BACKEND_CONFIG_ENV), "error names the env var: {msg}");
+    }
+
+    #[test]
+    fn describe_backend_labels_every_arm() {
+        assert_eq!(
+            describe_backend(&BackendConfig::Local { path: "/x".into() }),
+            "local"
+        );
+        assert_eq!(
+            describe_backend(&BackendConfig::Redis {
+                url: "redis://r:6379".into(),
+                ttl_secs: None,
+            }),
+            "redis"
+        );
+        assert_eq!(
+            describe_backend(&BackendConfig::Pg {
+                url: "postgres://p:5432/s".into(),
+                max_conns: 8,
+            }),
+            "pg"
+        );
+        assert_eq!(
+            describe_backend(&BackendConfig::Tiered {
+                l1: Box::new(BackendConfig::Redis { url: "redis://r:6379".into(), ttl_secs: None }),
+                l2: Box::new(BackendConfig::Pg { url: "postgres://p:5432/s".into(), max_conns: 8 }),
+                l3: Box::new(BackendConfig::Local { path: "/x".into() }),
+                write_policy: Default::default(),
+            }),
+            "tiered"
+        );
     }
 }
