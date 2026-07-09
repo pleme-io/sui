@@ -128,8 +128,23 @@ impl ParsedNar {
         // for now — symmetric materialise-then-walk.  A pure
         // streaming parser is a follow-up optimization; the
         // current shape is correct + uses the same wire format.
+        //
+        // The materialization path MUST be unique per call. The prior
+        // `{pid}-{nanos}` scheme was NOT: two `parse` calls on different
+        // threads at the same nanosecond resolved to the SAME `tmp`, so
+        // one call's `decode` wrote its tree into a dir the other call's
+        // `read_node` then walked — reading BOTH trees and returning a
+        // corrupted node with the neighbor's entries mixed in (a real,
+        // shipped concurrency bug, not merely a test artifact). A
+        // process-wide atomic counter appended to the path removes the
+        // shared cell entirely — no two calls can ever collide. (No
+        // `tempfile` dep: it is dev-only for this crate; the counter is
+        // zero-dependency and equally collision-proof.)
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static PARSE_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = PARSE_SEQ.fetch_add(1, Ordering::Relaxed);
         let tmp = std::env::temp_dir().join(format!(
-            "sui-parsed-nar-{}-{}",
+            "sui-parsed-nar-{}-{}-{seq}",
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos()).unwrap_or(0),

@@ -12,10 +12,20 @@ use sui_spec::fetcher::{
 // ── FsTransport properties ─────────────────────────────────
 
 fn tmpfile_with(content: &[u8]) -> std::path::PathBuf {
+    // A per-call atomic counter makes the temp path collision-proof
+    // across threads and same-nanosecond calls. Without it, two proptest
+    // cases (this file's `fs_transport_roundtrips_bytes` and
+    // `router_routes_file_urls_to_fs`) running in parallel could land on
+    // the same `{pid}-{nanos}` path and read back each other's bytes — a
+    // flaky cross-test file race that surfaces only under heavy parallel
+    // load. The counter removes the shared-path state entirely.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let p = std::env::temp_dir().join(format!("sui-spec-fs-prop-{id}-{nanos}"));
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("sui-spec-fs-prop-{id}-{nanos}-{seq}"));
     std::fs::write(&p, content).unwrap();
     p
 }

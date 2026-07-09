@@ -10,12 +10,19 @@ use proptest::prelude::*;
 use sui_spec::registry::{self, RegistryEntry};
 
 fn write_temp_registry(entries: &[RegistryEntry]) -> std::path::PathBuf {
+    // Per-call atomic counter: without it two proptest cases sharing a
+    // nanosecond collide on the same JSON path and read back each other's
+    // entries — a flaky cross-case race under parallel load. The counter
+    // makes the path genuinely unique.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("sui-spec-reg-{id}-{nanos}.json"));
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("sui-spec-reg-{id}-{nanos}-{seq}.json"));
 
     // Mirror the same shape `cmd::registry_add` writes — flatten
     // refs to typed JSON objects.

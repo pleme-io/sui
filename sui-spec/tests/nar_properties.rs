@@ -12,12 +12,20 @@ use sui_spec::nar;
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn unique_tmpdir(label: &str) -> std::path::PathBuf {
+    // Per-call atomic counter: without it two proptest cases sharing a
+    // `label` at the same `nanos` collide on the same dir, and the
+    // `remove_dir_all` below then wipes one case's tree mid-encode — a
+    // flaky failure under parallel load. The counter makes the path
+    // genuinely unique.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let id = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let p = std::env::temp_dir().join(format!("sui-spec-nar-prop-{label}-{id}-{nanos}"));
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let p = std::env::temp_dir().join(format!("sui-spec-nar-prop-{label}-{id}-{nanos}-{seq}"));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p

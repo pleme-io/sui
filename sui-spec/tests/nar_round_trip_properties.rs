@@ -9,16 +9,21 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 use sui_spec::nar;
 
-fn unique_tmpdir(label: &str) -> std::path::PathBuf {
-    let id = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let p = std::env::temp_dir().join(format!("sui-nar-rt-{label}-{id}-{nanos}"));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).unwrap();
-    p
+/// A guaranteed-unique, auto-cleaned temp directory.
+///
+/// Returns a `tempfile::TempDir` (RAII) rather than a bare `PathBuf`
+/// built from `{pid}-{nanos}` — the old scheme collided when two
+/// proptest cases across parallel test functions hit the same
+/// nanosecond, so one case's `nar::encode` walked a directory another
+/// case had populated (the `file_count 8 vs 4` cross-contamination this
+/// pre-existing flake produced under parallel load). `tempdir()` mints
+/// an OS-unique path and removes it on drop, so the caller MUST bind the
+/// returned guard for the directory's lifetime.
+fn unique_tmpdir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("sui-nar-rt-{label}-"))
+        .tempdir()
+        .expect("create unique temp dir")
 }
 
 fn write_tree(dir: &std::path::Path, files: &BTreeMap<String, Vec<u8>>) {
@@ -38,16 +43,15 @@ proptest! {
         content in proptest::collection::vec(any::<u8>(), 0..1024),
     ) {
         let src_dir = unique_tmpdir("file-src");
-        let src = src_dir.join("f");
+        let src = src_dir.path().join("f");
         std::fs::write(&src, &content).unwrap();
         let nar = nar::encode(&src).unwrap();
 
-        let dst = unique_tmpdir("file-dst").join("f");
+        let dst_dir = unique_tmpdir("file-dst");
+        let dst = dst_dir.path().join("f");
         nar::decode(&nar, &dst).unwrap();
         let got = std::fs::read(&dst).unwrap();
 
-        let _ = std::fs::remove_dir_all(&src_dir);
-        let _ = std::fs::remove_dir_all(dst.parent().unwrap());
         prop_assert_eq!(got, content);
     }
 
@@ -60,21 +64,21 @@ proptest! {
             0..6,
         ),
     ) {
-        let src = unique_tmpdir("dir-src");
+        let src_dir = unique_tmpdir("dir-src");
+        let src = src_dir.path().join("tree");
+        std::fs::create_dir_all(&src).unwrap();
         write_tree(&src, &files);
         let nar = nar::encode(&src).unwrap();
 
-        let dst = unique_tmpdir("dir-dst");
-        let _ = std::fs::remove_dir_all(&dst);
+        let dst_dir = unique_tmpdir("dir-dst");
+        // decode wants a not-yet-existing target path.
+        let dst = dst_dir.path().join("out");
         nar::decode(&nar, &dst).unwrap();
 
         for (rel, content) in &files {
             let got = std::fs::read(dst.join(rel)).unwrap();
             prop_assert_eq!(got, content.clone());
         }
-
-        let _ = std::fs::remove_dir_all(&src);
-        let _ = std::fs::remove_dir_all(&dst);
     }
 
     /// Full round-trip: encode → decode → encode produces
@@ -87,17 +91,17 @@ proptest! {
             1..5,
         ),
     ) {
-        let src = unique_tmpdir("canon-src");
+        let src_dir = unique_tmpdir("canon-src");
+        let src = src_dir.path().join("tree");
+        std::fs::create_dir_all(&src).unwrap();
         write_tree(&src, &files);
         let nar1 = nar::encode(&src).unwrap();
 
-        let dst = unique_tmpdir("canon-dst");
-        let _ = std::fs::remove_dir_all(&dst);
+        let dst_dir = unique_tmpdir("canon-dst");
+        let dst = dst_dir.path().join("out");
         nar::decode(&nar1, &dst).unwrap();
         let nar2 = nar::encode(&dst).unwrap();
 
-        let _ = std::fs::remove_dir_all(&src);
-        let _ = std::fs::remove_dir_all(&dst);
         prop_assert_eq!(nar1, nar2);
     }
 
@@ -107,18 +111,16 @@ proptest! {
         content in proptest::collection::vec(any::<u8>(), 1..256),
     ) {
         let src_dir = unique_tmpdir("hash-src");
-        let src = src_dir.join("f");
+        let src = src_dir.path().join("f");
         std::fs::write(&src, &content).unwrap();
         let h1 = nar::hash_path_nar(&src).unwrap();
 
         let nar = nar::encode(&src).unwrap();
         let dst_dir = unique_tmpdir("hash-dst");
-        let dst = dst_dir.join("f");
+        let dst = dst_dir.path().join("f");
         nar::decode(&nar, &dst).unwrap();
         let h2 = nar::hash_path_nar(&dst).unwrap();
 
-        let _ = std::fs::remove_dir_all(&src_dir);
-        let _ = std::fs::remove_dir_all(&dst_dir);
         prop_assert_eq!(h1, h2);
     }
 }
@@ -136,12 +138,13 @@ proptest! {
             0..5,
         ),
     ) {
-        let src = unique_tmpdir("parsed-rt");
+        let src_dir = unique_tmpdir("parsed-rt");
+        let src = src_dir.path().join("tree");
+        std::fs::create_dir_all(&src).unwrap();
         write_tree(&src, &files);
         let nar1 = nar::encode(&src).unwrap();
         let parsed = sui_spec::store_ops::ParsedNar::parse(&nar1).unwrap();
         let nar2 = parsed.serialize();
-        let _ = std::fs::remove_dir_all(&src);
         prop_assert_eq!(nar1, nar2);
     }
 
@@ -150,7 +153,9 @@ proptest! {
     fn parsed_nar_file_count_matches_input(
         n in 1usize..8,
     ) {
-        let dir = unique_tmpdir("parsed-count");
+        let dir_guard = unique_tmpdir("parsed-count");
+        let dir = dir_guard.path().join("tree");
+        std::fs::create_dir_all(&dir).unwrap();
         let mut expected_files = 0usize;
         for i in 0..n {
             std::fs::write(dir.join(format!("f{i}")), [i as u8]).unwrap();
@@ -158,7 +163,6 @@ proptest! {
         }
         let nar = nar::encode(&dir).unwrap();
         let parsed = sui_spec::store_ops::ParsedNar::parse(&nar).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
         prop_assert_eq!(parsed.root.file_count(), expected_files);
     }
 }

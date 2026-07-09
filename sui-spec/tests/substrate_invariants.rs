@@ -11,7 +11,7 @@
 //! the substrate composes.
 
 use sui_spec::{
-    activation_script, catalog, derivation, eval_cache, fetcher, flake, gc,
+    activation_script, catalog, derivation, dockerfile, eval_cache, fetcher, flake, gc,
     hash, lock_file, module_system, nar, narinfo, profile, realisation,
     registry, sandbox, store_layout, substituter, trust_model,
     worker_protocol, SpecError,
@@ -191,6 +191,7 @@ fn every_catalog_entry_has_a_loadable_module() {
             "registry" => registry::load_canonical().map(drop),
             "trust_model" => trust_model::load_canonical().map(drop),
             "worker_protocol" => worker_protocol::load_canonical_protocols().map(drop),
+            "dockerfile" => dockerfile::load_canonical().map(drop),
             other => panic!(
                 "catalog references unknown domain `{other}` — \
                  add a match arm in tests/substrate_invariants.rs::\

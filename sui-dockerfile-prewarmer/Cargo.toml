@@ -31,7 +31,11 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+# `net` + `io-util`: the resilience tests stand up a throwaway in-process
+# TCP HTTP server to drive the REAL `RealCommitsApi` reqwest transport
+# against genuine failure modes (rate-limit, malformed JSON, 404,
+# connection-refused) with zero new external dependencies.
+tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
 
 [lints.clippy]
 pedantic = "warn"
