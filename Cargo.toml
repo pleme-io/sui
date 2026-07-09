@@ -166,6 +166,14 @@ sha2 = "0.10"
 sha3 = "0.10"
 blake3 = "1"
 
+# Typed work-graph primitive — the fleet-standard shigoto Dag of Jobs
+# (SHIGOTO.md). The layers-stay-warm Viggy loop expresses its warm STEP
+# as a shigoto::Dag of typed re-warm Jobs rather than a bare loop, so the
+# ordering/topology is a typed value, not ad-hoc control flow. Published
+# on crates.io; pulled by digest via the workspace lock.
+shigoto-dag = "0.1.10"
+shigoto-types = "0.1.10"
+
 # Directories
 dirs-next = "2"
 

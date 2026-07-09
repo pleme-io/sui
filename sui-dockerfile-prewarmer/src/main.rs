@@ -1,11 +1,27 @@
 //! `sui-dockerfile-prewarmer` — the standing pre-warming service
-//! binary. Loads typed config, then runs the poll loop forever on a
-//! `tokio::time::interval`, emitting structured `tracing` events on
-//! every cycle (checked, found change, pre-warmed, duration).
+//! binary.
+//!
+//! ## The layers-stay-warm Viggy loop (the destination — default)
+//!
+//! The binary runs the `(defpromessa layers-stay-warm)` PromessaController
+//! ([`sui_dockerfile_prewarmer::viggy::LayersWarmController`]) on a
+//! `tokio::time::interval`: the poll trigger stays, but each interval tick
+//! runs the Viggy **seven-beat** (Observe → Diff → Classify → Decide → Act
+//! via a shigoto Dag → Attest to a BLAKE3 OutcomeChain → Tick), proving —
+//! tick by tick, with an attested seen-ratio — that the watched layers stay
+//! warm. This replaces the bare poll loop that merely warmed without
+//! proving a promise.
+//!
+//! The interim [`run_poll_loop`] (bare cycle + logs, no promessa, no
+//! attestation) is retained below only as the honest interim reference; the
+//! binary no longer runs it.
+
+use std::time::Duration;
 
 use sui_dockerfile_prewarmer::config::PrewarmerConfig;
 use sui_dockerfile_prewarmer::github::RealCommitsApi;
 use sui_dockerfile_prewarmer::prewarm::RealPrewarmRunner;
+use sui_dockerfile_prewarmer::viggy::{Controller, LayersStayWarm, LayersWarmController};
 use sui_dockerfile_prewarmer::{run_cycle, CheckOutcome, PollState, PrewarmOutcome};
 
 #[tokio::main]
@@ -26,19 +42,66 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    tracing::info!(watched_count = config.watched.len(), poll_interval_secs = config.poll_interval_secs, "starting sui-dockerfile-prewarmer");
+    let promessa = LayersStayWarm::default();
+    tracing::info!(
+        watched_count = config.watched.len(),
+        poll_interval_secs = config.poll_interval_secs,
+        promessa = %promessa.name,
+        seen_ratio_target = promessa.target_ratio(),
+        "starting sui-dockerfile-prewarmer (layers-stay-warm Viggy loop)"
+    );
 
     let commits_api = RealCommitsApi::new(config.github_api_base.clone(), config.github_raw_base.clone());
     let cache = sui_cache::storage::build_backend(&config.cache_backend).await?;
     let prewarm_runner = RealPrewarmRunner::new(cache, std::env::current_dir()?);
 
-    run_poll_loop(&commits_api, &prewarm_runner, config).await;
+    let controller = LayersWarmController::new(
+        promessa,
+        config.watched.clone(),
+        commits_api,
+        prewarm_runner,
+        Duration::from_secs(config.poll_interval_secs),
+    );
+
+    run_viggy_loop(&controller, config.poll_interval_secs).await;
     Ok(())
 }
 
-/// The standing loop: tick every `poll_interval_secs`, run one cycle,
-/// emit one structured log line per watched entry per cycle. Runs
-/// forever — the process is the deploy unit's whole lifecycle.
+/// The standing seven-beat loop: tick every `poll_interval_secs`, run one
+/// Viggy reconcile tick, emit the typed tick report + the attestation head.
+/// Runs forever — the process is the deploy unit's whole lifecycle.
+async fn run_viggy_loop<A, P>(controller: &LayersWarmController<A, P>, poll_interval_secs: u64)
+where
+    A: sui_dockerfile_prewarmer::github::CommitsApi,
+    P: sui_dockerfile_prewarmer::prewarm::PrewarmRunner,
+{
+    let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs));
+    loop {
+        interval.tick().await;
+        match controller.tick().await {
+            Ok(outcome) => {
+                tracing::info!(
+                    examined = outcome.report.objects_examined,
+                    rewarmed = outcome.report.objects_changed,
+                    skipped = outcome.report.objects_skipped,
+                    attested_ticks = controller.attested_ticks(),
+                    note = outcome.report.note.as_deref().unwrap_or(""),
+                    "layers-stay-warm tick"
+                );
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "layers-stay-warm tick failed; retrying next interval");
+            }
+        }
+    }
+}
+
+/// **Interim reference (no longer run by the binary).** The bare poll loop
+/// the Viggy controller replaces: tick every `poll_interval_secs`, run one
+/// cycle, emit one structured log line per watched entry per cycle — but no
+/// promessa, no seen-ratio, no attestation. Kept for parity/reference; the
+/// destination is [`run_viggy_loop`].
+#[allow(dead_code)]
 async fn run_poll_loop<A, P>(commits_api: &A, prewarm_runner: &P, config: PrewarmerConfig)
 where
     A: sui_dockerfile_prewarmer::github::CommitsApi,

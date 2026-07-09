@@ -17,6 +17,21 @@ path = "src/main.rs"
 sui-spec.workspace = true
 sui-cache.workspace = true
 sui-dockerfile-wrapper.workspace = true
+# REUSE the Viggy machinery — the `Controller` trait / `ReconcileOutcome`
+# seven-beat contract + the `WarmthVerdict`/`WarmthBreach` promessa
+# vocabulary — from the sibling super-cache-ci crate. The layers-stay-warm
+# loop does NOT re-roll a PromessaController; it mirrors preheat's shape
+# over the prewarmer's own observable (watched-graph seen-ratio).
+sui-supercacheci.workspace = true
+# The typed warm STEP is a shigoto Dag of re-warm Jobs (not a bare loop).
+shigoto-dag.workspace = true
+shigoto-types.workspace = true
+# The OutcomeChain attestation is a BLAKE3 content-addressed hash chain
+# (tier-honest: a hash chain, NOT an Ed25519-signed chain — see viggy.rs).
+blake3.workspace = true
+# Hex-encode the 32-byte content-addressed link ids for JSON-safe,
+# human-diffable chain serialization.
+data-encoding.workspace = true
 shikumi = "0.1"
 serde.workspace = true
 serde_json.workspace = true

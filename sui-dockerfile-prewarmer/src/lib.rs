@@ -15,7 +15,9 @@
 
 pub mod config;
 pub mod github;
+pub mod outcome_chain;
 pub mod prewarm;
+pub mod viggy;
 
 use config::WatchedDockerfile;
 use github::{CommitsApi, GithubError};
