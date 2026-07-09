@@ -110,6 +110,7 @@ pub mod mock {
                 nodes: Vec::new(),
                 total_wall_clock_ms: 0,
                 docker_ran: true,
+                fell_through_reason: None,
             })
         }
     }

@@ -61,8 +61,8 @@ use sui_spec::dockerfile::{self, DockerfileArgs, MockDockerfileEnvironment};
 /// this harness produces (never a free-form log line).
 #[derive(Debug, Serialize)]
 struct WarmthReport {
-    cold_duration_ms: u128,
-    warm_duration_ms: u128,
+    cold_duration_ms: u64,
+    warm_duration_ms: u64,
     speedup_ratio: f64,
     partial_invalidation_node_count: usize,
     total_node_count: usize,

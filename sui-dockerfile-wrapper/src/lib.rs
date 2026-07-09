@@ -83,7 +83,15 @@ pub enum WrapperOutcome {
     CacheHit { image_ref: String, node_count: usize },
     /// At least one node was missing (or the cache had zero nodes) —
     /// `docker build` ran end to end and the cache was back-filled.
-    CacheMiss { docker_build_duration_ms: u128, nodes_cached: usize },
+    ///
+    /// The duration is `u64` milliseconds, not `u128`: this enum is
+    /// `#[serde(tag = "kind")]` (internally tagged), and serde_json
+    /// cannot deserialize a `u128` through the intermediate buffer an
+    /// internally-tagged enum requires — a `u128` here made every
+    /// `CacheMiss` receipt un-round-trippable through the keyway "JSON
+    /// receipt out" contract. `u64` ms is ~584 million years of range,
+    /// far beyond any build wall-clock.
+    CacheMiss { docker_build_duration_ms: u64, nodes_cached: usize },
     /// `docker build` (or the cache-hit `docker pull`) exited non-zero.
     BuildFailed { exit_code: Option<i32>, stderr_tail: String },
 }
@@ -94,8 +102,21 @@ pub enum WrapperOutcome {
 pub struct WrapperReceipt {
     pub outcome: WrapperOutcome,
     pub nodes: Vec<NodeCacheStatus>,
-    pub total_wall_clock_ms: u128,
+    /// `u64` milliseconds — see [`WrapperOutcome::CacheMiss`] for why not
+    /// `u128` (serde_json + internally-tagged-enum round-trip).
+    pub total_wall_clock_ms: u64,
     pub docker_ran: bool,
+    /// Set when the cache *accelerator* could not be consulted and the
+    /// wrapper degraded to a plain real `docker build` — e.g. the graph
+    /// hasher rejected a Dockerfile that real docker builds fine (our
+    /// scoped parser is deliberately narrower than BuildKit), or the
+    /// cache backend itself errored (a transient Redis/Postgres hiccup).
+    /// The cache is an optimization: any cache-side trouble degrades to
+    /// a correct build, it never *breaks* one — this field makes that
+    /// degrade observable rather than silent. `None` on the normal
+    /// (cache consulted successfully) path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fell_through_reason: Option<String>,
 }
 
 impl WrapperReceipt {
@@ -112,14 +133,15 @@ impl WrapperReceipt {
     }
 }
 
-/// Errors reading/parsing the Dockerfile graph — surfaced as a typed
-/// error, never a panic.
+/// The one thing that can genuinely fail a wrapper run: the `docker`
+/// subprocess could not be *spawned* at all (e.g. the binary is not on
+/// PATH). Everything cache-side degrades to a plain real build (D6) and
+/// so is *not* a `WrapperError` — see [`run_wrapper`]'s fall-through
+/// contract. A failing `docker build` is likewise not a `WrapperError`;
+/// it is the typed [`WrapperOutcome::BuildFailed`] inside an `Ok`
+/// receipt. Surfaced as a typed error, never a panic.
 #[derive(Debug, thiserror::Error)]
 pub enum WrapperError {
-    #[error("computing the dockerfile graph: {0}")]
-    Graph(#[from] sui_spec::SpecError),
-    #[error("cache backend error: {0}")]
-    Cache(#[from] sui_cache::CacheError),
     #[error("failed to spawn docker: {0}")]
     Command(#[from] CommandRunError),
 }
@@ -141,16 +163,103 @@ impl DockerfileEnvironment for FilesystemDockerfileEnvironment {
     }
 }
 
-/// Run the wrapper: compute the graph, check the cache, and either
-/// materialize a hit or fall through to a real build.
+/// Elapsed milliseconds since `since`, saturated into a `u64` (the
+/// receipt's serde-safe width). `Instant::elapsed().as_millis()` is a
+/// `u128`; a `u64` of ms is ~584 million years of range, so the
+/// saturation is unreachable in practice — it just keeps the cast
+/// total and explicit rather than a bare `as` truncation.
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The successfully-consulted cache plan for one Dockerfile: the parsed
+/// graph, per-node cache status, and — when *every* node was a hit — the
+/// image reference to materialize instead of rebuilding.
+struct CachePlan {
+    graph: DockerfileGraph,
+    nodes: Vec<NodeCacheStatus>,
+    /// `Some(image_ref)` iff the whole graph was cached (a full hit).
+    full_hit_image_ref: Option<String>,
+}
+
+/// Try to consult the cache accelerator: parse the Dockerfile into a
+/// content-addressed graph and check every node against the backend.
+///
+/// Returns `Err(reason)` — a human-readable degrade reason — for **any**
+/// cache-side trouble: a Dockerfile the scoped graph hasher rejects
+/// (our parser is deliberately narrower than BuildKit — a `HEALTHCHECK`
+/// line real docker builds fine lands here), or a backend I/O error
+/// (a transient Redis/Postgres hiccup). The caller degrades to a plain
+/// real `docker build` on `Err` — the cache is an optimization, never a
+/// gate on correctness.
+async fn consult_cache<E>(
+    config: &WrapperConfig,
+    env: &E,
+    cache: &Arc<dyn StorageBackend>,
+) -> Result<CachePlan, String>
+where
+    E: DockerfileEnvironment,
+{
+    let graph: DockerfileGraph = dockerfile::apply(
+        &DockerfileArgs { path: config.dockerfile_path.display().to_string() },
+        env,
+    )
+    .map_err(|e| {
+        let mut msg = String::from("graph hasher rejected the Dockerfile (scoped parser narrower than docker): ");
+        msg.push_str(&e.to_string());
+        msg
+    })?;
+
+    let mut nodes = Vec::with_capacity(graph.nodes.len());
+    let mut all_cached = !graph.nodes.is_empty();
+    let mut cached_image_ref: Option<String> = None;
+    for node in &graph.nodes {
+        let hit = cache.get_narinfo(&node.content_hash).await.map_err(|e| {
+            let mut msg = String::from("cache backend error while checking a node: ");
+            msg.push_str(&e.to_string());
+            msg
+        })?;
+        if let Some(image_ref) = &hit {
+            cached_image_ref = Some(image_ref.clone());
+        } else {
+            all_cached = false;
+        }
+        nodes.push(NodeCacheStatus { content_hash: node.content_hash.clone(), cached: hit.is_some() });
+    }
+
+    let full_hit_image_ref = if all_cached {
+        Some(cached_image_ref.unwrap_or_else(|| config.image_tag.clone()))
+    } else {
+        None
+    };
+    Ok(CachePlan { graph, nodes, full_hit_image_ref })
+}
+
+/// Run the wrapper: consult the cache accelerator and either materialize
+/// a full hit or fall through to a real `docker build`.
+///
+/// # The fall-through safety contract (D6)
+///
+/// The cache is an *accelerator*, never a gate. For **every** cache-side
+/// failure mode — a Dockerfile the scoped graph hasher rejects, a cache
+/// backend I/O error, a partial cache hit, a missing node-cache daemon —
+/// the wrapper degrades to a plain real `docker build` of the *entire*
+/// Dockerfile and **never** returns a broken or partially-spliced
+/// result. The degrade is recorded in
+/// [`WrapperReceipt::fell_through_reason`] so it is observable, never
+/// silent. A partial hit is likewise never spliced — it is a full real
+/// build (with `fell_through_reason == None`, since the cache *was*
+/// consulted successfully, it simply wasn't a full hit).
 ///
 /// # Errors
 ///
-/// Returns [`WrapperError`] if the Dockerfile can't be parsed into a
-/// graph, or if the cache backend itself errors (a cache *miss* is not
-/// an error — only a backend I/O failure is). A failing `docker build`
-/// subprocess is *not* a `WrapperError` — it is the typed
-/// [`WrapperOutcome::BuildFailed`] inside an `Ok` receipt.
+/// Returns [`WrapperError::Command`] only if the `docker` subprocess
+/// could not be *spawned* at all (e.g. the binary is missing) — a
+/// genuine environment failure, not a cache concern. Graph-computation
+/// and cache-backend errors are **not** propagated: they degrade to a
+/// real build. A failing `docker build` subprocess is not a
+/// `WrapperError` either — it is the typed [`WrapperOutcome::BuildFailed`]
+/// inside an `Ok` receipt.
 pub async fn run_wrapper<E, R>(
     config: &WrapperConfig,
     env: &E,
@@ -163,52 +272,58 @@ where
 {
     let start = Instant::now();
 
-    let graph: DockerfileGraph = dockerfile::apply(
-        &DockerfileArgs { path: config.dockerfile_path.display().to_string() },
-        env,
-    )?;
+    // Consult the cache accelerator. On ANY cache-side error, degrade to
+    // a plain real build rather than propagating — the cache never gates
+    // correctness (D6).
+    let (plan, fell_through_reason): (Option<CachePlan>, Option<String>) =
+        match consult_cache(config, env, cache).await {
+            Ok(plan) => (Some(plan), None),
+            Err(reason) => {
+                tracing::warn!(reason = %reason, "cache accelerator unavailable — falling through to a plain docker build");
+                (None, Some(reason))
+            }
+        };
 
-    let mut nodes = Vec::with_capacity(graph.nodes.len());
-    let mut all_cached = !graph.nodes.is_empty();
-    let mut cached_image_ref: Option<String> = None;
-    for node in &graph.nodes {
-        let hit = cache.get_narinfo(&node.content_hash).await?;
-        if let Some(image_ref) = &hit {
-            cached_image_ref = Some(image_ref.clone());
-        } else {
-            all_cached = false;
-        }
-        nodes.push(NodeCacheStatus { content_hash: node.content_hash.clone(), cached: hit.is_some() });
-    }
-
-    if all_cached {
-        // Full hit: materialize the already-built image rather than
-        // rebuilding. The image reference is whatever the last node's
-        // cache entry recorded on the miss path that produced it.
-        let image_ref = cached_image_ref.unwrap_or_else(|| config.image_tag.clone());
-        let invocation = DockerBuildInvocation::pull(&image_ref);
-        let outcome = runner.run(&invocation)?;
-        let total_wall_clock_ms = start.elapsed().as_millis();
-        if outcome.success {
+    // Full-hit fast path: materialize the already-built image via
+    // `docker pull` instead of rebuilding. Only reachable when the cache
+    // was consulted successfully AND every node was a hit.
+    if let Some(plan) = &plan {
+        if let Some(image_ref) = &plan.full_hit_image_ref {
+            let invocation = DockerBuildInvocation::pull(image_ref);
+            let outcome = runner.run(&invocation)?;
+            let total_wall_clock_ms = elapsed_ms(start);
+            if outcome.success {
+                return Ok(WrapperReceipt {
+                    outcome: WrapperOutcome::CacheHit {
+                        image_ref: image_ref.clone(),
+                        node_count: plan.nodes.len(),
+                    },
+                    nodes: plan.nodes.clone(),
+                    total_wall_clock_ms,
+                    docker_ran: false,
+                    fell_through_reason: None,
+                });
+            }
             return Ok(WrapperReceipt {
-                outcome: WrapperOutcome::CacheHit { image_ref, node_count: nodes.len() },
-                nodes,
+                outcome: WrapperOutcome::BuildFailed {
+                    exit_code: outcome.exit_code,
+                    stderr_tail: outcome.stderr_tail(4096),
+                },
+                nodes: plan.nodes.clone(),
                 total_wall_clock_ms,
                 docker_ran: false,
+                fell_through_reason: None,
             });
         }
-        return Ok(WrapperReceipt {
-            outcome: WrapperOutcome::BuildFailed {
-                exit_code: outcome.exit_code,
-                stderr_tail: outcome.stderr_tail(4096),
-            },
-            nodes,
-            total_wall_clock_ms,
-            docker_ran: false,
-        });
     }
 
-    // Partial or full miss: never splice, always a full real build.
+    // Fall-through: a partial/full cache miss, OR the cache was
+    // unavailable entirely. Either way — never splice, always a full
+    // real build. When the cache was consulted we carry its per-node
+    // status; when it was unavailable we carry an empty node list (we
+    // never computed the graph).
+    let mut nodes = plan.as_ref().map(|p| p.nodes.clone()).unwrap_or_default();
+
     let build_started = Instant::now();
     let invocation = DockerBuildInvocation::build(
         &config.dockerfile_path,
@@ -217,8 +332,8 @@ where
         &config.build_args,
     );
     let outcome = runner.run(&invocation)?;
-    let docker_build_duration_ms = build_started.elapsed().as_millis();
-    let total_wall_clock_ms = start.elapsed().as_millis();
+    let docker_build_duration_ms = elapsed_ms(build_started);
+    let total_wall_clock_ms = elapsed_ms(start);
 
     if !outcome.success {
         return Ok(WrapperReceipt {
@@ -229,18 +344,28 @@ where
             nodes,
             total_wall_clock_ms,
             docker_ran: true,
+            fell_through_reason,
         });
     }
 
     // Back-fill the cache: every node's hash now maps to the freshly
-    // built image tag, so a future run over the same graph hits.
+    // built image tag, so a future run over the same graph hits. This is
+    // best-effort — a back-fill write failure must not fail an
+    // already-successful build (the cache is an accelerator), so a
+    // put error only marks that node uncached and continues.
     let mut nodes_cached = 0usize;
-    for node in &graph.nodes {
-        cache.put_narinfo(&node.content_hash, &config.image_tag).await?;
-        nodes_cached += 1;
-    }
-    for status in &mut nodes {
-        status.cached = true;
+    if let Some(plan) = &plan {
+        for node in &plan.graph.nodes {
+            match cache.put_narinfo(&node.content_hash, &config.image_tag).await {
+                Ok(()) => nodes_cached += 1,
+                Err(e) => {
+                    tracing::warn!(hash = %node.content_hash, error = %e, "cache back-fill write failed — build still succeeded");
+                }
+            }
+        }
+        for status in &mut nodes {
+            status.cached = nodes_cached == plan.graph.nodes.len();
+        }
     }
 
     Ok(WrapperReceipt {
@@ -248,6 +373,7 @@ where
         nodes,
         total_wall_clock_ms,
         docker_ran: true,
+        fell_through_reason,
     })
 }
 
@@ -405,10 +531,23 @@ mod tests {
             ],
             total_wall_clock_ms: 42,
             docker_ran: false,
+            fell_through_reason: None,
         };
         let json = receipt.to_json().unwrap();
         let parsed: WrapperReceipt = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, receipt);
+
+        // A degraded receipt round-trips too, and its reason survives.
+        let degraded = WrapperReceipt {
+            outcome: WrapperOutcome::CacheMiss { docker_build_duration_ms: 10, nodes_cached: 0 },
+            nodes: Vec::new(),
+            total_wall_clock_ms: 12,
+            docker_ran: true,
+            fell_through_reason: Some("cache backend error while checking a node: io error".to_string()),
+        };
+        let dj = degraded.to_json().unwrap();
+        let dparsed: WrapperReceipt = serde_json::from_str(&dj).unwrap();
+        assert_eq!(dparsed, degraded);
     }
 
     #[test]
