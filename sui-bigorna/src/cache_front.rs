@@ -14,11 +14,36 @@
 //! Every endpoint token (`type=registry,ref=…,mode=max`) is rendered by a
 //! [`std::fmt::Display`] impl — the one sanctioned typed-emission surface — not
 //! a `format!()` at a call site.
+//!
+//! ## Import vs export are not always the same token
+//!
+//! `registry` / `s3` / `inline` are symmetric — `BuildKit` accepts the exact
+//! same `type=<wire>,…` token on both `--cache-from` (import) and `--cache-to`
+//! (export). The `local` wire is **not**: an export writes `type=local,dest=…`
+//! and an import reads `type=local,src=…`. Passing a `dest=` token to
+//! `--cache-from` fails the whole build (`local cache importer requires src`),
+//! so the token a [`CacheEndpoint`] renders depends on the [`CacheDirection`]
+//! it is used in. [`CacheEndpoint::render`] takes that direction; the
+//! [`std::fmt::Display`] impl renders the export form (the historical
+//! behavior, and the correct token for every symmetric wire and for
+//! `--cache-to`).
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use sui_cache::config::BackendConfig;
+
+/// Which side of the cache front an endpoint token is rendered for. Only the
+/// `local` wire renders differently per direction (`dest=` export vs `src=`
+/// import); every other wire renders identically, so a symmetric wire ignores
+/// this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheDirection {
+    /// `--cache-from` — read cached layers. `local` reads `src=<path>`.
+    Import,
+    /// `--cache-to` — write layers back. `local` writes `dest=<path>`.
+    Export,
+}
 
 /// How much of the build graph's cache is exported. `Max` exports intermediate
 /// layers too (the useful setting for cross-build reuse); `Min` exports only
@@ -114,10 +139,20 @@ impl CacheEndpoint {
             }
         }
     }
-}
 
-impl fmt::Display for CacheEndpoint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// Render the `type=<wire>,…` token for the given [`CacheDirection`].
+    ///
+    /// Every wire but `local` renders identically for import and export; the
+    /// `local` wire renders `src=<path>` on [`CacheDirection::Import`] and
+    /// `dest=<path>` on [`CacheDirection::Export`] — passing the wrong one to
+    /// `--cache-from` makes `BuildKit` fail with `local cache importer requires
+    /// src`.
+    ///
+    /// # Errors
+    ///
+    /// This never errors; it returns [`fmt::Result`] only to compose with the
+    /// [`fmt::Display`] impl.
+    pub fn render(&self, direction: CacheDirection, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CacheEndpoint::Registry { r#ref: reference, mode } => {
                 write!(f, "type=registry,ref={reference}")?;
@@ -139,9 +174,44 @@ impl fmt::Display for CacheEndpoint {
                 }
                 Ok(())
             }
-            CacheEndpoint::Local { path } => write!(f, "type=local,dest={path}"),
+            CacheEndpoint::Local { path } => match direction {
+                CacheDirection::Import => write!(f, "type=local,src={path}"),
+                CacheDirection::Export => write!(f, "type=local,dest={path}"),
+            },
             CacheEndpoint::Inline => f.write_str("type=inline"),
         }
+    }
+
+    /// Render this endpoint as a `--cache-from` (import) token — a small typed
+    /// wrapper over [`render`](CacheEndpoint::render) so a call site never has
+    /// to name a `Formatter`.
+    #[must_use]
+    pub fn to_import_token(&self) -> String {
+        DirectedEndpoint { endpoint: self, direction: CacheDirection::Import }.to_string()
+    }
+}
+
+/// An endpoint bound to a direction, so its [`Display`] renders the correct
+/// (import vs export) token. The typed-emission surface a directional call
+/// site formats through.
+struct DirectedEndpoint<'a> {
+    endpoint: &'a CacheEndpoint,
+    direction: CacheDirection,
+}
+
+impl fmt::Display for DirectedEndpoint<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.endpoint.render(self.direction, f)
+    }
+}
+
+impl fmt::Display for CacheEndpoint {
+    /// The **export** form (`--cache-to`). For `local` this is `dest=<path>`;
+    /// every other wire is direction-agnostic. Use
+    /// [`to_import_token`](CacheEndpoint::to_import_token) for a `--cache-from`
+    /// token.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.render(CacheDirection::Export, f)
     }
 }
 
@@ -207,7 +277,48 @@ mod tests {
     fn local_endpoint_maps_from_sui_backend_config() {
         let cfg = BackendConfig::Local { path: PathBuf::from("/var/cache/sui") };
         let ep = CacheEndpoint::from_backend_config(&cfg, None, None).unwrap();
+        // Display == the export form (`--cache-to`).
         assert_eq!(ep.to_string(), "type=local,dest=/var/cache/sui");
+    }
+
+    #[test]
+    fn local_endpoint_is_asymmetric_import_uses_src_export_uses_dest() {
+        // Regression: buildx rejects `--cache-from type=local,dest=…` with
+        // `local cache importer requires src`. The import token MUST be `src=`.
+        let ep = CacheEndpoint::Local { path: "/var/cache/sui".to_string() };
+        assert_eq!(ep.to_import_token(), "type=local,src=/var/cache/sui");
+        assert_eq!(ep.to_string(), "type=local,dest=/var/cache/sui");
+        assert_ne!(
+            ep.to_import_token(),
+            ep.to_string(),
+            "a local endpoint's import and export tokens differ (src vs dest)",
+        );
+    }
+
+    #[test]
+    fn symmetric_wires_render_identically_in_both_directions() {
+        // registry / s3 / inline take the same token on --cache-from and
+        // --cache-to; only `local` is direction-sensitive.
+        for ep in [
+            CacheEndpoint::Registry {
+                r#ref: "ghcr.io/pleme-io/camada:buildcache".to_string(),
+                mode: Some(CacheMode::Max),
+            },
+            CacheEndpoint::S3 {
+                region: "us-east-1".to_string(),
+                bucket: "sui-camada".to_string(),
+                endpoint_url: None,
+                name: None,
+                mode: None,
+            },
+            CacheEndpoint::Inline,
+        ] {
+            assert_eq!(
+                ep.to_import_token(),
+                ep.to_string(),
+                "symmetric wire {ep:?} must render the same import + export token",
+            );
+        }
     }
 
     #[test]

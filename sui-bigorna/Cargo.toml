@@ -21,6 +21,11 @@ serde_yaml_ng.workspace = true
 thiserror.workspace = true
 clap.workspace = true
 
+[dev-dependencies]
+# Real-docker integration harnesses (#[ignore]d) write throwaway build
+# contexts + local buildx cache dirs under a tempdir.
+tempfile.workspace = true
+
 [[bin]]
 name = "bigorna"
 path = "src/bin/bigorna.rs"

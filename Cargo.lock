@@ -6153,6 +6153,7 @@ dependencies = [
  "serde_yaml_ng",
  "sui-cache",
  "sui-dockerfile-wrapper",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

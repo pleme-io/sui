@@ -246,7 +246,11 @@ impl BuildSpec {
         }
         for ep in &self.cache.from {
             args.push("--cache-from".to_string());
-            args.push(ep.to_string());
+            // Import token: a `local` endpoint MUST render `src=<path>` here,
+            // not `dest=` — buildx rejects a `dest=` on `--cache-from` with
+            // `local cache importer requires src`. Every other wire renders the
+            // same either way. See `cache_front::CacheDirection`.
+            args.push(ep.to_import_token());
         }
         for ep in &self.cache.to {
             args.push("--cache-to".to_string());
