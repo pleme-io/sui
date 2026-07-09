@@ -135,6 +135,15 @@
               type = "app";
               program = "${suiPkg}/bin/sui-sweep";
             };
+            # `bigorna` — the typed buildx-native-multi-arch primitive
+            # (sui-bigorna). Exposed as an app so a CI runner reaches the
+            # shipped binary with `nix run github:pleme-io/sui#bigorna`
+            # (the pleme-io/actions `bigorna` CI-ENTRY action's fallback
+            # when a bigorna is not already baked onto the runner's PATH).
+            bigorna = {
+              type = "app";
+              program = "${suiPkg}/bin/bigorna";
+            };
             release-image = (imageOutputs.apps.${system} or {}).release or {
               type = "app";
               program = "echo 'image release not available on ${system}'";
