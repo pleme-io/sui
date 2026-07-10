@@ -55,7 +55,6 @@ fn construct_derivation(
 
     let name = force_attr_string(input, "name")?;
     let system = force_attr_string(input, "system")?;
-    let builder = force_attr_string(input, "builder")?;
 
     // Accumulate context across every coerce call.  Each element
     // ends up in one of three places on the Derivation:
@@ -63,6 +62,20 @@ fn construct_derivation(
     //   - Plain(path) starting with /nix/store/ → input_sources
     //   - Plain(path) elsewhere                  → ignored (not a store ref)
     let mut collected_ctx = StringContext::new();
+
+    // The `builder` carries string context too: e.g. a bash builder path is an
+    // OUTPUT of bash.drv, so bash.drv must appear in inputDrvs.  Coerce it WITH
+    // context (force_attr_string DROPS context) and fold that in — otherwise
+    // every stdenv derivation is missing its builder's input drv, diverging the
+    // drv hash from nix.
+    let builder = {
+        let v = input.get("builder").ok_or_else(|| {
+            EvalError::TypeError("derivation: missing required attribute 'builder'".into())
+        })?;
+        let (s, ctx) = coerce_drv_value_to_string_with_context(v)?;
+        collected_ctx.merge(&ctx);
+        s
+    };
 
     let args_list: Vec<String> = if let Some(a) = input.get("args") {
         let forced_args = crate::eval::force_value(a)?;
@@ -78,19 +91,29 @@ fn construct_derivation(
         Vec::new()
     };
 
+    // `__ignoreNulls = true` (CppNix): attrs whose value is null are dropped
+    // from the env, and `__ignoreNulls` itself is consumed (never emitted).
+    // Every stdenv package sets this, so without it every stdenv drv env
+    // carried an extra `__ignoreNulls` + any null attr (e.g. `userHook`),
+    // diverging the modulo hash.
+    let ignore_nulls = input
+        .get("__ignoreNulls")
+        .and_then(|v| crate::eval::force_value(v).ok())
+        .is_some_and(|v| matches!(v, Value::Bool(true)));
+
     let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
     for (k, v) in input.iter() {
-        // `outputs` is NOT excluded: CppNix coerces the outputs attribute into
-        // the env like any other attr (the list `[ "out" "bin" "dev" ]` →
-        // "out bin dev"), and that env var is part of the hashed derivation.
-        // Dropping it made every multi-output drv's modulo hash — hence every
-        // output path — diverge from nix.  (`name`/`system`/`builder` are
-        // excluded here only because they are re-inserted below from the
-        // already-coerced locals; `args` is structural, not an env var.)
+        // Excluded from env: `name`/`system`/`builder` (re-inserted below from
+        // the coerced locals); `args` (structural, not an env var); the control
+        // flags CppNix consumes rather than emits (`__ignoreNulls`, `__impure`,
+        // `__contentAddressed`).  NOT excluded: `outputs` (coerced to
+        // "out bin dev") and `__structuredAttrs` (coerced to "" for a
+        // non-structured drv) — CppNix emits both, and dropping either diverged
+        // the modulo hash.
         if matches!(
             k.as_str(),
             "name" | "system" | "builder" | "args"
-                | "__impure" | "__contentAddressed" | "__structuredAttrs"
+                | "__ignoreNulls" | "__impure" | "__contentAddressed"
         ) {
             continue;
         }
@@ -98,6 +121,9 @@ fn construct_derivation(
             Ok(v) => v,
             Err(_) => continue,
         };
+        if ignore_nulls && matches!(forced_v, Value::Null) {
+            continue;
+        }
         if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
             collected_ctx.merge(&ctx);
             env_vars.insert(k.clone(), s);

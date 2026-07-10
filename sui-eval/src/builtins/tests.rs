@@ -2943,6 +2943,20 @@ fn default_output_is_first_declared() {
     );
 }
 
+// Regression (2026-07-10): two derivation-parity fixes verified together, byte-
+// exact against nix. (1) `__ignoreNulls = true` drops the null `drop` attr and
+// consumes the flag itself (every stdenv drv sets it; sui was emitting an extra
+// `__ignoreNulls` + the null attrs). (2) the `builder` string context (`${a}`)
+// adds a.drv to b's inputDrvs — `force_attr_string` dropped that context, so
+// every stdenv drv was missing its builder's input derivation.
+#[test]
+fn ignore_nulls_and_builder_context_byte_match_cppnix() {
+    assert_eq!(
+        ev(r#"let a = derivation { name = "a"; system = "aarch64-darwin"; builder = "/bin/sh"; args = [ "-c" "echo hi > $out" ]; }; b = derivation { name = "b"; system = "aarch64-darwin"; builder = "${a}/bin/sh"; __ignoreNulls = true; keep = "v"; drop = null; }; in b.drvPath"#),
+        Value::string("/nix/store/442cqmi3055irhx2r2z70l4isxmvzs37-b.drv"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(
