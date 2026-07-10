@@ -226,6 +226,12 @@ fn compute_derivation_outputs(
             hash: output_hash_hex.clone(),
         });
 
+        // CppNix hashes the FOD with `env["out"] = <out-path>` present (the
+        // input-addressed spec's FillOutputs phase sets it; this hand-rolled
+        // fixed-output branch skipped it) — without it the FOD drvPath diverges
+        // from nix while its outPath already matches.
+        drv.env.insert("out".to_string(), out_path.clone());
+
         let drv_content = drv.serialize();
         let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
         let mut out_paths = BTreeMap::new();

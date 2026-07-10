@@ -2957,6 +2957,19 @@ fn ignore_nulls_and_builder_context_byte_match_cppnix() {
     );
 }
 
+// Regression (2026-07-10, byte-parity root #6): CppNix hashes a fixed-output
+// derivation with `env["out"] = <out-path>` present (the input-addressed spec's
+// FillOutputs phase sets it). sui's hand-rolled FOD branch computed the outPath
+// (which already matched) but serialized the .drv WITHOUT env["out"], so the FOD
+// drvPath diverged from nix. Verified byte-exact against nix 2.34 on aarch64-darwin.
+#[test]
+fn fod_drv_byte_matches_cppnix() {
+    assert_eq!(
+        ev(r#"(builtins.derivation { name = "s"; system = "aarch64-darwin"; builder = "/bin/sh"; outputHash = "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2"; outputHashAlgo = "sha256"; outputHashMode = "flat"; }).drvPath"#),
+        Value::string("/nix/store/yswzdrpndzk7a21fyzdxdkly4s74xpra-s.drv"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(
