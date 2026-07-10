@@ -1746,6 +1746,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen-nix"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a5115c705e506dd8c22183a88fbfc2e6c11d52b3ff1d66ffd7e7ca65dab0427"
+dependencies = [
+ "gen-types",
+ "indexmap 2.14.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gen-platform"
 version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6197,6 +6208,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "futures-core",
+ "gen-nix",
  "http-body-util",
  "mimalloc",
  "predicates",

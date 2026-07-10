@@ -92,6 +92,11 @@ license = "MIT"
 repository = "https://github.com/pleme-io/sui"
 
 [workspace.dependencies]
+# pleme-io gen — the canonical typed Nix-expression AST (theory/NIX-AST.md).
+# Used by the parity corpus to build eval-surface shapes typed + render them to
+# canonical Nix source (no format!() of Nix syntax), replacing the interim local
+# mirror. Published on crates.io.
+gen-nix = "0.1"
 # Internal crates
 sui-intern = { path = "sui-intern", version = "0.1.10" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.10" }
@@ -286,6 +291,7 @@ name = "sui"
 path = "src/main.rs"
 
 [dependencies]
+gen-nix.workspace = true
 sui-bytecode.workspace = true
 sui-cache.workspace = true
 sui-compat.workspace = true
