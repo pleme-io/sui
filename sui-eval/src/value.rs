@@ -1222,6 +1222,28 @@ impl Thunk {
                     );
                     crate::trace::dump_force_stack_ids();
                 }
+                // FRONTIER (2026-07-10): genuine fixpoint re-entry.  When the
+                // re-entered thunk is the SAME thunk currently mid-evaluation on
+                // the force stack, this is a real fixpoint self-reference (the
+                // nixpkgs `self:super:` overlay / `lib.fix` pattern) that nix
+                // tolerates by exposing the not-yet-complete value.  Returning an
+                // empty attrset here BYTE-MATCHES nix for `pkgs.libxcrypt.drvPath`
+                // (jb9k6090…) via the `__spliced.buildHost or drv` fall-through —
+                // BUT it is NOT universally correct: a blank empty-attrs is the
+                // WRONG partial where the fixpoint's not-yet-complete value is a
+                // non-attrs or a specific attr (it turns the `(import <nixpkgs>
+                // {}).hello.drvPath` corpus row from a wrong-value diverge into a
+                // downstream TYPE ERROR).  The load-bearing fix must return the
+                // thunk's actual in-progress value (the Promise-cell partial),
+                // not a blank sentinel — see docs/BYTE-PARITY-TYPESCAPE.md's
+                // frontier finding + sui-spec/specs/laziness.lisp.  Kept behind
+                // SUI_FIXPOINT_PARTIAL (off by default) so the byte-verified
+                // libxcrypt result is reproducible without degrading hello.
+                if std::env::var_os("SUI_FIXPOINT_PARTIAL").is_some()
+                    && crate::trace::force_stack_contains(thunk_id)
+                {
+                    return Ok(Value::Attrs(Rc::new(NixAttrs::new())));
+                }
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();
                 Err(EvalError::InfiniteRecursion(chain.to_string()))

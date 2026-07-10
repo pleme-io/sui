@@ -279,13 +279,28 @@ correct and the bug is purely fixpoint/blackhole demand-order:**
 | `(builtins.head p.libxcrypt.nativeBuildInputs).drvPath` | `az4wk58…` ✅ |
 | `p.libxcrypt.drvPath` (the real fixpoint demand) | `q9b9v7a9…` ❌ (nbi dropped) |
 
-**The fix DIRECTION is byte-verified.** `SUI_BLACKHOLE_AS_EMPTY_ATTRS=1` makes
-`pkgs.libxcrypt.drvPath` byte-match nix (`jb9k6090…`) — because the re-entered
-`__spliced.buildHost` access on an empty-attrs partial falls through the `or drv`
-to the correct raw perl. This is exactly the `recursive-binding → Promise`
-discipline in `sui-spec/specs/laziness.lisp`. But the global env-var is a band-aid
-(hides every real cycle) — the load-bearing fix is to make this **automatic and
-targeted**.
+**The fix DIRECTION is byte-verified — but a blank empty-attrs is NOT the final
+fix.** Returning an empty attrset on same-thunk fixpoint re-entry (gated behind
+`SUI_FIXPOINT_PARTIAL`, off by default) makes `pkgs.libxcrypt.drvPath` byte-match
+nix (`jb9k6090…`) — the re-entered `__spliced.buildHost` access on an empty-attrs
+partial falls through the `or drv` to the correct raw perl. It also keeps the whole
+sealed corpus at **19 match / 0 regressions** and graduates the crypt-disabled-perl
+tracked row. HOWEVER it is **NOT universally correct**: under the corpus's default
+`<nixpkgs>` pin, `(import <nixpkgs> {}).hello.drvPath` turns from a wrong-value
+diverge into a downstream **TYPE ERROR** (`sui-err`) — because a blank empty-attrs
+is the wrong partial where the fixpoint's not-yet-complete value is a non-attrs or a
+specific attr. So it is shipped **gated, off by default** (the default gate stays at
+19/2/0 with no hello degradation); flipping it on is a measured degradation of the
+hello row, not a clean win.
+
+**The load-bearing fix (unchanged target).** Return the re-entered thunk's ACTUAL
+in-progress value (the `Promise`-cell partial that `sui-spec/specs/laziness.lisp`'s
+`recursive-binding` discipline specifies), NOT a blank sentinel — so the fixpoint
+sees its own not-yet-complete real value. That requires the overlay/`fix`-fixpoint
+attrset thunks to carry the `recursive` flag (a `Promise` cell), which the syntactic
+`is_self_recursive_binding` detector cannot set because the self-reference threads
+through `self`/`super`/`callPackage` across file boundaries. This is the same
+rearchitecture as `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.
 
 **The precise remaining fix (the M2.6-sibling rearchitecture).** The `recursive`
 classification is **syntactic** (`eval.rs::is_self_recursive_binding` — RHS names
