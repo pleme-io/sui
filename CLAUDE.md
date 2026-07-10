@@ -27,6 +27,25 @@ shared `/nix/store`** — byte-identical hash/NAR/drv/binary-cache formats
 (proven at `sui parity` 7/0). The flip is the destination, not a maybe; a
 change moves toward it or is off-course.
 
+**The bar is 100%, byte for byte — table stakes, not a goal.** A replacement that
+matches 99% of the ecosystem is not a nix replacement; the missing 1% is exactly
+where a real system silently mis-builds. Standing invariant, now and across every
+future version of sui as a binary-delivery platform: for the ENTIRE ecosystem sui
+touches — nixpkgs, darwin-nix, nixos, home-manager — sui's `outPath` / `.drv` /
+NAR / realized-store bytes are **identical to nix's, or it is a defect**, never an
+acceptable state. **Silent divergence** — a wrong value that still evaluates — is
+the worst failure of all, worse than a crash, because it corrupts a build with no
+signal; that is why a band-aid that "makes eval proceed" is forbidden (it trades a
+loud gap for a silent one).
+
+**Proven, not asserted — the enforced form of this fact is `sui parity` extended
+to a corpus gate:** a differential that evaluates a growing corpus (nixpkgs
+packages → whole nixpkgs → system closures) in sui *and* nix and byte-compares
+every artifact, going red on a single differing byte. `sui == nix` is then a
+theorem the gate re-proves on every change — the mechanical observation of this
+fact over sui's evolution. Grow the gate's coverage with the evaluator so a green
+build never outruns the corpus it actually proves.
+
 Getting there is empirical — stock nix is the differential **oracle** (see
 *The sui rhythm* below). Every fix, **especially in the subtle
 evaluator/fixpoint code**, is elegant Rust + tatara-lisp, macro vocabulary
