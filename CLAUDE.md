@@ -28,7 +28,7 @@ shared `/nix/store`** — byte-identical hash/NAR/drv/binary-cache formats
 change moves toward it or is off-course.
 
 Getting there is empirical — stock nix is the differential **oracle** (see
-*Validating against nix* below). Every fix, **especially in the subtle
+*The sui rhythm* below). Every fix, **especially in the subtle
 evaluator/fixpoint code**, is elegant Rust + tatara-lisp, macro vocabulary
 where a pattern repeats, no tech debt. A band-aid in the evaluator — returning
 `null` "so eval proceeds", memoizing a transient fixpoint partial, an
@@ -126,18 +126,49 @@ SUI_EVAL_PERF=1 sui eval ...   # profiling (expression breakdown + thunk waste)
 SUI_VM_TRACE=1 sui eval ...    # VM diagnostics (fixpoint detection, condition errors)
 ```
 
-## Validating against nix — the oracle loop
+## The sui rhythm — the empirical fix loop
 
-Stock **nix is the differential oracle** for every sui behavior. Byte-compare:
-`nix eval <flake>#…outPath --raw` is ground truth for any sui eval. On a
-divergence, isolate the failing builtin with a battery of minimal-expression
-probes — `sui eval --no-vm -E '<expr>'` vs the known nix value — killing wrong
-hypotheses cheaply before touching the evaluator. Worked (2026-07): the darwin
-`system.outPath` "expected list, got null" was bisected this way
-(catAttrs/concatLists exonerated in seconds). `--no-vm` forces the tree-walker;
-drop it to exercise the VM path. For a self-referential-value crash, get a real
-backtrace: ad-hoc-codesign the binary (get-task-allow), run under `lldb -k`, on a
-`CARGO_PROFILE_RELEASE_STRIP=false DEBUG=1` build.
+The cadence for any sui/nix divergence: **repro → oracle → instrument → pin →
+root-fix → verify+test → commit → next.** Each pass drains one bug class and
+leaves a passing regression test. Never guess-patch the evaluator.
+
+1. **Repro small.** Reduce to the cheapest expression that still fails. For the
+   module fix-point, the leaf
+   `(builtins.getFlake "path:.../nix").darwinConfigurations.<host>.config.system.stateVersion`
+   forces the full merge without package realization (minutes, not the whole system).
+2. **Oracle.** Stock nix is ground truth — `nix eval … --raw` and
+   `builtins.typeOf <name>` nix-vs-sui. Kill wrong hypotheses with minimal-expression
+   probes (`sui eval --no-vm -E '<expr>'` — `--no-vm` is the tree-walker; drop it for
+   the VM path) before touching the evaluator.
+3. **Instrument at the site, env-gated** — `if std::env::var_os("SUI_DBG_X").is_some() { eprintln!(…) }`;
+   `cargo build --release --bin sui` (~3.5 min); run; read. Techniques that cracked
+   real bugs: instrument the **builtin itself** with `crate::eval::current_eval_file()`
+   — a builtin error's file is often where it was *bound* (`inherit (lib) …`), not
+   called; check **every** failure path (`concatLists` has two `as_list()` — the null
+   was an *element*, not the arg); dump the exact expr across files via
+   `ident.syntax().ancestors().nth(2).text()`, or a scope's names via a `debug_keys()`
+   env probe.
+4. **Force-order test.** A value that's `null` forced lazily but a list forced
+   eagerly (`map builtins.typeOf` trace) is a fix-point order-dependence — the M2.6
+   Promise/Blackhole partial-value class. Deep; don't hack it.
+5. **Missing-global diff.** For `UndefinedVar`, diff nix bare-globals against sui's
+   `builtins/mod.rs` `DEFAULT_SCOPE`; promote genuine nix globals that exist under
+   `builtins.` but aren't bare (`placeholder`, `fetchGit`, `fromTOML`, …).
+6. **Root-fix, no hacks** (the north-star): a band-aid — return null so eval
+   proceeds, memoize a transient partial, an env-sentinel — is not a fix.
+7. **Verify + regression-test.** Revert every diagnostic; keep only the fix; run
+   the `sui-eval` suite. Prove any remaining failures are pre-existing by checking
+   out the pre-session commit and re-running (env-dependent flake/NIX_PATH tests
+   fail regardless). Add one passing test per fix (unit-test a private fn via
+   `rnix::Root::parse(s).tree().expr()`). Commit.
+
+**Cache-edit discipline.** To site-trace inside nixpkgs: `cp` the cached lib file
+to a backup, `chmod u+w`, add `builtins.trace` wrappers (no rebuild — nix-file
+change), run, then force-restore. Always leave `~/.cache/sui` pristine.
+
+**Crash → lldb.** Stack overflow / segfault: ad-hoc-codesign the binary
+(get-task-allow), run under `lldb -k` (run-on-crash), on a
+`CARGO_PROFILE_RELEASE_STRIP=false DEBUG=1` build for symbols.
 
 ## Performance Architecture
 
