@@ -3598,6 +3598,22 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             Box::new(move || diff_eval(&sui, &nix,
                 "(builtins.derivation { name = \"s\"; system = builtins.currentSystem; builder = \"/bin/sh\"; outputHash = \"1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2\"; outputHashAlgo = \"sha256\"; outputHashMode = \"flat\"; }).drvPath"))
         }),
+        // Session 2026-07-10 wins — sealed as Match so they can never silently
+        // regress. concatStringsSep/concatStrings context accumulation (the
+        // makeLibraryPath/makeBinPath fleet-wide root): a `${pkg.out}/lib`
+        // element must keep pkg's `out` output in the derivation's input set.
+        (ParityProbe { name: "eval concatStringsSep context", description: "makeLibraryPath-shaped context accumulation (root a67c244)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "let m = derivation { name = \"m\"; system = builtins.currentSystem; builder = \"/bin/sh\"; outputs = [ \"out\" \"dev\" ]; }; in (derivation { name = \"c\"; system = builtins.currentSystem; builder = \"/bin/sh\"; L = builtins.concatStringsSep \":\" [ \"${m.out}/lib\" \"${m.dev}/include\" ]; }).drvPath"))
+        }),
+        // Attrset dotted+full-set deep-merge (the pkg-config-wrapper env.addFlags
+        // root): `a.b = x; a = { c = y; }` must merge, not clobber.
+        (ParityProbe { name: "eval attrset dotted+fullset merge", description: "`a.b=x; a={c=y}` deep-merge (root 73b904d)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "let s = { a.b = \"x\"; a = { c = \"y\"; }; }; in s.a.b + s.a.c"))
+        }),
         (ParityProbe { name: "eval hello drvPath", description: "nixpkgs hello through stdenv (ecosystem target)", expect: Expect::KnownDiverge }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
