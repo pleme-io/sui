@@ -29,6 +29,14 @@
   :cppnix-mirror      "libexpr/eval.cc (Value force + thunk blackholing)"
   :depends-on         ())
 
+(defsubstrate-domain
+  :name               "coercion"
+  :authoring-keywords ("defcoercion-rule")
+  :gate               M3TypedOnly
+  :purpose            "Value→string coercion at the eval→drv boundary — copy-to-store paths + toString-stays-plain + string-context propagation (the drv-input-set parity roots)"
+  :cppnix-mirror      "libexpr/eval.cc (coerceToString + PathSet context)"
+  :depends-on         ("laziness"))
+
 ;; ── M2: gated on module system implementation ────────────────────
 
 (defsubstrate-domain

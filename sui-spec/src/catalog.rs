@@ -269,6 +269,7 @@ mod tests {
             "worker_protocol",
             "dockerfile",
             "laziness",
+            "coercion",
         ] {
             assert!(
                 names.contains(required),
