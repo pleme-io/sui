@@ -156,7 +156,12 @@ fn construct_derivation(
             }
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_e) => {
+                    if std::env::var_os("SUI_DEBUG_DRV").is_some() {
+                        eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} FORCE-ERR: {_e:?}");
+                    }
+                    continue;
+                }
             };
             if ignore_nulls && matches!(forced_v, Value::Null) {
                 continue;
@@ -164,6 +169,8 @@ fn construct_derivation(
             if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
                 collected_ctx.merge(&ctx);
                 env_vars.insert(k.clone(), s);
+            } else if std::env::var_os("SUI_DEBUG_DRV").is_some() {
+                eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} COERCE-NONE type={}", forced_v.type_name());
             }
         }
         env_vars.insert("name".to_string(), name.clone());
