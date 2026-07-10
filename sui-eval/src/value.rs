@@ -2009,6 +2009,66 @@ impl Value {
         }
     }
 
+    /// Like [`to_json`] but threads string context into `ctx`. Used by
+    /// `__structuredAttrs` derivation-env building: a derivation value
+    /// serializes to its outPath (a store-path string) and its drv reference
+    /// must flow into the derivation's `inputDrvs`; a bare path is copy-to-store
+    /// coerced. (`to_json` drops context, which is fine for `builtins.toJSON`
+    /// but not for building a derivation's `__json`.)
+    pub fn to_json_with_context(
+        &self,
+        ctx: &mut StringContext,
+    ) -> Result<serde_json::Value, EvalError> {
+        Ok(match self {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Int(n) => serde_json::json!(n),
+            Value::Float(f) => serde_json::json!(f),
+            Value::String(s) => {
+                ctx.merge(&s.context);
+                serde_json::Value::String(s.chars.to_string())
+            }
+            Value::Path(_) => {
+                let (str, c) = self.coerce_to_string_copy_to_store()?;
+                ctx.merge(&c);
+                serde_json::Value::String(str)
+            }
+            Value::List(items) => {
+                let mut arr = Vec::with_capacity(items.len());
+                for v in items.iter() {
+                    let fv = crate::eval::force_value(v)?;
+                    arr.push(fv.to_json_with_context(ctx)?);
+                }
+                serde_json::Value::Array(arr)
+            }
+            Value::Attrs(attrs) => {
+                // A derivation (attrset with `outPath`/`__toString`) serializes
+                // to that string with its context — never its own attrs.
+                if attrs.get("__toString").is_some() || attrs.get("outPath").is_some() {
+                    let (s, c) = self.coerce_to_string_copy_to_store()?;
+                    ctx.merge(&c);
+                    return Ok(serde_json::Value::String(s));
+                }
+                let mut map = serde_json::Map::new();
+                for (k, v) in attrs.iter() {
+                    let fv = crate::eval::force_value(v)?;
+                    map.insert(k.clone(), fv.to_json_with_context(ctx)?);
+                }
+                serde_json::Value::Object(map)
+            }
+            Value::Thunk(_) => {
+                let forced = crate::eval::force_value(self)?;
+                forced.to_json_with_context(ctx)?
+            }
+            other => {
+                return Err(EvalError::TypeError(format!(
+                    "cannot serialize {} to JSON (__structuredAttrs)",
+                    other.type_name()
+                )));
+            }
+        })
+    }
+
     /// Return the Nix type name for this value (e.g. `"int"`, `"set"`).
     #[must_use]
     pub fn type_name(&self) -> &'static str {

@@ -101,37 +101,75 @@ fn construct_derivation(
         .and_then(|v| crate::eval::force_value(v).ok())
         .is_some_and(|v| matches!(v, Value::Bool(true)));
 
+    // `__structuredAttrs = true` fundamentally changes the env: instead of each
+    // attr coerced to a flat env var, CppNix collapses ALL attrs into a single
+    // `__json` env var (a typed JSON object — lists stay lists, bools stay bools,
+    // derivations become their outPath) and drops the flat vars. name/builder/
+    // system/outputs go INTO the JSON; `args` and `__structuredAttrs` do not;
+    // the per-output env vars (out/dev/…) are added later by output-filling.
+    let structured_attrs = input
+        .get("__structuredAttrs")
+        .and_then(|v| crate::eval::force_value(v).ok())
+        .is_some_and(|v| matches!(v, Value::Bool(true)));
+
     let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
-    for (k, v) in input.iter() {
-        // Excluded from env: `name`/`system`/`builder` (re-inserted below from
-        // the coerced locals); `args` (structural, not an env var); the control
-        // flags CppNix consumes rather than emits (`__ignoreNulls`, `__impure`,
-        // `__contentAddressed`).  NOT excluded: `outputs` (coerced to
-        // "out bin dev") and `__structuredAttrs` (coerced to "" for a
-        // non-structured drv) — CppNix emits both, and dropping either diverged
-        // the modulo hash.
-        if matches!(
-            k.as_str(),
-            "name" | "system" | "builder" | "args"
-                | "__ignoreNulls" | "__impure" | "__contentAddressed"
-        ) {
-            continue;
+    if structured_attrs {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in input.iter() {
+            if matches!(
+                k.as_str(),
+                "args" | "__structuredAttrs" | "__ignoreNulls" | "__impure" | "__contentAddressed"
+            ) {
+                continue;
+            }
+            let forced_v = match crate::eval::force_value(v) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            // `__ignoreNulls` drops null attrs from the JSON too (every stdenv
+            // mkDerivation sets it) — without this, a null attr like `userHook`
+            // leaks into `__json` and diverges the hash.
+            if ignore_nulls && matches!(forced_v, Value::Null) {
+                continue;
+            }
+            if let Ok(jv) = forced_v.to_json_with_context(&mut collected_ctx) {
+                obj.insert(k.clone(), jv);
+            }
         }
-        let forced_v = match crate::eval::force_value(v) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if ignore_nulls && matches!(forced_v, Value::Null) {
-            continue;
+        let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+        env_vars.insert("__json".to_string(), json);
+    } else {
+        for (k, v) in input.iter() {
+            // Excluded from env: `name`/`system`/`builder` (re-inserted below from
+            // the coerced locals); `args` (structural, not an env var); the control
+            // flags CppNix consumes rather than emits (`__ignoreNulls`, `__impure`,
+            // `__contentAddressed`).  NOT excluded: `outputs` (coerced to
+            // "out bin dev") and `__structuredAttrs` (coerced to "" for a
+            // non-structured drv) — CppNix emits both, and dropping either diverged
+            // the modulo hash.
+            if matches!(
+                k.as_str(),
+                "name" | "system" | "builder" | "args"
+                    | "__ignoreNulls" | "__impure" | "__contentAddressed"
+            ) {
+                continue;
+            }
+            let forced_v = match crate::eval::force_value(v) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if ignore_nulls && matches!(forced_v, Value::Null) {
+                continue;
+            }
+            if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
+                collected_ctx.merge(&ctx);
+                env_vars.insert(k.clone(), s);
+            }
         }
-        if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
-            collected_ctx.merge(&ctx);
-            env_vars.insert(k.clone(), s);
-        }
+        env_vars.insert("name".to_string(), name.clone());
+        env_vars.insert("system".to_string(), system.clone());
+        env_vars.insert("builder".to_string(), builder.clone());
     }
-    env_vars.insert("name".to_string(), name.clone());
-    env_vars.insert("system".to_string(), system.clone());
-    env_vars.insert("builder".to_string(), builder.clone());
 
     // Fold context into input_derivations / input_sources.
     let mut input_derivations: BTreeMap<String, Vec<String>> = BTreeMap::new();

@@ -3031,6 +3031,33 @@ fn two_input_consumer_modulo_sort_byte_matches_cppnix() {
     );
 }
 
+// Regression (2026-07-10): __structuredAttrs = true. CppNix collapses ALL attrs
+// into a single typed `__json` env var (lists stay lists, bools stay bools) and
+// drops the flat vars; name/builder/system/outputs go INTO the JSON, `args` does
+// not, keys sorted, derivations → outPath. Byte-verified against nix 2.34
+// aarch64-darwin (drv-bisect localized this to apple-sdk-14.4 in the stdenv).
+#[test]
+fn structured_attrs_byte_matches_cppnix() {
+    sui_spec::derivation::reset_modulo_cache();
+    assert_eq!(
+        ev(r#"(builtins.derivation { name = "s"; system = "aarch64-darwin"; builder = "/bin/sh"; __structuredAttrs = true; foo = "bar"; nums = [ 1 2 ]; flag = true; }).drvPath"#),
+        Value::string("/nix/store/ajlwk64l5a2knarz6nxbhv8z1k3453k0-s.drv"),
+    );
+}
+
+// Regression (2026-07-10): __structuredAttrs with explicit outputs + args + a
+// null attr. `outputs` goes into __json as a list; the per-output env vars are
+// added separately; `args` is excluded; null attrs stay JSON null when
+// __ignoreNulls is NOT set. Byte-verified against nix 2.34 aarch64-darwin.
+#[test]
+fn structured_attrs_with_outputs_args_null_byte_matches_cppnix() {
+    sui_spec::derivation::reset_modulo_cache();
+    assert_eq!(
+        ev(r#"(builtins.derivation { name = "s3"; system = "aarch64-darwin"; builder = "/bin/sh"; args = [ "-e" "x" ]; outputs = [ "out" "dev" ]; __structuredAttrs = true; foo = "bar"; nn = null; }).drvPath"#),
+        Value::string("/nix/store/kmfpxabrms6bf9gx7rcclpyl3gacjsmv-s3.drv"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(
