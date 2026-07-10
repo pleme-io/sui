@@ -38,11 +38,17 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "placeholder", |args| {
+        // CppNix `hashPlaceholder`: "/" + nix-base32(sha256("nix-output:" + name)).
+        // (Not a hex digest, not a "placeholder-" prefix — the byte-exact form is
+        // load-bearing: it is embedded verbatim in derivation env/args, so any
+        // divergence changes every drv hash that self-references an output.)
         let output = args[0].as_string()?;
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let hash = Sha256::digest(format!("nix-output:{output}").as_bytes());
-        let hash_str = format!("{:x}", hash);
-        Ok(Value::string(format!("/placeholder-{}", &hash_str[..32])))
+        Ok(Value::string(format!(
+            "/{}",
+            sui_compat::store_path::nix_base32_encode(hash.as_slice())
+        )))
     });
 
     // genericClosure

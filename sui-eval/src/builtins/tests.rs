@@ -1203,14 +1203,14 @@ fn builtins_path_default_name() {
 
 #[test]
 fn builtins_placeholder() {
-    let v = ev(r#"builtins.placeholder "out""#);
-    if let Value::String(ns) = v {
-        let s = &ns.chars;
-        assert!(s.starts_with("/placeholder-"));
-        assert_eq!(s.len(), "/placeholder-".len() + 32);
-    } else {
-        panic!("expected string");
-    }
+    // CppNix `hashPlaceholder`: "/" + nix-base32(sha256("nix-output:out")).
+    // (Previously asserted a wrong "/placeholder-<hex>" form — that locked in a
+    // bug that diverged every drv referencing an output; see
+    // placeholder_byte_matches_cppnix.)
+    assert_eq!(
+        ev(r#"builtins.placeholder "out""#),
+        Value::string("/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"),
+    );
 }
 
 #[test]
@@ -2895,6 +2895,24 @@ fn bare_globals_include_placeholder_and_fetchers() {
     }
     // …and `placeholder` is callable bare, producing a placeholder path.
     assert!(matches!(ev(r#"placeholder "out""#), Value::String(_)));
+}
+
+// Regression (2026-07-10): `builtins.placeholder` is CppNix `hashPlaceholder`
+// — "/" + nix-base32(sha256("nix-output:" + name)) — NOT a hex digest with a
+// "placeholder-" prefix. The byte-exact form is embedded verbatim in derivation
+// env/args, so a wrong value changes every drv hash that self-references an
+// output (multi-output packages, `${placeholder}` in configureFlags, …).
+#[test]
+fn placeholder_byte_matches_cppnix() {
+    assert_eq!(
+        ev(r#"builtins.placeholder "out""#),
+        Value::string("/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"),
+    );
+    // a different output name → a different placeholder (CppNix parity)
+    assert_eq!(
+        ev(r#"builtins.placeholder "dev""#),
+        Value::string("/02qcpld1y6xhs5gz9bchpxaw0xdhmsp5dv88lh25r2ss44kh8dxz"),
+    );
 }
 
 #[test]
