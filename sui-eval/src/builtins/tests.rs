@@ -2984,6 +2984,21 @@ fn fod_drv_byte_matches_cppnix() {
     );
 }
 
+#[test]
+// concatStringsSep must ACCUMULATE the string context of every element into
+// the result (CppNix `v.mkString(res, context)`). The old text-only path
+// dropped it, so a `${m.out}/lib` element built by `lib.makeLibraryPath`
+// stopped registering m's `out` output — diverging xgcc's `LIBRARY_PATH`
+// (zlib requested `["dev"]` not `["dev","out"]`) → a different
+// hashDerivationModulo → a divergent drvPath. Byte-pinned against nix 2.x:
+// `nix eval --raw --expr '<this>'` yields the same store path.
+fn concat_strings_sep_preserves_context_byte_matches_cppnix() {
+    assert_eq!(
+        ev(r#"let m = derivation { name = "m"; system = "x86_64-linux"; builder = "/bin/sh"; outputs = [ "out" "dev" ]; }; in (derivation { name = "c"; system = "x86_64-linux"; builder = "/bin/sh"; L = builtins.concatStringsSep ":" [ "${m.out}/lib" "${m.dev}/include" ]; }).drvPath"#),
+        Value::string("/nix/store/6w30qnbkalsil8yd09680vzkzczbzhjv-c.drv"),
+    );
+}
+
 // Regression (2026-07-10): a derivation CONSUMING a fixed-output derivation.
 // The consumer's output path depends on the FOD's hashDerivationModulo, which
 // for a fixed-output drv is sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>")

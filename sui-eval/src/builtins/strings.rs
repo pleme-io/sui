@@ -132,11 +132,26 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "concatStringsSep<partial>",
             func: Rc::new(move |args2| {
+                // CppNix's prim_concatStringsSep coerces each element to a
+                // string and ACCUMULATES its string context into the result
+                // (`v.mkString(res, context)`). Dropping the element context —
+                // as the old `to_str()`/`Value::string` path did — loses every
+                // input-drv reference a coerced derivation output carried, so a
+                // `${pkg.out}/lib` element stopped registering `pkg`'s `out`
+                // output. That silently diverged `lib.makeLibraryPath` /
+                // xgcc's `LIBRARY_PATH` (zlib requested `["dev"]` not
+                // `["dev","out"]`) → a different hashDerivationModulo →
+                // divergent drvPath. Merge the context like CppNix.
                 let list = args2[0].to_list()?;
-                let strings: Result<Vec<_>, _> = list.iter()
-                    .map(|v| v.to_str())
-                    .collect();
-                Ok(Value::string(strings?.join(&sep)))
+                let mut result = String::new();
+                let mut ctx = StringContext::new();
+                for (i, v) in list.iter().enumerate() {
+                    if i > 0 { result.push_str(&sep); }
+                    let (s, c) = v.coerce_to_string()?;
+                    result.push_str(&s);
+                    ctx.merge(&c);
+                }
+                Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
             }),
         })))
     });
@@ -145,13 +160,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_string_predicate!(builtins, "hasSuffix", "hasSuffix<partial>",
         |suffix: &str, s: &str| s.ends_with(suffix));
 
-    // concatStrings — concat without separator
+    // concatStrings — concat without separator (= concatStringsSep "").
+    // Same context-accumulation contract as concatStringsSep above.
     register_builtin(builtins, "concatStrings", |args| {
         let list = args[0].to_list()?;
-        let result: Result<String, _> = list.iter()
-            .map(|v| v.to_str())
-            .collect();
-        Ok(Value::string(result?))
+        let mut result = String::new();
+        let mut ctx = StringContext::new();
+        for v in list.iter() {
+            let (s, c) = v.coerce_to_string()?;
+            result.push_str(&s);
+            ctx.merge(&c);
+        }
+        Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
     });
 
     // Regex: hashString, match, split
