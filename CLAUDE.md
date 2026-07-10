@@ -39,7 +39,7 @@ signal; that is why a band-aid that "makes eval proceed" is forbidden (it trades
 loud gap for a silent one).
 
 **Proven, not asserted — the enforced form of this fact is `sui parity` extended
-to a corpus gate:** a differential that evaluates a growing corpus (nixpkgs
+to a corpus gate** (the typed vocabulary + phased plan: [`docs/BYTE-PARITY-TYPESCAPE.md`](docs/BYTE-PARITY-TYPESCAPE.md))**:** a differential that evaluates a growing corpus (nixpkgs
 packages → whole nixpkgs → system closures) in sui *and* nix and byte-compares
 every artifact, going red on a single differing byte. `sui == nix` is then a
 theorem the gate re-proves on every change — the mechanical observation of this
