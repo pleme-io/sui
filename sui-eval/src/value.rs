@@ -2264,7 +2264,7 @@ impl Value {
             }
             Value::Path(p) => {
                 let raw: &str = &**p;
-                if copy_to_store && !raw.starts_with("/nix/store/") {
+                if copy_to_store {
                     // CppNix copy-to-store coercion: resolve the path to its
                     // canonical absolute location (relative literals resolve
                     // against the evaluating file's dir, matching CppNix's
@@ -2272,6 +2272,18 @@ impl Value {
                     // realpath, e.g. macOS /tmp → /private/tmp), require it to
                     // exist (CppNix errors "path '…' does not exist"), NAR-copy
                     // it, and reference the resulting store path.
+                    //
+                    // A Path VALUE is ALWAYS copied, even one already under
+                    // /nix/store — CppNix re-NAR-copies a bare path literal
+                    // (a store subpath like `<nixpkgs-source>/pkgs/…/default-
+                    // builder.sh` → its own `<hash>-default-builder.sh`, or even
+                    // a store root) to a fresh basename-named store path,
+                    // verified against nix 2.34. Store paths that must NOT be
+                    // re-copied (derivation outputs, fetchurl `src`, storePath)
+                    // arrive as context-carrying *Strings*, never as Path values,
+                    // so they never reach this arm. (The earlier `/nix/store/`
+                    // guard kept stdenv's builder-script subpaths verbatim, which
+                    // diverged every nixpkgs input-drv hash from nix.)
                     let pb = std::path::Path::new(raw);
                     let abs = if pb.is_absolute() {
                         pb.to_path_buf()
