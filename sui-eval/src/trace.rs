@@ -63,6 +63,32 @@ pub fn pop_force() {
     });
 }
 
+/// Diagnostic: is `thunk_id` present anywhere on the current force
+/// stack?  A `true` means the SAME thunk pointer is being re-entered
+/// (a genuine self-cycle); a `false` means the blackholed thunk is NOT
+/// on the stack (a re-created / distinct thunk — a sharing gap).
+pub fn force_stack_contains(thunk_id: usize) -> bool {
+    FORCE_STACK.with(|s| s.borrow().iter().any(|f| f.thunk_id == thunk_id))
+}
+
+/// Diagnostic: dump the whole force stack's thunk ids + files + descriptions.
+pub fn dump_force_stack_ids() {
+    FORCE_STACK.with(|s| {
+        let stack = s.borrow();
+        eprintln!("[SUI_DEBUG_CYCLE] force stack depth={}", stack.len());
+        for (i, f) in stack.iter().enumerate() {
+            let loc = f
+                .defined_in
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<eval>".into());
+            let d: String = f.description.chars().take(50).collect();
+            let d = d.replace('\n', " ");
+            eprintln!("[SUI_DEBUG_CYCLE]   [{i}] id={:#x} {loc}  ::  {d}", f.thunk_id);
+        }
+    });
+}
+
 /// Capture the cycle portion of the force stack starting from the
 /// frame whose `thunk_id` matches the blackholed thunk.
 pub fn capture_cycle(thunk_id: usize) -> ForceChain {

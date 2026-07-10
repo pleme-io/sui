@@ -35,6 +35,26 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
     // 3. Write the .drv file to the store.
     write_derivation_to_store(&drv_path, &out_paths, &mut drv)?;
 
+    // Diagnostic: `SUI_DUMP_DRV=<name>` (or `all`) dumps the fully-computed
+    // derivation — inputDrvs / inputSrcs / env / outputs / args / the ATerm —
+    // to stderr so a computed drv can be field-diffed against
+    // `nix derivation show`. Zero cost when unset. Load-bearing parity tool,
+    // not a behavior change.
+    if let Some(want) = std::env::var_os("SUI_DUMP_DRV") {
+        let want = want.to_string_lossy();
+        if want == "all" || name.contains(want.as_ref()) {
+            eprintln!("[SUI_DUMP_DRV] === {name} ===");
+            eprintln!("[SUI_DUMP_DRV] drvPath = {drv_path}");
+            eprintln!("[SUI_DUMP_DRV] outputs = {out_paths:#?}");
+            eprintln!("[SUI_DUMP_DRV] inputDrvs = {:#?}", drv.input_derivations);
+            eprintln!("[SUI_DUMP_DRV] inputSrcs = {:#?}", drv.input_sources);
+            eprintln!("[SUI_DUMP_DRV] builder = {}", drv.builder);
+            eprintln!("[SUI_DUMP_DRV] args = {:#?}", drv.args);
+            eprintln!("[SUI_DUMP_DRV] env = {:#?}", drv.env);
+            eprintln!("[SUI_DUMP_DRV] ATerm = {}", drv.serialize());
+        }
+    }
+
     // 4. Assemble the result attrset.
     build_derivation_result(input, &name, &drv_path, &out_paths)
 }

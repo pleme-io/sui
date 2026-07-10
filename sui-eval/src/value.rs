@@ -1214,6 +1214,14 @@ impl Thunk {
                 if std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some() {
                     return Ok(Value::Attrs(Rc::new(NixAttrs::new())));
                 }
+                if std::env::var_os("SUI_DEBUG_CYCLE").is_some() {
+                    let same = crate::trace::force_stack_contains(thunk_id);
+                    eprintln!(
+                        "[SUI_DEBUG_CYCLE] blackhole re-entry thunk_id={thunk_id:#x} same_thunk_on_stack={same} recursive_flag={}",
+                        self.0.recursive
+                    );
+                    crate::trace::dump_force_stack_ids();
+                }
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();
                 Err(EvalError::InfiniteRecursion(chain.to_string()))
