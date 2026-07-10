@@ -1980,6 +1980,17 @@ impl Value {
                 serde_json::Value::Array(items.iter().map(|v| v.to_json()).collect())
             }
             Value::Attrs(attrs) => {
+                // nix-faithful (CppNix value-to-json.cc `tryAttrsToString`):
+                // a derivation — an attrset carrying `__toString` or `outPath`
+                // — serializes to THAT STRING, never its own attrs. Without
+                // this, `to_json` recurses forever on the self-referential
+                // derivation graph (`drv.out.drv == drv`, `drv.all`, …) and
+                // overflows the stack. Mirrors `coerce_to_string` below.
+                if attrs.get("__toString").is_some() || attrs.get("outPath").is_some() {
+                    if let Ok((s, _ctx)) = self.coerce_to_string() {
+                        return serde_json::Value::String(s);
+                    }
+                }
                 let map: serde_json::Map<String, serde_json::Value> = attrs
                     .iter()
                     .map(|(k, v)| (k.clone(), v.to_json()))
