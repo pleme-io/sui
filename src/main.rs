@@ -3625,6 +3625,23 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{}}).hello.drvPath"))
             })
         }),
+        // The META-PROBLEM frontier, narrower than hello: the crypt-disabled perl
+        // that breaks nixpkgs' perl↔libxcrypt/openssl bootstrap cycles. nix
+        // resolves `buildPackages.perl.override{enableCrypt=false}` to a
+        // stage-distinct earlier perl deep in the bootstrap; sui collapses it to
+        // one thunk → self-cycle → sentinel → nulled perl. This is a CLEANER
+        // target than hello (no top-level cycle) and graduates the moment sui's
+        // stdenv stage-graph makes nested `buildPackages` stage-distinct.
+        (ParityProbe { name: "eval crypt-disabled perl (bootstrap cycle-break)", description: "buildPackages.perl.override{enableCrypt=false} — the stdenv stage-graph frontier", expect: Expect::KnownDiverge }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).buildPackages.perl.override {{ enableCrypt = false; }}).drvPath"))
+            })
+        }),
     ];
 
     // Run + collect (carry each probe's matrix expectation alongside the verdict).
