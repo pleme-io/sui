@@ -1617,7 +1617,24 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         // maybeThunk: skip thunk for trivial exprs.
                         // is_rec=false — Ident lookups are safe.
                         let value = maybe_thunk(&value_expr, env, false, None);
-                        attrs.insert(key, value);
+                        // CppNix desugars `a.b = x; a = { c = y; };` into a single
+                        // merged `a = { b = x; c = y; }` at parse time. rnix keeps
+                        // the two bindings separate, so when a single-key binding
+                        // collides with an already-built (dotted) attrs for the
+                        // same key, deep-MERGE instead of overwrite. Force the RHS
+                        // to WHNF so merge_nested_insert (which needs concrete
+                        // Value::Attrs on both sides) can merge — forcing an
+                        // attrset to WHNF does NOT force its fields, so leaf values
+                        // stay lazy. Only fires on collision; non-colliding
+                        // single-key bindings keep the plain fast insert.
+                        // (This is the pkg-config-wrapper `env.addFlags` drop:
+                        // `env.addFlags = …` then `env = { wrapperName = …; … }`.)
+                        if matches!(attrs.get(&key), Some(Value::Attrs(_))) {
+                            let forced = force_value(&value)?;
+                            merge_nested_insert(&mut attrs, key, forced);
+                        } else {
+                            attrs.insert(key, value);
+                        }
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;

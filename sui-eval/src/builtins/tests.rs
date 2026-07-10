@@ -2999,6 +2999,19 @@ fn concat_strings_sep_preserves_context_byte_matches_cppnix() {
     );
 }
 
+#[test]
+// CppNix desugars `a.b = x; a = { c = y; };` into ONE merged
+// `a = { b = x; c = y; }` at parse time; the full-set binding must NOT
+// clobber the dotted one. rnix keeps the bindings separate, so eval_attrset
+// deep-merges on collision. This is the pkg-config-wrapper `env.addFlags`
+// drop (its `env.addFlags = …` then `env = { wrapperName = …; … }` collide;
+// the drop diverged every downstream drvPath). Both keys must survive.
+fn attrset_dotted_and_fullset_binding_merge() {
+    assert_eq!(ev(r#"let s = { a.b = "x"; a = { c = "y"; }; }; in s.a.b + s.a.c"#), Value::string("xy"));
+    // nested collision merges recursively, matching nix
+    assert_eq!(ev(r#"let s = { a.b.c = "1"; a = { d = "2"; }; a.b.e = "3"; }; in s.a.b.c + s.a.b.e + s.a.d"#), Value::string("132"));
+}
+
 // Regression (2026-07-10): a derivation CONSUMING a fixed-output derivation.
 // The consumer's output path depends on the FOD's hashDerivationModulo, which
 // for a fixed-output drv is sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>")
