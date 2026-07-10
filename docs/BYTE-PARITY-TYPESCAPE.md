@@ -242,6 +242,73 @@ matrix, the `--gate` CLI arm. Everything else is composition.
 - **M3 — system closures.** darwin-nix / nixos / home-manager `SystemClosure`
   parity (after M2.6). The gate spans the ecosystem; the flip is provable.
 
+## Frontier finding (2026-07-10) — the libxcrypt/perl fixpoint-reentry root
+
+Byte-verified against the live nix oracle (nixpkgs pin
+`4dp7jwjpwb9filsqnrq7x7lw3kzbzkdk`). Cracked with the two diagnostics
+`SUI_DUMP_DRV=<name>|all` (dumps a computed drv's inputDrvs/inputSrcs/env/
+outputs/args/ATerm) and `SUI_DEBUG_CYCLE` (prints Blackhole re-entry thunk
+identity + the full force stack). Both shipped, zero-cost when unset.
+
+**The divergent drv field.** `pkgs.libxcrypt.drvPath` = `q9b9v7a9…` (sui) vs
+`jb9k6090…` (nix). The final-stdenv libxcrypt is byte-identical to nix in every
+field *except* `nativeBuildInputs`: nix has the perl dep (`jhz6cf…-perl` in env,
+`az4wk58…-perl.drv` in inputDrvs); sui **drops it** — forcing `nativeBuildInputs`
+raises `InfiniteRecursion`, which `derivation.rs`'s `Err(_) => continue` silently
+swallows into a corrupt drv.
+
+**Thunk-identity verdict: SAME thunk, false cycle.** `same_thunk_on_stack=true`,
+`recursive_flag=false`. The re-entered thunk is the crypt+thread-disabled perl
+(`pkgs/stdenv/linux/default.nix:354` — `perl = super.perl.override {
+enableThreading = false; enableCrypt = false; }`). The cycle:
+`perl540 (interpreter.nix, enableCrypt default true) → propagatedBuildInputs
+demands libxcrypt → libxcrypt.nativeBuildInputs = [perl.override{enableCrypt=false}]
+→ forcing that override re-enters the blackholed perl540/overlay thunk`. In nix
+there is no cycle: the crypt-disabled perl never demands libxcrypt, and the base
+perl's *result attrset* (carrying `.override`) is a resolved, memoized value by the
+time deep deps force.
+
+**Decisive isolation probes — all byte-match nix, proving the drv logic is
+correct and the bug is purely fixpoint/blackhole demand-order:**
+
+| Probe | sui result |
+|---|---|
+| `(derivation p.libxcrypt.drvAttrs).drvPath` | `jb9k6090…` ✅ |
+| `(p.libxcrypt.override {}).drvPath` | `jb9k6090…` ✅ |
+| `p.libxcrypt.drvAttrs.nativeBuildInputs` | `jhz6cf…perl` ✅ |
+| `(builtins.head p.libxcrypt.nativeBuildInputs).drvPath` | `az4wk58…` ✅ |
+| `p.libxcrypt.drvPath` (the real fixpoint demand) | `q9b9v7a9…` ❌ (nbi dropped) |
+
+**The fix DIRECTION is byte-verified.** `SUI_BLACKHOLE_AS_EMPTY_ATTRS=1` makes
+`pkgs.libxcrypt.drvPath` byte-match nix (`jb9k6090…`) — because the re-entered
+`__spliced.buildHost` access on an empty-attrs partial falls through the `or drv`
+to the correct raw perl. This is exactly the `recursive-binding → Promise`
+discipline in `sui-spec/specs/laziness.lisp`. But the global env-var is a band-aid
+(hides every real cycle) — the load-bearing fix is to make this **automatic and
+targeted**.
+
+**The precise remaining fix (the M2.6-sibling rearchitecture).** The `recursive`
+classification is **syntactic** (`eval.rs::is_self_recursive_binding` — RHS names
+its own binding), so it fires for literal `rec {…}`/`let` self-refs but MISSES the
+nixpkgs **overlay / `self: super:` fixpoint** where the self-reference threads
+through `self`/`super`/`callPackage` lambda args across file boundaries (the
+`perl = super.perl.override {…}` overlay binding is a plain-attrset binding whose
+RHS names `super.perl`, not `perl`, so it stays `non-recursive` → hard Blackhole).
+The fix: make overlay/fix-fixpoint-participating attrset thunks classify as
+`recursive-binding` (Promise re-entry returning the partial attrset), so genuine
+fixpoint cycles return the in-progress value while `let r = r` still errors.
+Same root as `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md` (`extraArgs ↔ matchedOptions`)
+— both are fixpoints nix tolerates via per-thunk lazy sharing that sui's syntactic
+recursion detection can't see. Landing it graduates the two tracked corpus rows
+(hello cascades separately — its own divergence is a **fetchurl-stdenv/mirrors**
+root, `pvir9l70…` vs sui's `gc56b6ig…-stdenv-linux`, an independent target).
+
+**Tail measurement (23-package basket, unchanged this session — no fix landed):**
+base 10/23. `SUI_BLACKHOLE_AS_EMPTY_ATTRS` graduates only libxcrypt → 11/23; the
+other 12 diverge on independent stdenv-stage / fetchurl roots, not this cycle. The
+"~9-package cascade" earlier estimated for this root is **not confirmed** — the
+diverging tail has multiple independent roots.
+
 ## The one-line law
 
 A byte that differs between sui and nix is a **red gate**, forever — and the only
