@@ -4391,3 +4391,49 @@ fn bridge_unknown_builtin_returns_error() {
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("unknown builtin"));
 }
+
+// ── Laziness-correctness lock (the perl↔libxcrypt bootstrap depends on these)
+// The libxcrypt perl-null is an EMERGENT full-nixpkgs recursion, but every
+// primitive it's built on is individually lazy-correct in sui (verified against
+// nix 2026-07-10). These lock that correctness so a regression in any building
+// block can't silently reintroduce the class. Each `ev()` errors (panics) if the
+// throwing value is wrongly forced.
+
+#[test]
+fn lazy_unused_function_arg_not_forced() {
+    // callPackage over-fills args; an UNUSED one must stay a thunk.
+    assert_eq!(
+        ev(r#"({ used, unused }: used) { used = "ok"; unused = throw "forced"; }"#),
+        Value::string("ok"),
+    );
+}
+
+#[test]
+fn lazy_intersect_attrs_does_not_force_values() {
+    // callPackage's arg-fill = intersectAttrs (functionArgs fn) scope — must
+    // preserve the scope's value-thunks unforced.
+    assert_eq!(
+        ev(r#"builtins.attrNames (builtins.intersectAttrs { a = true; } { a = throw "forced"; b = 1; })"#),
+        ev(r#"[ "a" ]"#),
+    );
+}
+
+#[test]
+fn lazy_implication_short_circuits() {
+    // perl's `assert (enableCrypt -> (libxcrypt != null))` with enableCrypt=false
+    // must NOT force the RHS (which would force libxcrypt).
+    assert_eq!(ev(r#"false -> (throw "forced")"#), Value::Bool(true));
+}
+
+#[test]
+fn lazy_make_overridable_override_keeps_unused_origarg_lazy() {
+    // The exact perl.override{enableCrypt=false} shape: makeOverridable's
+    // `origArgs // newArgs` re-invocation must not force an unused origArg.
+    assert_eq!(
+        ev(r#"let makeOverridable = f: origArgs: (f origArgs) // { override = new: makeOverridable f (origArgs // new); };
+                  fn = { enableCrypt ? true, libxcrypt ? null }: { name = "p"; use = if enableCrypt then libxcrypt else null; };
+                  p = makeOverridable fn { enableCrypt = true; libxcrypt = throw "forced"; };
+              in (p.override { enableCrypt = false; }).name"#),
+        Value::string("p"),
+    );
+}
