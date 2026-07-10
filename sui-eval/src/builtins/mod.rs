@@ -235,11 +235,22 @@ pub fn register(env: &mut Env) {
         "derivationStrict",
         "dirOf",
         "false",
+        // nix exposes the fetchers + fromTOML as bare globals too; nixpkgs
+        // uses e.g. bare `fetchGit`/`fetchTree`/`fromTOML` unqualified.
+        "fetchGit",
+        "fetchMercurial",
         "fetchTarball",
+        "fetchTree",
+        "fromTOML",
         "import",
         "isNull",
         "map",
         "null",
+        // `placeholder` is a bare global in nix (not only `builtins.placeholder`):
+        // nixpkgs uses `(placeholder "out")` unqualified, e.g. cpython's
+        // `--enable-framework=${placeholder "out"}`.  Without it the bare ref
+        // resolves to null inside the module fix-point and breaks eval.
+        "placeholder",
         "removeAttrs",
         "scopedImport",
         "throw",

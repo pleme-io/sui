@@ -2857,6 +2857,46 @@ fn builtins_to_json_null() {
     assert_eq!(ev("builtins.toJSON null"), Value::string("null"));
 }
 
+// Regression (2026-07-10): `to_json` on a derivation-shaped attrset (one
+// carrying `outPath` or `__toString`) must serialize to THAT STRING, never
+// recurse into its own attrs — otherwise the self-referential derivation
+// graph (`drv.out.drv == drv`) overflows the stack.  Byte-matches CppNix.
+#[test]
+fn to_json_collapses_derivation_to_outpath() {
+    assert_eq!(
+        ev(r#"builtins.toJSON { type = "derivation"; outPath = "/nix/store/x"; name = "x"; }"#),
+        Value::string(r#""/nix/store/x""#)
+    );
+    assert_eq!(
+        ev(r#"builtins.toJSON { __toString = _: "hi"; other = 1; }"#),
+        Value::string(r#""hi""#)
+    );
+}
+
+// Regression (2026-07-10): nix exposes `placeholder` and the fetchers +
+// `fromTOML` as BARE globals (not only under `builtins.`).  nixpkgs uses
+// `(placeholder "out")` and bare `fetchGit`/`fetchTree` unqualified; without
+// the promotion the bare ref resolves to null in the module fix-point.
+#[test]
+fn bare_globals_include_placeholder_and_fetchers() {
+    for g in [
+        "placeholder",
+        "fetchGit",
+        "fetchMercurial",
+        "fetchTarball",
+        "fetchTree",
+        "fromTOML",
+    ] {
+        assert_eq!(
+            ev(&format!("builtins.typeOf {g}")),
+            Value::string("lambda"),
+            "bare global `{g}` should resolve to a lambda"
+        );
+    }
+    // …and `placeholder` is callable bare, producing a placeholder path.
+    assert!(matches!(ev(r#"placeholder "out""#), Value::String(_)));
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(

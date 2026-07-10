@@ -2194,6 +2194,32 @@ mod tests {
         eval(input).unwrap()
     }
 
+    // Regression (2026-07-10): the let-scope fix-point detector must count
+    // only GENUINE variable references, not attribute names / attrset keys
+    // (which sit under a `NODE_ATTRPATH`).  nixpkgs `lib/types.nix` has
+    // `placeholder = if lhs.placeholder == …` whose RHS mentions the
+    // *attribute* `.placeholder`; the old raw-token match falsely flagged
+    // the binding self-recursive and routed it through the Promise path.
+    #[test]
+    fn is_self_recursive_binding_ignores_attribute_names() {
+        fn expr(s: &str) -> ast::Expr {
+            rnix::Root::parse(s).tree().expr().expect("parse")
+        }
+        // attribute names / keys are NOT references to the binding
+        assert!(!is_self_recursive_binding(&expr("lhs.placeholder"), "placeholder"));
+        assert!(!is_self_recursive_binding(&expr("{ placeholder = 1; }"), "placeholder"));
+        assert!(!is_self_recursive_binding(
+            &expr("if lhs.placeholder == rhs.placeholder then lhs.placeholder else null"),
+            "placeholder",
+        ));
+        // genuine variable references ARE detected
+        assert!(is_self_recursive_binding(&expr("placeholder + 1"), "placeholder"));
+        assert!(is_self_recursive_binding(
+            &expr("if placeholder then 1 else 2"),
+            "placeholder"
+        ));
+    }
+
     #[test]
     fn eval_int() { assert_eq!(ev("42"), Value::Int(42)); }
 
