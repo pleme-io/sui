@@ -6,21 +6,25 @@
 use crate::value::*;
 
 /// Coerce an already-forced value to a string the way CppNix does for
-/// derivation env vars. Delegates to `Value::coerce_to_string()` which
-/// is the single source of truth for string coercion semantics.
+/// derivation env vars. Derivation-attribute coercion is CppNix
+/// **copy-to-store** mode: a source path (`src = ./.`, `builder = ./x`)
+/// is NAR-copied into `/nix/store/<hash>-<name>` and the store path is
+/// what lands in the env — so the drv hash matches CppNix. Delegates to
+/// `Value::coerce_to_string_copy_to_store()`, the single source of truth.
 pub(crate) fn coerce_drv_value_to_string(v: &Value) -> Result<String, EvalError> {
-    let (s, _ctx) = v.coerce_to_string()?;
+    let (s, _ctx) = v.coerce_to_string_copy_to_store()?;
     Ok(s)
 }
 
 /// Like [`coerce_drv_value_to_string`] but also returns the string
 /// context (drv-path + output-source references the string carries).
 /// Used by derivation construction to populate `input_derivations`
-/// / `input_sources` — CppNix parity on transitive closures.
+/// / `input_sources` — CppNix parity on transitive closures. Copy-to-store
+/// mode: a coerced source path adds its store path to `input_sources`.
 pub(crate) fn coerce_drv_value_to_string_with_context(
     v: &Value,
 ) -> Result<(String, StringContext), EvalError> {
-    v.coerce_to_string()
+    v.coerce_to_string_copy_to_store()
 }
 
 /// Variant of `coerce_drv_value_to_string` that returns `None` for values
@@ -35,7 +39,7 @@ pub(crate) fn coerce_drv_value_to_string_opt(v: &Value) -> Option<String> {
 pub(crate) fn coerce_drv_value_to_string_opt_with_context(
     v: &Value,
 ) -> Option<(String, StringContext)> {
-    v.coerce_to_string().ok()
+    v.coerce_to_string_copy_to_store().ok()
 }
 
 /// Force an attribute and require it to be present + string-coercible.

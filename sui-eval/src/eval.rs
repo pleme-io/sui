@@ -1441,7 +1441,11 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
                     EvalError::ParseError("interpolation missing expr".to_string())
                 })?;
                 let val = force_value(&eval_expr(&expr, env)?)?;
-                let (s, c) = val.coerce_to_string()?;
+                // CppNix string interpolation is copy-to-store coercion: an
+                // interpolated source path (`"${./foo}"`) is NAR-copied into
+                // the store and the store path is spliced in (with context),
+                // never the raw filesystem path.
+                let (s, c) = val.coerce_to_string_copy_to_store()?;
                 result.push_str(&s);
                 ctx.merge(&c);
             }
@@ -3381,11 +3385,12 @@ mod tests {
 
     #[test]
     fn interp_path_in_string_context() {
-        // Paths are coerced to strings in interpolation
-        assert_eq!(
-            ev(r#""path: ${./foo}""#),
-            Value::string("path: ./foo"),
-        );
+        // CppNix string interpolation is copy-to-store coercion: a nonexistent
+        // path errors "path '…' does not exist" (previously sui spliced the raw
+        // relative path "./foo" verbatim, diverging from nix). The positive
+        // copy-to-store case is byte-verified in
+        // interp_path_copies_to_store_byte_matches_cppnix below.
+        assert!(eval(r#""path: ${./foo-nonexistent-xyz}""#).is_err());
     }
 
     #[test]
@@ -5776,15 +5781,31 @@ mod tests {
 
     // ── Path interpolation adds context ───────────────────
 
+    // Byte-parity root #5: interpolating a source path is CppNix copy-to-store
+    // coercion — the path is NAR-copied into /nix/store/<hash>-<name> and the
+    // store path (with store-path context) is spliced in, not the raw path.
+    // NAR of a single regular file is content+basename only (location-
+    // independent), so a temp <dir>/data.txt of "hello\n" yields the exact
+    // store path nix 2.34 produced: /nix/store/y9dmv…-data.txt.
     #[test]
-    fn interp_path_adds_plain_context() {
-        let v = ev(r#""${/tmp/abc}""#);
+    fn interp_path_copies_to_store_byte_matches_cppnix() {
+        let dir = std::env::temp_dir().join(format!("sui-r5-interp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("data.txt");
+        std::fs::write(&f, b"hello\n").unwrap();
+        let expr = format!(r#""${{{}}}""#, f.display());
+        let v = eval(&expr).unwrap();
         if let Value::String(ns) = v {
+            assert_eq!(
+                ns.chars.to_string(),
+                "/nix/store/y9dmvfhip31hg8ia4njwjz9vfa3ndphr-data.txt",
+            );
             assert!(ns.has_context());
-            assert!(ns.chars.contains("/tmp/abc"));
         } else {
             panic!("expected string");
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── pipe operators (NotImplemented) ────────────────────

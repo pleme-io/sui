@@ -2234,6 +2234,28 @@ impl Value {
     /// - List → space-joined coerced elements
     /// - Lambda/Builtin/Thunk → error
     pub fn coerce_to_string(&self) -> Result<(String, StringContext), EvalError> {
+        self.coerce_to_string_impl(false)
+    }
+
+    /// Coerce to string in CppNix **copy-to-store** mode — the coercion used by
+    /// string interpolation (`"${./foo}"`) and derivation-attribute population.
+    /// A source path that isn't already in the store is absolutized,
+    /// canonicalized, required to exist, and NAR-copied into
+    /// `/nix/store/<hash>-<basename>`; the result string is that store path and
+    /// it carries store-path context. This is what makes `src = ./.` reference
+    /// the correct store path (and thus the correct drv hash) instead of a raw
+    /// filesystem path. `builtins.toString` keeps the plain mode
+    /// ([`coerce_to_string`]) — it does *not* copy.
+    pub fn coerce_to_string_copy_to_store(
+        &self,
+    ) -> Result<(String, StringContext), EvalError> {
+        self.coerce_to_string_impl(true)
+    }
+
+    fn coerce_to_string_impl(
+        &self,
+        copy_to_store: bool,
+    ) -> Result<(String, StringContext), EvalError> {
         let mut ctx = StringContext::new();
         let s = match self {
             Value::String(ns) => {
@@ -2241,8 +2263,51 @@ impl Value {
                 ns.chars.to_string()
             }
             Value::Path(p) => {
-                ctx.add_plain((**p).clone());
-                p.to_string()
+                let raw: &str = &**p;
+                if copy_to_store && !raw.starts_with("/nix/store/") {
+                    // CppNix copy-to-store coercion: resolve the path to its
+                    // canonical absolute location (relative literals resolve
+                    // against the evaluating file's dir, matching CppNix's
+                    // parse-time absolutization; canonicalize also yields the
+                    // realpath, e.g. macOS /tmp → /private/tmp), require it to
+                    // exist (CppNix errors "path '…' does not exist"), NAR-copy
+                    // it, and reference the resulting store path.
+                    let pb = std::path::Path::new(raw);
+                    let abs = if pb.is_absolute() {
+                        pb.to_path_buf()
+                    } else if let Some(dir) = crate::eval::current_eval_dir() {
+                        dir.join(pb)
+                    } else {
+                        std::env::current_dir()
+                            .map_err(|e| EvalError::IoError {
+                                context: format!("copy-to-store coercion of {raw}"),
+                                message: e.to_string(),
+                            })?
+                            .join(pb)
+                    };
+                    let canon = abs.canonicalize().map_err(|_| {
+                        EvalError::TypeError(format!(
+                            "path '{}' does not exist",
+                            abs.display()
+                        ))
+                    })?;
+                    let name = canon
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "source".to_string());
+                    let src = sui_compat::source::nar_hash_source_tree(&canon, &name)
+                        .map_err(|e| {
+                            EvalError::TypeError(format!(
+                                "copy-to-store coercion of '{}': {e}",
+                                canon.display()
+                            ))
+                        })?;
+                    ctx.add_plain(src.store_path.clone());
+                    src.store_path
+                } else {
+                    ctx.add_plain(raw.to_string());
+                    raw.to_string()
+                }
             }
             Value::Int(n) => n.to_string(),
             // CppNix uses C printf "%f" for float → string coercion,
@@ -2259,12 +2324,12 @@ impl Value {
                     let result =
                         crate::eval::apply(to_str.clone(), Value::Attrs(attrs.clone()))?;
                     let forced = crate::eval::force_value(&result)?;
-                    let (s, c) = forced.coerce_to_string()?;
+                    let (s, c) = forced.coerce_to_string_impl(copy_to_store)?;
                     ctx.merge(&c);
                     s
                 } else if let Some(out_path) = attrs.get("outPath") {
                     let forced = crate::eval::force_value(out_path)?;
-                    let (s, c) = forced.coerce_to_string()?;
+                    let (s, c) = forced.coerce_to_string_impl(copy_to_store)?;
                     ctx.merge(&c);
                     s
                 } else {
@@ -2277,7 +2342,7 @@ impl Value {
                 let mut parts = Vec::new();
                 for item in items.iter() {
                     let forced = crate::eval::force_value(item)?;
-                    let (s, c) = forced.coerce_to_string()?;
+                    let (s, c) = forced.coerce_to_string_impl(copy_to_store)?;
                     ctx.merge(&c);
                     parts.push(s);
                 }
@@ -2286,7 +2351,7 @@ impl Value {
             Value::Thunk(_) => {
                 // Force thunk then coerce the result.
                 let forced = crate::eval::force_value(self)?;
-                let (s, c) = forced.coerce_to_string()?;
+                let (s, c) = forced.coerce_to_string_impl(copy_to_store)?;
                 ctx.merge(&c);
                 s
             }

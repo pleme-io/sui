@@ -2089,20 +2089,34 @@ fn interp_merges_ctx() {
 }
 #[test]
 fn path_interp_ctx() {
-    // Path interpolated into string adds a Plain context element.
-    // Use let binding to avoid raw string quoting issues with "${...}".
-    let v = ev(r#"let p = /tmp; in builtins.hasContext "${p}""#);
+    // Path interpolation is CppNix copy-to-store coercion; the result carries
+    // store-path context. Use a small controlled temp file — interpolating a
+    // large dir like /tmp would NAR-copy the whole tree.
+    let dir = std::env::temp_dir().join(format!("sui-r5-ctx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("c.txt");
+    std::fs::write(&f, b"x").unwrap();
+    let v = ev(&format!(r#"builtins.hasContext "${{{}}}""#, f.display()));
     assert_eq!(v, Value::Bool(true));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 #[test]
 fn path_interp_ctx_content() {
-    // Verify the context entry produced by path interpolation.
-    let v = ev(r#"let p = /tmp; in builtins.getContext "${p}""#);
+    // Verify the store-path context entry produced by copy-to-store path
+    // interpolation (small controlled temp file, not /tmp).
+    let dir = std::env::temp_dir().join(format!("sui-r5-ctxc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("c.txt");
+    std::fs::write(&f, b"x").unwrap();
+    let v = ev(&format!(r#"builtins.getContext "${{{}}}""#, f.display()));
     if let Value::Attrs(a) = v {
         assert!(!a.is_empty(), "context should contain at least one entry");
     } else {
         panic!("expected Attrs, got {v:?}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 #[test] fn add_drv_out_deps() { let v = ev(r#"let s = builtins.appendContext "/nix/store/abc.drv" { "/nix/store/abc.drv" = { path = true; }; }; p = builtins.addDrvOutputDependencies s; in builtins.getContext p"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/abc.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("allOutputs"), Some(&Value::Bool(true))); } else { panic!(); } }
 #[test] fn discard_out_dep() { let v = ev(r#"let s = builtins.appendContext "hello" { "/nix/store/x.drv" = { allOutputs = true; }; }; d = builtins.unsafeDiscardOutputDependency s; in builtins.getContext d"#); if let Value::Attrs(a) = v { let e = a.get("/nix/store/x.drv").unwrap().as_attrs().unwrap(); assert_eq!(e.get("path"), Some(&Value::Bool(true))); } else { panic!(); } }
