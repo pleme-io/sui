@@ -30,6 +30,22 @@ derivation through the stdenv bootstrap** (`sui-spec/derivation.rs`'s
 job below turns "0/10, unknown why" into "a corpus gate that is green or names the
 exact differing byte."
 
+## Status — M0 realized (2026-07-10): the sealed corpus gate is live
+`sui parity` is now the all-variants corpus differential + gate (`main.rs`
+`cmd_parity`). It carries the **xfail matrix** (`Expect::{Match, KnownDiverge}`):
+a `Match` row that regresses OR a `KnownDiverge` row that *graduates to match*
+fails the gate (`exit 1`) — divergence can neither regress nor silently advance
+(CONVERGE=SEAL, the honest CI-caught tier, since the oracle is an external
+process). **Eval-parity probes** (`diff_eval`: `sui --no-vm eval` vs `nix eval`,
+byte-for-byte) cover the mission core; seeded green with `builtins.placeholder`,
+`(derivation{…}).outPath`, and the FOD `.drvPath`. The ecosystem target
+`(import <nixpkgs> {}).hello.drvPath` is a tracked `KnownDiverge` row that prints
+both differing drvPaths — the exact next root (stdenv-bootstrap drv computation);
+it auto-graduates the gate the moment parity lands. Extending parity = **add a
+corpus row**, not hand-probe. Live: 11 probes, 10 match / 1 tracked / 0 regressions.
+The `#[derive(DeriveTataraDomain)]` + `(defparity-artifact …)` typescape below is
+the *next* tier (authorable corpus in Lisp); M0 ships the sealed gate in Rust.
+
 ## The typed vocabulary (the typescape)
 
 Every concept is a `#[derive(DeriveTataraDomain)]` border + a `(def…)` tatara-lisp
