@@ -3743,21 +3743,27 @@ fn read_drv_bytes(drv_path: &str) -> Option<Vec<u8>> {
 /// that differs ONLY by cascaded store hashes reads as equal — isolating
 /// genuine content divergence from hash cascade.
 fn strip_store_hashes(s: &str) -> String {
+    // UTF-8-safe: scan by `find` + char-aware slicing (drv env values contain
+    // multi-byte chars, e.g. the U+2010 hyphen in gcc build scripts — byte
+    // indexing would panic on a non-char-boundary).
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if s[i..].starts_with("/nix/store/") && i + 11 + 32 <= bytes.len() {
-            let hash = &s[i + 11..i + 11 + 32];
-            if hash.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
-                out.push_str("/nix/store/<HASH>");
-                i += 11 + 32;
-                continue;
-            }
+    let mut rest = s;
+    while let Some(pos) = rest.find("/nix/store/") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + "/nix/store/".len()..];
+        // The store hash is exactly 32 nix-base32 chars (all ASCII); collect the
+        // first 32 chars and verify — if they're all ASCII the byte length is 32
+        // and `after[32..]` lands on a char boundary.
+        let hash: String = after.chars().take(32).collect();
+        if hash.len() == 32 && hash.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+            out.push_str("/nix/store/<HASH>");
+            rest = &after[32..];
+        } else {
+            out.push_str("/nix/store/");
+            rest = after;
         }
-        out.push(bytes[i] as char);
-        i += 1;
     }
+    out.push_str(rest);
     out
 }
 
