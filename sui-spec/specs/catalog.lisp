@@ -21,6 +21,14 @@
   :cppnix-mirror      "libflake/flake.cc"
   :depends-on         ())
 
+(defsubstrate-domain
+  :name               "laziness"
+  :authoring-keywords ("deflaziness-model" "defthunk-discipline")
+  :gate               M3TypedOnly
+  :purpose            "Evaluator laziness/thunk-sharing/demand-order model both engines must drive — Referential sharing + Tracked string-context are the byte-parity invariants"
+  :cppnix-mirror      "libexpr/eval.cc (Value force + thunk blackholing)"
+  :depends-on         ())
+
 ;; ── M2: gated on module system implementation ────────────────────
 
 (defsubstrate-domain

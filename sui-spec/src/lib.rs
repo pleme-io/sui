@@ -78,6 +78,7 @@ pub mod fetcher;
 pub mod flake;
 pub mod gc;
 pub mod hash;
+pub mod laziness;
 pub mod loader;
 pub mod lock_file;
 pub mod lockfile_graph;
