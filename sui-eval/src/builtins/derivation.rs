@@ -234,6 +234,28 @@ fn compute_derivation_outputs(
 
         let drv_content = drv.serialize();
         let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
+
+        // CppNix `hashDerivationModulo` for a FIXED-OUTPUT derivation is NOT the
+        // input-addressed ATerm hash — it is the special
+        // sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>"). Cache it against
+        // this FOD's drv path so every input-addressed derivation that consumes
+        // this FOD substitutes the correct modulo hash. Without it `modulo_of`
+        // returns the FOD's drv path unchanged, so the consumer's output path —
+        // and everything transitively above it (all of nixpkgs, whose stdenv
+        // bootstrap consumes fetchurl FODs) — diverges from nix even though the
+        // FOD's own drv path already matches.
+        let method_algo = if is_recursive {
+            format!("r:{output_hash_algo}")
+        } else {
+            output_hash_algo.clone()
+        };
+        let modulo_preimage = format!("fixed:out:{method_algo}:{output_hash_hex}:{out_path}");
+        let modulo_hex: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(modulo_preimage.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+        };
+        sui_spec::derivation::remember_modulo_hash(&drv_path, &modulo_hex);
+
         let mut out_paths = BTreeMap::new();
         out_paths.insert("out".to_string(), out_path);
         Ok((drv_path, out_paths, drv))

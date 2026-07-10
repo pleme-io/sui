@@ -2984,6 +2984,22 @@ fn fod_drv_byte_matches_cppnix() {
     );
 }
 
+// Regression (2026-07-10): a derivation CONSUMING a fixed-output derivation.
+// The consumer's output path depends on the FOD's hashDerivationModulo, which
+// for a fixed-output drv is sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>")
+// — NOT the FOD's drv path. sui previously left the FOD un-cached so `modulo_of`
+// returned the drv path unchanged, diverging the consumer (and everything above
+// it — the whole nixpkgs stdenv bootstrap consumes fetchurl FODs). Byte-verified
+// against nix 2.34 aarch64-darwin (drv-bisect localized this from hello.drv).
+#[test]
+fn fod_consumer_output_modulo_byte_matches_cppnix() {
+    sui_spec::derivation::reset_modulo_cache();
+    assert_eq!(
+        ev(r#"let fod = builtins.derivation { name = "f"; system = "aarch64-darwin"; builder = "/bin/sh"; outputHash = "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2"; outputHashAlgo = "sha256"; outputHashMode = "flat"; }; consumer = builtins.derivation { name = "c"; system = "aarch64-darwin"; builder = "/bin/sh"; args = [ fod ]; }; in consumer.outPath"#),
+        Value::string("/nix/store/y624jf64a4mkfy8rgcxln3wnf28nsg4r-c"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(
