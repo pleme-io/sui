@@ -4193,60 +4193,18 @@ fn derivation_add(path: &str) -> Result<(), CliError> {
 }
 
 fn hash_path(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
-    // Deterministic recursive hash: walk the directory tree in
-    // sorted order, hashing path + content.  This is the
-    // "flat hash" approximation; full NAR hashing comes with
-    // sui_spec::nar::hash_path.
+    // Recursive NAR hash — `nix hash path` serializes the path as a NAR
+    // archive and hashes that.  Reuse the canonical NAR serializer (the same
+    // one `store dump-path` uses) rather than a bespoke flat hash: the old
+    // walk used `fs::metadata` (which FOLLOWS symlinks → crashed on dangling
+    // links) and a non-NAR digest, so it could never match nix.
     use sha2::Digest;
-    use std::collections::BTreeMap;
-
-    fn collect_paths(
-        root: &std::path::Path,
-        rel: std::path::PathBuf,
-        acc: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
-    ) -> std::io::Result<()> {
-        let abs = root.join(&rel);
-        let meta = std::fs::metadata(&abs)?;
-        if meta.is_file() {
-            acc.insert(rel, std::fs::read(&abs)?);
-        } else if meta.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(&abs)?
-                .filter_map(Result::ok)
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-            for entry in entries {
-                let child_rel = rel.join(entry.file_name());
-                collect_paths(root, child_rel, acc)?;
-            }
-        }
-        Ok(())
-    }
-
-    let mut tree: BTreeMap<std::path::PathBuf, Vec<u8>> = BTreeMap::new();
     let root = std::path::Path::new(path);
-    collect_paths(root, std::path::PathBuf::new(), &mut tree)
-        .map_err(|e| CliError::NotImplemented(format!("hash path: walk {path}: {e}")))?;
-
-    // Hash sorted (path, content) pairs into the typed digest.
+    let nar = sui_spec::nar::encode(root)
+        .map_err(|e| CliError::NotImplemented(format!("hash path: NAR-encode {path}: {e}")))?;
     let digest: Vec<u8> = match hash_type {
-        "sha256" => {
-            let mut h = sha2::Sha256::new();
-            for (k, v) in &tree {
-                h.update(k.to_string_lossy().as_bytes());
-                h.update(&(v.len() as u64).to_le_bytes());
-                h.update(v);
-            }
-            h.finalize().to_vec()
-        }
-        "sha512" => {
-            let mut h = sha2::Sha512::new();
-            for (k, v) in &tree {
-                h.update(k.to_string_lossy().as_bytes());
-                h.update(&(v.len() as u64).to_le_bytes());
-                h.update(v);
-            }
-            h.finalize().to_vec()
-        }
+        "sha256" => sha2::Sha256::digest(&nar).to_vec(),
+        "sha512" => sha2::Sha512::digest(&nar).to_vec(),
         other => return Err(CliError::NotImplemented(format!(
             "hash path: unsupported --type `{other}` (sha256 | sha512)"
         ))),
@@ -4263,7 +4221,10 @@ fn hash_path(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
     };
     let out = sui_spec::hash::encode_hash(hash_type, encoding, &digest)
         .map_err(|e| CliError::NotImplemented(format!("hash path: encode: {e:?}")))?;
-    println!("{out}");
+    // `nix hash path` emits base16/base32/base64 WITHOUT an `<algo>:` prefix
+    // (only SRI carries `<algo>-`); encode_hash prepends `<algo>:` for
+    // nix-base32/base64, so strip it (SRI + hex have no `:` and pass through).
+    println!("{}", strip_algo_prefix(&out));
     Ok(())
 }
 
@@ -4304,7 +4265,10 @@ fn hash_file(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
 
     let out = sui_spec::hash::encode_hash(hash_type, encoding, &digest)
         .map_err(|e| CliError::NotImplemented(format!("hash file: encode: {e:?}")))?;
-    println!("{out}");
+    // `nix hash file` emits base16/base32/base64 WITHOUT an `<algo>:` prefix
+    // (only SRI carries `<algo>-`); strip the `<algo>:` encode_hash prepends
+    // for nix-base32/base64 (SRI + hex have no `:` and pass through).
+    println!("{}", strip_algo_prefix(&out));
     Ok(())
 }
 
