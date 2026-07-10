@@ -119,11 +119,29 @@ pub enum Reentry {
     Promise,
 }
 
+/// How a thunk's recursion is *detected* — the axis the libxcrypt/perl
+/// byte-parity root turns on (sui frontier 2026-07-10, byte-verified).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecursionKind {
+    /// The RHS names its own binding — detectable *syntactically* (sui's
+    /// `is_self_recursive_binding` today).
+    Syntactic,
+    /// The self-reference threads through `self` / `super` /
+    /// `callPackage` across file boundaries — the nixpkgs overlay
+    /// fixpoint.  Detectable only *semantically* (fixpoint detection).
+    /// sui MISSES this today: it classifies such a thunk as
+    /// non-recursive → a hard `Blackhole` where nix returns a
+    /// `Promise`-partial, so `libxcrypt.nativeBuildInputs` drops its
+    /// perl dep and the drv diverges.  The fix: a `Fixpoint` thunk MUST
+    /// be `recursive` + `Promise`.
+    Fixpoint,
+}
+
 /// How a specific thunk *kind* is forced + what re-entry means for it.
 #[derive(DeriveTataraDomain, Serialize, Deserialize, Debug, Clone)]
 #[tatara(keyword = "defthunk-discipline")]
 pub struct ThunkDiscipline {
-    /// `"non-recursive"` | `"recursive-binding"`.
+    /// `"non-recursive"` | `"recursive-binding"` | `"overlay-fixpoint"`.
     pub name: String,
     pub recursive: bool,
     pub reentry: Reentry,
@@ -131,6 +149,24 @@ pub struct ThunkDiscipline {
     /// `Sharing::Referential` this MUST be true, or sharing is a lie.
     #[serde(rename = "memoizeOnForce")]
     pub memoize_on_force: bool,
+    /// How this thunk's recursion is detected.  A `Fixpoint` thunk that
+    /// isn't `recursive`/`Promise` is the byte-parity bug made explicit.
+    #[serde(rename = "recursionKind")]
+    pub recursion_kind: RecursionKind,
+}
+
+impl ThunkDiscipline {
+    /// A fixpoint-participating thunk MUST be treated as recursive with
+    /// `Promise` re-entry — otherwise its blackhole drops a real dep
+    /// (the libxcrypt/perl root).  Syntactic thunks are unconstrained on
+    /// this axis.  The real engine's classifier must satisfy this.
+    #[must_use]
+    pub fn is_correctly_classified(&self) -> bool {
+        match self.recursion_kind {
+            RecursionKind::Fixpoint => self.recursive && self.reentry == Reentry::Promise,
+            RecursionKind::Syntactic => true,
+        }
+    }
 }
 
 // ── Interpreter — the force-discipline FSM (mockable Environment) ──
@@ -350,5 +386,43 @@ mod tests {
             force(&model, &disc, &mut env, 9).unwrap(),
             ForceOutcome::InfiniteRecursion
         );
+    }
+
+    #[test]
+    fn every_authored_discipline_is_correctly_classified() {
+        // Including overlay-fixpoint: a Fixpoint thunk MUST be recursive
+        // + Promise (the byte-parity fix stated as an invariant).
+        for d in load_canonical_disciplines().unwrap() {
+            assert!(d.is_correctly_classified(), "discipline {} misclassified", d.name);
+        }
+    }
+
+    #[test]
+    fn overlay_fixpoint_forces_to_a_promise_not_infinite_recursion() {
+        // The libxcrypt/perl root: re-entering the fixpoint thunk must
+        // yield a promise cell (nix), NOT the Blackhole sui produces today.
+        let model = cppnix_model();
+        let disc = discipline("overlay-fixpoint");
+        assert_eq!(disc.recursion_kind, RecursionKind::Fixpoint);
+        let mut env = MockEnv {
+            states: HashMap::from([(42, ThunkState::InProgress)]),
+            compute_returns: String::new(),
+            compute_calls: 0,
+        };
+        assert_eq!(force(&model, &disc, &mut env, 42).unwrap(), ForceOutcome::Recursed);
+    }
+
+    #[test]
+    fn a_fixpoint_classified_as_non_recursive_is_the_bug() {
+        // Documents the byte-parity defect: a Fixpoint thunk left
+        // non-recursive/Blackhole fails the classification invariant.
+        let bug = ThunkDiscipline {
+            name: "misclassified-overlay".into(),
+            recursive: false,
+            reentry: Reentry::Blackhole,
+            memoize_on_force: true,
+            recursion_kind: RecursionKind::Fixpoint,
+        };
+        assert!(!bug.is_correctly_classified());
     }
 }
