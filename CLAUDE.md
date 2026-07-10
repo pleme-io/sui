@@ -19,6 +19,25 @@
 
 Pure-Rust Nix evaluator + build system. Drop-in `nix` CLI replacement.
 
+## ★★ North star — the nix→sui flip (destination-first, no hacks in the evaluator)
+
+sui replaces nix at the **binary level**: the fleet's default rebuild
+(`nix run .#rebuild`, darwin-/nixos-rebuild) will invoke sui over the **same
+shared `/nix/store`** — byte-identical hash/NAR/drv/binary-cache formats
+(proven at `sui parity` 7/0). The flip is the destination, not a maybe; a
+change moves toward it or is off-course.
+
+Getting there is empirical — stock nix is the differential **oracle** (see
+*Validating against nix* below). Every fix, **especially in the subtle
+evaluator/fixpoint code**, is elegant Rust + tatara-lisp, macro vocabulary
+where a pattern repeats, no tech debt. A band-aid in the evaluator — returning
+`null` "so eval proceeds", memoizing a transient fixpoint partial, an
+env-var-gated sentinel — is **not a fix**: it hides a divergence the oracle
+will resurface downstream. Fix the load-bearing cause (e.g. the genuine
+`Promise(NixAttrs)` handling of a blackholed *lexical* binding in the
+module-system fixpoint), never paper over it. This is Operating Principle #0
+(path-of-least-resistance is a cardinal sin) at the evaluator.
+
 ## Core Philosophy: Construction Guarantees
 
 Sui's architecture makes entire categories of bugs **impossible by construction**.
