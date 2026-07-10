@@ -3369,6 +3369,22 @@ fn store_materialize(
 struct ParityProbe {
     name: &'static str,
     description: &'static str,
+    /// The all-variants matrix's expectation for this row. A `Match` row is a
+    /// byte-parity theorem — a regression fails the gate. A `KnownDiverge` row
+    /// is a tracked (xfail) divergence — it does NOT fail the gate while it
+    /// still diverges, but if it starts *matching* it has GRADUATED and the
+    /// gate fails to force its promotion to `Match` (so progress can never be
+    /// silently un-tracked). This is CONVERGE = SEAL: the corpus is the sealed
+    /// invariant; neither a regression nor an un-promoted graduation can ship.
+    expect: Expect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    /// Byte-identical to nix is required; any divergence/error is a regression.
+    Match,
+    /// Known to diverge today (tracked); surfaced but tolerated until fixed.
+    KnownDiverge,
 }
 
 /// Outcome of running one probe.
@@ -3451,7 +3467,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
 
     // Definitive corpus.
     let probes: Vec<(ParityProbe, Box<dyn Fn() -> ParityVerdict>)> = vec![
-        (ParityProbe { name: "hash to-base16", description: "byte-equivalent" }, {
+        (ParityProbe { name: "hash to-base16", description: "byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             Box::new(move || diff_text(
@@ -3459,7 +3475,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 run_capture(&nix, &["hash", "to-base16", "--type", "sha256", sample_hash]),
             ))
         }),
-        (ParityProbe { name: "hash to-base32", description: "byte-equivalent" }, {
+        (ParityProbe { name: "hash to-base32", description: "byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             Box::new(move || diff_text(
@@ -3467,7 +3483,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 run_capture(&nix, &["hash", "to-base32", "--type", "sha256", sample_hash]),
             ))
         }),
-        (ParityProbe { name: "hash to-base64", description: "byte-equivalent" }, {
+        (ParityProbe { name: "hash to-base64", description: "byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             Box::new(move || diff_text(
@@ -3475,7 +3491,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 run_capture(&nix, &["hash", "to-base64", "--type", "sha256", sample_hash]),
             ))
         }),
-        (ParityProbe { name: "hash to-sri", description: "byte-equivalent" }, {
+        (ParityProbe { name: "hash to-sri", description: "byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             Box::new(move || diff_text(
@@ -3483,7 +3499,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 run_capture(&nix, &["hash", "to-sri", "--type", "sha256", sample_hash]),
             ))
         }),
-        (ParityProbe { name: "hash file", description: "SRI byte-equivalent" }, {
+        (ParityProbe { name: "hash file", description: "SRI byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             let h = h_fixture.clone();
@@ -3492,7 +3508,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 run_capture(&nix, &["hash", "file", h.to_str().unwrap()]),
             ))
         }),
-        (ParityProbe { name: "store dump-path", description: "NAR sha256 byte-equivalent" }, {
+        (ParityProbe { name: "store dump-path", description: "NAR sha256 byte-equivalent", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let nix = nix.to_path_buf();
             let sp = source_path.clone();
@@ -3515,7 +3531,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 }
             })
         }),
-        (ParityProbe { name: "derivation show→add", description: "ATerm round-trip" }, {
+        (ParityProbe { name: "derivation show→add", description: "ATerm round-trip", expect: Expect::Match }, {
             let sui = sui_bin.clone();
             let drv = drv_path.clone();
             Box::new(move || match &drv {
@@ -3550,25 +3566,64 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 }
             })
         }),
+        // ── eval-parity: the mission core — outPath / drvPath byte-for-byte
+        //    through the evaluator (the tree-walker, --no-vm). These are the
+        //    rows the ecosystem north star lives or dies by; the CLI probes
+        //    above only cover the hash/store/derivation surfaces.
+        (ParityProbe { name: "eval placeholder", description: "builtins.placeholder \"out\"", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix, "builtins.placeholder \"out\""))
+        }),
+        (ParityProbe { name: "eval drv outPath", description: "(derivation{…}).outPath", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "(builtins.derivation { name = \"p\"; system = builtins.currentSystem; builder = \"/bin/sh\"; }).outPath"))
+        }),
+        (ParityProbe { name: "eval FOD drvPath", description: "fixed-output .drvPath (env[out])", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "(builtins.derivation { name = \"s\"; system = builtins.currentSystem; builder = \"/bin/sh\"; outputHash = \"1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2\"; outputHashAlgo = \"sha256\"; outputHashMode = \"flat\"; }).drvPath"))
+        }),
+        (ParityProbe { name: "eval hello drvPath", description: "nixpkgs hello through stdenv (ecosystem target)", expect: Expect::KnownDiverge }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{}}).hello.drvPath"))
+            })
+        }),
     ];
 
-    // Run + collect.
-    let mut results: Vec<(String, String, ParityVerdict)> = Vec::new();
+    // Run + collect (carry each probe's matrix expectation alongside the verdict).
+    let mut results: Vec<(String, String, Expect, ParityVerdict)> = Vec::new();
     for (probe, run) in &probes {
         let verdict = run();
-        results.push((probe.name.to_string(), probe.description.to_string(), verdict));
+        results.push((probe.name.to_string(), probe.description.to_string(), probe.expect, verdict));
     }
     let _ = std::fs::remove_file(&h_fixture);
 
     let total = results.len();
-    let matches = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Match)).count();
-    let diverged = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Diverge { .. })).count();
-    let skipped = results.iter().filter(|(_, _, v)| matches!(v, ParityVerdict::Skipped(_))).count();
-    let errored = results.iter().filter(|(_, _, v)|
-        matches!(v, ParityVerdict::SuiError(_) | ParityVerdict::NixError(_))).count();
+    let matches = results.iter().filter(|(_, _, _, v)| matches!(v, ParityVerdict::Match)).count();
+    let diverged = results.iter().filter(|(_, _, _, v)| matches!(v, ParityVerdict::Diverge { .. })).count();
+    let skipped = results.iter().filter(|(_, _, _, v)| matches!(v, ParityVerdict::Skipped(_))).count();
+    // The sealed-invariant gate. A `Match` row that isn't Match is a REGRESSION;
+    // a `KnownDiverge` row that IS Match has GRADUATED (a fix landed — promote
+    // it to `Match`). Either is `unexpected` and fails the gate, so the corpus
+    // can neither regress a proven byte-parity theorem nor silently advance an
+    // untracked one. This is CONVERGE = SEAL made mechanical.
+    let regressions = results.iter().filter(|(_, _, ex, v)| *ex == Expect::Match
+        && matches!(v, ParityVerdict::Diverge { .. } | ParityVerdict::SuiError(_) | ParityVerdict::NixError(_))
+    ).count();
+    let graduated = results.iter().filter(|(_, _, ex, v)|
+        *ex == Expect::KnownDiverge && matches!(v, ParityVerdict::Match)).count();
+    let tracked = results.iter().filter(|(_, _, ex, v)|
+        *ex == Expect::KnownDiverge && matches!(v, ParityVerdict::Diverge { .. })).count();
+    let unexpected = regressions + graduated;
 
     if json {
-        let probes_json: Vec<serde_json::Value> = results.iter().map(|(n, d, v)| {
+        let probes_json: Vec<serde_json::Value> = results.iter().map(|(n, d, ex, v)| {
             let (label, detail) = match v {
                 ParityVerdict::Match              => ("match",   serde_json::Value::Null),
                 ParityVerdict::Diverge { sui, nix } => ("diverge", serde_json::json!({"sui": sui, "nix": nix})),
@@ -3576,14 +3631,18 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 ParityVerdict::NixError(e)        => ("nix-err", serde_json::Value::String(e.clone())),
                 ParityVerdict::Skipped(r)         => ("skip",    serde_json::Value::String(r.clone())),
             };
-            serde_json::json!({"name": n, "description": d, "verdict": label, "detail": detail})
+            let expect = match ex { Expect::Match => "match", Expect::KnownDiverge => "known-diverge" };
+            serde_json::json!({"name": n, "description": d, "expect": expect, "verdict": label, "detail": detail})
         }).collect();
         let summary = serde_json::json!({
             "total": total,
             "match": matches,
             "diverged": diverged,
+            "tracked": tracked,
+            "regressions": regressions,
+            "graduated": graduated,
+            "unexpected": unexpected,
             "skipped": skipped,
-            "errored": errored,
             "probes": probes_json,
         });
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
@@ -3592,21 +3651,25 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             glyph_snowflake(), header("sui-vs-nix parity"),
             ident(&total.to_string()), muted(&nix.display().to_string()));
         println!();
-        let name_w = results.iter().map(|(n, _, _)| n.len()).max().unwrap_or(20);
-        for (name, desc, v) in &results {
-            let glyph = match v {
-                ParityVerdict::Match           => success(v.glyph()),
-                ParityVerdict::Diverge { .. } => error(v.glyph()),
-                ParityVerdict::SuiError(_)    => error(v.glyph()),
-                ParityVerdict::NixError(_)    => warn(v.glyph()),
-                ParityVerdict::Skipped(_)     => muted(v.glyph()),
-            };
-            let verdict_label = match v {
-                ParityVerdict::Match           => success(v.label()),
-                ParityVerdict::Diverge { .. } => error(v.label()),
-                ParityVerdict::SuiError(_)    => error(v.label()),
-                ParityVerdict::NixError(_)    => warn(v.label()),
-                ParityVerdict::Skipped(_)     => muted(v.label()),
+        let name_w = results.iter().map(|(n, _, _, _)| n.len()).max().unwrap_or(20);
+        for (name, desc, ex, v) in &results {
+            // A KnownDiverge row that still diverges is TRACKED (expected, not a
+            // failure); one that now Matches has GRADUATED (a fix landed — it
+            // must be promoted to Match).
+            let tracked_row = *ex == Expect::KnownDiverge && matches!(v, ParityVerdict::Diverge { .. });
+            let graduated_row = *ex == Expect::KnownDiverge && matches!(v, ParityVerdict::Match);
+            let (glyph, verdict_label) = if tracked_row {
+                (warn("~"), warn("tracked-diverge"))
+            } else if graduated_row {
+                (warn("↑"), warn("GRADUATED → promote to Match"))
+            } else {
+                match v {
+                    ParityVerdict::Match          => (success(v.glyph()), success(v.label())),
+                    ParityVerdict::Diverge { .. } => (error(v.glyph()),   error(v.label())),
+                    ParityVerdict::SuiError(_)    => (error(v.glyph()),   error(v.label())),
+                    ParityVerdict::NixError(_)    => (warn(v.glyph()),    warn(v.label())),
+                    ParityVerdict::Skipped(_)     => (muted(v.glyph()),   muted(v.label())),
+                }
             };
             println!("  {} {}  {}  {}",
                 glyph,
@@ -3623,17 +3686,21 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             }
         }
         println!();
-        println!("  {} {}/{}/{}/{}/{} (match/diverge/sui-err/nix-err/skip)",
+        println!("  {} {} match · {} tracked · {} regressions · {} graduated · {} skip",
             body("∑"),
             success(&matches.to_string()),
-            if diverged > 0 { error(&diverged.to_string()) } else { muted("0") },
-            if errored > 0 { warn(&errored.to_string()) } else { muted("0") },
-            muted("0"),
+            if tracked > 0 { warn(&tracked.to_string()) } else { muted("0") },
+            if regressions > 0 { error(&regressions.to_string()) } else { success("0") },
+            if graduated > 0 { warn(&graduated.to_string()) } else { muted("0") },
             muted(&skipped.to_string()),
         );
+        if unexpected == 0 {
+            println!("  {} corpus sealed — every Match row byte-identical to nix",
+                success("✔"));
+        }
     }
 
-    if diverged > 0 {
+    if unexpected > 0 {
         std::process::exit(1);
     }
     Ok(())
@@ -3647,6 +3714,21 @@ fn diff_text(sui: Result<String, String>, nix: Result<String, String>) -> Parity
         (Err(e), _)              => ParityVerdict::SuiError(e),
         (_, Err(e))              => ParityVerdict::NixError(e),
     }
+}
+
+/// Byte-compare an eval expression's rendered result between sui and nix — the
+/// mission-core parity surface (`.outPath` / `.drvPath` / any value). Uses the
+/// tree-walker (`--no-vm`): it is the byte-parity engine, since the bytecode VM
+/// defers string-context tracking (so it can't build correct derivations). No
+/// `--raw` — both engines render a string value identically quoted, so the
+/// comparison is on those value bytes.
+fn diff_eval(sui: &std::path::Path, nix: &std::path::Path, expr: &str) -> ParityVerdict {
+    let s = run_capture(sui, &["--no-vm", "eval", "--impure", "--expr", expr]);
+    let n = run_capture(
+        nix,
+        &["eval", "--extra-experimental-features", "nix-command", "--impure", "--expr", expr],
+    );
+    diff_text(s, n)
 }
 
 /// Locate the first `/nix/store/*` entry whose name contains the
