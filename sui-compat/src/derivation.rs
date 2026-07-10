@@ -251,9 +251,23 @@ impl Derivation {
         })));
         out.push_str("],");
 
+        // CppNix's hashDerivationModulo keys the input derivations by their
+        // MODULO hash and serializes them SORTED BY THAT KEY — not by the
+        // original drv path. So resolve every path to its modulo first, then
+        // re-sort by the resolved value before emitting. Without the re-sort a
+        // derivation with ≥2 input drvs whose modulo order differs from their
+        // drv-path order serializes its modulo ATerm in the wrong order, and its
+        // output path (and everything transitively above it) diverges from nix —
+        // even though its full drv ATerm is byte-identical. Single-input drvs
+        // never expose this, which is why it survived until a 2-input stdenv drv.
+        let mut resolved_inputs: Vec<(String, &Vec<String>)> = self
+            .input_derivations
+            .iter()
+            .map(|(path, outputs)| (resolver(path), outputs))
+            .collect();
+        resolved_inputs.sort_by(|a, b| a.0.cmp(&b.0));
         out.push('[');
-        out.push_str(&join_comma(self.input_derivations.iter().map(|(path, outputs)| {
-            let resolved = resolver(path);
+        out.push_str(&join_comma(resolved_inputs.into_iter().map(|(resolved, outputs)| {
             let outs = join_comma(outputs.iter().map(|o| escape(o)));
             format!("({},[{outs}])", escape(&resolved))
         })));

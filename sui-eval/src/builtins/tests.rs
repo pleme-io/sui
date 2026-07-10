@@ -3000,6 +3000,37 @@ fn fod_consumer_output_modulo_byte_matches_cppnix() {
     );
 }
 
+// Regression (2026-07-10): a FIXED-OUTPUT derivation with an input derivation.
+// Its .drv path must fold its refs (inputDrvs + inputSrcs) like every other
+// derivation — the FOD branch used compute_drv_path (no refs), so a fetchurl FOD
+// (which consumes curl/mirrors-list as inputDrvs) diverged. A bare FOD with no
+// inputs has an empty ref set, so it hid until a FOD WITH an inputDrv. Byte-
+// verified against nix 2.34 aarch64-darwin (drv-bisect localized this to
+// bash-5.3.tar.gz.drv, whose content was byte-identical to nix yet path-diverged).
+#[test]
+fn fod_with_input_drv_folds_refs_byte_matches_cppnix() {
+    sui_spec::derivation::reset_modulo_cache();
+    assert_eq!(
+        ev(r#"let dep = builtins.derivation { name = "dep"; system = "aarch64-darwin"; builder = "/bin/sh"; }; fod = builtins.derivation { name = "ff"; system = "aarch64-darwin"; builder = "${dep}/bin/sh"; outputHash = "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2"; outputHashAlgo = "sha256"; outputHashMode = "flat"; }; in fod.drvPath"#),
+        Value::string("/nix/store/68za8mj2yl3db3qzcqyamg5yhlf4nczs-ff.drv"),
+    );
+}
+
+// Regression (2026-07-10): a derivation with TWO input derivations. CppNix's
+// hashDerivationModulo keys inputDrvs by their modulo hash and serializes them
+// SORTED BY THAT KEY, not by the original drv path. sui serialized in drv-path
+// order with modulos substituted, so a drv whose ≥2 inputs' modulo order differs
+// from their drv-path order got a wrong output path. Single-input drvs never
+// exposed it (drv-bisect localized it to a 2-input stdenv drv, mirrors-list).
+#[test]
+fn two_input_consumer_modulo_sort_byte_matches_cppnix() {
+    sui_spec::derivation::reset_modulo_cache();
+    assert_eq!(
+        ev(r#"let a = builtins.derivation { name = "a"; system = "aarch64-darwin"; builder = "/bin/sh"; }; b = builtins.derivation { name = "b"; system = "aarch64-darwin"; builder = "/bin/sh"; }; c = builtins.derivation { name = "c"; system = "aarch64-darwin"; builder = "/bin/sh"; args = [ a b ]; }; in c.outPath"#),
+        Value::string("/nix/store/wdw53pm18752ihdihmdsl6asy616cyk3-c"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(

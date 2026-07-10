@@ -233,7 +233,17 @@ fn compute_derivation_outputs(
         drv.env.insert("out".to_string(), out_path.clone());
 
         let drv_content = drv.serialize();
-        let drv_path = sui_compat::store_path::compute_drv_path(drv_content.as_bytes(), name);
+        // Fold the .drv's references (its inputDrvs + inputSrcs) into the store
+        // path — CppNix's makeTextPath does this for EVERY derivation, including
+        // fixed-output ones. A fetchurl FOD consumes curl / mirrors-list / stdenv
+        // as inputDrvs, so without the refs its .drv path diverges from nix. (A
+        // bare FOD with no inputs has an empty ref set, so the simple FOD case
+        // matched even while this hid — it took a FOD WITH inputDrvs to expose.)
+        let drv_refs: Vec<String> = drv.input_derivations.keys().cloned()
+            .chain(drv.input_sources.iter().cloned())
+            .collect();
+        let drv_path = sui_compat::store_path::compute_drv_path_with_refs(
+            drv_content.as_bytes(), name, &drv_refs);
 
         // CppNix `hashDerivationModulo` for a FIXED-OUTPUT derivation is NOT the
         // input-addressed ATerm hash — it is the special
