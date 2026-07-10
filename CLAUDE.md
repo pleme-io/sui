@@ -107,6 +107,19 @@ SUI_EVAL_PERF=1 sui eval ...   # profiling (expression breakdown + thunk waste)
 SUI_VM_TRACE=1 sui eval ...    # VM diagnostics (fixpoint detection, condition errors)
 ```
 
+## Validating against nix — the oracle loop
+
+Stock **nix is the differential oracle** for every sui behavior. Byte-compare:
+`nix eval <flake>#…outPath --raw` is ground truth for any sui eval. On a
+divergence, isolate the failing builtin with a battery of minimal-expression
+probes — `sui eval --no-vm -E '<expr>'` vs the known nix value — killing wrong
+hypotheses cheaply before touching the evaluator. Worked (2026-07): the darwin
+`system.outPath` "expected list, got null" was bisected this way
+(catAttrs/concatLists exonerated in seconds). `--no-vm` forces the tree-walker;
+drop it to exercise the VM path. For a self-referential-value crash, get a real
+backtrace: ad-hoc-codesign the binary (get-task-allow), run under `lldb -k`, on a
+`CARGO_PROFILE_RELEASE_STRIP=false DEBUG=1` build.
+
 ## Performance Architecture
 
 - **Value:** 16 bytes — 2 per cache line (compile-time enforced)
