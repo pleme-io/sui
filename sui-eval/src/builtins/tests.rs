@@ -2915,6 +2915,34 @@ fn placeholder_byte_matches_cppnix() {
     );
 }
 
+// Regression (2026-07-10): a multi-output derivation must coerce its `outputs`
+// attribute into the env ("out bin dev"), exactly like CppNix; dropping it
+// diverged the modulo hash and hence every output path.  The drvPath is
+// content-addressed (system is pinned in the expr), so this is deterministic
+// across hosts and byte-exact against nix.
+#[test]
+fn multi_output_drv_byte_matches_cppnix() {
+    assert_eq!(
+        ev(r#"(derivation { name = "m"; system = "aarch64-darwin"; builder = "/bin/sh"; args = [ "-c" "x" ]; outputs = [ "out" "bin" "dev" ]; }).drvPath"#),
+        Value::string("/nix/store/g76j4rxpbj2f04hjpnj1fhgz4d8pbj3n-m.drv"),
+    );
+}
+
+// Regression (2026-07-10): the default output (`.outputName` / the top-level
+// `.outPath`) is CppNix `outputs[0]` — the FIRST DECLARED output — not "out"
+// and not the alphabetically-first key. bzip2's outputs = [ "bin" … ] ⇒ "bin".
+#[test]
+fn default_output_is_first_declared() {
+    assert_eq!(
+        ev(r#"(derivation { name = "d"; system = "x86_64-linux"; builder = "/bin/sh"; outputs = [ "bin" "out" "dev" ]; }).outputName"#),
+        Value::string("bin"),
+    );
+    assert_eq!(
+        ev(r#"(derivation { name = "d"; system = "x86_64-linux"; builder = "/bin/sh"; }).outputName"#),
+        Value::string("out"),
+    );
+}
+
 #[test]
 fn builtins_to_json_list() {
     assert_eq!(

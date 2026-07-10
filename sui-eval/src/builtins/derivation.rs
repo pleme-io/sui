@@ -80,9 +80,16 @@ fn construct_derivation(
 
     let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
     for (k, v) in input.iter() {
+        // `outputs` is NOT excluded: CppNix coerces the outputs attribute into
+        // the env like any other attr (the list `[ "out" "bin" "dev" ]` →
+        // "out bin dev"), and that env var is part of the hashed derivation.
+        // Dropping it made every multi-output drv's modulo hash — hence every
+        // output path — diverge from nix.  (`name`/`system`/`builder` are
+        // excluded here only because they are re-inserted below from the
+        // already-coerced locals; `args` is structural, not an env var.)
         if matches!(
             k.as_str(),
-            "name" | "system" | "builder" | "args" | "outputs"
+            "name" | "system" | "builder" | "args"
                 | "__impure" | "__contentAddressed" | "__structuredAttrs"
         ) {
             continue;
@@ -346,11 +353,15 @@ fn build_derivation_result(
     // CppNix: drvAttrs contains the original input attributes
     result.insert("drvAttrs".to_string(), Value::Attrs(Rc::new(input.clone())));
 
-    let primary_output_name = if out_paths.contains_key("out") {
-        "out".to_string()
-    } else {
-        out_paths.keys().next().cloned().unwrap_or_else(|| "out".to_string())
-    };
+    // CppNix: the default output (what `.outPath` / `.outputName` return) is the
+    // FIRST *declared* output — `outputs[0]` — NOT "out" and NOT the
+    // alphabetically-first key. e.g. bzip2's outputs = [ "bin" "dev" "out" "man" ]
+    // ⇒ default "bin", so `.outPath` is the `-bin` path. (`out_paths` is a
+    // BTreeMap, so its key order is alphabetical, not declaration order.)
+    let primary_output_name = parse_outputs_list(input)?
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "out".to_string());
     let primary_out = out_paths
         .get(&primary_output_name)
         .cloned()
