@@ -547,10 +547,24 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// fallback.
 fn is_self_recursive_binding(value_expr: &ast::Expr, name: &str) -> bool {
     use rnix::SyntaxKind;
-    value_expr.syntax().descendants_with_tokens().any(|elem| {
-        elem.as_token().is_some_and(|t| {
-            t.kind() == SyntaxKind::TOKEN_IDENT && t.text() == name
-        })
+    // A binding participates in the let-scope fix-point only if its RHS
+    // genuinely REFERENCES `name` as a variable.  Match `NODE_IDENT` nodes
+    // whose text is `name`, but exclude idents that are attribute names or
+    // attrset keys — those live under a `NODE_ATTRPATH` (`lhs.placeholder`,
+    // `{ placeholder = …; }`) and are NOT references to the binding.
+    //
+    // Without this exclusion, `placeholder = if lhs.placeholder == …` in
+    // nixpkgs `lib/types.nix` is falsely flagged self-recursive (its RHS
+    // mentions the *attribute* `.placeholder`), routing the binding through
+    // the `Promise` fix-point path whose env handling drops the let-scope —
+    // surfacing as a force-order-dependent `null` in the module system
+    // (`concatLists: expected list, got null`).
+    value_expr.syntax().descendants().any(|node| {
+        node.kind() == SyntaxKind::NODE_IDENT
+            && node
+                .parent()
+                .is_none_or(|p| p.kind() != SyntaxKind::NODE_ATTRPATH)
+            && ast::Ident::cast(node).is_some_and(|i| ident_text(&i) == name)
     })
 }
 
