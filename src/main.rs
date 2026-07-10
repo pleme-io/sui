@@ -185,6 +185,20 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Bisect a diverging `<expr>.drvPath` to the structural leaf: recurse the
+    /// sui↔nix input-derivation graph (matched by name) to the first drv whose
+    /// same-name inputs all match nix but which itself diverges — naming the
+    /// exact root of a byte-parity divergence instead of hand-diffing ATerms.
+    #[command(name = "parity-bisect")]
+    ParityBisect {
+        /// Nix expression whose `.drvPath` diverges (e.g.
+        /// `(import <nixpkgs> {}).hello`). `.drvPath` is appended automatically.
+        #[arg(long)]
+        expr: String,
+        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
+        #[arg(long, default_value = "nix")]
+        nix: std::path::PathBuf,
+    },
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
     /// Run differential parity probes (sui vs cppnix) and write a typed
@@ -3706,6 +3720,202 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
     Ok(())
 }
 
+/// The store-name of a `/nix/store/<32-hash>-<name>` path — the hash stripped,
+/// used to match sui's temp-cache drvs against nix's store drvs across the
+/// input-derivation graph (the hashes differ where they diverge; the names don't).
+fn drv_name(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    base.splitn(2, '-').nth(1).unwrap_or(base).to_string()
+}
+
+/// Read a drv's ATerm bytes — the nix store first, then sui's temp-cache
+/// fallback (`$TMPDIR/sui-drv-cache/`, where sui writes drvs it can't put in a
+/// read-only /nix/store).
+fn read_drv_bytes(drv_path: &str) -> Option<Vec<u8>> {
+    if let Ok(b) = std::fs::read(drv_path) {
+        return Some(b);
+    }
+    let base = drv_path.rsplit('/').next()?;
+    std::fs::read(std::env::temp_dir().join("sui-drv-cache").join(base)).ok()
+}
+
+/// Replace every `/nix/store/<32-hash>-` with a fixed placeholder so a value
+/// that differs ONLY by cascaded store hashes reads as equal — isolating
+/// genuine content divergence from hash cascade.
+fn strip_store_hashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if s[i..].starts_with("/nix/store/") && i + 11 + 32 <= bytes.len() {
+            let hash = &s[i + 11..i + 11 + 32];
+            if hash.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+                out.push_str("/nix/store/<HASH>");
+                i += 11 + 32;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// One structural-leaf result of the bisect.
+struct BisectLeaf {
+    sui_path: String,
+    nix_path: String,
+    sui: sui_compat::derivation::Derivation,
+    nix: sui_compat::derivation::Derivation,
+}
+
+/// Recurse the sui↔nix input-derivation graph to the first drv whose same-name
+/// inputs all match nix but which itself diverges — the structural leaf.
+fn bisect_drv(
+    sui_path: &str,
+    nix_path: &str,
+    trail: &mut Vec<String>,
+    depth: usize,
+) -> Result<BisectLeaf, CliError> {
+    use sui_compat::derivation::Derivation;
+    if depth > 256 {
+        return Err(CliError::NotImplemented("parity-bisect: recursion too deep".into()));
+    }
+    let sui_bytes = read_drv_bytes(sui_path).ok_or_else(|| CliError::NotImplemented(
+        format!("parity-bisect: cannot read sui drv {sui_path} (not in store or sui-drv-cache)")))?;
+    let nix_bytes = read_drv_bytes(nix_path).ok_or_else(|| CliError::NotImplemented(
+        format!("parity-bisect: cannot read nix drv {nix_path}")))?;
+    let sui = Derivation::parse(&sui_bytes)
+        .map_err(|e| CliError::NotImplemented(format!("parity-bisect: parse sui drv: {e:?}")))?;
+    let nix = Derivation::parse(&nix_bytes)
+        .map_err(|e| CliError::NotImplemented(format!("parity-bisect: parse nix drv: {e:?}")))?;
+
+    // Pair input derivations by name; recurse into the shallowest that diverges.
+    let sui_in: std::collections::BTreeMap<String, String> =
+        sui.input_derivations.keys().map(|p| (drv_name(p), p.clone())).collect();
+    let nix_in: std::collections::BTreeMap<String, String> =
+        nix.input_derivations.keys().map(|p| (drv_name(p), p.clone())).collect();
+    let mut diverging: Vec<(String, String, String)> = sui_in.iter()
+        .filter_map(|(name, sp)| nix_in.get(name).filter(|np| **np != *sp)
+            .map(|np| (name.clone(), sp.clone(), np.clone())))
+        .collect();
+    diverging.sort();
+    match diverging.into_iter().next() {
+        // Every same-name input matches nix — the divergence is HERE.
+        None => Ok(BisectLeaf {
+            sui_path: sui_path.to_string(), nix_path: nix_path.to_string(), sui, nix,
+        }),
+        Some((name, sp, np)) => {
+            trail.push(name);
+            bisect_drv(&sp, &np, trail, depth + 1)
+        }
+    }
+}
+
+fn cmd_parity_bisect(nix: &std::path::Path, expr: &str) -> Result<(), CliError> {
+    use sui_spec::style::{body, error, glyph_snowflake, header, ident, muted, success, warn};
+    use std::collections::BTreeSet;
+
+    let sui_bin = std::env::current_exe()
+        .map_err(|e| CliError::NotImplemented(format!("parity-bisect: own exe: {e}")))?;
+    let drv_expr = format!("({expr}).drvPath");
+    let sui_top = run_capture(&sui_bin,
+        &["--no-vm", "eval", "--impure", "--raw", "--expr", &drv_expr])
+        .map_err(|e| CliError::NotImplemented(format!("parity-bisect: sui eval: {e}")))?
+        .trim().trim_matches('"').to_string();
+    let nix_top = run_capture(nix,
+        &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", &drv_expr])
+        .map_err(|e| CliError::NotImplemented(format!("parity-bisect: nix eval: {e}")))?
+        .trim().to_string();
+
+    println!("{}  {}", glyph_snowflake(), header("parity-bisect"));
+    println!("  {} sui={}", muted("top"), ident(&sui_top));
+    println!("  {} nix={}", muted("top"), ident(&nix_top));
+    if sui_top == nix_top {
+        println!("  {} already byte-identical — nothing to bisect", success("✔"));
+        return Ok(());
+    }
+    println!();
+
+    let mut trail: Vec<String> = vec![drv_name(&nix_top)];
+    let leaf = bisect_drv(&sui_top, &nix_top, &mut trail, 0)?;
+    let s = &leaf.sui;
+    let n = &leaf.nix;
+
+    println!("  {} structural leaf: {}", body("→"), ident(&drv_name(&leaf.nix_path)));
+    println!("      {} sui={}", muted("·"), muted(&leaf.sui_path));
+    println!("      {} nix={}", muted("·"), muted(&leaf.nix_path));
+    println!("  {} trail: {}", muted("↳"), muted(&trail.join(" → ")));
+    println!();
+
+    let mut found = false;
+    if s.system != n.system {
+        println!("  {} system   sui={}  nix={}", error("✘"), s.system, n.system); found = true;
+    }
+    if strip_store_hashes(&s.builder) != strip_store_hashes(&n.builder) {
+        println!("  {} builder  sui={}  nix={}", error("✘"), s.builder, n.builder); found = true;
+    }
+    if s.args.iter().map(|a| strip_store_hashes(a)).ne(n.args.iter().map(|a| strip_store_hashes(a))) {
+        println!("  {} args differ (sui {} / nix {})", error("✘"), s.args.len(), n.args.len()); found = true;
+    }
+    let s_src: BTreeSet<String> = s.input_sources.iter().map(|p| drv_name(p)).collect();
+    let n_src: BTreeSet<String> = n.input_sources.iter().map(|p| drv_name(p)).collect();
+    if s_src != n_src {
+        let so: Vec<_> = s_src.difference(&n_src).collect();
+        let no: Vec<_> = n_src.difference(&s_src).collect();
+        println!("  {} inputSrcs name-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
+    }
+    let s_dn: BTreeSet<String> = s.input_derivations.keys().map(|p| drv_name(p)).collect();
+    let n_dn: BTreeSet<String> = n.input_derivations.keys().map(|p| drv_name(p)).collect();
+    if s_dn != n_dn {
+        let so: Vec<_> = s_dn.difference(&n_dn).collect();
+        let no: Vec<_> = n_dn.difference(&s_dn).collect();
+        println!("  {} inputDrv name-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
+    }
+    let s_ek: BTreeSet<&String> = s.env.keys().collect();
+    let n_ek: BTreeSet<&String> = n.env.keys().collect();
+    if s_ek != n_ek {
+        let so: Vec<_> = s_ek.difference(&n_ek).collect();
+        let no: Vec<_> = n_ek.difference(&s_ek).collect();
+        println!("  {} env key-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
+    }
+    let val_diffs: Vec<&String> = s_ek.intersection(&n_ek)
+        .filter(|k| strip_store_hashes(&s.env[**k]) != strip_store_hashes(&n.env[**k]))
+        .copied().collect();
+    if !val_diffs.is_empty() {
+        println!("  {} env values differ beyond store-path cascade: {val_diffs:?}", error("✘"));
+        for k in val_diffs.iter().take(4) {
+            println!("      {} {k}: sui={:?}", muted("·"), strip_store_hashes(&s.env[*k]));
+            println!("        {} nix={:?}", muted(" "), strip_store_hashes(&n.env[*k]));
+        }
+        found = true;
+    }
+    if !found {
+        // High-signal case: every input + field matches, only THIS drv's own
+        // output store path differs → the root is sui's input-addressed output
+        // computation (hashDerivationModulo / SerializeModulo) for a drv WITH
+        // input-derivations — not the bare-derivation path (which matches).
+        let s_out_names: BTreeSet<String> = s.outputs.values().map(|o| drv_name(&o.path)).collect();
+        let n_out_names: BTreeSet<String> = n.outputs.values().map(|o| drv_name(&o.path)).collect();
+        let out_paths_differ = s.outputs.iter().any(|(k, so)|
+            n.outputs.get(k).is_some_and(|no| no.path != so.path));
+        if out_paths_differ && s_out_names == n_out_names {
+            println!("  {} OUTPUT-PATH-ONLY divergence — every input + field is byte-identical; only this drv's own output store path differs.", warn("⚑"));
+            println!("      {} root: sui's INPUT-ADDRESSED output computation (hashDerivationModulo / SerializeModulo) for a drv WITH input-derivations. The bare-derivation path matches, so the bug is in the modulo replacement of inputDrvs (FOD special-case or the modulo memo).", body("→"));
+            for (name, so) in &s.outputs {
+                if let Some(no) = n.outputs.get(name) {
+                    if so.path != no.path {
+                        println!("      {} out[{name}]: sui={} nix={}", muted("·"), so.path, no.path);
+                    }
+                }
+            }
+        } else {
+            println!("  {} no field-level structural diff at the leaf — every field matches once store hashes are normalized. The divergence is a store-path cascade the by-name match localizes no further (an input nix has that sui lacks under a differing name).", warn("~"));
+        }
+    }
+    Ok(())
+}
+
 /// Diff two text outputs and classify the result.
 fn diff_text(sui: Result<String, String>, nix: Result<String, String>) -> ParityVerdict {
     match (sui, nix) {
@@ -5313,6 +5523,9 @@ async fn main() -> Result<(), CliError> {
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
         Commands::Parity { nix, json } => {
             cmd_parity(&nix, json)?;
+        }
+        Commands::ParityBisect { expr, nix } => {
+            cmd_parity_bisect(&nix, &expr)?;
         }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
