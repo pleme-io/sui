@@ -3642,6 +3642,19 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).buildPackages.perl.override {{ enableCrypt = false; }}).drvPath"))
             })
         }),
+        // Cornering lock (Match): the closest SYNTHETIC analogue of the real
+        // libxcrypt bug — a two-stage fixpoint where a mutually-referential
+        // `libxcrypt` takes `buildPackages.perl.override{...}` (a distinct,
+        // non-cycling override) as its sole nativeBuildInput. sui handles this
+        // correctly (byte-matches nix), which PROVES the real perl-null is NOT
+        // caused by {fixpoint, mutual-ref, override, staged buildPackages} —
+        // it is isolated to the real splice/makeScopeWithSplicing machinery.
+        // Locking it prevents regression AND documents what the bug is NOT.
+        (ParityProbe { name: "eval staged mutual-ref override nativeBuildInput", description: "corners the libxcrypt null: synthetic stage+mutual+override works (bug is in real splice machinery)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "let fix = f: let x = f x; in x; mkStage = adjacent: name: fix (self: { inherit name; buildPackages = if adjacent == null then self else adjacent; mkP = args: derivation { name = \"p\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; tag = args.tag; stage = name; buildInputs = if args.tag == \"full\" then [ self.libxcrypt ] else []; }; perl = (self.mkP { tag = \"full\"; }) // { override = a: self.mkP a; }; libxcrypt = derivation { name = \"libxcrypt\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; nativeBuildInputs = [ (self.buildPackages.perl.override { tag = \"nocrypt\"; }) ]; }; }); s0 = mkStage null \"s0\"; s1 = mkStage s0 \"s1\"; in s1.libxcrypt.drvPath"))
+        }),
     ];
 
     // Run + collect (carry each probe's matrix expectation alongside the verdict).
