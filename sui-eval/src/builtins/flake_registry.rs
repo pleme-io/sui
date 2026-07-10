@@ -374,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "env-dependent: resolves the `nixpkgs` indirect flakeref through the host flake registry, which resolves to type=path on hosts with a local nixpkgs registry override (type=github only on a default registry). Run with --ignored on a default-registry host."]
     fn resolve_indirect_nixpkgs() {
         invalidate_cache();
         let mut attrs = NixAttrs::new();
