@@ -8,6 +8,7 @@ use sui::{CliError, NIX_DB_PATH};
 
 mod agent;
 mod legacy;
+mod parity_corpus;
 use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};
 
@@ -3631,6 +3632,19 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
     for (probe, run) in &probes {
         let verdict = run();
         results.push((probe.name.to_string(), probe.description.to_string(), probe.expect, verdict));
+    }
+    // Generated mass-synthesis corpus: typed Nix-AST shapes rendered to source
+    // (parity_corpus), each byte-checked sui-vs-nix. Adding a new eval-surface
+    // variant is a typed shape, not a hand-authored probe — CLOSED-LOOP
+    // MASS-SYNTHESIS applied to parity. Every Match row is sealed against
+    // regression; a KnownDiverge row must graduate when a fix lands.
+    for row in parity_corpus::generate() {
+        let expect = match row.expect {
+            parity_corpus::RowExpect::Match => Expect::Match,
+            parity_corpus::RowExpect::KnownDiverge => Expect::KnownDiverge,
+        };
+        let verdict = diff_eval(&sui_bin, nix, &row.expr);
+        results.push((row.name, "generated (typed nix-AST mass-synthesis)".to_string(), expect, verdict));
     }
     let _ = std::fs::remove_file(&h_fixture);
 
