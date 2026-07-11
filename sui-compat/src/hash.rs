@@ -162,7 +162,11 @@ pub fn decode_hash_any(
     let sri_prefix = format!("{}-", algo.as_nix_str());
 
     if let Some(b64) = raw.strip_prefix(&sri_prefix) {
-        let bytes = base64_decode(b64)?;
+        // CppNix accepts SRI base64 whether or not it carries `=`
+        // padding (nixpkgs `fetchFromGitLab`/`fetchurl` hashes are
+        // frequently written UNPADDED, e.g. `sha256-…/go` = 43 chars).
+        // Standard base64 decode requires padding, so add it.
+        let bytes = base64_decode_padtolerant(b64)?;
         if bytes.len() != want {
             return Err(HashError::InvalidEncoding);
         }
@@ -197,10 +201,15 @@ pub fn decode_hash_any(
     //    stdenv `mkDerivation` swallows the throw and silently drops the
     //    whole attribute (e.g. `patches`), diverging the drv from CppNix.
     let base64_len = (4 * want / 3 + 3) & !3usize;
-    if raw.len() == base64_len {
-        let bytes = base64_decode(raw)?;
-        if bytes.len() == want {
-            return Ok(bytes);
+    // Accept both the padded length and the unpadded length
+    // (`4 * ceil(want*8/6)`, i.e. padded minus trailing `=`s). Both
+    // remain distinct from hex_len / base32_len for every algorithm.
+    let base64_len_unpadded = (want * 8).div_ceil(6);
+    if raw.len() == base64_len || raw.len() == base64_len_unpadded {
+        if let Ok(bytes) = base64_decode_padtolerant(raw) {
+            if bytes.len() == want {
+                return Ok(bytes);
+            }
         }
     }
 
@@ -260,6 +269,26 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>, HashError> {
     base64::engine::general_purpose::STANDARD
         .decode(input)
         .map_err(|_| HashError::InvalidEncoding)
+}
+
+/// Base64 decode a string, tolerating MISSING `=` padding.
+///
+/// CppNix's hash parser accepts both padded and unpadded standard
+/// base64 (nixpkgs `fetchFromGitLab`/`fetchurl` hashes are frequently
+/// written unpadded, e.g. `sha256-…/go`). Standard base64 decode
+/// requires padding, so re-pad to a multiple of 4 before decoding.
+pub fn base64_decode_padtolerant(input: &str) -> Result<Vec<u8>, HashError> {
+    let rem = input.len() % 4;
+    if rem == 0 {
+        return base64_decode(input);
+    }
+    // A base64 group of 1 char is never valid; 2→1 byte, 3→2 bytes.
+    let mut padded = String::with_capacity(input.len() + (4 - rem));
+    padded.push_str(input);
+    for _ in 0..(4 - rem) {
+        padded.push('=');
+    }
+    base64_decode(&padded)
 }
 
 /// Base64 encode bytes (alias for [`base64_encode`] kept for backward compatibility).
@@ -867,5 +896,53 @@ mod tests {
             NixHash::parse_any(HashAlgorithm::Sha256, &short),
             Err(HashError::InvalidEncoding)
         ));
+    }
+
+    // ── unpadded base64 (SRI + bare) ─────────────────────
+    // nixpkgs `fetchFromGitLab`/`fetchurl` hashes are frequently
+    // written WITHOUT `=` padding (e.g. `sha256-…/go` = 43 chars).
+    // CppNix accepts both; without this the source FOD's outputHash
+    // throws and stdenv drops the whole `src` attr.
+
+    #[test]
+    fn sri_unpadded_base64_parses() {
+        // Real nixpkgs mesa-gl-headers fetchFromGitLab hash (43 chars,
+        // no trailing `=`).
+        let raw = "sha256-UlI+6OMUj5F6uVAw+Mg2wOZrjfdRq73d1qufaXVI/go";
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, raw)
+            .expect("unpadded SRI sha256 must parse");
+        assert_eq!(h.digest.len(), 32);
+        // Same bytes as the padded form.
+        let padded = format!("{raw}=");
+        let h2 = NixHash::parse_any(HashAlgorithm::Sha256, &padded).unwrap();
+        assert_eq!(h.digest, h2.digest);
+    }
+
+    #[test]
+    fn bare_unpadded_base64_parses_every_algo() {
+        for (algo, n) in [
+            (HashAlgorithm::Sha256, 32usize),
+            (HashAlgorithm::Sha512, 64),
+            (HashAlgorithm::Sha1, 20),
+            (HashAlgorithm::Md5, 16),
+        ] {
+            let digest = vec![0x5Au8; n];
+            let padded = base64_encode(&digest);
+            let unpadded = padded.trim_end_matches('=');
+            let parsed = NixHash::parse_any(algo, unpadded)
+                .expect("unpadded bare base64 must parse");
+            assert_eq!(parsed.digest, digest);
+        }
+    }
+
+    #[test]
+    fn pad_tolerant_matches_padded() {
+        let digest = vec![0x11u8; 32];
+        let padded = base64_encode(&digest);
+        let unpadded = padded.trim_end_matches('=');
+        assert_eq!(
+            base64_decode_padtolerant(unpadded).unwrap(),
+            base64_decode(&padded).unwrap()
+        );
     }
 }
