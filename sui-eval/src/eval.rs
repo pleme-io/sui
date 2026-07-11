@@ -1743,14 +1743,41 @@ fn eval_inherit(
         }
     } else {
         // inherit a b c;
+        //
+        // CppNix resolves a bare `inherit x;` LAZILY, exactly like a plain
+        // reference to `x` — it does NOT eagerly force the enclosing scope.
+        // This matters when `x` is provided only by an enclosing `with`
+        // scope whose value is a fixpoint still being constructed (a
+        // blackhole): eager `env.lookup` returns None → spurious
+        // `UndefinedVar`. nixpkgs `all-packages.nix` is
+        // `… with pkgs; { nettle = import … { inherit callPackage; }; }`,
+        // so `inherit callPackage` must resolve `callPackage` from the
+        // `with pkgs` scope AT FORCE TIME, not eagerly at attrset
+        // construction. Mirror `maybe_thunk`'s Ident path: try the fast
+        // lookup, and on a miss defer to a WithIdent thunk (or a suspended
+        // env lookup) so the resolution happens lazily against the settled
+        // scope. (This was the `nettle` UndefinedVar('callPackage') drop.)
         let mut be = bind_env;
         for attr in inherit.attrs() {
             let name = eval_attr(&attr, env)?;
-            let value = env
-                .lookup(&name)
-                .ok_or_else(|| EvalError::UndefinedVar(
-                    format!("'{name}'{}", eval_file_ctx()),
-                ))?;
+            let sym = crate::value::intern(&name);
+            let value = if let Some(v) = env.lookup_fast(sym, &name) {
+                v
+            } else if let Some((scope_cache, scope_value)) =
+                env.innermost_with_scope()
+            {
+                Value::Thunk(Thunk::new_with_ident(
+                    SmolStr::from(name.as_str()),
+                    scope_cache,
+                    scope_value,
+                    env.clone(),
+                ))
+            } else {
+                return Err(EvalError::UndefinedVar(format!(
+                    "'{name}'{}",
+                    eval_file_ctx()
+                )));
+            };
             attrs.insert(name.clone(), value.clone());
             if let Some(ref mut e) = be {
                 e.bind(name, value);
@@ -4956,6 +4983,36 @@ mod tests {
         assert_eq!(
             ev("let x = 1; in { inherit x; }.x"),
             Value::Int(1),
+        );
+    }
+
+    // Regression (2026-07-11): a bare `inherit x;` must resolve LAZILY, like
+    // a plain reference to `x` — not eagerly at attrset construction. When
+    // `x` is provided only by an enclosing `with` scope whose value is a
+    // fixpoint still being constructed, eager resolution spuriously threw
+    // `UndefinedVar`. nixpkgs `all-packages.nix` is
+    // `with pkgs; { nettle = import … { inherit callPackage; }; }`, so
+    // `inherit callPackage` must resolve from the `with pkgs` scope at force
+    // time. (This was the nettle UndefinedVar('callPackage') drop.)
+    #[test]
+    fn inherit_plain_from_with_scope_lazy() {
+        // `inherit cp` reads `cp` from a `with self` fixpoint scope; the
+        // attr forcing it (`a`) must resolve `cp` lazily against the settled
+        // scope, not eagerly during attrset construction.
+        assert_eq!(
+            ev("let fix = f: let x = f x; in x;
+                    self = fix (self: with self; {
+                      a = use { inherit cp; };
+                      use = { cp }: cp 5;
+                      cp = x: x + 100;
+                    });
+                in self.a"),
+            Value::Int(105),
+        );
+        // Simpler: bare inherit from a plain (non-blackhole) with scope.
+        assert_eq!(
+            ev("with { y = 7; }; { inherit y; }.y"),
+            Value::Int(7),
         );
     }
 
