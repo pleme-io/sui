@@ -151,29 +151,14 @@ impl std::fmt::Debug for Chunk {
             if let Some(op) = OpCode::from_byte(byte) {
                 write!(f, "  {offset:04}  L{line:<4}  {op:?}")?;
                 offset += 1;
-                // Print inline operands for opcodes that have them.
-                match op {
-                    OpCode::Constant
-                    | OpCode::GetLocal
-                    | OpCode::SetLocal
-                    | OpCode::GetUpvalue
-                    | OpCode::SetUpvalue
-                    | OpCode::LookupWith
-                    | OpCode::GetAttr
-                    | OpCode::HasAttr
-                    | OpCode::SelectOrDefault
-                    | OpCode::MakeAttrs
-                    | OpCode::MakeList
-                    | OpCode::Interpolate
-                    | OpCode::MakeClosure
-                    | OpCode::Jump
-                    | OpCode::JumpIfFalse
-                    | OpCode::JumpIfTrue
-                    | OpCode::GetLocalCall
-                    | OpCode::PushBuiltins
-                    | OpCode::MakeThunk
-                    | OpCode::Force
-                    | OpCode::Import => {
+                // Print inline operands for opcodes that have them. The
+                // per-opcode u16-operand count comes from the generated
+                // `OpCode::disasm_operands` classifier (one authored column
+                // in the `opcodes!` table), not a hand-kept bucket list —
+                // so "add an opcode, forget its arity in the disassembler"
+                // is no longer a drift possibility.
+                match op.disasm_operands() {
+                    1 => {
                         if offset + 1 < self.code.len() {
                             let operand = self.read_u16(offset);
                             write!(f, " {operand}")?;
@@ -181,7 +166,7 @@ impl std::fmt::Debug for Chunk {
                         }
                     }
                     // Two u16 operands.
-                    OpCode::GetLocalAttr | OpCode::CallBuiltin => {
+                    2 => {
                         if offset + 3 < self.code.len() {
                             let slot = self.read_u16(offset);
                             let key = self.read_u16(offset + 2);
@@ -249,5 +234,32 @@ mod tests {
         let debug = format!("{chunk:?}");
         assert!(debug.contains("Null"));
         assert!(debug.contains("Return"));
+    }
+
+    /// Byte-pin the disassembler output across all three operand-arity
+    /// classes (0 / 1 / 2 u16 operands) so the P2 rewire — which drives the
+    /// arity off the generated `OpCode::disasm_operands` classifier instead
+    /// of a hand-kept bucket match — is proven byte-identical to the
+    /// pre-refactor formatter. A single character drift here fails the test.
+    #[test]
+    fn disassembly_output_is_byte_identical() {
+        let mut chunk = Chunk::new();
+        // 1-operand opcode: `Constant 7`.
+        chunk.write_op(OpCode::Constant, 1);
+        chunk.write_u16(7, 1);
+        // 2-operand opcode: `GetLocalAttr slot=3 key=9`.
+        chunk.write_op(OpCode::GetLocalAttr, 1);
+        chunk.write_u16(3, 1);
+        chunk.write_u16(9, 1);
+        // 0-operand opcode: `Return`.
+        chunk.write_op(OpCode::Return, 2);
+
+        let expected = "\
+Chunk (9 bytes, 0 constants)
+  0000  L1     Constant 7
+  0003  L1     GetLocalAttr slot=3 key=9
+  0008  L2     Return
+";
+        assert_eq!(format!("{chunk:?}"), expected);
     }
 }
