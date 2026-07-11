@@ -352,6 +352,56 @@ other 12 diverge on independent stdenv-stage / fetchurl roots, not this cycle. T
 "~9-package cascade" earlier estimated for this root is **not confirmed** — the
 diverging tail has multiple independent roots.
 
+### CONFIRMED (2026-07-10) — hello's root is stdenv STAGE-COLLAPSE, not fetchurl
+
+An `sui parity-bisect` walk of `hello`, `hello.src`, `perl`, `openssl`, and
+`buildPackages.perl.override{enableCrypt=false}` **all bottom out at the same
+leaf** — the stdenv perl↔openssl↔krb5 bootstrap cycle — and the earlier
+"fetchurl/mirrors" characterization (`pvir9l70…` vs `gc56b6ig…`) is **disproven**:
+even `hello.src` (the fetchurl derivation) bisects to `perl → libxcrypt`, i.e. its
+divergence rides in through the same bootstrap perl, not through a mirror-list or
+`SSL_CERT_FILE` difference.
+
+**The exact divergent field** (byte-diffed at the `krb5-1.22.1.drv` leaf via
+`SUI_DUMP_DRV` + `parity-bisect`): krb5's `__json` (`__structuredAttrs`) has
+`buildInputs = [null, …]` and `nativeBuildInputs = [byacc, null, pkg-config]` in
+sui where nix has `[openssl-dev, …]` and `[byacc, perl, pkg-config]`. The `null`s
+are the **empty-attrs fixpoint partial surviving through the splice map**
+`map (drv: getDev drv.__spliced.buildHost or drv) …` in
+`pkgs/stdenv/generic/make-derivation.nix` (§ dependencies): `drv.__spliced.<pos>`
+misses on the empty partial, `or drv` yields the empty partial, `getDev` on it
+→ `null` in the dep list. openssl's `postFixup` shows the same:
+`grep -r '' $out` (empty) vs nix's `grep -r '<perl-path>' $out`.
+
+**The real root is stage-collapse, NOT partial materialization.** nix has no true
+cycle here: the perl that openssl uses is stage-distinct from the top-level perl
+(`buildPackages.perl.override{enableCrypt=false}` = `az4wk58…`, a bootstrap-stage
+perl whose own build chain uses `stdenv.fetchurlBoot`, so it does **not** re-enter
+openssl). sui **collapses these stage-distinct derivations into one thunk** (the
+`finalPackage`/`args` `finalAttrs` fixpoint in `makeDerivationExtensible`,
+`make-derivation.nix:84` `args = rattrs (args // { inherit finalPackage …; })`),
+manufacturing a fixpoint that does not exist in nix → the same-thunk Blackhole
+re-entry → the empty-attrs promoted partial → the `null` deps above. The
+`SUI_PROMOTE` trace confirms it: the re-entered expression is literally
+`(drv.__spliced.buildHost or drv)` in `make-derivation.nix`.
+
+**Why the materialized-keys partial alone will NOT close it.** Because the two
+derivations (openssl and its perl) are *both* mid-`finalPackage` construction, no
+cell is populated at re-entry — a cell-backed lazy partial (`PromiseRef`,
+experimentally added + reverted this session: **clean no-op**, 19 match · 0
+regressions, no graduation) reads the still-empty cell. The load-bearing fix is to
+**stop collapsing the stages** — give the stdenv stage-graph distinct
+`finalPackage` thunks per bootstrap stage so `buildPackages` at each stage is a
+stage-distinct package set (the corpus row's exact criterion:
+"graduates the moment sui's stdenv stage-graph makes nested `buildPackages`
+stage-distinct"). This is a stdenv-booter-level change, still deferred; the
+`staged mutual-ref override nativeBuildInput` corpus lock proves the bug is NOT in
+`{fixpoint, mutual-ref, override, staged buildPackages}` in isolation — it is the
+real `makeScopeWithSplicing` stage machinery. The keystone `libxcrypt.drvPath`
+(`jb9k6090…`) matches because its standalone demand order forces the crypt-disabled
+perl cleanly (top-level perl not on the stack); the divergence is order-dependent,
+appearing only when the top-level perl fixpoint is on the force stack.
+
 ## The one-line law
 
 A byte that differs between sui and nix is a **red gate**, forever — and the only

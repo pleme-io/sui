@@ -3655,6 +3655,27 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             Box::new(move || diff_eval(&sui, &nix,
                 "let fix = f: let x = f x; in x; mkStage = adjacent: name: fix (self: { inherit name; buildPackages = if adjacent == null then self else adjacent; mkP = args: derivation { name = \"p\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; tag = args.tag; stage = name; buildInputs = if args.tag == \"full\" then [ self.libxcrypt ] else []; }; perl = (self.mkP { tag = \"full\"; }) // { override = a: self.mkP a; }; libxcrypt = derivation { name = \"libxcrypt\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; nativeBuildInputs = [ (self.buildPackages.perl.override { tag = \"nocrypt\"; }) ]; }; }); s0 = mkStage null \"s0\"; s1 = mkStage s0 \"s1\"; in s1.libxcrypt.drvPath"))
         }),
+        // CONFIRMED narrowest real leaf of the hello/perl divergence
+        // (2026-07-10, `sui parity-bisect`): standalone `openssl.drvPath`
+        // bisects to `krb5-1.22.1.drv`, whose `__structuredAttrs` `buildInputs`
+        // / `nativeBuildInputs` carry a `null` where nix carries `openssl-dev` /
+        // `perl` — the empty-attrs fixpoint partial surviving through the splice
+        // `map (drv: getDev drv.__spliced.buildHost or drv)` in
+        // make-derivation.nix. This is the SAME stage-collapse root as the
+        // crypt-disabled-perl row (hello → … → this), tracked at its most
+        // reduced real leaf. Graduates the moment sui's stdenv stage-graph stops
+        // collapsing stage-distinct `finalPackage` thunks (see
+        // docs/BYTE-PARITY-TYPESCAPE.md § CONFIRMED (2026-07-10)).
+        (ParityProbe { name: "eval openssl drvPath (__spliced null leaf)", description: "openssl → krb5 __structuredAttrs dep null via drv.__spliced splice on empty fixpoint partial — the reduced real leaf of hello", expect: Expect::KnownDiverge }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).openssl.drvPath"))
+            })
+        }),
     ];
 
     // Run + collect (carry each probe's matrix expectation alongside the verdict).
