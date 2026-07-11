@@ -189,6 +189,26 @@ change), run, then force-restore. Always leave `~/.cache/sui` pristine.
 (get-task-allow), run under `lldb -k` (run-on-crash), on a
 `CARGO_PROFILE_RELEASE_STRIP=false DEBUG=1` build for symbols.
 
+**★★ The Parity Method — typescape the class, don't just fix the instance
+(canonical: [`theory/BUILD.md` §II.1](https://github.com/pleme-io/theory/blob/main/BUILD.md)).**
+The fix loop above (repro → root-fix → test → commit) is the *detect* half. A
+parity fix is not *done* until its whole **class** is sealed: (1) reduce to a
+smallest pure-builtins repro proving the root is **general**, not
+package-specific (the cascade a general fix produces is the confirmation — this
+arc: single fixes closed 7–10 packages each); (2) **typescape the class** as a
+TYPED-SPEC + INTERPRETER TRIPLET in `sui-spec` (Rust border + `(def…)` Lisp spec
++ `apply` behind a mockable `Environment`), so the illegal state is a typed
+invariant, not a runtime guard (`laziness`/`coercion` are the worked examples);
+(3) **regenerate across channels** — both engines drive the one authored spec,
+repeating impl-shapes absorb into the generated macro vocabulary
+([`docs/MACRO-VOCABULARY.md`](docs/MACRO-VOCABULARY.md)); (4) **seal** — a
+sealed `sui parity` corpus row (a Match that regresses fails CI) + a regression
+test + the CATALOG REFLECTION entry in the same commit. Standing rule: every
+parity fix advances a domain + a sealed corpus row, or carries a typed
+`parity-oneoff: <reason>` note naming why the divergence is genuinely
+instance-specific. A one-off patch that leaves the class able to recur is the
+deviation this method forbids.
+
 ## Performance Architecture
 
 - **Value:** 16 bytes — 2 per cache line (compile-time enforced)
