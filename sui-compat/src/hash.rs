@@ -186,6 +186,24 @@ pub fn decode_hash_any(
         }
     }
 
+    // 4. **bare (un-prefixed) standard base64** — CppNix's
+    //    `Hash::parseNonSRIUnprefixed` accepts a padded standard-base64
+    //    digest with NO `<algo>-` prefix (the historical `sha256 = "…="`
+    //    form used all over nixpkgs `fetchpatch`/`fetchurl`). The length
+    //    is `4 * ceil(digest_len / 3)` rounded up to a multiple of 4 —
+    //    distinct from the hex and base32 lengths for every algorithm, so
+    //    length alone disambiguates (no backtracking). Without this branch
+    //    a FOD whose `outputHash` is bare base64 throws at drv-construction;
+    //    stdenv `mkDerivation` swallows the throw and silently drops the
+    //    whole attribute (e.g. `patches`), diverging the drv from CppNix.
+    let base64_len = (4 * want / 3 + 3) & !3usize;
+    if raw.len() == base64_len {
+        let bytes = base64_decode(raw)?;
+        if bytes.len() == want {
+            return Ok(bytes);
+        }
+    }
+
     Err(HashError::InvalidEncoding)
 }
 
@@ -799,5 +817,55 @@ mod tests {
         let hex_part = hash.to_nix_string();
         let h = hex_part.strip_prefix("sha1:").unwrap();
         assert_eq!(h.len(), 40); // 20 bytes * 2 hex chars
+    }
+
+    // ── bare (un-prefixed) standard-base64 ingress ───────
+    // CppNix `Hash::parseNonSRIUnprefixed` accepts a padded standard
+    // base64 digest with NO `<algo>-` prefix (the historical
+    // `sha256 = "…="` form used all over nixpkgs fetchpatch/fetchurl).
+    // Without this branch a FOD whose outputHash is bare base64 throws
+    // at drv-construction; stdenv mkDerivation swallows the throw and
+    // silently drops the whole attribute (e.g. `patches`).
+
+    #[test]
+    fn bare_base64_sha256_round_trips_to_hex() {
+        // Real nixpkgs elfutils fix-aarch64_fregs.patch fetchpatch hash.
+        let raw = "zvncoRkQx3AwPx52ehjA2vcFroF+yDC2MQR5uS6DATs=";
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, raw)
+            .expect("bare base64 sha256 must parse");
+        assert_eq!(h.digest.len(), 32);
+        // And it decodes to the same bytes as the SRI-prefixed form.
+        let sri = format!("sha256-{raw}");
+        let h2 = NixHash::parse_any(HashAlgorithm::Sha256, &sri).unwrap();
+        assert_eq!(h.digest, h2.digest);
+    }
+
+    #[test]
+    fn bare_base64_length_per_algo_disambiguates() {
+        // hex / base32 / base64 lengths are distinct for every algo, so
+        // length alone selects the encoding (no backtracking).
+        for (algo, n) in [
+            (HashAlgorithm::Sha256, 32usize),
+            (HashAlgorithm::Sha512, 64),
+            (HashAlgorithm::Sha1, 20),
+            (HashAlgorithm::Md5, 16),
+        ] {
+            let digest = vec![0x3C; n];
+            let b64 = base64_encode(&digest);
+            let parsed = NixHash::parse_any(algo, &b64)
+                .expect("bare base64 must parse for every algo");
+            assert_eq!(parsed.digest, digest);
+        }
+    }
+
+    #[test]
+    fn bare_base64_wrong_length_rejected() {
+        // A base64 string whose decoded length ≠ digest_len must NOT be
+        // silently accepted (would corrupt the store-path fingerprint).
+        let short = base64_encode(&[0u8; 16]); // 16 bytes, not sha256's 32
+        assert!(matches!(
+            NixHash::parse_any(HashAlgorithm::Sha256, &short),
+            Err(HashError::InvalidEncoding)
+        ));
     }
 }
