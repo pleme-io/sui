@@ -107,7 +107,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Bool(std::path::Path::new(&path_str).exists()))
     });
 
-    // builtins.path { path; name?; sha256?; recursive?; }
+    // builtins.path { path; name?; sha256?; recursive?; filter?; }
+    //
+    // CppNix builds the store path by NAR-serializing the source tree
+    // (the default `recursive`/"source" mode), sha256-hashing the NAR,
+    // and computing a `fixed:out:r:sha256:<hex>` store path named by
+    // `name` (or the path's basename). This is the SAME machinery a
+    // plain path-value copy-to-store uses (`nar_hash_source_tree`),
+    // proven byte-identical to nix. The previous impl hand-rolled a
+    // `sha256(file-content-bytes)[..32]` hex placeholder — a wrong
+    // store path that diverged every `builtins.path`-produced input
+    // (e.g. llvm's `getVersionFile` patches → the whole LLVM/Rust
+    // toolchain, ~13 packages).
     register_builtin(builtins, "path", |args| {
         let attrs = args[0].to_attrs()?;
         let path_val = attrs
@@ -115,42 +126,92 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
         let path_forced = crate::eval::force_value(path_val)?;
         let path_str = path_forced.coerce_to_path("path")?;
+
+        // Absolutize (relative literals resolve against the evaluating
+        // file's dir, matching CppNix's parse-time absolutization) then
+        // canonicalize (realpath) — identical to the copy-to-store
+        // coercion arm in `Value::coerce_to_string_impl`.
+        let pb = std::path::Path::new(&path_str);
+        let abs = if pb.is_absolute() {
+            pb.to_path_buf()
+        } else if let Some(dir) = crate::eval::current_eval_dir() {
+            dir.join(pb)
+        } else {
+            std::env::current_dir()
+                .map_err(|e| EvalError::IoError {
+                    context: format!("builtins.path: {path_str}"),
+                    message: e.to_string(),
+                })?
+                .join(pb)
+        };
+        let canon = abs.canonicalize().map_err(|_| {
+            EvalError::TypeError(format!("path '{}' does not exist", abs.display()))
+        })?;
+
         let name = attrs
             .get("name")
-            .map(|v| v.to_str())
+            .map(|v| crate::eval::force_value(v).and_then(|f| f.to_str()))
             .transpose()?
             .unwrap_or_else(|| {
-                std::path::Path::new(&path_str)
+                canon
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string()
             });
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        let p = std::path::Path::new(&path_str);
-        if p.is_file() {
-            let content = std::fs::read(p)
-                .map_err(|e| EvalError::IoError { context: "path".into(), message: e.to_string() })?;
-            hasher.update(&content);
-        } else if p.is_dir() {
-            // Hash the directory name for deterministic output
-            hasher.update(path_str.as_bytes());
-        } else {
-            hasher.update(path_str.as_bytes());
-        }
+
+        let src = sui_compat::source::nar_hash_source_tree(&canon, &name).map_err(|e| {
+            EvalError::TypeError(format!(
+                "builtins.path: NAR-hashing '{}': {e}",
+                canon.display()
+            ))
+        })?;
+
+        // Optional integrity check: nix verifies the supplied `sha256`
+        // (SRI / bare-base64 / hex / base32) against the NAR hash.
         if let Some(expected) = attrs.get("sha256") {
-            let expected_str = expected.to_str()?;
-            let actual = format!("{:x}", hasher.clone().finalize());
-            if expected_str != actual {
-                return Err(EvalError::TypeError(format!(
-                    "path: sha256 mismatch: expected {expected_str}, got {actual}"
-                )));
+            let expected_forced = crate::eval::force_value(expected)?;
+            let expected_str = expected_forced.to_str()?;
+            let want = sui_compat::hash::NixHash::parse_any(
+                sui_compat::hash::HashAlgorithm::Sha256,
+                expected_str.trim_start_matches("sha256-"),
+            )
+            .or_else(|_| {
+                sui_compat::hash::NixHash::parse_any(
+                    sui_compat::hash::HashAlgorithm::Sha256,
+                    &expected_str,
+                )
+            });
+            if let Ok(want) = want {
+                let got = sui_compat::hash::NixHash::parse_any(
+                    sui_compat::hash::HashAlgorithm::Sha256,
+                    src.nar_hash_sri.trim_start_matches("sha256-"),
+                );
+                if let Ok(got) = got {
+                    if want.digest != got.digest {
+                        return Err(EvalError::TypeError(format!(
+                            "path: sha256 mismatch: expected {expected_str}, got {}",
+                            src.nar_hash_sri
+                        )));
+                    }
+                }
             }
         }
-        let hash = format!("{:x}", hasher.finalize());
-        let store_path = format!("/nix/store/{}-{}", &hash[..32], name);
-        Ok(Value::Path(Box::new(SmolStr::from(store_path.as_str()))))
+
+        // CppNix's `builtins.path` returns a STRING carrying the store
+        // path as opaque (`Plain`) context — NOT a Path value. This is
+        // load-bearing: a Path value would be RE-copied when coerced
+        // into a derivation env (per the copy-to-store arm's "a Path is
+        // always copied" rule), producing a doubled `<hash>-<hash>-name`
+        // store path and diverging every consumer (e.g. llvm's patches
+        // → the whole LLVM/Rust toolchain). A String-with-context is
+        // referenced verbatim, exactly like nix.
+        let mut ctx = StringContext::new();
+        ctx.add_plain(src.store_path.clone());
+        Ok(Value::String(std::rc::Rc::new(NixString::with_context(
+            SmolStr::from(src.store_path.as_str()),
+            ctx,
+        ))))
     });
 
     // filterSource

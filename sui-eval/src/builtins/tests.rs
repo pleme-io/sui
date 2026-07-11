@@ -1220,7 +1220,9 @@ fn builtins_read_dir_empty() {
 
 #[test]
 fn builtins_path_with_file() {
-    // builtins.path on a real file returns a /nix/store/... path
+    // builtins.path on a real file returns a STRING (with store context)
+    // referencing a /nix/store/… path named by `name`. (CppNix yields a
+    // string, not a Path — a Path would be re-copied in a derivation env.)
     let dir = std::env::temp_dir().join("sui_eval_test_builtins_path");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1231,18 +1233,15 @@ fn builtins_path_with_file() {
         file.display()
     );
     let v = eval(&expr).unwrap();
-    if let Value::Path(p) = v {
-        assert!(p.starts_with("/nix/store/"));
-        assert!(p.ends_with("-test"));
-    } else {
-        panic!("expected path, got {v}");
-    }
+    let s = v.as_string().unwrap_or_else(|_| panic!("expected string, got {v}"));
+    assert!(s.starts_with("/nix/store/"));
+    assert!(s.ends_with("-test"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn builtins_path_default_name() {
-    // Without explicit name, uses the file name component
+    // Without explicit name, uses the file name component. Still a STRING.
     let dir = std::env::temp_dir().join("sui_eval_test_builtins_path_dn");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1253,12 +1252,9 @@ fn builtins_path_default_name() {
         file.display()
     );
     let v = eval(&expr).unwrap();
-    if let Value::Path(p) = v {
-        assert!(p.starts_with("/nix/store/"));
-        assert!(p.ends_with("-myfile.txt"));
-    } else {
-        panic!("expected path, got {v}");
-    }
+    let s = v.as_string().unwrap_or_else(|_| panic!("expected string, got {v}"));
+    assert!(s.starts_with("/nix/store/"));
+    assert!(s.ends_with("-myfile.txt"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4493,4 +4489,49 @@ fn lazy_make_overridable_override_keeps_unused_origarg_lazy() {
               in (p.override { enableCrypt = false; }).name"#),
         Value::string("p"),
     );
+}
+
+#[test]
+fn builtins_path_returns_string_not_path() {
+    // CppNix's `builtins.path` yields a STRING carrying the store path as
+    // opaque context — NOT a Path value. A Path value would be RE-copied
+    // when coerced into a derivation env (doubling `<hash>-<hash>-name`),
+    // diverging every consumer (e.g. llvm's `getVersionFile` patches). This
+    // pins the type-level invariant.
+    let dir = std::env::temp_dir().join("sui-builtins-path-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("probe.patch");
+    std::fs::write(&file, b"probe contents\n").unwrap();
+    let expr = format!(
+        r#"builtins.typeOf (builtins.path {{ name = "probe.patch"; path = {}; }})"#,
+        file.display()
+    );
+    assert_eq!(ev(&expr), Value::string("string"));
+}
+
+#[test]
+fn builtins_path_does_not_double_copy_in_derivation_env() {
+    // The store path a `builtins.path` result produces must be referenced
+    // VERBATIM when placed in a derivation env — never re-NAR-copied to a
+    // `<newhash>-<oldhash>-name` doubled path. We assert the derivation's
+    // referenced store path is the SAME single-hash path builtins.path
+    // returned (idempotent under one round of env coercion).
+    let dir = std::env::temp_dir().join("sui-builtins-path-test2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("probe2.patch");
+    std::fs::write(&file, b"probe2 contents\n").unwrap();
+    let expr = format!(
+        r#"let p = builtins.path {{ name = "probe2.patch"; path = {}; }};
+           in toString p"#,
+        file.display()
+    );
+    let s = ev(&expr).as_string().unwrap().to_string();
+    // Exactly one `<32-char-hash>-` segment before the name (no doubling).
+    let base = s.rsplit('/').next().unwrap();
+    assert!(base.ends_with("-probe2.patch"), "unexpected store name: {base}");
+    // basename = <hash>-probe2.patch — a single hash, so exactly one '-'
+    // separating the hash from the plain name.
+    let hash = base.split('-').next().unwrap();
+    assert_eq!(hash.len(), 32, "store hash must be 32 chars, got {base}");
+    assert!(!base.contains("-probe2.patch-"), "doubled name: {base}");
 }
