@@ -1631,10 +1631,44 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     let value_expr = apv.value().ok_or_else(|| {
                         EvalError::ParseError("binding missing value".to_string())
                     })?;
-                    let mut path_keys: Vec<String> = attrpath
-                        .attrs()
-                        .filter_map(|a| eval_attr_maybe_null(&a, env).transpose())
-                        .collect::<Result<_, _>>()?;
+                    let path_attrs: Vec<ast::Attr> = attrpath.attrs().collect();
+                    // CppNix defers a dynamic key that is NOT at the HEAD of the
+                    // attrpath: `{ a.${e} = v; }` builds `{ a = <thunk {${e}=v}>; }`,
+                    // so `e` never forces until `.a` is demanded. Evaluating the
+                    // whole path eagerly would force `e` at construction and — in
+                    // the module-system fixpoint — read `config.<x>` while `config`
+                    // is mid-force (the M2.6 divergence: `homes.null` instead of
+                    // `homes.<name>`). Only the head is eager; a lone dynamic tail
+                    // becomes a deferred thunk. A rarer collision under the same
+                    // head stays eager (forced) so static deep-merge still works.
+                    let tail_is_dynamic =
+                        path_attrs.len() > 1 && attrs_have_dynamic(&path_attrs[1..]);
+                    let head_key = match eval_attr_maybe_null(&path_attrs[0], env)? {
+                        Some(k) => k,
+                        // Null dynamic HEAD attr name → skip entire binding.
+                        None => continue,
+                    };
+                    if tail_is_dynamic && attrs.get(&head_key).is_none() {
+                        let value =
+                            build_deferred_tail_attr(&path_attrs[1..], &value_expr, env);
+                        attrs.insert(head_key, value);
+                        continue;
+                    }
+                    // Eager path: evaluate the remaining (static, or collision)
+                    // keys now. A null dynamic tail key skips the binding.
+                    let mut path_keys: Vec<String> = {
+                        let mut v = Vec::with_capacity(path_attrs.len());
+                        v.push(head_key);
+                        let mut skip = false;
+                        for a in &path_attrs[1..] {
+                            match eval_attr_maybe_null(a, env)? {
+                                Some(k) => v.push(k),
+                                None => { skip = true; break; }
+                            }
+                        }
+                        if skip { v.clear(); }
+                        v
+                    };
                     // Null dynamic attr name → skip entire binding (CppNix compat)
                     if path_keys.is_empty() { continue; }
                     if path_keys.len() == 1 {
@@ -1801,6 +1835,66 @@ fn build_nested_attr(
     }
     let key = path[0].clone();
     let inner = build_nested_attr(&path[1..], expr, env)?;
+    let mut attrs = NixAttrs::new();
+    attrs.insert(key, inner);
+    Ok(Value::Attrs(Rc::new(attrs)))
+}
+
+/// True if any attr in the slice is a dynamic (interpolated) key.
+///
+/// A dynamic key beyond the HEAD of an attrpath must NOT be evaluated at
+/// attrset-construction time — CppNix defers it inside the head's lazy
+/// value, so `{ a.${e} = v; }` never forces `e` until `.a` is demanded.
+/// Static string/ident keys are cheap and force nothing, so they don't
+/// need deferral.
+fn attrs_have_dynamic(attrs: &[ast::Attr]) -> bool {
+    attrs.iter().any(|a| matches!(a, ast::Attr::Dynamic(_)))
+}
+
+/// Build the nested attrset for the TAIL of an attrpath, deferring
+/// evaluation of dynamic tail keys until the value is forced.
+///
+/// Given tail attrs `[b, ${e}, c]` and a value expr, produce a lazy
+/// `Value::Thunk` that, when forced, evaluates each tail key (including
+/// the dynamic `${e}`) against `env` and builds `{ b = { ${e} = { c =
+/// <leaf-thunk> }; }; }`. This mirrors CppNix: the inner attrset (and
+/// thus its dynamic keys) is constructed only when the enclosing head
+/// attribute is demanded — never at construction of the outer attrset.
+///
+/// A dynamic key that evaluates to `null` skips the whole binding
+/// (returns an empty attrset), matching CppNix's null-dynamic-attr rule.
+fn build_deferred_tail_attr(
+    tail: &[ast::Attr],
+    value_expr: &ast::Expr,
+    env: &Env,
+) -> Value {
+    let tail: Vec<ast::Attr> = tail.to_vec();
+    let value_expr = value_expr.clone();
+    let env = env.clone();
+    Value::Thunk(Thunk::new_native(move || {
+        build_tail_attrs_now(&tail, &value_expr, &env)
+    }))
+}
+
+/// Eagerly build `{ <tail> = <leaf-thunk> }` — used from inside the
+/// deferred thunk above once the head is demanded. Dynamic keys ARE
+/// evaluated here (correctly, at demand time). A null dynamic key
+/// yields an empty attrset (CppNix null-dynamic-attr skip).
+fn build_tail_attrs_now(
+    tail: &[ast::Attr],
+    value_expr: &ast::Expr,
+    env: &Env,
+) -> Result<Value, EvalError> {
+    if tail.is_empty() {
+        return Ok(maybe_thunk(value_expr, env, false, None));
+    }
+    let key = match eval_attr_maybe_null(&tail[0], env)? {
+        Some(k) => k,
+        // Null dynamic key → the whole binding is skipped; an empty
+        // attrset is the identity for merge_nested_insert.
+        None => return Ok(Value::Attrs(Rc::new(NixAttrs::new()))),
+    };
+    let inner = build_tail_attrs_now(&tail[1..], value_expr, env)?;
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(Rc::new(attrs)))
@@ -2403,6 +2497,55 @@ mod tests {
         } else {
             panic!("expected Attrs, got {v:?}");
         }
+    }
+
+    // ── Inner dynamic attrpath key laziness ──────────────────
+    // CppNix defers a dynamic key that is NOT at the head of an attrpath:
+    // `{ a.${e} = v; }` builds `{ a = <thunk {${e}=v}>; }`, so `e` never
+    // forces until `.a` is demanded. Reading a sibling must not force the
+    // inner dynamic key. Root fix: `build_deferred_tail_attr` in eval.rs.
+    // This is the pure-builtins reduction of the NixOS module-system
+    // `config.homes.${cfg.userName}` fixpoint divergence.
+    #[test]
+    fn dynamic_inner_attr_key_is_lazy_on_sibling_read() {
+        // The dynamic key throws; reading the SIBLING must NOT force it.
+        assert_eq!(
+            ev(r#"let s = { a.${throw "KEYFORCED"} = 7; other = 9; }; in s.other"#),
+            Value::Int(9),
+        );
+    }
+
+    #[test]
+    fn dynamic_inner_attr_key_resolves_on_head_demand() {
+        // Demanding the head DOES resolve the deferred dynamic key.
+        let v = ev(r#"let u = "bob"; s = { homes.${u} = 7; }; in s.homes"#);
+        if let Value::Attrs(attrs) = force_value(&v).unwrap() {
+            assert_eq!(attrs.get("bob"), Some(&Value::Int(7)));
+        } else {
+            panic!("expected Attrs");
+        }
+    }
+
+    #[test]
+    fn dynamic_inner_attr_key_merges_with_static_sibling() {
+        // Collision under one head still deep-merges (static + dynamic).
+        let v = ev(r#"let u = "x"; s = { a.${u} = 1; a.b = 2; }; in s.a"#);
+        if let Value::Attrs(attrs) = force_value(&v).unwrap() {
+            assert_eq!(attrs.get("x"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected Attrs");
+        }
+    }
+
+    #[test]
+    fn dynamic_inner_attr_key_null_skips_binding() {
+        // A null dynamic inner key skips the definition (CppNix rule):
+        // `a` becomes an empty attrset, the sibling stays.
+        let v = ev(
+            r#"let c = true; s = { a.${if c then null else "n"} = 5; b = 1; }; in s.b"#,
+        );
+        assert_eq!(v, Value::Int(1));
     }
 
     #[test]

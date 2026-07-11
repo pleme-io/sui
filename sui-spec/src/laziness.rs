@@ -169,6 +169,63 @@ impl ThunkDiscipline {
     }
 }
 
+// ── Typed border — attrpath-key construction force-site ────────────
+
+/// Where in an attrpath a dynamic (`${e}`) key sits, relative to the
+/// head.  The force-site of the key expression `e` depends on this.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttrKeyPosition {
+    /// The FIRST segment of the attrpath (`{ ${e} = v; }`).  nix forces
+    /// `e` when the attrset is constructed (its key-set must be known to
+    /// reach WHNF).
+    Head,
+    /// Any segment AFTER the head (`{ a.${e} = v; }`).  nix builds the
+    /// head's value as a lazy thunk `{ ${e} = v; }`, so `e` is NOT
+    /// forced at construction — only when the head (`.a`) is demanded.
+    Tail,
+}
+
+/// When the engine forces a dynamic attrpath key's expression.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyForceSite {
+    /// Forced eagerly while constructing the enclosing attrset.
+    Construction,
+    /// Deferred until the head attribute is demanded.
+    HeadDemand,
+}
+
+/// The construction-time force discipline for a dynamic attrpath key —
+/// the byte-parity root fixed 2026-07-11 (sui module-system frontier):
+/// sui forced a dynamic key at ANY position eagerly at construction, so
+/// `{ a.${e} = v; }` forced `e` immediately.  In the NixOS module
+/// fixpoint that `e` is `config.<x>` read while `config` is mid-force —
+/// the empty-Promise partial softens it to `null`, so the definition
+/// routes to `<null>` (`homes.null` instead of `homes.<name>`).  nix
+/// defers a TAIL key to head-demand; only a HEAD key is eager.  A
+/// `Tail`/`Construction` pairing is that bug made explicit.
+#[derive(DeriveTataraDomain, Serialize, Deserialize, Debug, Clone)]
+#[tatara(keyword = "defattrkey-forcesite")]
+pub struct AttrKeyForceSite {
+    /// `"head-dynamic"` | `"tail-dynamic"`.
+    pub name: String,
+    pub position: AttrKeyPosition,
+    #[serde(rename = "forceSite")]
+    pub force_site: KeyForceSite,
+}
+
+impl AttrKeyForceSite {
+    /// Whether this force-site matches nix.  A HEAD key is forced at
+    /// construction; a TAIL key is deferred to head-demand.  Any other
+    /// pairing diverges (the `homes.null` module-system root).
+    #[must_use]
+    pub fn is_parity_correct(&self) -> bool {
+        match self.position {
+            AttrKeyPosition::Head => self.force_site == KeyForceSite::Construction,
+            AttrKeyPosition::Tail => self.force_site == KeyForceSite::HeadDemand,
+        }
+    }
+}
+
 // ── Interpreter — the force-discipline FSM (mockable Environment) ──
 
 /// A thunk's identity in the store.  The real engine uses `Rc` cell
@@ -272,6 +329,14 @@ pub fn load_canonical_disciplines() -> Result<Vec<ThunkDiscipline>, SpecError> {
     crate::loader::load_all::<ThunkDiscipline>(CANONICAL_LAZINESS_LISP)
 }
 
+/// Load every authored `(defattrkey-forcesite …)`.
+///
+/// # Errors
+/// Fails if the canonical Lisp doesn't parse under the schema.
+pub fn load_canonical_attrkey_forcesites() -> Result<Vec<AttrKeyForceSite>, SpecError> {
+    crate::loader::load_all::<AttrKeyForceSite>(CANONICAL_LAZINESS_LISP)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +387,37 @@ mod tests {
     fn canonical_lisp_loads_model_and_disciplines() {
         assert!(!load_canonical_models().unwrap().is_empty());
         assert!(load_canonical_disciplines().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn canonical_attrkey_forcesites_load() {
+        let sites = load_canonical_attrkey_forcesites().unwrap();
+        assert!(sites.len() >= 2, "head-dynamic + tail-dynamic");
+        // The authored force-sites both match nix — the byte-parity
+        // contract the real engine must satisfy.
+        for s in &sites {
+            assert!(s.is_parity_correct(), "authored site {} diverges", s.name);
+        }
+    }
+
+    #[test]
+    fn tail_dynamic_key_eager_construction_is_the_module_system_bug() {
+        // A TAIL dynamic key forced at Construction is exactly the
+        // `homes.null` module-system divergence made explicit — it must
+        // FAIL is_parity_correct so the spec names the bug, not hides it.
+        let buggy = AttrKeyForceSite {
+            name: "sui-pre-fix".into(),
+            position: AttrKeyPosition::Tail,
+            force_site: KeyForceSite::Construction,
+        };
+        assert!(!buggy.is_parity_correct());
+        // The fix — deferred to head demand — is parity-correct.
+        let fixed = AttrKeyForceSite {
+            name: "sui-fixed".into(),
+            position: AttrKeyPosition::Tail,
+            force_site: KeyForceSite::HeadDemand,
+        };
+        assert!(fixed.is_parity_correct());
     }
 
     #[test]

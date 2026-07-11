@@ -277,5 +277,62 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── inner dynamic attrpath key laziness (root: eval.rs deferred tail) ──
+    // CppNix defers a dynamic key that is NOT at the head of an attrpath:
+    // `{ a.${e} = v; }` builds `{ a = <thunk {${e}=v}>; }`, so `e` never
+    // forces until `.a` is demanded. Reading a SIBLING (`.other`) must not
+    // force the inner dynamic key. Before the fix sui evaluated the whole
+    // attrpath eagerly at construction, forcing `e` — which, in the NixOS
+    // module-system fixpoint, read `config.<x>` while `config` was mid-force
+    // (the `homes.${cfg.userName}` → `homes.null` divergence). `u` binds the
+    // dynamic key; reading `.other` proves `${u}` is not forced during
+    // construction of the sibling.
+    let dyn_key_entry = |head: &str, key_expr: NixValue, value: NixValue| {
+        AttrSetEntry::KeyValue {
+            key: gen_nix::ast::AttrPath(vec![
+                gen_nix::ast::AttrKey::Ident(head.to_string()),
+                gen_nix::ast::AttrKey::Interp(key_expr),
+            ]),
+            value,
+        }
+    };
+    rows.push(row(
+        "dynamic inner attrpath key — sibling read stays lazy",
+        let_(
+            vec![
+                ("u", str_("bob")),
+                (
+                    "s",
+                    attrs(vec![
+                        dyn_key_entry("homes", path(&["u"]), NixValue::Int(7)),
+                        entry("other", NixValue::Int(9)),
+                    ]),
+                ),
+            ],
+            path(&["s", "other"]),
+        ),
+        RowExpect::Match,
+    ));
+    // Demanding the head DOES resolve the deferred dynamic key: selecting
+    // `s.homes.bob` returns 7 in both engines.
+    rows.push(row(
+        "dynamic inner attrpath key — head demand resolves key",
+        let_(
+            vec![
+                ("u", str_("bob")),
+                (
+                    "s",
+                    attrs(vec![dyn_key_entry(
+                        "homes",
+                        path(&["u"]),
+                        NixValue::Int(7),
+                    )]),
+                ),
+            ],
+            NixValue::AttrPath(vec!["s".into(), "homes".into(), "bob".into()]),
+        ),
+        RowExpect::Match,
+    ));
+
     rows
 }

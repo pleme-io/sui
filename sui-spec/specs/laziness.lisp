@@ -52,3 +52,24 @@
   :reentry          Promise
   :memoize-on-force  #t
   :recursion-kind   Fixpoint)
+
+;; ── Dynamic attrpath-key construction force-site ────────────────────
+;; A dynamic key `${e}` at the HEAD of an attrpath (`{ ${e} = v; }`) is
+;; forced at construction — nix must know the key-set to reach WHNF.
+(defattrkey-forcesite
+  :name       "head-dynamic"
+  :position   Head
+  :force-site Construction)
+
+;; A dynamic key AFTER the head (`{ a.${e} = v; }`) is DEFERRED: nix
+;; builds `{ a = <thunk {${e}=v}>; }`, so `e` forces only when `.a` is
+;; demanded.  Byte-parity root fixed 2026-07-11 (module-system frontier,
+;; byte-verified): sui forced tail keys eagerly at construction, so in
+;; the NixOS fixpoint `config.homes.${cfg.userName}` read `config` while
+;; it was mid-force → empty-Promise partial → softened `null` key →
+;; `homes.null` instead of `homes.<name>`.  The fix, as data: a TAIL key
+;; MUST be HeadDemand (a `Construction` pairing fails is_parity_correct).
+(defattrkey-forcesite
+  :name       "tail-dynamic"
+  :position   Tail
+  :force-site HeadDemand)

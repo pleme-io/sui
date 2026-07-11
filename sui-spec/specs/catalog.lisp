@@ -23,7 +23,7 @@
 
 (defsubstrate-domain
   :name               "laziness"
-  :authoring-keywords ("deflaziness-model" "defthunk-discipline")
+  :authoring-keywords ("deflaziness-model" "defthunk-discipline" "defattrkey-forcesite")
   :gate               M3TypedOnly
   :purpose            "Evaluator laziness/thunk-sharing/demand-order model both engines must drive — Referential sharing + Tracked string-context are the byte-parity invariants"
   :cppnix-mirror      "libexpr/eval.cc (Value force + thunk blackholing)"
