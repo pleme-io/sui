@@ -4606,3 +4606,45 @@ fn builtins_path_does_not_double_copy_in_derivation_env() {
     assert_eq!(hash.len(), 32, "store hash must be 32 chars, got {base}");
     assert!(!base.contains("-probe2.patch-"), "doubled name: {base}");
 }
+
+#[test]
+fn builtins_path_filter_changes_store_path() {
+    // `builtins.path { filter; … }` (the engine behind
+    // `lib.cleanSourceWith` / cleanCargoSource / crane) must PRUNE the
+    // tree before NAR-hashing. A filter that drops a file must yield a
+    // DIFFERENT store path than the unfiltered copy — otherwise every
+    // filtered nixpkgs `src` diverges (e.g. prefetch-npm-deps).
+    let dir = std::env::temp_dir().join("sui-builtins-path-filter");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("keep.txt"), b"keep\n").unwrap();
+    std::fs::write(dir.join("drop.txt"), b"drop\n").unwrap();
+
+    let unfiltered = format!(
+        r#"toString (builtins.path {{ name = "src"; path = {}; }})"#,
+        dir.display()
+    );
+    let filtered = format!(
+        r#"toString (builtins.path {{
+             name = "src";
+             path = {};
+             filter = p: t: (builtins.baseNameOf p) != "drop.txt";
+           }})"#,
+        dir.display()
+    );
+    let u = ev(&unfiltered).as_string().unwrap().to_string();
+    let f = ev(&filtered).as_string().unwrap().to_string();
+    assert_ne!(u, f, "filtered path must differ from unfiltered");
+    // Both are single-hash `-src` store paths.
+    for p in [&u, &f] {
+        let base = p.rsplit('/').next().unwrap();
+        assert!(base.ends_with("-src"), "unexpected name: {base}");
+        assert_eq!(base.split('-').next().unwrap().len(), 32);
+    }
+    // A filter that keeps everything reproduces the unfiltered hash.
+    let keep_all = format!(
+        r#"toString (builtins.path {{ name = "src"; path = {}; filter = p: t: true; }})"#,
+        dir.display()
+    );
+    assert_eq!(ev(&keep_all).as_string().unwrap().to_string(), u);
+}

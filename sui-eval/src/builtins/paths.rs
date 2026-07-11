@@ -160,10 +160,30 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     .to_string()
             });
 
-        let src = sui_compat::source::nar_hash_source_tree(&canon, &name).map_err(|e| {
+        // A `filter` (Nix `path -> type -> bool`) prunes the tree BEFORE
+        // NAR-hashing — `lib.cleanSourceWith` (crane, cleanCargoSource,
+        // and every filtered nixpkgs `src`) is `builtins.path { filter;
+        // path; }`, so ignoring the filter NAR-hashes the WRONG tree and
+        // diverges the store path. Materialize the kept subtree in a
+        // deterministic temp dir, then NAR-hash that (giving the exact
+        // same store path CppNix computes over the filtered contents).
+        let filter = attrs.get("filter").filter(|v| {
+            !matches!(
+                crate::eval::force_value(v),
+                Ok(Value::Null) | Err(_)
+            )
+        });
+        let hash_root: std::path::PathBuf = if let Some(filter_fn) = filter {
+            let filter_fn = crate::eval::force_value(filter_fn)?;
+            materialize_filtered(&canon, &filter_fn, &name)?
+        } else {
+            canon.clone()
+        };
+
+        let src = sui_compat::source::nar_hash_source_tree(&hash_root, &name).map_err(|e| {
             EvalError::TypeError(format!(
                 "builtins.path: NAR-hashing '{}': {e}",
-                canon.display()
+                hash_root.display()
             ))
         })?;
 
@@ -314,6 +334,127 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         }
         Ok(Value::Path(Box::new(SmolStr::from(target.to_string_lossy().as_ref()))))
     });
+}
+
+/// Apply a Nix `filter` (`path -> type -> bool`) to a source tree and
+/// materialize the KEPT entries into a deterministic temp directory,
+/// returning that directory so it can be NAR-hashed. This is the
+/// `builtins.path { filter; … }` / `lib.cleanSourceWith` engine: nix
+/// calls `filter <abs-path> <type>` for each entry (`type` ∈
+/// {"regular","directory","symlink"}), keeps it iff the result is
+/// true, and does NOT recurse into a pruned directory.
+///
+/// The temp dir is keyed by the origin path + a BLAKE-free content
+/// tag so repeated evals of the same filtered source reuse it; the
+/// NAR hash over the materialized tree is what determines the store
+/// path, so the temp location itself never leaks into the result.
+fn materialize_filtered(
+    src_root: &std::path::Path,
+    filter_fn: &Value,
+    name: &str,
+) -> Result<std::path::PathBuf, EvalError> {
+    // Recursively decide + record kept entries (relative paths).
+    fn walk(
+        base: &std::path::Path,
+        current: &std::path::Path,
+        filter_fn: &Value,
+        kept: &mut Vec<(std::path::PathBuf, std::fs::Metadata)>,
+    ) -> Result<(), EvalError> {
+        let md = std::fs::symlink_metadata(current).map_err(|e| EvalError::IoError {
+            context: format!("builtins.path filter: {}", current.display()),
+            message: e.to_string(),
+        })?;
+        let type_str = if md.is_dir() {
+            "directory"
+        } else if md.file_type().is_symlink() {
+            "symlink"
+        } else {
+            "regular"
+        };
+        // nix passes the absolute path string as the first arg.
+        let path_arg = Value::string(current.to_string_lossy().to_string());
+        let type_arg = Value::string(type_str);
+        let partial = crate::eval::apply(filter_fn.clone(), path_arg)?;
+        let keep = crate::eval::apply_and_force(partial, type_arg)?.as_bool()?;
+        if !keep {
+            return Ok(());
+        }
+        let rel = current.strip_prefix(base).unwrap_or(current).to_path_buf();
+        if !rel.as_os_str().is_empty() {
+            kept.push((rel, md.clone()));
+        }
+        if md.is_dir() {
+            let mut children: Vec<std::path::PathBuf> = std::fs::read_dir(current)
+                .map_err(|e| EvalError::IoError {
+                    context: format!("builtins.path filter: {}", current.display()),
+                    message: e.to_string(),
+                })?
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            children.sort();
+            for child in children {
+                walk(base, &child, filter_fn, kept)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut kept: Vec<(std::path::PathBuf, std::fs::Metadata)> = Vec::new();
+    walk(src_root, src_root, filter_fn, &mut kept)?;
+
+    // Deterministic temp dir keyed by the source path + the sorted set
+    // of kept relative paths (so two different filters over the same
+    // source don't collide, and the same filter reuses the tree).
+    use sha2::{Digest, Sha256};
+    let mut tag = Sha256::new();
+    tag.update(src_root.to_string_lossy().as_bytes());
+    tag.update([0u8]);
+    for (rel, _) in &kept {
+        tag.update(rel.to_string_lossy().as_bytes());
+        tag.update([0u8]);
+    }
+    let tag_hex: String = tag.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let target = std::env::temp_dir()
+        .join("sui-path-filter")
+        .join(format!("{}-{name}", &tag_hex[..32]));
+
+    // Materialize (idempotent).
+    std::fs::create_dir_all(&target).map_err(|e| EvalError::IoError {
+        context: format!("builtins.path filter: {}", target.display()),
+        message: e.to_string(),
+    })?;
+    for (rel, md) in &kept {
+        let dst = target.join(rel);
+        let src = src_root.join(rel);
+        if md.is_dir() {
+            std::fs::create_dir_all(&dst).map_err(|e| EvalError::IoError {
+                context: format!("builtins.path filter: {}", dst.display()),
+                message: e.to_string(),
+            })?;
+        } else {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            if dst.exists() {
+                continue;
+            }
+            if md.file_type().is_symlink() {
+                let link = std::fs::read_link(&src).map_err(|e| EvalError::IoError {
+                    context: format!("builtins.path filter: {}", src.display()),
+                    message: e.to_string(),
+                })?;
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&link, &dst).ok();
+            } else {
+                std::fs::copy(&src, &dst).map_err(|e| EvalError::IoError {
+                    context: format!("builtins.path filter: {}", dst.display()),
+                    message: e.to_string(),
+                })?;
+            }
+        }
+    }
+    Ok(target)
 }
 
 /// Read a UTF-8 file, consulting the sui-tofile-cache fallback when
