@@ -4,8 +4,21 @@ use super::*;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toJSON", |args| {
-        Ok(Value::string(serde_json::to_string(&args[0].to_json())
-            .unwrap_or_else(|_| "null".to_string())))
+        // CppNix `builtins.toJSON` PRESERVES string context: every string
+        // (and every derivation-outPath / copy-to-store path) it serializes
+        // contributes its store-path references to the OUTPUT string's
+        // context. `to_json` (plain) drops context — which silently broke
+        // `lib.generators.toLua` (`toJSON v` over a `toString drv`) so the
+        // generated luarocks config `.drv` lost its `external_deps_dirs`
+        // inputDrvs (neovim's `mpack-luarocks-config.lua`). Thread context
+        // through `to_json_with_context` and attach it to the result.
+        // This also matches CppNix's stricter type handling (a lambda or a
+        // non-store path throws, rather than emitting a placeholder string).
+        let mut ctx = crate::value::StringContext::default();
+        let json = args[0].to_json_with_context(&mut ctx)?;
+        let s = serde_json::to_string(&json)
+            .unwrap_or_else(|_| "null".to_string());
+        Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
     });
     register_builtin(builtins, "fromJSON", |args| {
         let s = args[0].as_string()?;

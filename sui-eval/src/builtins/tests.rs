@@ -2954,6 +2954,36 @@ fn builtins_to_json_null() {
 // carrying `outPath` or `__toString`) must serialize to THAT STRING, never
 // recurse into its own attrs — otherwise the self-referential derivation
 // graph (`drv.out.drv == drv`) overflows the stack.  Byte-matches CppNix.
+// Regression (2026-07-11): CppNix `builtins.toJSON` PRESERVES string
+// context — every string it serializes contributes its store-path
+// references to the output. `to_json` (plain) dropped context, silently
+// breaking `lib.generators.toLua` (`toJSON v`) so a generated config
+// `.drv` lost its dep `inputDrvs` (neovim's mpack-luarocks-config.lua).
+#[test]
+fn to_json_preserves_string_context() {
+    // A context-carrying string, round-tripped through toJSON, must keep
+    // its context.
+    let v = ev(
+        r#"builtins.getContext (builtins.toJSON (
+             builtins.appendContext "s" { "/nix/store/abc.drv" = { path = true; }; }))"#,
+    );
+    if let Value::Attrs(a) = v {
+        assert!(a.contains_key("/nix/store/abc.drv"), "toJSON dropped context");
+    } else {
+        panic!("expected attrs");
+    }
+    // Context also flows through nested lists (the toLua-over-a-list case).
+    let v2 = ev(
+        r#"builtins.getContext (builtins.toJSON [
+             (builtins.appendContext "s" { "/nix/store/abc.drv" = { path = true; }; }) ])"#,
+    );
+    if let Value::Attrs(a) = v2 {
+        assert!(a.contains_key("/nix/store/abc.drv"), "toJSON dropped list-element context");
+    } else {
+        panic!("expected attrs");
+    }
+}
+
 #[test]
 fn to_json_collapses_derivation_to_outpath() {
     assert_eq!(
