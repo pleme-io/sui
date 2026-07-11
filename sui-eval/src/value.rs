@@ -510,10 +510,46 @@ impl PartialEq for Concrete {
             (Concrete::String(a), Concrete::String(b)) => Rc::ptr_eq(a, b) || a.chars == b.chars,
             (Concrete::Path(a), Concrete::Path(b)) => a == b,
             (Concrete::List(a), Concrete::List(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Concrete::Attrs(a), Concrete::Attrs(b)) => Rc::ptr_eq(a, b) || a.inner() == b.inner(),
+            (Concrete::Attrs(a), Concrete::Attrs(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return true;
+                }
+                // cppnix `EvalState::eqValues` derivation short-circuit:
+                // two attrsets that are BOTH derivations (each has
+                // `type == "derivation"`) AND each carry an `outPath`
+                // compare by their `outPath` string ONLY — never by deep
+                // structural equality.  This is load-bearing: derivations
+                // hold thunks/functions (`meta`, `override`, …) that never
+                // compare structurally-equal even when the two describe the
+                // same store output, and forcing every attr can throw.
+                // (Empirically characterized against the live nix oracle:
+                //  `hello == (hello // { x = 5; })` ⇒ true.)
+                if let (Some(pa), Some(pb)) =
+                    (derivation_out_path(a), derivation_out_path(b))
+                {
+                    return pa == pb;
+                }
+                a.inner() == b.inner()
+            }
             (Concrete::Lambda(a), Concrete::Lambda(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
+    }
+}
+
+/// If `attrs` is a derivation — an attrset whose `type` forces to the string
+/// `"derivation"` AND which carries a forceable `outPath` — return that
+/// `outPath` string.  Otherwise `None` (caller falls back to structural
+/// equality).  A force error on `type`/`outPath` yields `None`, so a broken
+/// derivation degrades to structural compare rather than a spurious match.
+fn derivation_out_path(attrs: &NixAttrs) -> Option<String> {
+    match attrs.get("type")?.demand().ok()? {
+        Concrete::String(s) if s.chars == "derivation" => {}
+        _ => return None,
+    }
+    match attrs.get("outPath")?.demand().ok()? {
+        Concrete::String(s) => Some(s.chars.to_string()),
+        _ => None,
     }
 }
 
@@ -2804,6 +2840,53 @@ mod tests {
         attrs.insert("a".to_string(), Value::Int(1));
         let v = Value::Attrs(Rc::new(attrs));
         assert_eq!(v.to_json(), serde_json::json!({"a": 1}));
+    }
+
+    // ── cppnix derivation-equality short-circuit (curl/git root) ─────────
+
+    fn mk_drv_attrs(out_path: &str, extra_key: &str, extra_val: i64) -> Value {
+        let mut a = NixAttrs::new();
+        a.insert("type".to_string(), Value::string("derivation"));
+        a.insert("outPath".to_string(), Value::string(out_path));
+        a.insert(extra_key.to_string(), Value::Int(extra_val));
+        Value::Attrs(Rc::new(a))
+    }
+
+    #[test]
+    fn derivations_same_outpath_differing_attrs_are_equal() {
+        // The load-bearing rule: two attrsets that are BOTH `type=="derivation"`
+        // with an `outPath` compare by `outPath` string ONLY — differing extra
+        // attrs must NOT make them unequal. This is what nixpkgs'
+        // `isMismatchedPython` (`drv.pythonModule != python`) relies on; a deep
+        // structural compare here spuriously fired the guard and dropped
+        // `python` from flit-core's `propagatedBuildInputs` (curl/git root).
+        let a = mk_drv_attrs("/nix/store/x-foo", "foo", 1);
+        let b = mk_drv_attrs("/nix/store/x-foo", "bar", 2);
+        assert!(a == b, "same-outPath derivations must compare equal");
+        assert!(!(a != b));
+    }
+
+    #[test]
+    fn derivations_differing_outpath_are_unequal() {
+        let a = mk_drv_attrs("/nix/store/x-foo", "foo", 1);
+        let b = mk_drv_attrs("/nix/store/y-foo", "foo", 1);
+        assert!(a != b, "different-outPath derivations must compare unequal");
+    }
+
+    #[test]
+    fn non_derivation_attrs_with_outpath_use_structural_eq() {
+        // `outPath` alone (no `type == "derivation"`) does NOT trigger the
+        // short-circuit — nix falls back to structural equality.
+        let mut a = NixAttrs::new();
+        a.insert("outPath".to_string(), Value::string("/nix/store/x"));
+        a.insert("foo".to_string(), Value::Int(1));
+        let mut b = NixAttrs::new();
+        b.insert("outPath".to_string(), Value::string("/nix/store/x"));
+        b.insert("foo".to_string(), Value::Int(2));
+        assert!(
+            Value::Attrs(Rc::new(a)) != Value::Attrs(Rc::new(b)),
+            "non-derivation attrs with equal outPath but differing foo must be unequal",
+        );
     }
 
     #[test]

@@ -3690,6 +3690,37 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).hello.drvPath"))
             })
         }),
+        // CLOSED (2026-07-10): curl + git — the last two divergent packages in
+        // the 23-package parity basket. Both bottomed out at the SAME root:
+        // `python3.13-flit-core-3.12.0.drv` was missing `propagatedBuildInputs`
+        // in its env because nixpkgs' python `isMismatchedPython` guard
+        // (`drv.pythonModule != python`, mk-python-derivation.nix:72) fired
+        // spuriously — sui compared two derivation attrsets that share an
+        // `outPath` by DEEP STRUCTURAL equality, which never matches (derivations
+        // carry thunks/functions), so `!=` was always `true`. Fixed by teaching
+        // `Concrete::PartialEq` cppnix's `EvalState::eqValues` derivation
+        // short-circuit: two attrsets that are BOTH `type=="derivation"` with an
+        // `outPath` compare by `outPath` string ONLY (value.rs `derivation_out_path`).
+        (ParityProbe { name: "eval curl drvPath (x86_64-linux)", description: "nixpkgs curl through python/flit-core — CLOSED via cppnix derivation-equality short-circuit", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).curl.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval git drvPath (x86_64-linux)", description: "nixpkgs git through python/flit-core — CLOSED via cppnix derivation-equality short-circuit", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).git.drvPath"))
+            })
+        }),
         // REGRESSION GUARD (2026-07-10): the fully self-contained minimal repro
         // of the stage-collapse root — NO nixpkgs, pure builtins. A
         // `makeOverridable` package set with a perl↔libxcrypt cycle broken by
