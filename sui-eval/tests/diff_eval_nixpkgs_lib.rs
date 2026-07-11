@@ -170,3 +170,42 @@ fn lib_versions_major() {
 fn lib_versions_split_version() {
     diff(r#"lib.versions.splitVersion "1.2.3""#);
 }
+
+// ── M2.6 ROOT #2: the module-system OVER-FORCE regression ─────────────
+// A config binding whose dynamic key depends on ANOTHER module's option
+// (`config.homes.${config.pleme.userName}`) must resolve when
+// `config.homes` is demanded, and only then. sui used to over-force the
+// `homes` definition's dynamic key while merely reading the enclosing
+// `config` attrset's WHNF (via `pushDownProperties m.config` during
+// definition collection) — the sibling key cppnix never touches when
+// `config.pleme.userName` alone is selected. Fixed by making
+// `build_tail_attrs_now` resolve one tail level and re-defer the rest.
+// Byte-verified 2026-07-11; `diff` asserts sui == nix.
+#[test]
+fn module_dynamic_key_from_sibling_option_resolves() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ config, lib, ... }: { \
+           options.pleme.userName = lib.mkOption { type = lib.types.str; default = \"luis\"; }; \
+           options.homes = lib.mkOption { type = lib.types.attrsOf lib.types.int; default = {}; }; \
+           config.homes.${config.pleme.userName} = 7; }) \
+         ({ ... }: { config.pleme.userName = \"drzzln\"; }) \
+         ]; }).config.homes",
+    );
+}
+
+// Selecting ONLY `config.pleme.userName` must NOT force the sibling
+// `homes` definition's dynamic key (KEYFORCE discriminator): a throwing
+// key proves the over-force is gone — both engines return "drzzln".
+#[test]
+fn module_unrelated_select_does_not_force_sibling_dynamic_key() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ config, lib, ... }: { \
+           options.pleme.userName = lib.mkOption { type = lib.types.str; default = \"luis\"; }; \
+           options.homes = lib.mkOption { type = lib.types.attrsOf lib.types.int; default = {}; }; \
+           config.homes.${throw \"KEYFORCE\"} = 7; }) \
+         ({ ... }: { config.pleme.userName = \"drzzln\"; }) \
+         ]; }).config.pleme.userName",
+    );
+}

@@ -334,5 +334,100 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── M2.6 ROOT #2: multi-level dynamic-tail attrpath stays lazy PER LEVEL ──
+    // `config.homes.${u} = 7` desugars (CppNix) to nested attrset literals
+    // `config = { homes = { ${u} = 7; }; }`, where EACH level is an
+    // independent lazy thunk. Forcing `.config` to WHNF must yield
+    // `{ homes = <thunk> }` WITHOUT forcing the `${u}` key one level deeper.
+    // The ROOT #1 fix deferred a *single* dynamic tail level; the ROOT #2 fix
+    // makes `build_tail_attrs_now` resolve ONE level and re-defer the rest, so
+    // the over-force (sui forcing `${u}` while only `.config` — e.g. its
+    // `._type` — was demanded) is gone. This is the exact shape of the NixOS
+    // module-system divergence (`config.homes.${config.pleme.userName}`): the
+    // definition-collection `pushDownProperties m.config` reads `m.config`'s
+    // WHNF, which must not force the inner dynamic key.
+    let dyn_key_entry3 = |h0: &str, h1: &str, key_expr: NixValue, value: NixValue| {
+        AttrSetEntry::KeyValue {
+            key: gen_nix::ast::AttrPath(vec![
+                gen_nix::ast::AttrKey::Ident(h0.to_string()),
+                gen_nix::ast::AttrKey::Ident(h1.to_string()),
+                gen_nix::ast::AttrKey::Interp(key_expr),
+            ]),
+            value,
+        }
+    };
+    // Reading the MIDDLE level's key structure (`attrNames s.config`) must not
+    // force the `${u}` key: both engines yield `[ "homes" ]`.
+    rows.push(row(
+        "multi-level dynamic-tail attrpath — middle-level read stays lazy",
+        let_(
+            vec![
+                ("u", str_("bob")),
+                (
+                    "s",
+                    attrs(vec![dyn_key_entry3(
+                        "config",
+                        "homes",
+                        path(&["u"]),
+                        NixValue::Int(7),
+                    )]),
+                ),
+            ],
+            apply(path(&["builtins", "attrNames"]), vec![path(&["s", "config"])]),
+        ),
+        RowExpect::Match,
+    ));
+    // Reading a SIBLING under the same head (`s.config.other`) must not force
+    // the deeper `${u}` key: both engines yield `9`.
+    rows.push(row(
+        "multi-level dynamic-tail attrpath — sibling under head stays lazy",
+        let_(
+            vec![
+                ("u", str_("bob")),
+                (
+                    "s",
+                    attrs(vec![
+                        dyn_key_entry3("config", "homes", path(&["u"]), NixValue::Int(7)),
+                        AttrSetEntry::KeyValue {
+                            key: gen_nix::ast::AttrPath(vec![
+                                gen_nix::ast::AttrKey::Ident("config".to_string()),
+                                gen_nix::ast::AttrKey::Ident("other".to_string()),
+                            ]),
+                            value: NixValue::Int(9),
+                        },
+                    ]),
+                ),
+            ],
+            NixValue::AttrPath(vec!["s".into(), "config".into(), "other".into()]),
+        ),
+        RowExpect::Match,
+    ));
+    // Demanding the leaf through both levels (`s.config.homes.bob`) DOES resolve
+    // the deferred dynamic key: both engines yield `7`.
+    rows.push(row(
+        "multi-level dynamic-tail attrpath — leaf demand resolves key",
+        let_(
+            vec![
+                ("u", str_("bob")),
+                (
+                    "s",
+                    attrs(vec![dyn_key_entry3(
+                        "config",
+                        "homes",
+                        path(&["u"]),
+                        NixValue::Int(7),
+                    )]),
+                ),
+            ],
+            NixValue::AttrPath(vec![
+                "s".into(),
+                "config".into(),
+                "homes".into(),
+                "bob".into(),
+            ]),
+        ),
+        RowExpect::Match,
+    ));
+
     rows
 }

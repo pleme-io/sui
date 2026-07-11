@@ -1347,6 +1347,12 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
             } else if bridge_active {
+                if std::env::var_os("SUI_M26_SELTRACE").is_some() {
+                    let path: Vec<String> = sel.attrpath().map(|ap|
+                        ap.attrs().map(|a| a.syntax().text().to_string()).collect()
+                    ).unwrap_or_default();
+                    eprintln!("[M26 SEL-MISS→null] base_type={base_type} path={path:?} missing-key={key}{}", eval_file_ctx());
+                }
                 Ok(Value::Null)
             } else {
                 Err(EvalError::AttrNotFound(
@@ -1876,10 +1882,26 @@ fn build_deferred_tail_attr(
     }))
 }
 
-/// Eagerly build `{ <tail> = <leaf-thunk> }` — used from inside the
-/// deferred thunk above once the head is demanded. Dynamic keys ARE
-/// evaluated here (correctly, at demand time). A null dynamic key
-/// yields an empty attrset (CppNix null-dynamic-attr skip).
+/// Resolve ONE level of the deferred attrpath tail — used from inside
+/// the deferred thunk above once the enclosing head is demanded.
+///
+/// M2.6 ROOT #2 (the OVER-FORCE fix): this resolves *only* `tail[0]`'s
+/// key and wraps the remaining tail `tail[1..]` in another DEFERRED
+/// thunk — it does NOT recurse eagerly through the whole tail. This is
+/// exactly CppNix's desugaring of `a.b.c = v` into nested attrset
+/// literals `a = { b = { c = v; }; }`, where forcing `a` to WHNF yields
+/// `{ b = <thunk {c=v}> }` — the inner level (`b`, and any dynamic key
+/// under it) stays lazy until `.b` is demanded.
+///
+/// Forcing the enclosing head therefore resolves ONE tail key, never
+/// the whole chain: `config.homes.${cfg.pleme.userName} = 7` demanded
+/// as `config` yields `{ homes = <deferred> }` WITHOUT forcing the
+/// `${cfg.pleme.userName}` key. The prior implementation recursed the
+/// whole tail eagerly, forcing that dynamic key while only `.config`
+/// (or its `._type`) was demanded — the over-force cppnix never does.
+///
+/// A dynamic key that evaluates to `null` skips the whole binding
+/// (returns an empty attrset), matching CppNix's null-dynamic-attr rule.
 fn build_tail_attrs_now(
     tail: &[ast::Attr],
     value_expr: &ast::Expr,
@@ -1888,13 +1910,29 @@ fn build_tail_attrs_now(
     if tail.is_empty() {
         return Ok(maybe_thunk(value_expr, env, false, None));
     }
+    if std::env::var_os("SUI_M26_TAILTRACE").is_some() {
+        let t: String = tail[0].syntax().text().to_string().chars().take(40).collect();
+        eprintln!("[M26 TAIL-RESOLVE] forcing dynamic tail key `{t}`");
+        if attrs_have_dynamic(&tail[..1]) {
+            crate::trace::dump_force_stack_ids();
+        }
+    }
     let key = match eval_attr_maybe_null(&tail[0], env)? {
         Some(k) => k,
         // Null dynamic key → the whole binding is skipped; an empty
         // attrset is the identity for merge_nested_insert.
         None => return Ok(Value::Attrs(Rc::new(NixAttrs::new()))),
     };
-    let inner = build_tail_attrs_now(&tail[1..], value_expr, env)?;
+    // Resolve ONE level: if more tail remains, defer it (a new lazy
+    // thunk) rather than recursing eagerly. Only the leaf (empty tail)
+    // is built here. This keeps each nested level lazy, exactly like
+    // CppNix's nested-attrset-literal desugaring — so forcing this
+    // level does NOT force the next level's (possibly dynamic) key.
+    let inner = if tail.len() == 1 {
+        maybe_thunk(value_expr, env, false, None)
+    } else {
+        build_deferred_tail_attr(&tail[1..], value_expr, env)
+    };
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(Rc::new(attrs)))

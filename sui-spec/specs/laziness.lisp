@@ -73,3 +73,22 @@
   :name       "tail-dynamic"
   :position   Tail
   :force-site HeadDemand)
+
+;; M2.6 ROOT #2 (the OVER-FORCE, byte-verified 2026-07-11): HeadDemand is
+;; PER-LEVEL, not whole-tail.  For a MULTI-LEVEL tail
+;; (`config.homes.${e} = v`), forcing the head `.config` must resolve
+;; EXACTLY ONE level — yielding `{ homes = <thunk {${e}=v}> }` — and
+;; leave the deeper `${e}` deferred until `.config.homes` is demanded.
+;; sui previously recursed the whole tail eagerly, so forcing `.config`
+;; (or merely reading its `._type`, as `pushDownProperties m.config` does
+;; in the module system) over-forced `${e}` — the sibling `homes`
+;; definition's dynamic key that cppnix never touches when only
+;; `config.pleme.userName` is selected.  Same `Tail → HeadDemand`
+;; invariant; the fix is that each nested tail level re-defers the rest,
+;; so `HeadDemand` means "the IMMEDIATELY-enclosing level's demand", not
+;; "the outermost head's demand".  Every intermediate tail level between
+;; the head and the dynamic key is itself a Tail/HeadDemand site.
+(defattrkey-forcesite
+  :name       "nested-tail-dynamic"
+  :position   Tail
+  :force-site HeadDemand)
