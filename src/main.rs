@@ -3721,6 +3721,40 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).git.drvPath"))
             })
         }),
+        // CLOSED (2026-07-11): ffmpeg — bottomed out at the full-set-then-dotted
+        // attr merge dropping the full-set keys. gst-plugins-base
+        // `passthru = { … }; passthru.tests.x = …;` dropped `waylandEnabled`
+        // (gst-plugins-bad reads it). Root: a full-set binding `a = { x = … }`
+        // is a lazy Thunk, and merge_nested_insert only merges concrete
+        // Value::Attrs, so `a.y = …` overwrote `a` with `{ y = … }`. Fixed by
+        // forcing the existing Thunk target to WHNF on a multi-segment collision.
+        (ParityProbe { name: "eval ffmpeg drvPath (x86_64-linux)", description: "nixpkgs ffmpeg through gstreamer passthru — CLOSED via full-set-then-dotted merge fix", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).ffmpeg.drvPath"))
+            })
+        }),
+        // CLOSED (2026-07-11): nettle — bottomed out at bare `inherit x`
+        // resolving EAGERLY. all-packages.nix is
+        // `with pkgs; { nettle = import … { inherit callPackage fetchurl; }; }`,
+        // so `inherit callPackage` must resolve from the `with pkgs` scope AT
+        // FORCE TIME. Eager env.lookup threw UndefinedVar(callPackage). Fixed by
+        // deferring a bare inherit to a WithIdent thunk (lazy with-scope lookup),
+        // matching CppNix.
+        (ParityProbe { name: "eval nettle drvPath (x86_64-linux)", description: "nixpkgs nettle through `with pkgs; inherit callPackage` — CLOSED via lazy bare-inherit", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).nettle.drvPath"))
+            })
+        }),
         // REGRESSION GUARD (2026-07-10): the fully self-contained minimal repro
         // of the stage-collapse root — NO nixpkgs, pure builtins. A
         // `makeOverridable` package set with a perl↔libxcrypt cycle broken by
