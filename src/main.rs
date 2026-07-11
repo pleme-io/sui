@@ -3625,14 +3625,17 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{}}).hello.drvPath"))
             })
         }),
-        // The META-PROBLEM frontier, narrower than hello: the crypt-disabled perl
-        // that breaks nixpkgs' perl↔libxcrypt/openssl bootstrap cycles. nix
-        // resolves `buildPackages.perl.override{enableCrypt=false}` to a
-        // stage-distinct earlier perl deep in the bootstrap; sui collapses it to
-        // one thunk → self-cycle → sentinel → nulled perl. This is a CLEANER
-        // target than hello (no top-level cycle) and graduates the moment sui's
-        // stdenv stage-graph makes nested `buildPackages` stage-distinct.
-        (ParityProbe { name: "eval crypt-disabled perl (bootstrap cycle-break)", description: "buildPackages.perl.override{enableCrypt=false} — the stdenv stage-graph frontier", expect: Expect::KnownDiverge }, {
+        // CLOSED (2026-07-10): the crypt-disabled perl that breaks nixpkgs'
+        // perl↔libxcrypt/openssl bootstrap cycle. Root was sui's EAGER
+        // `derivation` builtin — forcing a derivation VALUE to WHNF eagerly
+        // computed its drvPath, forcing every dependency attr, which
+        // manufactured a same-thunk Blackhole re-entry that nix avoids by never
+        // forcing the deps until a store path is demanded (`derivation` returns
+        // a LAZY `.drvPath`, only `derivationStrict` is eager). Fixed by making
+        // the computed fields (`drvPath`/`outPath`/per-output) memoized lazy
+        // thunks (`build_derivation` → `compute_full_drv` behind a OnceCell).
+        // This graduated openssl + hello (x86_64-linux) to byte-parity.
+        (ParityProbe { name: "eval crypt-disabled perl (bootstrap cycle-break)", description: "buildPackages.perl.override{enableCrypt=false} — CLOSED via lazy derivation", expect: Expect::Match }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
                 let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
@@ -3655,18 +3658,13 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             Box::new(move || diff_eval(&sui, &nix,
                 "let fix = f: let x = f x; in x; mkStage = adjacent: name: fix (self: { inherit name; buildPackages = if adjacent == null then self else adjacent; mkP = args: derivation { name = \"p\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; tag = args.tag; stage = name; buildInputs = if args.tag == \"full\" then [ self.libxcrypt ] else []; }; perl = (self.mkP { tag = \"full\"; }) // { override = a: self.mkP a; }; libxcrypt = derivation { name = \"libxcrypt\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; nativeBuildInputs = [ (self.buildPackages.perl.override { tag = \"nocrypt\"; }) ]; }; }); s0 = mkStage null \"s0\"; s1 = mkStage s0 \"s1\"; in s1.libxcrypt.drvPath"))
         }),
-        // CONFIRMED narrowest real leaf of the hello/perl divergence
-        // (2026-07-10, `sui parity-bisect`): standalone `openssl.drvPath`
-        // bisects to `krb5-1.22.1.drv`, whose `__structuredAttrs` `buildInputs`
-        // / `nativeBuildInputs` carry a `null` where nix carries `openssl-dev` /
-        // `perl` — the empty-attrs fixpoint partial surviving through the splice
-        // `map (drv: getDev drv.__spliced.buildHost or drv)` in
-        // make-derivation.nix. This is the SAME stage-collapse root as the
-        // crypt-disabled-perl row (hello → … → this), tracked at its most
-        // reduced real leaf. Graduates the moment sui's stdenv stage-graph stops
-        // collapsing stage-distinct `finalPackage` thunks (see
-        // docs/BYTE-PARITY-TYPESCAPE.md § CONFIRMED (2026-07-10)).
-        (ParityProbe { name: "eval openssl drvPath (__spliced null leaf)", description: "openssl → krb5 __structuredAttrs dep null via drv.__spliced splice on empty fixpoint partial — the reduced real leaf of hello", expect: Expect::KnownDiverge }, {
+        // CLOSED (2026-07-10): standalone `openssl.drvPath`. Was the reduced
+        // real leaf of the hello/perl stage-collapse — sui's EAGER `derivation`
+        // forced openssl's dep graph while the perl↔libxcrypt fixpoint was on
+        // the force stack, dropping perl to a `null`/empty-partial. Fixed by the
+        // lazy-`derivation` change (see the crypt-disabled-perl row above);
+        // openssl now byte-matches nix `izhl4bcm…`.
+        (ParityProbe { name: "eval openssl drvPath (__spliced null leaf)", description: "openssl standalone — CLOSED via lazy derivation (was the reduced hello stage-collapse leaf)", expect: Expect::Match }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
                 let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
@@ -3675,6 +3673,37 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 };
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).openssl.drvPath"))
             })
+        }),
+        // THE PRIZE (2026-07-10): x86_64-linux `hello.drvPath` — the mission
+        // minimum bar. Byte-matches nix `j8q5j0x4…` now that the stdenv
+        // perl↔libxcrypt/openssl bootstrap cycle resolves (lazy `derivation`).
+        // NOTE: the default-system (darwin) `hello` row above is still a
+        // KnownDiverge — a SEPARATE cross-system apple-sdk/python leaf, not this
+        // root.
+        (ParityProbe { name: "eval hello drvPath (x86_64-linux)", description: "nixpkgs hello through the linux stdenv bootstrap — THE mission target, CLOSED via lazy derivation", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).hello.drvPath"))
+            })
+        }),
+        // REGRESSION GUARD (2026-07-10): the fully self-contained minimal repro
+        // of the stage-collapse root — NO nixpkgs, pure builtins. A
+        // `makeOverridable` package set with a perl↔libxcrypt cycle broken by
+        // `enableCrypt=false` (perl propagates libxcrypt; libxcrypt's
+        // nativeBuildInput is `perl.override{enableCrypt=false}` which does NOT
+        // propagate libxcrypt → the cycle terminates in nix). Before the lazy-
+        // `derivation` fix, forcing `perl.drvPath` eagerly forced the whole
+        // fixpoint and dropped the crypt-disabled perl to an empty partial. This
+        // 22-line probe fails fast (no nixpkgs eval) if `derivation` ever regains
+        // eager-at-WHNF drvPath computation.
+        (ParityProbe { name: "eval lazy-derivation cycle-break (self-contained)", description: "makeOverridable perl↔libxcrypt cycle broken by enableCrypt — pure-builtins regression guard for lazy `derivation`", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || diff_eval(&sui, &nix,
+                "let makeOverridable = f: origArgs: let result = f origArgs; in result // { override = newArgs: makeOverridable f (origArgs // (if builtins.isFunction newArgs then newArgs origArgs else newArgs)); }; optional = c: x: if c then [x] else []; fakeMk = attrs: derivation { name = attrs.name; system = \"x86_64-linux\"; builder = \"/bin/sh\"; nbi = map (d: d.out or (toString d)) (attrs.nativeBuildInputs or []); pbi = map (d: d.out or (toString d)) (attrs.propagatedBuildInputs or []); }; scope = rec { perl = makeOverridable ({ enableCrypt ? true }: fakeMk { name = \"myperl\"; propagatedBuildInputs = optional enableCrypt libxcrypt; }) {}; libxcrypt = fakeMk { name = \"mylibxcrypt\"; nativeBuildInputs = [ (perl.override { enableCrypt = false; }) ]; }; }; in scope.perl.drvPath"))
         }),
     ];
 

@@ -224,7 +224,7 @@ matrix, the `--gate` CLI arm. Everything else is composition.
 | Drv-ATerm bisector | **design** — the first tool to build (finds the stdenv root) |
 | `--gate` CI corpus gate | **design** |
 | all-variants matrix | **design** |
-| nixpkgs package byte-parity | **RED, 0/N** — the stdenv drv divergence is target #1 |
+| nixpkgs package byte-parity | **hello CLOSED (x86_64-linux) 2026-07-10** — tail basket 21/23 (curl/git on a separate python-build root); root was an eager `derivation` builtin, fixed via lazy `derivation` |
 | darwin/nixos/HM system-closure parity | **blocked** on the M2.6 fixpoint fix (`docs/M2.6-…`) |
 
 ## Phased plan (destination first, then the path down)
@@ -352,6 +352,40 @@ other 12 diverge on independent stdenv-stage / fetchurl roots, not this cycle. T
 "~9-package cascade" earlier estimated for this root is **not confirmed** — the
 diverging tail has multiple independent roots.
 
+### CLOSED (2026-07-10) — hello byte-matches nix; root was an EAGER `derivation` builtin
+
+`hello.drvPath` (x86_64-linux) now **byte-matches nix `j8q5j0x4…`**. The
+stage-collapse root below was ultimately **sui's `derivation` builtin being eager**:
+`derivation attrs` computed the full drv (`.drvPath`/`.outPath`, forcing every
+dependency attr) the instant the derivation VALUE was forced to WHNF. nix instead
+returns an attrset with a **lazy** `.drvPath` — only `derivationStrict` is eager;
+the nixpkgs `derivation` wrapper defers. That eager forcing is what manufactured the
+same-thunk Blackhole re-entry: forcing `pkgs.perl` to WHNF eagerly forced its
+`propagatedBuildInputs → libxcrypt → nativeBuildInputs → perl.override{enableCrypt=
+false}`, which re-entered the on-stack `perl` thunk and produced the empty-attrs
+partial that dropped perl to `null`. nix never forces those deps until a store path
+is demanded, by which point the `perl` thunk is already a resolved value.
+
+**The fix** (`sui-eval/src/builtins/derivation.rs`): split `build_derivation` into
+`compute_full_drv` (the eager, dep-forcing half — construct ATerm + compute paths +
+write .drv) behind a **memoized lazy thunk** shared by `drvPath`/`outPath`/each
+output/`all` (a `Rc<OnceCell<Rc<ComputedDrv>>>`). `name` (+ the `outputs` list, both
+cheap, no dep forcing) stay eager. Forcing a derivation to WHNF now touches none of
+its dependency graph — matching nix exactly.
+
+**Measured:** the sealed corpus went **19 match · 3 tracked → 23 match · 1 tracked ·
+0 regressions** (`crypt-disabled perl`, `openssl`, `hello (x86_64-linux)`, and a new
+pure-builtins regression guard all promoted to Match; the sole remaining tracked row
+is the *darwin-system* hello, a SEPARATE cross-system apple-sdk/python `flit-core`
+`propagatedBuildInputs` root). The 23-package x86_64-linux tail basket went **11/23
+→ 21/23** (only `curl`/`git` remain, both on that same separate python-build root).
+Keystone `libxcrypt` `jb9k6090…` preserved; full `cargo test` 1527/0 (sui-eval) +
+sui-spec incl. `substrate_invariants` all green; the 4 lazy-correctness locks green;
+the 2 sui-bytecode VM failures are pre-existing/out-of-scope.
+
+The historical root analysis (still accurate as the *mechanism* the eager builtin
+triggered) follows.
+
 ### CONFIRMED (2026-07-10) — hello's root is stdenv STAGE-COLLAPSE, not fetchurl
 
 An `sui parity-bisect` walk of `hello`, `hello.src`, `perl`, `openssl`, and
@@ -373,34 +407,60 @@ misses on the empty partial, `or drv` yields the empty partial, `getDev` on it
 → `null` in the dep list. openssl's `postFixup` shows the same:
 `grep -r '' $out` (empty) vs nix's `grep -r '<perl-path>' $out`.
 
-**The real root is stage-collapse, NOT partial materialization.** nix has no true
-cycle here: the perl that openssl uses is stage-distinct from the top-level perl
-(`buildPackages.perl.override{enableCrypt=false}` = `az4wk58…`, a bootstrap-stage
-perl whose own build chain uses `stdenv.fetchurlBoot`, so it does **not** re-enter
-openssl). sui **collapses these stage-distinct derivations into one thunk** (the
-`finalPackage`/`args` `finalAttrs` fixpoint in `makeDerivationExtensible`,
-`make-derivation.nix:84` `args = rattrs (args // { inherit finalPackage …; })`),
-manufacturing a fixpoint that does not exist in nix → the same-thunk Blackhole
-re-entry → the empty-attrs promoted partial → the `null` deps above. The
-`SUI_PROMOTE` trace confirms it: the re-entered expression is literally
-`(drv.__spliced.buildHost or drv)` in `make-derivation.nix`.
+**The real root is a `self`-fixpoint re-entry under construction, NOT partial
+materialization.** (2026-07-10, sharpened + one doc correction below.) The cycle
+`perl → libxcrypt → crypt-disabled-perl` is **REAL in nix too** — byte-verified:
+nix's FINAL `perl.drv` (`9ynblaaq…`) lists `libxcrypt.drv` (`jb9k6090…`) in its
+`nix-store -q --references`, and openssl uses that same FINAL perl `9ynblaaq…`
+(`buildPackages.perl == perl == 9ynblaaq…`, native). So the earlier "openssl uses a
+stage-distinct `az4wk58…` perl" wording was imprecise: the cycle is
+`final-perl (propagatedBuildInputs=[libxcrypt]) → libxcrypt (nativeBuildInputs=
+[perl.override{enableCrypt=false}]) → crypt-disabled-perl (propagatedBuildInputs=[]
+→ TERMINATES)`. nix resolves it because the crypt-disabled `perl.override{...}` is a
+**distinct derivation** that completes on its own (no libxcrypt).
 
-**Why the materialized-keys partial alone will NOT close it.** Because the two
-derivations (openssl and its perl) are *both* mid-`finalPackage` construction, no
-cell is populated at re-entry — a cell-backed lazy partial (`PromiseRef`,
-experimentally added + reverted this session: **clean no-op**, 19 match · 0
-regressions, no graduation) reads the still-empty cell. The load-bearing fix is to
-**stop collapsing the stages** — give the stdenv stage-graph distinct
-`finalPackage` thunks per bootstrap stage so `buildPackages` at each stage is a
-stage-distinct package set (the corpus row's exact criterion:
-"graduates the moment sui's stdenv stage-graph makes nested `buildPackages`
-stage-distinct"). This is a stdenv-booter-level change, still deferred; the
-`staged mutual-ref override nativeBuildInput` corpus lock proves the bug is NOT in
-`{fixpoint, mutual-ref, override, staged buildPackages}` in isolation — it is the
-real `makeScopeWithSplicing` stage machinery. The keystone `libxcrypt.drvPath`
-(`jb9k6090…`) matches because its standalone demand order forces the crypt-disabled
-perl cleanly (top-level perl not on the stack); the divergence is order-dependent,
-appearing only when the top-level perl fixpoint is on the force stack.
+sui collapses it because of the **`self = perl540` fixpoint inside the perl
+interpreter** (`perl/default.nix`: `perl540 = callPackage ./interpreter.nix
+{ self = perl540; }`). When libxcrypt forces `nativeBuildInputs =
+[buildPackages.perl.override{enableCrypt=false}]`, the `.override` re-calls the perl
+interpreter whose body reads `self` — and `self` still points at the base `perl540`
+attribute thunk (correct — nix does NOT re-thread `self` on `.override` either), but
+in sui that base `perl540` is the thunk **currently mid-construction on the force
+stack** → same-thunk Blackhole re-entry → the empty-attrs promoted partial → perl
+dropped from libxcrypt's `nativeBuildInputs` (→ the `null`/missing-key at every
+downstream leaf: openssl `configureFlags`/`postPatch` missing, libssh2
+`propagatedBuildInputs=""`, krb5 `buildInputs=[null,…]`).
+
+**Isolated reproduction (2026-07-10):** `buildPackages.perl.override{enableCrypt=
+false}.drvPath` diverges *standalone* (sui `g2nxa9ih…` vs nix `p0r906cd…`) with only
+**2 promotions** — the cleanest trigger, no top-level `hello` machinery. Its
+`parity-bisect` leaf is `openssl-3.6.2.drv` dropping perl + missing `configureFlags`/
+`postPatch`. This is the corpus row `eval crypt-disabled perl (bootstrap
+cycle-break)` (already tracked). Every synthetic reduction of the cycle — even
+`{self-fixpoint + makeOverridable + finalAttrs + package-set-rec + libxcrypt
+mutual-ref}` — **byte-matches nix in sui** (verified this session): the bug lives
+ONLY in the *real* multi-file `makeScopeWithSplicing`/`callPackageWith` overlay
+machinery, where `self` threads through `self`/`super`/`callPackage`/`__spliced`
+across file boundaries and the promoted partial is `self` mid-construction.
+
+**Why the materialized-keys partial alone will NOT close it.** At promotion sui
+returns `cell.borrow().clone()` = an **empty** attrs *immediately*, and the consumer
+(libxcrypt's `getDev`/`__structuredAttrs`-JSON map) reads that empty clone *before*
+the outer perl completes and populates the cell. Deferring the read (a cell-backed
+lazy `PromiseRef`) is a **clean no-op** (re-tested this session; 19 match · 0
+regressions · no graduation) because libxcrypt is fully computed *before* the outer
+perl's construction returns to populate the cell. The load-bearing fix is to **NOT
+collapse the thunk** — either (a) give the crypt-disabled `perl.override{...}` a
+`self` that resolves to a *distinct, completable* fixpoint (stage-distinct thunk
+identity at the `makeScopeWithSplicing` level), OR (b) publish the fixpoint attrset's
+key-skeleton into the Promise cell **as soon as the body produces the attrset**
+(partial-attrset publication mid-eval), so a same-thunk re-entry sees the keys nix
+sees. Both are stdenv-booter-/evaluator-level changes. The `staged mutual-ref
+override nativeBuildInput` corpus lock proves the bug is NOT in `{fixpoint,
+mutual-ref, override, staged buildPackages}` in isolation. The keystone
+`libxcrypt.drvPath` (`jb9k6090…`) matches because its standalone demand order forces
+the crypt-disabled perl cleanly (top-level perl not on the stack); the divergence is
+order-dependent, appearing only when the perl `self`-fixpoint is on the force stack.
 
 ## The one-line law
 
