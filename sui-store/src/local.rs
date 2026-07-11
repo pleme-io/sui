@@ -586,12 +586,19 @@ impl Store for LocalStore {
                     if dry_run {
                         // Just count — don't actually link.
                     } else {
-                        // Replace with hard link.
-                        if std::fs::remove_file(file_path).is_ok()
-                            && std::fs::hard_link(existing, file_path).is_err()
+                        // Replace `file_path` with a hard link to `existing`,
+                        // crash-safely (seal I7). `optimise_link_over` hardlinks
+                        // to a temp name in the SAME directory then atomically
+                        // `rename`s it over the target — so a crash between the
+                        // two steps leaves `file_path` as either the original or
+                        // the linked replacement, NEVER absent (the old
+                        // `remove_file` then `hard_link` window lost the file on
+                        // a mid-op crash). On failure the original is untouched.
+                        if optimise_link_over(existing, file_path, |src, dst| {
+                            std::fs::hard_link(src, dst)
+                        })
+                        .is_err()
                         {
-                            // If hard_link fails, the file is already removed.
-                            // This is a best-effort operation.
                             return;
                         }
                     }
@@ -639,6 +646,56 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     let data = std::fs::read(path)?;
     let hash = Sha256::digest(&data);
     Ok(hex_encode(&hash))
+}
+
+/// Crash-safely replace `target` with a hard link to `existing` (seal I7).
+///
+/// This is the store-optimise dedup step done the way nix's `optimisePath_`
+/// does it: hard-link `existing` to a temporary name **in the same directory
+/// as `target`** (same filesystem — a precondition for both `hard_link` and an
+/// atomic `rename`), then `rename` the temp over `target`. POSIX `rename(2)` is
+/// atomic within one filesystem, so at every instant `target` is either the
+/// original file or the fully-linked replacement — the "file lost on a mid-op
+/// crash" window of `remove_file`-then-`hard_link` is **unrepresentable** here.
+///
+/// On any error the temp link is cleaned up and `target` is left untouched.
+///
+/// `linker(existing, tmp)` performs the actual hard-link; it is a parameter so
+/// tests can inject a failing linker and assert the original survives intact.
+pub fn optimise_link_over<L>(existing: &Path, target: &Path, linker: L) -> std::io::Result<()>
+where
+    L: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let dir = target.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "target has no parent directory")
+    })?;
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "target has no file name")
+        })?;
+
+    // Temp name in the SAME directory: guarantees the hard link and the rename
+    // both stay on `target`'s filesystem. `.optimise-tmp` + pid keeps concurrent
+    // optimise passes from colliding on the temp name.
+    let tmp = dir.join(format!(".{file_name}.optimise-tmp-{}", std::process::id()));
+
+    // Defensive: a stale temp from a crashed previous pass would make hard_link
+    // fail with AlreadyExists; clear it first.
+    let _ = std::fs::remove_file(&tmp);
+
+    // 1. Link the shared inode to the temp path.
+    linker(existing, &tmp)?;
+
+    // 2. Atomically swap the temp over the target. `target` is never absent.
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        // Clean the temp; the ORIGINAL target is untouched (still on disk).
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 /// Derive the nix state directory (`…/var/nix`) for a given store directory.

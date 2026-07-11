@@ -243,3 +243,74 @@ async fn store_optimise_is_idempotent() {
     let second = store.optimise_store(false).await.unwrap();
     assert_eq!(second.files_linked, 0, "second pass links nothing (idempotent)");
 }
+
+/// SEAL I7 — crash-safety: a link failure mid-optimise NEVER loses the file.
+///
+/// This is the differential that pins the seal. `optimise_link_over` links the
+/// shared inode to a temp name in the target's directory, then atomically
+/// `rename`s over the target. A crash (modelled here as the link step failing)
+/// therefore leaves the original file present and byte-intact — unlike the old
+/// `remove_file`-then-`hard_link` which lost the file on a mid-op failure.
+///
+/// The test drives `optimise_link_over` directly with an injected failing
+/// linker (the deterministic stand-in for a crash between "start replacing" and
+/// "replacement in place") and asserts (a) the call errors, (b) the original
+/// target file still exists with its original bytes, and (c) no temp turd is
+/// left behind. Then it drives it with the real hard-linker and asserts the
+/// dedup actually happens (same inode) — proving the seal is not vacuous.
+#[test]
+fn store_optimise_link_failure_never_loses_file() {
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path();
+
+    // A "shared" source inode and a "victim" target that optimise would dedup.
+    let existing = dir.join("existing.txt");
+    let target = dir.join("victim.txt");
+    std::fs::write(&existing, b"shared content\n").unwrap();
+    std::fs::write(&target, b"shared content\n").unwrap();
+    let target_ino_before = inode(&target);
+
+    // Inject a failing linker — models a crash between remove-and-relink.
+    let err = sui_store::optimise_link_over(&existing, &target, |_src, _dst| {
+        Err(std::io::Error::other("simulated link failure (crash)"))
+    });
+    assert!(err.is_err(), "injected link failure must surface as an error");
+
+    // THE SEAL: the original target is still on disk, byte-intact, unchanged
+    // inode — the file was never removed before the replacement was in place.
+    assert!(target.exists(), "seal I7: original file must survive a link failure");
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"shared content\n",
+        "seal I7: original bytes must be untouched after a failed link"
+    );
+    assert_eq!(
+        inode(&target),
+        target_ino_before,
+        "seal I7: original inode must be untouched after a failed link"
+    );
+
+    // No temp turd left behind on the failure path.
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains("optimise-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "no temp file left after a failed link: {leftovers:?}");
+
+    // Sanity — the same helper with a REAL hard-link actually dedups (the seal
+    // is not vacuously passing because linking never happens).
+    sui_store::optimise_link_over(&existing, &target, |src, dst| std::fs::hard_link(src, dst))
+        .unwrap();
+    assert_eq!(
+        inode(&existing),
+        inode(&target),
+        "after a successful optimise_link_over, target shares the source inode"
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        b"shared content\n",
+        "content byte-unchanged after a successful dedup link"
+    );
+}
