@@ -213,6 +213,24 @@ const MAX_EVAL_DEPTH: usize = usize::MAX;
 /// compiler should be able to elide most of the overhead.
 struct DepthGuard;
 
+/// Release-active runaway backstop for the overlay-fixpoint promotion.
+///
+/// Release builds set `MAX_EVAL_DEPTH = usize::MAX` (no eval-depth guard)
+/// so nixpkgs' legitimately-deep fixpoints evaluate.  But a promoted
+/// empty-attrs partial that corrupts a downstream `makeOverridable` /
+/// `commonAttrs` fixpoint (the cross-system Darwin `apple-sdk` path `hello`
+/// hits under `builtins.currentSystem = macOS`) recurses through
+/// `eval_expr` without bound — and that recursion does NOT climb the force
+/// stack, so only an `eval_expr`-level bound catches it before the OS stack
+/// aborts.  Armed ONLY once a promotion has fired (`promotion_occurred()`),
+/// so ordinary deep evaluation (never after a promotion) is untouched.  The
+/// converging native-system fixpoint (`libxcrypt`) peaks well under this
+/// bound and is unaffected; the non-converging cross-system runaway is
+/// caught here, converting a hard native-stack abort into a recoverable
+/// `InfiniteRecursion` that `x.y or default` recovers exactly like nix
+/// (`hello` returns to a clean value-diverge instead of aborting).
+const PROMOTION_RUNAWAY_EVAL_DEPTH: usize = 500;
+
 impl DepthGuard {
     #[inline(always)]
     fn enter() -> Result<Self, EvalError> {
@@ -221,6 +239,13 @@ impl DepthGuard {
             if MAX_EVAL_DEPTH != usize::MAX && depth > MAX_EVAL_DEPTH {
                 return Err(EvalError::InfiniteRecursion(
                     "eval depth exceeded".into(),
+                ));
+            }
+            if depth > PROMOTION_RUNAWAY_EVAL_DEPTH
+                && crate::value::promotion_occurred()
+            {
+                return Err(EvalError::InfiniteRecursion(
+                    "overlay-fixpoint promotion runaway (eval depth exceeded)".into(),
                 ));
             }
             d.set(depth + 1);

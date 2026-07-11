@@ -587,6 +587,35 @@ impl Value {
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<Value>() <= 16);
 
+/// Runaway backstop for overlay-fixpoint promotion.  A genuine fixpoint
+/// re-entry converges in a bounded number of nested promotions (the
+/// nixpkgs `libxcrypt`/`self:super:` overlay needs ≤18 concurrent
+/// promotions).  A non-converging demand (e.g. a cross-system stdenv
+/// fixpoint that keeps re-entering the empty partial) climbs the nesting
+/// without bound.  When the active concurrent-promotion nesting
+/// (`IN_PROMISE_EVAL`) reaches this cap we STOP promoting and fall through
+/// to `InfiniteRecursion` — which `eval_select`'s `x.y or default` arm
+/// recovers exactly like nix's lazy fall-through, converting a would-be
+/// native stack overflow into the recoverable error nix itself raises.
+///
+/// This is the runaway half of the same discipline the release-build
+/// `MAX_EVAL_DEPTH` guard provides (which is `usize::MAX` in release to
+/// admit nixpkgs' legitimately-deep fixpoints); scoping the bound to
+/// *promotions* keeps ordinary deep evaluation unbounded while still
+/// catching a non-terminating fixpoint before the OS stack does.
+const FIXPOINT_PROMOTE_NEST_CAP: u32 = 32;
+
+/// Force-stack-depth backstop that arms once a fixpoint promotion has fired
+/// (`promotion_occurred()`).  A converging fixpoint (`libxcrypt`) bottoms
+/// out at a force depth of a few dozen; a non-converging promoted partial
+/// recurses without bound.  This cap (10× any observed real fixpoint's force
+/// depth) converts a force-stack runaway into a recoverable
+/// `InfiniteRecursion` before the native OS stack aborts, without touching
+/// ordinary (non-promotion) deep evaluation.  Paired with the eval-depth
+/// backstop (`eval::PROMOTION_RUNAWAY_EVAL_DEPTH`) for runaways that don't
+/// climb the force stack.
+const PROMOTION_RUNAWAY_FORCE_DEPTH: usize = 500;
+
 thread_local! {
     /// Depth counter for "currently evaluating the body of a Promise-state
     /// thunk".  Incremented before the body of a `ThunkRepr::Promise`
@@ -595,6 +624,21 @@ thread_local! {
     /// instead of erroring with `AttrNotFound`.  Scoped to Promise
     /// evaluation so unrelated user code retains cppnix-strict semantics.
     pub(crate) static IN_PROMISE_EVAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// Set once a fixpoint promotion has occurred anywhere in the current
+    /// top-level evaluation.  Arms the release-active force-depth runaway
+    /// backstop for the REST of the eval (not just while `IN_PROMISE_EVAL`
+    /// is non-zero) — a corrupted promoted partial can send a DOWNSTREAM
+    /// fixpoint (`makeOverridable`/`commonAttrs`) into unbounded recursion
+    /// AFTER the promoting force has already returned, so the backstop must
+    /// outlive the promotion's own softening scope.
+    pub(crate) static PROMOTION_OCCURRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `true` if any overlay-fixpoint promotion has fired in this eval.
+#[inline(always)]
+pub fn promotion_occurred() -> bool {
+    PROMOTION_OCCURRED.with(|c| c.get())
 }
 
 /// `true` if the evaluator is currently inside the body of a
@@ -951,6 +995,42 @@ impl Thunk {
                     description: desc.clone(),
                     thunk_id,
                 });
+                // Runaway backstop #1 (force-stack depth) for overlay-fixpoint
+                // promotion (release-active; belt-and-suspenders with the
+                // eval-depth backstop in `eval::DepthGuard::enter`).
+                //
+                // A promoted empty-attrs partial is byte-correct for the
+                // native-system stdenv fixpoint (`libxcrypt` — the actual
+                // byte-parity root; its promotions bottom out at a force depth
+                // ≤ ~50), but is the WRONG partial for a demand that indexes it
+                // as a list / non-attrs (the cross-system Darwin `apple-sdk`
+                // path `hello` hits when `builtins.currentSystem` is macOS).
+                // There the empty partial feeds a downstream `makeOverridable`
+                // fixpoint that recurses without bound.  Release disables the
+                // general `MAX_EVAL_DEPTH` guard (`usize::MAX`) to admit
+                // nixpkgs' legitimately-deep fixpoints, so nothing else stops
+                // that recursion before the OS stack aborts.
+                //
+                // Armed only once a promotion has fired (`promotion_occurred()`)
+                // and for the REST of the eval — a corrupted partial can send a
+                // downstream fixpoint runaway AFTER the promoting force returns,
+                // so the backstop must outlive the promotion's own softening
+                // scope.  A runaway that climbs the force stack is caught here;
+                // one that climbs `eval_expr` without pushing force frames is
+                // caught by the eval-depth backstop.  Either converts the
+                // would-be native abort into a recoverable `InfiniteRecursion`
+                // (which `x.y or default` recovers exactly like nix).
+                if crate::value::promotion_occurred()
+                    && crate::trace::current_force_depth() as usize
+                        > PROMOTION_RUNAWAY_FORCE_DEPTH
+                {
+                    crate::trace::pop_force();
+                    *unsafe { &mut *self.0.repr.get() } =
+                        ThunkRepr::Suspended { expr, env };
+                    return Err(EvalError::InfiniteRecursion(
+                        "overlay-fixpoint promotion runaway (force depth exceeded)".into(),
+                    ));
+                }
                 if tracing {
                     crate::trace::trace_force_enter(
                         env.eval_file().map(|p| p.as_path()),
@@ -985,6 +1065,20 @@ impl Thunk {
                 if is_promise {
                     IN_PROMISE_EVAL.with(|c| c.set(c.get().saturating_sub(1)));
                 }
+                // A `Blackhole` thunk (non-recursive at construction) may have
+                // been PROMOTED to `Promise` mid-body by a same-thunk fixpoint
+                // re-entry (the overlay-fixpoint path in the Blackhole arm
+                // below).  That promotion bumped `IN_PROMISE_EVAL` once; balance
+                // it here, and populate its cell exactly like a
+                // recursive-at-construction Promise.  `is_promise` covers the
+                // construction-time case; `became_promise` covers the mid-body
+                // semantic-promotion case.  They're mutually exclusive (a
+                // construction-time Promise never re-enters the Blackhole arm).
+                let became_promise = !is_promise
+                    && matches!(unsafe { &*self.0.repr.get() }, ThunkRepr::Promise(_));
+                if became_promise {
+                    IN_PROMISE_EVAL.with(|c| c.set(c.get().saturating_sub(1)));
+                }
                 match result {
                     Ok(mut value) => {
                         // M2.6 Promise update: if this thunk transitioned
@@ -993,7 +1087,7 @@ impl Thunk {
                         // outstanding Rc clones of the cell (held by inner
                         // thunks whose bodies haven't yet run) will see the
                         // complete value when they later force.
-                        if is_promise {
+                        if is_promise || became_promise {
                             if let ThunkRepr::Promise(cell) = unsafe { &*self.0.repr.get() } {
                                 *cell.borrow_mut() = value.clone();
                             }
@@ -1222,27 +1316,67 @@ impl Thunk {
                     );
                     crate::trace::dump_force_stack_ids();
                 }
-                // FRONTIER (2026-07-10): genuine fixpoint re-entry.  When the
-                // re-entered thunk is the SAME thunk currently mid-evaluation on
-                // the force stack, this is a real fixpoint self-reference (the
-                // nixpkgs `self:super:` overlay / `lib.fix` pattern) that nix
-                // tolerates by exposing the not-yet-complete value.  Returning an
-                // empty attrset here BYTE-MATCHES nix for `pkgs.libxcrypt.drvPath`
-                // (jb9k6090…) via the `__spliced.buildHost or drv` fall-through —
-                // BUT it is NOT universally correct: a blank empty-attrs is the
-                // WRONG partial where the fixpoint's not-yet-complete value is a
-                // non-attrs or a specific attr (it turns the `(import <nixpkgs>
-                // {}).hello.drvPath` corpus row from a wrong-value diverge into a
-                // downstream TYPE ERROR).  The load-bearing fix must return the
-                // thunk's actual in-progress value (the Promise-cell partial),
-                // not a blank sentinel — see docs/BYTE-PARITY-TYPESCAPE.md's
-                // frontier finding + sui-spec/specs/laziness.lisp.  Kept behind
-                // SUI_FIXPOINT_PARTIAL (off by default) so the byte-verified
-                // libxcrypt result is reproducible without degrading hello.
-                if std::env::var_os("SUI_FIXPOINT_PARTIAL").is_some()
-                    && crate::trace::force_stack_contains(thunk_id)
+                // OVERLAY-FIXPOINT SEMANTIC PROMOTION (2026-07-10, default-ON).
+                //
+                // When the re-entered thunk is the SAME thunk currently
+                // mid-evaluation on the force stack, this is a genuine fixpoint
+                // self-reference — the nixpkgs `self:super:` overlay / `lib.fix`
+                // pattern threading through `callPackage`/`self`/`super` across
+                // file boundaries.  `is_self_recursive_binding` (syntactic RHS
+                // name search) MISSES this because the binding's RHS never
+                // textually names itself, so the thunk was classified
+                // `recursive=false` and installed a hard `Blackhole` where nix
+                // exposes the not-yet-complete value.  That misclassification is
+                // exactly the byte-parity defect (`sui-spec/src/laziness.rs`
+                // `RecursionKind::Fixpoint` ⇒ MUST be recursive + Promise): the
+                // dropped perl `nativeBuildInput` on `pkgs.libxcrypt` (sui
+                // q9b9v7a9… vs nix jb9k6090…).
+                //
+                // The FIX is the Blackhole↔Promise machinery, not a sentinel:
+                // retroactively PROMOTE this Blackhole to a real `Promise(cell)`
+                // and return the cell's in-progress partial.  Unlike the earlier
+                // blank-empty-attrs sentinel (which left the thunk in Blackhole
+                // forever and stack-overflowed `hello`), the promoted cell is a
+                // first-class fixpoint cell:
+                //   * the outer body populates it on completion (the
+                //     `is_promise || became_promise` branch below), so any inner
+                //     Rc clones that already read the empty partial converge, and
+                //     the repr transitions cleanly to `Evaluated`;
+                //   * `IN_PROMISE_EVAL` is bumped so downstream `eval_select`
+                //     softens `AttrNotFound`/`cannot-select` on the partial to
+                //     `null` (the `x.y or default` fall-through nix relies on),
+                //     which is what stops the `hello` overflow.
+                //
+                // Genuine NON-terminating cycles (`let r = r; in r`) remain
+                // errors: the promoted partial cannot make progress, so the
+                // force-depth backstop (`check_force_depth`, ~2048/100 in
+                // test/release) still fires `InfiniteRecursion` — nix's own
+                // behaviour.  This is the semantic (fixpoint) classification the
+                // typed discipline demands, done in the demand-order engine
+                // instead of at syntactic construction time.
+                if crate::trace::force_stack_contains(thunk_id)
+                    && IN_PROMISE_EVAL.with(|c| c.get()) < FIXPOINT_PROMOTE_NEST_CAP
                 {
-                    return Ok(Value::Attrs(Rc::new(NixAttrs::new())));
+                    if std::env::var_os("SUI_DEBUG_CYCLE").is_some() {
+                        let chain = crate::trace::capture_cycle(thunk_id);
+                        let nest = IN_PROMISE_EVAL.with(|c| c.get());
+                        let fdepth = crate::trace::current_force_depth();
+                        eprintln!("[SUI_PROMOTE] thunk_id={thunk_id:#x} cycle_len={} nest={nest} fdepth={fdepth}", chain.0.len());
+                    }
+                    let cell = Rc::new(RefCell::new(
+                        Value::Attrs(Rc::new(NixAttrs::new())),
+                    ));
+                    // SAFETY: single-threaded evaluator; we hold no other borrow
+                    // of `repr` here (the outer match consumed it, we replace it).
+                    *unsafe { &mut *self.0.repr.get() } =
+                        ThunkRepr::Promise(cell.clone());
+                    // Enable Promise-body softening for the remainder of the
+                    // outer force.  Decremented once by the outer force's
+                    // post-body reconciliation (`became_promise`).
+                    IN_PROMISE_EVAL.with(|c| c.set(c.get() + 1));
+                    // Arm the release runaway backstop for the rest of the eval.
+                    PROMOTION_OCCURRED.with(|c| c.set(true));
+                    return Ok(cell.borrow().clone());
                 }
                 let chain = crate::trace::capture_cycle(thunk_id);
                 crate::trace::dump_trace_on_error();

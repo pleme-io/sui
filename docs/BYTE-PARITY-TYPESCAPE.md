@@ -279,44 +279,72 @@ correct and the bug is purely fixpoint/blackhole demand-order:**
 | `(builtins.head p.libxcrypt.nativeBuildInputs).drvPath` | `az4wk58…` ✅ |
 | `p.libxcrypt.drvPath` (the real fixpoint demand) | `q9b9v7a9…` ❌ (nbi dropped) |
 
-**The fix DIRECTION is byte-verified — but a blank empty-attrs is NOT the final
-fix.** Returning an empty attrset on same-thunk fixpoint re-entry (gated behind
-`SUI_FIXPOINT_PARTIAL`, off by default) makes `pkgs.libxcrypt.drvPath` byte-match
-nix (`jb9k6090…`) — the re-entered `__spliced.buildHost` access on an empty-attrs
-partial falls through the `or drv` to the correct raw perl. It also keeps the whole
-sealed corpus at **19 match / 0 regressions** and graduates the crypt-disabled-perl
-tracked row. HOWEVER it is **NOT universally correct**: under the corpus's default
-`<nixpkgs>` pin, `(import <nixpkgs> {}).hello.drvPath` turns from a wrong-value
-diverge into a downstream **TYPE ERROR** (`sui-err`) — because a blank empty-attrs
-is the wrong partial where the fixpoint's not-yet-complete value is a non-attrs or a
-specific attr. So it is shipped **gated, off by default** (the default gate stays at
-19/2/0 with no hello degradation); flipping it on is a measured degradation of the
-hello row, not a clean win.
+### RESOLVED (2026-07-10) — engine-level semantic fixpoint promotion, default-ON
 
-**The load-bearing fix (unchanged target).** Return the re-entered thunk's ACTUAL
-in-progress value (the `Promise`-cell partial that `sui-spec/specs/laziness.lisp`'s
-`recursive-binding` discipline specifies), NOT a blank sentinel — so the fixpoint
-sees its own not-yet-complete real value. That requires the overlay/`fix`-fixpoint
-attrset thunks to carry the `recursive` flag (a `Promise` cell), which the syntactic
-`is_self_recursive_binding` detector cannot set because the self-reference threads
-through `self`/`super`/`callPackage` across file boundaries. This is the same
-rearchitecture as `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.
+`pkgs.libxcrypt.drvPath` now byte-matches nix (`jb9k6090…`) **by default, no env
+gate**. The fix is the Blackhole↔Promise machinery the target section below
+specified, applied at the **demand-order engine** instead of at syntactic
+construction time (because the overlay `self:super:` self-reference threads through
+`self`/`super`/`callPackage` across file boundaries, so `is_self_recursive_binding`
+— a syntactic RHS name search — structurally cannot see it).
 
-**The precise remaining fix (the M2.6-sibling rearchitecture).** The `recursive`
-classification is **syntactic** (`eval.rs::is_self_recursive_binding` — RHS names
-its own binding), so it fires for literal `rec {…}`/`let` self-refs but MISSES the
-nixpkgs **overlay / `self: super:` fixpoint** where the self-reference threads
-through `self`/`super`/`callPackage` lambda args across file boundaries (the
-`perl = super.perl.override {…}` overlay binding is a plain-attrset binding whose
-RHS names `super.perl`, not `perl`, so it stays `non-recursive` → hard Blackhole).
-The fix: make overlay/fix-fixpoint-participating attrset thunks classify as
-`recursive-binding` (Promise re-entry returning the partial attrset), so genuine
-fixpoint cycles return the in-progress value while `let r = r` still errors.
-Same root as `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md` (`extraArgs ↔ matchedOptions`)
-— both are fixpoints nix tolerates via per-thunk lazy sharing that sui's syntactic
-recursion detection can't see. Landing it graduates the two tracked corpus rows
-(hello cascades separately — its own divergence is a **fetchurl-stdenv/mirrors**
-root, `pvir9l70…` vs sui's `gc56b6ig…-stdenv-linux`, an independent target).
+**What ships (default-ON):** when a thunk re-enters a `Blackhole` that is the SAME
+thunk currently on the force stack (`force_stack_contains` — a genuine fixpoint
+self-reference, not a distinct-thunk sharing gap), the engine retroactively
+**promotes** that `Blackhole` to a real `ThunkRepr::Promise(cell)` and returns the
+cell's in-progress partial — exactly what a `recursive`-at-construction thunk does,
+including outer-body cell population (`is_promise || became_promise`) and the
+`IN_PROMISE_EVAL` softening that makes `x.y or default` fall through like nix. This
+satisfies `sui-spec/src/laziness.rs`'s `overlay-fixpoint` discipline
+(`RecursionKind::Fixpoint ⇒ recursive + Promise`) in practice — the
+`overlay_fixpoint_forces_to_a_promise_not_infinite_recursion` +
+`every_authored_discipline_is_correctly_classified` locks are green.
+(`sui-eval/src/value.rs`, the `ThunkRepr::Blackhole` arm + the outer-force
+`became_promise` reconciliation.)
+
+**Why it is NOT the blank sentinel that was rejected.** The earlier
+`SUI_FIXPOINT_PARTIAL` gate returned a blank empty-attrs on re-entry, left the
+thunk in `Blackhole` forever, and stack-overflow-**aborted** `(import <nixpkgs>
+{}).hello.drvPath`. The promotion instead installs a first-class `Promise` cell
+that the outer body populates and that transitions cleanly to `Evaluated`. The gate
+has been **removed**.
+
+**The two runaway backstops (release-active, armed only after a promotion fires).**
+The promoted empty-attrs partial is byte-correct for the native-system fixpoint
+(`libxcrypt`), but is the WRONG partial where a demand indexes it as a list /
+non-attrs — the cross-system Darwin `apple-sdk` path `hello` hits under
+`builtins.currentSystem = macOS` (via `elemAt (elemAt deps 1) 1` /
+`makeOverridable`), which recurses without bound. Release disables the general
+`MAX_EVAL_DEPTH` guard (`usize::MAX`) to admit nixpkgs' legitimately-deep
+fixpoints, so nothing else stops that before the OS stack aborts. Two cheap
+backstops, both gated on `promotion_occurred()` (untouched otherwise), catch it:
+an **eval-depth** bound (`eval::PROMOTION_RUNAWAY_EVAL_DEPTH`, for runaways that
+climb `eval_expr`) and a **force-stack-depth** bound
+(`value::PROMOTION_RUNAWAY_FORCE_DEPTH`, for runaways that climb the force stack).
+Either converts the would-be native abort into a recoverable `InfiniteRecursion`
+that `x.y or default` recovers exactly like nix — so `hello` returns to a **clean
+value-diverge**, not an abort. The converging `libxcrypt` fixpoint peaks well below
+both bounds and is unaffected. `let r = r; in r` still errors (the promoted partial
+can't progress → the depth backstop fires).
+
+**Measured result.** Tail basket (`system = x86_64-linux`) went **10/23 → 11/23**:
+`libxcrypt` flipped diverge→**MATCH**, every prior match stayed MATCH, every prior
+diverge stayed a clean diverge — **0 regressions, 0 aborts**. Sealed corpus stays
+**19 match · 2 tracked · 0 regressions · sealed**. `hello` remains a `KnownDiverge`
+(its own root is an independent **fetchurl/mirrors** divergence, `pvir9l70…` vs
+`gc56b6ig…-stdenv-linux`) — the promotion no longer touches its outcome negatively.
+
+**The remaining terminal fix (deferred, larger).** The promoted partial is an
+**empty** attrset. The truly-correct partial is the **materialized attrset with its
+keys present** (the lazy attribute thunks), which nix has because the fixpoint
+attrset value is materialized before its attribute thunks force. With that, the
+`__structuredAttrs`/env-loop force error on cross-system dep positions would coerce
+correctly rather than needing the best-effort skip in
+`builtins/derivation.rs` — at which point that skip can be **surfaced** as a typed
+error (surfacing it today regresses `libxcrypt` itself back to a `throw` and a dozen
+clean diverges into hard errors — measured — so the skip deliberately stays until
+the materialized-keys partial lands). Same architectural family as
+`docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.
 
 **Tail measurement (23-package basket, unchanged this session — no fix landed):**
 base 10/23. `SUI_BLACKHOLE_AS_EMPTY_ATTRS` graduates only libxcrypt → 11/23; the

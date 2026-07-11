@@ -174,6 +174,20 @@ fn construct_derivation(
             ) {
                 continue;
             }
+            // NOTE (2026-07-10): this force-error path is DELIBERATELY still a
+            // best-effort skip, NOT a surfaced error, even after the
+            // overlay-fixpoint promotion fix.  The promotion lands the real
+            // partial for the native-system fixpoint (`libxcrypt` — the perl
+            // dep is no longer dropped, sui now byte-matches nix jb9k6090…),
+            // but on cross-system paths the promoted empty-attrs partial can
+            // still fail to coerce in a dep position that nix itself tolerates
+            // by dropping.  Surfacing the error there regresses `libxcrypt`
+            // ITSELF back to a `throw` and turns a dozen clean value-diverges
+            // into hard errors (measured).  The correct terminal fix is the
+            // materialized-attrset-with-keys partial (so the coerce succeeds),
+            // which is a larger architectural change than this increment; until
+            // then the skip stays.  `SUI_DEBUG_DRV` surfaces the dropped attr
+            // for diagnosis without changing the result.
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
                 Err(_e) => {
