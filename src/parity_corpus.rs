@@ -429,5 +429,67 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── M2.6 ROOT #3: dynamic tail key under a COLLIDING head stays lazy ──
+    // Two bindings share the head `sd`: a static `sd.services.x` AND a
+    // dynamic `sd.tmpfiles.${k}.d`. The ROOT #1/#2 deferral bailed when the
+    // head already existed (collision) and the eager path forced `${k}` at
+    // construction — the NixOS-module over-force (osquery's
+    // `systemd.services.… = …` then
+    // `systemd.tmpfiles.settings."10-osquery".${dirname …}.d`), which reads
+    // `config.<x>` mid-fixpoint → the empty-Promise partial. Fixed by
+    // `merge_deferred_dynamic_tail`: splice a deferred thunk under the
+    // existing head. Reading the STATIC sibling (`sd.services.x`) must not
+    // force `${k}` — both engines yield `1`.
+    let dyn_tail_under_head = |h0: &str, h1: &str, key_expr: NixValue, leaf: &str, value: NixValue| {
+        AttrSetEntry::KeyValue {
+            key: gen_nix::ast::AttrPath(vec![
+                gen_nix::ast::AttrKey::Ident(h0.to_string()),
+                gen_nix::ast::AttrKey::Ident(h1.to_string()),
+                gen_nix::ast::AttrKey::Interp(key_expr),
+                gen_nix::ast::AttrKey::Ident(leaf.to_string()),
+            ]),
+            value,
+        }
+    };
+    rows.push(row(
+        "dynamic tail under colliding head — static sibling read stays lazy",
+        let_(
+            vec![
+                ("k", str_("z")),
+                (
+                    "s",
+                    attrs(vec![
+                        dotted_entry("sd.services.x", NixValue::Int(1)),
+                        dyn_tail_under_head("sd", "tmpfiles", path(&["k"]), "d", NixValue::Int(2)),
+                    ]),
+                ),
+            ],
+            NixValue::AttrPath(vec!["s".into(), "sd".into(), "services".into(), "x".into()]),
+        ),
+        RowExpect::Match,
+    ));
+    // Demanding the dynamic branch (`s.sd.tmpfiles.z.d`) DOES resolve the
+    // deferred key AND the static sibling survives the merge — both engines
+    // yield `2` here (and the sibling would still yield `1`).
+    rows.push(row(
+        "dynamic tail under colliding head — dynamic branch resolves",
+        let_(
+            vec![
+                ("k", str_("z")),
+                (
+                    "s",
+                    attrs(vec![
+                        dotted_entry("sd.services.x", NixValue::Int(1)),
+                        dyn_tail_under_head("sd", "tmpfiles", path(&["k"]), "d", NixValue::Int(2)),
+                    ]),
+                ),
+            ],
+            NixValue::AttrPath(vec![
+                "s".into(), "sd".into(), "tmpfiles".into(), "z".into(), "d".into(),
+            ]),
+        ),
+        RowExpect::Match,
+    ));
+
     rows
 }

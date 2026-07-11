@@ -209,3 +209,77 @@ fn module_unrelated_select_does_not_force_sibling_dynamic_key() {
          ]; }).config.pleme.userName",
     );
 }
+
+// ── M2.6 ROOT #3: the INTERPOLATED-STRING dynamic-key OVER-FORCE ──────
+// ROOT #2 deferred only bare `${e}` tail keys; an INTERPOLATED-STRING
+// tail key (`config.environment.etc."iwd/${nm}"`) still fell to the
+// eager path and forced `nm` at construction. In the module system that
+// forces a `config.<x>` read while `config` is mid-fixpoint (iwd's
+// `environment.etc."iwd/${configFile.name}"`, where `configFile` reads
+// `with config.networking.networkmanager`), yielding the empty-Promise
+// partial → the `set/null` softening. Fixed by teaching
+// `attrs_have_dynamic` that an interpolated `Str` attr key is dynamic,
+// routing it through the same per-level deferral as `${e}`.
+// Byte-verified 2026-07-11; `diff` asserts sui == nix (returns 42).
+#[test]
+fn module_interpolated_string_dynamic_key_stays_lazy() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ lib, ... }: { \
+           options.other.enable = lib.mkOption { type = lib.types.bool; default = true; }; \
+           options.probe = lib.mkOption { type = lib.types.int; default = 0; }; \
+           config.probe = 42; }) \
+         ({ config, lib, ... }: \
+           let d = with config.other; lib.optionalAttrs enable { x = 1; }; \
+               nm = if d ? x then \"yes\" else \"no\"; \
+           in { options.environment.etc = lib.mkOption { type = lib.types.attrs; default = {}; }; \
+                config.environment.etc.\"iwd/${nm}\" = { source = 1; }; }) \
+         ]; }).config.probe",
+    );
+}
+
+// ── M2.6 ROOT #3 (collision case): dynamic tail key under a COLLIDING
+// head. When a sibling binding already wrote the head (osquery's
+// `systemd.services.… = …` then
+// `systemd.tmpfiles.settings."10-osquery".${dirname …}.d`), the ROOT
+// #1/#2 deferral bailed (head present) and the eager path forced the
+// dynamic key at construction → the same empty-Promise partial. Fixed by
+// `merge_deferred_dynamic_tail`: descend the existing head along the
+// tail's static prefix and splice a deferred thunk at the first dynamic
+// level, preserving both laziness AND the static deep-merge.
+// Byte-verified 2026-07-11; `diff` asserts sui == nix (returns 42).
+#[test]
+fn module_dynamic_tail_key_under_colliding_head_stays_lazy() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ lib, ... }: { \
+           options.svc.path = lib.mkOption { type = lib.types.str; default = \"/a/b\"; }; \
+           options.probe = lib.mkOption { type = lib.types.int; default = 0; }; \
+           config.probe = 42; }) \
+         ({ config, lib, ... }: { \
+           options.sd.services = lib.mkOption { type = lib.types.attrs; default = {}; }; \
+           options.sd.tmpfiles = lib.mkOption { type = lib.types.attrs; default = {}; }; \
+           config.sd.services.x = { a = 1; }; \
+           config.sd.tmpfiles.${builtins.dirOf config.svc.path}.d = { m = 1; }; }) \
+         ]; }).config.probe",
+    );
+}
+
+// The static deep-merge under the colliding head MUST still work: the
+// deferred dynamic-tail binding must not clobber the sibling
+// `sd.services.x`. Demanding the dynamic branch resolves the key AND the
+// sibling static branch remains intact.
+#[test]
+fn module_dynamic_tail_collision_preserves_static_sibling() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ lib, ... }: { \
+           options.svc.path = lib.mkOption { type = lib.types.str; default = \"/a/b\"; }; }) \
+         ({ config, lib, ... }: { \
+           options.sd.services = lib.mkOption { type = lib.types.attrs; default = {}; }; \
+           options.sd.tmpfiles = lib.mkOption { type = lib.types.attrs; default = {}; }; \
+           config.sd.services.x = { a = 1; }; \
+           config.sd.tmpfiles.${builtins.dirOf config.svc.path}.d = { m = 1; }; }) \
+         ]; }).config.sd",
+    );
+}

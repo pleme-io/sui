@@ -92,3 +92,36 @@
   :name       "nested-tail-dynamic"
   :position   Tail
   :force-site HeadDemand)
+
+;; M2.6 ROOT #3a (the INTERPOLATED-STRING key, byte-verified 2026-07-11):
+;; a dynamic key is not only a bare `${e}` — an INTERPOLATED-STRING attr
+;; key (`{ a."p/${e}" = v; }`) is equally dynamic (it references `e`) and
+;; MUST defer identically.  sui's dynamic-key classifier recognised only
+;; the bare `${e}` form, so an interpolated tail key fell to the eager
+;; path and forced `e` at construction — in the NixOS fixpoint iwd's
+;; `environment.etc."iwd/${configFile.name}"` (configFile reads
+;; `with config.networking.networkmanager`) → empty-Promise partial →
+;; softened `null` → `set/null`.  As data: an interpolated-string TAIL
+;; key is the SAME `Tail → HeadDemand` site as a bare `${e}` — a
+;; purely-literal string key (`"foo bar"`, no interpolation) is NOT
+;; dynamic and stays eager.
+(defattrkey-forcesite
+  :name       "interpolated-tail-dynamic"
+  :position   Tail
+  :force-site HeadDemand)
+
+;; M2.6 ROOT #3b (the COLLIDING-HEAD case, byte-verified 2026-07-11): a
+;; dynamic tail key under a head a SIBLING binding already wrote
+;; (osquery's `systemd.services.… = …` then
+;; `systemd.tmpfiles.settings."10-osquery".${dirname …}.d`).  The prior
+;; deferral bailed when the head existed (collision) and the eager path
+;; forced the dynamic key at construction → the empty-Promise partial.
+;; The fix descends the existing head along the tail's STATIC prefix and
+;; splices the deferred thunk at the first dynamic level, so the key is
+;; STILL a `Tail → HeadDemand` site AND the static deep-merge with the
+;; sibling binding is preserved.  Same invariant; the collision no longer
+;; downgrades a Tail site to Construction.
+(defattrkey-forcesite
+  :name       "colliding-head-tail-dynamic"
+  :position   Tail
+  :force-site HeadDemand)

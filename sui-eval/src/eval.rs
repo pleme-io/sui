@@ -1660,6 +1660,31 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         attrs.insert(head_key, value);
                         continue;
                     }
+                    // M2.6 ROOT #3 (collision case): the tail has a dynamic key
+                    // AND the head already exists (a sibling binding wrote it,
+                    // e.g. osquery's `systemd.services.… = …` then
+                    // `systemd.tmpfiles.settings."10-osquery".${dirname …}.d`).
+                    // The plain deferral above bails (head present), and the
+                    // eager path below would force the dynamic key at
+                    // construction — re-reading `config.<x>` mid-fixpoint →
+                    // the empty-Promise partial. Instead, descend the existing
+                    // head along the tail's STATIC prefix and splice a DEFERRED
+                    // thunk at the first dynamic level, so the dynamic key
+                    // stays lazy exactly as CppNix's nested-literal desugaring
+                    // does — while preserving the static deep-merge with the
+                    // sibling binding.
+                    if tail_is_dynamic {
+                        if let Some(existing) = attrs.get(&head_key).cloned() {
+                            let merged = merge_deferred_dynamic_tail(
+                                existing,
+                                &path_attrs[1..],
+                                &value_expr,
+                                env,
+                            )?;
+                            attrs.insert(head_key, merged);
+                            continue;
+                        }
+                    }
                     // Eager path: evaluate the remaining (static, or collision)
                     // keys now. A null dynamic tail key skips the binding.
                     let mut path_keys: Vec<String> = {
@@ -1846,6 +1871,39 @@ fn build_nested_attr(
     Ok(Value::Attrs(Rc::new(attrs)))
 }
 
+/// True if a single attr is a DYNAMIC key — one whose resolution runs
+/// arbitrary expression code and therefore must not be forced at
+/// attrset-construction time.
+///
+/// Two forms are dynamic:
+///   * `ast::Attr::Dynamic` — a bare `${e}` antiquotation.
+///   * `ast::Attr::Str` **containing an interpolation** — an interpolated
+///     string key like `"iwd/${nm}"`.  A `Str` with NO interpolation
+///     (`"foo bar"`) is a plain static string literal and is NOT dynamic.
+///
+/// M2.6 ROOT #3: `attrs_have_dynamic` previously matched ONLY
+/// `Attr::Dynamic`, so an interpolated-string tail key (`config.a."p${e}"`)
+/// fell to the eager path and forced `e` at construction.  In the module
+/// system that forces a `config.<x>` read while `config` is mid-fixpoint
+/// (`environment.etc."iwd/${configFile.name}"`, where `configFile` reads
+/// `with config.networking.networkmanager`), yielding the empty-Promise
+/// partial → the `set/null` softening.  Treating an interpolated `Str` as
+/// dynamic routes it through the same per-level deferral as `${e}`
+/// (ROOT #1/#2), so `e` forces only when the enclosing head is demanded —
+/// exactly CppNix's nested-attrset-literal desugaring.
+fn attr_is_dynamic(attr: &ast::Attr) -> bool {
+    match attr {
+        ast::Attr::Dynamic(_) => true,
+        // A string attr key is dynamic iff it has ≥1 interpolation part;
+        // a purely-literal string key forces nothing and stays eager.
+        ast::Attr::Str(s) => s
+            .normalized_parts()
+            .iter()
+            .any(|p| matches!(p, InterpolPart::Interpolation(_))),
+        ast::Attr::Ident(_) => false,
+    }
+}
+
 /// True if any attr in the slice is a dynamic (interpolated) key.
 ///
 /// A dynamic key beyond the HEAD of an attrpath must NOT be evaluated at
@@ -1854,7 +1912,7 @@ fn build_nested_attr(
 /// Static string/ident keys are cheap and force nothing, so they don't
 /// need deferral.
 fn attrs_have_dynamic(attrs: &[ast::Attr]) -> bool {
-    attrs.iter().any(|a| matches!(a, ast::Attr::Dynamic(_)))
+    attrs.iter().any(attr_is_dynamic)
 }
 
 /// Build the nested attrset for the TAIL of an attrpath, deferring
@@ -1936,6 +1994,126 @@ fn build_tail_attrs_now(
     let mut attrs = NixAttrs::new();
     attrs.insert(key, inner);
     Ok(Value::Attrs(Rc::new(attrs)))
+}
+
+/// M2.6 ROOT #3 (collision case): splice a DEFERRED dynamic-tail binding
+/// into an ALREADY-PRESENT head value without forcing the dynamic key.
+///
+/// `existing` is the value already stored at the attrpath's head (written
+/// by a sibling binding — e.g. `systemd.services.… = …`). `tail` is the
+/// remaining attrpath (`path_attrs[1..]`) of the new binding, which
+/// contains ≥1 dynamic attr (`systemd.tmpfiles.….${dirname …}.d`).
+///
+/// We descend `existing` along the LONGEST STATIC PREFIX of `tail`
+/// (`tmpfiles`, `settings`, `"10-osquery"` — all static, forced-free
+/// keys), forcing each already-present sub-attrset to WHNF so the merge
+/// sees concrete keys (forcing to WHNF never forces leaf VALUES, so leaf
+/// laziness is preserved), and at the first DYNAMIC level splice a
+/// `build_deferred_tail_attr` thunk. The dynamic key therefore forces
+/// only when that exact nested path is later demanded — CppNix's
+/// nested-attrset-literal desugaring, now honoured through a sibling
+/// collision too.
+fn merge_deferred_dynamic_tail(
+    existing: Value,
+    tail: &[ast::Attr],
+    value_expr: &ast::Expr,
+    env: &Env,
+) -> Result<Value, EvalError> {
+    // `tail` is non-empty and contains a dynamic attr somewhere (the
+    // caller guarantees `attrs_have_dynamic(tail)`).
+    debug_assert!(!tail.is_empty());
+
+    // If the FIRST tail attr is itself dynamic, there is no static prefix
+    // to descend — the whole tail is deferred and merged as a lazy
+    // overlay onto the existing head (a `//`-style right-merge; the
+    // deferred attrset only materialises its dynamic key on demand).
+    if attr_is_dynamic(&tail[0]) {
+        let deferred = build_deferred_tail_attr(tail, value_expr, env);
+        return Ok(lazy_overlay_merge(existing, deferred));
+    }
+
+    // The head static key of `tail`. Resolve it (static → forces nothing
+    // relevant; a null dynamic can't occur here since tail[0] is static).
+    let key = match eval_attr_maybe_null(&tail[0], env)? {
+        Some(k) => k,
+        None => return Ok(existing),
+    };
+
+    // Force the existing head to a concrete attrset so we can descend +
+    // merge on the resolved static key. Forcing to WHNF does NOT force
+    // its field VALUES, so leaf laziness is preserved.
+    let existing_forced = force_value(&existing)?;
+    let mut base = match existing_forced {
+        Value::Attrs(a) => (*a).clone(),
+        // The existing head is not an attrset (a sibling wrote a leaf
+        // here); CppNix would error on the merge, but to stay lazy we
+        // defer the tail and let a later demand surface the real merge
+        // conflict. Build the deferred tail as a fresh attrset.
+        _ => {
+            let deferred = build_deferred_tail_attr(tail, value_expr, env);
+            return Ok(deferred);
+        }
+    };
+
+    // Recurse: merge the REMAINING tail (`tail[1..]`) under `key`.
+    let child_existing = base.get(&key).cloned();
+    let new_child = match child_existing {
+        Some(child) if tail.len() > 1 => {
+            // Deeper static/dynamic prefix under an existing sub-attrset.
+            merge_deferred_dynamic_tail(child, &tail[1..], value_expr, env)?
+        }
+        Some(child) => {
+            // tail == [key]; the leaf collides with an existing value.
+            // Static leaf collision — build the leaf and lazy-merge.
+            let leaf = maybe_thunk(value_expr, env, false, None);
+            lazy_overlay_merge(child, leaf)
+        }
+        None if tail.len() > 1 => {
+            // No existing child; the remaining tail may itself start with
+            // a dynamic key — defer it whole (build_deferred_tail_attr
+            // handles the static/dynamic split per-level).
+            build_deferred_tail_attr(&tail[1..], value_expr, env)
+        }
+        None => maybe_thunk(value_expr, env, false, None),
+    };
+    base.insert(key, new_child);
+    Ok(Value::Attrs(Rc::new(base)))
+}
+
+/// Lazy right-merge of two values that are (or will force to) attrsets,
+/// preserving leaf laziness. Used by [`merge_deferred_dynamic_tail`] to
+/// combine a deferred dynamic-tail attrset with an existing value without
+/// forcing either's dynamic keys eagerly. When both are concrete attrs we
+/// deep-merge in place (reusing [`merge_nested_insert`]); otherwise we
+/// build a lazy overlay thunk that merges on demand.
+fn lazy_overlay_merge(left: Value, right: Value) -> Value {
+    match (&left, &right) {
+        (Value::Attrs(la), Value::Attrs(_)) => {
+            let mut merged = (**la).clone();
+            if let Value::Attrs(ra) = &right {
+                for (k, v) in ra.iter() {
+                    merge_nested_insert(&mut merged, k.clone(), v.clone());
+                }
+            }
+            Value::Attrs(Rc::new(merged))
+        }
+        _ => {
+            // At least one side is a thunk (a deferred dynamic tail).
+            // Defer the merge behind a Native thunk so neither side's
+            // dynamic key forces until the merged attrset is demanded.
+            Value::Thunk(Thunk::new_native(move || {
+                let lf = force_value(&left)?;
+                let rf = force_value(&right)?;
+                let la = lf.as_attrs()?;
+                let ra = rf.as_attrs()?;
+                let mut merged = (*la).clone();
+                for (k, v) in ra.iter() {
+                    merge_nested_insert(&mut merged, k.clone(), v.clone());
+                }
+                Ok(Value::Attrs(Rc::new(merged)))
+            }))
+        }
+    }
 }
 
 /// Like [`build_nested_attr`] but wraps the leaf in a [`Thunk`] instead of
@@ -2584,6 +2762,82 @@ mod tests {
             r#"let c = true; s = { a.${if c then null else "n"} = 5; b = 1; }; in s.b"#,
         );
         assert_eq!(v, Value::Int(1));
+    }
+
+    // ── M2.6 ROOT #3: interpolated-STRING tail keys are dynamic too ──────
+    // `{ a."p${e}" = v; }` must build `{ a = <thunk {"p${e}"=v}>; }` — an
+    // interpolated-string attr key references `e` and so must defer like a
+    // bare `${e}`, never force at construction. Reading a sibling must NOT
+    // force it (the KEYFORCE discriminator, now for a `Str` key).
+    #[test]
+    fn interpolated_string_attr_key_is_lazy_on_sibling_read() {
+        assert_eq!(
+            ev(r#"let s = { a."p/${throw "KEYFORCED"}" = 7; other = 9; }; in s.other"#),
+            Value::Int(9),
+        );
+    }
+
+    #[test]
+    fn interpolated_string_attr_key_resolves_on_head_demand() {
+        // Demanding the head DOES resolve the deferred interpolated key.
+        let v = ev(r#"let u = "bob"; s = { homes."u/${u}" = 7; }; in s.homes"#);
+        if let Value::Attrs(attrs) = force_value(&v).unwrap() {
+            assert_eq!(attrs.get("u/bob"), Some(&Value::Int(7)));
+        } else {
+            panic!("expected Attrs");
+        }
+    }
+
+    #[test]
+    fn purely_literal_string_attr_key_stays_eager_static() {
+        // A `Str` key with NO interpolation is a plain static key and must
+        // NOT be treated as dynamic (it forces nothing, deep-merges).
+        let v = ev(r#"let s = { a."foo bar" = 1; a.b = 2; }; in s.a"#);
+        if let Value::Attrs(attrs) = force_value(&v).unwrap() {
+            assert_eq!(attrs.get("foo bar"), Some(&Value::Int(1)));
+            assert_eq!(attrs.get("b"), Some(&Value::Int(2)));
+        } else {
+            panic!("expected Attrs");
+        }
+    }
+
+    // ── M2.6 ROOT #3 (collision case): dynamic tail key under a head that
+    // a sibling binding already wrote must stay lazy AND deep-merge.
+    #[test]
+    fn dynamic_tail_key_under_colliding_head_is_lazy() {
+        // `sd.services.x` writes head `sd`; the second binding's dynamic
+        // key must NOT force when a SIBLING (`sd.services`) is read.
+        let v = ev(
+            r#"let s = { sd.services.x = 1; sd.tmpfiles.${throw "KEYFORCED"}.d = 2; }; in s.sd.services.x"#,
+        );
+        assert_eq!(v, Value::Int(1));
+    }
+
+    #[test]
+    fn dynamic_tail_key_under_colliding_head_resolves_and_merges() {
+        // Demanding the dynamic branch resolves the key; the sibling
+        // static branch (`sd.services`) survives the merge intact.
+        let v = ev(
+            r#"let k = "z"; s = { sd.services.x = 1; sd.tmpfiles.${k}.d = 2; }; in s.sd"#,
+        );
+        let sd = force_value(&v).unwrap();
+        if let Value::Attrs(sd_attrs) = &sd {
+            // static sibling intact
+            let services = force_value(sd_attrs.get("services").unwrap()).unwrap();
+            if let Value::Attrs(a) = &services {
+                assert_eq!(force_value(a.get("x").unwrap()).unwrap(), Value::Int(1));
+            } else { panic!("expected services attrs"); }
+            // dynamic branch resolved to key "z"
+            let tmpfiles = force_value(sd_attrs.get("tmpfiles").unwrap()).unwrap();
+            if let Value::Attrs(a) = &tmpfiles {
+                let z = force_value(a.get("z").unwrap()).unwrap();
+                if let Value::Attrs(zd) = &z {
+                    assert_eq!(force_value(zd.get("d").unwrap()).unwrap(), Value::Int(2));
+                } else { panic!("expected z attrs"); }
+            } else { panic!("expected tmpfiles attrs"); }
+        } else {
+            panic!("expected sd attrs");
+        }
     }
 
     #[test]
