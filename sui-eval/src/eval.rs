@@ -79,12 +79,14 @@ pub fn attach_trace(err: EvalError) -> EvalError {
         if stack.is_empty() {
             return err;
         }
+        let max_frames = std::env::var("SUI_M26_MAXFRAMES").ok()
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(15);
         let mut trace = format!("{err}");
-        for (i, frame) in stack.iter().rev().take(15).enumerate() {
+        for (i, frame) in stack.iter().rev().take(max_frames).enumerate() {
             let loc = frame.file.as_deref().unwrap_or("<eval>");
             trace.push_str(&format!("\n  {} ({loc})", frame.description));
-            if i >= 14 {
-                trace.push_str(&format!("\n  ... ({} more frames)", stack.len() - 15));
+            if i + 1 >= max_frames && stack.len() > max_frames {
+                trace.push_str(&format!("\n  ... ({} more frames)", stack.len() - max_frames));
             }
         }
         // CRITICAL: preserve Throw/AssertionFailed variants so tryEval can catch them.
@@ -131,7 +133,7 @@ pub fn eval_file_stack_snapshot() -> Vec<String> {
 
 /// Format the current eval file for error context strings.
 /// Returns e.g. `", in '/nix/store/.../default.nix'"` or empty string.
-fn eval_file_ctx() -> String {
+pub(crate) fn eval_file_ctx() -> String {
     current_eval_file()
         .map(|p| format!(", in '{}'", p.display()))
         .unwrap_or_default()
@@ -1353,6 +1355,16 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
                     ).unwrap_or_default();
                     eprintln!("[M26 SEL-MISS→null] base_type={base_type} path={path:?} missing-key={key}{}", eval_file_ctx());
                 }
+                if let Ok(filt) = std::env::var("SUI_M26_HARDSOFTEN") {
+                    let path: Vec<String> = sel.attrpath().map(|ap|
+                        ap.attrs().map(|a| a.syntax().text().to_string()).collect()
+                    ).unwrap_or_default();
+                    if path.iter().any(|p| p.contains(&filt)) {
+                        return Err(EvalError::type_error(format!(
+                            "M26-HARDSOFTEN path={path:?} key={key}"
+                        )));
+                    }
+                }
                 Ok(Value::Null)
             } else {
                 Err(EvalError::AttrNotFound(
@@ -1369,6 +1381,16 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
             if let Some(def) = sel.default_expr() {
                 eval_expr(&def, env)
             } else if bridge_active {
+                if let Ok(filt) = std::env::var("SUI_M26_HARDSOFTEN") {
+                    let path: Vec<String> = sel.attrpath().map(|ap|
+                        ap.attrs().map(|a| a.syntax().text().to_string()).collect()
+                    ).unwrap_or_default();
+                    if path.iter().any(|p| p.contains(&filt)) {
+                        return Err(EvalError::type_error(format!(
+                            "M26-HARDSOFTEN-NOTATTRS path={path:?} base_type={base_type}"
+                        )));
+                    }
+                }
                 return Ok(Value::Null);
             } else {
                 if std::env::var("SUI_DEBUG_SELECT").is_ok() {

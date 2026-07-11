@@ -283,3 +283,71 @@ fn module_dynamic_tail_collision_preserves_static_sibling() {
          ]; }).config.sd",
     );
 }
+
+// ── M2.6 ROOT #4 (OPEN): the field-lazy `concatLists: got null` frontier ──
+// The full `lib.nixosSystem { modules = []; }` diverges at
+// `concatLists: expected list, got null` (checkUnmatched → seq →
+// merged.unmatchedDefns → mergeModules' recursion → a mkIf's content that
+// reads `config.services.<x>` mid-fixpoint → the `in_promise_eval`
+// select-miss softening returns `null` where cppnix resolves the field to
+// its option default). This is the field-independence gap, NOT a dynamic-
+// key over-force — see `docs/repros/root4-concatlists-null.md`. It has NO
+// minimal pure-lib reducer (the empty-Promise partial only arises from the
+// full base-module `_module.args` fixpoint re-entrance). The tests below
+// pin the BOUNDARY: the doRename / mkIf-reading-config shapes that CARRY
+// the bug in-situ resolve CORRECTLY in isolation (sui == nix), proving the
+// divergence is emergent from the full-set re-entrance and guarding the
+// boundary against regression when the field-lazy fix lands.
+
+// A `doRename`/`mkRenamedOptionModule` alias forwards the old option's
+// definition to the new option — resolves correctly in isolation.
+#[test]
+fn module_rename_forwards_definition() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         (lib.mkRenamedOptionModule [ \"old\" \"opt\" ] [ \"new\" \"opt\" ]) \
+         ({ lib, ... }: { options.new.opt = lib.mkOption { type = lib.types.str; default = \"def\"; }; }) \
+         ({ ... }: { old.opt = \"fromold\"; }) \
+         ]; }).config.new.opt",
+    );
+}
+
+// A `doRename` whose `to` path descends into an `attrsOf submodule` (the
+// nixos base-module shape) + selecting an UNRELATED option: the alias's
+// `setAttrByPath`/`atDepth` dynamic-head-key is on the force chain but its
+// key force is correct — both engines return the unrelated option's value.
+#[test]
+fn module_rename_into_submodule_unrelated_select() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         (lib.doRename { from = [ \"old\" \"sub\" \"field\" ]; to = [ \"new\" \"sub\" \"field\" ]; \
+            visible = false; warn = false; use = x: x; }) \
+         ({ lib, ... }: { \
+           options.new.sub = lib.mkOption { \
+             type = lib.types.submodule { options.field = lib.mkOption { type = lib.types.str; default = \"d\"; }; }; \
+             default = {}; }; \
+           options.probe = lib.mkOption { type = lib.types.str; default = \"PROBE\"; }; }) \
+         ({ ... }: { old.sub.field = \"fromold\"; }) \
+         ]; }).config.probe",
+    );
+}
+
+// A `config = mkIf (config.svc != {}) (with config.svc; { … })` over an
+// `attrsOf submodule` option defaulting to `{}` — the borgbackup shape
+// whose `with config.services.borgbackup` softens to null in-situ. In
+// isolation `config.svc` resolves to its `{}` default; both engines agree.
+#[test]
+fn module_mkif_config_read_over_attrs_of_submodule() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ config, lib, ... }: { \
+           options.repos = lib.mkOption { \
+             type = lib.types.attrsOf (lib.types.submodule { options.user = lib.mkOption { type = lib.types.str; default = \"u\"; }; }); \
+             default = {}; }; \
+           options.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = {}; }; \
+           options.probe = lib.mkOption { type = lib.types.str; default = \"PROBE\"; }; \
+           config = lib.mkIf (config.repos != {}) (with config.repos; { \
+             users = lib.mkMerge (lib.mapAttrsToList (n: c: { \"${c.user}\" = {}; }) config.repos); }); }) \
+         ]; }).config.probe",
+    );
+}

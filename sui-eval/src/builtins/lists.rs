@@ -181,6 +181,26 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let mut result = Vec::with_capacity(total_len);
         for v in lists {
             let forced = crate::eval::force_value(v)?;
+            // M2.6 ROOT #4 diagnostics (byte-neutral, env-gated, zero hot-path
+            // cost): a non-list element in `concatLists`'s argument is the
+            // `concatLists: expected list, got null` failure mode — the
+            // module-system fixpoint softening (`in_promise_eval`) returned
+            // `null` for a `config.<x>` select-miss that flowed into a
+            // list-typed position.  `SUI_M26_CLTRACE` reports the offending
+            // element's type + file stack; `SUI_M26_CLDUMP` (requires
+            // `SUI_TRACE_EVAL=ring`) dumps the ring-buffer tail so the
+            // deepest `mergeModules'` frame that produced the null is visible.
+            if !matches!(forced, Value::List(_)) {
+                if std::env::var_os("SUI_M26_CLTRACE").is_some() {
+                    let stack = crate::eval::eval_file_stack_snapshot();
+                    let tail: Vec<String> = stack.iter().rev().take(6).cloned().collect();
+                    eprintln!("[M26 CONCATLISTS-null] elem_type={} outer_len={} filestack(top6)={:?}", forced.type_name(), lists.len(), tail);
+                }
+                if std::env::var_os("SUI_M26_CLDUMP").is_some() {
+                    eprintln!("[M26 CONCATLISTS-null] elem_type={} outer_len={} — ring tail:", forced.type_name(), lists.len());
+                    crate::trace::dump_ring_tail(12);
+                }
+            }
             let inner = forced.as_list()?;
             result.extend(inner.iter().cloned());
         }

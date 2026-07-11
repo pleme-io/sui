@@ -225,6 +225,17 @@ pub fn trace_force_exit() {
     TRACE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
 }
 
+/// Dump the last `n` ring-buffer entries to stderr (for inline diagnostics).
+pub fn dump_ring_tail(n: usize) {
+    RING_BUFFER.with(|rb| {
+        let rb = rb.borrow();
+        let start = rb.len().saturating_sub(n);
+        for line in rb.iter().skip(start) {
+            eprintln!("{line}");
+        }
+    });
+}
+
 /// Dump the trace ring buffer to stderr. Called on error paths.
 pub fn dump_trace_on_error() {
     if !trace_enabled() {
