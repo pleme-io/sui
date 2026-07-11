@@ -6,6 +6,17 @@ fn ev(input: &str) -> Value {
     eval(input).unwrap()
 }
 
+/// Force + read a (now-lazy) derivation string field like `drvPath`/`outPath`.
+/// `derivation` returns those as memoized lazy thunks (matching nix), so a raw
+/// `.as_string()` on the field would see an unforced `Value::Thunk`.
+fn drv_field(attrs: &crate::value::NixAttrs, key: &str) -> String {
+    crate::eval::force_value(attrs.get(key).unwrap_or_else(|| panic!("missing field {key}")))
+        .unwrap()
+        .as_string()
+        .unwrap()
+        .to_string()
+}
+
 #[test]
 fn builtins_gen_list_generates_correct_list() {
     // genList (x: x * 2) 4 => [0 2 4 6]
@@ -724,14 +735,14 @@ fn builtins_derivation_returns_real_paths() {
     assert_eq!(a.get("name"), Some(&Value::string("test")));
 
     // drvPath: /nix/store/<32 base32 chars>-test.drv
-    let drv_path = a.get("drvPath").unwrap().as_string().unwrap();
+    let drv_path = drv_field(&a, "drvPath");
     assert!(drv_path.starts_with("/nix/store/"), "drvPath: {drv_path}");
     assert!(drv_path.ends_with("-test.drv"), "drvPath: {drv_path}");
     let drv_basename = drv_path.strip_prefix("/nix/store/").unwrap();
     assert_eq!(drv_basename.len(), 32 + 1 + "test.drv".len());
 
     // outPath: /nix/store/<32 base32 chars>-test
-    let out_path = a.get("outPath").unwrap().as_string().unwrap();
+    let out_path = drv_field(&a, "outPath");
     assert!(out_path.starts_with("/nix/store/"));
     assert!(out_path.ends_with("-test"));
     assert_ne!(drv_path, out_path);
@@ -762,8 +773,8 @@ fn builtins_derivation_is_deterministic() {
 fn builtins_derivation_different_names_produce_different_paths() {
     let v1 = eval(r#"builtins.derivation { name = "foo"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
     let v2 = eval(r#"builtins.derivation { name = "bar"; system = "x86_64-linux"; builder = "/bin/sh"; }"#).unwrap();
-    let p1 = v1.as_attrs().unwrap().get("drvPath").unwrap().as_string().unwrap().to_string();
-    let p2 = v2.as_attrs().unwrap().get("drvPath").unwrap().as_string().unwrap().to_string();
+    let p1 = drv_field(&v1.as_attrs().unwrap(), "drvPath");
+    let p2 = drv_field(&v2.as_attrs().unwrap(), "drvPath");
     assert_ne!(p1, p2);
 }
 
@@ -795,12 +806,9 @@ fn builtins_derivation_multiple_outputs() {
     }
 
     // The three outputs must have distinct paths.
-    let out_p = a.get("out").unwrap().as_attrs().unwrap()
-        .get("outPath").unwrap().as_string().unwrap().to_string();
-    let dev_p = a.get("dev").unwrap().as_attrs().unwrap()
-        .get("outPath").unwrap().as_string().unwrap().to_string();
-    let lib_p = a.get("lib").unwrap().as_attrs().unwrap()
-        .get("outPath").unwrap().as_string().unwrap().to_string();
+    let out_p = drv_field(&a.get("out").unwrap().as_attrs().unwrap(), "outPath");
+    let dev_p = drv_field(&a.get("dev").unwrap().as_attrs().unwrap(), "outPath");
+    let lib_p = drv_field(&a.get("lib").unwrap().as_attrs().unwrap(), "outPath");
     assert_ne!(out_p, dev_p);
     assert_ne!(out_p, lib_p);
     assert_ne!(dev_p, lib_p);
@@ -821,9 +829,9 @@ fn builtins_derivation_fixed_output() {
     }"#).unwrap();
     let a = v.as_attrs().unwrap();
     assert_eq!(a.get("type"), Some(&Value::string("derivation")));
-    let out_path = a.get("outPath").unwrap().as_string().unwrap();
+    let out_path = drv_field(&a, "outPath");
     assert!(out_path.ends_with("-src.tar.gz"));
-    assert!(a.get("drvPath").unwrap().as_string().unwrap().ends_with("-src.tar.gz.drv"));
+    assert!(drv_field(&a, "drvPath").ends_with("-src.tar.gz.drv"));
 }
 
 #[test]
@@ -848,8 +856,8 @@ fn builtins_derivation_fixed_output_recursive_differs_from_flat() {
         outputHashAlgo = "sha256";
         outputHashMode = "recursive";
     }"#).unwrap();
-    let p1 = flat.as_attrs().unwrap().get("outPath").unwrap().as_string().unwrap().to_string();
-    let p2 = rec.as_attrs().unwrap().get("outPath").unwrap().as_string().unwrap().to_string();
+    let p1 = drv_field(&flat.as_attrs().unwrap(), "outPath");
+    let p2 = drv_field(&rec.as_attrs().unwrap(), "outPath");
     assert_ne!(p1, p2);
 }
 
@@ -882,8 +890,55 @@ fn eval_drv_in_temp_store_inner(expr: &str, dir: &std::path::Path) -> Value {
     // no concurrent mutation.
     unsafe { std::env::set_var("SUI_STORE_DIR", dir) };
     let result = eval(expr).unwrap();
+    // `derivation` is now LAZY (matching nix): the .drv is written to the store
+    // only when a store path (`drvPath`/`outPath`/an output) is forced.  These
+    // tests assert the on-disk .drv AND read `.drvPath`/`.outPath` directly via
+    // `.as_string()`, so rebuild the result attrset with those fields FORCED
+    // (under `SUI_STORE_DIR`, which triggers the write).  The per-output
+    // attrsets and `all` are forced too so their `outPath`/`drvPath` strings are
+    // resolved.
+    let forced = if let Ok(attrs) = result.to_attrs() {
+        let mut flat = crate::value::NixAttrs::new();
+        for (k, v) in attrs.iter() {
+            let fv = crate::eval::force_value(v).unwrap_or_else(|_| v.clone());
+            // Force one level into per-output attrsets + `all` so their
+            // lazy outPath/drvPath strings resolve for the assertions.
+            let fv = match fv {
+                crate::value::Value::Attrs(inner) => {
+                    let mut inner_flat = crate::value::NixAttrs::new();
+                    for (ik, iv) in inner.iter() {
+                        inner_flat.insert(ik.clone(), crate::eval::force_value(iv).unwrap_or_else(|_| iv.clone()));
+                    }
+                    crate::value::Value::Attrs(std::rc::Rc::new(inner_flat))
+                }
+                crate::value::Value::List(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for it in items.iter() {
+                        let fit = crate::eval::force_value(it).unwrap_or_else(|_| it.clone());
+                        let fit = match fit {
+                            crate::value::Value::Attrs(inner) => {
+                                let mut inner_flat = crate::value::NixAttrs::new();
+                                for (ik, iv) in inner.iter() {
+                                    inner_flat.insert(ik.clone(), crate::eval::force_value(iv).unwrap_or_else(|_| iv.clone()));
+                                }
+                                crate::value::Value::Attrs(std::rc::Rc::new(inner_flat))
+                            }
+                            other => other,
+                        };
+                        out.push(fit);
+                    }
+                    crate::value::Value::List(std::rc::Rc::new(out))
+                }
+                other => other,
+            };
+            flat.insert(k.clone(), fv);
+        }
+        crate::value::Value::Attrs(std::rc::Rc::new(flat))
+    } else {
+        result
+    };
     unsafe { std::env::remove_var("SUI_STORE_DIR") };
-    result
+    forced
 }
 
 fn make_drv_temp_dir(label: &str) -> std::path::PathBuf {
@@ -948,12 +1003,14 @@ fn drv_write_is_idempotent() {
     let expr = r#"builtins.derivation { name = "idem"; system = "x86_64-linux"; builder = "/bin/sh"; }"#;
     let v1 = eval(expr).unwrap();
     let v2 = eval(expr).unwrap();
-    unsafe { std::env::remove_var("SUI_STORE_DIR") };
-
+    // `derivation` is lazy — force `drvPath` (which writes the .drv) WHILE
+    // `SUI_STORE_DIR` is still set.
     let a1 = v1.as_attrs().unwrap();
     let a2 = v2.as_attrs().unwrap();
-    let p1 = a1.get("drvPath").unwrap().as_string().unwrap();
-    let p2 = a2.get("drvPath").unwrap().as_string().unwrap();
+    let p1 = crate::eval::force_value(a1.get("drvPath").unwrap()).unwrap().as_string().unwrap().to_string();
+    let p2 = crate::eval::force_value(a2.get("drvPath").unwrap()).unwrap().as_string().unwrap().to_string();
+    unsafe { std::env::remove_var("SUI_STORE_DIR") };
+
     assert_eq!(p1, p2, "same derivation must produce same drvPath");
 
     // The file on disk should exist exactly once (not overwritten).

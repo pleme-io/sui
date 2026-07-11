@@ -21,18 +21,26 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 }
 
-pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
-    let forced = crate::eval::force_value(arg)?;
-    let input_owned = forced.to_attrs()?;
-    let input = &input_owned;
+/// The fully-computed drv, memoized behind the lazy `derivation` result's
+/// fields.  Produced once by `compute_full_drv` and shared by `drvPath` /
+/// `outPath` / every output / `all`.
+struct ComputedDrv {
+    drv_path: String,
+    out_paths: std::collections::BTreeMap<String, String>,
+}
 
-    // 1. Validate and extract derivation inputs.
-    let (name, drv) = construct_derivation(input)?;
-
-    // 2. Compute output paths and .drv path.
-    let (drv_path, out_paths, mut drv) = compute_derivation_outputs(input, &name, drv)?;
-
-    // 3. Write the .drv file to the store.
+/// The eager half: force the inputs, build the ATerm, compute the .drv path +
+/// output paths, and write the .drv to the store.  Split out of
+/// `build_derivation` so it can be deferred behind a memoized lazy thunk (nix's
+/// `derivation` returns an attrset with a LAZY `.drvPath`/`.outPath`; only
+/// `derivationStrict` computes eagerly).  Deferring this is what makes the
+/// bootstrap perl↔libxcrypt fixpoint resolve: forcing a derivation VALUE to
+/// WHNF no longer forces its dependency attrs, so a mutually-referential
+/// package set never manufactures a same-thunk Blackhole re-entry that nix
+/// avoids by never forcing the deps until a store path is demanded.
+fn compute_full_drv(input: &NixAttrs, name: &str) -> Result<ComputedDrv, EvalError> {
+    let (_name, drv) = construct_derivation(input)?;
+    let (drv_path, out_paths, mut drv) = compute_derivation_outputs(input, name, drv)?;
     write_derivation_to_store(&drv_path, &out_paths, &mut drv)?;
 
     // Diagnostic: `SUI_DUMP_DRV=<name>` (or `all`) dumps the fully-computed
@@ -55,8 +63,23 @@ pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
         }
     }
 
-    // 4. Assemble the result attrset.
-    build_derivation_result(input, &name, &drv_path, &out_paths)
+    Ok(ComputedDrv { drv_path, out_paths })
+}
+
+pub fn build_derivation(arg: &Value) -> Result<Value, EvalError> {
+    let forced = crate::eval::force_value(arg)?;
+    let input_owned = forced.to_attrs()?;
+    let input = &input_owned;
+
+    // `name` is the ONLY input attr the lazy result needs eagerly (it labels
+    // the outputs + names the store path); nix forces `name` (and `system`) at
+    // `derivation` time too.  Everything else — every dependency attr — is
+    // deferred into `compute_full_drv`, forced only when a store path is
+    // actually demanded.
+    let name = force_attr_string(input, "name")?;
+
+    // 4. Assemble the result attrset with LAZY computed fields.
+    build_derivation_result(input, &name)
 }
 
 /// Extract required/optional attributes and construct the Derivation skeleton.
@@ -471,56 +494,104 @@ fn write_derivation_to_store(
 fn build_derivation_result(
     input: &NixAttrs,
     name: &str,
-    drv_path: &str,
-    out_paths: &std::collections::BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
     use crate::value::{NixString, StringContext};
 
-    // Helper — a string carrying a single `Output { drv, output }` context.
-    let out_str = |s: &str, output_name: &str| -> Value {
-        let mut ctx = StringContext::new();
-        ctx.add_output(drv_path.to_string(), output_name.to_string());
-        Value::String(Rc::new(NixString::with_context(s, ctx)))
+    // Shared, memoized handle to the (expensive, dep-forcing) drv computation.
+    // The FIRST time any store-path field (`drvPath` / `outPath` / an output's
+    // path / `all`) is forced, `compute_full_drv` runs once and caches its
+    // result here; every other field reuses it.  This is the whole point of the
+    // laziness: forcing the derivation VALUE to WHNF touches none of this, so a
+    // mutually-referential package set never forces its dependency graph until a
+    // store path is actually demanded — matching nix, where `derivation attrs`
+    // returns an attrset with a lazy `.drvPath`.
+    let computed: Rc<std::cell::OnceCell<Rc<ComputedDrv>>> =
+        Rc::new(std::cell::OnceCell::new());
+    let input_shared = Rc::new(input.clone());
+    let name_shared: Rc<str> = Rc::from(name);
+    let get_computed = {
+        let computed = computed.clone();
+        let input_shared = input_shared.clone();
+        let name_shared = name_shared.clone();
+        move || -> Result<Rc<ComputedDrv>, EvalError> {
+            if let Some(c) = computed.get() {
+                return Ok(c.clone());
+            }
+            let c = Rc::new(compute_full_drv(&input_shared, &name_shared)?);
+            // `OnceCell::set` fails only if already set by a re-entrant force;
+            // in that case prefer the already-cached value.
+            let _ = computed.set(c.clone());
+            Ok(computed.get().cloned().unwrap_or(c))
+        }
     };
-    // Helper — a string carrying just the deep-drv context (for `.drvPath`).
-    let drv_str = |s: &str| -> Value {
-        let mut ctx = StringContext::new();
-        ctx.add_drv_deep(drv_path.to_string());
-        Value::String(Rc::new(NixString::with_context(s, ctx)))
+
+    // `.drvPath`: a lazy native thunk that computes the drv on first force and
+    // returns the drv-path string with deep-drv context.
+    let drv_path_thunk = {
+        let get_computed = get_computed.clone();
+        Value::Thunk(crate::value::Thunk::new_native(move || {
+            let c = get_computed()?;
+            let mut ctx = StringContext::new();
+            ctx.add_drv_deep(c.drv_path.clone());
+            Ok(Value::String(Rc::new(NixString::with_context(&c.drv_path, ctx))))
+        }))
     };
 
-    let mut result = input.clone();
-    result.insert("type".to_string(), Value::string("derivation"));
-    result.insert("drvPath".to_string(), drv_str(drv_path));
-
-    // CppNix: drvAttrs contains the original input attributes
-    result.insert("drvAttrs".to_string(), Value::Attrs(Rc::new(input.clone())));
-
-    // CppNix: the default output (what `.outPath` / `.outputName` return) is the
-    // FIRST *declared* output — `outputs[0]` — NOT "out" and NOT the
-    // alphabetically-first key. e.g. bzip2's outputs = [ "bin" "dev" "out" "man" ]
-    // ⇒ default "bin", so `.outPath` is the `-bin` path. (`out_paths` is a
-    // BTreeMap, so its key order is alphabetical, not declaration order.)
+    // The default output name comes from the `outputs` INPUT list (cheap; no
+    // dep forcing) — CppNix: the FIRST declared output, defaulting to "out".
     let primary_output_name = parse_outputs_list(input)?
         .into_iter()
         .next()
         .unwrap_or_else(|| "out".to_string());
-    let primary_out = out_paths
-        .get(&primary_output_name)
-        .cloned()
-        .unwrap_or_default();
-    result.insert("outPath".to_string(), out_str(&primary_out, &primary_output_name));
+
+    // `.outPath`: lazy — the primary output's store path with output context.
+    let out_path_thunk = {
+        let get_computed = get_computed.clone();
+        let primary = primary_output_name.clone();
+        Value::Thunk(crate::value::Thunk::new_native(move || {
+            let c = get_computed()?;
+            let p = c.out_paths.get(&primary).cloned().unwrap_or_default();
+            let mut ctx = StringContext::new();
+            ctx.add_output(c.drv_path.clone(), primary.clone());
+            Ok(Value::String(Rc::new(NixString::with_context(&p, ctx))))
+        }))
+    };
+
+    let mut result = (*input_shared).clone();
+    result.insert("type".to_string(), Value::string("derivation"));
+    result.insert("drvPath".to_string(), drv_path_thunk.clone());
+    // CppNix: drvAttrs contains the original input attributes
+    result.insert("drvAttrs".to_string(), Value::Attrs(input_shared.clone()));
+    result.insert("outPath".to_string(), out_path_thunk);
     result.insert("outputName".to_string(), Value::string(primary_output_name.clone()));
 
-    // Build per-output attrsets and collect them for `all`
+    // Per-output attrsets + `all`.  The OUTPUT NAMES are known from the input
+    // `outputs` list (no dep forcing); each output's `outPath` is lazy.
+    let output_names = parse_outputs_list(input)?;
+    let output_names = if output_names.is_empty() {
+        vec!["out".to_string()]
+    } else {
+        output_names
+    };
     let mut all_outputs: Vec<Value> = Vec::new();
-    for (output_name, output_path) in out_paths {
+    for output_name in &output_names {
         let mut out_attrs = NixAttrs::new();
-        out_attrs.insert("outPath".to_string(), out_str(output_path, output_name));
-        out_attrs.insert("drvPath".to_string(), drv_str(drv_path));
+        let out_path_field = {
+            let get_computed = get_computed.clone();
+            let output_name = output_name.clone();
+            Value::Thunk(crate::value::Thunk::new_native(move || {
+                let c = get_computed()?;
+                let p = c.out_paths.get(&output_name).cloned().unwrap_or_default();
+                let mut ctx = StringContext::new();
+                ctx.add_output(c.drv_path.clone(), output_name.clone());
+                Ok(Value::String(Rc::new(NixString::with_context(&p, ctx))))
+            }))
+        };
+        out_attrs.insert("outPath".to_string(), out_path_field);
+        out_attrs.insert("drvPath".to_string(), drv_path_thunk.clone());
         out_attrs.insert("type".to_string(), Value::string("derivation"));
         out_attrs.insert("outputName".to_string(), Value::string(output_name.clone()));
-        out_attrs.insert("name".to_string(), Value::string(name));
+        out_attrs.insert("name".to_string(), Value::string(&*name_shared));
         let out_val = Value::Attrs(Rc::new(out_attrs));
         all_outputs.push(out_val.clone());
         result.insert(output_name.clone(), out_val);
