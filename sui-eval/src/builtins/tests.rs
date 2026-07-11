@@ -3203,6 +3203,57 @@ fn builtins_replace_strings_no_match() {
     );
 }
 
+#[test]
+fn builtins_replace_strings_first_match_wins() {
+    // Left-to-right, first pattern in the list wins at each position
+    // (CppNix single-pass semantics), NOT sequential per-pattern passes.
+    assert_eq!(
+        ev(r#"builtins.replaceStrings ["a" "ab"] ["X" "Y"] "abc""#),
+        Value::string("Xbc"),
+    );
+    // Longest useful pattern listed first is honored.
+    assert_eq!(
+        ev(r#"builtins.replaceStrings ["oo" "o"] ["1" "2"] "foo""#),
+        Value::string("f1"),
+    );
+}
+
+#[test]
+fn builtins_replace_strings_empty_from_interleaves() {
+    // An empty `from` matches at every position AND at the end.
+    assert_eq!(
+        ev(r#"builtins.replaceStrings [""] ["-"] "abc""#),
+        Value::string("-a-b-c-"),
+    );
+}
+
+#[test]
+fn builtins_replace_strings_preserves_subject_context() {
+    // CppNix `replaceStrings` accumulates the subject string's context.
+    // `escapeShellArg`/`replaceVars` rely on this: a `-B${drv}/bin` value
+    // must keep its input-drv reference through the replace, or the
+    // generated derivation drops that dependency from its inputDrvs.
+    // A NO-OP replace (pattern never fires) still keeps the context.
+    let ctx_len = ev(
+        r#"let d = derivation { name="ctxdep"; system="x86_64-linux"; builder="/bin/sh"; };
+               s = "-B${d}/bin";
+           in builtins.length (builtins.attrNames (builtins.getContext
+                (builtins.replaceStrings ["ZZZ"] ["_"] s)))"#,
+    );
+    assert_eq!(ctx_len, Value::Int(1));
+}
+
+#[test]
+fn builtins_replace_strings_merges_replacement_context() {
+    // The context of a replacement that FIRES is merged in.
+    let ctx_len = ev(
+        r#"let d = derivation { name="rep"; system="x86_64-linux"; builder="/bin/sh"; };
+           in builtins.length (builtins.attrNames (builtins.getContext
+                (builtins.replaceStrings ["X"] ["${d}"] "aXb")))"#,
+    );
+    assert_eq!(ctx_len, Value::Int(1));
+}
+
 // ── warn ──────────────────────────────────────────────
 
 #[test]

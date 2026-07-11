@@ -108,20 +108,79 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Builtin(Box::new(BuiltinFn {
             name: "replaceStrings<p1>",
             func: Rc::new(move |args2| {
-                let to = args2[0].to_list()?.iter()
-                    .map(|v| v.to_str())
+                // Keep each replacement's STRING + its CONTEXT. CppNix's
+                // `prim_replaceStrings` accumulates the context of the
+                // subject string PLUS the context of every replacement
+                // that actually fires — dropping either loses input-drv
+                // references and diverges the drv (e.g. `escapeShellArg`
+                // uses replaceStrings; a `-B${gcc}/bin` value stopped
+                // registering gcc, so `replaceVars`-built patches were
+                // missing their toolchain inputDrvs).
+                let to: Vec<(String, StringContext)> = args2[0]
+                    .to_list()?
+                    .iter()
+                    .map(|v| {
+                        let forced = crate::eval::force_value(v)?;
+                        let (s, c) = forced.coerce_to_string()?;
+                        Ok::<_, EvalError>((s, c))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let from2 = from.clone();
                 Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "replaceStrings<p2>",
                     func: Rc::new(move |args3| {
-                        let mut s = args3[0].as_string()?.to_string();
-                        for (f, t) in from2.iter().zip(to.iter()) {
-                            if !f.is_empty() {
-                                s = s.replace(f.as_str(), t);
+                        // Subject string WITH its context.
+                        let forced = crate::eval::force_value(&args3[0])?;
+                        let (subject, subject_ctx) = forced.coerce_to_string()?;
+                        let mut ctx = subject_ctx;
+
+                        // Left-to-right scan matching CppNix: at each
+                        // position, try each `from[i]` in order; the first
+                        // match wins, emits `to[i]` (accumulating its
+                        // context), and advances past the match. Empty
+                        // `from` entries match the empty string at every
+                        // position (CppNix semantics), so handle them the
+                        // same way — but never loop forever.
+                        let bytes = subject.as_bytes();
+                        let mut result = String::with_capacity(subject.len());
+                        let mut i = 0usize;
+                        while i < bytes.len() {
+                            let mut matched = false;
+                            for (idx, f) in from2.iter().enumerate() {
+                                if !f.is_empty() && subject[i..].starts_with(f.as_str()) {
+                                    result.push_str(&to[idx].0);
+                                    ctx.merge(&to[idx].1);
+                                    i += f.len();
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if !matched {
+                                // CppNix also matches an EMPTY `from` at the
+                                // current position before copying the char.
+                                if let Some(empty_idx) =
+                                    from2.iter().position(|f| f.is_empty())
+                                {
+                                    result.push_str(&to[empty_idx].0);
+                                    ctx.merge(&to[empty_idx].1);
+                                }
+                                let ch_len = subject[i..]
+                                    .chars()
+                                    .next()
+                                    .map_or(1, char::len_utf8);
+                                result.push_str(&subject[i..i + ch_len]);
+                                i += ch_len;
                             }
                         }
-                        Ok(Value::string(s))
+                        // Trailing empty-`from` match at end-of-string.
+                        if let Some(empty_idx) = from2.iter().position(|f| f.is_empty()) {
+                            result.push_str(&to[empty_idx].0);
+                            ctx.merge(&to[empty_idx].1);
+                        }
+
+                        Ok(Value::String(Rc::new(NixString::with_context(
+                            result, ctx,
+                        ))))
                     }),
                 })))
             }),
