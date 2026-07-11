@@ -105,6 +105,59 @@ impl LocalStore {
             .map_err(db_err)
     }
 
+    /// Delete a valid path (DB rows + reference/derivation edges + on-disk
+    /// bytes) addressed by its **stored** absolute path string. Unlike
+    /// [`Store::delete_path`], this does not round-trip through `StorePath`
+    /// (which hardcodes the logical `/nix/store` prefix), so it is correct for
+    /// a chroot/temp store whose rows carry a physical prefix. Returns the bytes
+    /// freed from disk.
+    async fn delete_path_by_string(&self, abs_path: &str) -> StoreResult<u64> {
+        use sea_orm::ConnectionTrait;
+
+        let model = self.find_by_path(abs_path).await?;
+
+        let fs_path = Path::new(abs_path);
+        let freed = if fs_path.exists() {
+            dir_size(fs_path)
+        } else {
+            0
+        };
+
+        if let Some(model) = model {
+            let backend = self.db.get_database_backend();
+            let del_refs = sea_orm::Statement::from_string(
+                backend,
+                format!(
+                    "DELETE FROM Refs WHERE referrer = {} OR reference = {}",
+                    model.id, model.id
+                ),
+            );
+            self.db.execute(del_refs).await.map_err(db_err)?;
+
+            let del_drv = sea_orm::Statement::from_string(
+                backend,
+                format!("DELETE FROM DerivationOutputs WHERE drv = {}", model.id),
+            );
+            self.db.execute(del_drv).await.map_err(db_err)?;
+
+            let del_path = sea_orm::Statement::from_string(
+                backend,
+                format!("DELETE FROM ValidPaths WHERE id = {}", model.id),
+            );
+            self.db.execute(del_path).await.map_err(db_err)?;
+        }
+
+        if fs_path.exists() {
+            if fs_path.is_dir() {
+                std::fs::remove_dir_all(fs_path)?;
+            } else {
+                std::fs::remove_file(fs_path)?;
+            }
+        }
+
+        Ok(freed)
+    }
+
     /// Get the references (runtime dependencies) for a given ValidPath id.
     async fn get_references(&self, path_id: i64) -> StoreResult<Vec<String>> {
         let refs = reference::Entity::find()
@@ -334,22 +387,60 @@ impl Store for LocalStore {
     ) -> StoreResult<crate::traits::GcResult> {
         use std::collections::HashSet;
 
-        // 1. Enumerate GC roots.
+        // GC reasons in the BASENAME domain (`<hash>-<name>`), which is nix's
+        // path identity and is independent of the store's physical prefix. This
+        // makes reachability + garbage identification correct for BOTH the
+        // canonical `/nix/store` store (where basename ⇄ absolute is a
+        // bijection) AND a chroot/temp store at `<X>/nix/store` (where the DB
+        // rows + on-disk paths carry the physical prefix). Keying on the
+        // absolute/logical path instead would silently treat every temp-store
+        // path as garbage, because `StorePath::to_absolute_path` hardcodes
+        // `/nix/store`.
+        let basename_of = |p: &str| -> Option<String> {
+            p.rsplit('/').next().filter(|b| !b.is_empty()).map(str::to_string)
+        };
+
+        // 1. Enumerate GC roots (store-root-relative — see `find_gc_roots`).
         let roots = find_gc_roots(&self.store_dir);
 
-        // 2. Compute reachable closure from the roots.
-        let all_paths = self.query_all_valid_paths().await?;
+        // 2. Enumerate every registered valid path AS STORED (physical prefix
+        //    preserved), so temp-store rows are not dropped the way
+        //    `query_all_valid_paths` drops them (it filters through StorePath).
+        let all_path_strings: Vec<String> = {
+            use sea_orm::QueryOrder;
+            valid_path::Entity::find()
+                .order_by_asc(valid_path::Column::Path)
+                .all(&self.db)
+                .await
+                .map_err(db_err)?
+                .into_iter()
+                .map(|m| m.path)
+                .collect()
+        };
+
+        // Index references by basename for the closure walk.
+        let mut refs_by_basename: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for path_str in &all_path_strings {
+            if let Some(bn) = basename_of(path_str)
+                && let Some(model) = self.find_by_path(path_str).await?
+            {
+                let info = self.model_to_path_info(&model).await?;
+                let ref_basenames: Vec<String> =
+                    info.references.iter().filter_map(|r| basename_of(r)).collect();
+                refs_by_basename.insert(bn, ref_basenames);
+            }
+        }
+
+        // 3. Compute the reachable closure (basename domain).
         let mut reachable: HashSet<String> = HashSet::new();
-        let mut queue: Vec<String> = roots;
-        while let Some(path_str) = queue.pop() {
-            if !reachable.insert(path_str.clone()) {
+        let mut queue: Vec<String> = roots.iter().filter_map(|r| basename_of(r)).collect();
+        while let Some(bn) = queue.pop() {
+            if !reachable.insert(bn.clone()) {
                 continue;
             }
-            // Look up references for this path.
-            if let Ok(sp) = StorePath::from_absolute_path(&path_str)
-                && let Ok(Some(info)) = self.query_path_info(&sp).await
-            {
-                for r in &info.references {
+            if let Some(refs) = refs_by_basename.get(&bn) {
+                for r in refs {
                     if !reachable.contains(r) {
                         queue.push(r.clone());
                     }
@@ -357,17 +448,17 @@ impl Store for LocalStore {
             }
         }
 
-        // 3. Find unreachable paths.
-        let garbage: Vec<StorePath> = all_paths
+        // 4. Garbage = every valid path whose basename is not reachable.
+        let garbage: Vec<String> = all_path_strings
             .into_iter()
-            .filter(|p| !reachable.contains(&p.to_absolute_path()))
+            .filter(|p| basename_of(p).map(|b| !reachable.contains(&b)).unwrap_or(false))
             .collect();
 
-        // 4. Delete unreachable paths.
+        // 5. Delete unreachable paths (by their stored physical path).
         let mut freed: u64 = 0;
         let mut deleted: usize = 0;
-        for path in &garbage {
-            match self.delete_path(path).await {
+        for path_str in &garbage {
+            match self.delete_path_by_string(path_str).await {
                 Ok(bytes) => {
                     freed += bytes;
                     deleted += 1;
@@ -377,7 +468,7 @@ impl Store for LocalStore {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        path = %path.to_absolute_path(),
+                        path = %path_str,
                         error = %e,
                         "failed to delete path during GC",
                     );
@@ -446,54 +537,8 @@ impl Store for LocalStore {
     }
 
     async fn delete_path(&self, path: &StorePath) -> StoreResult<u64> {
-        use sea_orm::ConnectionTrait;
-
-        let abs_path = path.to_absolute_path();
-        let model = self.find_by_path(&abs_path).await?;
-
-        // Calculate size of the path on disk.
-        let fs_path = Path::new(&abs_path);
-        let freed = if fs_path.exists() {
-            dir_size(fs_path)
-        } else {
-            0
-        };
-
-        // Remove from database first.
-        if let Some(model) = model {
-            // Delete reference edges.
-            let backend = self.db.get_database_backend();
-            let del_refs = sea_orm::Statement::from_string(
-                backend,
-                format!("DELETE FROM Refs WHERE referrer = {} OR reference = {}", model.id, model.id),
-            );
-            self.db.execute(del_refs).await.map_err(db_err)?;
-
-            // Delete derivation outputs.
-            let del_drv = sea_orm::Statement::from_string(
-                backend,
-                format!("DELETE FROM DerivationOutputs WHERE drv = {}", model.id),
-            );
-            self.db.execute(del_drv).await.map_err(db_err)?;
-
-            // Delete the valid path row.
-            let del_path = sea_orm::Statement::from_string(
-                backend,
-                format!("DELETE FROM ValidPaths WHERE id = {}", model.id),
-            );
-            self.db.execute(del_path).await.map_err(db_err)?;
-        }
-
-        // Remove from disk.
-        if fs_path.exists() {
-            if fs_path.is_dir() {
-                std::fs::remove_dir_all(fs_path)?;
-            } else {
-                std::fs::remove_file(fs_path)?;
-            }
-        }
-
-        Ok(freed)
+        // Delegate to the string-keyed core using the logical absolute path.
+        self.delete_path_by_string(&path.to_absolute_path()).await
     }
 
     async fn optimise_store(&self, dry_run: bool) -> StoreResult<crate::traits::OptimiseResult> {
@@ -596,15 +641,39 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     Ok(hex_encode(&hash))
 }
 
-/// Find GC roots by scanning well-known root directories.
+/// Derive the nix state directory (`…/var/nix`) for a given store directory.
 ///
-/// Follows symlinks in `/nix/var/nix/gcroots/` and `/nix/var/nix/profiles/`
-/// to discover which store paths are rooted.
+/// nix lays out a store as `<prefix>/nix/store` alongside its state at
+/// `<prefix>/nix/var/nix`, so the GC roots for a store live at
+/// `<state>/nix/{gcroots,profiles}` — relative to the store's own physical
+/// prefix, NOT a hardcoded system path. For the canonical `/nix/store` this is
+/// `/nix/var/nix` (unchanged behavior); for a chroot/temp store at
+/// `<X>/nix/store` it is `<X>/nix/var/nix` (which is what nix itself scans, and
+/// what makes a `--store <X>` GC differential against `nix-store --gc` possible
+/// without root).
+///
+/// The rule: replace a trailing `/store` with `/var/nix`
+/// (`/nix/store` → `/nix/var/nix`, `<X>/nix/store` → `<X>/nix/var/nix`). If the
+/// store dir does not end in `/store` we fall back to the canonical system
+/// state dir so real-world behavior is never regressed.
+fn state_dir_for_store(store_dir: &str) -> String {
+    match store_dir.strip_suffix("/store") {
+        Some(prefix) => format!("{prefix}/var/nix"),
+        None => "/nix/var/nix".to_string(),
+    }
+}
+
+/// Find GC roots by scanning the store's own root directories.
+///
+/// Follows symlinks in `<state>/gcroots/` and `<state>/profiles/` (where
+/// `<state>` is derived from `store_dir` via [`state_dir_for_store`]) to
+/// discover which store paths are rooted.
 pub fn find_gc_roots(store_dir: &str) -> Vec<String> {
     let mut roots = Vec::new();
+    let state_dir = state_dir_for_store(store_dir);
     let gc_dirs = [
-        "/nix/var/nix/gcroots",
-        "/nix/var/nix/profiles",
+        format!("{state_dir}/gcroots"),
+        format!("{state_dir}/profiles"),
     ];
 
     for dir in &gc_dirs {
