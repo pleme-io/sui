@@ -1663,6 +1663,24 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                     } else {
                         let key = path_keys[0].clone();
                         let value = build_nested_attr(&path_keys[1..], &value_expr, env)?;
+                        // CppNix desugars `a = { x = …; }; a.y = …;` into a
+                        // single merged `a = { x = …; y = …; }`. When the
+                        // full-set binding for `a` was inserted FIRST it is a
+                        // lazy Thunk (attrset literals go through maybe_thunk),
+                        // so merge_nested_insert — which only merges when the
+                        // existing value is a concrete Value::Attrs — would
+                        // NOT see the earlier keys and would overwrite `a`
+                        // with just `{ y = … }`, silently dropping `x`. Force
+                        // the existing entry to WHNF on collision so the merge
+                        // sees the concrete attrs (forcing to WHNF does not
+                        // force the fields, so leaf laziness is preserved).
+                        // (This is the gst-plugins-base `passthru.waylandEnabled`
+                        // drop: `passthru = { … }; passthru.tests.x = …;`.)
+                        if matches!(attrs.get(&key), Some(Value::Thunk(_))) {
+                            let existing = attrs.get(&key).cloned().unwrap();
+                            let forced = force_value(&existing)?;
+                            attrs.insert(key.clone(), forced);
+                        }
                         merge_nested_insert(&mut attrs, key, value);
                     }
                 }
@@ -4873,6 +4891,26 @@ mod tests {
     fn attrset_deep_merge_in_let() {
         let v = ev("let s = { a.b = 1; a.c = 2; }; in s.a.b + s.a.c");
         assert_eq!(v, Value::Int(3));
+    }
+
+    #[test]
+    fn attrset_deep_merge_fullset_then_dotted() {
+        // General root (gst-plugins-base `passthru.waylandEnabled` drop):
+        // `a = { x = 1; }; a.y = 2;` — the full-set binding is a lazy
+        // Thunk (attrset literals go through maybe_thunk), so a naive
+        // merge_nested_insert (which only merges concrete Value::Attrs)
+        // overwrote `a` with `{ y = 2 }`, silently dropping `x`. The
+        // collision must force the existing thunk to WHNF first.
+        let v = ev("let s = { a = { x = 1; }; a.y = 2; }; in s.a.x + s.a.y");
+        assert_eq!(v, Value::Int(3));
+        // both keys must survive (not just their sum)
+        let both = ev("let s = { a = { x = 1; }; a.y = 2; }; in [ s.a.x s.a.y ]");
+        if let Value::List(items) = both {
+            assert_eq!(force_value(&items[0]).unwrap(), Value::Int(1));
+            assert_eq!(force_value(&items[1]).unwrap(), Value::Int(2));
+        } else {
+            panic!("expected list");
+        }
     }
 
     // ── inherit-from patterns ─────────────────────────────
