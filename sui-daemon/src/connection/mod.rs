@@ -844,9 +844,11 @@ mod tests {
     async fn unimplemented_opcode_returns_stderr_error_then_last() {
         let store = Arc::new(MockStore::new());
 
-        // Send a known but unimplemented opcode (AddToStore = 7)
+        // Send a known but still-unimplemented opcode (BuildPaths = 9).
+        // (AddToStore/AddToStoreNar are now implemented, so they no
+        // longer fall to the unimplemented arm.)
         let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
+        wire::write_u64(&mut input, WorkerOp::BuildPaths as u64).unwrap();
 
         let reader = Cursor::new(input);
         let writer: Vec<u8> = Vec::new();
@@ -1306,9 +1308,68 @@ mod tests {
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), 0);
     }
 
+    /// `AddToStore` with an unsupported ingestion method returns a
+    /// typed stderr error (never a silently-wrong store path) — and
+    /// still drains the framed NAR off the wire first so the stream
+    /// stays in sync.
     #[tokio::test]
-    async fn unimpl_add_to_store() {
-        assert_op_unimplemented(WorkerOp::AddToStore).await;
+    async fn add_to_store_rejects_unsupported_method() {
+        let store = Arc::new(MockStore::new());
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
+        wire::write_string(&mut input, "pkg").unwrap();
+        // Non-recursive method: not supported by the realizer.
+        wire::write_string(&mut input, "flat:sha256").unwrap();
+        wire::write_u64(&mut input, 0).unwrap(); // 0 references
+        wire::write_u64(&mut input, 0).unwrap(); // repair = false
+        // Framed NAR: one chunk + zero terminator (raw, unpadded).
+        let chunk = b"nardata";
+        wire::write_u64(&mut input, chunk.len() as u64).unwrap();
+        input.extend_from_slice(chunk);
+        wire::write_u64(&mut input, 0).unwrap(); // terminator
+
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.expect("dispatch should not fail");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
+        let _ = wire::read_string(&mut cursor).unwrap(); // "Error"
+        let msg = wire::read_string(&mut cursor).unwrap();
+        assert!(
+            msg.contains("not supported") && msg.contains("flat:sha256"),
+            "should name the unsupported method: {msg:?}"
+        );
+        let _ = wire::read_u64(&mut cursor).unwrap(); // err num
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
+    }
+
+    /// `AddToStore` on a store that doesn't support writes surfaces the
+    /// store error as a typed stderr error, not a panic or a hang.
+    #[tokio::test]
+    async fn add_to_store_surfaces_store_error() {
+        let store = Arc::new(MockStore::new()); // trait-default add_to_store → NotSupported
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
+        wire::write_string(&mut input, "pkg").unwrap();
+        wire::write_string(&mut input, "fixed:r:sha256").unwrap();
+        wire::write_u64(&mut input, 0).unwrap(); // 0 references
+        wire::write_u64(&mut input, 0).unwrap(); // repair
+        wire::write_u64(&mut input, 0).unwrap(); // empty framed NAR (just terminator)
+
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.expect("dispatch should not fail");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
+        let _ = wire::read_string(&mut cursor).unwrap();
+        let msg = wire::read_string(&mut cursor).unwrap();
+        assert!(msg.contains("store write failed"), "got {msg:?}");
+        let _ = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
     }
 
     #[tokio::test]
@@ -1489,9 +1550,47 @@ mod tests {
         assert_op_unimplemented(WorkerOp::NarFromPath).await;
     }
 
+    /// `AddToStoreNar` reads the full unkeyed-`ValidPathInfo` header +
+    /// the framed NAR, then registers via the realizer. On a
+    /// write-unsupporting store it surfaces a typed error (no response
+    /// body — STDERR_LAST closes the op). This test proves the header
+    /// wire layout is drained in the exact order CppNix sends it.
     #[tokio::test]
-    async fn unimpl_add_to_store_nar() {
-        assert_op_unimplemented(WorkerOp::AddToStoreNar).await;
+    async fn add_to_store_nar_reads_full_header_then_surfaces_error() {
+        let store = Arc::new(MockStore::new()); // add_to_store → NotSupported
+        let mut input = Vec::new();
+        wire::write_u64(&mut input, WorkerOp::AddToStoreNar as u64).unwrap();
+        // Unkeyed ValidPathInfo header, in cppnix order:
+        wire::write_string(&mut input, "/nix/store/abc123-hello-2.12.1").unwrap(); // path
+        wire::write_string(&mut input, "").unwrap(); // deriver
+        wire::write_string(&mut input, "sha256:deadbeef").unwrap(); // narHash
+        wire::write_u64(&mut input, 1).unwrap(); // 1 reference
+        wire::write_string(&mut input, "/nix/store/dep").unwrap();
+        wire::write_u64(&mut input, 0).unwrap(); // registrationTime
+        wire::write_u64(&mut input, 42).unwrap(); // narSize
+        wire::write_u64(&mut input, 0).unwrap(); // ultimate
+        wire::write_u64(&mut input, 0).unwrap(); // 0 sigs
+        wire::write_string(&mut input, "").unwrap(); // ca
+        wire::write_u64(&mut input, 0).unwrap(); // repair
+        wire::write_u64(&mut input, 1).unwrap(); // dontCheckSigs
+        // Framed NAR: one chunk + terminator.
+        let chunk = b"narbody";
+        wire::write_u64(&mut input, chunk.len() as u64).unwrap();
+        input.extend_from_slice(chunk);
+        wire::write_u64(&mut input, 0).unwrap();
+
+        let reader = Cursor::new(input);
+        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
+        conn.client_version = PROTOCOL_VERSION;
+        conn.run().await.expect("dispatch should not fail");
+
+        let mut cursor = Cursor::new(conn.writer.as_slice());
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
+        let _ = wire::read_string(&mut cursor).unwrap();
+        let msg = wire::read_string(&mut cursor).unwrap();
+        assert!(msg.contains("AddToStoreNar"), "got {msg:?}");
+        let _ = wire::read_u64(&mut cursor).unwrap();
+        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
     }
 
     #[tokio::test]

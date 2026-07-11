@@ -6360,6 +6360,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_yaml_ng",
+ "sha2",
  "shikumi",
  "sui-build",
  "sui-compat",

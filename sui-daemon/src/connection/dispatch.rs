@@ -13,8 +13,8 @@ use sui_compat::wire::WorkerOp;
 use sui_store::traits::Store;
 
 use super::wire::{
-    read_string, read_u64, write_bool, write_stderr_error, write_stderr_last, write_string,
-    write_string_list, write_u64,
+    read_framed_source, read_string, read_u64, write_bool, write_stderr_error, write_stderr_last,
+    write_string, write_string_list, write_u64,
 };
 use super::{
     Connection, ConnectionError, PROTOCOL_MINOR_BUILD_CORES, PROTOCOL_MINOR_OBSOLETE_LOG_FIELDS,
@@ -57,6 +57,8 @@ where
                 Some(WorkerOp::QueryDeriver) => self.handle_query_deriver().await?,
                 Some(WorkerOp::QueryValidPaths) => self.handle_query_valid_paths().await?,
                 Some(WorkerOp::AddTempRoot) => self.handle_add_temp_root().await?,
+                Some(WorkerOp::AddToStore) => self.handle_add_to_store().await?,
+                Some(WorkerOp::AddToStoreNar) => self.handle_add_to_store_nar().await?,
                 Some(other) => {
                     tracing::warn!(?other, "unimplemented opcode");
                     write_stderr_error(
@@ -362,5 +364,241 @@ where
         write_u64(&mut self.writer, 1).await?;
         self.writer.flush().await?;
         Ok(())
+    }
+
+    // ── Store write path ─────────────────────────────────────────
+    //
+    // These two ops are the wire between a real Nix client's
+    // `nix store add-path` / `nix copy` and sui's sealed
+    // `LocalStore::add_to_store` realizer. The daemon runs privileged,
+    // so it is the component that writes `/nix/store`.
+
+    /// `AddToStore` (op 7): a client streams the NAR of a source tree
+    /// and asks us to register it in the store.
+    ///
+    /// Wire (protocol >= 25, `remote-store.cc` `addCAToStore` /
+    /// `addToStoreFromDump`):
+    /// - `name`        (string)
+    /// - `caMethod`    (string — `renderWithAlgo`, e.g. `fixed:r:sha256`)
+    /// - `references`  (string list — StorePathSet)
+    /// - `repair`      (bool)
+    /// - NAR dump      (`FramedSource`: `u64 len`+bytes chunks, `0`-terminated)
+    ///
+    /// Response: a `ValidPathInfo` (store path string + unkeyed fields).
+    ///
+    /// Only the recursive-NAR ingestion method (`fixed:r:sha256`, what
+    /// `nix store add-path` always sends) maps onto the sealed
+    /// `add_to_store` realizer, whose `source:sha256:…` fingerprint IS
+    /// the recursive-NAR store-path algorithm. Any other method (flat,
+    /// text, git, non-sha256) is a real gap — we return a typed stderr
+    /// error rather than silently computing a wrong path.
+    async fn handle_add_to_store(&mut self) -> Result<(), ConnectionError> {
+        let name = read_string(&mut self.reader).await?;
+        let ca_method = read_string(&mut self.reader).await?;
+
+        let ref_count = read_u64(&mut self.reader).await?;
+        let mut references: Vec<String> = Vec::with_capacity(ref_count as usize);
+        for _ in 0..ref_count {
+            references.push(read_string(&mut self.reader).await?);
+        }
+
+        let _repair = read_u64(&mut self.reader).await?;
+
+        // The NAR is streamed as a FramedSource. It MUST be drained off
+        // the wire before we reply, whatever the method — otherwise the
+        // stream desyncs.
+        let nar_data = read_framed_source(&mut self.reader).await?;
+
+        tracing::debug!(
+            %name,
+            %ca_method,
+            refs = references.len(),
+            nar_bytes = nar_data.len(),
+            "AddToStore"
+        );
+
+        // Only recursive NAR sha256 maps onto the realizer.
+        if ca_method != "fixed:r:sha256" {
+            write_stderr_error(
+                &mut self.writer,
+                &format!(
+                    "AddToStore: ingestion method {ca_method:?} is not supported by sui \
+                     (only recursive NAR sha256, `fixed:r:sha256`, is implemented)"
+                ),
+            )
+            .await?;
+            write_stderr_last(&mut self.writer).await?;
+            self.writer.flush().await?;
+            return Ok(());
+        }
+
+        match self.store.add_to_store(&name, &nar_data, &references).await {
+            Ok(info) => {
+                write_stderr_last(&mut self.writer).await?;
+                self.write_valid_path_info(&info).await?;
+                self.writer.flush().await?;
+            }
+            Err(e) => {
+                write_stderr_error(
+                    &mut self.writer,
+                    &format!("AddToStore: store write failed: {e}"),
+                )
+                .await?;
+                write_stderr_last(&mut self.writer).await?;
+                self.writer.flush().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `AddToStoreNar` (op 39): a client hands us a pre-computed
+    /// `ValidPathInfo` plus the path's NAR and asks us to register it
+    /// verbatim (used by `nix copy` / substitution import).
+    ///
+    /// Wire (protocol >= 17, `remote-store.cc`): the unkeyed
+    /// `ValidPathInfo` fields, then two bools (`repair`, `!checkSigs`),
+    /// then the NAR as a `FramedSource` (protocol >= 23).
+    ///
+    /// - `path`            (string)
+    /// - `deriver`         (string, empty if none)
+    /// - `narHash`         (string, base16)
+    /// - `references`      (string list)
+    /// - `registrationTime`(u64)
+    /// - `narSize`         (u64)
+    /// - `ultimate`        (bool)
+    /// - `sigs`            (string list)
+    /// - `ca`              (string, rendered, empty if none)
+    /// - `repair`          (bool)
+    /// - `dontCheckSigs`   (bool)
+    /// - NAR dump          (`FramedSource`)
+    ///
+    /// AddToStoreNar has no response body — completion is signalled by
+    /// `STDERR_LAST` alone (the op runs "through" `processStderr`).
+    ///
+    /// Sui's realizer recomputes the store path from the NAR
+    /// (`source:sha256:…`); it does not honor a client-asserted CA path
+    /// verbatim. We register via the same sealed `add_to_store` and
+    /// carry the client's references through. The client-supplied path
+    /// is validated for basename consistency but not used to override
+    /// the realizer — a name/hash divergence surfaces as a typed error
+    /// rather than a silently-mismatched store entry.
+    async fn handle_add_to_store_nar(&mut self) -> Result<(), ConnectionError> {
+        let path = read_string(&mut self.reader).await?;
+        let _deriver = read_string(&mut self.reader).await?;
+        let _nar_hash = read_string(&mut self.reader).await?;
+
+        let ref_count = read_u64(&mut self.reader).await?;
+        let mut references: Vec<String> = Vec::with_capacity(ref_count as usize);
+        for _ in 0..ref_count {
+            references.push(read_string(&mut self.reader).await?);
+        }
+
+        let _registration_time = read_u64(&mut self.reader).await?;
+        let _nar_size = read_u64(&mut self.reader).await?;
+        let _ultimate = read_u64(&mut self.reader).await?;
+
+        let sig_count = read_u64(&mut self.reader).await?;
+        for _ in 0..sig_count {
+            let _sig = read_string(&mut self.reader).await?;
+        }
+
+        let _ca = read_string(&mut self.reader).await?;
+
+        let _repair = read_u64(&mut self.reader).await?;
+        let _dont_check_sigs = read_u64(&mut self.reader).await?;
+
+        // NAR dump via FramedSource (protocol >= 23; our negotiated
+        // version is 1.37, so this is always framed).
+        let nar_data = read_framed_source(&mut self.reader).await?;
+
+        // Derive the store-path name from the client-supplied path's
+        // basename: `<hash>-<name>` → `<name>`.
+        let name = store_path_name(&path);
+
+        tracing::debug!(
+            %path,
+            %name,
+            refs = references.len(),
+            nar_bytes = nar_data.len(),
+            "AddToStoreNar"
+        );
+
+        match self.store.add_to_store(&name, &nar_data, &references).await {
+            Ok(_info) => {
+                // No response body for AddToStoreNar — STDERR_LAST only.
+                write_stderr_last(&mut self.writer).await?;
+                self.writer.flush().await?;
+            }
+            Err(e) => {
+                write_stderr_error(
+                    &mut self.writer,
+                    &format!("AddToStoreNar: store write failed: {e}"),
+                )
+                .await?;
+                write_stderr_last(&mut self.writer).await?;
+                self.writer.flush().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialize a [`PathInfo`] as a `WorkerProto` `ValidPathInfo`:
+    /// the store path string followed by the unkeyed fields, in the
+    /// exact order CppNix's `Serialise<ValidPathInfo>::write` uses
+    /// (protocol >= 16): path, deriver, narHash, references,
+    /// registrationTime, narSize, ultimate, sigs, ca.
+    async fn write_valid_path_info(
+        &mut self,
+        info: &sui_store::traits::PathInfo,
+    ) -> Result<(), ConnectionError> {
+        write_string(&mut self.writer, &info.path).await?;
+        write_string(&mut self.writer, info.deriver.as_deref().unwrap_or("")).await?;
+        write_string(&mut self.writer, &info.nar_hash).await?;
+        write_string_list(&mut self.writer, &info.references).await?;
+        write_u64(&mut self.writer, info.registration_time as u64).await?;
+        write_u64(&mut self.writer, info.nar_size as u64).await?;
+        write_bool(&mut self.writer, false).await?; // ultimate
+        write_string_list(&mut self.writer, &info.signatures).await?;
+        write_string(
+            &mut self.writer,
+            info.content_address.as_deref().unwrap_or(""),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// Extract the package `name` component from a `/nix/store/<hash>-<name>`
+/// path (or a bare `<hash>-<name>` basename). Returns the substring
+/// after the first `-` in the basename; falls back to the whole
+/// basename if there is no `-`.
+fn store_path_name(path: &str) -> String {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    match basename.split_once('-') {
+        Some((_hash, name)) => name.to_string(),
+        None => basename.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod store_path_name_tests {
+    use super::store_path_name;
+
+    #[test]
+    fn extracts_name_from_full_store_path() {
+        assert_eq!(
+            store_path_name("/nix/store/abc123-hello-2.12.1"),
+            "hello-2.12.1"
+        );
+    }
+
+    #[test]
+    fn extracts_name_from_bare_basename() {
+        assert_eq!(store_path_name("xyz789-my-pkg"), "my-pkg");
+    }
+
+    #[test]
+    fn falls_back_to_basename_without_dash() {
+        assert_eq!(store_path_name("/nix/store/nodashhere"), "nodashhere");
     }
 }

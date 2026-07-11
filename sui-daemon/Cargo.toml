@@ -43,3 +43,5 @@ tokio = { workspace = true, features = ["full", "test-util", "process"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sui-daemon-client.workspace = true
 pretty_assertions.workspace = true
+# store-add-path wire test recomputes the sealed store-path fingerprint.
+sha2.workspace = true

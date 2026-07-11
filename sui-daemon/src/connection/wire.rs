@@ -88,6 +88,36 @@ pub(crate) async fn write_string_list(
     Ok(())
 }
 
+/// Read a Nix `FramedSource` stream into a single contiguous byte buffer.
+///
+/// The framed format (CppNix `FramedSource`/`FramedSink`,
+/// `libutil/serialise`) is: repeat { `u64 len`; `len` **raw** bytes }
+/// until a zero-length frame (`len == 0`) terminates the stream.
+///
+/// Crucially, the per-frame payload is **not** 8-byte padded — unlike
+/// [`read_bytes`], which is the padded `WorkerProto` byte encoding used
+/// for named string/byte fields. The length prefix is a plain
+/// little-endian `u64`; the chunk bytes follow with no alignment. A NAR
+/// dump sent via `withFramedSink` uses exactly this shape, so this is
+/// how the daemon reassembles the NAR that a client streams for
+/// `AddToStore`.
+pub(crate) async fn read_framed_source(
+    r: &mut (impl AsyncRead + Unpin),
+) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let len = read_u64(r).await? as usize;
+        if len == 0 {
+            // Zero-length frame is the stream terminator.
+            break;
+        }
+        let start = out.len();
+        out.resize(start + len, 0);
+        r.read_exact(&mut out[start..]).await?;
+    }
+    Ok(out)
+}
+
 /// Write `STDERR_LAST` to signal the end of the stderr stream.
 pub(crate) async fn write_stderr_last(
     w: &mut (impl AsyncWrite + Unpin),
@@ -362,6 +392,73 @@ mod tests {
         assert!(msg.is_empty());
         let n = read_u64(&mut cursor).await.unwrap();
         assert_eq!(n, 0);
+    }
+
+    // ── FramedSource reader ────────────────────────────────────
+
+    /// Encode a byte slice as a CppNix FramedSink stream: one or more
+    /// `u64 len` + raw bytes chunks, terminated by a `u64 0` frame. No
+    /// per-chunk padding — this mirrors `libutil/serialise` exactly.
+    fn frame(chunks: &[&[u8]]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for c in chunks {
+            buf.extend_from_slice(&(c.len() as u64).to_le_bytes());
+            buf.extend_from_slice(c);
+        }
+        buf.extend_from_slice(&0u64.to_le_bytes()); // terminator
+        buf
+    }
+
+    #[tokio::test]
+    async fn read_framed_source_single_chunk() {
+        let payload = b"the nar bytes";
+        let buf = frame(&[payload]);
+        let mut cursor = Cursor::new(buf);
+        let got = read_framed_source(&mut cursor).await.unwrap();
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn read_framed_source_multi_chunk_concatenates_in_order() {
+        let buf = frame(&[b"abc", b"defgh", b"i"]);
+        let mut cursor = Cursor::new(buf);
+        let got = read_framed_source(&mut cursor).await.unwrap();
+        assert_eq!(got, b"abcdefghi");
+    }
+
+    #[tokio::test]
+    async fn read_framed_source_empty_stream() {
+        // Just the zero terminator -> empty payload.
+        let buf = frame(&[]);
+        let mut cursor = Cursor::new(buf);
+        let got = read_framed_source(&mut cursor).await.unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_framed_source_no_chunk_padding() {
+        // A 3-byte chunk must consume exactly 8 (len) + 3 (payload)
+        // bytes — NOT 8 + 8 — so the terminator that follows lands
+        // where expected. This is the load-bearing distinction from
+        // the padded `read_bytes` encoding.
+        let buf = frame(&[b"xyz"]);
+        assert_eq!(buf.len(), 8 + 3 + 8, "len + 3 raw bytes + terminator");
+        let mut cursor = Cursor::new(buf);
+        let got = read_framed_source(&mut cursor).await.unwrap();
+        assert_eq!(got, b"xyz");
+    }
+
+    #[tokio::test]
+    async fn read_framed_source_stops_at_terminator_leaves_trailing() {
+        // After the framed stream ends we must be able to read a
+        // following u64 — proves we don't over-read.
+        let mut buf = frame(&[b"data"]);
+        buf.extend_from_slice(&0xBEEFu64.to_le_bytes());
+        let mut cursor = Cursor::new(buf);
+        let got = read_framed_source(&mut cursor).await.unwrap();
+        assert_eq!(got, b"data");
+        let trailing = read_u64(&mut cursor).await.unwrap();
+        assert_eq!(trailing, 0xBEEF);
     }
 
     // ── property-style: pseudo-random byte buffers round-trip ─
