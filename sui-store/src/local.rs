@@ -746,7 +746,15 @@ pub fn find_gc_roots(store_dir: &str) -> Vec<String> {
     roots
 }
 
-/// Recursively scan a directory for symlinks pointing into the store.
+/// Recursively scan a directory for symlinks that root a store path — DIRECTLY
+/// or through an INDIRECT (`auto/`) two-hop chain (seal I6a).
+///
+/// A direct root is a symlink under `gcroots/`/`profiles/` whose target is
+/// inside the store. An **indirect** root (nix's `gcroots/auto/<hash>`) points
+/// at an *out-of-store* symlink (a user's `./result`) which in turn points into
+/// the store; the store path it transitively resolves to must be treated live.
+/// If sui only rooted direct targets, a `./result`-only-rooted build output
+/// would be wrongly collected as dead — matched to nix's `findRoots` behavior.
 fn collect_gc_roots_from(dir: &Path, store_dir: &str, roots: &mut Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -756,26 +764,69 @@ fn collect_gc_roots_from(dir: &Path, store_dir: &str, roots: &mut Vec<String>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_symlink() {
-            if let Ok(target) = std::fs::read_link(&path) {
-                let target_str = target.to_string_lossy();
-                if target_str.starts_with(store_dir) {
-                    // Extract the top-level store path (first component after store_dir).
-                    let remainder = &target_str[store_dir.len()..];
-                    let first_component = remainder
-                        .trim_start_matches('/')
-                        .split('/')
-                        .next()
-                        .unwrap_or("");
-                    if !first_component.is_empty() {
-                        roots.push(format!("{store_dir}/{first_component}"));
-                    }
-                }
+            if let Some(store_root) = resolve_symlink_to_store(&path, store_dir) {
+                roots.push(store_root);
             }
         }
         if path.is_dir() && !path.is_symlink() {
             collect_gc_roots_from(&path, store_dir, roots);
         }
     }
+}
+
+/// Follow a gcroot symlink (chasing out-of-store indirect hops) until it lands
+/// inside `store_dir`, returning the top-level store path it roots, or `None`.
+///
+/// Handles both cases with one bounded walk:
+///   - **direct**: `gcroots/rootA -> <store_dir>/<hash>-pkgA` (first hop is in
+///     the store).
+///   - **indirect** (`auto/`): `gcroots/auto/<h> -> …/result -> <store_dir>/…`
+///     (the middle hop leaves the store, so `<store_dir>` matches only after
+///     chasing the out-of-store `result` symlink — nix's two-hop indirect root).
+///
+/// Hops are bounded (`MAX_HOPS`) so a symlink cycle can never loop forever.
+/// Relative targets are resolved against the referring link's directory, the
+/// same way the kernel resolves a symlink.
+fn resolve_symlink_to_store(link: &Path, store_dir: &str) -> Option<String> {
+    /// Bound on symlink hops — matches the spirit of the OS `SYMLOOP_MAX`; an
+    /// `auto -> result -> store` indirect root is 2 hops.
+    const MAX_HOPS: usize = 40;
+
+    let mut current = link.to_path_buf();
+    for _ in 0..MAX_HOPS {
+        let target = std::fs::read_link(&current).ok()?;
+        // Resolve a relative target against the referring link's directory,
+        // exactly as the kernel would when following the symlink.
+        let resolved = if target.is_absolute() {
+            target
+        } else {
+            current.parent().map(|p| p.join(&target)).unwrap_or(target)
+        };
+
+        let resolved_str = resolved.to_string_lossy();
+        if let Some(store_root) = store_root_of(&resolved_str, store_dir) {
+            // Landed inside the store — this is the rooted store path.
+            return Some(store_root);
+        }
+
+        // Not in the store yet. If the target is itself a symlink (an
+        // out-of-store `./result`), chase it (the indirect-root hop). If it is
+        // a regular path outside the store, it roots nothing.
+        if resolved.is_symlink() {
+            current = resolved;
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
+/// If `path_str` is inside `store_dir`, return the top-level store path (store
+/// dir + first component); else `None`.
+fn store_root_of(path_str: &str, store_dir: &str) -> Option<String> {
+    let remainder = path_str.strip_prefix(store_dir)?;
+    let first_component = remainder.trim_start_matches('/').split('/').next().unwrap_or("");
+    (!first_component.is_empty()).then(|| format!("{store_dir}/{first_component}"))
 }
 
 /// Compute the NAR serialization of a filesystem path.

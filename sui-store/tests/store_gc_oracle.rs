@@ -319,6 +319,220 @@ async fn store_gc_partition_matches_nix_no_roots() {
     assert!(remaining.is_empty(), "sui: all package dirs collected");
 }
 
+/// SEAL I6a — INDIRECT (`auto/`) root completeness.
+///
+/// nix's `gcroots/auto/<hash>` entries are symlinks pointing at OTHER,
+/// out-of-store symlinks (a `./result` in a user dir); the store path they
+/// *transitively* resolve to must be treated live. This differential proves
+/// sui roots a path that is reachable ONLY through the two-hop
+/// `auto -> result -> /nix/store/<path>` indirection — exactly as nix does.
+///
+/// Empirically confirmed oracle (nix 2.34): with pkgA rooted only via
+/// `auto -> result -> pkgA` and pkgB unrooted, `nix-store --gc --print-dead`
+/// prints ONLY pkgB. Before this seal sui's `find_gc_roots` dropped any symlink
+/// whose immediate target was out of the store, so pkgA would have been wrongly
+/// collected as dead. The test asserts sui's partition == nix's (pkgA live,
+/// pkgB dead) on this indirect-only scenario.
+
+/// nix oracle: root pkgA ONLY through `auto -> result -> pkgA`; return
+/// `(dead_kinds, live_kinds)` from `nix-store --gc --print-dead`.
+fn nix_gc_partition_indirect(td: &Path) -> Option<(Vec<String>, Vec<String>)> {
+    let store = td.join("nixstore");
+    std::fs::create_dir_all(&store).ok()?;
+
+    let a_src = td.join("nia");
+    let b_src = td.join("nib");
+    std::fs::create_dir_all(&a_src).ok()?;
+    std::fs::create_dir_all(&b_src).ok()?;
+    std::fs::write(a_src.join("f"), b"alpha\n").ok()?;
+    std::fs::write(b_src.join("f"), b"beta\n").ok()?;
+
+    let add = |src: &Path, name: &str| -> Option<String> {
+        let out = Command::new("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command flakes",
+                "store",
+                "add-path",
+                "--store",
+            ])
+            .arg(&store)
+            .arg(src)
+            .args(["--name", name])
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    // For a chroot store, add-path returns the LOGICAL `/nix/store/...` path;
+    // the `result` symlink targets that logical path (confirmed empirically —
+    // this is what nix's indirect-root resolution recognizes).
+    let pa = add(&a_src, "pkgA")?; // logical /nix/store/<hash>-pkgA
+    let _pb = add(&b_src, "pkgB")?;
+
+    // The out-of-store `./result` symlink -> pkgA's logical store path.
+    let result = td.join("result");
+    let _ = std::fs::remove_file(&result);
+    std::os::unix::fs::symlink(&pa, &result).ok()?;
+
+    // The indirect auto root: gcroots/auto/<x> -> ./result (out of store).
+    let auto = store.join("nix/var/nix/gcroots/auto");
+    std::fs::create_dir_all(&auto).ok()?;
+    let _ = std::fs::remove_file(auto.join("testauto"));
+    std::os::unix::fs::symlink(&result, auto.join("testauto")).ok()?;
+
+    let out = Command::new("nix-store")
+        .args(["--store"])
+        .arg(&store)
+        .args(["--gc", "--print-dead"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        eprintln!(
+            "nix-store --gc --print-dead (indirect) failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return None;
+    }
+    let dead: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| basename(l.trim()).to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let kind = |names: &[String], suffix: &str| names.iter().any(|n| n.ends_with(suffix));
+    let mut dead_kinds = vec![];
+    let mut live_kinds = vec![];
+    for k in ["pkgA", "pkgB"] {
+        if kind(&dead, &format!("-{k}")) {
+            dead_kinds.push(k.to_string());
+        } else {
+            live_kinds.push(k.to_string());
+        }
+    }
+    Some((dead_kinds, live_kinds))
+}
+
+/// sui arm: root pkgA ONLY through `auto -> result -> pkgA` (physical path),
+/// run `collect_garbage`, return `(dead_kinds, live_kinds)`.
+async fn sui_gc_partition_indirect(td: &Path) -> (Vec<String>, Vec<String>) {
+    let store_dir = td.join("suistore/nix/store");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let store = sui_store::LocalStore::open_in_memory_with_dir(store_dir.to_str().unwrap())
+        .await
+        .unwrap();
+
+    let mk_nar = |content: &[u8]| {
+        use sui_compat::nar::{NarEntry, NarNode, NarWriter};
+        let node = NarNode::Directory {
+            entries: vec![NarEntry {
+                name: "f".to_string(),
+                node: NarNode::Regular {
+                    executable: false,
+                    contents: content.to_vec(),
+                },
+            }],
+        };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        buf
+    };
+    let info_a = store.add_to_store("pkgA", &mk_nar(b"alpha\n"), &[]).await.unwrap();
+    let _info_b = store.add_to_store("pkgB", &mk_nar(b"beta\n"), &[]).await.unwrap();
+
+    // The out-of-store `./result` symlink -> pkgA's PHYSICAL store path (sui
+    // stores paths physically under `<store_dir>/<hash>-pkgA`).
+    let result = td.join("suiresult");
+    std::os::unix::fs::symlink(&info_a.path, &result).unwrap();
+
+    // The indirect auto root: gcroots/auto/<x> -> ./result (out of store).
+    let auto = td.join("suistore/nix/var/nix/gcroots/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    std::os::unix::fs::symlink(&result, auto.join("testauto")).unwrap();
+
+    // Sanity: sui MUST discover pkgA as a root through the two-hop chase.
+    let roots = sui_store::find_gc_roots(store_dir.to_str().unwrap());
+    assert!(
+        roots.iter().any(|r| r.ends_with("-pkgA")),
+        "seal I6a: find_gc_roots must resolve the auto->result->pkgA indirect root; got {roots:?}"
+    );
+    assert!(
+        !roots.iter().any(|r| r.ends_with("-pkgB")),
+        "pkgB is unrooted; got {roots:?}"
+    );
+
+    let res = store
+        .collect_garbage(&sui_store::traits::GcOptions::default())
+        .await
+        .unwrap();
+
+    let mut survived = vec![];
+    if let Ok(entries) = std::fs::read_dir(&store_dir) {
+        for e in entries.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            for k in ["pkgA", "pkgB"] {
+                if n.ends_with(&format!("-{k}")) {
+                    survived.push(k.to_string());
+                }
+            }
+        }
+    }
+    let mut dead_kinds = vec![];
+    let mut live_kinds = vec![];
+    for k in ["pkgA", "pkgB"] {
+        if survived.iter().any(|s| s == k) {
+            live_kinds.push(k.to_string());
+        } else {
+            dead_kinds.push(k.to_string());
+        }
+    }
+    assert_eq!(
+        res.paths_deleted,
+        dead_kinds.len(),
+        "GcResult.paths_deleted must match the on-disk dead partition"
+    );
+    (dead_kinds, live_kinds)
+}
+
+/// **The seal differential.** pkgA rooted ONLY via the two-hop indirect
+/// `auto -> result -> store` chain; nix keeps it live and so must sui.
+#[tokio::test]
+async fn store_gc_indirect_root_matches_nix() {
+    if !have_nix() {
+        eprintln!("skip store_gc_indirect_root_matches_nix: no nix binary");
+        return;
+    }
+    let td = tempfile::tempdir().unwrap();
+    let base: PathBuf = td.path().canonicalize().unwrap();
+
+    let (nix_dead, nix_live) = match nix_gc_partition_indirect(&base) {
+        Some(p) => p,
+        None => {
+            eprintln!("nix indirect gc partition unavailable; skipping");
+            return;
+        }
+    };
+    let (sui_dead, sui_live) = sui_gc_partition_indirect(&base).await;
+
+    // The oracle must be the expected indirect scenario: pkgA live, pkgB dead.
+    assert_eq!(
+        nix_dead,
+        vec!["pkgB".to_string()],
+        "nix oracle: only pkgB dead (pkgA rooted through auto->result)"
+    );
+    assert_eq!(
+        nix_live,
+        vec!["pkgA".to_string()],
+        "nix oracle: pkgA indirectly-rooted -> live"
+    );
+
+    // sui's partition must equal nix's — the indirectly-rooted path is LIVE in
+    // both (seal I6a).
+    assert_eq!(sui_dead, nix_dead, "sui dead-set must equal nix dead-set (indirect root)");
+    assert_eq!(sui_live, nix_live, "sui live-set must equal nix live-set (indirect root)");
+}
+
 /// ROOT-GATED MANUAL VERIFICATION (documented, not faked green).
 ///
 /// A dead-set differential against the *real* `/nix/store` (the exact byte set
