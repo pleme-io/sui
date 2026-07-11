@@ -1991,8 +1991,17 @@ impl Env {
                             None
                         }
                     } else {
-                        // Thunk not yet evaluated — try to force
-                        match crate::eval::force_value_tracked(&scope.value, "with_scope") {
+                        // Thunk not yet evaluated — force it FULLY. Must use
+                        // `force_value` (which chases the whole thunk chain),
+                        // NOT `force_value_tracked` (single `force_thunk` step):
+                        // a with-scope head like `lib.platforms` is often a
+                        // lazy `Thunk(Thunk(Attrs))`, so one step yields a
+                        // `Value::Thunk` whose `type_name()` peeks to "set" but
+                        // which the `if let Value::Attrs` match REJECTS — the
+                        // scope is then wrongly skipped and every bare-ident
+                        // lookup through it (`with lib.platforms; unix`) fails
+                        // with a spurious UndefinedVar.
+                        match crate::eval::force_value(&scope.value) {
                             Ok(forced) => {
                                 if let Value::Attrs(ref attrs) = forced {
                                     *scope.cached.borrow_mut() = Some((**attrs).clone());
@@ -2006,7 +2015,8 @@ impl Env {
                     }
                 }
                 _ => {
-                    match crate::eval::force_value_tracked(&scope.value, "with_scope") {
+                    // Same full-chain force as the Thunk arm above.
+                    match crate::eval::force_value(&scope.value) {
                         Ok(forced) => {
                             if let Value::Attrs(ref attrs) = forced {
                                 *scope.cached.borrow_mut() = Some((**attrs).clone());

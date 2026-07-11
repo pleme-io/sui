@@ -4791,6 +4791,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn with_scope_over_lazy_thunk_chain_resolves() {
+        // A `with`-head that resolves through a NESTED thunk chain
+        // (`Thunk(Thunk(Attrs))`) must still be searched: the lookup
+        // has to FULLY force the head (chase the chain), not take a
+        // single force step. A single step leaves a `Value::Thunk`
+        // that `type_name()` reports as "set" but the `Value::Attrs`
+        // match rejects — the scope is skipped and a bare ident
+        // through it fails with a spurious UndefinedVar. This corners
+        // the nixpkgs `platforms = with lib.platforms; unix;` shape.
+        assert_eq!(
+            ev(r#"let outer = if true then (if true then { unix = 42; } else {}) else {};
+                      # force a two-deep lazy wrap of the with-head
+                      head = (x: x) ((y: y) outer);
+                  in with head; unix"#),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn with_scope_head_from_deep_select_resolves() {
+        // `with a.b.c; key` where a.b.c is a lazily-selected attrset —
+        // the bare-ident body must find `key` through the forced head.
+        assert_eq!(
+            ev(r#"let a = { b = { c = { key = 7; }; }; }; in with a.b.c; key"#),
+            Value::Int(7),
+        );
+    }
+
     // ── attrset deep merge ────────────────────────────────
 
     #[test]
