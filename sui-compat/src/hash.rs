@@ -157,6 +157,16 @@ pub fn decode_hash_any(
     let want = algo.digest_len();
     let hex_len = want * 2;
     let base32_len = (want * 8 + 4) / 5;
+    // CppNix `Hash::parseAny` also accepts the legacy `<algo>:<hash>`
+    // COLON-prefixed form (as opposed to the SRI `<algo>-<base64>`
+    // DASH form), where `<hash>` is hex / nix-base32 / base64. nixpkgs
+    // writes it in `fetchurl { hash = "sha256:<hex>"; }` (e.g. neovim's
+    // treesitter-parsers). Strip a matching `<algo>:` prefix so the
+    // body decodes through the same hex/base32/base64 ladder below.
+    // Without this, the FOD `outputHash` throws at drv-construction,
+    // stdenv swallows the throw, `src` is dropped, and the drv diverges.
+    let colon_prefix = format!("{}:", algo.as_nix_str());
+    let raw = raw.strip_prefix(&colon_prefix).unwrap_or(raw);
     // SRI is `<algo>-<base64-of-digest>`; the base64 length for
     // n bytes is 4 * ceil(n / 3), padded to a multiple of 4.
     let sri_prefix = format!("{}-", algo.as_nix_str());
@@ -348,6 +358,23 @@ mod tests {
         // SRI of 32 zero bytes.
         let sri = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let h = NixHash::parse_any(HashAlgorithm::Sha256, sri).unwrap();
+        assert_eq!(h.digest, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn parse_any_accepts_colon_prefixed_hex_sha256() {
+        // Legacy `<algo>:<hex>` colon form (neovim treesitter-parsers
+        // `fetchurl { hash = "sha256:<hex>"; }`). Must decode the body
+        // through the same hex ladder as the bare form.
+        let raw = format!("sha256:{}", "0".repeat(64));
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, &raw).unwrap();
+        assert_eq!(h.digest, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn parse_any_accepts_colon_prefixed_base32_sha256() {
+        let raw = format!("sha256:{}", "0".repeat(52));
+        let h = NixHash::parse_any(HashAlgorithm::Sha256, &raw).unwrap();
         assert_eq!(h.digest, vec![0u8; 32]);
     }
 
