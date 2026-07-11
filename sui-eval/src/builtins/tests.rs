@@ -2377,13 +2377,32 @@ fn builtins_path_exists_nonexistent() {
 
 #[test]
 fn builtins_to_file_returns_store_path() {
+    // CppNix's toFile yields a STRING (with store context), not a Path —
+    // a Path would be re-copied in a derivation env, doubling the name.
     let v = ev(r#"builtins.toFile "test.txt" "hello""#);
-    if let Value::Path(p) = v {
-        assert!(p.starts_with("/nix/store/"));
-        assert!(p.ends_with("-test.txt"));
-    } else {
-        panic!("expected path, got {v}");
-    }
+    assert_eq!(
+        ev(r#"builtins.typeOf (builtins.toFile "test.txt" "hello")"#),
+        Value::string("string"),
+    );
+    let s = v.as_string().unwrap_or_else(|_| panic!("expected string, got {v}"));
+    assert!(s.starts_with("/nix/store/"));
+    assert!(s.ends_with("-test.txt"));
+}
+
+#[test]
+fn builtins_to_file_no_double_copy_in_derivation_env() {
+    // Placing a toFile result in a derivation env must reference it
+    // verbatim (single `<hash>-name`), never re-copy to a doubled
+    // `<newhash>-<storehash>-name` path (the lua setupHook divergence).
+    let s = ev(r#"toString (builtins.toFile "myhook" "echo hi")"#)
+        .as_string()
+        .unwrap()
+        .to_string();
+    let base = s.rsplit('/').next().unwrap();
+    assert!(base.ends_with("-myhook"), "unexpected name: {base}");
+    let hash = base.split('-').next().unwrap();
+    assert_eq!(hash.len(), 32, "store hash must be 32 chars: {base}");
+    assert!(!base.contains("-myhook-"), "doubled name: {base}");
 }
 
 #[test]
@@ -2507,7 +2526,8 @@ fn builtins_find_file_not_found() {
 
 #[test] fn builtins_to_file() {
     let v = ev(r#"builtins.toFile "test.txt" "hello""#);
-    assert!(matches!(v, Value::Path(_) | Value::String(_)));
+    // nix-faithful: a String (with store context), never a Path.
+    assert!(matches!(v, Value::String(_)), "expected string, got {v}");
 }
 
 #[test] fn builtins_unsafe_get_attr_pos() {

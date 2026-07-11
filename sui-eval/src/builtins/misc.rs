@@ -223,7 +223,19 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 context: format!("toFile {store_path}"),
                 message: e.to_string(),
             })?;
-        Ok(Value::Path(Box::new(SmolStr::from(store_path.as_str()))))
+        // CppNix's `builtins.toFile` returns a STRING carrying the store
+        // path as opaque (`Plain`) context — NOT a Path value. A Path
+        // value would be RE-copied when coerced into a derivation env
+        // (per the copy-to-store "a Path is always copied" rule), yielding
+        // a doubled `<newhash>-<storehash>-name` path and diverging every
+        // consumer (e.g. lua's `setupHook` → neovim, redis). Referencing a
+        // String-with-context is verbatim, exactly like nix.
+        let mut ctx = StringContext::new();
+        ctx.add_plain(store_path.clone());
+        Ok(Value::String(std::rc::Rc::new(NixString::with_context(
+            SmolStr::from(store_path.as_str()),
+            ctx,
+        ))))
     });
 }
 
