@@ -1541,12 +1541,42 @@ fn store_add_file(path: &str, name: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
-fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
+async fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     let basename = name.unwrap_or_else(|| {
         std::path::Path::new(path).file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("source")
     });
+
+    // Prefer the daemon: it runs privileged and performs the real
+    // `/nix/store` write via the sealed `LocalStore::add_to_store`
+    // realizer (whose `source:sha256:…` fingerprint is byte-identical
+    // to `nix store add-path`). When a daemon socket is reachable we
+    // stream the NAR to it over the worker protocol and print the
+    // authoritative store path it returns.
+    match add_path_via_daemon(std::path::Path::new(path), basename).await {
+        Ok(store_path) => {
+            println!("{store_path}");
+            return Ok(());
+        }
+        Err(AddPathDaemonError::Unreachable) => {
+            // No daemon — fall through to the unprivileged cache shim.
+        }
+        Err(AddPathDaemonError::Protocol(msg)) => {
+            // The daemon was there but the op failed. This is a real
+            // error, not a "try the fallback" — surface it.
+            return Err(CliError::NotImplemented(format!(
+                "store add-path: daemon write failed: {msg}"
+            )));
+        }
+    }
+
+    // Fallback: unprivileged local cache (no `/nix/store` write). Note
+    // this path computes an APPROXIMATE store path via the direct-NAR
+    // hash algorithm, which is NOT byte-identical to `nix store
+    // add-path` for non-trivial trees — the daemon path above is the
+    // authoritative one. Kept only so an operator without a running
+    // daemon still gets a materialized copy.
     let nar_hash = sui_spec::nar::hash_path_nar(std::path::Path::new(path))
         .map_err(|e| CliError::NotImplemented(format!("store add-path: NAR: {e}")))?;
     let store_path = sui_spec::nar::store_path_for(STORE_ROOT, &nar_hash, basename);
@@ -1562,8 +1592,210 @@ fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
     let cache_path = cache.join(std::path::Path::new(&store_path).file_name().unwrap());
     copy_recursive(std::path::Path::new(path), &cache_path)?;
     println!("{store_path}");
-    eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
+    eprintln!(
+        "# no daemon reachable — cached locally at {} (approximate path). \
+         Start `sui daemon` (or run as root) for a real /nix/store write.",
+        cache_path.display()
+    );
     Ok(())
+}
+
+/// Outcome of trying to add a path through the daemon.
+enum AddPathDaemonError {
+    /// No daemon socket was reachable — caller should try the fallback.
+    Unreachable,
+    /// The daemon replied with a protocol/store error — a real failure.
+    Protocol(String),
+}
+
+/// Resolve the worker-protocol daemon socket path, honoring
+/// `NIX_REMOTE=unix://…` and falling back to the standard nix daemon
+/// socket. Returns `None` if `NIX_REMOTE` names a non-unix store.
+fn daemon_socket_path() -> Option<std::path::PathBuf> {
+    match std::env::var("NIX_REMOTE") {
+        Ok(v) if v.starts_with("unix://") => {
+            Some(std::path::PathBuf::from(v.trim_start_matches("unix://")))
+        }
+        Ok(v) if v == "daemon" || v.is_empty() => {
+            Some(std::path::PathBuf::from(sui_daemon::DEFAULT_SOCKET_PATH))
+        }
+        Ok(_) => None, // e.g. NIX_REMOTE=https://… — not our socket
+        Err(_) => Some(std::path::PathBuf::from(sui_daemon::DEFAULT_SOCKET_PATH)),
+    }
+}
+
+/// Stream `path`'s NAR to the daemon via the worker-protocol
+/// `AddToStore` op (protocol >= 25) and return the authoritative store
+/// path from the `ValidPathInfo` reply.
+///
+/// Wire (matching CppNix `remote-store.cc` `addToStoreFromDump`):
+/// handshake → `SetOptions` → `AddToStore { name, "fixed:r:sha256",
+/// refs=[], repair=false, FramedSource(nar) }` → read `ValidPathInfo`.
+async fn add_path_via_daemon(
+    path: &std::path::Path,
+    name: &str,
+) -> Result<String, AddPathDaemonError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use sui_compat::wire::{
+        PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2, WorkerOp,
+    };
+
+    const STDERR_LAST: u64 = 0x616c7473;
+    const STDERR_ERROR: u64 = 0x63787470;
+    const STDERR_WRITE: u64 = 0x6f6c6d67;
+
+    let socket = daemon_socket_path().ok_or(AddPathDaemonError::Unreachable)?;
+
+    let mut s = match tokio::net::UnixStream::connect(&socket).await {
+        Ok(s) => s,
+        Err(_) => return Err(AddPathDaemonError::Unreachable),
+    };
+
+    // Pack the NAR up front — if this fails it's a local error, not a
+    // daemon one, so surface it as a protocol-side failure message.
+    let mut nar = Vec::new();
+    sui_compat::nar::NarWriter::write_path(&mut nar, path)
+        .map_err(|e| AddPathDaemonError::Protocol(format!("NAR pack: {e}")))?;
+
+    // ── async wire helpers (client side) ──
+    async fn w_u64(s: &mut tokio::net::UnixStream, v: u64) -> std::io::Result<()> {
+        s.write_all(&v.to_le_bytes()).await
+    }
+    async fn r_u64(s: &mut tokio::net::UnixStream) -> std::io::Result<u64> {
+        let mut b = [0u8; 8];
+        s.read_exact(&mut b).await?;
+        Ok(u64::from_le_bytes(b))
+    }
+    async fn w_str(s: &mut tokio::net::UnixStream, v: &str) -> std::io::Result<()> {
+        let b = v.as_bytes();
+        w_u64(s, b.len() as u64).await?;
+        s.write_all(b).await?;
+        let pad = (8 - (b.len() % 8)) % 8;
+        if pad > 0 {
+            s.write_all(&[0u8; 8][..pad]).await?;
+        }
+        Ok(())
+    }
+    async fn r_str(s: &mut tokio::net::UnixStream) -> std::io::Result<String> {
+        let len = r_u64(s).await? as usize;
+        let mut buf = vec![0u8; len];
+        s.read_exact(&mut buf).await?;
+        let pad = (8 - (len % 8)) % 8;
+        if pad > 0 {
+            let mut p = [0u8; 8];
+            s.read_exact(&mut p[..pad]).await?;
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    let io = |e: std::io::Error| AddPathDaemonError::Protocol(format!("io: {e}"));
+
+    // Handshake (client side of handshake.rs).
+    w_u64(&mut s, WORKER_MAGIC_1).await.map_err(io)?;
+    s.flush().await.map_err(io)?;
+    let magic2 = r_u64(&mut s).await.map_err(io)?;
+    if magic2 != WORKER_MAGIC_2 {
+        return Err(AddPathDaemonError::Protocol(format!(
+            "bad server magic {magic2:#x}"
+        )));
+    }
+    let _server_ver = r_u64(&mut s).await.map_err(io)?;
+    w_u64(&mut s, PROTOCOL_VERSION).await.map_err(io)?;
+    w_u64(&mut s, 0).await.map_err(io)?; // cpu affinity (obsolete)
+    w_u64(&mut s, 0).await.map_err(io)?; // reserve space (obsolete)
+    s.flush().await.map_err(io)?;
+    let _daemon_ver = r_str(&mut s).await.map_err(io)?;
+    let _trust = r_u64(&mut s).await.map_err(io)?;
+    // Handshake terminates with STDERR_LAST.
+    if r_u64(&mut s).await.map_err(io)? != STDERR_LAST {
+        return Err(AddPathDaemonError::Protocol(
+            "handshake missing STDERR_LAST".into(),
+        ));
+    }
+
+    // SetOptions with the base-6 + version-gated fields our negotiated
+    // 1.37 version expects (the daemon's handle_set_options reads these
+    // exact conditionals). All zeros / empty overrides map.
+    w_u64(&mut s, WorkerOp::SetOptions as u64).await.map_err(io)?;
+    for _ in 0..6 {
+        w_u64(&mut s, 0).await.map_err(io)?; // base 6 fields
+    }
+    w_u64(&mut s, 0).await.map_err(io)?; // useBuildHook (>=2)
+    w_u64(&mut s, 0).await.map_err(io)?; // verboseBuild (>=4)
+    w_u64(&mut s, 0).await.map_err(io)?; // logType (>=6)
+    w_u64(&mut s, 0).await.map_err(io)?; // printBuildTrace (>=6)
+    w_u64(&mut s, 0).await.map_err(io)?; // buildCores (>=10)
+    w_u64(&mut s, 0).await.map_err(io)?; // useSubstitutes (>=11)
+    w_u64(&mut s, 0).await.map_err(io)?; // overrides count (>=12)
+    s.flush().await.map_err(io)?;
+    // SetOptions reply is STDERR_LAST only.
+    drain_stderr(&mut s, STDERR_LAST, STDERR_ERROR, STDERR_WRITE).await?;
+
+    // AddToStore.
+    w_u64(&mut s, WorkerOp::AddToStore as u64).await.map_err(io)?;
+    w_str(&mut s, name).await.map_err(io)?;
+    w_str(&mut s, "fixed:r:sha256").await.map_err(io)?; // recursive NAR sha256
+    w_u64(&mut s, 0).await.map_err(io)?; // 0 references
+    w_u64(&mut s, 0).await.map_err(io)?; // repair = false
+    // FramedSource: single chunk + zero terminator (raw, unpadded).
+    if !nar.is_empty() {
+        w_u64(&mut s, nar.len() as u64).await.map_err(io)?;
+        s.write_all(&nar).await.map_err(io)?;
+    }
+    w_u64(&mut s, 0).await.map_err(io)?; // terminator
+    s.flush().await.map_err(io)?;
+
+    // Response: stderr frames → STDERR_LAST → ValidPathInfo (path first).
+    drain_stderr(&mut s, STDERR_LAST, STDERR_ERROR, STDERR_WRITE).await?;
+    let store_path = r_str(&mut s).await.map_err(io)?;
+    Ok(store_path)
+}
+
+/// Read worker-protocol stderr frames until STDERR_LAST. An Error frame
+/// becomes a typed `Protocol` error carrying the daemon's message.
+async fn drain_stderr(
+    s: &mut tokio::net::UnixStream,
+    last: u64,
+    error: u64,
+    write: u64,
+) -> Result<(), AddPathDaemonError> {
+    use tokio::io::{AsyncReadExt};
+    async fn r_u64(s: &mut tokio::net::UnixStream) -> std::io::Result<u64> {
+        let mut b = [0u8; 8];
+        s.read_exact(&mut b).await?;
+        Ok(u64::from_le_bytes(b))
+    }
+    async fn r_str(s: &mut tokio::net::UnixStream) -> std::io::Result<String> {
+        let len = r_u64(s).await? as usize;
+        let mut buf = vec![0u8; len];
+        s.read_exact(&mut buf).await?;
+        let pad = (8 - (len % 8)) % 8;
+        if pad > 0 {
+            let mut p = [0u8; 8];
+            s.read_exact(&mut p[..pad]).await?;
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+    let io = |e: std::io::Error| AddPathDaemonError::Protocol(format!("io: {e}"));
+    loop {
+        let msg = r_u64(s).await.map_err(io)?;
+        if msg == last {
+            return Ok(());
+        }
+        if msg == error {
+            let _ty = r_str(s).await.map_err(io)?;
+            let text = r_str(s).await.map_err(io)?;
+            let _n = r_u64(s).await.map_err(io)?;
+            return Err(AddPathDaemonError::Protocol(text));
+        }
+        if msg == write {
+            let _ = r_str(s).await.map_err(io)?;
+            continue;
+        }
+        return Err(AddPathDaemonError::Protocol(format!(
+            "unexpected stderr frame {msg:#x}"
+        )));
+    }
 }
 
 // ── `sui store sbom` — SPDX 2.3 JSON emitter ─────────────────
@@ -4885,7 +5117,7 @@ async fn main() -> Result<(), CliError> {
                 }
                 StoreCommands::Ping => { println!("Store URL: daemon\nVersion: sui {}\nTrusted: 1", env!("CARGO_PKG_VERSION")); }
                 StoreCommands::AddPath { path: p, name } => {
-                    store_add_path(&p, name.as_deref())?;
+                    store_add_path(&p, name.as_deref()).await?;
                 }
                 StoreCommands::AddFile { path: p, name } => {
                     store_add_file(&p, name.as_deref())?;
