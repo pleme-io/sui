@@ -5526,6 +5526,11 @@ async fn main() -> Result<(), CliError> {
                         // stacked roots a diverging package hides — with zero
                         // change to the printed value above (default unchanged).
                         report_parity_strict();
+                        // Diagnostic perf trace (no-op unless SUI_PERF_TRACE=1):
+                        // report the NAR-hash-source-tree storm + IFD realize
+                        // counts accumulated during this eval.
+                        sui_compat::source::nar_hash_dump();
+                        ifd_realize_dump();
                         Ok(())
                     })
                     .expect("failed to spawn eval thread");
@@ -6441,10 +6446,43 @@ fn ifd_realize_bound() -> std::time::Duration {
 /// exists on no cache; wrapping it in a wall-clock bound converts the former
 /// unbounded hang into a typed, named error the evaluator surfaces (it then goes
 /// on to NAME the next root instead of hanging).
+// ── Diagnostic IFD realize trace (gated by SUI_PERF_TRACE=1) ───────
+thread_local! {
+    static IFD_TRACE: std::cell::RefCell<Vec<(String, std::time::Duration)>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+fn ifd_trace_enabled() -> bool {
+    std::env::var("SUI_PERF_TRACE").ok().as_deref() == Some("1")
+}
+
+/// Dump the IFD realize trace to stderr (no-op unless SUI_PERF_TRACE=1).
+fn ifd_realize_dump() {
+    if !ifd_trace_enabled() {
+        return;
+    }
+    IFD_TRACE.with(|c| {
+        let mut rows = c.borrow().clone();
+        let total: std::time::Duration = rows.iter().map(|(_, d)| *d).sum();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        eprintln!("\n=== IFD realize trace ===");
+        eprintln!("realize calls:  {}", rows.len());
+        eprintln!("total elapsed:  {:.2}s", total.as_secs_f64());
+        eprintln!("--- top 20 realizes by elapsed ---");
+        for (drv, d) in rows.iter().take(20) {
+            eprintln!("  {:>7.2}s  {}", d.as_secs_f64(), drv);
+        }
+        eprintln!("=========================\n");
+    });
+}
+
 fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
     use sui_build::BuildClosure;
 
-    IFD_REALIZER.with(|cell| {
+    let trace = ifd_trace_enabled();
+    let t0 = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let result = IFD_REALIZER.with(|cell| {
         // Lazily build the pipeline on first demand.
         if cell.borrow().is_none() {
             let realizer = build_ifd_realizer()?;
@@ -6502,7 +6540,24 @@ fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
                 Ok(())
             }
         }
-    })
+    });
+
+    if let Some(t0) = t0 {
+        let d = t0.elapsed();
+        IFD_TRACE.with(|c| {
+            let mut v = c.borrow_mut();
+            v.push((drv_path.to_string(), d));
+            let total: std::time::Duration = v.iter().map(|(_, d)| *d).sum();
+            eprintln!(
+                "[ifd-trace] realize #{} took {:.2}s (cumulative {:.1}s) {}",
+                v.len(),
+                d.as_secs_f64(),
+                total.as_secs_f64(),
+                drv_path
+            );
+        });
+    }
+    result
 }
 
 /// Install the IFD realize hook on the current (eval) thread. Returns the guard
