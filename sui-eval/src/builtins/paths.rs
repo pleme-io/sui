@@ -46,8 +46,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "readFileType", |args| {
-        let path = args[0].as_string()?;
-        match std::fs::symlink_metadata(path) {
+        let path = crate::path::materialize_str(&args[0].as_string()?);
+        match std::fs::symlink_metadata(&path) {
             Ok(meta) => {
                 let kind = if meta.is_symlink() {
                     "symlink"
@@ -65,7 +65,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "readDir", |args| {
-        let path_str = args[0].coerce_to_path("readDir")?;
+        let path_str = crate::path::materialize_str(&args[0].coerce_to_path("readDir")?);
         let mut attrs = NixAttrs::new();
         for entry in std::fs::read_dir(&path_str)
             .map_err(|e| EvalError::IoError { context: "readDir".into(), message: e.to_string() })?
@@ -103,7 +103,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
 
     // pathExists
     register_builtin(builtins, "pathExists", |args| {
-        let path_str = args[0].coerce_to_path("pathExists")?;
+        let path_str = crate::path::materialize_str(&args[0].coerce_to_path("pathExists")?);
         Ok(Value::Bool(std::path::Path::new(&path_str).exists()))
     });
 
@@ -144,7 +144,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 })?
                 .join(pb)
         };
-        let canon = abs.canonicalize().map_err(|_| {
+        // Redirect a fetched flake input's `-source` store path to its real
+        // on-disk tree before realpath (the store path isn't materialized);
+        // the resulting store hash is computed from the SAME tree cppnix
+        // NAR-hashed, so the value is byte-identical.
+        let canon = crate::path::materialize(&abs).canonicalize().map_err(|_| {
             EvalError::TypeError(format!("path '{}' does not exist", abs.display()))
         })?;
 
@@ -245,7 +249,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // and shared the same root-filter pruning bug as builtins.path did).
     register_curried(builtins, "filterSource", |pred, src| {
         let src_path = src.coerce_to_path("filterSource")?;
-        let src_path_buf = std::path::PathBuf::from(&src_path);
+        // Redirect a fetched flake input's `-source` store subpath to its
+        // real on-disk tree (the store path isn't materialized by sui); the
+        // store path returned below is NAR-hashed from tree CONTENT, so it is
+        // byte-identical whether read from the store path or the cache.
+        let src_path_buf = crate::path::materialize(std::path::Path::new(&src_path));
         if !src_path_buf.exists() {
             return Err(EvalError::IoError {
                 context: format!("filterSource: {src_path}"),
@@ -420,6 +428,10 @@ fn materialize_filtered(
 /// `readFile (toFile name content) == content` even on hosts where
 /// the operator can't write to `/nix/store` directly.
 fn read_file_with_tofile_fallback(path: &str) -> Result<String, std::io::Error> {
+    // Redirect a fetched flake input's `-source` store path to its real
+    // on-disk tree (the store path isn't materialized by sui); a no-op for
+    // any other path.
+    let path = &crate::path::materialize_str(path);
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound

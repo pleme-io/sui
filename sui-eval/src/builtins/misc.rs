@@ -97,7 +97,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             &raw_path,
         ).unwrap_or_else(|_| std::path::PathBuf::from(&raw_path));
         let path = resolved.to_string_lossy().into_owned();
-        let source = std::fs::read_to_string(&path).map_err(|e| EvalError::IoError {
+        let read_path = crate::path::materialize_str(&path);
+        let source = std::fs::read_to_string(&read_path).map_err(|e| EvalError::IoError {
             context: format!("scopedImport {path}"),
             message: e.to_string(),
         })?;
@@ -157,7 +158,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             return Ok(value);
         }
 
-        let source = std::fs::read_to_string(&path)
+        // Redirect the on-disk read to the input's real source tree when
+        // `path` lies under a fetched flake input's `-source` store prefix;
+        // the store-path `path`/`path_buf` (below) is unchanged so relative
+        // imports re-enter the remap and eval-dir/string tracking stays
+        // byte-correct.
+        let read_path = crate::path::materialize_str(&path);
+        let source = std::fs::read_to_string(&read_path)
             .map_err(|e| EvalError::IoError { context: format!("import {path}"), message: e.to_string() })?;
         let path_buf = std::path::PathBuf::from(&path);
         let _guard = crate::eval::push_eval_file(path_buf.clone());

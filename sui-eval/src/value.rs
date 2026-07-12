@@ -2600,7 +2600,14 @@ impl Value {
                             })?
                             .join(pb)
                     };
-                    let canon = abs.canonicalize().map_err(|_| {
+                    // Redirect the on-disk read to the input's real source
+                    // tree when `abs` lies under a fetched flake input's
+                    // `-source` store prefix (sui does not materialize that
+                    // store path). The resulting store path is NAR-hashed
+                    // from the tree CONTENT — byte-identical whether read from
+                    // the store path or the cache — so no value changes.
+                    let read_abs = crate::path::materialize(&abs);
+                    let canon = read_abs.canonicalize().map_err(|_| {
                         EvalError::TypeError(format!(
                             "path '{}' does not exist",
                             abs.display()

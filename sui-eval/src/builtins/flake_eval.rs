@@ -157,6 +157,24 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                 } else {
                     format!("/nix/store/flake-input-{input_name}")
                 };
+                // Register the `outPath` → real-tree mapping so any read the
+                // flake's own Nix code issues under this input's `-source`
+                // store path (`import "${input.outPath}/lib/foo.nix"`,
+                // `readFile`, `pathExists`, `readDir`, `builtins.path`)
+                // resolves against `read_dir` (the fetcher cache / literal
+                // path) instead of the un-materialized store path — while the
+                // store-path STRING flowing through eval stays byte-correct.
+                // (The prior peel special-cased only recursing into
+                // `flake.nix`; this generalizes to ALL `${outPath}/subpath`
+                // reads.)
+                if out_path.starts_with("/nix/store/")
+                    && let Some(ref rd) = read_dir {
+                        crate::path::register_input_source(
+                            std::path::Path::new(&out_path),
+                            rd,
+                        );
+                    }
+
                 // A flake input's `outPath` is a `/nix/store/…-source` store
                 // reference: it must carry copy-to-store STRING CONTEXT so that,
                 // when a downstream derivation embeds it (nix-darwin's
