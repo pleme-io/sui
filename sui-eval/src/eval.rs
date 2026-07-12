@@ -572,27 +572,51 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// inherit-from-source clause) leave the existing
 /// `InfiniteRecursion` behaviour intact, which is the conservative
 /// fallback.
-fn is_self_recursive_binding(value_expr: &ast::Expr, name: &str) -> bool {
+/// The set of variable-reference ident names in `value_expr`'s subtree
+/// (`NODE_IDENT` whose parent is NOT a `NODE_ATTRPATH` — i.e. genuine
+/// variable references, not attribute names/keys). ONE subtree walk.
+///
+/// Kills the O(N²) re-walk storm (Storm A) at the call sites: previously
+/// `is_self_recursive_binding` did a full subtree walk once per
+/// `(binding × sibling-name)` in every `let`/`rec` scope; now each RHS is
+/// walked ONCE to build this set, then every name is an O(1) set lookup.
+/// Byte-neutral: the recursion verdict is unchanged (a name is self/mutually
+/// recursive iff it is in the set).
+///
+/// NOT cross-call memoized: a process-lifetime memo keyed on ephemeral AST
+/// node identity `(source-id, range)` collides when nodes are parsed/dropped
+/// without a per-eval clear (the standalone-predicate case). The call-site
+/// single-walk is the byte-safe win; `ContentMemo` (sui-intern) is reserved
+/// for sites with a STABLE content key (the NAR-hash memo's `(dir,name)`, the
+/// overlay-flatten per-node cache).
+///
+/// The attrpath exclusion matters: without it, `placeholder = if
+/// lhs.placeholder == …` in nixpkgs `lib/types.nix` would be falsely flagged
+/// self-recursive (its RHS mentions the *attribute* `.placeholder`), routing
+/// the binding through the `Promise` fix-point path whose env handling drops
+/// the let-scope — surfacing as a force-order-dependent `null` in the module
+/// system (`concatLists: expected list, got null`).
+fn referenced_idents(value_expr: &ast::Expr) -> HashSet<SmolStr> {
     use rnix::SyntaxKind;
-    // A binding participates in the let-scope fix-point only if its RHS
-    // genuinely REFERENCES `name` as a variable.  Match `NODE_IDENT` nodes
-    // whose text is `name`, but exclude idents that are attribute names or
-    // attrset keys — those live under a `NODE_ATTRPATH` (`lhs.placeholder`,
-    // `{ placeholder = …; }`) and are NOT references to the binding.
-    //
-    // Without this exclusion, `placeholder = if lhs.placeholder == …` in
-    // nixpkgs `lib/types.nix` is falsely flagged self-recursive (its RHS
-    // mentions the *attribute* `.placeholder`), routing the binding through
-    // the `Promise` fix-point path whose env handling drops the let-scope —
-    // surfacing as a force-order-dependent `null` in the module system
-    // (`concatLists: expected list, got null`).
-    value_expr.syntax().descendants().any(|node| {
-        node.kind() == SyntaxKind::NODE_IDENT
+    let mut set: HashSet<SmolStr> = HashSet::new();
+    for node in value_expr.syntax().descendants() {
+        if node.kind() == SyntaxKind::NODE_IDENT
             && node
                 .parent()
                 .is_none_or(|p| p.kind() != SyntaxKind::NODE_ATTRPATH)
-            && ast::Ident::cast(node).is_some_and(|i| ident_text(&i) == name)
-    })
+            && let Some(i) = ast::Ident::cast(node)
+        {
+            set.insert(SmolStr::from(ident_text(&i).as_str()));
+        }
+    }
+    set
+}
+
+/// True iff `value_expr` references `name` as a variable. Now a set lookup
+/// over one subtree walk (see `referenced_idents`). Byte-neutral vs the prior
+/// per-name-walk implementation.
+fn is_self_recursive_binding(value_expr: &ast::Expr, name: &str) -> bool {
+    referenced_idents(value_expr).contains(name)
 }
 
 fn maybe_thunk(
@@ -1143,10 +1167,16 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // `let_scope_names` is collected upfront in a
                             // pre-pass so each binding sees every other
                             // binding name (not just earlier ones).
-                            let in_mutual_cycle = is_self_recursive_binding(&value_expr, &key)
-                                || let_scope_names
-                                    .iter()
-                                    .any(|n| n != &key && is_self_recursive_binding(&value_expr, n));
+                            // O(N) not O(N²): compute the RHS's referenced-name
+                            // set ONCE (memoized), then intersect with the
+                            // let-scope names. Byte-identical to the prior
+                            // `references(key) OR references(any sibling)`:
+                            // chaining `key` covers the self-reference case
+                            // regardless of whether `key ∈ let_scope_names`.
+                            let referenced = referenced_idents(&value_expr);
+                            let in_mutual_cycle = std::iter::once(&key)
+                                .chain(let_scope_names.iter())
+                                .any(|n| referenced.contains(n.as_str()));
                             let value = if in_mutual_cycle {
                                 Value::Thunk(Thunk::new_suspended_recursive(
                                     value_expr.clone(),
@@ -1736,11 +1766,14 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         // defined siblings; siblings defined later are
                         // covered when THEIR thunks force (they reference
                         // back into this rec scope via Phase 2's env update).
-                        let is_recursive_binding =
-                            is_self_recursive_binding(&value_expr, &key)
+                        // O(N) not O(N²): one memoized referenced-name set,
+                        // intersected with key + already-defined siblings.
+                        // Byte-identical to the prior per-name walks.
+                        let referenced = referenced_idents(&value_expr);
+                        let is_recursive_binding = referenced.contains(key.as_str())
                             || defined_so_far
                                 .iter()
-                                .any(|n| is_self_recursive_binding(&value_expr, n));
+                                .any(|n| referenced.contains(n.as_str()));
                         let value = if is_recursive_binding {
                             Value::Thunk(Thunk::new_suspended_recursive(
                                 value_expr.clone(),

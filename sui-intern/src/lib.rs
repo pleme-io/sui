@@ -34,6 +34,11 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+/// `ContentMemo` + the `thread_local_content_memo!` macro — a byte-neutral,
+/// content-keyed memo of a pure function (the extracted shape hand-rolled at
+/// the NAR-hash / referenced-idents / overlay-flatten memo sites).
+pub mod memo;
+
 /// An interned string handle — a cheap, copyable, comparable token.
 ///
 /// Two `Symbol`s are equal if and only if they refer to the same
