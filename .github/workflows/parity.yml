@@ -1,0 +1,55 @@
+# Byte-parity regression box — the CORRECTNESS half of the sui↔nix seal.
+#
+# `sui parity` runs the eval-shape corpus and diffs each sui-computed drvPath /
+# hash / NAR byte-for-byte against the real `nix` binary. A shape whose sui
+# output diverges from nix fails this job — "a drvPath changed" is now a red CI
+# check, not a silent drift caught only when an operator remembers to run it.
+#
+# This is the sibling gate to `perf-seal.yml`:
+#   - perf-seal.yml  → SPEED   (deterministic eval_expr op-count budget, no nix)
+#   - parity.yml     → BYTE     (sui drvPath == nix drvPath, needs nix)
+# Together they box both axes: eval may not get slower AND may not change a byte.
+#
+# Unlike perf-seal (in-process, nix-free), this job installs `nix` because the
+# gate IS the sui-vs-nix differential. Linux-runner probes render
+# `builtins.currentSystem` = x86_64-linux and compare against nix's x86_64-linux
+# output; darwin-only rows are not exercised here (that needs a macOS runner —
+# a named follow-up, see docs/EVAL-PERF-SEAL.md).
+name: parity
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The byte gate needs the real nix binary to diff against.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Build sui
+        run: cargo build -p sui --bin sui
+
+      # The provable box: exits non-zero on any drvPath/hash/NAR byte-divergence
+      # from nix, or any unexpected regression of a previously-matching row.
+      # A row that can't run on this platform is reported Skipped, not failed —
+      # a nix-present linux runner still enforces the x86_64-linux corpus.
+      - name: Run byte-parity gate
+        run: ./target/debug/sui parity
