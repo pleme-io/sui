@@ -539,5 +539,43 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── cid-marquee ROOT: path-literal antiquotation interpolation ──────
+    // A `${e}` inside a PATH literal (`./${x}.nix`, `/a/${e}`) must be
+    // evaluated + string-coerced + spliced, NOT treated as literal `${x}`
+    // text.  Root: sui flattened the whole path token to raw text and
+    // dropped the interpolation → `map (x: import ./${x}.nix) […]` in
+    // spicetify-nix errored `import ./${x}.nix: No such file or directory`.
+    // These rows `toString` the path so the byte-check compares a plain
+    // string surface (both engines render it identically); the interpolated
+    // ABSOLUTE / path-typed-splice cases are file-context-free, so they are
+    // fully byte-checkable at the top level.
+    //
+    // Absolute interpolated path: `/a/${x}/b` with x="foo" → /a/foo/b.
+    rows.push(row(
+        "path-literal interp (absolute, string splice)",
+        NixValue::Raw(r#"(let x = "foo"; in toString /a/${x}/b)"#.to_string()),
+        RowExpect::Match,
+    ));
+    // A slash inside the spliced value survives verbatim: /root/${"a/b"}.nix.
+    rows.push(row(
+        "path-literal interp (absolute, slash in value)",
+        NixValue::Raw(r#"(let x = "a/b"; in toString /root/${x}.nix)"#.to_string()),
+        RowExpect::Match,
+    ));
+    // Path-typed interpolation splices the raw path (plain coercion, no
+    // copy-to-store) and normalizes the `//` seam: /bar/${/tmp/foo} →
+    // /bar/tmp/foo.
+    rows.push(row(
+        "path-literal interp (path-typed splice, seam normalized)",
+        NixValue::Raw(r#"(toString /bar/${/tmp/foo})"#.to_string()),
+        RowExpect::Match,
+    ));
+    // The result is a `path` value, not a string.
+    rows.push(row(
+        "path-literal interp yields a path value",
+        NixValue::Raw(r#"(let x = "foo"; in builtins.typeOf /a/${x})"#.to_string()),
+        RowExpect::Match,
+    ));
+
     rows
 }

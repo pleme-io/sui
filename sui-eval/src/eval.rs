@@ -660,12 +660,15 @@ fn maybe_thunk(
                 }
             }
         }
-        // Absolute and home paths: trivial text extraction.
-        ast::Expr::PathAbs(p) => {
+        // Absolute and home paths: trivial text extraction — but ONLY
+        // for the non-interpolated case. An interpolated path (`/a/${e}`,
+        // `~/${e}`) must be thunked so its `${…}` parts are evaluated in
+        // `eval_expr_inner`, never spliced as literal text.
+        ast::Expr::PathAbs(p) if !parts_have_interpolation(&p.parts()) => {
             let text = p.syntax().text().to_string();
             Value::Path(Box::new(SmolStr::from(text.as_str())))
         }
-        ast::Expr::PathHome(p) => {
+        ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
             let text = p.syntax().text().to_string();
             Value::Path(Box::new(SmolStr::from(text.as_str())))
         }
@@ -867,6 +870,12 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
         ast::Expr::Str(s) => return eval_str(s, env),
 
         ast::Expr::PathAbs(p) => {
+            // An interpolated absolute path (`/a/${e}`) splices its
+            // `${…}` parts; a plain one takes the raw-text shortcut.
+            let parts = p.parts();
+            if parts_have_interpolation(&parts) {
+                return eval_interpol_path_parts(&parts, PathKind::Abs, env);
+            }
             let text = p.syntax().text().to_string();
             return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
         }
@@ -876,6 +885,15 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // process cwd. Use the current eval-file stack; fall
             // back to cwd when no file is being evaluated (e.g.,
             // top-level `sui eval`).
+            //
+            // An interpolated relative path (`./${x}.nix`) first splices
+            // its `${…}` parts, then resolves the concatenated text the
+            // same way — the interpolation is evaluated + string-coerced,
+            // NOT treated as literal `${x}` text.
+            let parts = p.parts();
+            if parts_have_interpolation(&parts) {
+                return eval_interpol_path_parts(&parts, PathKind::Rel, env);
+            }
             let text = p.syntax().text().to_string();
             let resolved = if let Some(dir) = current_eval_dir() {
                 let joined = dir.join(&text);
@@ -891,6 +909,10 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
         }
         ast::Expr::PathHome(p) => {
+            let parts = p.parts();
+            if parts_have_interpolation(&parts) {
+                return eval_interpol_path_parts(&parts, PathKind::Home, env);
+            }
             let text = p.syntax().text().to_string();
             return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
         }
@@ -1533,6 +1555,89 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
         }
     }
     Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
+}
+
+/// Whether a list of path parts contains a `${…}` interpolation. When
+/// it does not, the raw `.syntax().text()` shortcut is byte-identical
+/// and cheaper, so the trivial fast paths stay on that shortcut.
+fn parts_have_interpolation(parts: &[InterpolPart<rnix::ast::PathContent>]) -> bool {
+    parts
+        .iter()
+        .any(|p| matches!(p, InterpolPart::Interpolation(_)))
+}
+
+/// Evaluate an interpolatable path literal that contains `${…}` parts.
+///
+/// CppNix path interpolation (`./${x}.nix`, `/a/${e}`, `~/x/${e}`):
+///   * each literal segment is spliced verbatim,
+///   * each `${e}` is **plain**-coerced to a string with context
+///     (NOT copy-to-store — path-typed interpolations splice the raw
+///     store/filesystem path, e.g. `/bar/${./foo}` → `/bar/tmp/foo`),
+///   * the concatenated text is then resolved exactly like the plain
+///     path literal of the same kind (relative → joined + normalized
+///     against the defining file's directory; absolute/home → verbatim),
+///   * the result is a `path` value.
+///
+/// Parts come from rnix's `<PathKind>::parts()` which splits the path
+/// token stream into `Literal(PathContent)` / `Interpolation(Interpol)`.
+fn eval_interpol_path_parts(
+    parts: &[InterpolPart<rnix::ast::PathContent>],
+    kind: PathKind,
+    env: &Env,
+) -> Result<Value, EvalError> {
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            InterpolPart::Literal(content) => text.push_str(content.text()),
+            InterpolPart::Interpolation(interpol) => {
+                let expr = interpol.expr().ok_or_else(|| {
+                    EvalError::ParseError("path interpolation missing expr".to_string())
+                })?;
+                let val = force_value(&eval_expr(&expr, env)?)?;
+                // Plain coercion (coerceMore = false): a path-typed
+                // interpolation splices the raw path string, never a
+                // copied-to-store hash path.
+                let (s, _ctx) = val.coerce_to_string()?;
+                text.push_str(&s);
+            }
+        }
+    }
+    let resolved = match kind {
+        // Relative path: resolve against the defining file's directory,
+        // mirroring the plain `PathRel` branch.
+        PathKind::Rel => {
+            if let Some(dir) = current_eval_dir() {
+                normalize_path(&dir.join(&text)).to_string_lossy().into_owned()
+            } else {
+                // No eval-file context (top-level `sui eval -E`): the
+                // plain branch keeps the raw text, so match it — but the
+                // interpolation is still spliced.
+                text
+            }
+        }
+        // Absolute / home paths: normalize the concatenated text. CppNix
+        // canonicalizes interpolated absolute paths — the `${e}` splice
+        // routinely introduces a `//` seam (`/bar/` + `/tmp/foo`) or a
+        // `.`/`..` component that must collapse (`/bar//tmp/foo` →
+        // `/bar/tmp/foo`). `normalize_path` is filesystem-free so it works
+        // on not-yet-materialized flake paths. Home paths (`~`) normalize
+        // the same way, with `~` carried as a leading component.
+        PathKind::Abs | PathKind::Home => {
+            normalize_path(std::path::Path::new(&text))
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))))
+}
+
+/// Which kind of interpolatable path literal — governs how the
+/// concatenated text is finally resolved.
+#[derive(Clone, Copy)]
+enum PathKind {
+    Abs,
+    Rel,
+    Home,
 }
 
 /// Evaluate an attribute name, requiring non-null.
@@ -3417,6 +3522,82 @@ mod tests {
         assert_eq!(ev("/nix/store/abc"), Value::Path(Box::new(SmolStr::from("/nix/store/abc"))));
         // Home path
         assert_eq!(ev("~/myfile"), Value::Path(Box::new(SmolStr::from("~/myfile"))));
+    }
+
+    // ── Interpolated path literals (cid-marquee root, 2026-07-12) ──
+    //
+    // CppNix path literals may contain `${e}` antiquotations: `./${x}.nix`,
+    // `/a/${e}`, `~/${e}`. sui previously flattened the whole path token to
+    // raw text and dropped the interpolation (`import ./${x}.nix` →
+    // `No such file or directory`). The `${e}` must be evaluated,
+    // string-coerced (plain, no copy-to-store), spliced, and the result is
+    // still a `path` value. Oracles taken from cppnix.
+
+    #[test]
+    fn interp_path_abs_splices_and_types_path() {
+        // /a/${x}/b with x="foo" → /a/foo/b, type path (nix oracle).
+        let v = ev(r#"let x = "foo"; in /a/${x}/b"#);
+        assert_eq!(v, Value::Path(Box::new(SmolStr::from("/a/foo/b"))));
+    }
+
+    #[test]
+    fn interp_path_abs_multi_and_slash_in_value() {
+        // Multiple interpolations + a slash inside the spliced value.
+        assert_eq!(
+            ev(r#"let a = "x"; b = "y/z"; in /p/${a}/${b}.nix"#),
+            Value::Path(Box::new(SmolStr::from("/p/x/y/z.nix"))),
+        );
+    }
+
+    #[test]
+    fn interp_path_abs_normalizes_double_slash_seam() {
+        // A path-typed interpolation splices the raw path (no copy-to-store)
+        // and the `/` seam is normalized: `/bar/` + `/tmp/foo` → /bar/tmp/foo.
+        assert_eq!(
+            ev(r#"/bar/${/tmp/foo}"#),
+            Value::Path(Box::new(SmolStr::from("/bar/tmp/foo"))),
+        );
+    }
+
+    #[test]
+    fn interp_path_rel_resolves_against_eval_dir() {
+        // The spicetify `map (x: ./${x}.nix) [...]` root: a relative
+        // interpolated path resolves against the defining file's directory,
+        // exactly like a plain `./foo.nix` literal.
+        let _g = push_eval_file(std::path::PathBuf::from("/tmp/example/default.nix"));
+        assert_eq!(
+            ev(r#"let x = "foo"; in ./${x}.nix"#),
+            Value::Path(Box::new(SmolStr::from("/tmp/example/foo.nix"))),
+        );
+    }
+
+    #[test]
+    fn interp_path_rel_no_eval_dir_keeps_relative_text() {
+        // With no eval-file context the plain branch keeps the raw relative
+        // text; the interpolated branch splices then does the same.
+        assert_eq!(
+            ev(r#"let x = "foo"; in ./${x}.nix"#),
+            Value::Path(Box::new(SmolStr::from("./foo.nix"))),
+        );
+    }
+
+    #[test]
+    fn interp_path_home_splices_leading_tilde_preserved() {
+        // Home paths splice their `${e}`; the leading `~` is carried as-is
+        // (matching sui's plain `~/foo` behavior — `~`-expansion is a
+        // separate, pre-existing concern, not introduced here).
+        assert_eq!(
+            ev(r#"let x = "foo"; in ~/${x}/bar"#),
+            Value::Path(Box::new(SmolStr::from("~/foo/bar"))),
+        );
+    }
+
+    #[test]
+    fn interp_path_non_interpolated_still_raw() {
+        // A path with no `${…}` must keep the trivial raw-text shortcut
+        // (byte-for-byte identical to the plain branch).
+        assert_eq!(ev("/a/b/c"), Value::Path(Box::new(SmolStr::from("/a/b/c"))));
+        assert_eq!(ev("~/plain"), Value::Path(Box::new(SmolStr::from("~/plain"))));
     }
 
     #[test]
