@@ -33,6 +33,9 @@ pub mod trace;
 pub mod value;
 /// Lazy evaluation primitives — making accidental eagerness impossible.
 pub mod lazy;
+/// Import-from-derivation: realize a derivation output mid-eval via a
+/// binary-installed hook (the pure evaluator owns no build pipeline).
+pub mod realize;
 
 /// Re-export flake lock types from sui-compat where they canonically live.
 pub mod flake {

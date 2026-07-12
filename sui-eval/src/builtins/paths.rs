@@ -39,7 +39,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // so that `builtins.readFile (builtins.toFile name content)`
     // round-trips even when the operator isn't a nixbld user.
     register_builtin(builtins, "readFile", |args| {
-        let path = args[0].coerce_to_path("readFile")?;
+        // `coerce_to_realized_path` triggers import-from-derivation: reading a
+        // file under a derivation's `outPath` realizes that output first.
+        let path = args[0].coerce_to_realized_path("readFile")?;
         let contents = read_file_with_tofile_fallback(&path)
             .map_err(|e| EvalError::IoError { context: "readFile".into(), message: e.to_string() })?;
         Ok(Value::string(contents))
@@ -65,7 +67,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     register_builtin(builtins, "readDir", |args| {
-        let path_str = crate::path::materialize_str(&args[0].coerce_to_path("readDir")?);
+        // IFD: reading a directory under a derivation's `outPath` realizes it.
+        let path_str = crate::path::materialize_str(&args[0].coerce_to_realized_path("readDir")?);
         let mut attrs = NixAttrs::new();
         for entry in std::fs::read_dir(&path_str)
             .map_err(|e| EvalError::IoError { context: "readDir".into(), message: e.to_string() })?
@@ -101,9 +104,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::Path(Box::new(SmolStr::from(s))))
     });
 
-    // pathExists
+    // pathExists — cppnix REALIZES a derivation argument (verified: `nix eval
+    // 'builtins.pathExists "${drv}"'` builds the drv, then returns true), so a
+    // derivation coercion goes through the IFD-aware helper.
     register_builtin(builtins, "pathExists", |args| {
-        let path_str = crate::path::materialize_str(&args[0].coerce_to_path("pathExists")?);
+        let path_str = crate::path::materialize_str(&args[0].coerce_to_realized_path("pathExists")?);
         Ok(Value::Bool(std::path::Path::new(&path_str).exists()))
     });
 
@@ -125,7 +130,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             .get("path")
             .ok_or_else(|| EvalError::AttrNotFound("path".into()))?;
         let path_forced = crate::eval::force_value(path_val)?;
-        let path_str = path_forced.coerce_to_path("path")?;
+        // IFD: `builtins.path { path = <drv>; }` realizes the derivation output
+        // before NAR-hashing the source tree.
+        let path_str = path_forced.coerce_to_realized_path("path")?;
 
         // Absolutize (relative literals resolve against the evaluating
         // file's dir, matching CppNix's parse-time absolutization) then

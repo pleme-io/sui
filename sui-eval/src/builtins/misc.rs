@@ -91,7 +91,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // scopedImport
     register_curried(builtins, "scopedImport", |scope_val, path_val| {
         let scope = scope_val.to_attrs()?.clone();
-        let raw_path = path_val.coerce_to_path("scopedImport")?;
+        // IFD: `scopedImport … <drv>` realizes the derivation output before read.
+        let raw_path = path_val.coerce_to_realized_path("scopedImport")?;
         let resolved = crate::path::resolve_import(
             crate::eval::current_eval_dir().as_deref(),
             &raw_path,
@@ -143,7 +144,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // import
     register_builtin(builtins, "import", |args| {
         crate::perf::inc(crate::perf::Counter::Import);
-        let raw_path = args[0].coerce_to_path("import")?;
+        // IFD: `import <drv>` realizes the derivation output before reading it.
+        // This is the marquee darwin root — `import ishou.stylix-fonts` (a
+        // `runCommand` derivation) demands its built output mid-eval.
+        let raw_path = args[0].coerce_to_realized_path("import")?;
         let resolved = crate::path::resolve_import(
             crate::eval::current_eval_dir().as_deref(),
             &raw_path,

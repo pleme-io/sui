@@ -5269,6 +5269,8 @@ async fn main() -> Result<(), CliError> {
                     .name("sui-eval".into())
                     .stack_size(256 * 1024 * 1024) // 256MB
                     .spawn(move || -> Result<(), CliError> {
+                        // IFD: reads of a derivation output mid-eval realize it.
+                        let _ifd_guard = install_ifd_hook();
                         let value = sui_eval::eval(&expr_clone)?;
                         if json_flag {
                             println!("{}", serde_json::to_string(&value.to_json())?);
@@ -5291,6 +5293,10 @@ async fn main() -> Result<(), CliError> {
                     .name("sui-vm-eval".into())
                     .stack_size(256 * 1024 * 1024) // 256MB
                     .spawn(move || -> Result<(), CliError> {
+                // IFD: reads of a derivation output mid-eval realize it. Installed
+                // on the VM thread too — VM builtin reads bridge to the tree-walker,
+                // which shares this thread-local hook.
+                let _ifd_guard = install_ifd_hook();
                 // Install flake resolver so VM getFlake delegates to tree-walker.
                 let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
                     let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
@@ -6058,6 +6064,118 @@ async fn open_store() -> Result<LocalStore, CliError> {
             path: NIX_DB_PATH,
             source: e,
         })
+}
+
+// ── Import-from-derivation (IFD) realize hook ───────────────────
+//
+// The pure evaluator (`sui-eval`) owns no build pipeline; when it needs a
+// derivation's output on disk mid-eval (an `import`/`readFile`/`readDir`/
+// `pathExists`/`builtins.path` of a derivation — e.g. the darwin toplevel
+// importing `ishou.stylix-fonts`, a `runCommand` drv), it invokes a
+// thread-local realize hook the binary installs. The binary owns the store,
+// substitutor, builder, sandbox, and a tokio runtime — everything the async
+// realize pipeline needs — so orchestration stays out of the evaluator.
+//
+// The pipeline is built lazily inside the eval thread on the *first* IFD demand
+// (opening the store `open_rw` is privileged; a pure eval that never hits IFD
+// must not require it), then reused for every subsequent realize on that
+// thread.
+
+/// The lazily-built, per-eval-thread realize infrastructure.
+struct IfdRealizer {
+    rt: tokio::runtime::Runtime,
+    builder: sui_build::LocalBuilder,
+    substitutor: Substitutor,
+}
+
+thread_local! {
+    /// Per-thread lazily-initialized realizer. `Ok(None)` = not yet built;
+    /// `Ok(Some(_))` = built and ready; a build error surfaces per-call so the
+    /// first failure to open the store doesn't poison later attempts on a
+    /// different thread.
+    static IFD_REALIZER: std::cell::RefCell<Option<IfdRealizer>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Build the IFD realize pipeline (store + substitutor + builder + a
+/// current-thread tokio runtime). Called once per eval thread on the first IFD
+/// demand.
+fn build_ifd_realizer() -> Result<IfdRealizer, String> {
+    use sui_build::{sandbox, LocalBuilder};
+
+    // A current-thread runtime is enough — realize is a synchronous
+    // block-on-one-closure from the (non-async) eval thread.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("ifd runtime: {e}"))?;
+
+    let store = rt
+        .block_on(sui_store::LocalStore::open_rw(NIX_DB_PATH))
+        .map_err(|e| format!("ifd store open ({NIX_DB_PATH}): {e}"))?;
+    let store: Arc<dyn sui_store::Store> = Arc::new(store);
+
+    let caches = sui_orchestrate::build_caches(&sui_orchestrate::get_substituters());
+    let substitutor = Substitutor::new(store.clone(), caches);
+
+    #[cfg(target_os = "macos")]
+    let sandbox: Box<dyn sandbox::Sandbox> = Box::new(sandbox::DarwinSandbox::new());
+    #[cfg(not(target_os = "macos"))]
+    let sandbox: Box<dyn sandbox::Sandbox> = Box::new(sandbox::LinuxSandbox::new());
+
+    let builder = LocalBuilder::new(store, sandbox);
+
+    Ok(IfdRealizer { rt, builder, substitutor })
+}
+
+/// Realize one derivation output: substitute-then-build its closure until the
+/// `.drv`'s outputs are present on disk. Byte-parity-safe: the drvPath is
+/// computed by the evaluator's module fixpoint (already byte-identical to nix),
+/// so the realized output is byte-identical to nix's.
+fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
+    use sui_build::BuildClosure;
+
+    IFD_REALIZER.with(|cell| {
+        // Lazily build the pipeline on first demand.
+        if cell.borrow().is_none() {
+            let realizer = build_ifd_realizer()?;
+            *cell.borrow_mut() = Some(realizer);
+        }
+        let borrow = cell.borrow();
+        let realizer = borrow.as_ref().expect("realizer built above");
+
+        let closure = BuildClosure::compute(drv_path)
+            .map_err(|e| format!("closure {drv_path}: {e}"))?;
+        let result = realizer
+            .rt
+            .block_on(
+                realizer
+                    .builder
+                    .build_closure(&closure, Some(&realizer.substitutor)),
+            )
+            .map_err(|e| format!("build {drv_path}: {e}"))?;
+        if !result.success {
+            return Err(format!("build failed for {drv_path}:\n{}", result.log));
+        }
+
+        // Verify the demanded output is now present — a build/substitute that
+        // "succeeded" but didn't produce this path is a real error, not a
+        // silent pass.
+        let read_path = sui_eval::path::materialize_str(out_path);
+        if !std::path::Path::new(&read_path).exists() {
+            return Err(format!(
+                "realized {drv_path} but expected output {out_path} is still absent on disk"
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// Install the IFD realize hook on the current (eval) thread. Returns the guard
+/// that uninstalls it on drop. Call inside the eval thread, before eval runs.
+#[must_use]
+fn install_ifd_hook() -> sui_eval::realize::RealizeHookGuard {
+    sui_eval::realize::install_realize_hook(Box::new(ifd_realize))
 }
 
 /// Resolve a flake directory from an optional CLI argument.
