@@ -75,6 +75,19 @@ pub enum DaemonRealizeError {
     /// A `.drv` in the closure could not be located on disk to hand to the daemon.
     #[error("derivation {0} not present on disk (neither /nix/store nor the sui-drv-cache fallback)")]
     DrvMissing(String),
+    /// The realize did not complete within its wall-clock bound. A daemon
+    /// `BuildPaths` is external, non-cancellable I/O (it may substitute or build
+    /// an arbitrarily large closure); if it exceeds the bound — because the
+    /// output store path never becomes valid (a sui↔nix path divergence: the
+    /// path exists on no cache and cannot be built), or a substituter stalls —
+    /// the realize is aborted with this typed error rather than blocking the
+    /// evaluator forever. See [`realize_via_daemon_bounded`].
+    #[error(
+        "daemon realize of {drv} → {out} exceeded its {bound_secs}s bound \
+         (output never became valid — likely a sui↔nix output-path divergence \
+         or a stalled substituter; NOT a hang)"
+    )]
+    Timeout { drv: String, out: String, bound_secs: u64 },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,6 +353,51 @@ pub async fn realize_via_daemon(
     let valid = conn.is_valid_path(out_root).await?;
     let nar = if valid { conn.query_nar_hash(out_root).await.ok().flatten() } else { None };
     Realized::attested(drv_path, out_path, valid, nar)
+}
+
+/// Realize `drv_path`'s output `out_path` through the daemon **within a
+/// wall-clock bound** — the bounded-realize seal.
+///
+/// [`realize_via_daemon`] can block indefinitely inside `BuildPaths`: the daemon
+/// substitutes-or-builds an arbitrarily large closure, and if the demanded
+/// output path never becomes valid (a sui↔nix output-path divergence — the path
+/// exists on no configured cache and its `.drv` cannot be built) the daemon may
+/// stall waiting on a substituter or spend unbounded time trying to build it. In
+/// the IFD-during-eval setting that blocks the *evaluator*, which is exactly the
+/// full-cid-eval hang.
+///
+/// This wrapper makes the hang **unrepresentable at the realize boundary**: the
+/// call either resolves (a `Realized` proof or a typed daemon error) or, on
+/// elapse of `bound`, returns [`DaemonRealizeError::Timeout`]. There is no code
+/// path that returns neither within `bound`.
+///
+/// # Tier
+///
+/// The bound is an **only-mitigated C5 ceiling** (non-transactional, external,
+/// non-cancellable daemon I/O — a wall-clock bound is the correct terminal
+/// answer, not a compile error). It composes with the *parse-time-rejected*
+/// [`DaemonRealizeError::OutputAbsent`] seal: when the daemon build finishes but
+/// the output is invalid, that stronger seal fires first; the timeout is the
+/// floor for the case where the build never finishes at all.
+///
+/// # Errors
+///
+/// [`DaemonRealizeError::Timeout`] on elapse; otherwise any error
+/// [`realize_via_daemon`] surfaces.
+pub async fn realize_via_daemon_bounded(
+    store: &DaemonStore,
+    drv_path: &str,
+    out_path: &str,
+    bound: std::time::Duration,
+) -> Result<Realized, DaemonRealizeError> {
+    match tokio::time::timeout(bound, realize_via_daemon(store, drv_path, out_path)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(DaemonRealizeError::Timeout {
+            drv: drv_path.to_string(),
+            out: out_path.to_string(),
+            bound_secs: bound.as_secs(),
+        }),
+    }
 }
 
 /// Extract the store-path ROOT (`/nix/store/<hash>-<name>`) from a possibly-
@@ -855,6 +913,48 @@ mod tests {
         assert_eq!(store_path_root("/nix/store/abc-name"), "/nix/store/abc-name");
         // A non-store path is returned unchanged.
         assert_eq!(store_path_root("/tmp/whatever/x"), "/tmp/whatever/x");
+    }
+
+    #[tokio::test]
+    async fn bounded_realize_times_out_on_a_stalled_daemon() {
+        // A listener that ACCEPTS the connection but NEVER replies to the
+        // handshake models the stall the bound seals: the realize future blocks
+        // in `read_exact` forever. The bound must convert that into a typed
+        // `Timeout`, never an unbounded hang.
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("stall.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        // Hold the accepted stream so the OS keeps the connection open (silent).
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                // Park the connection open; never write a byte back.
+                let _held = stream;
+                std::future::pending::<()>().await;
+            }
+        });
+
+        let store = DaemonStore::at(sock).expect("socket exists");
+        let start = std::time::Instant::now();
+        let bound = std::time::Duration::from_millis(150);
+        let err = realize_via_daemon_bounded(
+            &store,
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-x.drv",
+            "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-x",
+            bound,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, DaemonRealizeError::Timeout { bound_secs: 0, .. }),
+            "expected a Timeout (bound_secs=0 for a sub-second bound), got: {err:?}"
+        );
+        // The bound is honored: we returned promptly, not after a real hang.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "bounded realize must return near its bound, took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
