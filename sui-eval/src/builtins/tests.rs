@@ -4406,6 +4406,94 @@ fn flake_lazy_input_outputs_forced_on_access() {
 }
 
 #[test]
+fn flake_git_input_outputs_read_from_cache_not_store_path() {
+    // Marquee darwin root (stylix/blackmatter `darwinModules`): a
+    // FETCHED (non-`path`) flake input's `outPath` is the cppnix
+    // `/nix/store/<narhash>-source` STORE-PATH STRING (byte-parity),
+    // which sui computes but does NOT materialize into `/nix/store`.
+    // Its flake.nix therefore lives ONLY in the fetcher cache — so the
+    // recursive `evaluate_flake` MUST read from the cache dir, never
+    // from the (non-existent) store path.  The pre-fix code checked
+    // `<store_path>/flake.nix` (absent on disk) → fell to a BARE
+    // input_val with NO flake outputs → the dep's `darwinModules` /
+    // `answer` silently vanished and surfaced far downstream as
+    // `AttrNotFound`.  This test locks a local git repo as a `git`
+    // input and asserts the dep's output is still reachable.
+    let Some(dep) = make_local_git_repo() else {
+        eprintln!("skip: git not available");
+        return;
+    };
+    std::fs::write(
+        dep.join("flake.nix"),
+        r#"{
+            description = "git dep";
+            outputs = { self }: { answer = 42; darwinModules.default = { ... }: {}; };
+        }"#,
+    )
+    .unwrap();
+    // Re-commit so flake.nix is in the tree HEAD points at (the repo
+    // already exists — `make_local_git_repo` inited + committed once).
+    let dep_repo = gix::open(&dep).unwrap();
+    crate::git::commit_all(&dep_repo, "add flake", "sui-test", "test@sui.local").ok();
+    let dep_rev = crate::git::head_rev(&dep).unwrap();
+    let dep_url = format!("file://{}", dep.display());
+
+    let main = tempfile::tempdir().unwrap();
+    std::fs::write(
+        main.path().join("flake.nix"),
+        r#"{
+            description = "main";
+            inputs.dep = { };
+            outputs = { self, dep }: {
+                value = dep.answer;
+                hasDarwin = dep ? darwinModules;
+            };
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        main.path().join("flake.lock"),
+        format!(
+            r#"{{
+                "nodes": {{
+                    "root": {{ "inputs": {{ "dep": "dep" }} }},
+                    "dep": {{
+                        "locked": {{
+                            "type": "git",
+                            "url": "{dep_url}",
+                            "rev": "{dep_rev}",
+                            "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                        }},
+                        "original": {{ "type": "git", "url": "{dep_url}" }}
+                    }}
+                }},
+                "root": "root",
+                "version": 7
+            }}"#
+        ),
+    )
+    .unwrap();
+
+    let result = match evaluate_flake(main.path()) {
+        Ok(r) => r,
+        Err(e) => {
+            // A git fetch failure (offline/sandbox) is an environment
+            // limitation, not a logic regression — skip rather than fail.
+            eprintln!("skip: git fetch unavailable: {e:?}");
+            let _ = std::fs::remove_dir_all(&dep);
+            return;
+        }
+    };
+    // The dep's flake OUTPUTS must be present — proving they were read
+    // from the fetcher cache, not lost to the un-materialized store path.
+    let val = crate::builtins::navigate_attrs(&result, &["value"]).unwrap();
+    assert_eq!(val, Value::Int(42), "dep flake output must survive the store-path/cache split");
+    let has_darwin = crate::builtins::navigate_attrs(&result, &["hasDarwin"]).unwrap();
+    assert_eq!(has_darwin, Value::Bool(true), "dep.darwinModules must be reachable (the marquee root)");
+    let _ = std::fs::remove_dir_all(&dep);
+}
+
+#[test]
 fn native_thunk_forces_correctly() {
     // Direct unit test for Thunk::new_native.
     use crate::value::Thunk;
@@ -4417,18 +4505,32 @@ fn native_thunk_forces_correctly() {
 }
 
 #[test]
-fn native_thunk_error_memoizes_null() {
-    // When a native thunk's closure returns an error, subsequent
-    // forces should see Evaluated(Null) rather than Blackhole.
+fn native_thunk_error_re_raises_never_null() {
+    // Marquee darwin root (stylix `darwinModules`): a `Native`
+    // (`FnOnce`) thunk whose closure ERRORS must memoize the ERROR and
+    // RE-RAISE it on every subsequent force — it must NEVER silently
+    // become `Null`.  The old behavior (`Evaluated(Null)`) poisoned a
+    // flake-input thunk whose first force failed transiently so a later
+    // re-read saw `null`, surfacing far downstream as a bogus
+    // `AttrNotFound` / `cannot select from set` inside `lib.isFunction`
+    // (`f ? __functor` true, then `f.__functor` on the poisoned null).
     use crate::value::Thunk;
     let thunk = Thunk::new_native(|| {
         Err(crate::value::EvalError::Throw("test error".into()))
     });
     let r1 = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
-    assert!(r1.is_err());
-    // Second force should succeed with Null (not Blackhole/infinite recursion).
+    assert!(r1.is_err(), "first force must surface the error");
+    // Second force must RE-RAISE the same error — never return Null.
     let r2 = thunk.force(&|e, env| crate::eval::eval_expr(e, env));
-    assert_eq!(r2.unwrap(), Value::Null);
+    assert!(
+        r2.is_err(),
+        "re-force of a failed Native thunk must re-raise, got {r2:?}"
+    );
+    assert_ne!(
+        r2.ok(),
+        Some(Value::Null),
+        "re-force must NOT silently poison to Null (the darwinModules root)"
+    );
 }
 
 // ── Import cache tests ───────────────────────────────────

@@ -757,6 +757,17 @@ pub enum ThunkRepr {
     /// completes, the cell is replaced with the final value and
     /// the repr transitions to `Evaluated`.
     Promise(Rc<RefCell<Value>>),
+    /// A `Native` (`FnOnce`) thunk whose closure already ran and
+    /// FAILED.  The closure is consumed and cannot be retried, so we
+    /// memoize the error itself and re-raise it on every subsequent
+    /// force.  This is the correctness-preserving replacement for the
+    /// old `Evaluated(Null)` poisoning: a thunk that threw on its first
+    /// force MUST NOT silently become `null` on a second read (which
+    /// turned a swallowed transient flake-input error into a bogus
+    /// `AttrNotFound`/`cannot select from set` far downstream — the
+    /// stylix `darwinModules` marquee root).  A re-force re-throws the
+    /// original error, exactly as cppnix re-throws a thunk that failed.
+    Failed(EvalError),
     /// Already evaluated and memoized.
     Evaluated(Box<Value>),
 }
@@ -1255,8 +1266,20 @@ impl Thunk {
                         Ok(value)
                     }
                     Err(e) => {
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(Value::Null));
-                        let _ = self.0.cache.set(Box::new(Concrete::Null));
+                        // The `FnOnce` closure is consumed and cannot be
+                        // retried.  Memoize the ERROR (not `Null`): a
+                        // re-force must re-raise, never silently return a
+                        // value the first force did not produce.  The old
+                        // `Evaluated(Null)` here poisoned a flake-input
+                        // thunk whose first force failed transiently
+                        // (e.g. a not-yet-cached transitive source) so a
+                        // later re-read saw `null` — surfacing as a bogus
+                        // downstream `AttrNotFound` /
+                        // `cannot select from set` (the stylix
+                        // `darwinModules` marquee root).  Do NOT populate
+                        // the OnceCell (there is no correct concrete value
+                        // to cache); the `Failed` repr arm re-raises.
+                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Failed(e.clone());
                         if tracing { crate::trace::dump_trace_on_error(); }
                         crate::trace::pop_force();
                         if tracing { crate::trace::trace_force_exit(); }
@@ -1441,6 +1464,15 @@ impl Thunk {
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(v);
                 Ok(cloned)
             }
+            ThunkRepr::Failed(e) => {
+                // A previously-forced `Native` thunk whose closure threw.
+                // Re-raise the memoized error — never fall through to a
+                // silent value.  Restore the repr (the outer
+                // `mem::replace` swapped in Blackhole/Promise).
+                let err = e.clone();
+                *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Failed(e);
+                Err(err)
+            }
         }
     }
 }
@@ -1455,6 +1487,7 @@ impl fmt::Debug for Thunk {
             ThunkRepr::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
             ThunkRepr::Promise(_) => write!(f, "<promise>"),
+            ThunkRepr::Failed(e) => write!(f, "<failed-thunk: {e}>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
         }
     }

@@ -95,9 +95,26 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
 
                 let mut input_val = NixAttrs::new();
 
+                // `out_path` is the cppnix `/nix/store/<narhash>-source`
+                // STORE-PATH STRING the input's `outPath`/`sourceInfo`
+                // must expose (byte-parity).  `read_dir` is the ACTUAL
+                // on-disk directory the tree lives at — the sui fetcher
+                // cache (`~/.cache/sui/inputs/…`) for a fetched input, or
+                // the literal path for a `type = "path"` input.  These two
+                // DIFFER for fetched inputs: sui computes the store-path
+                // string via `nar_hash_source_tree` but does NOT copy the
+                // tree into `/nix/store` at that path, so reading
+                // `flake.nix` / recursing via `evaluate_flake` MUST use
+                // `read_dir`, never `out_path` (the marquee darwin root
+                // that made every un-materialized transitive input —
+                // blackmatter-vpn, …-tailscale — silently drop its flake
+                // outputs and surface as `AttrNotFound("darwinModules")`).
+                let mut read_dir: Option<std::path::PathBuf> = None;
                 let out_path = if let Some(ref locked) = node.locked {
                     if locked.source_type == "path" {
-                        locked.path.clone().unwrap_or_default()
+                        let p = locked.path.clone().unwrap_or_default();
+                        read_dir = Some(std::path::PathBuf::from(&p));
+                        p
                     } else {
                         // Byte-parity root (marquee darwin proof, 2026-07-11):
                         // CppNix copies every fetched flake input tree INTO the
@@ -115,6 +132,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                         // `-source` store path.
                         match fetcher.fetch(locked) {
                             Ok(fetched_path) => {
+                                read_dir = Some(fetched_path.clone());
                                 match sui_compat::source::nar_hash_source_tree(
                                     &fetched_path,
                                     "source",
@@ -200,10 +218,20 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
 
                 let is_flake = node.flake.unwrap_or(true);
                 if is_flake {
-                    let input_dir = std::path::Path::new(&out_path);
-                    if input_dir.join("flake.nix").exists() {
+                    // Read `flake.nix` and recurse from the ACTUAL on-disk
+                    // tree (`read_dir` — the fetcher cache / literal path),
+                    // NOT the `out_path` STORE-PATH STRING which sui does
+                    // not materialize into `/nix/store`.  Fall back to
+                    // `out_path` only when it genuinely exists (e.g. a store
+                    // path already materialized by a prior real nix build).
+                    let eval_dir: std::path::PathBuf = match &read_dir {
+                        Some(d) if d.join("flake.nix").exists() => d.clone(),
+                        _ => std::path::PathBuf::from(&out_path),
+                    };
+                    let has_flake_nix = eval_dir.join("flake.nix").exists();
+                    if has_flake_nix {
                         let immediate = input_val;
-                        let dir = input_dir.to_path_buf();
+                        let dir = eval_dir;
                         let thunk = Thunk::new_native(move || {
                             let mut merged = immediate;
                             let flake_result = evaluate_flake(&dir)?;
