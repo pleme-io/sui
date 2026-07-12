@@ -4002,6 +4002,54 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).ffmpeg.drvPath"))
             })
         }),
+        // KNOWN DIVERGE (2026-07-12): neovim — un-blinded via SUI_PARITY_STRICT
+        // (the derivation.rs env-loop swallow collector, this session's M0). The
+        // `SUI_PARITY_STRICT` run named 4 dropped deps, all
+        // `UndefinedVar("'callPackage'")`, in the python2.7 build-hook drvs
+        // (pip-install-hook / setuptools-build-hook / python-catch-conflicts-hook).
+        // `parity-bisect` localizes the structural leaf to `pip-install-hook.drv`
+        // via `neovim → wl-clipboard → xdg-utils → resholve → pip-install-hook`,
+        // with nix carrying an inputDrv `python2.7-pip-20.3.4.drv` + an env key
+        // `propagatedBuildInputs` that sui drops.
+        //
+        // ROOT (localized, NOT yet closed): forcing `python27.pkgs.pip` (or any
+        // python27 package) throws `UndefinedVar(callPackage)` in sui while nix
+        // resolves it; `python3.pkgs.pip` is CLEAN. The python2.7 package set is
+        // the ONLY set that composes the extra `python2-packages.nix` overlay
+        // (`passthrufun.nix`: `optionalExtensions (!self.isPy3k) [ python2Extension ]`),
+        // whose body is `self: super: with self; with super; { pip = callPackage …; }`.
+        // So `callPackage` is a `with self;`-scoped var — the SAME class as the
+        // CLOSED `nettle` row below (bare-inherit/`with`-scope resolving eagerly)
+        // — but reached through the `lib.extends`/`composeManyExtensions`/
+        // `makeScopeWithSplicing'` extension-composition path rather than
+        // all-packages.nix's `with pkgs;`. A faithful in-isolation repro of the
+        // two-layer `self: super: with self;` overlay + fixpoint does NOT diverge
+        // in sui, so the trigger is a specific interaction in that composition
+        // path — closing it safely needs deeper work than a parity-safe single
+        // session, and a wrong touch to `lib.extends`/with-scope threading risks
+        // the 50+ green rows. Sealed KnownDiverge so a fix auto-graduates the
+        // gate and a further silent regression is caught. (ffmpeg, the sibling
+        // "open" package, is already CLOSED above — byte-identical, clean strict.)
+        (ParityProbe { name: "eval neovim drvPath (x86_64-linux)", description: "nixpkgs neovim — TRACKED: python2.7 build-hook `with self; callPackage` (python2Extension layer), sibling of the closed nettle root; un-blinded via SUI_PARITY_STRICT", expect: Expect::KnownDiverge }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).neovim.drvPath"))
+            })
+        }),
+        // NOTE: the LOAD-BEARING ROOT of the neovim divergence is isolated to
+        // `python27.pkgs.pip` throwing `UndefinedVar(callPackage)` in sui (nix →
+        // "python2.7-pip-20.3.4") — the python2Extension `with self; callPackage`
+        // layer. It is NOT added as its own corpus row because on that expr sui
+        // *errors* (an uncatchable `UndefinedVar`, not a value), which `diff_eval`
+        // classifies `SuiError` rather than `Diverge` — so it would neither seal
+        // as `tracked` nor fail the gate (a silent hole). The `neovim.drvPath`
+        // row above IS the tracked seal: sui produces a (divergent) drvPath there
+        // because the swallow drops the dep instead of propagating the throw, so
+        // it is a clean `Diverge` the gate tracks + auto-graduates on the fix.
         // CLOSED (2026-07-11): nettle — bottomed out at bare `inherit x`
         // resolving EAGERLY. all-packages.nix is
         // `with pkgs; { nettle = import … { inherit callPackage fetchurl; }; }`,
@@ -4309,6 +4357,52 @@ fn bisect_drv(
             trail.push(name);
             bisect_drv(&sp, &np, trail, depth + 1)
         }
+    }
+}
+
+/// Drain + emit the `SUI_PARITY_STRICT` un-blinding ledger to stderr.
+///
+/// No-op unless `SUI_PARITY_STRICT` is set (the collector only records then).
+/// Groups the swallowed force-error drops by drv → attr → force-error so a
+/// single strict `sui --no-vm eval <pkg>.drvPath` run names the exact stacked
+/// roots a diverging package hides behind the env-loop best-effort skip. This
+/// is an ENUMERATION instrument for the byte-parity campaign — it never changes
+/// the eval result, only surfaces what the swallow drops.
+fn report_parity_strict() {
+    use sui_eval::builtins::parity_strict::{self, DropSite};
+    if !parity_strict::enabled() {
+        return;
+    }
+    let drops = parity_strict::drain();
+    if drops.is_empty() {
+        eprintln!("[SUI_PARITY_STRICT] no swallowed force-error drops (clean eval)");
+        return;
+    }
+    // Dedup by (drv, attr, site, force_err), counting occurrences — a fixpoint
+    // re-entry can drop the same attr many times; the distinct set is the root
+    // list, the count is the multiplicity.
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<(String, String, &'static str), (usize, String)> = BTreeMap::new();
+    for d in &drops {
+        let site = match d.site {
+            DropSite::FlatEnv => "flat-env",
+            DropSite::StructuredAttrs => "structured-attrs",
+        };
+        let e = grouped
+            .entry((d.drv.clone(), d.attr.clone(), site))
+            .or_insert((0, d.force_err.clone()));
+        e.0 += 1;
+    }
+    eprintln!(
+        "[SUI_PARITY_STRICT] {} swallowed force-error drop(s), {} distinct (drv,attr,site):",
+        drops.len(),
+        grouped.len()
+    );
+    for ((drv, attr, site), (count, force_err)) in &grouped {
+        eprintln!(
+            "[SUI_PARITY_STRICT]   drv={drv} attr={attr} site={site} x{count}\n\
+             [SUI_PARITY_STRICT]     force-err: {force_err}"
+        );
     }
 }
 
@@ -5352,6 +5446,15 @@ async fn main() -> Result<(), CliError> {
                         } else {
                             println!("{value}");
                         }
+                        // SUI_PARITY_STRICT: un-blind the byte-parity campaign's
+                        // swallowed force-error drops (the derivation.rs env-loop
+                        // best-effort skips) accumulated during this eval. The
+                        // ledger is thread-local, so it MUST be drained on this
+                        // worker thread. Emitting it here means any
+                        // `sui --no-vm eval <expr>.drvPath` self-reports the
+                        // stacked roots a diverging package hides — with zero
+                        // change to the printed value above (default unchanged).
+                        report_parity_strict();
                         Ok(())
                     })
                     .expect("failed to spawn eval thread");

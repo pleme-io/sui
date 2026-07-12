@@ -21,6 +21,88 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 }
 
+/// `SUI_PARITY_STRICT` — the byte-parity campaign's M0 un-blinding collector.
+///
+/// The env-loop force-error swallow (both the flat-env and `__structuredAttrs`
+/// paths below) is DELIBERATELY a best-effort skip — surfacing it as a hard
+/// error regresses `libxcrypt` and a dozen clean value-diverges into aborts
+/// (measured; see the `NOTE (2026-07-10)` at the flat-env swallow). But the
+/// swallow HIDES stacked parity roots: a diverging package like ffmpeg/neovim
+/// shows up only as a generic "value diverges", never as the *named* dropped
+/// dependency + the force error that dropped it.
+///
+/// This collector un-blinds them **for enumeration only** — when
+/// `SUI_PARITY_STRICT` is set in the environment, each swallowed drop is
+/// recorded onto a thread-local ledger (drv name, attr key, whether it was the
+/// flat-env or structured-attrs path, the force-error string) INSTEAD OF being
+/// lost, while the `continue` behaviour stays byte-for-byte identical. A strict
+/// run therefore NAMES the exact roots a package stacks on, with zero change to
+/// the default drvPath outcome (the parity gate stays green).
+///
+/// Tier: this is an *enumeration instrument*, not an invariant seal — it makes
+/// the hidden roots observable so each can be closed at its load-bearing cause.
+pub mod parity_strict {
+    use std::cell::RefCell;
+
+    /// Which force-error swallow site dropped the dependency.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum DropSite {
+        /// The flat-env attr loop (`derivation.rs` NOTE 2026-07-10 swallow).
+        FlatEnv,
+        /// The `__structuredAttrs` `__json` attr loop.
+        StructuredAttrs,
+    }
+
+    /// One swallowed force-error: the drv whose env was being built, the attr
+    /// key that failed to force + coerce, the swallow site, and the force error.
+    #[derive(Clone, Debug)]
+    pub struct DroppedDep {
+        pub drv: String,
+        pub attr: String,
+        pub site: DropSite,
+        pub force_err: String,
+    }
+
+    thread_local! {
+        static LEDGER: RefCell<Vec<DroppedDep>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// True iff `SUI_PARITY_STRICT` is set — the ONLY gate. When false, `record`
+    /// is a no-op and the swallow behaves exactly as before (default unchanged).
+    #[inline]
+    pub fn enabled() -> bool {
+        std::env::var_os("SUI_PARITY_STRICT").is_some()
+    }
+
+    /// Record a swallowed force-error. No-op unless `enabled()`. Never changes
+    /// control flow at the call site — the caller still `continue`s.
+    pub fn record(drv: &str, attr: &str, site: DropSite, force_err: &str) {
+        if !enabled() {
+            return;
+        }
+        LEDGER.with(|l| {
+            l.borrow_mut().push(DroppedDep {
+                drv: drv.to_string(),
+                attr: attr.to_string(),
+                site,
+                force_err: force_err.to_string(),
+            })
+        });
+    }
+
+    /// Drain + return the accumulated drops (clears the ledger). Used by the
+    /// strict enumeration tooling after an eval to report the measured roots.
+    pub fn drain() -> Vec<DroppedDep> {
+        LEDGER.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    }
+
+    /// Non-destructive count of pending drops (for a quick "did the swallow
+    /// fire?" check without consuming the ledger).
+    pub fn len() -> usize {
+        LEDGER.with(|l| l.borrow().len())
+    }
+}
+
 /// The fully-computed drv, memoized behind the lazy `derivation` result's
 /// fields.  Produced once by `compute_full_drv` and shared by `drvPath` /
 /// `outPath` / every output / `all`.
@@ -167,7 +249,16 @@ fn construct_derivation(
             }
             let forced_v = match crate::eval::force_value(v) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_e) => {
+                    // SUI_PARITY_STRICT: un-blind the structured-attrs drop too.
+                    parity_strict::record(
+                        &name,
+                        &k,
+                        parity_strict::DropSite::StructuredAttrs,
+                        &format!("{_e:?}"),
+                    );
+                    continue;
+                }
             };
             // `__ignoreNulls` drops null attrs from the JSON too (every stdenv
             // mkDerivation sets it) — without this, a null attr like `userHook`
@@ -217,6 +308,15 @@ fn construct_derivation(
                     if std::env::var_os("SUI_DEBUG_DRV").is_some() {
                         eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} FORCE-ERR: {_e:?}");
                     }
+                    // SUI_PARITY_STRICT: un-blind this dropped dep for
+                    // enumeration. No-op unless strict; the `continue` below is
+                    // unchanged, so the default drvPath outcome is identical.
+                    parity_strict::record(
+                        &name,
+                        &k,
+                        parity_strict::DropSite::FlatEnv,
+                        &format!("{_e:?}"),
+                    );
                     continue;
                 }
             };
