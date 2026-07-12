@@ -280,6 +280,53 @@ impl FlakeLock {
             .ok_or(FlakeLockError::NodeNotFound(current_name))
     }
 
+    /// Resolve one edge of the input graph: given the *node name* of a flake
+    /// in the lock and the *input name* it declares, return the concrete node
+    /// name that input resolves to — walking any `follows` redirection.
+    ///
+    /// This is the load-bearing primitive for transitive-input resolution.
+    /// CppNix pins a flake's *entire* input closure in the ROOT lock's node
+    /// graph: a sub-flake's `inputs.substrate` edge is stored on `nodes[node]`
+    /// (as a direct node ref or a `follows` path rooted at the lock's root),
+    /// so the sub-flake's OWN `flake.lock` is irrelevant once the root lock
+    /// exists.  A consumer that recurses into the sub-flake and re-reads its
+    /// own lock resolves a *different* revision than nix (the sub-flake's
+    /// independent pin instead of the root's `follows` target).  Use this to
+    /// resolve every transitive input against the one authoritative graph.
+    pub fn resolve_node_input(
+        &self,
+        node_name: &str,
+        input_name: &str,
+    ) -> Result<String, FlakeLockError> {
+        let node = self
+            .nodes
+            .get(node_name)
+            .ok_or_else(|| FlakeLockError::NodeNotFound(node_name.to_string()))?;
+        let input_ref = node.inputs.get(input_name).ok_or_else(|| {
+            FlakeLockError::NodeNotFound(format!("{node_name}.inputs.{input_name}"))
+        })?;
+        self.resolve_ref(node_name, input_ref)
+    }
+
+    /// Return the resolved `(input_name, target_node_name)` pairs for a node,
+    /// in the lock's declaration order (BTreeMap ⇒ deterministic).
+    ///
+    /// Unresolvable edges (a `follows` into a missing sibling) are skipped —
+    /// the caller falls back to a stub input, matching the pre-existing
+    /// resolve-what-you-can behavior of `evaluate_flake`.
+    pub fn node_input_edges(&self, node_name: &str) -> Vec<(String, String)> {
+        let Some(node) = self.nodes.get(node_name) else {
+            return Vec::new();
+        };
+        let mut edges = Vec::new();
+        for input_name in node.inputs.keys() {
+            if let Ok(target) = self.resolve_node_input(node_name, input_name) {
+                edges.push((input_name.clone(), target));
+            }
+        }
+        edges
+    }
+
     /// Build an adjacency list representation of the full input graph.
     ///
     /// Returns `node_name -> [(input_name, resolved_target_node)]`.
@@ -601,6 +648,65 @@ mod tests {
         let node = lock.resolve_input(&["foo", "nixpkgs"]).unwrap();
         let locked = node.locked.as_ref().unwrap();
         assert_eq!(locked.owner.as_deref(), Some("nixos"));
+    }
+
+    // ── Transitive-input resolution (marquee darwin parity) ──
+    //
+    // These seal the byte-parity fix: a sub-flake's input, when
+    // redirected by a `follows` edge in the ROOT lock, must resolve to
+    // the follows TARGET (root's pin), NOT the sub-flake's own pin.  This
+    // is the `ishou.inputs.substrate = ["substrate"]` shape — sui must
+    // honor the root lock's node graph for every transitive input, never
+    // re-read the sub-flake's own `flake.lock`.
+
+    #[test]
+    fn resolve_node_input_follows_lands_on_root_target() {
+        let lock = FlakeLock::parse(follows_lock_json()).unwrap();
+        // `utils.inputs.nixpkgs = ["nixpkgs"]` (a follows edge into root's
+        // nixpkgs) — resolving the (node, input) edge directly must return
+        // the root `nixpkgs` node, not some utils-local pin.
+        let target = lock.resolve_node_input("utils", "nixpkgs").unwrap();
+        assert_eq!(target, "nixpkgs");
+        // `utils.inputs.systems = "systems"` (a direct ref) resolves to itself.
+        let target = lock.resolve_node_input("utils", "systems").unwrap();
+        assert_eq!(target, "systems");
+    }
+
+    #[test]
+    fn node_input_edges_resolves_follows_for_subflake() {
+        let lock = FlakeLock::parse(follows_lock_json()).unwrap();
+        let mut edges = lock.node_input_edges("utils");
+        edges.sort();
+        assert_eq!(
+            edges,
+            vec![
+                ("nixpkgs".to_string(), "nixpkgs".to_string()),
+                ("systems".to_string(), "systems".to_string()),
+            ],
+            "utils' follows edge must resolve to the ROOT nixpkgs node graph"
+        );
+    }
+
+    #[test]
+    fn node_input_edges_deep_follows_chain() {
+        // bar.inputs.nixpkgs = ["foo","nixpkgs"] → root→foo→nixpkgs → root's
+        // nixpkgs.  The whole redirection chain lives in the ROOT lock; a
+        // transitive consumer must walk it, not read bar's own lock.
+        let lock = FlakeLock::parse(deep_follows_json()).unwrap();
+        let target = lock.resolve_node_input("bar", "nixpkgs").unwrap();
+        assert_eq!(target, "nixpkgs");
+    }
+
+    #[test]
+    fn node_input_edges_unknown_node_is_empty() {
+        let lock = FlakeLock::parse(follows_lock_json()).unwrap();
+        assert!(lock.node_input_edges("does-not-exist").is_empty());
+    }
+
+    #[test]
+    fn resolve_node_input_unknown_input_errors() {
+        let lock = FlakeLock::parse(follows_lock_json()).unwrap();
+        assert!(lock.resolve_node_input("utils", "ghost").is_err());
     }
 
     // ── Adjacency map ───────────────────────────────────

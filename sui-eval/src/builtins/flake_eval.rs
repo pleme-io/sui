@@ -11,13 +11,48 @@ thread_local! {
 
 pub(crate) const MAX_FLAKE_EVAL_DEPTH: u32 = 50;
 
+/// The authoritative lock context threaded through transitive-input
+/// resolution.  Holds the ROOT flake's lock (shared, immutable) plus the
+/// *node name* of the flake currently being evaluated.
+///
+/// CppNix pins a flake's ENTIRE transitive input closure in the root lock's
+/// node graph and passes each sub-flake its inputs as resolved by THAT graph
+/// (walking `follows`), never letting a sub-flake re-resolve from its own
+/// `flake.lock`.  Threading this context is what makes sui's transitive
+/// resolution byte-identical to nix — the marquee root cause where sui read
+/// `ishou`'s own lock (`substrate = fcd35143…`) instead of honoring the root
+/// lock's `ishou.inputs.substrate = ["substrate"]` follows edge (→ root's
+/// `substrate_5 = b2802c62…`), diverging every downstream drvPath.
+#[derive(Clone)]
+struct FlakeContext {
+    lock: std::rc::Rc<sui_compat::flake::FlakeLock>,
+    /// Node name of the flake at `flake_dir` in `lock`'s node graph.
+    node_name: String,
+}
+
 /// Evaluate a flake directory — reads flake.nix, parses flake.lock, resolves
 /// inputs, calls `outputs(inputs)`, and returns the merged result attrset.
 ///
 /// This is the native implementation of `builtins.getFlake` for path-based
 /// references.  External callers (orchestrate, CLI) can use this to evaluate
 /// a local flake without shelling out to `nix eval`.
+///
+/// This is the ROOT entrypoint: it reads `flake_dir/flake.lock` as the
+/// authoritative closure and evaluates from its root node.  Transitive inputs
+/// are resolved against THIS lock (see [`FlakeContext`]), never their own.
 pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
+    evaluate_flake_ctx(flake_dir, None)
+}
+
+/// Depth-guarded flake evaluation with an optional inherited lock context.
+///
+/// `ctx = None` ⇒ the ROOT flake: read `flake_dir/flake.lock`.
+/// `ctx = Some(_)` ⇒ a transitive input: resolve its inputs from the inherited
+/// root lock at the given node name; the sub-flake's own lock is ignored.
+fn evaluate_flake_ctx(
+    flake_dir: &std::path::Path,
+    ctx: Option<FlakeContext>,
+) -> Result<Value, EvalError> {
     let depth = FLAKE_EVAL_DEPTH.with(|d| {
         let mut d = d.borrow_mut();
         *d += 1;
@@ -34,12 +69,15 @@ pub fn evaluate_flake(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
         ));
     }
 
-    let result = evaluate_flake_inner(flake_dir);
+    let result = evaluate_flake_inner(flake_dir, ctx);
     FLAKE_EVAL_DEPTH.with(|d| *d.borrow_mut() -= 1);
     result
 }
 
-fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError> {
+fn evaluate_flake_inner(
+    flake_dir: &std::path::Path,
+    ctx: Option<FlakeContext>,
+) -> Result<Value, EvalError> {
     let flake_nix = flake_dir.join("flake.nix");
     let flake_lock_path = flake_dir.join("flake.lock");
 
@@ -61,35 +99,50 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
         .clone();
     let outputs_fn = crate::eval::force_value(&outputs_value)?;
 
-    // 3. Parse flake.lock if it exists.
-    let lock = if flake_lock_path.exists() {
-        let lock_content = std::fs::read_to_string(&flake_lock_path).map_err(|e| {
-            EvalError::IoError {
-                context: format!("getFlake: {}", flake_lock_path.display()),
-                message: e.to_string(),
+    // 3. Establish the authoritative lock context.
+    //
+    // ROOT invocation (`ctx = None`): read THIS dir's flake.lock — it is the
+    // authoritative closure for the whole tree.  TRANSITIVE invocation
+    // (`ctx = Some`): INHERIT the root lock + this input's node name; the
+    // sub-flake's own flake.lock is deliberately NOT read (that was the
+    // divergence — a sub-flake re-resolving its inputs from its own pins
+    // instead of the root lock's `follows`-redirected node graph).
+    let (lock, current_node): (Option<std::rc::Rc<sui_compat::flake::FlakeLock>>, String) =
+        match &ctx {
+            Some(c) => (Some(c.lock.clone()), c.node_name.clone()),
+            None => {
+                if flake_lock_path.exists() {
+                    let lock_content =
+                        std::fs::read_to_string(&flake_lock_path).map_err(|e| {
+                            EvalError::IoError {
+                                context: format!("getFlake: {}", flake_lock_path.display()),
+                                message: e.to_string(),
+                            }
+                        })?;
+                    let parsed = sui_compat::flake::FlakeLock::parse(&lock_content).map_err(
+                        |e| EvalError::TypeError(format!("getFlake: invalid flake.lock: {e}")),
+                    )?;
+                    let root = parsed.root.clone();
+                    (Some(std::rc::Rc::new(parsed)), root)
+                } else {
+                    (None, String::new())
+                }
             }
-        })?;
-        Some(
-            sui_compat::flake::FlakeLock::parse(&lock_content)
-                .map_err(|e| EvalError::TypeError(format!("getFlake: invalid flake.lock: {e}")))?,
-        )
-    } else {
-        None
-    };
+        };
 
     // 3b. Create the content-addressed input fetcher.
     let fetcher = crate::fetcher::InputFetcher::new();
 
-    // 4. Resolve every direct input.
+    // 4. Resolve every direct input of the CURRENT node against the root lock.
     let self_path = flake_dir.to_string_lossy().to_string();
     let mut resolved_inputs = NixAttrs::new();
 
-    if let Some(ref lock) = lock
-        && let Ok(root_node) = lock.root_node() {
-            let input_names: Vec<String> = root_node.inputs.keys().cloned().collect();
-            for input_name in input_names {
-                let segments = [input_name.as_str()];
-                let Ok(node) = lock.resolve_input(&segments) else {
+    if let Some(ref lock) = lock {
+            // Resolved `(input_name, target_node_name)` edges of the current
+            // node in the ROOT lock's graph — `follows` already redirected.
+            let edges = lock.node_input_edges(&current_node);
+            for (input_name, target_node_name) in edges {
+                let Some(node) = lock.nodes.get(&target_node_name) else {
                     continue;
                 };
 
@@ -250,9 +303,20 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                     if has_flake_nix {
                         let immediate = input_val;
                         let dir = eval_dir;
+                        // Recurse with the INHERITED root lock at the target
+                        // input's node name — never re-reading the sub-flake's
+                        // own flake.lock.  This is the byte-parity fix: the
+                        // sub-flake's transitive inputs resolve against the one
+                        // authoritative closure (with `follows` redirection),
+                        // exactly as CppNix does.
+                        let child_ctx = FlakeContext {
+                            lock: lock.clone(),
+                            node_name: target_node_name.clone(),
+                        };
                         let thunk = Thunk::new_native(move || {
                             let mut merged = immediate;
-                            let flake_result = evaluate_flake(&dir)?;
+                            let flake_result =
+                                evaluate_flake_ctx(&dir, Some(child_ctx.clone()))?;
                             if let Value::Attrs(ref flake_out_attrs) = flake_result {
                                 for (k, v) in flake_out_attrs.iter() {
                                     if !merged.contains_key(&k) {
