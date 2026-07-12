@@ -201,32 +201,48 @@ fn nix_repo_cid_drv_path() {
     }
 }
 
-// ── M2.6 regression — `lib.nixosSystem` infinite recursion ───────────
+// ── M2.6 regression — `lib.nixosSystem` full module set ──────────────
 //
 // Pins the operator-blocking failure documented in
-// `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.  `lib.nixosSystem` with empty
-// user modules diverges in the `_module.args.pkgs` ↔ `matchedOptions`
-// fix-point bootstrap.  When M2.6 closes, remove the `#[ignore]` and
-// the assertion flips: success becomes mandatory.
+// `docs/M2.6-MODULE-SYSTEM-FIXPOINT.md`.  Original symptom:
+// `lib.nixosSystem { modules = []; }` raised `InfiniteRecursion` in the
+// `_module.args.pkgs` ↔ `matchedOptions` bootstrap.  CLOSED 2026-07-11
+// via TWO byte-verified laziness fixes (roots #1–#3 sealed earlier):
 //
-// Marked `#[ignore]` so `cargo test` is green on main while M2.6 is
-// open; `cargo test --ignored` (or the rebuild sweep) reports it.
+//   ROOT #4a (over-force) — `with X; body` eagerly EVALUATED the
+//     namespace at `with`-entry (`eval.rs::eval_expr` With arm).  For
+//     nixpkgs' `config = mkIf … (with config.services.X; { … })` module
+//     shape, demanding the body's WHNF/keys during collection forced
+//     `config.services.X` mid-fixpoint → the empty-Promise partial →
+//     `concatLists null`.  Fixed by storing the namespace as a lazy
+//     thunk (`maybe_thunk`), forced only on a lookup fallthrough.
+//     Repro: `builtins.attrNames (with (throw "X"); { a = 1; })`.
+//
+//   ROOT #4b (dropped full-set leaf) — a depth-≥2 dotted binding whose
+//     leaf is a full-set (`options.hardware.alsa = { … }`) followed by a
+//     deeper dotted sibling (`options.hardware.alsa.enablePersistence =
+//     …`) merged to ONLY the deeper key, because `merge_nested_insert`
+//     required BOTH collision sides to be concrete `Value::Attrs` and a
+//     full-set leaf is a lazy `Thunk`.  Fixed by forcing the existing
+//     thunk to WHNF (fields stay lazy) before the deep merge.
+//     Repro: `builtins.attrNames { o.a = { x = 1; }; o.a.y = 2; }.o.a`.
+//
+// The assertion is now MANDATORY: `config.system.name` must be a real
+// string (`"nixos"`), byte-identical to cppnix.
 
-/// M2.6 — `lib.nixosSystem { modules = []; }` must terminate.
-///
-/// Today it raises `InfiniteRecursion`.  When sui-eval's option-merge
-/// stops forcing the `content` of `lib.mkOverride` wrappers while
-/// resolving priority (the suspected root cause per the M2.6 doc),
-/// this test should produce a short string like `"nixos"` and pass.
+/// M2.6 — `lib.nixosSystem { modules = []; }` must terminate and yield
+/// `config.system.name == "nixos"`.  Regression guard for ROOT #4a/#4b.
 #[test]
-#[ignore = "M2.6 — lib.nixosSystem fix-point diverges; remove ignore when fixed"]
 fn nixos_system_empty_modules_terminates() {
     if common::skip_if_offline("m2_6_regression") {
         return;
     }
-    let nixpkgs_dir = std::path::Path::new(
-        "/home/drzzln/.cache/sui/inputs/github-NixOS-nixpkgs-b77b3de/nixpkgs-b77b3de8775677f84492abe84635f87b0e153f0f",
+    // HOME-relative sui input cache (works on both macOS + Linux).
+    let home = std::env::var("HOME").unwrap_or_default();
+    let nixpkgs_owned = std::path::PathBuf::from(home).join(
+        ".cache/sui/inputs/github-NixOS-nixpkgs-b77b3de/nixpkgs-b77b3de8775677f84492abe84635f87b0e153f0f",
     );
+    let nixpkgs_dir = nixpkgs_owned.as_path();
     if !nixpkgs_dir.exists() {
         println!("skip: pinned nixpkgs source not in sui input cache");
         return;

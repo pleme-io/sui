@@ -491,5 +491,53 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── M2.6 ROOT #4a: `with` namespace stays LAZY ──────────────────────
+    // `with X; body` must NOT force X to compute the body's WHNF/keys —
+    // cppnix forces the namespace ONLY on a bare-ident lookup fallthrough.
+    // sui used to EVALUATE the namespace at `with`-entry, which for nixpkgs'
+    // `config = mkIf … (with config.services.X; { … })` module shape forced
+    // `config.services.X` mid-fixpoint during collection → the empty-Promise
+    // partial → `concatLists null`.  `attrNames (with (throw "X"); {a=1;b=2;})`
+    // must be `[ "a" "b" ]` (the throw never fires).
+    rows.push(row(
+        "with-namespace laziness — body WHNF does not force the namespace",
+        apply(
+            path(&["builtins", "attrNames"]),
+            vec![NixValue::Raw(
+                "(with (throw \"WITH-FORCED\"); { a = 1; b = 2; })".to_string(),
+            )],
+        ),
+        RowExpect::Match,
+    ));
+
+    // ── M2.6 ROOT #4b: depth-≥2 dotted full-set leaf deep-merges ────────
+    // `o.a = { x = 1; }` inserts `o = { a = <thunk {x=1}> }` (the full-set
+    // leaf goes through `maybe_thunk`); a deeper sibling `o.a.y = 2` must
+    // deep-merge into it, not overwrite.  sui's `merge_nested_insert`
+    // dropped the earlier leaf on a Thunk-vs-Attrs collision → nixpkgs'
+    // `options.hardware.alsa = { … }` + `options.hardware.alsa.enablePersistence
+    // = …` merged to only `{enablePersistence}`.  Both orderings must yield
+    // `[ "x" "y" ]`.
+    rows.push(row(
+        "dotted full-set leaf deep-merges with a deeper sibling (forward)",
+        apply(
+            path(&["builtins", "attrNames"]),
+            vec![NixValue::Raw(
+                "({ o.a = { x = 1; }; o.a.y = 2; }.o.a)".to_string(),
+            )],
+        ),
+        RowExpect::Match,
+    ));
+    rows.push(row(
+        "dotted full-set leaf deep-merges with a deeper sibling (reverse)",
+        apply(
+            path(&["builtins", "attrNames"]),
+            vec![NixValue::Raw(
+                "({ o.a.y = 2; o.a = { x = 1; }; }.o.a)".to_string(),
+            )],
+        ),
+        RowExpect::Match,
+    ));
+
     rows
 }

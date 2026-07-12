@@ -351,3 +351,49 @@ fn module_mkif_config_read_over_attrs_of_submodule() {
          ]; }).config.probe",
     );
 }
+
+// ── M2.6 ROOT #4a — `with` namespace laziness (the OVER-FORCE) ────────
+// nixpkgs' `config = mkIf … (with config.services.X; { … })` module shape:
+// demanding the module's `config` WHNF/keys during collection must NOT
+// force `config.services.X` (the `with` namespace).  sui used to EVALUATE
+// the namespace at `with`-entry, forcing `config.services.X` mid-fixpoint
+// → the empty-Promise partial → `concatLists null`.  Fixed by storing the
+// namespace as a lazy thunk (`maybe_thunk`), forced only on fallthrough.
+// Reduced pure repro (no modules): `attrNames (with (throw "X"); {a=1;})`
+// → nix ["a"]; sui (before) → throws.  Here in the module shape both
+// engines return the unrelated probe.
+// Byte-verified 2026-07-11; `diff` asserts sui == nix.
+#[test]
+fn module_with_namespace_config_read_stays_lazy() {
+    diff(
+        "(lib.evalModules { modules = [ \
+         ({ config, lib, ... }: { \
+           options.svc.enable = lib.mkOption { type = lib.types.bool; default = false; }; \
+           options.out = lib.mkOption { type = lib.types.attrsOf lib.types.int; default = {}; }; \
+           options.probe = lib.mkOption { type = lib.types.str; default = \"PROBE\"; }; \
+           config.out = lib.mkIf config.svc.enable (with config.svc; { x = 1; }); }) \
+         ]; }).config.probe",
+    );
+}
+
+// ── M2.6 ROOT #4b — depth-≥2 option-decl full-set + dotted sibling ────
+// nixpkgs' alsa module declares `options.hardware.alsa = { enable = …;
+// cardAliases = …; … }` AND `options.hardware.alsa.enablePersistence = …`
+// in ONE module; these must DEEP-MERGE.  sui's `merge_nested_insert`
+// dropped the full-set leaf (a lazy Thunk) on a Thunk-vs-Attrs collision,
+// yielding only {enablePersistence} → `cardAliases` "does not exist".
+// Fixed by forcing the existing thunk to WHNF (fields stay lazy) before
+// the deep merge.  Here both engines see BOTH option keys.
+// Byte-verified 2026-07-11; `diff` asserts sui == nix.
+#[test]
+fn module_options_fullset_and_dotted_sibling_deep_merge() {
+    diff(
+        "builtins.filter (n: n == \"enable\" || n == \"extra\") \
+           (builtins.attrNames \
+             (lib.evalModules { modules = [ \
+              ({ lib, ... }: { \
+                options.a = { enable = lib.mkOption { type = lib.types.bool; default = false; }; }; \
+                options.a.extra = lib.mkOption { type = lib.types.int; default = 0; }; }) \
+              ]; }).options.a)",
+    );
+}

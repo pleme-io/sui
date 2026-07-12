@@ -1009,7 +1009,27 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // forced when a name lookup actually falls through lexical scope.
             // This is critical for `fix (self: with self; { … })` patterns
             // used throughout nixpkgs.
-            let scope_val = eval_expr(&ns, env)?;
+            //
+            // M2.6 ROOT #4a (byte-verified): `eval_expr(&ns, env)?` was NOT
+            // lazy — it EVALUATED the namespace expression eagerly at
+            // `with`-entry.  For `with (throw "X"); body` that runs the
+            // throw; for `with config.services.borgbackup; { … }` (nixpkgs'
+            // module `config` shape) it forces `config.services.borgbackup`
+            // the instant the `with`-body's WHNF/keys are demanded (during
+            // module collection's `pushDownProperties`), re-entering the
+            // mid-force `config` fixpoint → the empty-Promise partial →
+            // `null` softening → `concatLists null`.  cppnix stores the
+            // namespace as a thunk and forces it ONLY when a bare-ident
+            // lookup actually falls through lexical scope into the `with`.
+            // Reduced repro (no module system, iterates in ms):
+            //   `builtins.attrNames (with (throw "X"); { a = 1; })`
+            //   nix → [ "a" ] ; sui (before) → throws "X".
+            // `maybe_thunk` keeps the fast-path for an already-resolved
+            // ident namespace (no thunk overhead) while deferring any
+            // non-trivial namespace (Select / Apply / throw) into a lazy
+            // thunk the scope-lookup path (`Env::lookup_fast`) forces only
+            // on fallthrough.
+            let scope_val = maybe_thunk(&ns, env, false, None);
             let new_env = env.child().with_scope(scope_val);
             cur_expr = body;
             cur_env = new_env;
@@ -1335,13 +1355,21 @@ fn eval_select(sel: &ast::Select, env: &Env) -> Result<Value, EvalError> {
     // their lazy values), so the lookup would succeed; null is the
     // cheapest sentinel that propagates through downstream code
     // without further type errors.
+    //
+    // M2.6 ROOT #4 CLOSED (2026-07-11): the `|| crate::value::in_promise_eval()`
+    // clause that used to soften a mid-Promise `config.<x>` select-miss to
+    // `null` is REMOVED.  It was the band-aid masking the two real over-forces
+    // that ROOT #4a (the `with`-namespace eager eval, above) and ROOT #4b (the
+    // dropped full-set leaf in `merge_nested_insert`, below) now fix at their
+    // load-bearing cause.  Verified with the softening gone: both
+    // `lib.nixosSystem { modules = []; }.config.system.name` → `"nixos"` and
+    // `attrNames sys.options` → 53 (nix-parity), `sui parity` stays 35 match /
+    // 0 regressions, 1324 sui-eval lib tests + 30 diff tests pass — nothing
+    // depended on the sentinel any more.  The two explicit operator-gated
+    // bridges below stay as opt-in experiments (default-off); only the
+    // always-on Promise softening is retired.
     let bridge_active = std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some()
-        || std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some()
-        // The Promise variant's empty-attrset sentinel hits the same
-        // downstream "key not found / can't select from {}" patterns
-        // as the env-gated bridges.  When we're inside a Promise body
-        // (any layer deep), apply the same soft-fallback semantics.
-        || crate::value::in_promise_eval();
+        || std::env::var_os("SUI_BLACKHOLE_AS_NULL").is_some();
     let traversal = traverse_attrpath(base, &attrpath, env);
     match traversal {
         Ok(TraverseResult::Found(v)) => Ok(v),
@@ -2171,17 +2199,71 @@ fn build_nested_attr_thunk(
 /// `{ a = { b = { c = 1; d = 2; }; e = 3; }; }` instead of
 /// dropping siblings — every nixpkgs module relies on this.
 fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
-    let should_merge = matches!(target.get(&key), Some(Value::Attrs(_)))
-        && matches!(value, Value::Attrs(_));
-    if !should_merge {
+    // Fast path: no existing entry at this key → plain insert, keeping the
+    // value lazy (the overwhelmingly common non-colliding case, so we never
+    // force a thunk here).
+    let existing = match target.get(&key) {
+        Some(e) => e.clone(),
+        None => {
+            target.insert(key, value);
+            return;
+        }
+    };
+    // A collision exists.  A deep merge is warranted only when BOTH the
+    // existing entry AND the new value are attrset-shaped.  M2.6 ROOT #4b
+    // (byte-verified): either side may be a lazy `Thunk` wrapping a
+    // full-set leaf — both dotted-path orderings hit this:
+    //   forward  `o.a = { x = 1; }; o.a.y = 2;` → EXISTING `a` is a thunk
+    //            (`build_nested_attr` puts the `{x=1}` leaf through
+    //            `maybe_thunk`), NEW `a` is `{ y = … }`;
+    //   reverse  `o.a.y = 2; o.a = { x = 1; };` → EXISTING `a` is `{y}`,
+    //            NEW `a` is the `<thunk {x=1}>`.
+    // The old `should_merge` required BOTH sides to already be concrete
+    // `Value::Attrs`, so a Thunk-vs-Attrs collision fell to the overwrite
+    // path and silently dropped the earlier leaf's keys.  cppnix desugars
+    // BOTH orderings into one merged `o.a = { x = 1; y = 2; }`.  Force each
+    // side's thunk to WHNF ON COLLISION ONLY (forcing an attrset to WHNF
+    // does NOT force its fields, so leaf laziness is preserved); a thunk
+    // that forces to a non-attrset (or errors) makes the merge a plain
+    // overwrite (leaf last-write-wins).
+    // Symptom this closes: nixpkgs' alsa module declares
+    // `options.hardware.alsa = { enable = …; cardAliases = …; … }` AND
+    // `options.hardware.alsa.enablePersistence = …`; sui merged them to
+    // only `{enablePersistence}`, so `hardware.alsa.cardAliases` "does not
+    // exist" — the M2.6 frontier once the `with`-namespace over-force (#4a)
+    // was fixed.
+    let value = match value {
+        Value::Thunk(_) => match force_value(&value) {
+            Ok(v @ Value::Attrs(_)) => v,
+            _ => value,
+        },
+        other => other,
+    };
+    if !matches!(value, Value::Attrs(_)) {
         target.insert(key, value);
         return;
     }
+    // Normalize the existing side to concrete attrs too (forcing a thunk
+    // to WHNF if needed); if it isn't attrset-shaped, the new attrs wins.
+    let existing_concrete = match &existing {
+        Value::Attrs(_) => existing.clone(),
+        Value::Thunk(_) => match force_value(&existing) {
+            Ok(v @ Value::Attrs(_)) => v,
+            _ => {
+                target.insert(key, value);
+                return;
+            }
+        },
+        _ => {
+            target.insert(key, value);
+            return;
+        }
+    };
     // Both sides are concrete attrs — merge in place. We pop the
     // existing entry, then walk the new attrs and recursively
     // merge each child onto it.
-    let mut existing_attrs = match target.get(&key).cloned() {
-        Some(Value::Attrs(a)) => (*a).clone(),
+    let mut existing_attrs = match existing_concrete {
+        Value::Attrs(a) => (*a).clone(),
         _ => unreachable!(),
     };
     let new_attrs = match value {
@@ -2860,6 +2942,84 @@ mod tests {
         } else {
             panic!("expected sd attrs");
         }
+    }
+
+    // ── M2.6 ROOT #4a — `with` namespace must be LAZY ─────────────────
+    // `with X; body` stores the namespace as a thunk forced only on a
+    // bare-ident fallthrough lookup; demanding only the body's WHNF/keys
+    // must NOT force X.  cppnix: `attrNames (with (throw "X"); {a=1;})`
+    // → ["a"].  Before the fix, sui EVALUATED the namespace at `with`-entry
+    // and threw.  This is the load-bearing over-force behind the M2.6
+    // `concatLists null` (nixpkgs' `config = mkIf … (with config.services.X;
+    // { … })` module shape forced `config.services.X` during collection).
+    #[test]
+    fn with_namespace_is_lazy_on_body_whnf() {
+        let v = ev(r#"builtins.attrNames (with (throw "WITH-FORCED"); { a = 1; b = 2; })"#);
+        if let Value::List(items) = force_value(&v).unwrap() {
+            let names: Vec<String> = items
+                .iter()
+                .map(|i| match force_value(i).unwrap() {
+                    Value::String(s) => s.as_str().to_string(),
+                    other => panic!("expected string, got {}", other.type_name()),
+                })
+                .collect();
+            assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    #[test]
+    fn with_namespace_forces_only_on_fallthrough() {
+        // A bare ident that falls through lexical scope DOES resolve via
+        // the namespace (correct cppnix semantics) — proves the deferred
+        // thunk is real and gets forced on demand, not an accidental no-op.
+        assert_eq!(ev(r#"with { x = 42; }; x"#), Value::Int(42));
+        // A lexical binding shadows the with-scope, so the (throwing)
+        // namespace is never forced — the laziness we rely on for M2.6.
+        assert_eq!(ev(r#"let x = 7; in with (throw "NS"); x"#), Value::Int(7));
+    }
+
+    // ── M2.6 ROOT #4b — depth-≥2 dotted full-set leaf must deep-merge ──
+    // `o.a = { x = 1; }` inserts `o = { a = <thunk {x=1}> }` (leaf goes
+    // through maybe_thunk); a deeper sibling `o.a.y = 2` recurses
+    // merge_nested_insert down to key `a` where the existing value is that
+    // thunk.  Before the fix, merge_nested_insert required BOTH sides to be
+    // concrete Attrs, so the Thunk-vs-Attrs collision OVERWROTE — dropping
+    // `x`.  cppnix desugars both orderings into `o.a = { x = 1; y = 2; }`.
+    // This is the M2.6 post-`with`-fix frontier (nixpkgs alsa's
+    // `options.hardware.alsa = { … }` + `options.hardware.alsa.enablePersistence
+    // = …` merged to only {enablePersistence} → `cardAliases` "does not exist").
+    #[test]
+    fn dotted_fullset_leaf_deep_merges_with_deeper_sibling() {
+        let v = ev(r#"{ o.a = { x = 1; }; o.a.y = 2; }.o.a"#);
+        if let Value::Attrs(a) = force_value(&v).unwrap() {
+            assert_eq!(force_value(a.get("x").unwrap()).unwrap(), Value::Int(1));
+            assert_eq!(force_value(a.get("y").unwrap()).unwrap(), Value::Int(2));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn dotted_fullset_leaf_deep_merge_reverse_order() {
+        // Deeper sibling FIRST, full-set leaf SECOND — the NEW value is the
+        // `<thunk {x=1}>`; must still merge (the collision forces it).
+        let v = ev(r#"{ o.a.y = 2; o.a = { x = 1; }; }.o.a"#);
+        if let Value::Attrs(a) = force_value(&v).unwrap() {
+            assert_eq!(force_value(a.get("x").unwrap()).unwrap(), Value::Int(1));
+            assert_eq!(force_value(a.get("y").unwrap()).unwrap(), Value::Int(2));
+        } else {
+            panic!("expected attrs");
+        }
+    }
+
+    #[test]
+    fn dotted_fullset_leaf_merge_preserves_leaf_laziness() {
+        // The merge forces the existing/new leaf to WHNF (keys) but MUST
+        // NOT force the leaf VALUES — a throwing sibling value that is never
+        // demanded stays lazy.
+        assert_eq!(ev(r#"{ o.a = { x = throw "X-NEVER"; }; o.a.y = 2; }.o.a.y"#), Value::Int(2));
     }
 
     #[test]
