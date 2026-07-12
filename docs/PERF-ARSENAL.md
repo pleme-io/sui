@@ -26,6 +26,27 @@ catalog exists to forbid.**
 ## 2. The catalog (weakest axis wins; file:line vs live HEAD)
 
 ### PROVABLY-NEUTRAL — the founding tier
+- **S5 · list-concat structural-share** `[reuse-uniquely-owned-alloc]` — SHIPPED (this branch).
+  `++` (`eval.rs:2583` → `value::concat_lists`) used `l.as_list()?.to_vec()` — an O(n) clone of the
+  whole left accumulator per concat, O(n²) over a growing left-assoc `++` chain. Fix: `Rc::try_unwrap`
+  the left backing `Vec` and **append the right in place** when the `Rc` is uniquely owned
+  (`strong_count == 1`); clone-extend fallback (byte-identical to the old path) when shared. Enabler:
+  `eval_binop` now `into_value()`s the operand `Concrete`s instead of `to_value()` (move, not
+  clone-and-keep-alive), so a fresh `++` temporary's `Rc` reaches `concat_lists` with refcount 1.
+  **PROVABLY-NEUTRAL** — both paths yield the identical ordered sequence of the same `Rc`-shared lazy
+  `Value` thunks; **no element is forced, reordered, or re-identified** (proven by an `Rc::ptr_eq`
+  element-identity unit test + the 4 sealed corpus rows). truly-unrep on the byte axis via `sui parity`.
+  - **Measured (SUI_EVAL_PERF `list-concat` counter):** synthetic left-assoc `++` chain n=15000 →
+    baseline copies **112,485,000** elements (Σ 1..14999), fix copies **0** (100% reuse). Real
+    `hello.drvPath` tree-walker eval: 43,944 concat calls, **8.7% live reuse rate** (3,858 elems reused).
+  - **Ceiling (NAMED): the wall-time win is negligible for small-element lists.** Nix list elements are
+    `Value` (16 B — Int/Path/interned-String/`Rc`-thunk); `Vec::<Value>::clone` is a memcpy-fast,
+    cache-friendly linear copy, so eliminating 112M *count* of copies does **not** move best-of-5
+    wall-time at n≤15000 (0.33s → 0.33s). The win is **allocation + copy-count elimination**, not a
+    measured speedup — the fold-heavy nixpkgs cost lives in `force`/`overlay`/`sorted_entries`, not
+    `++`. The `foldl' (acc: x: acc ++ [x])` shape stays 0% reuse (the `acc` binding pins refcount ≥2);
+    the fast path fires only for fresh `++` temporaries (chained literals + intermediate results) — the
+    8.7% seen live. **Do not round the reuse-rate up to a speedup.**
 - **S1 · sort-storm-elimination** `[drop-unobserved-order]` — SHIPPED (`6d3226c`). **Measured 24–33%.**
   `iter_unsorted` at fresh-map sites; `AttrsInner::Flat` is unordered `im_rc::HashMap`, every
   observation re-sorts via `sorted_entries()` → the sort was dead work. truly-unrep (value).
@@ -109,14 +130,20 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
    the two iterators are type-indistinguishable. Mostly only-mitigated + one theorem tier
    (content-addressing, sealed by the key's *math*, not `rustc`). ZERO type-level unrep seals today.
 4. **"Add persistent HAMT bindings."** CLOSED premise — sui already ships `im_rc::HashMap` + Rc sharing
-   + COW. The live gaps are elsewhere: LIST `++` clones `Rc<Vec>` O(n) (RRB-tree = the real move),
-   the `//` deferred-tail deep-copy (C-slash, RISKY), small-attrs inline storage — not bindings.
+   + COW. The live gaps are elsewhere: LIST `++` clones `Rc<Vec>` O(n) — **now structural-shared (S5):
+   `Rc::try_unwrap` + in-place extend for a uniquely-owned left, byte-neutral, 100% reuse on fresh-`++`
+   chains but 8.7% live + a NAMED wall-time ceiling for small-element lists** (the full RRB-tree/`im::Vector`
+   swap stays REJECTED — a representation change of the borrowing `as_list() -> &[Value]` surface, high
+   byte-risk, and the memcpy-fast small-element copy makes the wall-time payoff unproven); the `//`
+   deferred-tail deep-copy (C-slash, RISKY), small-attrs inline storage — not bindings.
 5. **The CI gate covers the marquee eval.** FALSE — ~8 shapes, partial corpus.
 
 ## 6. Phased plan
 
-- **M0** — register S1–S4 as `(defseal)` entries at their honest tier + land the honesty gate. ContentMemo
-  stays sui-local (record the promote trigger).
+- **M0** — register S1–S5 as `(defseal)` entries at their honest tier + land the honesty gate. ContentMemo
+  stays sui-local (record the promote trigger). **S5 (list-concat structural-share) SHIPPED this branch**
+  at PROVABLY-NEUTRAL with a NAMED wall-time ceiling + 4 sealed corpus rows + the `SUI_EVAL_PERF`
+  `list-concat` counter (the durable measurement tool).
 - **M1** — the PROVABLY-NEUTRAL one-liners (count-not-clone, map-builder family), each its own commit + corpus confirm.
 - **M1.5** — NEEDS-VERIFICATION (C-A, C-filter): success-path argument + explicit nix diff.
 - **M2** — RISKY arms (C-with → C-slash → C-store → C-eq-demand): per-site force-order proof + Parity Method,
@@ -130,7 +157,12 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
 memo (ephemeral-key collision) · naive hash-consing of unforced thunks (breaks blackhole identity) ·
 per-file arena for the escaping value graph (unsound) · any `iter_unsorted` at an order-OBSERVED sink ·
 the four RISKY candidates presented as neutral one-liners · any "fleet-wide byte-neutral" brand
-(sui-path-specific label) · counting `iter_unsorted` as a fleet pattern.
+(sui-path-specific label) · counting `iter_unsorted` as a fleet pattern · **the full `Rc<Vec<Value>>` →
+`im::Vector`/RRB-tree list-representation swap** (S5 took the surgical in-place reuse instead — the swap
+touches every `as_list() -> &[Value]` borrowing site (a representation change, byte-high-risk) AND the
+small-element memcpy-fast copy leaves its wall-time payoff unproven; revisit only if a measured
+large-element `++`-fold storm appears) · **presenting S5's reuse-rate as a wall-time speedup** (it is a
+copy-count elimination with a named negligible-wall-time ceiling for small elements).
 
 **Doctrine name: NONE** — not earned. The home is this graded `(defseal)` catalog in
 `/algorithmic-prowess-seal` + the one shipped Rust primitive `sui-intern::ContentMemo` (sui-local).

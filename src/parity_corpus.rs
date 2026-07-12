@@ -577,5 +577,81 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── list-concat structural share (PERF-ARSENAL list `++` gap) ─────────
+    // The in-place structural-share fast path for `++` (Rc uniquely owned →
+    // append in place instead of cloning the whole accumulator) must be
+    // byte-neutral: the concatenated list is the same ordered sequence of the
+    // same lazy elements. These rows seal that neutrality against regression.
+    //
+    // Value-level: a left-associative `++` fold — the exact quadratic-clone
+    // shape the fix targets. Both engines yield the same joined list; comparing
+    // `toString` gives a byte surface.
+    rows.push(row(
+        "list-concat fold — left-associative ++ (value)",
+        NixValue::Raw(
+            r#"(builtins.toString ([1 2] ++ [3] ++ [4 5] ++ [6] ++ [7 8 9]))"#.to_string(),
+        ),
+        RowExpect::Match,
+    ));
+    // concatLists over a list of lists — the flatten shape.
+    rows.push(row(
+        "concatLists flatten (value)",
+        NixValue::Raw(
+            r#"(builtins.toString (builtins.concatLists [[1 2] [3] [] [4 5] [6]]))"#.to_string(),
+        ),
+        RowExpect::Match,
+    ));
+    // concatMap — the concat-in-a-loop shape.
+    rows.push(row(
+        "concatMap expand (value)",
+        NixValue::Raw(
+            r#"(builtins.toString (builtins.concatMap (x: [x (x * 10)]) [1 2 3]))"#.to_string(),
+        ),
+        RowExpect::Match,
+    ));
+    // Order + identity preserved under a fold that also carries string context
+    // (a `${drv.out}` element): the concatenated args must reproduce the SAME
+    // drvPath, so a concat that reordered or dropped context would diverge the
+    // hash. This is the load-bearing byte check — the concat participates in
+    // the derivation input set.
+    rows.push(row(
+        "list-concat ++ into derivation args — drvPath",
+        let_(
+            vec![
+                (
+                    "m",
+                    drv("cm", vec![entry("outputs", NixValue::List(vec![str_("out"), str_("dev")]))]),
+                ),
+                (
+                    "c",
+                    drv(
+                        "cc",
+                        vec![entry(
+                            "args",
+                            // ([ "${m.out}/a" ] ++ [ "b" ] ++ [ "${m.dev}/c" ])
+                            NixValue::BinOp {
+                                op: NixBinOp::Concat,
+                                left: Box::new(NixValue::BinOp {
+                                    op: NixBinOp::Concat,
+                                    left: Box::new(NixValue::List(vec![interp(vec![
+                                        StrPart::Interp(path(&["m", "out"])),
+                                        StrPart::Literal("/a".to_string()),
+                                    ])])),
+                                    right: Box::new(NixValue::List(vec![str_("b")])),
+                                }),
+                                right: Box::new(NixValue::List(vec![interp(vec![
+                                    StrPart::Interp(path(&["m", "dev"])),
+                                    StrPart::Literal("/c".to_string()),
+                                ])])),
+                            },
+                        )],
+                    ),
+                ),
+            ],
+            path(&["c", "drvPath"]),
+        ),
+        RowExpect::Match,
+    ));
+
     rows
 }

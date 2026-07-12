@@ -95,9 +95,19 @@ pub enum Counter {
     // `SortedEntriesRows` accumulates entries sorted.
     SortedEntriesCalls = 34,
     SortedEntriesRows = 35,
+    // List concatenation (`++` / `concatLists` / `concatMap`). `ListConcatCalls`
+    // counts concat operations; `ListConcatElemsCopied` accumulates the total
+    // number of list ELEMENTS physically copied (cloned) into a fresh Vec —
+    // the O(n) storm signal. `ListConcatElemsReused` accumulates the elements
+    // that were appended in place (Rc uniquely owned) instead of copied — the
+    // work the structural-share fix elides. A left-associative `++` fold over a
+    // growing accumulator makes elems_copied grow quadratically without the fix.
+    ListConcatCalls = 36,
+    ListConcatElemsCopied = 37,
+    ListConcatElemsReused = 38,
 }
 
-const NUM_COUNTERS: usize = 36;
+const NUM_COUNTERS: usize = 39;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -137,6 +147,9 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "overlay_created",
     "sorted_entries_calls",
     "sorted_entries_rows",
+    "list_concat_calls",
+    "list_concat_elems_copied",
+    "list_concat_elems_reused",
 ];
 
 struct PerfCounters {
@@ -383,6 +396,26 @@ pub fn report() {
             eprintln!("  rows_sorted:       {se_rows}");
             eprintln!("  walltime:          {se_ms:.1}ms  ({se_pct:.1}% of eval)");
         }
+        // List concatenation (`++` / concatLists / concatMap) — the O(n) copy
+        // storm. `elems_copied` is the raw work volume; `elems_reused` is what
+        // the in-place structural-share fix elides. A copied/reused ratio near
+        // 0 means most concats hit the shared fast path.
+        let lc_calls = c.get(Counter::ListConcatCalls);
+        let lc_copied = c.get(Counter::ListConcatElemsCopied);
+        let lc_reused = c.get(Counter::ListConcatElemsReused);
+        if lc_calls > 0 {
+            let total = lc_copied + lc_reused;
+            let reuse_pct = if total > 0 {
+                (lc_reused as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("--- list concat (`++` / concatLists) ---");
+            eprintln!("  calls:             {lc_calls}");
+            eprintln!("  elems_copied:      {lc_copied}");
+            eprintln!("  elems_reused:      {lc_reused}  (in-place, Rc uniquely owned)");
+            eprintln!("  reuse_rate:        {reuse_pct:.1}%");
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -566,12 +599,15 @@ mod tests {
 
     #[test]
     fn counter_enum_has_30_variants() {
-        // Each variant maps to an index 0..33, and NUM_COUNTERS == 34.
-        assert_eq!(NUM_COUNTERS, 36);
+        // Each variant maps to a fixed index; NUM_COUNTERS is the array size.
+        assert_eq!(NUM_COUNTERS, 39);
         assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
         assert_eq!(Counter::OverlayCreated as usize, 33);
         assert_eq!(Counter::SortedEntriesCalls as usize, 34);
         assert_eq!(Counter::SortedEntriesRows as usize, 35);
+        assert_eq!(Counter::ListConcatCalls as usize, 36);
+        assert_eq!(Counter::ListConcatElemsCopied as usize, 37);
+        assert_eq!(Counter::ListConcatElemsReused as usize, 38);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

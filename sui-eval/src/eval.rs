@@ -2515,8 +2515,14 @@ fn eval_binop(
 
     let lc = force_concrete(&eval_expr(lhs, env)?)?;
     let rc = force_concrete(&eval_expr(rhs, env)?)?;
-    let l = lc.to_value();
-    let r = rc.to_value();
+    // Consume the Concretes (move, don't clone) so `l`/`r` hold the sole Rc to
+    // any heap payload. This is byte-neutral — `into_value` yields the identical
+    // `Value` as `to_value` — but it drops `lc`/`rc`, which is what lets the
+    // `Concat` arm's structural-share fast path see a uniquely-owned left list
+    // for a fresh `++` temporary (`Rc::try_unwrap` → append in place). Keeping
+    // `lc` alive via `to_value` pinned the refcount at ≥2 and defeated reuse.
+    let l = lc.into_value();
+    let r = rc.into_value();
 
     match op {
         ast::BinOpKind::Add => match (&l, &r) {
@@ -2581,9 +2587,16 @@ fn eval_binop(
             Ok(Value::Attrs(Rc::new(la.overlay(ra))))
         }
         ast::BinOpKind::Concat => {
-            let mut la = l.as_list()?.to_vec();
-            la.extend_from_slice(r.as_list()?);
-            Ok(Value::list(la))
+            // Structural-share fast path: when the left operand's `Rc<Vec>` is
+            // uniquely owned (a fresh temporary, as in a left-associative `++`
+            // fold `acc ++ [x]`), append the right elements IN PLACE instead of
+            // cloning the whole accumulator. This turns an O(n) copy per concat
+            // into amortized O(1), byte-identically — the result is the same
+            // ordered sequence of the same Rc-shared lazy thunks (no forcing,
+            // no reordering, no identity change). When the Rc is shared (the
+            // left came from a still-live binding/thunk) we fall back to the
+            // clone-extend path, preserving the shared list unchanged.
+            crate::value::concat_lists(l, r.as_list()?)
         }
         ast::BinOpKind::And | ast::BinOpKind::Or | ast::BinOpKind::Implication => {
             unreachable!("handled above")

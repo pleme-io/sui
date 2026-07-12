@@ -165,7 +165,15 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 let mut result = Vec::new();
                 for v in list {
                     let mapped = crate::eval::apply_and_force(func.clone(), v.clone())?;
-                    result.extend_from_slice(mapped.as_list()?);
+                    let inner = mapped.as_list()?;
+                    if crate::perf::enabled() {
+                        crate::perf::inc(crate::perf::Counter::ListConcatCalls);
+                        crate::perf::add(
+                            crate::perf::Counter::ListConcatElemsCopied,
+                            inner.len() as u64,
+                        );
+                    }
+                    result.extend_from_slice(inner);
                 }
                 Ok(Value::List(Rc::new(result)))
             }),
@@ -202,6 +210,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
             }
             let inner = forced.as_list()?;
+            if crate::perf::enabled() {
+                crate::perf::inc(crate::perf::Counter::ListConcatCalls);
+                crate::perf::add(
+                    crate::perf::Counter::ListConcatElemsCopied,
+                    inner.len() as u64,
+                );
+            }
             result.extend(inner.iter().cloned());
         }
         Ok(Value::List(Rc::new(result)))

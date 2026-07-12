@@ -537,6 +537,62 @@ impl PartialEq for Concrete {
     }
 }
 
+/// Concatenate two Nix lists: `left ++ right_elems`.
+///
+/// `left` must be a `Value::List`; `right_elems` is the right list's element
+/// slice. When `left`'s backing `Rc<Vec>` is uniquely owned (a fresh
+/// temporary, as in a left-associative `acc ++ [x]` fold), the right elements
+/// are appended IN PLACE — amortized O(1) instead of the O(n) full clone that
+/// `left.to_vec()` would cost. When the `Rc` is shared, the shared list is
+/// left untouched and a fresh clone-extended Vec is built (identical to the
+/// prior `to_vec()` + `extend_from_slice` path).
+///
+/// # Byte-neutrality
+/// PROVABLY-NEUTRAL. Both paths produce the identical ordered sequence of the
+/// same `Rc`-shared lazy `Value` thunks — no element is forced, reordered, or
+/// re-identified. The only observable difference is heap allocation reuse,
+/// which is not a Nix-observable property. See `docs/PERF-ARSENAL.md`.
+pub fn concat_lists(left: Value, right_elems: &[Value]) -> Result<Value, EvalError> {
+    // Take ownership of the left backing Vec, reusing its allocation when the
+    // Rc is unique. `Rc::try_unwrap` returns the inner Vec on refcount 1;
+    // otherwise it clones (identical bytes to the old `to_vec()`).
+    let mut la = match left {
+        Value::List(rc) => {
+            let reused = Rc::strong_count(&rc) == 1;
+            let vec = match Rc::try_unwrap(rc) {
+                Ok(v) => v,        // uniquely owned: allocation reused
+                Err(rc) => (*rc).clone(), // shared: clone the left (unchanged)
+            };
+            if crate::perf::enabled() {
+                crate::perf::inc(crate::perf::Counter::ListConcatCalls);
+                if reused {
+                    // Left elements appended in place — copy elided.
+                    crate::perf::add(
+                        crate::perf::Counter::ListConcatElemsReused,
+                        vec.len() as u64,
+                    );
+                } else {
+                    // Left elements cloned into a fresh Vec (the storm).
+                    crate::perf::add(
+                        crate::perf::Counter::ListConcatElemsCopied,
+                        vec.len() as u64,
+                    );
+                }
+            }
+            vec
+        }
+        other => {
+            return Err(EvalError::TypeMismatch {
+                expected: "list",
+                got: other.type_name(),
+            });
+        }
+    };
+    // Right elements are always copied (appended); their thunks are Rc-shared.
+    la.extend_from_slice(right_elems);
+    Ok(Value::list(la))
+}
+
 /// If `attrs` is a derivation — an attrset whose `type` forces to the string
 /// `"derivation"` AND which carries a forceable `outPath` — return that
 /// `outPath` string.  Otherwise `None` (caller falls back to structural
@@ -2301,6 +2357,13 @@ impl Value {
         Value::List(Rc::new(items))
     }
 
+    /// True when `self` is a `List` whose backing `Rc<Vec>` is uniquely owned
+    /// (refcount 1). Used by [`concat_lists`] to decide the in-place fast path.
+    #[must_use]
+    pub fn is_uniquely_owned_list(&self) -> bool {
+        matches!(self, Value::List(rc) if Rc::strong_count(rc) == 1)
+    }
+
     /// Convert a value to JSON for API output.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
@@ -3222,6 +3285,67 @@ mod tests {
     fn as_list_error_on_non_list() {
         assert!(Value::Int(1).as_list().is_err());
         assert!(Value::Attrs(Rc::new(NixAttrs::new())).as_list().is_err());
+    }
+
+    // ── concat_lists structural share (byte-neutrality) ──────────
+
+    #[test]
+    fn concat_lists_uniquely_owned_reuses_and_is_correct() {
+        // A fresh left list (Rc strong_count == 1) hits the in-place path.
+        let left = Value::list(vec![Value::Int(1), Value::Int(2)]);
+        assert!(left.is_uniquely_owned_list());
+        let right = [Value::Int(3), Value::Int(4)];
+        let out = super::concat_lists(left, &right).unwrap();
+        assert_eq!(
+            out.as_list().unwrap(),
+            &[Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)]
+        );
+    }
+
+    #[test]
+    fn concat_lists_shared_left_is_left_untouched_and_correct() {
+        // Keep an outstanding Rc clone so the left is NOT uniquely owned;
+        // the clone-extend fallback fires and the shared list is unchanged.
+        let shared = Rc::new(vec![Value::Int(1), Value::Int(2)]);
+        let left = Value::List(Rc::clone(&shared));
+        assert!(!left.is_uniquely_owned_list());
+        let right = [Value::Int(3)];
+        let out = super::concat_lists(left, &right).unwrap();
+        assert_eq!(
+            out.as_list().unwrap(),
+            &[Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+        // The original shared backing Vec is untouched.
+        assert_eq!(&*shared, &[Value::Int(1), Value::Int(2)]);
+    }
+
+    #[test]
+    fn concat_lists_empty_operands() {
+        let out = super::concat_lists(Value::list(vec![]), &[]).unwrap();
+        assert!(out.as_list().unwrap().is_empty());
+        let out2 = super::concat_lists(Value::list(vec![Value::Int(9)]), &[]).unwrap();
+        assert_eq!(out2.as_list().unwrap(), &[Value::Int(9)]);
+        let out3 = super::concat_lists(Value::list(vec![]), &[Value::Int(9)]).unwrap();
+        assert_eq!(out3.as_list().unwrap(), &[Value::Int(9)]);
+    }
+
+    #[test]
+    fn concat_lists_non_list_left_errors() {
+        assert!(super::concat_lists(Value::Int(1), &[]).is_err());
+    }
+
+    #[test]
+    fn concat_lists_preserves_element_identity() {
+        // The concatenated list must share the SAME element Rc, not deep-copy.
+        let inner = Rc::new(NixString::plain("x"));
+        let a = Value::String(Rc::clone(&inner));
+        let left = Value::list(vec![a]);
+        let out = super::concat_lists(left, &[]).unwrap();
+        if let Value::String(rc) = &out.as_list().unwrap()[0] {
+            assert!(Rc::ptr_eq(rc, &inner), "element Rc identity preserved");
+        } else {
+            panic!("expected string element");
+        }
     }
 
     // ── to_float int->float coercion ─────────────────────
