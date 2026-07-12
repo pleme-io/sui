@@ -4034,6 +4034,61 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             Box::new(move || diff_eval(&sui, &nix,
                 "let makeOverridable = f: origArgs: let result = f origArgs; in result // { override = newArgs: makeOverridable f (origArgs // (if builtins.isFunction newArgs then newArgs origArgs else newArgs)); }; optional = c: x: if c then [x] else []; fakeMk = attrs: derivation { name = attrs.name; system = \"x86_64-linux\"; builder = \"/bin/sh\"; nbi = map (d: d.out or (toString d)) (attrs.nativeBuildInputs or []); pbi = map (d: d.out or (toString d)) (attrs.propagatedBuildInputs or []); }; scope = rec { perl = makeOverridable ({ enableCrypt ? true }: fakeMk { name = \"myperl\"; propagatedBuildInputs = optional enableCrypt libxcrypt; }) {}; libxcrypt = fakeMk { name = \"mylibxcrypt\"; nativeBuildInputs = [ (perl.override { enableCrypt = false; }) ]; }; }; in scope.perl.drvPath"))
         }),
+        // ── DARWIN PARITY CORPUS (the Parity Method on the aarch64-darwin
+        //    surface). Each row asks nixpkgs for a package's `.drvPath` on the
+        //    HOST's currentSystem; on aarch64-darwin these exercise the darwin
+        //    stdenv bootstrap, apple-sdk, multi-output, and withPackages shapes.
+        //    On a non-darwin host `currentSystem` yields that host's system, so
+        //    the row still runs (it just probes the host stdenv) — the parity
+        //    invariant is system-agnostic. Seeded 2026-07-12 from the marquee
+        //    darwin frontier: all eight matched byte-for-byte sui-vs-nix on
+        //    aarch64-darwin, so they seal that surface against regression.
+        //    (The FIRST darwin divergence found in this frontier — the ishou
+        //    crate2nix `rust_ishou-cli` drvPath — is NOT a byte-parity eval bug
+        //    but a transitive flake-input TOOLCHAIN-REVISION skew, so it is NOT
+        //    encoded here as a KnownDiverge eval row; it lives in the report.)
+        (ParityProbe { name: "eval hello drvPath (currentSystem)", description: "nixpkgs hello through the host stdenv — darwin corpus seed (aarch64-darwin byte-parity 2026-07-12)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "hello"))
+        }),
+        (ParityProbe { name: "eval stdenv drvPath (currentSystem)", description: "the host stdenv derivation (darwin stdenv bootstrap on aarch64-darwin)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "stdenv"))
+        }),
+        (ParityProbe { name: "eval bash drvPath (currentSystem)", description: "bash-interactive through the host stdenv (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "bash"))
+        }),
+        (ParityProbe { name: "eval coreutils drvPath (currentSystem)", description: "coreutils through the host stdenv (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "coreutils"))
+        }),
+        (ParityProbe { name: "eval openssl drvPath (currentSystem)", description: "openssl through the host stdenv (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "openssl"))
+        }),
+        (ParityProbe { name: "eval curl drvPath (currentSystem)", description: "curl through the host stdenv (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "curl"))
+        }),
+        (ParityProbe { name: "eval python3 drvPath (currentSystem)", description: "python3 through the host stdenv (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "python3"))
+        }),
+        (ParityProbe { name: "eval perl drvPath (currentSystem)", description: "perl through the host stdenv — multi-output (out/man/devdoc), the darwin frontier's perl-5.42.0-devdoc class at the top level (matches)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || darwin_pkg_drvpath(&sui, &nix, "perl"))
+        }),
+        (ParityProbe { name: "eval python3.withPackages drvPath (currentSystem)", description: "python3.withPackages env derivation — the chromeTheme/stylix-fonts IFD build-input shape (darwin corpus)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = builtins.currentSystem; }}).python3.withPackages (p: [ p.pyyaml ])).drvPath"))
+            })
+        }),
     ];
 
     // Run + collect (carry each probe's matrix expectation alongside the verdict).
@@ -4384,6 +4439,26 @@ fn diff_eval(sui: &std::path::Path, nix: &std::path::Path, expr: &str) -> Parity
         &["eval", "--extra-experimental-features", "nix-command", "--impure", "--expr", expr],
     );
     diff_text(s, n)
+}
+
+/// Darwin-corpus probe: byte-compare `(import <nixpkgs> { system =
+/// currentSystem; }).<attr>.drvPath` sui-vs-nix. `currentSystem` keeps the
+/// probe host-agnostic — on aarch64-darwin it exercises the darwin stdenv
+/// bootstrap (the marquee frontier's surface); on any other host it probes that
+/// host's stdenv. Skips cleanly when `<nixpkgs>` isn't resolvable.
+fn darwin_pkg_drvpath(sui: &std::path::Path, nix: &std::path::Path, attr: &str) -> ParityVerdict {
+    let np = match run_capture(
+        nix,
+        &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"],
+    ) {
+        Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+    };
+    diff_eval(
+        sui,
+        nix,
+        &format!("(import {np} {{ system = builtins.currentSystem; }}).{attr}.drvPath"),
+    )
 }
 
 /// Locate the first `/nix/store/*` entry whose name contains the
@@ -6163,12 +6238,35 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
     }
 }
 
+/// The per-realize wall-clock bound (the MOVE-1 seal). A single derivation's
+/// substitute-or-build must complete within this bound or the realize fails-fast
+/// with a typed error — an unbounded hang has no code path. Overridable via
+/// `SUI_IFD_REALIZE_TIMEOUT_SECS`; the default is generous enough to substitute
+/// a large closure yet well under any outer eval harness timeout, so sui itself
+/// NAMES the stalled derivation instead of being killed as a mystery hang.
+fn ifd_realize_bound() -> std::time::Duration {
+    const DEFAULT_SECS: u64 = 300;
+    let secs = std::env::var("SUI_IFD_REALIZE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Realize one derivation output: substitute-then-build its closure until the
 /// demanded output is present in the store. Byte-parity-safe: the drvPath is
 /// computed by the evaluator's module fixpoint (already byte-identical to nix),
 /// so the realized output is byte-identical to nix's — a `Direct` build and a
 /// `Daemon` build both produce the same bytes at the same content-addressed
 /// path.
+///
+/// **Bounded (the MOVE-1 seal):** each realize either resolves (a validated
+/// output) or returns an `Err` within [`ifd_realize_bound`]. A daemon build is
+/// external, non-cancellable I/O that can stall on a divergent output path that
+/// exists on no cache; wrapping it in a wall-clock bound converts the former
+/// unbounded hang into a typed, named error the evaluator surfaces (it then goes
+/// on to NAME the next root instead of hanging).
 fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
     use sui_build::BuildClosure;
 
@@ -6181,12 +6279,25 @@ fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
         let borrow = cell.borrow();
         let realizer = borrow.as_ref().expect("realizer built above");
 
+        let bound = ifd_realize_bound();
         match realizer {
             IfdRealizer::Direct { rt, builder, substitutor } => {
                 let closure = BuildClosure::compute(drv_path)
                     .map_err(|e| format!("closure {drv_path}: {e}"))?;
+                // Bound the local build too: a `Direct` build can stall on a
+                // divergent input path exactly as a daemon build can. On elapse,
+                // fail-fast with a typed, named error — never an unbounded hang.
+                let build = builder.build_closure(&closure, Some(substitutor));
                 let result = rt
-                    .block_on(builder.build_closure(&closure, Some(substitutor)))
+                    .block_on(tokio::time::timeout(bound, build))
+                    .map_err(|_elapsed| {
+                        format!(
+                            "ifd realize of {drv_path} → {out_path} exceeded its {}s bound \
+                             (local build stalled — likely a sui↔nix output-path divergence; \
+                             NOT a hang)",
+                            bound.as_secs()
+                        )
+                    })?
                     .map_err(|e| format!("build {drv_path}: {e}"))?;
                 if !result.success {
                     return Err(format!("build failed for {drv_path}:\n{}", result.log));
@@ -6209,7 +6320,9 @@ fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
                 // constructible when the daemon attests the output valid at its
                 // content-addressed path — a wrong/absent output cannot pass.
                 let realized = rt
-                    .block_on(sui_store::realize_via_daemon(store, drv_path, out_path))
+                    .block_on(sui_store::realize_via_daemon_bounded(
+                        store, drv_path, out_path, bound,
+                    ))
                     .map_err(|e| format!("daemon realize {drv_path}: {e}"))?;
                 debug_assert_eq!(realized.out_path(), out_path);
                 Ok(())
