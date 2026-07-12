@@ -77,9 +77,27 @@ pub enum Counter {
     ExprUnaryOp = 27,
     ExprAssert = 28,
     ExprPath = 29,
+    // Overlay (`//`) flatten instrumentation. `OverlayFlattenAttempt` counts
+    // every `as_flat()` call on an Overlay node; `OverlayFlattenBuild` counts
+    // the subset that actually ran the merge closure (a cache MISS — real
+    // O(n) work). `OverlayFlattenEntries` accumulates total (left+right)
+    // entries merged across all builds — the raw work volume. The redundancy
+    // signal is builds / attempts: a high ratio means the same logical
+    // overlay content is re-flattened because each fixpoint iteration mints a
+    // fresh node with a cold cache.
+    OverlayFlattenAttempt = 30,
+    OverlayFlattenBuild = 31,
+    OverlayFlattenEntries = 32,
+    OverlayCreated = 33,
+    // `sorted_entries()` — the sorted-name/value path used by `attrNames`,
+    // `attrValues`, `keys`, `iter`. Each call resolves every Symbol → String
+    // and string-sorts. `SortedEntriesCalls` counts invocations;
+    // `SortedEntriesRows` accumulates entries sorted.
+    SortedEntriesCalls = 34,
+    SortedEntriesRows = 35,
 }
 
-const NUM_COUNTERS: usize = 30;
+const NUM_COUNTERS: usize = 36;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -113,6 +131,12 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "expr_unaryop",
     "expr_assert",
     "expr_path",
+    "overlay_flatten_attempt",
+    "overlay_flatten_build",
+    "overlay_flatten_entries",
+    "overlay_created",
+    "sorted_entries_calls",
+    "sorted_entries_rows",
 ];
 
 struct PerfCounters {
@@ -315,6 +339,50 @@ pub fn report() {
         if dead > 0 {
             eprintln!("dead_skipped:   {dead}");
         }
+        // Overlay (`//`) flatten stats — the re-flatten storm signal.
+        let ov_created = c.get(Counter::OverlayCreated);
+        let ov_attempt = c.get(Counter::OverlayFlattenAttempt);
+        let ov_build = c.get(Counter::OverlayFlattenBuild);
+        let ov_entries = c.get(Counter::OverlayFlattenEntries);
+        if ov_created > 0 || ov_attempt > 0 {
+            let hit = ov_attempt.saturating_sub(ov_build);
+            let hit_rate = if ov_attempt > 0 {
+                (hit as f64 / ov_attempt as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("--- overlay (`//`) flatten ---");
+            eprintln!("  overlays_created:  {ov_created}");
+            eprintln!("  flatten_attempts:  {ov_attempt}");
+            eprintln!("  flatten_builds:    {ov_build}  (cache-miss = real O(n) merge)");
+            eprintln!("  cache_hit_rate:    {hit_rate:.1}%");
+            eprintln!("  entries_merged:    {ov_entries}  (sum of left+right over all builds)");
+            if ov_created > 0 {
+                let builds_per_overlay = ov_build as f64 / ov_created as f64;
+                eprintln!("  builds_per_overlay:{builds_per_overlay:.2}");
+            }
+            let flatten_ms = crate::trace::get_overlay_flatten_nanos() as f64 / 1_000_000.0;
+            let pct = if elapsed > 0.0 {
+                (flatten_ms / 1000.0 / elapsed) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("  flatten_walltime:  {flatten_ms:.1}ms  ({pct:.1}% of eval, incl. nested)");
+        }
+        let se_calls = c.get(Counter::SortedEntriesCalls);
+        let se_rows = c.get(Counter::SortedEntriesRows);
+        if se_calls > 0 {
+            let se_ms = crate::trace::get_sorted_entries_nanos() as f64 / 1_000_000.0;
+            let se_pct = if elapsed > 0.0 {
+                (se_ms / 1000.0 / elapsed) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("--- sorted_entries (attrNames/iter) ---");
+            eprintln!("  calls:             {se_calls}");
+            eprintln!("  rows_sorted:       {se_rows}");
+            eprintln!("  walltime:          {se_ms:.1}ms  ({se_pct:.1}% of eval)");
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -498,8 +566,12 @@ mod tests {
 
     #[test]
     fn counter_enum_has_30_variants() {
-        // Each variant maps to an index 0..29, and NUM_COUNTERS == 30.
-        assert_eq!(NUM_COUNTERS, 30);
+        // Each variant maps to an index 0..33, and NUM_COUNTERS == 34.
+        assert_eq!(NUM_COUNTERS, 36);
+        assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
+        assert_eq!(Counter::OverlayCreated as usize, 33);
+        assert_eq!(Counter::SortedEntriesCalls as usize, 34);
+        assert_eq!(Counter::SortedEntriesRows as usize, 35);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

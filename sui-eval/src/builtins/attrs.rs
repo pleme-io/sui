@@ -43,7 +43,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let b = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
-                for (k, v) in b.iter() {
+                // Result is a fresh attrset (unordered FxHashMap storage);
+                // iteration order here is discarded on insert, so the sorted
+                // `iter()` was pure dead work. Byte-neutral: the observable
+                // order of `result` is re-derived at observation time.
+                for (k, v) in b.iter_unsorted() {
                     if a.contains_key(&k) {
                         result.insert(k.clone(), v.clone());
                     }
@@ -61,7 +65,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
-                for (k, v) in attrs.iter() {
+                // Fresh result map — insertion order discarded; sorted iter
+                // was dead work. The predicate is a pure per-entry test whose
+                // outcome is order-independent, so this is byte-neutral.
+                for (k, v) in attrs.iter_unsorted() {
                     let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
                     if crate::eval::apply_and_force(partial, v.clone())?.as_bool()? {
                         result.insert(k.clone(), v.clone());
@@ -80,7 +87,10 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
-                for (k, v) in attrs.iter() {
+                // Fresh result map; each value is an independent lazy thunk,
+                // so per-entry mapping is order-independent and the sorted
+                // iter was dead work. Byte-neutral.
+                for (k, v) in attrs.iter_unsorted() {
                     let f = func.clone();
                     let key = k.clone();
                     let val = v.clone();
@@ -156,7 +166,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     std::collections::BTreeMap::new();
                 for item in &list {
                     let attrs = item.to_attrs()?;
-                    for (k, v) in attrs.iter() {
+                    // Feeds a BTreeMap keyed by name — the sort re-imposed by
+                    // `iter()` is redundant with the BTreeMap's own ordering.
+                    for (k, v) in attrs.iter_unsorted() {
                         collected.entry(k.clone()).or_default().push(v.clone());
                     }
                 }

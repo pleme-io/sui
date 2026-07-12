@@ -2287,7 +2287,10 @@ fn lazy_overlay_merge(left: Value, right: Value) -> Value {
         (Value::Attrs(la), Value::Attrs(_)) => {
             let mut merged = (**la).clone();
             if let Value::Attrs(ra) = &right {
-                for (k, v) in ra.iter() {
+                // Merging distinct override keys into `merged` is order-
+                // independent (per-key right-wins), and the result map is
+                // unordered storage — the sorted `iter()` was dead work.
+                for (k, v) in ra.iter_unsorted() {
                     merge_nested_insert(&mut merged, k.clone(), v.clone());
                 }
             }
@@ -2303,7 +2306,7 @@ fn lazy_overlay_merge(left: Value, right: Value) -> Value {
                 let la = lf.as_attrs()?;
                 let ra = rf.as_attrs()?;
                 let mut merged = (*la).clone();
-                for (k, v) in ra.iter() {
+                for (k, v) in ra.iter_unsorted() {
                     merge_nested_insert(&mut merged, k.clone(), v.clone());
                 }
                 Ok(Value::Attrs(Rc::new(merged)))
@@ -2416,7 +2419,7 @@ fn merge_nested_insert(target: &mut NixAttrs, key: String, value: Value) {
         Value::Attrs(ref a) => a,
         _ => unreachable!(),
     };
-    for (k, v) in new_attrs.iter() {
+    for (k, v) in new_attrs.iter_unsorted() {
         merge_nested_insert(&mut existing_attrs, k.clone(), v.clone());
     }
     target.insert(key, Value::Attrs(Rc::new(existing_attrs)));

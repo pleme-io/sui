@@ -1617,10 +1617,23 @@ impl NixAttrs {
         match &self.0 {
             AttrsInner::Flat(m) => m,
             AttrsInner::Overlay { left, right, cache } => {
+                crate::perf::inc(crate::perf::Counter::OverlayFlattenAttempt);
                 cache.get_or_init(|| {
+                    // Cache MISS: this Overlay node is being flattened for the
+                    // first time — real O(left+right) merge work.
+                    crate::perf::inc(crate::perf::Counter::OverlayFlattenBuild);
+                    let timed = crate::perf::enabled();
+                    let t0 = if timed { Some(std::time::Instant::now()) } else { None };
                     let mut result = left.as_flat().clone();
                     for (k, v) in right.as_flat().iter() {
                         result.insert(*k, v.clone());
+                    }
+                    crate::perf::add(
+                        crate::perf::Counter::OverlayFlattenEntries,
+                        result.len() as u64,
+                    );
+                    if let Some(t0) = t0 {
+                        crate::trace::add_overlay_flatten_nanos(t0.elapsed().as_nanos());
                     }
                     result
                 })
@@ -1629,11 +1642,18 @@ impl NixAttrs {
     }
 
     fn sorted_entries(&self) -> Vec<(String, &Value)> {
+        crate::perf::inc(crate::perf::Counter::SortedEntriesCalls);
         let m = self.as_flat();
+        crate::perf::add(crate::perf::Counter::SortedEntriesRows, m.len() as u64);
+        let timed = crate::perf::enabled();
+        let t0 = if timed { Some(std::time::Instant::now()) } else { None };
         let mut pairs: Vec<(String, &Value)> = m.iter()
             .map(|(sym, v)| (resolve(*sym), v))
             .collect();
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        if let Some(t0) = t0 {
+            crate::trace::add_sorted_entries_nanos(t0.elapsed().as_nanos());
+        }
         pairs
     }
 
@@ -1736,8 +1756,10 @@ impl NixAttrs {
         match &self.0 {
             AttrsInner::Flat(m) => m.len(),
             AttrsInner::Overlay { .. } => {
-                // Must flatten to count unique keys
-                self.as_flat().clone().len()
+                // Must flatten to count unique keys, but `as_flat()` already
+                // returns a borrow into the memoized map — cloning it just to
+                // read `.len()` was pure O(n) waste on every overlay `len()`.
+                self.as_flat().len()
             }
         }
     }
@@ -1755,6 +1777,7 @@ impl NixAttrs {
     pub fn overlay(self, other: NixAttrs) -> NixAttrs {
         if other.is_empty() { return self; }
         if self.is_empty() { return other; }
+        crate::perf::inc(crate::perf::Counter::OverlayCreated);
         NixAttrs(AttrsInner::Overlay {
             left: Rc::new(self),
             right: Rc::new(other),

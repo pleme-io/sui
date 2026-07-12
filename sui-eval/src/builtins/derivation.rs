@@ -273,7 +273,9 @@ fn construct_derivation(
         let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
         env_vars.insert("__json".to_string(), json);
     } else {
-        for (k, v) in input.iter() {
+        // Feeds `env_vars: BTreeMap` which self-sorts, so the sorted `iter()`
+        // is redundant with the BTreeMap's own ordering — byte-neutral.
+        for (k, v) in input.iter_unsorted() {
             // Excluded from env: `name`/`system`/`builder` (re-inserted below from
             // the coerced locals); `args` (structural, not an env var); the control
             // flags CppNix consumes rather than emits (`__ignoreNulls`, `__impure`,
