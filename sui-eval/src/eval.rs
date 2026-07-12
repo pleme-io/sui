@@ -665,7 +665,12 @@ fn maybe_thunk(
         // `~/${e}`) must be thunked so its `${…}` parts are evaluated in
         // `eval_expr_inner`, never spliced as literal text.
         ast::Expr::PathAbs(p) if !parts_have_interpolation(&p.parts()) => {
-            let text = p.syntax().text().to_string();
+            // CppNix canonicalizes every absolute path literal on eval
+            // (`/.` → `/`, `/a/./b` → `/a/b`, `/a/../b` → `/b`, `..`
+            // clamped at root). A path VALUE carries the canonical form —
+            // the marquee cid root threw in `lib.path.hasStorePathPrefix`
+            // precisely because sui kept the raw `/.` text.
+            let text = crate::path::canon_abs(&p.syntax().text().to_string());
             Value::Path(Box::new(SmolStr::from(text.as_str())))
         }
         ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
@@ -876,7 +881,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if parts_have_interpolation(&parts) {
                 return eval_interpol_path_parts(&parts, PathKind::Abs, env);
             }
-            let text = p.syntax().text().to_string();
+            // Canonicalize like CppNix (`/.` → `/`, `.`/`..` collapse,
+            // `..` clamps at root) — see the WHNF fast-path above.
+            let text = crate::path::canon_abs(&p.syntax().text().to_string());
             return Ok(Value::Path(Box::new(SmolStr::from(text.as_str()))));
         }
         ast::Expr::PathRel(p) => {
@@ -1615,18 +1622,19 @@ fn eval_interpol_path_parts(
                 text
             }
         }
-        // Absolute / home paths: normalize the concatenated text. CppNix
-        // canonicalizes interpolated absolute paths — the `${e}` splice
-        // routinely introduces a `//` seam (`/bar/` + `/tmp/foo`) or a
-        // `.`/`..` component that must collapse (`/bar//tmp/foo` →
-        // `/bar/tmp/foo`). `normalize_path` is filesystem-free so it works
-        // on not-yet-materialized flake paths. Home paths (`~`) normalize
-        // the same way, with `~` carried as a leading component.
-        PathKind::Abs | PathKind::Home => {
-            normalize_path(std::path::Path::new(&text))
-                .to_string_lossy()
-                .into_owned()
-        }
+        // Absolute paths: canonicalize the concatenated text CppNix's way.
+        // The `${e}` splice routinely introduces a `//` seam (`/bar/` +
+        // `/tmp/foo`) or a `.`/`..` component that must collapse
+        // (`/bar//tmp/foo` → `/bar/tmp/foo`), and `..` must clamp at root.
+        // `canon_abs` is filesystem-free (works on not-yet-materialized
+        // flake paths) and root-aware (unlike `normalize_path`, which pops
+        // past root — the marquee-root divergence).
+        PathKind::Abs => crate::path::canon_abs(&text),
+        // Home paths (`~/…`) carry a leading `~` component, so they are
+        // not absolute-rooted; keep the pre-existing normalization.
+        PathKind::Home => normalize_path(std::path::Path::new(&text))
+            .to_string_lossy()
+            .into_owned(),
     };
     Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))))
 }

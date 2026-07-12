@@ -94,6 +94,63 @@ pub fn normalize(path: &Path) -> PathBuf {
     }
 }
 
+/// Canonicalize an ABSOLUTE path string exactly the way CppNix's
+/// `canonPath` does — the byte-for-byte semantics of a Nix path *value*.
+///
+/// CppNix canonicalizes every path literal on evaluation: `.` components
+/// vanish, `..` pops the preceding component **but is clamped at the
+/// filesystem root** (`/..` → `/`, never below), and redundant separators
+/// collapse. The result always begins with a single `/` and never carries
+/// a trailing `/` (except the root itself, which is `/`).
+///
+/// This differs from [`normalize`] in the one load-bearing way the marquee
+/// cid root exposed: `normalize` uses `Path::components()`, whose
+/// `ParentDir` arm unconditionally `pop()`s — so `/..` collapses to `.`
+/// (root is popped, out empties) instead of clamping to `/`. A path VALUE
+/// must never escape its root, so absolute paths take this dedicated
+/// root-aware canonicalizer.
+///
+/// Only ABSOLUTE inputs (leading `/`) are canonicalized here; a
+/// non-absolute input is returned unchanged so callers can keep their own
+/// resolution semantics (relative-to-eval-dir, `~`-home, `<search>`).
+///
+/// Examples (all verified against CppNix):
+/// - `/.` → `/`            (the `lib.path.hasStorePathPrefix` root case)
+/// - `/foo/./bar` → `/foo/bar`
+/// - `/foo/../bar` → `/bar`
+/// - `/..` → `/`           (root clamp)
+/// - `/a/../..` → `/`      (root clamp after underflow)
+/// - `/nix/store` → `/nix/store`  (identity)
+#[must_use]
+pub fn canon_abs(raw: &str) -> String {
+    if !raw.starts_with('/') {
+        return raw.to_string();
+    }
+    let mut components: Vec<&str> = Vec::new();
+    for seg in raw.split('/') {
+        match seg {
+            // Empty (leading `/`, doubled `//`, trailing `/`) and `.` vanish.
+            "" | "." => {}
+            ".." => {
+                // Clamp at root: popping an empty stack is a no-op, so an
+                // absolute path can never escape below `/`.
+                components.pop();
+            }
+            other => components.push(other),
+        }
+    }
+    if components.is_empty() {
+        "/".to_string()
+    } else {
+        let mut out = String::with_capacity(raw.len());
+        for c in &components {
+            out.push('/');
+            out.push_str(c);
+        }
+        out
+    }
+}
+
 /// Resolve a relative path against a base directory, normalizing the result.
 #[must_use]
 pub fn resolve_relative(base: &Path, relative: &str) -> PathBuf {
@@ -188,6 +245,63 @@ mod tests {
     #[test]
     fn resolve_import_relative_needs_base() {
         assert!(resolve_import(None, "./relative.nix").is_err());
+    }
+
+    // ── canon_abs: CppNix path-value canonicalization ──────────────
+    //
+    // Every case verified against `nix eval --raw --expr 'toString <p>'`.
+    // The marquee case is `/.` → `/` — the failing clause of
+    // `lib.path.hasStorePathPrefix`'s root assertion in the cid closure.
+
+    #[test]
+    fn canon_abs_root_dot() {
+        // THE marquee root: `/.` must canonicalize to `/`.
+        assert_eq!(canon_abs("/."), "/");
+    }
+
+    #[test]
+    fn canon_abs_root_identity() {
+        assert_eq!(canon_abs("/"), "/");
+    }
+
+    #[test]
+    fn canon_abs_removes_dot() {
+        assert_eq!(canon_abs("/foo/./bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn canon_abs_resolves_dotdot() {
+        assert_eq!(canon_abs("/foo/../bar"), "/bar");
+    }
+
+    #[test]
+    fn canon_abs_dotdot_clamps_at_root() {
+        // CppNix never escapes root: `/..` → `/`, `/a/../..` → `/`.
+        assert_eq!(canon_abs("/.."), "/");
+        assert_eq!(canon_abs("/../.."), "/");
+        assert_eq!(canon_abs("/a/../.."), "/");
+    }
+
+    #[test]
+    fn canon_abs_collapses_redundant_slashes() {
+        assert_eq!(canon_abs("/foo//bar"), "/foo/bar");
+        assert_eq!(canon_abs("/nix/store/"), "/nix/store");
+    }
+
+    #[test]
+    fn canon_abs_store_path_identity() {
+        assert_eq!(canon_abs("/nix/store"), "/nix/store");
+        assert_eq!(
+            canon_abs("/nix/store/nvl9ic0pj1fpyln3zaqrf4cclbqdfn1j-foo"),
+            "/nix/store/nvl9ic0pj1fpyln3zaqrf4cclbqdfn1j-foo"
+        );
+    }
+
+    #[test]
+    fn canon_abs_leaves_relative_untouched() {
+        // Non-absolute inputs are the caller's concern (eval-dir / ~ / <search>).
+        assert_eq!(canon_abs("~/foo"), "~/foo");
+        assert_eq!(canon_abs("./foo"), "./foo");
     }
 
     #[test]
