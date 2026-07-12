@@ -6082,26 +6082,46 @@ async fn open_store() -> Result<LocalStore, CliError> {
 // thread.
 
 /// The lazily-built, per-eval-thread realize infrastructure.
-struct IfdRealizer {
-    rt: tokio::runtime::Runtime,
-    builder: sui_build::LocalBuilder,
-    substitutor: Substitutor,
+///
+/// The write path is chosen by `sui_store::StoreAccess` detected on the FIRST
+/// IFD demand:
+/// - `Direct` — the store is genuinely writable → the local builder pipeline
+///   (store + substitutor + builder), as before.
+/// - `Daemon` — the store is a root-owned multi-user store → all privileged
+///   writes route through the running nix daemon over the worker protocol.
+///
+/// The dispatch IS the seal (see `sui_store::daemon_realize`): the `Direct` arm
+/// carries a `WritableStore` proof, obtainable only over a writable store, so a
+/// direct store write against a multi-user store has no code path — the exact
+/// `cannot read <drv>` failure the operator's Mac hit is unrepresentable, not
+/// retried.
+enum IfdRealizer {
+    /// Single-user store: build directly through the local pipeline.
+    Direct {
+        rt: tokio::runtime::Runtime,
+        builder: sui_build::LocalBuilder,
+        substitutor: Substitutor,
+    },
+    /// Multi-user store: realize through the nix daemon.
+    Daemon {
+        rt: tokio::runtime::Runtime,
+        store: sui_store::DaemonStore,
+    },
 }
 
 thread_local! {
-    /// Per-thread lazily-initialized realizer. `Ok(None)` = not yet built;
-    /// `Ok(Some(_))` = built and ready; a build error surfaces per-call so the
-    /// first failure to open the store doesn't poison later attempts on a
-    /// different thread.
+    /// Per-thread lazily-initialized realizer. `None` = not yet built; a build
+    /// error surfaces per-call so the first failure to open the store doesn't
+    /// poison later attempts on a different thread.
     static IFD_REALIZER: std::cell::RefCell<Option<IfdRealizer>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Build the IFD realize pipeline (store + substitutor + builder + a
-/// current-thread tokio runtime). Called once per eval thread on the first IFD
-/// demand.
+/// Build the IFD realize pipeline, dispatching on the detected store access
+/// mode. Called once per eval thread on the first IFD demand.
 fn build_ifd_realizer() -> Result<IfdRealizer, String> {
     use sui_build::{sandbox, LocalBuilder};
+    use sui_store::StoreAccess;
 
     // A current-thread runtime is enough — realize is a synchronous
     // block-on-one-closure from the (non-async) eval thread.
@@ -6110,28 +6130,45 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
         .build()
         .map_err(|e| format!("ifd runtime: {e}"))?;
 
-    let store = rt
-        .block_on(sui_store::LocalStore::open_rw(NIX_DB_PATH))
-        .map_err(|e| format!("ifd store open ({NIX_DB_PATH}): {e}"))?;
-    let store: Arc<dyn sui_store::Store> = Arc::new(store);
+    // Detect the store access mode ONCE. On a multi-user store, `Direct` is
+    // unconstructable (its `WritableStore` proof requires a writable store), so
+    // the daemon arm is the only reachable path — the pivot.
+    match StoreAccess::detect() {
+        Some(StoreAccess::Direct(_writable)) => {
+            let store = rt
+                .block_on(sui_store::LocalStore::open_rw(NIX_DB_PATH))
+                .map_err(|e| format!("ifd store open ({NIX_DB_PATH}): {e}"))?;
+            let store: Arc<dyn sui_store::Store> = Arc::new(store);
 
-    let caches = sui_orchestrate::build_caches(&sui_orchestrate::get_substituters());
-    let substitutor = Substitutor::new(store.clone(), caches);
+            let caches =
+                sui_orchestrate::build_caches(&sui_orchestrate::get_substituters());
+            let substitutor = Substitutor::new(store.clone(), caches);
 
-    #[cfg(target_os = "macos")]
-    let sandbox: Box<dyn sandbox::Sandbox> = Box::new(sandbox::DarwinSandbox::new());
-    #[cfg(not(target_os = "macos"))]
-    let sandbox: Box<dyn sandbox::Sandbox> = Box::new(sandbox::LinuxSandbox::new());
+            #[cfg(target_os = "macos")]
+            let sandbox: Box<dyn sandbox::Sandbox> =
+                Box::new(sandbox::DarwinSandbox::new());
+            #[cfg(not(target_os = "macos"))]
+            let sandbox: Box<dyn sandbox::Sandbox> =
+                Box::new(sandbox::LinuxSandbox::new());
 
-    let builder = LocalBuilder::new(store, sandbox);
-
-    Ok(IfdRealizer { rt, builder, substitutor })
+            let builder = LocalBuilder::new(store, sandbox);
+            Ok(IfdRealizer::Direct { rt, builder, substitutor })
+        }
+        Some(StoreAccess::Daemon(store)) => Ok(IfdRealizer::Daemon { rt, store }),
+        None => Err(format!(
+            "no store-write path: /nix/store is not writable and no nix daemon \
+             socket is reachable at {} (set NIX_REMOTE=daemon or run the daemon)",
+            sui_store::default_daemon_socket().display()
+        )),
+    }
 }
 
 /// Realize one derivation output: substitute-then-build its closure until the
-/// `.drv`'s outputs are present on disk. Byte-parity-safe: the drvPath is
+/// demanded output is present in the store. Byte-parity-safe: the drvPath is
 /// computed by the evaluator's module fixpoint (already byte-identical to nix),
-/// so the realized output is byte-identical to nix's.
+/// so the realized output is byte-identical to nix's — a `Direct` build and a
+/// `Daemon` build both produce the same bytes at the same content-addressed
+/// path.
 fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
     use sui_build::BuildClosure;
 
@@ -6144,30 +6181,40 @@ fn ifd_realize(drv_path: &str, out_path: &str) -> Result<(), String> {
         let borrow = cell.borrow();
         let realizer = borrow.as_ref().expect("realizer built above");
 
-        let closure = BuildClosure::compute(drv_path)
-            .map_err(|e| format!("closure {drv_path}: {e}"))?;
-        let result = realizer
-            .rt
-            .block_on(
-                realizer
-                    .builder
-                    .build_closure(&closure, Some(&realizer.substitutor)),
-            )
-            .map_err(|e| format!("build {drv_path}: {e}"))?;
-        if !result.success {
-            return Err(format!("build failed for {drv_path}:\n{}", result.log));
-        }
+        match realizer {
+            IfdRealizer::Direct { rt, builder, substitutor } => {
+                let closure = BuildClosure::compute(drv_path)
+                    .map_err(|e| format!("closure {drv_path}: {e}"))?;
+                let result = rt
+                    .block_on(builder.build_closure(&closure, Some(substitutor)))
+                    .map_err(|e| format!("build {drv_path}: {e}"))?;
+                if !result.success {
+                    return Err(format!("build failed for {drv_path}:\n{}", result.log));
+                }
 
-        // Verify the demanded output is now present — a build/substitute that
-        // "succeeded" but didn't produce this path is a real error, not a
-        // silent pass.
-        let read_path = sui_eval::path::materialize_str(out_path);
-        if !std::path::Path::new(&read_path).exists() {
-            return Err(format!(
-                "realized {drv_path} but expected output {out_path} is still absent on disk"
-            ));
+                // Verify the demanded output is now present — a build that
+                // "succeeded" but didn't produce this path is a real error.
+                let read_path = sui_eval::path::materialize_str(out_path);
+                if !std::path::Path::new(&read_path).exists() {
+                    return Err(format!(
+                        "realized {drv_path} but expected output {out_path} is still absent on disk"
+                    ));
+                }
+                Ok(())
+            }
+            IfdRealizer::Daemon { rt, store } => {
+                // The daemon does the privileged work: AddToStore the computed
+                // `.drv` closure (byte-identical to nix), then BuildPaths
+                // (substitute-or-build). The returned `Realized` proof is only
+                // constructible when the daemon attests the output valid at its
+                // content-addressed path — a wrong/absent output cannot pass.
+                let realized = rt
+                    .block_on(sui_store::realize_via_daemon(store, drv_path, out_path))
+                    .map_err(|e| format!("daemon realize {drv_path}: {e}"))?;
+                debug_assert_eq!(realized.out_path(), out_path);
+                Ok(())
+            }
         }
-        Ok(())
     })
 }
 

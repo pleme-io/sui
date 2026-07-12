@@ -19,6 +19,7 @@
 
 pub mod binary_cache;
 pub mod convergence;
+pub mod daemon_realize;
 pub mod entity;
 pub mod http;
 pub mod local;
@@ -29,6 +30,10 @@ pub mod substitute;
 pub mod traits;
 
 pub use binary_cache::{BinaryCacheError, BinaryCacheStore, BinaryCacheStoreBuilder};
+pub use daemon_realize::{
+    default_daemon_socket, realize_via_daemon, DaemonRealizeError, DaemonStore, Realized,
+    StoreAccess, WritableStore, DEFAULT_DAEMON_SOCKET,
+};
 pub use http::{HttpClient, HttpError, HttpResponse, ReqwestHttpClient};
 pub use local::{LocalStore, LocalStoreMode};
 pub use nar::decompress_nar;

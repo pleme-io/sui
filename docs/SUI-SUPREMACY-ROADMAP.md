@@ -132,11 +132,47 @@ assertion flip, `nixos-rebuild-cli-shim`.
 
 ### Phase C — Store write path hardening (the two InProgress→Done conversions)
 Parallelizable with A (no dependency on module-system).
+- **C0 IFD realize on a multi-user store — ✅ LANDED (daemon-store-write pivot).**
+  On the operator's daemon-based Mac (`/nix/store` + `db.sqlite` root-owned, sui
+  runs uid 501) the IFD realize hook's `LocalBuilder`/`open_rw` path could not
+  write, so `import (stylix-fonts)` computed the right `.drv` then died at
+  `cannot read <drv>`. The pivot routes IFD realize through the running nix daemon
+  (worker protocol): `AddTextToStore` the computed `.drv` closure (byte-identical
+  to nix) → `BuildPaths` (substitute-or-build) → `IsValidPath` attestation. Two
+  seals in `sui-store/src/daemon_realize.rs`:
+  - **`StoreAccess` dispatch** (`Direct(WritableStore)` | `Daemon(DaemonStore)`),
+    chosen at construction. `WritableStore`'s only constructor probes writability,
+    so `Direct` over a read-only store is *unconstructable* → the `cannot read
+    <drv>` failure class is **truly-unrepresentable on the dispatch axis** (not a
+    runtime guard). The IFD hook (`src/main.rs`) dispatches on it.
+  - **`Realized` proof** — sole constructor requires the daemon to attest the
+    output valid at its content-addressed store path; a wrong/absent output is
+    **parse-time-rejected**. Tier: **C2 external-observation ceiling** — sui
+    observes the daemon's content-addressing attestation rather than re-hashing
+    root-owned bytes it cannot read.
+  - **Proven live end-to-end**: `sui eval` on a `pathExists "${pkgs.hello}/bin/…"`
+    IFD flake realizes hello via the daemon (both fast-path and, after GC'ing the
+    output, the full AddTextToStore+BuildPaths **substitute** path), returning the
+    same `true` as the nix oracle. Regression test:
+    `sui-store/tests/daemon_realize_oracle.rs`. `sui parity` = 39 match, 0
+    regressions, `hello` byte-identical throughout.
+  - **What this unlocks:** IFD realize now works on the operator's multi-user
+    store (the build-half's store-write dependency) and it is the reusable
+    daemon-write substrate C1 should consume. **What remains:** the cid
+    *full-toplevel* eval still does **not** reach IFD at all — it blocks in the
+    Phase A module-system fixpoint (0% CPU, no drv instantiated, no `sui-drv-cache`
+    written), exactly where §0 says it does. So IFD-on-cid is gated on Phase A
+    landing first, then on sui's darwin-eval byte-parity for that closure (the
+    pivot's aarch64-darwin IFD probe surfaced a real `perl-5.42.0-devdoc`
+    output-path divergence — a pre-existing eval-parity gap the daemon correctly
+    rejects, not a pivot defect). The pivot is proven on the *isolated* IFD flake;
+    the cid demonstration waits on the upstream gate.
 - **C1 store-add-path:** promote the unprivileged CLI shim to a real
   daemon-mediated write. **Target:** `sui store add-path <dir>` produces the same
   `/nix/store/<hash>-<name>` + registers in the DB as `nix store add-path`.
   **Oracle:** `nix store add-path <dir> --name n` vs sui path string + DB row.
-  **Gap: M** (the `add_to_store` realizer exists; wire the CLI through the daemon).
+  **Gap: M** (the `add_to_store` realizer exists; wire the CLI through the daemon;
+  the C0 pivot's `DaemonConn` worker-protocol client is the reusable substrate).
 - **C2 store-gc → Done:** re-label + add the oracle. **Target:** sui's dead set ==
   `nix-store --gc --print-dead`. **Oracle:** exactly that. **Gap: S** (impl done;
   needs the differential test).
