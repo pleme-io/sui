@@ -65,9 +65,28 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let attrs = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
-                // Fresh result map — insertion order discarded; sorted iter
-                // was dead work. The predicate is a pure per-entry test whose
-                // outcome is order-independent, so this is byte-neutral.
+                // Fresh result map — insertion order is discarded (re-derived
+                // sorted at any sink), so the sorted `iter()` was dead work.
+                //
+                // NEEDS-PER-SITE-VERIFICATION (PERF-ARSENAL C-filter), argument
+                // discharged: byte-neutral on the SUCCESS path, verified by two
+                // obligations —
+                //  (a) NO drvPath on the error path: this builtin only ever
+                //      builds a fresh plain attrset; it constructs no derivation
+                //      and produces no drvPath. On a predicate throw it returns
+                //      `Err` with no value, so the sui-parity byte axis (drvPath)
+                //      is unreachable when order could matter.
+                //  (b) NO cross-entry force dependency: the predicate is applied
+                //      per entry as `apply(pred, k)` then `apply_and_force(_, v)`
+                //      — a fresh partial application each time over an immutable
+                //      shared `pred`. One entry's force neither changes another
+                //      entry's boolean outcome nor whether it throws.
+                // Residual (NOT rounded up): under iter_unsorted, WHICH throwing
+                // entry errors FIRST is hasher-seed-nondeterministic, so the
+                // error *message* is order-sensitive — success-neutral, not
+                // error-deterministic. Byte-parity is unaffected (no drvPath on
+                // error); this stays NEEDS-VERIFICATION-with-argument, not
+                // PROVABLY-NEUTRAL.
                 for (k, v) in attrs.iter_unsorted() {
                     let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
                     if crate::eval::apply_and_force(partial, v.clone())?.as_bool()? {

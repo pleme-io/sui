@@ -653,5 +653,61 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
+    // ── attrs-eq structural compare by borrow (PERF-ARSENAL C-A) ──────────
+    // `Concrete::eq`'s Attrs arm now compares `a.as_flat() == b.as_flat()`
+    // (borrow) instead of `a.inner() == b.inner()` (clone-then-compare). Both
+    // run the identical `HashMap::eq`; the clone was dead allocation. These
+    // rows seal that attrset `==` — used pervasively by `elem`/`unique`/set
+    // membership — is byte-neutral, including when the equality result flows
+    // into a derivation input (the byte-parity axis).
+
+    // Value-level: attrset `==` true / false, and set-membership via `elem`.
+    rows.push(row(
+        "attrs-eq deep true/false + elem (value)",
+        NixValue::Raw(
+            r#"(builtins.toString [
+                 ({ a = 1; b = { c = 2; }; } == { a = 1; b = { c = 2; }; })
+                 ({ a = 1; b = { c = 2; }; } == { a = 1; b = { c = 3; }; })
+                 (builtins.elem { x = 1; y = "two"; } [ { p = 0; } { x = 1; y = "two"; } ])
+               ])"#
+                .to_string(),
+        ),
+        RowExpect::Match,
+    ));
+
+    // Load-bearing byte check: an attrset `==` decides WHICH strings become a
+    // derivation's args, so a broken eq would change the drvPath. Keep only the
+    // entries whose `k` attrset is structurally-equal to `{ keep = true; }`,
+    // then project each kept entry to its string `v` — the eq result drives the
+    // build-input set that hashes into the drvPath.
+    rows.push(row(
+        "attrs-eq selects derivation arg — drvPath",
+        NixValue::Raw(
+            r#"(derivation {
+                 name = "eq-arg";
+                 system = "x86_64-linux";
+                 builder = "/bin/sh";
+                 args = builtins.map (e: e.v)
+                          (builtins.filter (e: e.k == { keep = true; }) [
+                            { k = { keep = true; };  v = "yes"; }
+                            { k = { keep = false; }; v = "no"; }
+                            { k = { keep = true; };  v = "also"; }
+                          ]);
+               }).drvPath"#
+                .to_string(),
+        ),
+        RowExpect::Match,
+    ));
+
+    // ── filterAttrs (PERF-ARSENAL C-filter) — NO parity corpus row ─────────
+    // `builtins.filterAttrs` is a sui-ONLY extension builtin: real nix has no
+    // such builtin (`builtins ? filterAttrs` = false), and nixpkgs'
+    // `lib.filterAttrs` is defined as `removeAttrs set (filter …)` — it never
+    // routes through it. So (a) it cannot be byte-compared against a nix oracle
+    // (there is nothing to compare), and (b) the marquee nixpkgs eval never
+    // reaches sui's builtin, so its `iter_unsorted` has ZERO byte-parity impact
+    // on the corpus. The C-filter success-path neutrality is sealed by a
+    // sui-internal result-set unit test in builtins/attrs.rs, NOT here.
+
     rows
 }

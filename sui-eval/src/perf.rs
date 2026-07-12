@@ -105,9 +105,20 @@ pub enum Counter {
     ListConcatCalls = 36,
     ListConcatElemsCopied = 37,
     ListConcatElemsReused = 38,
+    // Attrset structural equality (`Concrete::eq` Attrs arm, the non-ptr-eq /
+    // non-derivation fallback that runs a full structural compare).
+    // `AttrsEqStructuralCalls` counts how often that fallback is reached — each
+    // is one site where the old `a.inner() == b.inner()` cloned BOTH backing
+    // FxHashMaps purely to feed `HashMap::eq`. `AttrsEqEntriesCloneElided`
+    // accumulates the combined entry count of both operands (the total map
+    // entries no longer cloned by the borrow-compare fix). Purely a
+    // measurement of eliminated clone/allocation work — the compare itself is
+    // byte-identical (PERF-ARSENAL C-A).
+    AttrsEqStructuralCalls = 39,
+    AttrsEqEntriesCloneElided = 40,
 }
 
-const NUM_COUNTERS: usize = 39;
+const NUM_COUNTERS: usize = 41;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -150,6 +161,8 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "list_concat_calls",
     "list_concat_elems_copied",
     "list_concat_elems_reused",
+    "attrs_eq_structural_calls",
+    "attrs_eq_entries_clone_elided",
 ];
 
 struct PerfCounters {
@@ -416,6 +429,17 @@ pub fn report() {
             eprintln!("  elems_reused:      {lc_reused}  (in-place, Rc uniquely owned)");
             eprintln!("  reuse_rate:        {reuse_pct:.1}%");
         }
+        // Attrset structural `==` — the clones the borrow-compare fix elides.
+        let eq_calls = c.get(Counter::AttrsEqStructuralCalls);
+        let eq_elided = c.get(Counter::AttrsEqEntriesCloneElided);
+        if eq_calls > 0 {
+            eprintln!("--- attrs structural eq (`==` fallback) ---");
+            eprintln!("  structural_calls:  {eq_calls}");
+            eprintln!(
+                "  map_clones_elided: {}  ({eq_elided} entries not cloned — was 2 FxHashMap clones/call)",
+                eq_calls * 2
+            );
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -600,7 +624,7 @@ mod tests {
     #[test]
     fn counter_enum_has_30_variants() {
         // Each variant maps to a fixed index; NUM_COUNTERS is the array size.
-        assert_eq!(NUM_COUNTERS, 39);
+        assert_eq!(NUM_COUNTERS, 41);
         assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
         assert_eq!(Counter::OverlayCreated as usize, 33);
         assert_eq!(Counter::SortedEntriesCalls as usize, 34);
@@ -608,6 +632,8 @@ mod tests {
         assert_eq!(Counter::ListConcatCalls as usize, 36);
         assert_eq!(Counter::ListConcatElemsCopied as usize, 37);
         assert_eq!(Counter::ListConcatElemsReused as usize, 38);
+        assert_eq!(Counter::AttrsEqStructuralCalls as usize, 39);
+        assert_eq!(Counter::AttrsEqEntriesCloneElided as usize, 40);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

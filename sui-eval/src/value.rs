@@ -529,7 +529,32 @@ impl PartialEq for Concrete {
                 {
                     return pa == pb;
                 }
-                a.inner() == b.inner()
+                // Structural compare by BORROW, not by clone. The prior
+                // `a.inner() == b.inner()` flattened AND cloned *both* backing
+                // FxHashMaps (`inner()` = `as_flat().clone()`) purely to feed
+                // `HashMap::eq` — the clone is dead work. `as_flat()` returns a
+                // borrow into the (memoized-if-overlay) map, so
+                // `a.as_flat() == b.as_flat()` runs the *identical*
+                // `HashMap::eq`: same keys, same per-value `Value::eq` calls, in
+                // the same iteration order (FxHashMap clone preserves order, so
+                // even the clone path iterated in this order). PROVABLY-NEUTRAL
+                // on the demand axis: cloning a `Value` is an `Rc`-bump that
+                // forces NOTHING; the only `.demand()` calls in this arm are (1)
+                // the derivation short-circuit above (unchanged) and (2) inside
+                // `Value::eq` (unchanged — same values, same order). Removing the
+                // clone cannot move which thunk forces, when, or whether a throw
+                // surfaces. See docs/PERF-ARSENAL.md C-A.
+                let (fa, fb) = (a.as_flat(), b.as_flat());
+                if crate::perf::enabled() {
+                    crate::perf::inc(crate::perf::Counter::AttrsEqStructuralCalls);
+                    // Combined entry count of the two maps the old `inner()`
+                    // path would have cloned before comparing.
+                    crate::perf::add(
+                        crate::perf::Counter::AttrsEqEntriesCloneElided,
+                        (fa.len() + fb.len()) as u64,
+                    );
+                }
+                fa == fb
             }
             (Concrete::Lambda(a), Concrete::Lambda(b)) => Rc::ptr_eq(a, b),
             _ => false,
@@ -3169,6 +3194,100 @@ mod tests {
         assert!(
             Value::Attrs(Rc::new(a)) != Value::Attrs(Rc::new(b)),
             "non-derivation attrs with equal outPath but differing foo must be unequal",
+        );
+    }
+
+    // ── C-A: attrs-eq structural compare BY BORROW (PERF-ARSENAL) ─────────
+    // These seal that `Concrete::eq`'s Attrs arm — now `a.as_flat() ==
+    // b.as_flat()` instead of `a.inner() == b.inner()` — is result- and
+    // force-identical. The clone the old path did was pure allocation waste.
+
+    #[test]
+    fn attrs_eq_borrow_result_matches_multi_key() {
+        // Structural equality over a multi-key set with a nested attrset value
+        // must be unaffected by dropping the pre-compare clone.
+        let mk = || {
+            let mut inner = NixAttrs::new();
+            inner.insert("n".to_string(), Value::Int(7));
+            let mut a = NixAttrs::new();
+            a.insert("a".to_string(), Value::Int(1));
+            a.insert("b".to_string(), Value::string("two"));
+            a.insert("c".to_string(), Value::Attrs(Rc::new(inner)));
+            Value::Attrs(Rc::new(a))
+        };
+        assert!(mk() == mk(), "equal multi-key attrsets must compare equal (borrow path)");
+
+        // Differ in one value → unequal.
+        let mut b = NixAttrs::new();
+        b.insert("a".to_string(), Value::Int(1));
+        b.insert("b".to_string(), Value::string("TWO"));
+        let mut a2 = NixAttrs::new();
+        a2.insert("a".to_string(), Value::Int(1));
+        a2.insert("b".to_string(), Value::string("two"));
+        assert!(
+            Value::Attrs(Rc::new(a2)) != Value::Attrs(Rc::new(b)),
+            "attrsets differing in one value must be unequal (borrow path)",
+        );
+
+        // Differ in key SET → unequal.
+        let mut a3 = NixAttrs::new();
+        a3.insert("a".to_string(), Value::Int(1));
+        let mut b3 = NixAttrs::new();
+        b3.insert("a".to_string(), Value::Int(1));
+        b3.insert("extra".to_string(), Value::Int(9));
+        assert!(
+            Value::Attrs(Rc::new(a3)) != Value::Attrs(Rc::new(b3)),
+            "attrsets differing in key set must be unequal (borrow path)",
+        );
+    }
+
+    #[test]
+    fn attrs_eq_borrow_does_not_force_or_throw_on_shared_thunk() {
+        // The demand-order verification obligation, made concrete:
+        // `Value::eq` swallows force errors to `Null` (unwrap_or), so the
+        // Attrs arm NEVER throws in the map-value-compare path. Two attrsets
+        // that carry the SAME `Rc`-shared throwing thunk under a key that is
+        // NOT decisive for (in)equality must:
+        //   (a) compare via the structural (borrow) path without panicking, and
+        //   (b) never let the throw escape.
+        // If the borrow-compare forced the thunk and propagated the error, this
+        // test would fail — proving the clone-elision touched no `.demand()`
+        // behaviour that the old `inner()` clone path did not already exhibit.
+        let boom = Value::Thunk(Thunk::new_native(|| {
+            Err(EvalError::Throw("kaboom".to_string()))
+        }));
+        let mut a = NixAttrs::new();
+        a.insert("x".to_string(), Value::Int(1));
+        a.insert("t".to_string(), boom.clone()); // same Rc-shared throwing thunk
+        let mut b = NixAttrs::new();
+        b.insert("x".to_string(), Value::Int(2)); // decisive differ on `x`
+        b.insert("t".to_string(), boom);
+        // No panic, no escaped Err: the comparison returns a bool. `x` differs,
+        // so they are unequal — and crucially the throwing `t` thunk did not
+        // abort the comparison.
+        let va = Value::Attrs(Rc::new(a));
+        let vb = Value::Attrs(Rc::new(b));
+        assert!(va != vb, "differ on x → unequal, throwing thunk must not abort eq");
+    }
+
+    #[test]
+    fn attrs_eq_borrow_overlay_still_compares() {
+        // The `as_flat()` borrow path must also work when one side is an
+        // Overlay (its cache is populated by `as_flat()`), matching the old
+        // `inner()` path which flattened via the same `as_flat()`.
+        let mut base = NixAttrs::new();
+        base.insert("a".to_string(), Value::Int(1));
+        let mut over = NixAttrs::new();
+        over.insert("b".to_string(), Value::Int(2));
+        // Build an overlay { a = 1; } // { b = 2; } (lazy Overlay variant),
+        // exercising the `as_flat()` cache-population path on one side.
+        let merged = base.overlay(over);
+        let mut flat = NixAttrs::new();
+        flat.insert("a".to_string(), Value::Int(1));
+        flat.insert("b".to_string(), Value::Int(2));
+        assert!(
+            Value::Attrs(Rc::new(merged)) == Value::Attrs(Rc::new(flat)),
+            "overlay and equivalent flat attrset must compare equal (borrow path)",
         );
     }
 

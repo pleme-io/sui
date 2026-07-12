@@ -60,12 +60,34 @@ catalog exists to forbid.**
   derivation-env(→BTreeMap)/lazy_overlay_merge/merge_nested_insert(unique keys). truly-unrep. (DESIGN, M1.)
 
 ### NEEDS-PER-SITE-VERIFICATION — success-neutral only
-- **C-filter · `filterAttrs` iter_unsorted** (`attrs.rs:71-74`) — the one iter_unsorted site that is
-  NOT clean: **eagerly forces the predicate in the loop**, so which throwing key errors first is
-  hasher-seed-nondeterministic. Byte-neutral ONLY on the success path (no drvPath exists on error);
-  not error-deterministic. Ship only with the "no-drvPath-on-error + no-cross-entry-force-dep" argument + nix diff.
-- **C-A · attrs-eq-by-borrow** (`Concrete::eq` Attrs arm) — eq forces `type`/`outPath` via `.demand()`,
-  so clone-elision could change demand-order-observable throws. Needs a demand-order argument + nix diff.
+- **C-filter · `filterAttrs` iter_unsorted** (`attrs.rs`) — SHIPPED (already `iter_unsorted`) +
+  **VERIFIED + SEALED this branch (M1.5)**, stays NEEDS-VERIFICATION-with-argument. Both obligations
+  discharged: **(a) no drvPath on the error path** — the builtin only ever builds a fresh plain
+  attrset, constructs no derivation, and returns `Err` with no value on a predicate throw, so the
+  byte-parity axis (drvPath) is unreachable when order could matter; **(b) no cross-entry force
+  dependency** — the predicate is applied per entry as `apply(pred,k)` then `apply_and_force(_,v)`, a
+  fresh partial over an immutable shared `pred`; one entry's force changes neither another's boolean
+  outcome nor whether it throws. **Load-bearing finding: there is NO parity corpus row and there
+  cannot be** — `builtins.filterAttrs` is a sui-ONLY extension (`builtins ? filterAttrs` = false in
+  nix), and nixpkgs `lib.filterAttrs` is `removeAttrs set (filter …)` (never routes through it). So
+  the marquee nixpkgs eval NEVER reaches this builtin → its `iter_unsorted` has **ZERO byte-parity
+  impact on the corpus**. Sealed instead by sui-internal result-set + no-cross-entry-force unit tests
+  (`builtins/attrs.rs` tests). **Residual (NOT rounded up):** under `iter_unsorted` WHICH throwing
+  entry errors FIRST is hasher-seed-nondeterministic → the error *message* is order-sensitive
+  (success-neutral, not error-deterministic). Byte-parity unaffected. Stays NEEDS-VERIFICATION, NOT
+  promoted to PROVABLY-NEUTRAL.
+- **C-A · attrs-eq-by-borrow** (`Concrete::eq` Attrs arm) — **SHIPPED + PROMOTED to PROVABLY-NEUTRAL
+  this branch (M1.5).** `a.inner() == b.inner()` (which flattened AND cloned both backing FxHashMaps
+  via `inner()` = `as_flat().clone()`) → `a.as_flat() == b.as_flat()` (borrow). The demand-order
+  obligation is discharged, and stronger than the NEEDS-VERIFICATION prior suggested: **the clone
+  touches NO `.demand()` site.** Cloning a `Value` is an `Rc`-bump that forces nothing; the two maps
+  are compared by the *identical* `HashMap::eq` (same keys, same per-value `Value::eq` calls). The
+  only `.demand()` in the arm are (1) the derivation short-circuit ABOVE the clone (unchanged) and (2)
+  inside `Value::eq` — which **swallows force errors to `Null` (`unwrap_or`) and cannot throw**, so
+  the Attrs-eq compare path has no error to reorder at all. Result is order-independent (HashMap
+  equality). Sealed by 3 unit tests (incl. a shared-throwing-thunk no-force/no-throw test) + 2 parity
+  corpus rows (attrset `==`/`elem` value surface + an `==`-selected derivation-arg **drvPath** byte
+  check) + the `SUI_EVAL_PERF` `attrs-eq` counter (structural-eq calls + entries-clone-elided).
 
 ### RISKY / DEFAULT-NOT-NEUTRAL — the four "discovered candidates" (all touch force-order/identity)
 - **C-with · with-scope clone** (`value.rs:1961-1975`) — the exact **M2.6 ROOT #4a** lazy-namespace
@@ -145,7 +167,14 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
   at PROVABLY-NEUTRAL with a NAMED wall-time ceiling + 4 sealed corpus rows + the `SUI_EVAL_PERF`
   `list-concat` counter (the durable measurement tool).
 - **M1** — the PROVABLY-NEUTRAL one-liners (count-not-clone, map-builder family), each its own commit + corpus confirm.
-- **M1.5** — NEEDS-VERIFICATION (C-A, C-filter): success-path argument + explicit nix diff.
+- **M1.5** — NEEDS-VERIFICATION (C-A, C-filter): success-path argument + explicit nix diff. **SHIPPED
+  this branch.** C-A: `a.inner()==b.inner()` → `a.as_flat()==b.as_flat()`, demand-order obligation
+  discharged (the arm forces nothing in the compare path; `Value::eq` swallows to `Null`) →
+  **PROMOTED to PROVABLY-NEUTRAL**; sealed by 3 unit tests + 2 parity corpus rows (incl. an
+  `==`-selected drvPath) + a `SUI_EVAL_PERF attrs-eq` counter. C-filter: already `iter_unsorted`,
+  both obligations discharged, **stays NEEDS-VERIFICATION-with-argument** (error-message order
+  residual); NO corpus row possible — `builtins.filterAttrs` is sui-only + off the nixpkgs marquee
+  path (zero byte-parity impact); sealed by sui-internal result-set + no-cross-entry-force unit tests.
 - **M2** — RISKY arms (C-with → C-slash → C-store → C-eq-demand): per-site force-order proof + Parity Method,
   or stay REJECTED.
 - **M3** — `ContentKey<T>` type-move (stale-key axis → parse-rejected; purity stays C1).

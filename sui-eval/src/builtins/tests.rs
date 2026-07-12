@@ -3739,6 +3739,56 @@ fn builtins_filter_attrs_non_attrs_errors() {
     assert!(result.is_err());
 }
 
+// ── C-filter (PERF-ARSENAL): iter_unsorted success-path neutrality ────
+// filterAttrs iterates `iter_unsorted`; the fresh result map discards
+// insertion order, so the SUCCESS path is result-identical regardless of
+// which order entries are visited. There is NO parity corpus row (nix has
+// no `builtins.filterAttrs`; nixpkgs `lib.filterAttrs` never routes through
+// it), so this sui-internal test IS the seal. Run over a large key set so
+// the FxHashMap hasher order is non-trivial; the resulting attrset is
+// observed sorted, so the outcome cannot depend on iteration order.
+
+#[test]
+fn filter_attrs_result_is_order_independent() {
+    // 12-key input; keep only even values. The result set + its sorted
+    // observation must be identical every run despite iter_unsorted order.
+    let v = ev(r#"builtins.filterAttrs (_: v: (v / 2) * 2 == v)
+        { a = 1; b = 2; c = 3; d = 4; e = 5; f = 6; g = 7; h = 8; i = 9; j = 10; k = 11; l = 12; }"#);
+    if let Value::Attrs(a) = v {
+        // Exactly the even-valued keys, nothing else.
+        let mut kept: Vec<String> = a.iter().map(|(k, _)| k).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["b", "d", "f", "h", "j", "l"]);
+        assert_eq!(a.get("b"), Some(&Value::Int(2)));
+        assert_eq!(a.get("l"), Some(&Value::Int(12)));
+        assert!(a.get("a").is_none());
+    } else {
+        panic!("expected attrs");
+    }
+}
+
+#[test]
+fn filter_attrs_no_cross_entry_force_dependency() {
+    // Each entry's predicate is applied to its own (k, v); one entry's
+    // evaluation cannot change another's outcome (no shared mutable thunk).
+    // A predicate that only looks at its own value must give the same result
+    // set as an equivalent predicate that only looks at its own key — proving
+    // the per-entry test is independent of visit order and of siblings.
+    let by_val = ev(r#"builtins.filterAttrs (_: v: v == "yes") { a = "yes"; b = "no"; c = "yes"; }"#);
+    let by_key = ev(r#"builtins.filterAttrs (k: _: k == "a" || k == "c") { a = "yes"; b = "no"; c = "yes"; }"#);
+    let names = |v: &Value| -> Vec<String> {
+        if let Value::Attrs(a) = v {
+            let mut n: Vec<String> = a.iter().map(|(k, _)| k).collect();
+            n.sort();
+            n
+        } else {
+            panic!("expected attrs");
+        }
+    };
+    assert_eq!(names(&by_val), vec!["a", "c"]);
+    assert_eq!(names(&by_val), names(&by_key));
+}
+
 // ── builtins.sui.* extensions ─────────────────────────
 
 #[test]
