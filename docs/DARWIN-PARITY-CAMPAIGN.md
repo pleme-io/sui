@@ -36,9 +36,21 @@ largest reuse fact of the whole campaign.
 
 **But "darwin = small delta over linux" is an OVERCLAIM.** It conflates the shared
 kernel with the darwin stdenv CORPUS. Honest picture:
-1. The **102/104 byte-verified basket is x86_64-linux ONLY**, freshly-true (2026-07-11),
-   still 2 short (ffmpeg, neovim). There is **no verified darwin basket** beyond a single
-   darwin-native `hello` row. Darwin byte-parity is an **open, actively-worked frontier.**
+1. The byte-verified basket is x86_64-linux ONLY. As of **2026-07-12** the sealed
+   `sui parity` corpus stands at **58 match · 1 tracked · 0 regressions** (up from
+   the 102/104 broad-basket snapshot): of the two formerly-open leaves, **ffmpeg is
+   CLOSED** (byte-identical — the gstreamer full-set-then-dotted merge fix), and
+   **neovim is sealed `KnownDiverge`/tracked** — its root is localized (the
+   python2.7 `python2Extension` `with self; callPackage` layer reached through
+   `makeScopeWithSplicing'` splicing; a faithful synthetic repro of the plain
+   two-layer overlay does NOT diverge, so the trigger is a specific interaction in
+   the splicing-scope composition path, deferred as too risky for a parity-safe
+   session). The `SUI_PARITY_STRICT` un-blinding collector (`derivation.rs`
+   env-loop swallow ledger, default-behavior-unchanged) NAMES neovim's exact 4
+   dropped deps for the eventual fix. The basket was broadened this session with
+   python3/sqlite/cmake/libxml2/ruby/gnused rows, all MATCH. There is still **no
+   verified darwin basket** beyond the 9 darwin-native `currentSystem` rows (all
+   match). Darwin byte-parity is an **open, actively-worked frontier.**
 2. **Most cid-closure divergences will be the SAME general eval-primitive roots already
    burned down on linux** — darwin *surfaces more of them* (IFD/apple-sdk/flit-core exercise
    paths the linux baskets never hit), but they are general roots that **cascade to linux

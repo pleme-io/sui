@@ -4067,6 +4067,77 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).nettle.drvPath"))
             })
         }),
+        // ── BROADENED BASKET (2026-07-12): six more x86_64-linux packages, each
+        //    probed byte-for-byte sui-vs-nix and confirmed MATCH in this
+        //    session's parity run. These widen the sealed corpus across distinct
+        //    build-graph shapes — an interpreter multi-output set (python3), a
+        //    C-lib with a fetch+configure graph (sqlite), a build-system stdenv
+        //    (cmake), an XML lib with propagated deps (libxml2), a second
+        //    interpreter fixpoint (ruby), and a plain coreutils-class tool
+        //    (gnused) — so a regression in any of those classes fails the gate.
+        //    None hit the python2.7 `python2Extension` splicing path that keeps
+        //    neovim tracked; they exercise the already-CLOSED lazy-derivation +
+        //    with-scope + dotted-merge roots at greater breadth.
+        (ParityProbe { name: "eval python3 drvPath (x86_64-linux)", description: "nixpkgs python3 multi-output through the linux stdenv — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).python3.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval sqlite drvPath (x86_64-linux)", description: "nixpkgs sqlite C-lib fetch+configure graph — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).sqlite.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval cmake drvPath (x86_64-linux)", description: "nixpkgs cmake build-system stdenv — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).cmake.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval libxml2 drvPath (x86_64-linux)", description: "nixpkgs libxml2 with propagated deps — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).libxml2.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval ruby drvPath (x86_64-linux)", description: "nixpkgs ruby interpreter fixpoint — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).ruby.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval gnused drvPath (x86_64-linux)", description: "nixpkgs gnused coreutils-class tool — broadened basket 2026-07-12", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).gnused.drvPath"))
+            })
+        }),
         // REGRESSION GUARD (2026-07-10): the fully self-contained minimal repro
         // of the stage-collapse root — NO nixpkgs, pure builtins. A
         // `makeOverridable` package set with a perl↔libxcrypt cycle broken by
