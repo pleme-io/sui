@@ -1,0 +1,29 @@
+{
+  "tolerance": 0.15,
+  "rows": {
+    "attr-merge order1 (dotted then fullset)": {
+      "eval_expr": 10
+    },
+    "dotted full-set leaf deep-merge": {
+      "eval_expr": 6
+    },
+    "foldl' sum over range (arith hot loop)": {
+      "eval_expr": 2513
+    },
+    "recursive attrset fixpoint (rec self-reference)": {
+      "eval_expr": 10
+    },
+    "storm-A deep let-scope (60 chained bindings)": {
+      "eval_expr": 179
+    },
+    "storm-B overlay re-flatten (40-deep // chain, attrNames)": {
+      "eval_expr": 87
+    },
+    "storm-C deep attr merge (30 dotted + full-set collision)": {
+      "eval_expr": 11
+    },
+    "with-namespace laziness (attrNames over with-throw)": {
+      "eval_expr": 5
+    }
+  }
+}

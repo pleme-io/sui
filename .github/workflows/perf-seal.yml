@@ -1,0 +1,41 @@
+# Perf-seal regression box — the SPEED half of the sui↔nix parity seal.
+#
+# `sui perf-seal` runs the eval-shape corpus IN-PROCESS under the eval
+# work-counters and gates each shape against the committed work budget in
+# `src/perf-baseline.json`. A shape that starts doing more eval work than its
+# baseline fails this job the same way a drvPath change fails the byte-parity
+# gate — "eval got slower" is now a red CI check, not a silent drift.
+#
+# The gated metric is a DETERMINISTIC work counter (eval_expr), never
+# wall-clock, so this runs on a plain GitHub runner with no `nix` binary and
+# does not flake on runner noise (a tight ms budget on a shared runner would
+# false-positive and get muted — defeating the gate).
+name: perf-seal
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  perf-seal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build sui
+        run: cargo build -p sui --bin sui
+
+      # The provable box: exits non-zero on any speed-regression / eval-error /
+      # unpinned shape. stdout carries the machine-readable summary; the process
+      # exit code is the gate. No `nix` needed — the speed half is in-process.
+      - name: Run perf-seal gate
+        run: ./target/debug/sui perf-seal

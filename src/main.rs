@@ -9,6 +9,7 @@ use sui::{CliError, NIX_DB_PATH};
 mod agent;
 mod legacy;
 mod parity_corpus;
+mod perf_seal;
 use sui_cache::StorageBackend as _;
 use sui_store::{LocalStore, Store, Substitutor};
 
@@ -199,6 +200,23 @@ enum Commands {
         /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
         #[arg(long, default_value = "nix")]
         nix: std::path::PathBuf,
+    },
+    /// Perf-seal: the SPEED peer of `parity`. Runs the eval-shape corpus
+    /// in-process under the eval work-counters and gates each shape against a
+    /// committed work budget (`src/perf-baseline.json`). "Eval got slower"
+    /// fails CI the same way `parity`'s "drvPath changed" does. The gated
+    /// metric is deterministic WORK (eval_expr count), not flaky wall-clock —
+    /// a red row means a shape does more eval work, never runner noise.
+    #[command(name = "perf-seal")]
+    PerfSeal {
+        /// Emit machine-readable JSON instead of the Nord table.
+        #[arg(long)]
+        json: bool,
+        /// (Re)mint the committed baseline from the current measurements
+        /// instead of grading — pin a fresh baseline or lock in a proven
+        /// speedup. Commit the result.
+        #[arg(long)]
+        write_baseline: bool,
     },
     #[command(name = "print-dev-env")] PrintDevEnv { flake_ref: Option<String>, #[arg(long)] json: bool },
     Bundle { installable: String, #[arg(long)] bundler: Option<String>, #[arg(short = 'o', long)] out_link: Option<String> },
@@ -6231,6 +6249,9 @@ async fn main() -> Result<(), CliError> {
         }
         Commands::ParityBisect { expr, nix } => {
             cmd_parity_bisect(&nix, &expr)?;
+        }
+        Commands::PerfSeal { json, write_baseline } => {
+            perf_seal::run(json, write_baseline)?;
         }
         Commands::PrintDevEnv { flake_ref, .. } => { return Err(CliError::NotImplemented(format!("print-dev-env {}", flake_ref.as_deref().unwrap_or(".")))); }
         Commands::Bundle { installable, bundler, .. } => { return Err(CliError::NotImplemented(format!("bundle {installable} --bundler {}", bundler.as_deref().unwrap_or("default")))); }
