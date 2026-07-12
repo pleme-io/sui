@@ -234,7 +234,15 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         ))))
     });
 
-    // filterSource
+    // filterSource — `builtins.filterSource pred src` is exactly
+    // `builtins.path { path = src; filter = pred; }` in CppNix: same
+    // root-dumped-unconditionally + descendants-filtered semantics, same
+    // NAR-hash-of-the-materialized-tree store path. Route it through the
+    // shared `materialize_filtered` + `nar_hash_source_tree` engine so the
+    // two builtins can never drift, and so filterSource returns a real
+    // `/nix/store/…` NAR path (the prior impl returned a bespoke temp-dir
+    // path hashed over relative-path bytes — wrong shape AND wrong hash —
+    // and shared the same root-filter pruning bug as builtins.path did).
     register_curried(builtins, "filterSource", |pred, src| {
         let src_path = src.coerce_to_path("filterSource")?;
         let src_path_buf = std::path::PathBuf::from(&src_path);
@@ -244,95 +252,20 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 message: "no such file or directory".into(),
             });
         }
-        let name = src_path_buf
+        let canon = std::fs::canonicalize(&src_path_buf).unwrap_or(src_path_buf.clone());
+        let name = canon
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "source".into());
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        let pred_clone = pred.clone();
-        fn walk_filter(
-            base: &std::path::Path,
-            current: &std::path::Path,
-            pred: &Value,
-            hasher: &mut sha2::Sha256,
-            kept: &mut Vec<std::path::PathBuf>,
-        ) -> Result<(), EvalError> {
-            let metadata = std::fs::symlink_metadata(current).map_err(|e| EvalError::IoError {
-                context: format!("filterSource: {}", current.display()),
+        let pred_fn = crate::eval::force_value(&pred)?;
+        let hash_root = materialize_filtered(&canon, &pred_fn, &name)?;
+        let s = sui_compat::source::nar_hash_source_tree(&hash_root, &name).map_err(|e| {
+            EvalError::IoError {
+                context: format!("filterSource: NAR-hashing '{}'", hash_root.display()),
                 message: e.to_string(),
-            })?;
-            let kind = if metadata.is_dir() {
-                "directory"
-            } else if metadata.is_symlink() {
-                "symlink"
-            } else {
-                "regular"
-            };
-            let path_arg = Value::string(current.to_string_lossy().to_string());
-            let kind_arg = Value::string(kind);
-            let partial = crate::eval::apply(pred.clone(), path_arg)?;
-            let keep = crate::eval::apply_and_force(partial, kind_arg)?.as_bool()?;
-            if !keep {
-                return Ok(());
             }
-            let rel = current.strip_prefix(base).unwrap_or(current);
-            hasher.update(rel.to_string_lossy().as_bytes());
-            hasher.update([0u8]);
-            kept.push(current.to_path_buf());
-            if metadata.is_dir() {
-                let entries =
-                    std::fs::read_dir(current).map_err(|e| EvalError::IoError {
-                        context: format!("filterSource: {}", current.display()),
-                        message: e.to_string(),
-                    })?;
-                let mut sorted: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-                sorted.sort();
-                for child in sorted {
-                    walk_filter(base, &child, pred, hasher, kept)?;
-                }
-            }
-            Ok(())
-        }
-        let mut kept_paths: Vec<std::path::PathBuf> = Vec::new();
-        walk_filter(&src_path_buf, &src_path_buf, &pred_clone, &mut hasher, &mut kept_paths)?;
-        let hash = format!("{:x}", hasher.finalize());
-        let target = std::env::temp_dir()
-            .join("sui-filterSource")
-            .join(format!("{hash}-{name}"));
-        if !target.exists() {
-            std::fs::create_dir_all(&target).map_err(|e| EvalError::IoError {
-                context: format!("filterSource: {}", target.display()),
-                message: e.to_string(),
-            })?;
-            for kept in &kept_paths {
-                let rel = kept.strip_prefix(&src_path_buf).unwrap_or(kept);
-                if rel.as_os_str().is_empty() {
-                    continue;
-                }
-                let dst = target.join(rel);
-                let metadata =
-                    std::fs::symlink_metadata(kept).map_err(|e| EvalError::IoError {
-                        context: format!("filterSource: {}", kept.display()),
-                        message: e.to_string(),
-                    })?;
-                if metadata.is_dir() {
-                    std::fs::create_dir_all(&dst).map_err(|e| EvalError::IoError {
-                        context: format!("filterSource: {}", dst.display()),
-                        message: e.to_string(),
-                    })?;
-                } else {
-                    if let Some(parent) = dst.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    std::fs::copy(kept, &dst).map_err(|e| EvalError::IoError {
-                        context: format!("filterSource: {}", dst.display()),
-                        message: e.to_string(),
-                    })?;
-                }
-            }
-        }
-        Ok(Value::Path(Box::new(SmolStr::from(target.to_string_lossy().as_ref()))))
+        })?;
+        Ok(Value::Path(Box::new(SmolStr::from(s.store_path.as_str()))))
     });
 }
 
@@ -354,36 +287,37 @@ fn materialize_filtered(
     name: &str,
 ) -> Result<std::path::PathBuf, EvalError> {
     // Recursively decide + record kept entries (relative paths).
+    //
+    // CRITICAL semantic: CppNix NEVER applies the filter to the ROOT
+    // path handed to `builtins.path` / `filterSource` — the root is
+    // dumped unconditionally, and the filter governs only which of its
+    // *descendants* are included. So `walk` always keeps `current` and
+    // only consults the filter for each *child* before recursing into
+    // it. Applying the filter to the root and pruning on a `false`
+    // result (the prior bug) empties the whole tree whenever the root's
+    // basename fails the predicate — which is EXACTLY what every
+    // `lib.cleanSourceWith { filter = p: t: elem (baseNameOf p) [...] }`
+    // does (the root dir's basename is never in the keep-list). That
+    // made `documentation-highlighter`'s filtered `src` NAR-hash to the
+    // empty-directory store path (0ccnxa25…) instead of nix's l2kdhi9h…,
+    // and every drv consuming a filtered source diverged its output path
+    // (Darwin Root #2).
     fn walk(
         base: &std::path::Path,
         current: &std::path::Path,
+        current_md: &std::fs::Metadata,
         filter_fn: &Value,
         kept: &mut Vec<(std::path::PathBuf, std::fs::Metadata)>,
     ) -> Result<(), EvalError> {
-        let md = std::fs::symlink_metadata(current).map_err(|e| EvalError::IoError {
-            context: format!("builtins.path filter: {}", current.display()),
-            message: e.to_string(),
-        })?;
-        let type_str = if md.is_dir() {
-            "directory"
-        } else if md.file_type().is_symlink() {
-            "symlink"
-        } else {
-            "regular"
-        };
-        // nix passes the absolute path string as the first arg.
-        let path_arg = Value::string(current.to_string_lossy().to_string());
-        let type_arg = Value::string(type_str);
-        let partial = crate::eval::apply(filter_fn.clone(), path_arg)?;
-        let keep = crate::eval::apply_and_force(partial, type_arg)?.as_bool()?;
-        if !keep {
-            return Ok(());
-        }
+        // `current` is already decided-kept by the caller (the root is
+        // kept unconditionally; a child is kept iff it passed the
+        // filter). Record it, then descend into a kept directory's
+        // children, filtering each.
         let rel = current.strip_prefix(base).unwrap_or(current).to_path_buf();
         if !rel.as_os_str().is_empty() {
-            kept.push((rel, md.clone()));
+            kept.push((rel, current_md.clone()));
         }
-        if md.is_dir() {
+        if current_md.is_dir() {
             let mut children: Vec<std::path::PathBuf> = std::fs::read_dir(current)
                 .map_err(|e| EvalError::IoError {
                     context: format!("builtins.path filter: {}", current.display()),
@@ -394,14 +328,37 @@ fn materialize_filtered(
                 .collect();
             children.sort();
             for child in children {
-                walk(base, &child, filter_fn, kept)?;
+                let child_md = std::fs::symlink_metadata(&child).map_err(|e| EvalError::IoError {
+                    context: format!("builtins.path filter: {}", child.display()),
+                    message: e.to_string(),
+                })?;
+                let type_str = if child_md.is_dir() {
+                    "directory"
+                } else if child_md.file_type().is_symlink() {
+                    "symlink"
+                } else {
+                    "regular"
+                };
+                // nix passes the absolute path string as the first arg.
+                let path_arg = Value::string(child.to_string_lossy().to_string());
+                let type_arg = Value::string(type_str);
+                let partial = crate::eval::apply(filter_fn.clone(), path_arg)?;
+                let keep = crate::eval::apply_and_force(partial, type_arg)?.as_bool()?;
+                if !keep {
+                    continue;
+                }
+                walk(base, &child, &child_md, filter_fn, kept)?;
             }
         }
         Ok(())
     }
 
     let mut kept: Vec<(std::path::PathBuf, std::fs::Metadata)> = Vec::new();
-    walk(src_root, src_root, filter_fn, &mut kept)?;
+    let root_md = std::fs::symlink_metadata(src_root).map_err(|e| EvalError::IoError {
+        context: format!("builtins.path filter: {}", src_root.display()),
+        message: e.to_string(),
+    })?;
+    walk(src_root, src_root, &root_md, filter_fn, &mut kept)?;
 
     // Deterministic temp dir keyed by the source path + the sorted set
     // of kept relative paths (so two different filters over the same

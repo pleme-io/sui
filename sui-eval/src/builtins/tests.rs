@@ -3467,7 +3467,10 @@ fn builtins_format_unix_yyyymmddhhmmss_basic() {
 // ── filterSource ──────────────────────────────────────
 
 #[test]
-fn builtins_filter_source_keeps_all_returns_path() {
+fn builtins_filter_source_keeps_all_returns_store_path() {
+    // `builtins.filterSource` returns the NAR-hashed /nix/store/… path of
+    // the (filtered) tree — NOT a materialized temp dir. The materialized
+    // tree is an internal detail consumed only for hashing.
     let dir = std::env::temp_dir().join("sui_eval_filter_src_keep");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -3479,10 +3482,11 @@ fn builtins_filter_source_keeps_all_returns_path() {
     );
     let v = eval(&expr).unwrap();
     if let Value::Path(p) = v {
-        assert!(std::path::Path::new(p.as_str()).exists(), "target {p} should exist");
-        // Both kept files should be present.
-        assert!(std::path::Path::new(p.as_str()).join("a.txt").exists());
-        assert!(std::path::Path::new(p.as_str()).join("b.txt").exists());
+        assert!(
+            p.as_str().starts_with("/nix/store/"),
+            "filterSource must return a /nix/store path, got {p}"
+        );
+        assert!(p.as_str().ends_with("-sui_eval_filter_src_keep"));
     } else {
         panic!("expected path");
     }
@@ -3491,22 +3495,36 @@ fn builtins_filter_source_keeps_all_returns_path() {
 
 #[test]
 fn builtins_filter_source_filters_by_predicate() {
+    // The predicate governs DESCENDANTS only; the root is dumped
+    // unconditionally (CppNix parity — the fix for Darwin Root #2).
+    // Dropping `drop.txt` must change the resulting store path relative to
+    // a keep-everything filter (so filtering demonstrably takes effect and
+    // does NOT prune the whole tree on the root's predicate result).
     let dir = std::env::temp_dir().join("sui_eval_filter_src_pred");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("keep.txt"), "k").unwrap();
     std::fs::write(dir.join("drop.txt"), "d").unwrap();
-    let expr = format!(
+
+    let filtered = match eval(&format!(
         r#"builtins.filterSource (path: type: type == "directory" || (builtins.match ".*keep.*" path != null)) "{}""#,
         dir.display()
+    )).unwrap() {
+        Value::Path(p) => p.as_str().to_string(),
+        _ => panic!("expected path"),
+    };
+    let keep_all = match eval(&format!(
+        r#"builtins.filterSource (path: type: true) "{}""#,
+        dir.display()
+    )).unwrap() {
+        Value::Path(p) => p.as_str().to_string(),
+        _ => panic!("expected path"),
+    };
+    assert!(filtered.starts_with("/nix/store/"), "got {filtered}");
+    assert_ne!(
+        filtered, keep_all,
+        "filtered tree (drop.txt excluded) must hash differently from the keep-all tree"
     );
-    let v = eval(&expr).unwrap();
-    if let Value::Path(p) = v {
-        assert!(std::path::Path::new(p.as_str()).join("keep.txt").exists());
-        assert!(!std::path::Path::new(p.as_str()).join("drop.txt").exists());
-    } else {
-        panic!("expected path");
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

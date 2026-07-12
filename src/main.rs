@@ -3847,6 +3847,38 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             Box::new(move || diff_eval(&sui, &nix,
                 "let s = { a.b = \"x\"; a = { c = \"y\"; }; }; in s.a.b + s.a.c"))
         }),
+        // CLOSED (Darwin Root #2, 2026-07-11): `builtins.path { filter; }` /
+        // `lib.cleanSourceWith` was applying the filter to the SOURCE ROOT
+        // itself and pruning the whole tree on a `false` result. Every
+        // `filter = p: t: elem (baseNameOf p) [...]` (the cleanSourceWith
+        // shape) returns false on the root dir (its basename is never in the
+        // keep-list), so sui NAR-hashed the EMPTY directory instead of the
+        // filtered contents — collapsing `documentation-highlighter`'s src to
+        // the empty-dir store path and diverging every drv consuming a filtered
+        // source. Fix: the root is dumped unconditionally; the filter governs
+        // only its descendants (paths.rs::materialize_filtered). This probe is
+        // self-contained (writes its own two-file dir) so it needs no
+        // <nixpkgs>: `keep.txt` survives, `drop.txt` + the root-that-fails-the-
+        // predicate must NOT empty the tree.
+        (ParityProbe { name: "eval builtins.path filter keeps root", description: "cleanSourceWith-shaped filter: root dumped unconditionally, only descendants filtered (Darwin Root #2)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let dir = std::env::temp_dir().join("sui-parity-pathfilter-src");
+                if std::fs::create_dir_all(&dir).is_err() {
+                    return ParityVerdict::Skipped("could not create temp source dir".into());
+                }
+                if std::fs::write(dir.join("keep.txt"), b"kept\n").is_err()
+                    || std::fs::write(dir.join("drop.txt"), b"dropped\n").is_err()
+                {
+                    return ParityVerdict::Skipped("could not write temp source files".into());
+                }
+                let d = dir.display();
+                diff_eval(&sui, &nix, &format!(
+                    "toString (builtins.path {{ path = {d}; name = \"source\"; \
+                     filter = path: type: (baseNameOf path) == \"keep.txt\"; }})"
+                ))
+            })
+        }),
         (ParityProbe { name: "eval hello drvPath", description: "nixpkgs hello through stdenv (ecosystem target)", expect: Expect::KnownDiverge }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
