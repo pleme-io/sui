@@ -265,3 +265,71 @@ fn nixos_system_empty_modules_terminates() {
         other => panic!("expected system.name string, got {}", other.type_name()),
     }
 }
+
+// ── Marquee darwin proof — flake-input `outPath` store-materialization ─
+//
+// The darwin counterpart of the M2.6 nixosSystem proof surfaced its OWN
+// frontier, one layer below the module fixpoint (which byte-matches cppnix
+// for darwinSystem exactly as it does for nixosSystem — verified via
+// `config.system.build.toplevel.name` == "darwin-system-25.11.dirty" and
+// `config.system.stateVersion` == 5).
+//
+// ROOT: a fetched (github/tarball) flake input's `outPath` was the raw
+//   sui fetcher CACHE path (`~/.cache/sui/inputs/…`) instead of the cppnix
+//   `/nix/store/<narhash>-source` store copy that `self` already produced
+//   (`flake_eval.rs` §4c `nar_hash_source_tree`).  Any system config that
+//   embeds `nixpkgs.source` into a derivation (nix-darwin's
+//   `/etc/nix/registry.json`, NIX_PATH) therefore diverged at the toplevel
+//   drvPath while the whole module fixpoint matched byte-for-byte.
+//   `parity-bisect` on the darwin toplevel named the exact leaf
+//   (`etc-registry.json.drv`) with two symptoms: the embedded `to.path`
+//   text differed, and `inputSrcs` was missing the `source` reference.
+//
+// FIX (`flake_eval.rs`): NAR-hash every fetched input tree to its cppnix
+//   `-source` store path (mirroring `self`) AND carry copy-to-store string
+//   context on the resulting `outPath` so the downstream derivation records
+//   the matching `source` inputSrc.
+//
+// This assertion pins the root: a transitive flake input's `outPath` MUST
+// be an in-store `/nix/store/…-source` path, never a `.cache/sui/inputs`
+// path.  Uses the HOME-relative nix-darwin input already in the sui cache.
+
+/// Marquee darwin — a fetched flake input's `outPath` is the in-store
+/// `-source` copy, never the raw sui fetcher cache path.
+#[test]
+fn flake_input_outpath_is_store_source_not_cache() {
+    if common::skip_if_offline("marquee_darwin_flake_input_outpath") {
+        return;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    // The nix-darwin flake pulled into the sui input cache (HOME-relative).
+    let darwin_flake = std::path::PathBuf::from(&home).join(
+        ".cache/sui/inputs/github-LnL7-nix-darwin-ebec37af18215214173c98cf6356d0aca24a2585/\
+         nix-darwin-ebec37af18215214173c98cf6356d0aca24a2585",
+    );
+    if !darwin_flake.join("flake.nix").exists() {
+        println!("skip: pinned nix-darwin flake not in sui input cache");
+        return;
+    }
+    let expr = format!(
+        "builtins.toString (builtins.getFlake \"path:{}\").inputs.nixpkgs.outPath",
+        darwin_flake.display(),
+    );
+    let value = sui_eval::eval(&expr).expect("getFlake input outPath must evaluate");
+    let forced = sui_eval::eval::force_value(&value).expect("outPath forces");
+    match forced {
+        sui_eval::value::Value::String(s) => {
+            let p = s.as_str();
+            println!("flake input nixpkgs.outPath = {p:?}");
+            assert!(
+                p.starts_with("/nix/store/") && p.ends_with("-source"),
+                "flake input outPath must be an in-store `-source` copy, got {p:?}"
+            );
+            assert!(
+                !p.contains(".cache/sui/inputs"),
+                "flake input outPath must NOT leak the sui fetcher cache path, got {p:?}"
+            );
+        }
+        other => panic!("expected outPath string, got {}", other.type_name()),
+    }
+}

@@ -99,8 +99,35 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                     if locked.source_type == "path" {
                         locked.path.clone().unwrap_or_default()
                     } else {
+                        // Byte-parity root (marquee darwin proof, 2026-07-11):
+                        // CppNix copies every fetched flake input tree INTO the
+                        // nix store as `/nix/store/<narhash>-source` and exposes
+                        // THAT store path as the input's `outPath` — the same
+                        // step `self` already runs below (§4c
+                        // `nar_hash_source_tree`).  The transitive inputs
+                        // previously used the raw fetcher CACHE path
+                        // (`~/.cache/sui/inputs/…`) verbatim, so any system
+                        // config that embeds `nixpkgs.source` into a derivation
+                        // (nix-darwin's `/etc/nix/registry.json`, NIX_PATH)
+                        // diverged from cppnix at the toplevel drvPath while the
+                        // whole module fixpoint matched byte-for-byte.  Mirror
+                        // `self`: NAR-hash the fetched tree to its cppnix
+                        // `-source` store path.
                         match fetcher.fetch(locked) {
-                            Ok(fetched_path) => fetched_path.to_string_lossy().to_string(),
+                            Ok(fetched_path) => {
+                                match sui_compat::source::nar_hash_source_tree(
+                                    &fetched_path,
+                                    "source",
+                                ) {
+                                    Ok(sh) => sh.store_path,
+                                    Err(e) => {
+                                        return Err(EvalError::TypeError(format!(
+                                            "nar-hashing flake input '{input_name}' tree at {}: {e}",
+                                            fetched_path.display(),
+                                        )));
+                                    }
+                                }
+                            }
                             Err(e) => {
                                 return Err(EvalError::IoError {
                                     context: format!("fetch flake input '{input_name}'"),
@@ -112,7 +139,25 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                 } else {
                     format!("/nix/store/flake-input-{input_name}")
                 };
-                input_val.insert("outPath".to_string(), Value::string(out_path.clone()));
+                // A flake input's `outPath` is a `/nix/store/…-source` store
+                // reference: it must carry copy-to-store STRING CONTEXT so that,
+                // when a downstream derivation embeds it (nix-darwin's
+                // `registry.json` `to.path`), the ATerm gains the matching
+                // `source` inputSrc — cppnix records exactly this, and the
+                // parity-bisect on the darwin toplevel flagged it as the
+                // `nix-only=["source"]` inputSrc gap.  Non-store paths (a
+                // `type = "path"` input, the pre-fetch placeholder) stay
+                // context-free.
+                let out_path_val = if out_path.starts_with("/nix/store/") {
+                    let mut ctx = crate::value::StringContext::new();
+                    ctx.add_plain(out_path.as_str());
+                    Value::String(std::rc::Rc::new(
+                        crate::value::NixString::with_context(out_path.as_str(), ctx),
+                    ))
+                } else {
+                    Value::string(out_path.clone())
+                };
+                input_val.insert("outPath".to_string(), out_path_val.clone());
 
                 if let Some(ref locked) = node.locked {
                     if let Some(ref rev) = locked.rev {
@@ -134,7 +179,7 @@ fn evaluate_flake_inner(flake_dir: &std::path::Path) -> Result<Value, EvalError>
                     }
 
                     let mut source_info = NixAttrs::new();
-                    source_info.insert("outPath".to_string(), Value::string(out_path.clone()));
+                    source_info.insert("outPath".to_string(), out_path_val.clone());
                     if let Some(ref rev) = locked.rev {
                         source_info.insert("rev".to_string(), Value::string(rev.clone()));
                     }
