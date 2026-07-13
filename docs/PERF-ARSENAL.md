@@ -169,10 +169,56 @@ x86_64-linux `j8q5j0x4…`, hello aarch64-darwin `a1fzz00d…`):**
   same-shape use, below the ≥3 bar.** Trigger to promote: migrate the NAR memo onto it (use #1), find a
   genuine 2nd stable-content-key site, then a *second repo* forcing the shape.
 - **The one real ≥2-crate duplication is the string interner** (`sui-intern` u32/Rc vs
-  `tatara-lisp-eval/src/interner.rs` Arc/Send+Sync). Redistribution = **generic-over-handle**
-  (`trait InternHandle`), NOT lowest-common-denominator; sui's adoption is *byte-verified*,
-  tatara's is *semantics-verified only* ("byte-neutral" is a sui-path label, non-transferable).
-  Earned-in-principle / DESTINATION — needs the `InternHandle` design pass (M4), not copy-paste-today.
+  `tatara-lisp/tatara-lisp-eval/src/interner.rs` Arc/Send+Sync). **M4 VERDICT (2026-07-12):
+  DESIGN-DEFERRED, not extracted** — deferring-with-a-design is the honest outcome here, and a real
+  deliverable (the org anti-premature-mint rule: a shared crate is earned-in-principle, but code-movement
+  across two crates — one of them sui, whose adoption is byte-parity-critical — is heavy + byte-risky and
+  must not be forced on a parity branch). The design is below; the trigger is named.
+
+  **Why one handle cannot be forced (the four genuine divergence axes):**
+  | axis | `sui-intern` | `tatara-lisp-eval` |
+  |---|---|---|
+  | handle | `Symbol(u32)` index into a `Vec<Rc<str>>` | `Arc<str>` — the pointer IS the handle |
+  | equality | integer `==` on the `u32` | `Arc::ptr_eq` + byte fallback |
+  | thread bound | `Rc` — `!Send` (single-threaded eval) | `Arc` — `Send + Sync` (cross-thread values stay valid) |
+  | reverse resolution | needs a `Vec` reverse map (`resolve`/`resolve_rc`/`try_resolve`/`lookup`) + **prewarm-low-index + `Symbol: Ord`** (load-bearing for attrset-key byte-parity) | self-resolving (`Arc<str>` derefs to `&str`); no reverse map; `intern`/`clear`/`size` only |
+
+  u32-only would break tatara's `Send + Sync`; Arc-only would cost sui its integer-eq **and** its
+  `Symbol: Ord` prewarm-ordering (a byte-parity dependency). So the generic must abstract the handle,
+  the equality strategy, the reverse-resolution presence, and the thread bound — 4 axes, not a
+  find-and-replace.
+
+  **The `InternHandle` design (the M4 deliverable):**
+  ```rust
+  /// A cheap, comparable interned-string handle. The interner is generic
+  /// over this trait so sui (u32/Rc/ordered) and tatara (Arc/Send+Sync)
+  /// share ONE table + prewarm engine without forcing one handle on the other.
+  trait InternHandle: Clone + Eq {
+      /// The stored form the handle resolves against (`Rc<str>` / `Arc<str>`).
+      type Backing: Clone;
+      /// Mint the Nth handle when a new string is inserted (u32 index vs Arc-clone).
+      fn from_insert(index: usize, backing: &Self::Backing) -> Self;
+      /// Resolve to the shared backing (Vec lookup vs identity).
+      fn resolve(&self, table: &InternTable<Self>) -> Self::Backing;
+  }
+  struct Interner<H: InternHandle> { /* shared FxHashMap<H::Backing, H> + reverse + prewarm hook */ }
+  ```
+  Ordering (`Symbol: Ord`) is an **`H`-specific** capability, exposed only where the backing supports it
+  (a `trait OrderedHandle: InternHandle` sui implements and tatara does not) — so the generic never
+  imposes an order tatara can't provide, and never drops the order sui's byte-parity needs.
+
+  **Adoption asymmetry (why "byte-neutral" is non-transferable):** sui's migration onto `Interner<Symbol>`
+  is **byte-verified** (GetAttr/MakeAttrs/UpdateAttrs are parity-critical — a full `sui parity` gate on
+  the migration commit); tatara's onto `Interner<ArcHandle>` is **semantics-verified only** (unit tests,
+  no byte oracle). "Byte-neutral" is a sui-path label and does not carry to tatara.
+
+  **`pending-interner:` trigger to promote from design → extraction:** land the `InternHandle` +
+  `OrderedHandle` traits in `sui-intern` behind a feature; migrate sui's `Interner`/`Symbol` onto it
+  **byte-verified** (`sui parity` green on the migration commit, GetAttr/MakeAttrs unchanged); then a
+  **second repo** (tatara) adopts `Interner<ArcHandle>` semantics-verified. Only when the *second repo
+  forces the shared shape* does the crate leave `sui-intern` for shared substrate (the ≥3-use / 2nd-repo
+  bar). Not copy-paste-today: the sui side is byte-risky and the shape must be exercised by a real 2nd
+  consumer before a mint.
 - **`unsorted-iter` is NOT a fleet pattern** — a single method, not a recurring cross-site shape.
 
 ## 4. The `/algorithmic-prowess-seal` fold — `sealed-optimization` family
@@ -183,11 +229,31 @@ a ceiling-less byte-neutrality claim is **unrepresentable in the catalog**. That
 
 **Today `ByteNeutral` is a COMMENT, not a TYPE** (grep-confirmed: no `enum ByteNeutral`, no `trait
 PureFn`; `iter()`/`iter_unsorted()` are type-indistinguishable). Two type-moves earn their keep:
-- **`ContentKey<T>` (M3):** memo constructible only via a `ContentKey::of(&T)=blake3(read-set)` newtype
-  whose sole constructor already fixed all inputs → the *stale-key/decoupling* footgun becomes
-  parse-time-rejected. **Purity of `T→V` stays C1-ceiling-bound forever** — there is no `PureFn` in safe
-  Rust and there cannot be; promising one is a fantasy this plan refuses. The CI byte gate is the
-  correct terminal C2 enforcement.
+- **`ContentKey<T>` (M3) — SHIPPED this branch (`sui-intern/src/memo.rs`).** The `ContentKey<T>` newtype
+  has a **sole constructor** `ContentKey::of(&T) -> ContentKey<T>` that hashes `T`'s structural read-set
+  (everything its `Hash` impl writes) through a BLAKE3-backed `std::hash::Hasher` → a 32-byte content
+  digest, private fields, `PhantomData<fn() -> T>` for type-safety. The keyed memo API
+  `ContentMemo<ContentKey<T>, V>::get_or_compute_keyed(&T, impl FnOnce(&T) -> V)` derives the key from
+  the SAME `&T` it hands to `compute`, so a key decoupled from the computed input **has no constructor**.
+  The general `get_or_compute` (documented only-mitigated) is kept for stable-key callers with no `T`.
+  **Tier — graded on two axes, exactly (no round-up):**
+  - **KEY↔CONTENT structural axis → PARSE-TIME-REJECTED.** There is no expressible program that memoizes
+    under a key not derived from the computed input: `of(&T)` is the only way to build a `ContentKey<T>`,
+    fields are private (proven by a `compile_fail` doctest forging raw digest bytes), and passing a `&B`
+    where a `&A`-key is expected is a type error (second `compile_fail` doctest). The `stale-key/decoupling`
+    footgun (the `Sharing::PerSite`/libxcrypt divergence class) is structurally unrepresentable *on this
+    axis*.
+  - **PURITY axis (`T → V`) → ONLY-MITIGATED (C1) FOREVER.** `ContentKey<T>` seals *decoupling*, NOT
+    *purity*: `compute` could still read wall-clock / `getEnv` / a mutable FS — opaque to the type
+    system. There is no `PureFn` in safe Rust and there cannot be; promising one is a fantasy this plan
+    refuses. The module invariant + the CI byte gate are the correct terminal C2 enforcement. **Do not
+    read `ContentKey<T>` as a purity proof — it is a decoupling proof.**
+
+  Sealed by: `content_key_of_is_deterministic`, `content_key_differs_on_different_content`,
+  `keyed_memo_round_trips_and_does_not_recompute_on_hit` (hit on a structurally-equal but *distinct*
+  object → the key is the content, not object identity), + the two `compile_fail` type-seal doctests.
+  **Zero behavior change to any existing memo** — additive API on a module with 0 live consumers, so the
+  byte-parity axis is provably untouched (no drvPath reachable from `sui-intern::memo`).
 - **`UnorderedIter` marker (deferred):** `iter_unsorted()` returns a wrapper with no exposed order →
   observing order without `.sorted()` is `E0599`; promotes `drop-unobserved-order`'s observation axis
   only-mitigated → parse-time-rejected. Build it when a 2nd order-observing consumer appears.
@@ -202,10 +268,17 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
    (C-with/C-slash/C-store/C-eq-demand) touch force-order/context/identity and are NOT proven neutral;
    C-filter is success-path-only.
 2. **"Fleet integrability is earned."** OVERCLAIM — ContentMemo has **0 live consumers**, 1 same-shape
-   precedent; below the ≥3 bar. Only the interner is a real duplication (design-gated).
-3. **"The invariants can be Rust types."** FALSE — purity is opaque to the type system (C1 forever);
-   the two iterators are type-indistinguishable. Mostly only-mitigated + one theorem tier
-   (content-addressing, sealed by the key's *math*, not `rustc`). ZERO type-level unrep seals today.
+   precedent; below the ≥3 bar. Only the interner is a real duplication (**M4: design-deferred**, §3 —
+   the design + `pending-interner:` trigger recorded, no code moved).
+3. **"The invariants can be Rust types."** MOSTLY still true (do not over-correct): **purity is opaque to
+   the type system (C1 forever)** and the two iterators are type-indistinguishable — so most axes stay
+   only-mitigated. But **M3 shipped ONE genuine parse-time-rejected type seal** — `ContentKey<T>`'s
+   key↔content *decoupling* axis (sole `of(&T)` constructor + private fields; `compile_fail`-proven).
+   That is a *decoupling* seal, NOT a *purity* seal — the value's byte-neutrality still rests on
+   content-addressing's *math* + the CI byte gate (C2), not on `rustc`. So: one parse-time-rejected
+   type-level seal (the decoupling axis) + one theorem tier (content-addressing) + everything else
+   only-mitigated. The old "ZERO type-level unrep seals" line is superseded by M3 — but the purity
+   fantasy stays refused.
 4. **"Add persistent HAMT bindings."** CLOSED premise — sui already ships `im_rc::HashMap` + Rc sharing
    + COW. The live gaps are elsewhere: LIST `++` clones `Rc<Vec>` O(n) — **now structural-shared (S5):
    `Rc::try_unwrap` + in-place extend for a uniquely-owned left, byte-neutral, 100% reuse on fresh-`++`
@@ -239,8 +312,17 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
   loop-collapsed → not content-neutral; unsafe-reorder neutrality is a runtime argument, not a type).
   **A rigorous DEFER is a real deliverable here — two of three arms defer with measured, exact reasons;
   no landing was forced.**
-- **M3** — `ContentKey<T>` type-move (stale-key axis → parse-rejected; purity stays C1).
-- **M4** — interner generic-over-handle crate (design-gated on `InternHandle`).
+- **M3** — `ContentKey<T>` type-move — **SHIPPED this branch** (`sui-intern/src/memo.rs`). The
+  key↔content decoupling axis → **parse-time-rejected** (sole `of(&T)` constructor + private fields,
+  2 `compile_fail` type-seal doctests); the purity axis **stays only-mitigated C1 forever** (no `PureFn`
+  in safe Rust). Keyed memo API `get_or_compute_keyed(&T, |&T| -> V)` added; general `get_or_compute`
+  kept for stable-key callers. 3 new unit tests + 2 doctests; additive-only (0 live consumers) so
+  byte-parity is provably untouched.
+- **M4** — interner generic-over-handle — **DESIGN-DEFERRED this branch (a real deliverable, not a
+  punt).** The `InternHandle`/`OrderedHandle` design + the four-axis divergence table + the
+  `pending-interner:` promote-trigger are recorded in §3; **no code moved** (byte-risky on the
+  parity-critical sui side, and the shape isn't yet forced by a 2nd repo — below the mint bar). Extract
+  only when the trigger fires (sui migrates byte-verified, then tatara adopts semantics-verified).
 
 ## 7. REJECTED (byte-parity sacred)
 
