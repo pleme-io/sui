@@ -291,6 +291,10 @@ thread_local! {
     /// Cumulative nanoseconds spent inside `NixAttrs::sorted_entries`
     /// (resolve + sort for attrNames/keys/iter/values). Diagnostic only.
     static SORTED_ENTRIES_NANOS: Cell<u128> = const { Cell::new(0) };
+    /// Cumulative nanoseconds spent inside `referenced_idents` (Storm A —
+    /// the self/mutual-recursion detection subtree walk). Diagnostic only;
+    /// gated on `perf::enabled()`.
+    static SELF_REC_WALK_NANOS: Cell<u128> = const { Cell::new(0) };
 }
 
 /// Add `nanos` to the cumulative overlay-flatten-build timer.
@@ -317,6 +321,19 @@ pub fn add_sorted_entries_nanos(nanos: u128) {
 /// Read the cumulative sorted_entries nanoseconds.
 pub fn get_sorted_entries_nanos() -> u128 {
     SORTED_ENTRIES_NANOS.with(Cell::get)
+}
+
+/// Add `nanos` to the cumulative Storm-A (`referenced_idents`) timer.
+#[inline(always)]
+pub fn add_self_rec_walk_nanos(nanos: u128) {
+    if crate::perf::enabled() {
+        SELF_REC_WALK_NANOS.with(|c| c.set(c.get() + nanos));
+    }
+}
+
+/// Read the cumulative Storm-A (`referenced_idents`) nanoseconds.
+pub fn get_self_rec_walk_nanos() -> u128 {
+    SELF_REC_WALK_NANOS.with(Cell::get)
 }
 
 /// Increment the thunks-created counter.
@@ -358,6 +375,7 @@ pub fn reset_thunk_stats() {
     THUNK_MAX_FORCE_DEPTH.with(|c| c.set(0));
     OVERLAY_FLATTEN_NANOS.with(|c| c.set(0));
     SORTED_ENTRIES_NANOS.with(|c| c.set(0));
+    SELF_REC_WALK_NANOS.with(|c| c.set(0));
 }
 
 /// Report thunk stats to stderr (called from `perf::report`).

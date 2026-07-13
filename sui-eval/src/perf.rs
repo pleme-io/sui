@@ -140,9 +140,24 @@ pub enum Counter {
     // byte-identical content. Skipping Store#2 here is provably
     // content-and-order-neutral (Store#1 already established the final state).
     ThunkStoreRedundant = 45,
+    // Storm A instrumentation: `referenced_idents` (eval.rs) is the residual
+    // self/mutual-recursion detection walk. `referenced_idents` already hoisted
+    // the original O(N²) per-`(binding × sibling-name)` re-walk down to O(N) per
+    // scope (ONE subtree walk per RHS, then O(1) set lookups). These counters
+    // measure the RESIDUAL cost that survives that hoist — the per-fixpoint-
+    // iteration subtree walks that still run once per let/rec binding RHS.
+    // `SelfRecWalkCalls` counts every `referenced_idents` invocation (= number
+    // of binding RHS subtree walks). `SelfRecWalkNodes` accumulates the total
+    // rnix `descendants()` visited across all walks — the raw work volume, the
+    // Storm-A analogue of `sorted_entries_rows`. A DEEP nested-let closure (the
+    // cid module-fixpoint) re-parses + re-walks the same RHS shapes across
+    // fixpoint iterations, so nodes/call stays high even though the O(N²) is
+    // gone. Byte-neutral: pure measurement, the recursion verdict is unchanged.
+    SelfRecWalkCalls = 46,
+    SelfRecWalkNodes = 47,
 }
 
-const NUM_COUNTERS: usize = 46;
+const NUM_COUNTERS: usize = 48;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -192,6 +207,8 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "thunk_store_writes",
     "thunk_store_loop_mutated",
     "thunk_store_redundant",
+    "self_rec_walk_calls",
+    "self_rec_walk_nodes",
 ];
 
 struct PerfCounters {
@@ -485,6 +502,25 @@ pub fn report() {
             let tr = c.get(Counter::ThunkStoreRedundant);
             eprintln!("  thunk_store_redundant:    {tr}  (C-store; Store#2 = pure redundant rewrite — provably skippable)");
         }
+        // Storm A: `referenced_idents` residual self/mutual-recursion walk.
+        // The original O(N²) is already hoisted to O(N) per scope; these show
+        // the residual per-fixpoint-iteration subtree-walk cost that remains.
+        let sr_calls = c.get(Counter::SelfRecWalkCalls);
+        let sr_nodes = c.get(Counter::SelfRecWalkNodes);
+        if sr_calls > 0 {
+            let nodes_per_call = sr_nodes as f64 / sr_calls as f64;
+            let sr_ms = crate::trace::get_self_rec_walk_nanos() as f64 / 1_000_000.0;
+            let sr_pct = if elapsed > 0.0 {
+                (sr_ms / 1000.0 / elapsed) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("--- Storm A: referenced_idents (self/mutual-rec walk) ---");
+            eprintln!("  walk_calls:        {sr_calls}  (= binding RHS subtree walks)");
+            eprintln!("  nodes_walked:      {sr_nodes}  (total rnix descendants visited)");
+            eprintln!("  nodes_per_call:    {nodes_per_call:.1}");
+            eprintln!("  walltime:          {sr_ms:.1}ms  ({sr_pct:.1}% of eval)");
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -671,7 +707,7 @@ mod tests {
         // Each variant maps to a fixed index; NUM_COUNTERS is the array size.
         // Extended by the M2 RISKY-tier waste probes (41..=45): C-with /
         // C-slash / C-store measurement + the C-store redundant-store skip.
-        assert_eq!(NUM_COUNTERS, 46);
+        assert_eq!(NUM_COUNTERS, 48);
         assert_eq!(COUNTER_NAMES.len(), NUM_COUNTERS);
         assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
         assert_eq!(Counter::OverlayCreated as usize, 33);
@@ -687,6 +723,8 @@ mod tests {
         assert_eq!(Counter::ThunkStoreWrites as usize, 43);
         assert_eq!(Counter::ThunkStoreLoopMutated as usize, 44);
         assert_eq!(Counter::ThunkStoreRedundant as usize, 45);
+        assert_eq!(Counter::SelfRecWalkCalls as usize, 46);
+        assert_eq!(Counter::SelfRecWalkNodes as usize, 47);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

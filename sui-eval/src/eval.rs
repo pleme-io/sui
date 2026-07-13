@@ -598,8 +598,22 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// system (`concatLists: expected list, got null`).
 fn referenced_idents(value_expr: &ast::Expr) -> HashSet<SmolStr> {
     use rnix::SyntaxKind;
+    // Storm A instrumentation (byte-neutral, gated on perf::enabled()): count
+    // this walk + the rnix descendants it visits + its walltime, so the
+    // residual per-fixpoint-iteration self/mutual-recursion detection cost is
+    // VISIBLE in the SUI_EVAL_PERF report — symmetric with sorted_entries /
+    // overlay-flatten. The counter reads add zero output-relevant work.
+    let perf_on = crate::perf::enabled();
+    let t0 = if perf_on {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+    crate::perf::inc(crate::perf::Counter::SelfRecWalkCalls);
+    let mut nodes_walked: u64 = 0;
     let mut set: HashSet<SmolStr> = HashSet::new();
     for node in value_expr.syntax().descendants() {
+        nodes_walked += 1;
         if node.kind() == SyntaxKind::NODE_IDENT
             && node
                 .parent()
@@ -608,6 +622,10 @@ fn referenced_idents(value_expr: &ast::Expr) -> HashSet<SmolStr> {
         {
             set.insert(SmolStr::from(ident_text(&i).as_str()));
         }
+    }
+    crate::perf::add(crate::perf::Counter::SelfRecWalkNodes, nodes_walked);
+    if let Some(t0) = t0 {
+        crate::trace::add_self_rec_walk_nanos(t0.elapsed().as_nanos());
     }
     set
 }
