@@ -1278,6 +1278,7 @@ impl Thunk {
                 }
                 match result {
                     Ok(mut value) => {
+                        crate::perf::inc(crate::perf::Counter::ThunkStoreWrites);
                         // M2.6 Promise update: if this thunk transitioned
                         // through Promise(cell), populate the cell with the
                         // final value BEFORE setting Evaluated.  Any
@@ -1297,11 +1298,39 @@ impl Thunk {
                         // depth limit to catch `let x = x; in x` cycles.
                         // Chase already-resolved thunks only (peek).
                         // force_value handles full transitive resolution.
+                        //
+                        // C-store PROVABLY-NEUTRAL narrow win (M2, byte-verified):
+                        // when `value` was NOT a Thunk at Store#1, this loop does
+                        // not execute (its guard is `while let Value::Thunk`), so
+                        // the second store (below) would rewrite BYTE-IDENTICAL
+                        // repr content and re-attempt a no-op OnceCell `cache.set`
+                        // (already populated by Store#1's guarded set). Skipping
+                        // it is content-AND-order-neutral: Store#1 already
+                        // established the terminal (repr=Evaluated(value),
+                        // cache=value); nothing between the two stores observes
+                        // `self.0.repr` (the body has returned — no re-entrant
+                        // force of self is in flight; the loop only `peek()`s
+                        // OTHER thunks' OnceCell caches, never self's repr), and
+                        // no code observes the `Box`'s pointer identity (repr is
+                        // only ever read by value — grep-confirmed). Only when
+                        // `value` WAS a Thunk (the loop may collapse it to a
+                        // different concrete) do we re-store the unwrapped result.
+                        let was_thunk_before_loop = matches!(value, Value::Thunk(_));
                         while let Value::Thunk(ref inner) = value {
                             match inner.peek() {
                                 Some(cached) => value = cached.clone().into_value(),
                                 None => break,
                             }
+                        }
+                        if !was_thunk_before_loop {
+                            // Store#1 already terminal; Store#2 is pure redundant.
+                            crate::perf::inc(crate::perf::Counter::ThunkStoreRedundant);
+                            crate::trace::pop_force();
+                            if tracing { crate::trace::trace_force_exit(); }
+                            return Ok(value);
+                        }
+                        if !matches!(value, Value::Thunk(_)) {
+                            crate::perf::inc(crate::perf::Counter::ThunkStoreLoopMutated);
                         }
                         *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
                         if !matches!(value, Value::Thunk(_)) {
@@ -2183,6 +2212,7 @@ impl Env {
             let resolved = match &scope.value {
                 Value::Attrs(attrs) => {
                     // Already concrete — cache and use directly
+                    crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
                     *scope.cached.borrow_mut() = Some((**attrs).clone());
                     Some((**attrs).clone())
                 }
@@ -2191,6 +2221,7 @@ impl Env {
                     // without entering the force state machine
                     if let Some(cached_val) = thunk.peek() {
                         if let Concrete::Attrs(ref attrs) = *cached_val {
+                            crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
                             *scope.cached.borrow_mut() = Some((**attrs).clone());
                             Some((**attrs).clone())
                         } else {
@@ -2210,6 +2241,7 @@ impl Env {
                         match crate::eval::force_value(&scope.value) {
                             Ok(forced) => {
                                 if let Value::Attrs(ref attrs) = forced {
+                                    crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
                                     *scope.cached.borrow_mut() = Some((**attrs).clone());
                                     Some((**attrs).clone())
                                 } else {
@@ -2225,6 +2257,7 @@ impl Env {
                     match crate::eval::force_value(&scope.value) {
                         Ok(forced) => {
                             if let Value::Attrs(ref attrs) = forced {
+                                crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
                                 *scope.cached.borrow_mut() = Some((**attrs).clone());
                                 Some((**attrs).clone())
                             } else {
@@ -2273,6 +2306,7 @@ impl Env {
             if let Ok(forced) = crate::eval::force_value_tracked(&scope.value, "with_scope") {
                 if let Value::Attrs(ref attrs) = forced {
                     let result = attrs.get_sym(&sym).cloned();
+                    crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
                     *scope.cached.borrow_mut() = Some((**attrs).clone());
                     if result.is_some() {
                         return result;
@@ -3910,6 +3944,35 @@ mod tests {
         let thunk = Thunk::new_evaluated(Value::Bool(true));
         let result = thunk.force(&|_, _| panic!("should not be called"));
         assert_eq!(result.unwrap(), Value::Bool(true));
+    }
+
+    // C-store PROVABLY-NEUTRAL seal (M2): a force whose body returns a
+    // CONCRETE (non-Thunk) value takes the redundant-Store#2 skip path
+    // (`!was_thunk_before_loop` early-return). It must still (a) return the
+    // correct value, (b) be `is_evaluated()`, (c) populate the OnceCell so
+    // the fast-path returns the identical value on re-force (proving Store#1's
+    // guarded `cache.set` — NOT the skipped Store#2 — is what seals the cache),
+    // and (d) `peek()` returns the value (repr holds it). If the skip dropped
+    // the terminal state, one of these would regress.
+    #[test]
+    fn thunk_force_concrete_skips_redundant_store_but_caches() {
+        // `1 + 2` evaluates directly to a concrete Int (no thunk-chain unwrap),
+        // so it exercises the `!was_thunk_before_loop` skip branch.
+        let root = rnix::Root::parse("1 + 2");
+        let expr = root.tree().expr().unwrap();
+        let thunk = Thunk::new_suspended(expr, Env::new());
+
+        let r1 = thunk.force(&|e, env| crate::eval::eval_expr(e, env)).unwrap();
+        assert_eq!(r1, Value::Int(3));
+        assert!(thunk.is_evaluated());
+
+        // OnceCell must be populated (peek sees the value) — proves Store#1's
+        // guarded cache.set fired and the skipped Store#2 was truly redundant.
+        assert_eq!(thunk.peek().map(|c| c.clone().into_value()), Some(Value::Int(3)));
+
+        // Re-force hits the OnceCell ultra-fast path and returns byte-identical.
+        let r2 = thunk.force(&|_, _| panic!("re-force must hit the cache, not re-eval")).unwrap();
+        assert_eq!(r2, Value::Int(3));
     }
 
     #[test]

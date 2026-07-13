@@ -2285,6 +2285,7 @@ fn merge_deferred_dynamic_tail(
 fn lazy_overlay_merge(left: Value, right: Value) -> Value {
     match (&left, &right) {
         (Value::Attrs(la), Value::Attrs(_)) => {
+            crate::perf::inc(crate::perf::Counter::SlashDeferredTailClone);
             let mut merged = (**la).clone();
             if let Value::Attrs(ra) = &right {
                 // Merging distinct override keys into `merged` is order-
@@ -2305,6 +2306,7 @@ fn lazy_overlay_merge(left: Value, right: Value) -> Value {
                 let rf = force_value(&right)?;
                 let la = lf.as_attrs()?;
                 let ra = rf.as_attrs()?;
+                crate::perf::inc(crate::perf::Counter::SlashDeferredTailClone);
                 let mut merged = (*la).clone();
                 for (k, v) in ra.iter_unsorted() {
                     merge_nested_insert(&mut merged, k.clone(), v.clone());

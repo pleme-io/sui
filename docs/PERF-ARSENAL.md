@@ -89,15 +89,70 @@ catalog exists to forbid.**
   corpus rows (attrset `==`/`elem` value surface + an `==`-selected derivation-arg **drvPath** byte
   check) + the `SUI_EVAL_PERF` `attrs-eq` counter (structural-eq calls + entries-clone-elided).
 
-### RISKY / DEFAULT-NOT-NEUTRAL — the four "discovered candidates" (all touch force-order/identity)
-- **C-with · with-scope clone** (`value.rs:1961-1975`) — the exact **M2.6 ROOT #4a** lazy-namespace
-  force-order path; materializing the scope earlier can re-throw the `null`/`concatLists null` class. RISKY.
-- **C-slash · per-`//` deferred-tail clone** (`eval.rs:2288/2308`) — the *real* `//` (`eval.rs:2577`) is
-  already clone-free (Rc-shared lazy Overlay); this is the deferred-dynamic-tail path, and sharing it
-  would change Overlay-node identity that `Concrete::eq`'s `Rc::ptr_eq` shortcut relies on. RISKY.
-- **C-store · thunk double-store** (`value.rs:1211-1228`) — `EVAL-PERF-SEAL.md §7` itself defers it;
-  `unsafe` force reorder + string-context propagation. RISKY (most delicate).
-- **C-eq-demand** — the `Concrete::eq` clone on its *demand* axis; bundle the demand-order proof with C-A.
+### RISKY / DEFAULT-NOT-NEUTRAL — the four "discovered candidates" (M2 adjudicated 2026-07-12)
+
+**M2 verdict summary (worktree `m2-risky-tier`, base `bb47971`; byte oracle = the two
+named drvPath probes, both byte-identical to nix on BOTH engines throughout — hello
+x86_64-linux `j8q5j0x4…`, hello aarch64-darwin `a1fzz00d…`):**
+
+> **The decisive structural fact all three share:** `NixAttrs` wraps `AttrsInner`, whose
+> `Flat` variant holds an **`im_rc::HashMap` 15.1.0** (a persistent HAMT). So `(**attrs).clone()`
+> / `(**la).clone()` is an **O(1) HAMT-root Arc-bump** (Overlay: 2×`Rc`+1×`Rc<OnceCell>`, also
+> O(1)), NOT the O(n) deep copy the candidate descriptions assumed. The "waste" is a *count of
+> O(1) clones*, not a copy volume — which changes the calculus decisively for C-with and C-slash.
+
+- **C-with · with-scope cache clone** (`value.rs` `lookup_fast`/`lookup_sym`/`lookup_with_cache_only`)
+  — **DEFERRED (measured-negligible + high-risk).** Measured over the full marquee eval with a
+  `WithScopeCacheClone` counter: **93** clones (hello x86_64-linux) / **460** (hello aarch64-darwin),
+  vs ~1.1M–1.9M `eval_expr` and 131k–286k forces. Each is an O(1) HAMT Arc-bump, so the *total*
+  eliminable work is a few hundred Arc-bumps — no measurable win. Meanwhile the clone sits on the
+  exact **M2.6 ROOT #4a** lazy-namespace force-order path. Sharing the `Rc` instead of cloning the
+  map would risk that force-timing class for **zero** measured payoff. **Exact defer reason: the
+  clone is already O(1) (`im_rc`) and fires ≤460× on the marquee eval — the win is negligible and
+  cannot justify touching the ROOT #4a force-order class.** (The force decision happens *above* the
+  clone — the scope is already forced to `Value::Attrs` before the cache clone runs — so the clone
+  isn't itself force-order-sensitive; but there is nothing to gain by changing it.)
+- **C-slash · per-`//` deferred-tail clone** (`eval.rs` `lazy_overlay_merge`) — **DEFERRED
+  (zero measured waste on the marquee path).** A `SlashDeferredTailClone` counter measured
+  **0** invocations on BOTH hello probes. `lazy_overlay_merge` is only reached on the
+  deferred-**dynamic**-tail path (`o.${dynKey}.y = …`), which the hello/darwin stdenv evals never
+  hit. There is no waste to eliminate on any corpus row, and the real `//` (`eval.rs:2577`) is
+  already clone-free. **Exact defer reason: 0 invocations on the marquee eval → no measurable win;
+  and eliminating the clone would change Overlay-node identity that `Concrete::eq`'s `Rc::ptr_eq`
+  shortcut relies on (`value.rs:512/514`) — real risk for zero gain.**
+- **C-store · thunk double-store** (`value.rs` `force_inner` Ok arm) — **PARTIALLY LANDED (the
+  provably-neutral slice) + DEFERRED (the delicate slice).** The Ok arm has TWO store-points:
+  Store#1 (pre-`while let Value::Thunk` unwrap loop) and Store#2 (post-loop). Measured: `ThunkStoreWrites`
+  = 131,438 (linux) / 285,587 (darwin) forces. A `ThunkStoreRedundant` sub-probe showed that in
+  **33% (linux) / 58% (darwin)** of forces `value` is NOT a thunk at Store#1, so the loop never runs
+  and **Store#2 rewrites byte-identical repr content + re-attempts a no-op `OnceCell` `cache.set`** —
+  a pure redundant store. **LANDED:** skip Store#2 in exactly this `!was_thunk_before_loop` branch
+  (early-return with the identical `pop_force`/`trace_force_exit`/`Ok(value)` cleanup). **Per-site
+  force-order/identity proof:** (a) Store#1 already established the terminal (`repr=Evaluated(value)`
+  + guarded `cache.set`); (b) the body `evaluator(&expr,&env)` has RETURNED before the Ok arm, so no
+  re-entrant force of `self` is in flight — the loop only `peek()`s OTHER thunks' OnceCell caches,
+  never `self.0.repr`; (c) no code observes the `Box`'s pointer identity — `ThunkRepr::Evaluated` is
+  read only by value (grep-confirmed: `value.rs:1621/1657`); (d) the string-context-carrying
+  `Concrete::String` sits unchanged in repr (no re-derivation). Sealed by a regression test
+  (`thunk_force_concrete_skips_redundant_store_but_caches`: value correct, `is_evaluated()`, `peek()`
+  populated, re-force hits the OnceCell without re-eval) + both byte-oracle probes on both engines +
+  the linux basket (11/11) + the darwin corpus (9/9). **Named wall-time CEILING:** `Value` is 16 B and
+  `Box::new(value.clone())` is a small-alloc + Rc-bump; the 43k–165k eliminated allocations are an
+  **allocation-count reduction, NOT a measured wall-time speedup** (marquee cost is overlay-flatten
+  21.5% + force machinery, not thunk-store allocs; darwin best-of-3 is 7.7–8.8s, store-I/O-bound —
+  a speedup claim would be noise). Tier: **PROVABLY-NEUTRAL on content+order** for this slice (proof
+  above), byte-gated belt-and-suspenders because it edits `unsafe` force machinery.
+  **DEFERRED — the full collapse:** the *other* 67%/42% of forces (loop ran / broke-early) are NOT
+  redundant — a `ThunkStoreLoopMutated` probe showed **31%/19%** of forces have the loop collapse a
+  thunk to a *different* concrete, so Store#1 and Store#2 hold different content there; collapsing
+  those to a single store, or reordering the `unsafe` repr/cache writes across the Promise/Blackhole
+  re-entrance machinery, stays RISKY (string-context + repr-visible-before-peek ordering rest on
+  runtime invariants, not types → `only-mitigated` at best). **Exact defer reason for the full
+  collapse: in 19–31% of forces the two stores hold genuinely different values (loop-collapsed), so
+  a single-store collapse is not content-neutral; and the remaining reorder touches unsafe
+  force-machinery whose neutrality is a runtime argument, not a type.**
+- **C-eq-demand** — the `Concrete::eq` clone on its *demand* axis; bundle the demand-order proof with
+  C-A (already PROVABLY-NEUTRAL, M1.5). No M2 action.
 
 ### Class B — ONLY-MITIGATED (memoization; ceiling NAMED)
 - **S3 · ContentMemo** (`sui-intern/src/memo.rs`) — SHIPPED but **ZERO live consumers** (grep-confirmed;
@@ -175,8 +230,15 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
   both obligations discharged, **stays NEEDS-VERIFICATION-with-argument** (error-message order
   residual); NO corpus row possible — `builtins.filterAttrs` is sui-only + off the nixpkgs marquee
   path (zero byte-parity impact); sealed by sui-internal result-set + no-cross-entry-force unit tests.
-- **M2** — RISKY arms (C-with → C-slash → C-store → C-eq-demand): per-site force-order proof + Parity Method,
-  or stay REJECTED.
+- **M2** — RISKY arms adjudicated (2026-07-12; see §2 RISKY block for the measured detail):
+  **C-with DEFERRED** (≤460 O(1) HAMT clones on the marquee eval — negligible + ROOT #4a
+  force-order risk); **C-slash DEFERRED** (0 invocations on the marquee — zero waste + `Rc::ptr_eq`
+  identity risk); **C-store PARTIALLY LANDED** — the provably-neutral redundant-Store#2 skip
+  (33–58% of second-stores, byte-verified on both engines + linux basket 11/11 + darwin corpus 9/9,
+  regression-test-sealed, wall-time ceiling NAMED), the full collapse DEFERRED (19–31% of forces are
+  loop-collapsed → not content-neutral; unsafe-reorder neutrality is a runtime argument, not a type).
+  **A rigorous DEFER is a real deliverable here — two of three arms defer with measured, exact reasons;
+  no landing was forced.**
 - **M3** — `ContentKey<T>` type-move (stale-key axis → parse-rejected; purity stays C1).
 - **M4** — interner generic-over-handle crate (design-gated on `InternHandle`).
 

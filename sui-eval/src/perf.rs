@@ -116,9 +116,33 @@ pub enum Counter {
     // byte-identical (PERF-ARSENAL C-A).
     AttrsEqStructuralCalls = 39,
     AttrsEqEntriesCloneElided = 40,
+    // M2 RISKY-tier waste measurement (C-with / C-slash / C-store).
+    // `WithScopeCacheClone` counts every `(**attrs).clone()` a with-scope
+    // lookup does to populate its `Rc<RefCell<Option<NixAttrs>>>` cache (C-with)
+    // — an `im_rc` HAMT root clone (O(1) structural share), NOT an O(n) deep
+    // copy. `SlashDeferredTailClone` counts the `(**la).clone()` in
+    // `lazy_overlay_merge` (C-slash) — same O(1) HAMT clone, then COW-mutated.
+    // `ThunkStoreWrites` counts the double `repr = Evaluated` + `cache.set`
+    // stores per successful force (C-store). Pure measurement — confirms
+    // whether the "waste" the arsenal names is real O(n) or already-O(1).
+    WithScopeCacheClone = 41,
+    SlashDeferredTailClone = 42,
+    ThunkStoreWrites = 43,
+    // C-store sub-probe: counts forces where the post-Store#1 thunk-chain
+    // unwrap loop actually MUTATED `value` (so Store#2's content ≠ Store#1's).
+    // When this is 0, Store#1 and Store#2 write byte-identical content and a
+    // collapse to a single store is trivially content-neutral; when > 0, the
+    // two stores hold different values and collapsing would change what an
+    // interleaved observer sees.
+    ThunkStoreLoopMutated = 44,
+    // C-store sub-probe #2: forces where `value` was NOT a thunk at Store#1,
+    // so the unwrap loop never ran and Store#2 is a pure redundant rewrite of
+    // byte-identical content. Skipping Store#2 here is provably
+    // content-and-order-neutral (Store#1 already established the final state).
+    ThunkStoreRedundant = 45,
 }
 
-const NUM_COUNTERS: usize = 41;
+const NUM_COUNTERS: usize = 46;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -163,6 +187,11 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "list_concat_elems_reused",
     "attrs_eq_structural_calls",
     "attrs_eq_entries_clone_elided",
+    "with_scope_cache_clone",
+    "slash_deferred_tail_clone",
+    "thunk_store_writes",
+    "thunk_store_loop_mutated",
+    "thunk_store_redundant",
 ];
 
 struct PerfCounters {
@@ -440,6 +469,22 @@ pub fn report() {
                 eq_calls * 2
             );
         }
+        // M2 RISKY-tier waste measurement (C-with / C-slash / C-store).
+        // Each `im_rc` HAMT clone is O(1) structural sharing, so these counts
+        // are the NUMBER of O(1) clones, not an O(n) copy volume.
+        let wc = c.get(Counter::WithScopeCacheClone);
+        let sc = c.get(Counter::SlashDeferredTailClone);
+        let ts = c.get(Counter::ThunkStoreWrites);
+        if wc + sc + ts > 0 {
+            eprintln!("--- M2 RISKY-tier waste probes ---");
+            eprintln!("  with_scope_cache_clone:   {wc}  (C-with; O(1) HAMT clone each)");
+            eprintln!("  slash_deferred_tail_clone:{sc}  (C-slash; O(1) HAMT clone, then COW-merged)");
+            eprintln!("  thunk_store_writes:       {ts}  (C-store; repr+cache double-store per force)");
+            let tm = c.get(Counter::ThunkStoreLoopMutated);
+            eprintln!("  thunk_store_loop_mutated: {tm}  (C-store; Store#2 content ≠ Store#1 — collapse NOT content-neutral if >0)");
+            let tr = c.get(Counter::ThunkStoreRedundant);
+            eprintln!("  thunk_store_redundant:    {tr}  (C-store; Store#2 = pure redundant rewrite — provably skippable)");
+        }
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -624,7 +669,10 @@ mod tests {
     #[test]
     fn counter_enum_has_30_variants() {
         // Each variant maps to a fixed index; NUM_COUNTERS is the array size.
-        assert_eq!(NUM_COUNTERS, 41);
+        // Extended by the M2 RISKY-tier waste probes (41..=45): C-with /
+        // C-slash / C-store measurement + the C-store redundant-store skip.
+        assert_eq!(NUM_COUNTERS, 46);
+        assert_eq!(COUNTER_NAMES.len(), NUM_COUNTERS);
         assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
         assert_eq!(Counter::OverlayCreated as usize, 33);
         assert_eq!(Counter::SortedEntriesCalls as usize, 34);
@@ -634,6 +682,11 @@ mod tests {
         assert_eq!(Counter::ListConcatElemsReused as usize, 38);
         assert_eq!(Counter::AttrsEqStructuralCalls as usize, 39);
         assert_eq!(Counter::AttrsEqEntriesCloneElided as usize, 40);
+        assert_eq!(Counter::WithScopeCacheClone as usize, 41);
+        assert_eq!(Counter::SlashDeferredTailClone as usize, 42);
+        assert_eq!(Counter::ThunkStoreWrites as usize, 43);
+        assert_eq!(Counter::ThunkStoreLoopMutated as usize, 44);
+        assert_eq!(Counter::ThunkStoreRedundant as usize, 45);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);
