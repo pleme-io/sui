@@ -155,9 +155,30 @@ pub enum Counter {
     // gone. Byte-neutral: pure measurement, the recursion verdict is unchanged.
     SelfRecWalkCalls = 46,
     SelfRecWalkNodes = 47,
+    // M2 thunk-waste creation-site attribution (byte-neutral): categorize
+    // WHERE `new_suspended` thunks are minted so the 51.8%-never-forced waste
+    // can be traced to a source. Each counter is one class of call site:
+    // `ThunkSiteMaybeOther` = the `maybe_thunk` `_` fall-through arm (every
+    // non-trivial expr the attrset/let-binding thunker wraps); `ThunkSiteApplyArg`
+    // = the `eval_apply` lambda-arg thunk (call-by-need); `ThunkSiteMaybeIdent`
+    // = the `maybe_thunk` ident arms that fall back to a thunk (blackhole/miss);
+    // `ThunkSiteLetForward` = a forward-reference let/rec binding thunk;
+    // `ThunkSiteOther` = every other direct `new_suspended` (inherit source,
+    // select-source, misc). Pure measurement — the thunk minted is identical.
+    ThunkSiteMaybeOther = 48,
+    ThunkSiteApplyArg = 49,
+    ThunkSiteMaybeIdent = 50,
+    ThunkSiteLetForward = 51,
+    ThunkSiteOther = 52,
+    // Further split of the "rest" bucket to confirm it is
+    // already-forced-by-construction (evaluated) / flake-input (native) /
+    // inherit-source, NOT harmful never-forced waste.
+    ThunkSiteInheritSrc = 53,
+    ThunkSiteNative = 54,
+    ThunkSiteEvaluated = 55,
 }
 
-const NUM_COUNTERS: usize = 48;
+const NUM_COUNTERS: usize = 56;
 
 /// Display names for each counter, indexed by `Counter as usize`.
 const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
@@ -209,6 +230,14 @@ const COUNTER_NAMES: [&str; NUM_COUNTERS] = [
     "thunk_store_redundant",
     "self_rec_walk_calls",
     "self_rec_walk_nodes",
+    "thunk_site_maybe_other",
+    "thunk_site_apply_arg",
+    "thunk_site_maybe_ident",
+    "thunk_site_let_forward",
+    "thunk_site_other",
+    "thunk_site_inherit_src",
+    "thunk_site_native",
+    "thunk_site_evaluated",
 ];
 
 struct PerfCounters {
@@ -521,6 +550,37 @@ pub fn report() {
             eprintln!("  nodes_per_call:    {nodes_per_call:.1}");
             eprintln!("  walltime:          {sr_ms:.1}ms  ({sr_pct:.1}% of eval)");
         }
+        // Thunk-creation site attribution — WHERE the never-forced thunks are
+        // minted. `maybe_other` (the maybe_thunk `_` arm) + `apply_arg` (lambda
+        // call-by-need) are the two dominant, closable classes.
+        let s_maybe = c.get(Counter::ThunkSiteMaybeOther);
+        let s_apply = c.get(Counter::ThunkSiteApplyArg);
+        let s_ident = c.get(Counter::ThunkSiteMaybeIdent);
+        let s_recfwd = c.get(Counter::ThunkSiteLetForward);
+        let s_withid = c.get(Counter::ThunkSiteOther);
+        let s_tagged = s_maybe + s_apply + s_ident + s_recfwd + s_withid;
+        let created = crate::trace::get_thunks_created();
+        // Untagged remainder = inherit-source + select-source + nested-attr +
+        // native/evaluated/misc constructors not on the hot creation paths.
+        let s_rest = created.saturating_sub(s_tagged);
+        if s_tagged > 0 {
+            eprintln!("--- thunk-creation site attribution ---");
+            eprintln!("  maybe_thunk `_` arm:  {s_maybe}");
+            eprintln!("  apply lambda-arg:     {s_apply}");
+            eprintln!("  maybe_thunk ident fb: {s_ident}");
+            eprintln!("  recursive let/rec:    {s_recfwd}");
+            eprintln!("  with-ident deferred:  {s_withid}");
+            let s_inh = c.get(Counter::ThunkSiteInheritSrc);
+            let s_nat = c.get(Counter::ThunkSiteNative);
+            let s_ev = c.get(Counter::ThunkSiteEvaluated);
+            eprintln!("  inherit-select:       {s_inh}");
+            eprintln!("  native (flake input): {s_nat}");
+            eprintln!("  evaluated (pre-done): {s_ev}");
+            let s_rest2 = s_rest.saturating_sub(s_inh + s_nat + s_ev);
+            eprintln!("  rest (select-src/…):  {s_rest2}");
+            eprintln!("  thunks_created:       {created}");
+        }
+        crate::trace::report_maybe_other_kinds();
         // Thunk stats from trace module.
         crate::trace::report_thunk_stats();
         eprintln!("===========================\n");
@@ -706,8 +766,9 @@ mod tests {
     fn counter_enum_has_30_variants() {
         // Each variant maps to a fixed index; NUM_COUNTERS is the array size.
         // Extended by the M2 RISKY-tier waste probes (41..=45): C-with /
-        // C-slash / C-store measurement + the C-store redundant-store skip.
-        assert_eq!(NUM_COUNTERS, 48);
+        // C-slash / C-store measurement + the C-store redundant-store skip;
+        // then the M2 thunk-waste creation-site attribution (48..=55).
+        assert_eq!(NUM_COUNTERS, 56);
         assert_eq!(COUNTER_NAMES.len(), NUM_COUNTERS);
         assert_eq!(Counter::OverlayFlattenAttempt as usize, 30);
         assert_eq!(Counter::OverlayCreated as usize, 33);
@@ -725,6 +786,14 @@ mod tests {
         assert_eq!(Counter::ThunkStoreRedundant as usize, 45);
         assert_eq!(Counter::SelfRecWalkCalls as usize, 46);
         assert_eq!(Counter::SelfRecWalkNodes as usize, 47);
+        assert_eq!(Counter::ThunkSiteMaybeOther as usize, 48);
+        assert_eq!(Counter::ThunkSiteApplyArg as usize, 49);
+        assert_eq!(Counter::ThunkSiteMaybeIdent as usize, 50);
+        assert_eq!(Counter::ThunkSiteLetForward as usize, 51);
+        assert_eq!(Counter::ThunkSiteOther as usize, 52);
+        assert_eq!(Counter::ThunkSiteInheritSrc as usize, 53);
+        assert_eq!(Counter::ThunkSiteNative as usize, 54);
+        assert_eq!(Counter::ThunkSiteEvaluated as usize, 55);
         assert_eq!(Counter::EvalExpr as usize, 0);
         assert_eq!(Counter::ForceValue as usize, 1);
         assert_eq!(Counter::ThunkForce as usize, 2);

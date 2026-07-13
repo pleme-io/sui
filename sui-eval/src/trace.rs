@@ -336,6 +336,42 @@ pub fn get_self_rec_walk_nanos() -> u128 {
     SELF_REC_WALK_NANOS.with(Cell::get)
 }
 
+// ── M2 scratch: maybe_thunk `_`-arm expr-kind histogram ──────────
+// Byte-neutral (gated on perf::enabled): counts which rnix expr kind
+// each maybe_thunk fall-through thunk wraps, so the 369K `_`-arm
+// thunks can be traced to a kind and the byte-safe-elidable subset
+// (constant Str, Paren, already-value List) separated from the
+// laziness-critical subset (Select, Apply, If, With).
+thread_local! {
+    static MAYBE_OTHER_KINDS: RefCell<std::collections::BTreeMap<&'static str, u64>> =
+        RefCell::new(std::collections::BTreeMap::new());
+}
+
+#[inline(always)]
+pub fn inc_maybe_other_kind(kind: &'static str) {
+    if crate::perf::enabled() {
+        MAYBE_OTHER_KINDS.with(|m| *m.borrow_mut().entry(kind).or_insert(0) += 1);
+    }
+}
+
+pub fn report_maybe_other_kinds() {
+    if !crate::perf::enabled() {
+        return;
+    }
+    MAYBE_OTHER_KINDS.with(|m| {
+        let m = m.borrow();
+        if m.is_empty() {
+            return;
+        }
+        let mut rows: Vec<(&&'static str, &u64)> = m.iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(a.1));
+        eprintln!("--- maybe_thunk `_`-arm by expr kind ---");
+        for (k, v) in rows {
+            eprintln!("  {k:<20} {v}");
+        }
+    });
+}
+
 /// Increment the thunks-created counter.
 #[inline(always)]
 pub fn inc_thunks_created() {

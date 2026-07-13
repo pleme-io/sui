@@ -969,6 +969,7 @@ impl Thunk {
     /// (see `eval::is_self_recursive_binding`).
     pub fn new_suspended_recursive(expr: rnix::ast::Expr, env: Env) -> Self {
         crate::trace::inc_thunks_created();
+        crate::perf::inc(crate::perf::Counter::ThunkSiteLetForward);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::Suspended { expr, env }),
@@ -985,6 +986,7 @@ impl Thunk {
     /// once regardless of how many names are inherited.
     pub fn new_inherit_select(source_thunk: Thunk, name: impl Into<SmolStr>) -> Self {
         crate::trace::inc_thunks_created();
+        crate::perf::inc(crate::perf::Counter::ThunkSiteInheritSrc);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::InheritSelect {
@@ -1005,6 +1007,7 @@ impl Thunk {
         env: Env,
     ) -> Self {
         crate::trace::inc_thunks_created();
+        crate::perf::inc(crate::perf::Counter::ThunkSiteOther);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::WithIdent {
@@ -1022,6 +1025,7 @@ impl Thunk {
     /// This is used for lazy flake input evaluation.
     pub fn new_native(f: impl FnOnce() -> Result<Value, EvalError> + 'static) -> Self {
         crate::trace::inc_thunks_created();
+        crate::perf::inc(crate::perf::Counter::ThunkSiteNative);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::Native(Box::new(f))),
@@ -1034,6 +1038,7 @@ impl Thunk {
     /// immediately available.
     pub fn new_evaluated(value: Value) -> Self {
         crate::trace::inc_thunks_created();
+        crate::perf::inc(crate::perf::Counter::ThunkSiteEvaluated);
         let cache = OnceCell::new();
         if !matches!(value, Value::Thunk(_)) {
             let _ = cache.set(Box::new(value.clone().demand_unchecked()));

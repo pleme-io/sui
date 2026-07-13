@@ -240,3 +240,115 @@ corpus; and the two doc fixes in §5.
   measured **overlay-flatten 2.1% / Storm A 1.8%** on the deep workload.
 - `EVAL-PERF-SEAL.md §3`: Storm A is no longer UNMEASURED — link this doc; the
   measured verdict is **A ≈ B ≈ small; the lever is thunk-waste**.
+
+---
+
+## 8. M2 — the byte-safe thunk-waste cut (LANDED) + creation-site attribution
+
+> Worktree `m2/thunk-waste` off `main` (`sui parity` = 64 match). This M2
+> **lands the byte-safe subset** of the thunk-waste lever §7 named, measures the
+> creation-site attribution the M0 profile did not have, and **defers the RISKY
+> laziness-observable subset with a named proof**. Tier: RELEASE build,
+> tree-walker `--no-vm`, same deep marquee workload as §2.1.
+
+### 8.1 WHERE the never-forced thunks are minted (measured, new)
+
+M0 knew *how many* thunks were wasted (51.8%) but not *where*. M2 adds byte-neutral
+creation-site attribution counters (`ThunkSite*`, gated on `perf::enabled()`,
+symmetric with the M0 Storm-A counters) + a `maybe_thunk` `_`-arm expr-kind
+histogram. On the deep workload, `thunks_created = 1,273,696` split:
+
+| Creation site | count | % | byte-safe to reduce? |
+|---|---:|---:|---|
+| **native (deferred dotted-tail / `//` merge)** | 422,164 | 33.1% | **NO** — laziness-critical (M2.6 ROOT #2 defer; eliding = over-force → `null` in module system) |
+| **maybe_thunk `_` arm** | 369,413 | 29.0% | PARTIAL — see §8.2 kind split |
+| **apply lambda-arg** | 298,352 | 23.4% | PARTIAL — pure-constant subset only (§8.3) |
+| rest (select-source / nested-attr) | 84,529 | 6.6% | NO (fixpoint) |
+| recursive let/rec | 50,298 | 3.9% | NO (usually forced) |
+| inherit-select | 45,029 | 3.5% | NO (usually forced) |
+| with-ident deferred | 3,503 | 0.3% | NO (blackhole deferral) |
+| maybe_thunk ident fallback | 408 | 0.0% | NO |
+
+**Key correction to the M0 mental model:** the single largest thunk creator is
+`native` (33%) — the **deferred dotted-path attrs + `//` merge** the module system
+is dense with. These are the *most* never-forced, but eliding them is *categorically
+byte-unsafe*: the deferral IS the M2.6 fixpoint-correctness fix (forcing `config` to
+WHNF must NOT force a dynamic tail key). The expensive never-forced thunks are
+exactly the ones whose laziness is load-bearing.
+
+`maybe_thunk` `_`-arm by expr kind (369,413 total): Apply 133,455 · **Str 78,003** ·
+Select 75,029 · Lambda(rec) 20,685 · BinOp 17,318 · List 12,032 · AttrSet 11,609 ·
+IfElse 6,236 · With 3,902 · **Paren 3,557** · Assert 2,764 · LetIn 2,510 ·
+Path(interp) 2,271 · UnaryOp 41 · HasAttr 1.
+
+### 8.2 LANDED cut #1 — eager non-interpolated `Str` in `maybe_thunk`
+
+A **constant string** (no `${…}` part) runs `eval_str` with zero force/coerce: it is
+pure, non-throwing, side-effect-free, and yields `String(NixString::with_context(text,
+EMPTY))`. Evaluating it directly in `maybe_thunk` is byte-identical to forcing a
+suspended thunk of it. **Laziness-safety proof:** a value that cannot throw or diverge
+is *inert* — a lambda/binding that never forces it observes no difference in eval
+order; there is no `${…}` to force in the wrong env. Interpolated strings stay thunked.
+
+Effect: `maybe_thunk` `_` arm 369,413 → 293,204; `thunks_created` 1,273,696 →
+1,197,487 (**−76,209, −6.0%**).
+
+### 8.3 LANDED cut #2 — eager pure-constant lambda-arg in `eval_apply`
+
+Call-by-need thunks every lambda arg. The **pure-constant subset** (a literal, a
+non-interpolated string, a non-interpolated abs/home path — `eval_pure_constant_arg`)
+can never throw or diverge, so producing its value directly is byte-neutral whether
+or not the lambda forces it. **Laziness-safety proof:** the classifier admits ONLY
+inert constants and **rejects everything laziness-observable** — Ident (may force a
+with-scope head, `lookup_fast` value.rs:2241), Select/Apply/BinOp/If/… (may throw),
+interpolated Str/Path (must force `${…}` lazily). A `throw`-ing arg an ignoring lambda
+drops stays fully thunked (test `ignored_throwing_arg_stays_lazy`).
+
+Effect: apply lambda-arg 298,352 → 291,461 (−6,891). Cumulative `thunks_created`
+1,197,487 → **1,190,596** (total from baseline **−83,100, −6.5%**).
+
+### 8.4 DEFERRED (RISKY — named, with proof of why)
+
+- **Full apply-arg elision (the Ident/Select/… bulk of the 298K).** RISKY: routing
+  a general arg through `maybe_thunk`/`eval_expr` eagerly can force a with-scope head
+  (`lookup_fast` forces the with-namespace attrset, value.rs:2241) or throw — a
+  laziness-observable change if the lambda never uses the arg. Deferred until a
+  per-arg "definitely-demanded-and-non-throwing" proof exists (a lambda body that
+  provably forces its param first-thing).
+- **`native` deferred dotted-tail / `//` merge (422K, the biggest bucket).** NOT a
+  waste bug — the deferral is the M2.6 ROOT #2 over-force fix. Reducing it would
+  reintroduce the `concatLists: expected list, got null` class. **Do not touch.**
+- **Select / Apply / BinOp / If / With / AttrSet / Assert / LetIn `_`-arm thunks.**
+  Each can throw, diverge, or observe a fixpoint blackhole (the Select comment in
+  `maybe_thunk` documents the module-system dependence explicitly). Not byte-safe.
+- **Paren (3,557).** Trivially safe (`(e)` ≡ `e`) but tiny; a recurse-through-paren
+  is a follow-up, not this M2's marquee.
+
+### 8.5 Measured effect (deep marquee, RELEASE `--no-vm`, best-of-N)
+
+| Metric | baseline (main) | M2 | delta |
+|---|---:|---:|---:|
+| `thunks_created` | 1,273,696 | 1,190,596 | **−83,100 (−6.5%)** |
+| maxRSS | 1974.8 MB | 1970.4 MB | **−4.4 MB (−0.22%)** |
+| wall (best-of) | 10.56 s | 10.44 s | −1.1% (≈ noise) |
+| result | `"nixos"` | `"nixos"` | byte-identical |
+
+The RSS win is honest-small: the byte-safe cuts are the *cheap* thunks (pure
+constants capture a trivial env, no retained HAMT). The dominant memory term —
+retained HAMTs of never-forced thunks — lives in the RISKY `native`/Select buckets
+whose laziness is load-bearing, so it is **not** reachable byte-safely. The larger
+wall/mem lever remains a representation change (bump-allocated Env chains / thunk-store
+collapse — the §4 constant-factor reprieve), not more elision.
+
+### 8.6 Byte-parity guard
+
+| Check | result |
+|---|---|
+| `hello.drvPath` (`--no-vm`, direct-import) | `a1fzz00d…-hello-2.12.2.drv` — byte-identical to nix |
+| `sui parity` | **64 match · 1 tracked · 0 regressions** (unchanged) |
+| neovim (the `1 tracked`) drv hash | `8n1325kk…` — byte-identical between main and M2 (change did not perturb the tracked divergence) |
+| darwin `currentSystem` probes (hello/stdenv/bash/coreutils/openssl/curl) | all match |
+| `sui-eval` lib tests | 1369 passed (+3 new) · 1 pre-existing failure (`evaluate_flake_fetch_failure_returns_error`, fails on pristine main too) |
+
+New regression tests pin the invariant: `maybe_thunk_eager_constant_str_is_byte_identical`,
+`eval_pure_constant_arg_classification`, `ignored_throwing_arg_stays_lazy`.

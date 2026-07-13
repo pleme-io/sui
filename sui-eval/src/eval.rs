@@ -675,6 +675,7 @@ fn maybe_thunk(
                             env.clone(),
                         ));
                     }
+                    crate::perf::inc(crate::perf::Counter::ThunkSiteMaybeIdent);
                     Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                 }
             }
@@ -693,10 +694,12 @@ fn maybe_thunk(
                     // scope, it's a backward reference — resolve directly.
                     if defined_so_far.map_or(false, |d| d.contains(&name)) {
                         env.lookup(&name).unwrap_or_else(|| {
+                            crate::perf::inc(crate::perf::Counter::ThunkSiteMaybeIdent);
                             Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                         })
                     } else {
                         // Forward reference — must thunk
+                        crate::perf::inc(crate::perf::Counter::ThunkSiteMaybeIdent);
                         Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
                     }
                 }
@@ -718,6 +721,23 @@ fn maybe_thunk(
         ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
             let text = p.syntax().text().to_string();
             Value::Path(Box::new(SmolStr::from(text.as_str())))
+        }
+        // Non-interpolated string literal: a constant value with no
+        // interpolation, so `eval_str` runs no `${…}` force/coerce — it is
+        // pure, non-throwing, side-effect-free, and produces a
+        // `String(NixString::with_context(text, EMPTY))`. Evaluating it here is
+        // therefore byte-identical to forcing a suspended thunk of it (M2
+        // thunk-waste: a constant Str thunk is always pure overhead — it can
+        // never observably change eval order because it cannot throw or
+        // diverge). Only the NON-interpolated case is direct; an interpolated
+        // `"${e}"` must stay thunked so its parts force lazily in the right
+        // env/order. `eval_str` on the empty-interpolation input cannot fail,
+        // but fall back to a thunk on the (unreachable) error to preserve
+        // exact prior behavior.
+        ast::Expr::Str(st) if !str_has_interpolation(st) => {
+            eval_str(st, env).unwrap_or_else(|_| {
+                Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+            })
         }
         // Lambda: capture env directly (no computation needed).
         // But NOT in recursive scopes -- the closure must capture the
@@ -743,7 +763,36 @@ fn maybe_thunk(
         // The performance cost is minimal (thunk allocation + deferred eval)
         // and correctness is critical for fixpoint patterns.
         // Everything else: wrap in a thunk for lazy evaluation.
-        _ => Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone())),
+        _ => {
+            crate::perf::inc(crate::perf::Counter::ThunkSiteMaybeOther);
+            if crate::perf::enabled() {
+                let kind = match expr {
+                    ast::Expr::Select(_) => "Select",
+                    ast::Expr::Apply(_) => "Apply",
+                    ast::Expr::BinOp(_) => "BinOp",
+                    ast::Expr::IfElse(_) => "IfElse",
+                    ast::Expr::Str(_) => "Str",
+                    ast::Expr::List(_) => "List",
+                    ast::Expr::With(_) => "With",
+                    ast::Expr::Assert(_) => "Assert",
+                    ast::Expr::HasAttr(_) => "HasAttr",
+                    ast::Expr::UnaryOp(_) => "UnaryOp",
+                    ast::Expr::Paren(_) => "Paren",
+                    ast::Expr::LetIn(_) => "LetIn",
+                    ast::Expr::AttrSet(_) => "AttrSet",
+                    ast::Expr::Ident(_) => "Ident(rec)",
+                    ast::Expr::Lambda(_) => "Lambda(rec)",
+                    ast::Expr::LegacyLet(_) => "LegacyLet",
+                    ast::Expr::PathAbs(_)
+                    | ast::Expr::PathHome(_)
+                    | ast::Expr::PathRel(_)
+                    | ast::Expr::PathSearch(_) => "Path(interp)",
+                    _ => "Other",
+                };
+                crate::trace::inc_maybe_other_kind(kind);
+            }
+            Value::Thunk(Thunk::new_suspended(expr.clone(), env.clone()))
+        }
     }
 }
 
@@ -1578,14 +1627,61 @@ fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
     // - __functor: evaluate eagerly (will be applied immediately)
     let arg = match &func {
         Value::Lambda(_) => {
-            Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+            // Call-by-need: the arg is thunked so it forces lazily. But a
+            // PURE-CONSTANT arg (a literal, a non-interpolated string, or a
+            // non-interpolated path) can never throw or diverge, so producing
+            // its value directly is byte-neutral whether or not the lambda ever
+            // forces it — identical eval-order-observable behavior, one fewer
+            // never-forced thunk. This is `arg_pure_constant` ONLY: any arg that
+            // could throw/diverge/observe a fixpoint (Ident with-scope, Select,
+            // Apply, BinOp, …) stays fully thunked to preserve laziness.
+            if let Some(v) = eval_pure_constant_arg(&arg_expr) {
+                v
+            } else {
+                crate::perf::inc(crate::perf::Counter::ThunkSiteApplyArg);
+                Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
+            }
         }
         Value::Builtin(b) if b.name == "tryEval" => {
+            crate::perf::inc(crate::perf::Counter::ThunkSiteApplyArg);
             Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
         }
         _ => eval_expr(&arg_expr, env)?,
     };
     apply(func, arg)
+}
+
+/// If `arg_expr` is a PURE CONSTANT — a literal, a non-interpolated string, or
+/// a non-interpolated absolute/home path — return its value directly (no thunk).
+///
+/// A pure constant has no free variables, cannot throw, cannot diverge, and has
+/// no fixpoint/laziness interaction: `eval_expr(arg)` is total and produces the
+/// exact value a suspended thunk of it would yield on force. Producing it
+/// eagerly in a call-by-need arg position is therefore byte-neutral (the
+/// lambda that never forces the arg observes no difference — the value is inert).
+///
+/// Returns `None` for EVERYTHING else (Ident — may hit a with-scope force;
+/// Select/Apply/BinOp/If/… — may throw or diverge; interpolated Str/Path —
+/// must force `${…}` lazily), which keeps those args fully thunked. `env` is
+/// NOT threaded in because a pure constant needs no environment; if a match
+/// arm ever needed `env`, it would not be a pure constant.
+fn eval_pure_constant_arg(arg_expr: &ast::Expr) -> Option<Value> {
+    match arg_expr {
+        ast::Expr::Literal(lit) => eval_literal(lit).ok(),
+        ast::Expr::Str(st) if !str_has_interpolation(st) => {
+            // No interpolation ⇒ `eval_str` runs no force/coerce; env is unused.
+            eval_str(st, &Env::new()).ok()
+        }
+        ast::Expr::PathAbs(p) if !parts_have_interpolation(&p.parts()) => {
+            let text = crate::path::canon_abs(&p.syntax().text().to_string());
+            Some(Value::Path(Box::new(SmolStr::from(text.as_str()))))
+        }
+        ast::Expr::PathHome(p) if !parts_have_interpolation(&p.parts()) => {
+            let text = p.syntax().text().to_string();
+            Some(Value::Path(Box::new(SmolStr::from(text.as_str()))))
+        }
+        _ => None,
+    }
 }
 
 fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
@@ -1617,6 +1713,15 @@ fn eval_str(s: &ast::Str, env: &Env) -> Result<Value, EvalError> {
 /// and cheaper, so the trivial fast paths stay on that shortcut.
 fn parts_have_interpolation(parts: &[InterpolPart<rnix::ast::PathContent>]) -> bool {
     parts
+        .iter()
+        .any(|p| matches!(p, InterpolPart::Interpolation(_)))
+}
+
+/// Whether a string literal contains any `${…}` interpolation part. A `false`
+/// result means the string is a pure constant (`eval_str` runs no force/coerce
+/// and cannot throw), so `maybe_thunk` may evaluate it eagerly byte-neutrally.
+fn str_has_interpolation(s: &ast::Str) -> bool {
+    s.normalized_parts()
         .iter()
         .any(|p| matches!(p, InterpolPart::Interpolation(_)))
 }
@@ -2905,6 +3010,61 @@ mod tests {
             &expr("if placeholder then 1 else 2"),
             "placeholder"
         ));
+    }
+
+    // M2 thunk-waste (byte-safe eager constant): a NON-interpolated string in a
+    // maybe_thunk site is evaluated directly (no suspended thunk). The value +
+    // its (empty) context must be byte-identical to forcing a thunk of it.
+    #[test]
+    fn maybe_thunk_eager_constant_str_is_byte_identical() {
+        fn expr(s: &str) -> ast::Expr {
+            rnix::Root::parse(s).tree().expr().expect("parse")
+        }
+        let env = Env::new();
+        // Constant string → returned as a concrete String, NOT a Thunk.
+        let v = maybe_thunk(&expr(r#""abc""#), &env, false, None);
+        assert!(matches!(v, Value::String(_)), "constant str should be eager, got {v:?}");
+        assert_eq!(force_value(&v).unwrap(), Value::string("abc"));
+        // Interpolated string → MUST stay a thunk (lazy `${…}` force).
+        let vi = maybe_thunk(&expr(r#""a${b}c""#), &env, false, None);
+        assert!(matches!(vi, Value::Thunk(_)), "interpolated str must stay thunked");
+    }
+
+    // The pure-constant arg classifier admits ONLY literals + non-interpolated
+    // strings/paths, and rejects everything that could throw/diverge/observe a
+    // fixpoint — the laziness safety boundary of the apply-arg optimization.
+    #[test]
+    fn eval_pure_constant_arg_classification() {
+        fn expr(s: &str) -> ast::Expr {
+            rnix::Root::parse(s).tree().expr().expect("parse")
+        }
+        // ADMIT: pure constants (byte-safe to eval eagerly in an arg position).
+        assert!(eval_pure_constant_arg(&expr("42")).is_some());
+        assert!(eval_pure_constant_arg(&expr("3.14")).is_some());
+        assert!(eval_pure_constant_arg(&expr(r#""const""#)).is_some());
+        assert!(eval_pure_constant_arg(&expr("/abs/path")).is_some());
+        // REJECT: anything that could throw / diverge / observe laziness.
+        assert!(eval_pure_constant_arg(&expr(r#""a${b}c""#)).is_none(), "interpolated str");
+        // `true`/`false`/`null` are IDENTS in nix (shadowable), not literals —
+        // rejected to avoid a with-scope force, correctly conservative.
+        assert!(eval_pure_constant_arg(&expr("true")).is_none(), "bool is an ident");
+        assert!(eval_pure_constant_arg(&expr("x")).is_none(), "ident (with-scope force)");
+        assert!(eval_pure_constant_arg(&expr("a.b")).is_none(), "select (fixpoint)");
+        assert!(eval_pure_constant_arg(&expr("f x")).is_none(), "apply (may throw)");
+        assert!(eval_pure_constant_arg(&expr("1 + 1")).is_none(), "binop (may throw)");
+        assert!(eval_pure_constant_arg(&expr("throw \"x\"")).is_none(), "throw stays lazy");
+    }
+
+    // LAZINESS GUARD: a lambda that IGNORES its arg must NOT force it — even a
+    // throwing arg. The pure-constant optimization only touches inert constants,
+    // so a `throw`-ing arg stays fully thunked and the ignoring lambda succeeds.
+    #[test]
+    fn ignored_throwing_arg_stays_lazy() {
+        assert_eq!(ev(r#"(x: 7) (throw "boom")"#), Value::Int(7));
+        // And an ignored constant arg is equally invisible.
+        assert_eq!(ev(r#"(x: 7) "const""#), Value::Int(7));
+        // A USED constant arg produces the right value.
+        assert_eq!(ev(r#"(x: x) "used""#), Value::string("used"));
     }
 
     #[test]
