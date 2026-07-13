@@ -6560,6 +6560,7 @@ dependencies = [
 name = "sui-intern"
 version = "0.1.88"
 dependencies = [
+ "blake3",
  "rustc-hash 2.1.2",
 ]
 
