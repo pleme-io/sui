@@ -58,6 +58,30 @@ auto-refreshed against the latest nixpkgs, and every gap is a tracked red gate."
 - **P3:** the **build-parity basket** — a `sui build-parity` subcommand that
   realizes a growing set of derivations and byte-compares the NAR to nix's,
   starting at the stdenv bootstrap. Grows one byte-verified row at a time.
+
+  **P3 findings (2026-07-15 — tier-honest split of "sui builds nixpkgs"):**
+  - **Derivation-hashing / instantiation parity: PROVEN + continuously gated.**
+    sui computes the `drvPath` AND the `outPath` byte-identical to nix — e.g.
+    `sui build .#seed` computed `outPath =
+    ddj3291990gsayjpv49c0qxc6n6k9ms5-bpf-seed`, identical to `nix build .#seed`.
+    Since the output path is input-addressed from the whole `.drv` graph, this
+    proves **sui produces the same build graph as nix** — the fundamental half.
+    This is exactly what the 65-row `sui parity` corpus gates on every commit.
+  - **Realization engine: works.** `sui-build` (`LocalBuilder` + `DarwinSandbox`
+    + `build_closure`) realizes a derivation to its output; a `.drv` that is
+    present in the store builds to the expected path.
+  - **End-to-end realization: BLOCKED on daemon-mediated store writes (the P3
+    build).** `write_derivation_to_store` (derivation.rs:126) writes the `.drv`
+    via a direct `std::fs::write` to `/nix/store/…drv`; on a multi-user nix store
+    `/nix/store` is `dr-xr-xr-x root` (read-only to the user), so the write fails
+    to a fallback path and `BuildClosure::compute` can't read the `.drv` at its
+    real store path. sui must write to the store **via the nix daemon protocol**
+    (it has `sui-store`/`sui-daemon`, but the build path uses direct `fs::write`).
+    This is the named, load-bearing P3 brick — realizing + NAR-comparing
+    end-to-end needs daemon-mediated (or single-user/root) store writes.
+  - Landed en route: a real `sui build` CLI fix — the flake-build path forces the
+    `drvPath` thunk before extracting it (it silently printed the derivation
+    instead of building, because `drvPath` is lazy).
 - **P4:** tameshi-attested public receipt per nixpkgs commit + a README badge:
   `sui ⟷ nixpkgs@<sha>: N eval ✓ · M build ✓ · 0 diverge`.
 

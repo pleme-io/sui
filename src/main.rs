@@ -5769,13 +5769,18 @@ async fn main() -> Result<(), CliError> {
                         operation: "build",
                         message: format!("navigate: {e}"),
                     })?;
-                // Extract drvPath from the derivation attrset.
+                // Extract drvPath from the derivation attrset. `drvPath` is a
+                // lazy thunk, so it MUST be forced before `as_string` — without
+                // the force the extraction silently yields `None` and the build
+                // falls through to just printing the derivation (the flake-build
+                // path never realizes anything). Force the target too, in case a
+                // navigated attr is itself a thunk.
+                let target = sui_eval::eval::force_value(&target).unwrap_or(target);
                 let drv_path = match &target {
-                    sui_eval::Value::Attrs(attrs) => {
-                        attrs.get("drvPath")
-                            .and_then(|v| v.as_string().ok())
-                            .map(std::string::ToString::to_string)
-                    }
+                    sui_eval::Value::Attrs(attrs) => attrs.get("drvPath").and_then(|v| {
+                        let forced = sui_eval::eval::force_value(&v).ok()?;
+                        forced.as_string().ok().map(std::string::ToString::to_string)
+                    }),
                     _ => None,
                 };
                 if let Some(drv_path) = drv_path {
