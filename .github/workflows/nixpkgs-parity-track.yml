@@ -1,0 +1,87 @@
+# nixpkgs-parity-track — THE MACHINE (phase 0): sui continuously + publicly
+# proves it tracks the LATEST nixpkgs.
+#
+# The standing `parity.yml` gate runs `sui parity` against whatever nixpkgs the
+# runner happens to carry, on every push. THIS workflow is the continuous
+# TRACKING half: on a daily schedule it pins `<nixpkgs>` to the current
+# `nixpkgs-unstable` HEAD and runs the same byte-parity corpus, so a divergence
+# introduced by an upstream nixpkgs change (not a sui change) surfaces as a red,
+# public, dated check — the exact signal that let us find + close the neovim /
+# python27 `callPackage` root.
+#
+# Philosophy (operator): build + improve + FIX the machine, not chase coverage.
+# Every red run is a real divergence to root-cause + fix in the eval core (like
+# neovim), then the corpus grows by one honest, byte-verified row. "How far we
+# get" is an output we earn, never a number we round up.
+#
+# ── The machine, phased (this file is phase 0) ────────────────────────────────
+#   P0 (HERE): scheduled eval-parity vs latest nixpkgs, in sui's own CI.
+#   P1: extract the run into `pleme-io/actions/sui-eval-parity` (a tlisp-backed
+#       reusable action) + a `substrate` reusable workflow — the 3-line consumer
+#       shim, per the AUTO-RELEASE pattern.
+#   P2: `tend.nixpkgs-track` job kind — tend polls the nixpkgs channel ref
+#       (it already polls tags for akeyless-matrix) and dispatches this pipeline
+#       on a new commit, so tracking is daemon-driven, not only cron.
+#   P3: BUILD-parity basket — realize a growing set of derivations with sui and
+#       byte-compare the NAR to nix's (the genuinely-new harness).
+#   P4: tameshi-attested public receipt + a README badge
+#       (`sui ⟷ nixpkgs@<sha>: N eval ✓ · M build ✓ · 0 diverge`).
+# See docs/NIXPKGS-PARITY-MACHINE.md for the full design + tier-honest ledger.
+
+name: nixpkgs-parity-track
+
+on:
+  schedule:
+    # Daily at 06:17 UTC — offset off the hour to avoid the cron thundering herd.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      nixpkgs-ref:
+        description: "nixpkgs ref to track (default: nixpkgs-unstable HEAD)"
+        required: false
+        default: "nixpkgs-unstable"
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      # Pin <nixpkgs> to the tracked ref's CURRENT HEAD. The resolved rev is
+      # recorded in the job summary so every run says exactly which nixpkgs it
+      # proved parity against — no moving-tag ambiguity in the receipt.
+      - name: Resolve + pin latest nixpkgs
+        id: pin
+        run: |
+          REF="${{ github.event.inputs.nixpkgs-ref || 'nixpkgs-unstable' }}"
+          REV=$(nix flake metadata "github:NixOS/nixpkgs/${REF}" --json | nix run nixpkgs#jq -- -r .locked.rev)
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+          echo "NIX_PATH=nixpkgs=https://github.com/NixOS/nixpkgs/archive/${REV}.tar.gz" >> "$GITHUB_ENV"
+          echo "### Tracking nixpkgs \`${REF}\` @ \`${REV}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build sui
+        run: cargo build -p sui --bin sui
+
+      # The byte gate, now against the freshly-pinned nixpkgs. A non-zero exit is
+      # a real divergence between sui and nix on the CURRENT nixpkgs — the public,
+      # dated red check that drives the fix loop.
+      - name: Run byte-parity gate vs tracked nixpkgs
+        run: |
+          set -o pipefail
+          ./target/debug/sui parity | tee parity.out
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -3 parity.out >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
