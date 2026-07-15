@@ -72,19 +72,26 @@ jobs:
       # trivial derivation (no network); nixpkgs leaves are added as the realize
       # path is proven green here.
       - name: Run build-parity basket
+        shell: bash
         run: |
+          set +e  # a per-row build failure must be REPORTED, not abort the step
           . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
-          export SUI=./target/debug/sui
+          SUI=./target/debug/sui
           MATCH=0; TOTAL=0; FAIL=0
           bp() {
-            local name="$1" expr="$2"
+            name="$1"; expr="$2"
             TOTAL=$((TOTAL+1))
-            local nixnar suinar
-            nixnar=$(nix hash path "$(nix build --impure --no-link --print-out-paths --expr "$expr" 2>/dev/null | tail -1)" 2>/dev/null)
-            local drv suiout
+            # nix side (oracle)
+            nixout=$(nix build --impure --no-link --print-out-paths --expr "$expr" 2>/dev/null | tail -1)
+            nixnar=$(nix hash path "$nixout" 2>/dev/null)
+            # sui side: eval drvPath (writes the .drv on this writable store), realize
             drv=$($SUI eval --no-vm --raw --expr "($expr).drvPath" 2>/dev/null | tail -1)
-            suiout=$($SUI build --print-out-paths "$drv" 2>/dev/null | grep '^/nix/store' | tail -1)
+            suiout=$($SUI build --print-out-paths "$drv" 2>&1 | grep '^/nix/store' | tail -1)
             suinar=$(nix hash path "$suiout" 2>/dev/null)
+            echo "  [$name] nix_out=$nixout"
+            echo "  [$name] sui_drv=$drv sui_out=$suiout"
+            echo "  [$name] nix_nar=$nixnar"
+            echo "  [$name] sui_nar=$suinar"
             if [ -n "$nixnar" ] && [ "$nixnar" = "$suinar" ]; then
               MATCH=$((MATCH+1)); echo "  ✓ $name  $nixnar"
             else
@@ -95,8 +102,11 @@ jobs:
           # ── the basket (grow this list one byte-verified row at a time) ──
           bp "trivial-echo" 'derivation { name = "bp-trivial"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo byte-parity > $out" ]; }'
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### build-parity: $MATCH/$TOTAL byte-identical ($FAIL diverge)" >> "$GITHUB_STEP_SUMMARY"
-          # A DIVERGENCE fails the job (a real build-graph or realize bug to fix).
-          # An empty basket or a still-maturing realize path is surfaced, not hidden.
+          {
+            echo ""
+            echo "### build-parity: $MATCH/$TOTAL byte-identical ($FAIL diverge)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A DIVERGENCE fails the job (a real build-graph / realize bug to fix at
+          # the root — the neovim loop). A still-maturing realize path is surfaced
+          # with its exact nix_out/sui_out, not hidden.
           [ "$FAIL" -eq 0 ]
