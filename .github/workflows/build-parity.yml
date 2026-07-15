@@ -71,42 +71,14 @@ jobs:
       # nix, byte-compare the output NAR. The starter row is a self-contained
       # trivial derivation (no network); nixpkgs leaves are added as the realize
       # path is proven green here.
-      - name: Run build-parity basket
-        shell: bash
+      # The build-parity engine is a TYPED sui subcommand (src/main.rs
+      # `Commands::BuildParity` + its basket), NOT shell in this template — it
+      # realizes each basket derivation with sui, builds the nix oracle, and
+      # byte-compares the output NAR, exiting non-zero on any divergence. The
+      # `nix` binary it shells to is the sanctioned typed-subprocess oracle
+      # (`run_capture`), the same pattern `sui parity` already uses. The `.` load
+      # is the one sanctioned line of glue to put single-user nix on PATH.
+      - name: Run build-parity (typed sui subcommand)
         run: |
-          set +e  # a per-row build failure must be REPORTED, not abort the step
           . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
-          SUI=./target/debug/sui
-          MATCH=0; TOTAL=0; FAIL=0
-          bp() {
-            name="$1"; expr="$2"
-            TOTAL=$((TOTAL+1))
-            # nix side (oracle)
-            nixout=$(nix build --impure --no-link --print-out-paths --expr "$expr" 2>/dev/null | tail -1)
-            nixnar=$(nix hash path "$nixout" 2>/dev/null)
-            # sui side: eval drvPath (writes the .drv on this writable store), realize
-            drv=$($SUI eval --no-vm --raw --expr "($expr).drvPath" 2>/dev/null | tail -1)
-            suiout=$($SUI build --print-out-paths "$drv" 2>&1 | grep '^/nix/store' | tail -1)
-            suinar=$(nix hash path "$suiout" 2>/dev/null)
-            echo "  [$name] nix_out=$nixout"
-            echo "  [$name] sui_drv=$drv sui_out=$suiout"
-            echo "  [$name] nix_nar=$nixnar"
-            echo "  [$name] sui_nar=$suinar"
-            if [ -n "$nixnar" ] && [ "$nixnar" = "$suinar" ]; then
-              MATCH=$((MATCH+1)); echo "  ✓ $name  $nixnar"
-            else
-              FAIL=$((FAIL+1)); echo "  ✘ $name  nix=$nixnar sui=$suinar"
-            fi
-          }
-
-          # ── the basket (grow this list one byte-verified row at a time) ──
-          bp "trivial-echo" 'derivation { name = "bp-trivial"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo byte-parity > $out" ]; }'
-
-          {
-            echo ""
-            echo "### build-parity: $MATCH/$TOTAL byte-identical ($FAIL diverge)"
-          } >> "$GITHUB_STEP_SUMMARY"
-          # A DIVERGENCE fails the job (a real build-graph / realize bug to fix at
-          # the root — the neovim loop). A still-maturing realize path is surfaced
-          # with its exact nix_out/sui_out, not hidden.
-          [ "$FAIL" -eq 0 ]
+          ./target/debug/sui build-parity | tee "$GITHUB_STEP_SUMMARY"

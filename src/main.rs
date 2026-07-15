@@ -187,6 +187,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// BUILD-parity: realize a basket of derivations with sui AND nix, then
+    /// byte-compare the built output NAR (via nix's own `nix hash path` on both).
+    /// The typed engine behind the build-parity machine (docs/NIXPKGS-PARITY-MACHINE.md):
+    /// proves sui BUILDS nixpkgs identically, not just evaluates it. Requires a
+    /// WRITABLE store (single-user; sui writes the .drv + output directly). Exits
+    /// non-zero on any divergence — a red gate to root-cause at the eval/build core.
+    #[command(name = "build-parity")]
+    BuildParity {
+        /// Path to the cppnix binary (the oracle).  Default: `nix` on PATH.
+        #[arg(long, default_value = "nix")]
+        nix: std::path::PathBuf,
+    },
     /// Bisect a diverging `<expr>.drvPath` to the structural leaf: recurse the
     /// sui↔nix input-derivation graph (matched by name) to the first drv whose
     /// same-name inputs all match nix but which itself diverges — naming the
@@ -5803,6 +5815,86 @@ async fn main() -> Result<(), CliError> {
                     // Not a derivation — just display the evaluated value.
                     println!("{target}");
                 }
+            }
+        }
+
+        Commands::BuildParity { nix } => {
+            use sui_build::{BuildClosure, LocalBuilder};
+            // The basket — grown one byte-verified row at a time (the build-parity
+            // sibling of `parity_corpus`). Starts self-contained (no network); real
+            // nixpkgs leaves are added as each proves byte-identical here.
+            let basket: &[(&str, &str)] = &[(
+                "trivial-echo",
+                "derivation { name = \"bp-trivial\"; system = builtins.currentSystem; \
+                 builder = \"/bin/sh\"; args = [ \"-c\" \"echo byte-parity > $out\" ]; }",
+            )];
+            // Writable-store precondition: single-user store, so sui writes the .drv
+            // + output directly (WritableStore path). On a root-owned multi-user
+            // store this build path can't write — that is the daemon-write brick.
+            let store = sui_store::LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| {
+                CliError::Orchestrate { operation: "build-parity", message: format!("store open: {e}") }
+            })?;
+            let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+            let caches = sui_orchestrate::build_caches(&sui_orchestrate::get_substituters());
+            let substitutor = Substitutor::new(store.clone(), caches);
+            #[cfg(target_os = "macos")]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::DarwinSandbox::new());
+            #[cfg(not(target_os = "macos"))]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::LinuxSandbox::new());
+            let builder = LocalBuilder::new(store, sandbox);
+            // Single-user nix needs `nix-command` explicitly enabled for `nix
+            // build` / `nix hash path`; without it both silently return empty.
+            const EXP: &str = "--extra-experimental-features";
+            let hash_path = |out: &str| -> String {
+                if out.is_empty() { String::new() }
+                else { run_capture(&nix, &["hash", "path", EXP, "nix-command", out]).unwrap_or_default() }
+            };
+
+            let mut matched = 0usize;
+            let mut failed = 0usize;
+            for (name, expr) in basket {
+                // nix oracle: build + NAR hash.
+                let nix_out = run_capture(
+                    &nix,
+                    &["build", EXP, "nix-command", "--impure", "--no-link", "--print-out-paths", "--expr", expr],
+                )
+                .map(|s| s.lines().last().unwrap_or("").to_string())
+                .unwrap_or_default();
+                let nix_nar = hash_path(&nix_out);
+
+                // sui: eval `(expr).drvPath` (writes the .drv on the writable store)
+                // then realize the closure; hash the built output with nix's own
+                // `nix hash path` so the comparison is against nix's NAR definition.
+                let sui_out = match eval_render_threaded(&format!("({expr}).drvPath"), false, true) {
+                    Ok(drv) => match BuildClosure::compute(&drv) {
+                        Ok(closure) => match builder.build_closure(&closure, Some(&substitutor)).await {
+                            Ok(r) => r.outputs.first().map(|o| o.to_absolute_path()).unwrap_or_default(),
+                            Err(e) => { eprintln!("  sui build [{name}]: {e}"); String::new() }
+                        },
+                        Err(e) => { eprintln!("  sui closure [{name}]: {e}"); String::new() }
+                    },
+                    Err(e) => { eprintln!("  sui eval [{name}]: {e}"); String::new() }
+                };
+                let sui_nar = hash_path(&sui_out);
+
+                if !nix_nar.is_empty() && nix_nar == sui_nar {
+                    matched += 1;
+                    println!("  ✓ {name}  {nix_nar}");
+                } else {
+                    failed += 1;
+                    println!("  ✘ {name}");
+                    println!("      nix_out={nix_out}  nix_nar={nix_nar}");
+                    println!("      sui_out={sui_out}  sui_nar={sui_nar}");
+                }
+            }
+            println!("\n  ∑ {matched}/{} byte-identical · {failed} diverge", basket.len());
+            if failed > 0 {
+                return Err(CliError::Orchestrate {
+                    operation: "build-parity",
+                    message: format!("{failed} build-parity divergence(s)"),
+                });
             }
         }
 
