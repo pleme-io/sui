@@ -298,8 +298,18 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Default persistent cache path: `~/.cache/sui/eval-cache.json`.
+/// Default persistent cache path.
+///
+/// `SUI_EVAL_CACHE_PATH` overrides the location outright (used for hermetic
+/// tests and for an operator who wants the warm eval-store on a specific
+/// disk/ZFS dataset). Otherwise: `$cache_dir/sui/eval-cache.json`, where
+/// `$cache_dir` is `~/Library/Caches` (macOS) or `$XDG_CACHE_HOME`/`~/.cache`.
 fn default_cache_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SUI_EVAL_CACHE_PATH") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
     dirs_next().map(|d| d.join("sui").join("eval-cache.json"))
 }
 

@@ -367,6 +367,7 @@ sui-eval.workspace = true
 sui-build.workspace = true
 sui-store.workspace = true
 sui-compat.workspace = true
+tempfile.workspace = true
 
 [profile.release]
 codegen-units = 1

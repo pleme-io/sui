@@ -5493,7 +5493,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json, raw: _, expr_flag, max_force_depth, no_eval_cache: _, apply: _, file_flag: _ } => {
+        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, apply: _, file_flag: _ } => {
             // Two input shapes (mirrors `nix eval`):
             //  - `--expr "EXPR"`   → raw Nix expression
             //  - positional INSTALLABLE (`flake-ref#attr.path`) → desugars to
@@ -5501,58 +5501,91 @@ async fn main() -> Result<(), CliError> {
             // `expr_flag` always wins; positional only desugars when it
             // contains a `#`, otherwise we treat it as a raw expression
             // for backwards compatibility with `sui eval '1 + 2'`.
+            //
+            // `installable_flake_ref` is set ONLY for the `flake-ref#attr`
+            // shape — the only input the cross-run eval-cache may key on
+            // (a lock-pinned flake output is a pure function of source+lock;
+            // a bare `--expr` may name the impure frontier and is never cached).
+            let mut installable_flake_ref: Option<String> = None;
             let expr = match (expr_flag, expression) {
                 (Some(raw), _) => raw,
                 (None, Some(s)) => match s.split_once('#') {
-                    Some((flake, attr)) => format!(
-                        "(builtins.getFlake \"{}\").{}",
-                        normalize_flake_ref(flake),
-                        attr,
-                    ),
+                    Some((flake, attr)) => {
+                        installable_flake_ref = Some(flake.to_string());
+                        format!(
+                            "(builtins.getFlake \"{}\").{}",
+                            normalize_flake_ref(flake),
+                            attr,
+                        )
+                    }
                     None => s,
                 },
                 (None, None) =>
                     return Err(CliError::MissingArgument("no expression provided".into())),
             };
+            // Render mode determines the output bytes, so it is part of the
+            // cache identity (json / raw / display never share an entry).
+            let render_mode = if json { "json" } else if raw { "raw" } else { "display" };
+            // Cross-run eval-cache key: installable-only, byte-safe, disabled by
+            // `--no-eval-cache`. `None` ⇒ this eval is never cached/served.
+            let cache_key = if no_eval_cache {
+                None
+            } else {
+                installable_flake_ref
+                    .as_deref()
+                    .and_then(|fr| eval_cache_key_for_installable(&expr, fr, render_mode))
+            };
             if max_force_depth > 0 {
                 sui_eval::trace::set_max_force_depth(max_force_depth);
             }
             if cli.no_vm {
-                // Tree-walker evaluation path.
-                // Spawn a thread with a large stack for deeply nested nixpkgs evaluation.
-                // macOS's main thread has a fixed 8MB stack that stacker can't grow.
-                let expr_clone = expr.clone();
-                let json_flag = json;
-                let handle = std::thread::Builder::new()
-                    .name("sui-eval".into())
-                    .stack_size(256 * 1024 * 1024) // 256MB
-                    .spawn(move || -> Result<(), CliError> {
-                        // IFD: reads of a derivation output mid-eval realize it.
-                        let _ifd_guard = install_ifd_hook();
-                        let value = sui_eval::eval(&expr_clone)?;
-                        if json_flag {
-                            println!("{}", serde_json::to_string(&value.to_json())?);
-                        } else {
-                            println!("{value}");
+                // Tree-walker evaluation path (the parity-correct engine —
+                // the only one whose drvPaths are byte-exact, so the only one
+                // the cross-run eval-cache serves).
+                //
+                // Fast path: an identical prior installable eval is served from
+                // the content-addressed eval-cache WITHOUT re-evaluating — the
+                // structural win nix cannot offer (memoized eval OUTPUT across
+                // runs, keyed on source+lock). This is the wiring that connects
+                // the previously-built-but-disconnected `eval_cache` module to
+                // the `sui eval` entrypoint.
+                let mut served_from_cache = false;
+                if let Some(key) = cache_key.as_ref() {
+                    let mut cache = sui_eval::eval_cache::EvalCache::default_persistent();
+                    if let Some(hit) = cache.get(key) {
+                        let cached = hit.value_json.clone();
+                        // Anti-stale differential gate (opt-in via
+                        // SUI_EVAL_CACHE_VERIFY): a served byte MUST equal a
+                        // fresh eval. Guards against a mis-keyed / drifted entry
+                        // ever shipping a wrong drvPath. Off by default so a hit
+                        // stays instant.
+                        if std::env::var_os("SUI_EVAL_CACHE_VERIFY").is_some() {
+                            let fresh = eval_render_threaded(&expr, json, raw)?;
+                            assert_eq!(
+                                fresh, cached,
+                                "eval-cache byte mismatch: a cached entry drifted from a fresh eval",
+                            );
                         }
-                        // SUI_PARITY_STRICT: un-blind the byte-parity campaign's
-                        // swallowed force-error drops (the derivation.rs env-loop
-                        // best-effort skips) accumulated during this eval. The
-                        // ledger is thread-local, so it MUST be drained on this
-                        // worker thread. Emitting it here means any
-                        // `sui --no-vm eval <expr>.drvPath` self-reports the
-                        // stacked roots a diverging package hides — with zero
-                        // change to the printed value above (default unchanged).
-                        report_parity_strict();
-                        // Diagnostic perf trace (no-op unless SUI_PERF_TRACE=1):
-                        // report the NAR-hash-source-tree storm + IFD realize
-                        // counts accumulated during this eval.
-                        sui_compat::source::nar_hash_dump();
-                        ifd_realize_dump();
-                        Ok(())
-                    })
-                    .expect("failed to spawn eval thread");
-                handle.join().expect("eval thread panicked")?;
+                        println!("{cached}");
+                        served_from_cache = true;
+                    }
+                }
+                if !served_from_cache {
+                    let output = eval_render_threaded(&expr, json, raw)?;
+                    println!("{output}");
+                    // Populate the cache after a successful eval (best-effort;
+                    // a failed write never changes correctness, only hit rate).
+                    if let Some(key) = cache_key {
+                        let mut cache = sui_eval::eval_cache::EvalCache::default_persistent();
+                        cache.put(
+                            key,
+                            sui_eval::eval_cache::CachedValue {
+                                value_json: output,
+                                timestamp: sui_eval::eval_cache::now_timestamp(),
+                            },
+                        );
+                    }
+                }
             } else {
                 // Bytecode VM evaluation path (default).
                 // Run VM on a large-stack thread: the tree-walker bridge
@@ -6632,6 +6665,91 @@ fn normalize_flake_ref(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Build a byte-safe cross-run eval-cache key for a flake **installable**
+/// (`flake-ref#attr.path`).  Returns `None` — meaning "do not cache" — for
+/// anything that isn't a lock-pinned local installable, because those are the
+/// only inputs whose evaluation is a pure function of content we can fully
+/// capture in the key:
+///
+///   * `source_hash` = SHA-256 of the DESUGARED expression (which embeds the
+///     normalized flake-ref + attr path) **plus** the render mode.  So `.#a`
+///     vs `.#b`, and `--json` vs default, never collide.
+///   * `lock_hash`   = SHA-256 of the installable's `flake.lock`, so a moved
+///     input pin invalidates the entry (miss → fresh eval → no stale byte).
+///
+/// A non-local ref (`nixpkgs#…`, a registry alias, a remote URL) is NOT cached
+/// in M0: its resolution can drift without a local `flake.lock` to pin it, so
+/// caching it would risk a stale byte.  `--expr` / bare-expression evals are
+/// likewise never cached (they can name `currentTime`/`getEnv`/mutable
+/// `readFile` — the impure frontier the eval-memo purity gate forbids).
+fn eval_cache_key_for_installable(
+    desugared_expr: &str,
+    flake_ref: &str,
+    render_mode: &str,
+) -> Option<sui_eval::eval_cache::CacheKey> {
+    use sha2::Digest;
+    // Only lock-pinned LOCAL flakes are byte-safe to cache in M0.
+    let normalized = normalize_flake_ref(flake_ref);
+    let dir = normalized.strip_prefix("path:")?;
+    let lock_path = std::path::Path::new(dir).join("flake.lock");
+    let lock_bytes = std::fs::read(&lock_path).ok()?;
+    let lock_hash = format!("{:x}", sha2::Sha256::digest(&lock_bytes));
+    // Fold the render mode into the source hash so json / raw / display outputs
+    // (which differ byte-for-byte) never collide on the same key.
+    let mut h = sha2::Sha256::new();
+    h.update(desugared_expr.as_bytes());
+    h.update(b"\0mode=");
+    h.update(render_mode.as_bytes());
+    let source_hash = format!("{:x}", h.finalize());
+    Some(sui_eval::eval_cache::CacheKey { source_hash, lock_hash: Some(lock_hash) })
+}
+
+/// Evaluate `expr` on the tree-walker with a large stack and return the exact
+/// rendered output bytes (`--json` → canonical JSON, else the `Display` form).
+/// This is the single eval-and-render primitive the `--no-vm` `eval` path uses
+/// for both a cache miss and the `SUI_EVAL_CACHE_VERIFY` differential, so the
+/// cached bytes are provably the same bytes a fresh eval prints.
+///
+/// macOS's main thread has a fixed 8 MB stack that stacker can't grow, so the
+/// 256 MB stack is mandatory for deep nixpkgs / module-system fixpoints.
+fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<String, CliError> {
+    let expr_clone = expr.to_string();
+    let handle = std::thread::Builder::new()
+        .name("sui-eval".into())
+        .stack_size(256 * 1024 * 1024) // 256MB
+        .spawn(move || -> Result<String, CliError> {
+            // IFD: reads of a derivation output mid-eval realize it.
+            let _ifd_guard = install_ifd_hook();
+            let value = sui_eval::eval(&expr_clone)?;
+            let output = if json_flag {
+                serde_json::to_string(&value.to_json())?
+            } else if raw_flag {
+                // `nix eval --raw` prints a string value's bytes verbatim (no
+                // surrounding quotes). The default `Display` wraps strings in
+                // Nix-source quotes, so `--raw` MUST special-case a forced
+                // string to be byte-identical to nix (load-bearing for the
+                // marquee: a drvPath printed with `--raw` must equal nix's).
+                // Non-string values keep the Display fallback (unchanged).
+                let forced = sui_eval::eval::force_value(&value).unwrap_or_else(|_| value.clone());
+                match &forced {
+                    sui_eval::Value::String(s) => s.as_str().to_string(),
+                    other => format!("{other}"),
+                }
+            } else {
+                format!("{value}")
+            };
+            // SUI_PARITY_STRICT: drain the thread-local swallowed-force-error
+            // ledger on THIS worker thread (no-op unless the env is set).
+            report_parity_strict();
+            // SUI_PERF_TRACE diagnostics (no-op unless the env is set).
+            sui_compat::source::nar_hash_dump();
+            ifd_realize_dump();
+            Ok(output)
+        })
+        .expect("failed to spawn eval thread");
+    handle.join().expect("eval thread panicked")
 }
 
 // ── flake show ──────────────────────────────────────────────────
