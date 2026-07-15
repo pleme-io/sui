@@ -4068,6 +4068,44 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
         // row above IS the tracked seal: sui produces a (divergent) drvPath there
         // because the swallow drops the dep instead of propagating the throw, so
         // it is a clean `Diverge` the gate tracks + auto-graduates on the fix.
+        //
+        // SHARPENED (2026-07-15) — the root repros CHEAPLY (6s, a plain error, NOT
+        // the OOM-prone full drvPath eval), which makes iterating on a fix
+        // tractable:
+        //   sui eval --no-vm --raw \
+        //     '(import <nixpkgs> { system = "x86_64-linux"; }).python27.pkgs.pip.drvPath'
+        //   → Error: Eval(UndefinedVar("'callPackage'"))   [python27.pkgs.setuptools too]
+        // Bisected scope boundary (all 6s):
+        //   • python3.pkgs.pip.drvPath        → CLEAN (control; python3 has no py2Extension)
+        //   • python27.pkgs.callPackage       → `<<lambda>>`  ← callPackage IS in the FINAL set
+        //   • python27.callPackage            → AttrNotFound (only under `.pkgs`)
+        // So the divergence is NOT a missing attr and NOT the `with` eval itself
+        // (both are correct): callPackage is present in the fully-composed
+        // `python27.pkgs`, yet the py2Extension body `self: super: with self; with
+        // super; { pip = callPackage …; }` throws UndefinedVar when `pip` is forced.
+        //
+        // MECHANISM (traced through eval.rs/value.rs 2026-07-15 — a nested-with
+        // FALLTHROUGH hypothesis was raised then REJECTED: `Env::lookup_fast`
+        // (value.rs:2202) already iterates ALL with-scopes innermost-first, and
+        // the `callPackage` WithIdent's miss path (value.rs:1510) falls back to
+        // that full `env.lookup`). The real root: at WithIdent-RESOLUTION time,
+        // `env.lookup` forces the OUTER `self` with-scope (value.rs:2246) and it
+        // FORCES TO A BLACKHOLE — the `makeScopeWithSplicing'`/`extends`/
+        // `composeManyExtensions` fixpoint is mid-construction and re-entered by
+        // pip's own demand → `Err(_) => None` (value.rs:2256) → scopes exhausted
+        // → `None` (2283) → `UndefinedVar` (value.rs:1514). The `in_promise_eval()
+        // => Null` softening (value.rs:1512) does NOT cover this resolution-time
+        // timing, so it errors. `python27.pkgs.callPackage` from OUTSIDE works
+        // only because the fixpoint is already complete there.
+        //
+        // FIX = the SAME deep item M2.6 already names: the proper `Promise(NixAttrs)`
+        // thunk variant (value.rs:1526 / docs/M2.6-MODULE-SYSTEM-FIXPOINT.md) so a
+        // blackholed with-scope RE-DEFERS the WithIdent until the fixpoint resolves
+        // instead of erroring — distinguishing "name genuinely absent" from "name
+        // in a not-yet-resolved scope". So NEOVIM AND THE DEEP MODULE-FIXPOINT WORK
+        // SHARE ONE ROOT; one architectural fix closes both. Dedicated byte-risky
+        // effort (a wrong touch risks the 50+ green rows) — but now iterable at
+        // 6s/probe via the `python27.pkgs.pip.drvPath` repro above.
         // CLOSED (2026-07-11): nettle — bottomed out at bare `inherit x`
         // resolving EAGERLY. all-packages.nix is
         // `with pkgs; { nettle = import … { inherit callPackage fetchurl; }; }`,
