@@ -53,3 +53,11 @@ jobs:
       # a nix-present linux runner still enforces the x86_64-linux corpus.
       - name: Run byte-parity gate
         run: ./target/debug/sui parity
+
+      # The cross-run eval-cache wiring box: a warm installable eval must be
+      # served byte-identically to a fresh one, `--raw` must equal nix's bare
+      # string (no quotes), `--no-eval-cache` must bypass, and render modes must
+      # not collide on one entry. Self-contained (a local no-input flake; no nix
+      # build), so a byte-drift in the warm-store path is a red check.
+      - name: Run eval-cache wiring gate
+        run: cargo test -p sui --test eval_cache_wiring
