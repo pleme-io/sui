@@ -1,0 +1,102 @@
+# build-parity — THE MACHINE (phase 3): sui proves it BUILDS nixpkgs
+# byte-identically, on FREE GitHub Actions compute (public repo ⇒ no charges).
+#
+# Eval-parity (parity.yml / nixpkgs-parity-track.yml) proves sui EVALUATES nixpkgs
+# identically — same drvPath/outPath, i.e. the same build GRAPH. THIS job proves
+# the next tier: sui RALIZES the build and the OUTPUT is byte-identical to nix's
+# (same NAR). It is the "eventually builds every single nixpkg, verifiably" tier.
+#
+# Runs on a SINGLE-USER nix store (the runner user owns /nix), so sui writes the
+# .drv + output directly — no daemon, no local memory wall (CI builds individual
+# leaf derivations, not the 18.8 GB cid toplevel that OOMs the operator's Mac).
+# sui auto-detects the writable store (WritableStore::probe, sui-store).
+#
+# Coverage is a GROWING BASKET: each row is a proven byte-verified package. The
+# basket starts self-contained (a trivial derivation, no network) and grows one
+# byte-verified nixpkgs leaf at a time as the store-write / realize path matures.
+# A divergence is a red gate → root-cause + fix at the eval/build core (the neovim
+# loop) → the basket grows by one honest row. See docs/NIXPKGS-PARITY-MACHINE.md.
+
+name: build-parity
+
+on:
+  schedule:
+    - cron: "37 6 * * *" # daily, offset from the eval-track job
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sui-build/**"
+      - "sui-store/**"
+      - "src/main.rs"
+      - ".github/workflows/build-parity.yml"
+
+jobs:
+  build-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # SINGLE-USER nix: the runner user owns /nix so sui's direct store writes
+      # succeed (WritableStore::probe returns Some). This is the whole reason
+      # build-parity works on CI where it can't on the operator's root-owned Mac
+      # store.
+      - name: Install Nix (single-user, writable store)
+        run: |
+          sh <(curl -L https://nixos.org/nix/install) --no-daemon
+          echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+          echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm the store is writable (the build-parity precondition)
+        run: |
+          . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          if touch /nix/store/.bp-probe 2>/dev/null; then
+            rm -f /nix/store/.bp-probe
+            echo "✓ /nix/store is writable — sui builds directly" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::/nix/store not writable — single-user install failed"
+            exit 1
+          fi
+
+      - name: Build sui
+        run: cargo build -p sui --bin sui
+
+      # The build-parity basket (grows over time). Each entry: build with sui AND
+      # nix, byte-compare the output NAR. The starter row is a self-contained
+      # trivial derivation (no network); nixpkgs leaves are added as the realize
+      # path is proven green here.
+      - name: Run build-parity basket
+        run: |
+          . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          export SUI=./target/debug/sui
+          MATCH=0; TOTAL=0; FAIL=0
+          bp() {
+            local name="$1" expr="$2"
+            TOTAL=$((TOTAL+1))
+            local nixnar suinar
+            nixnar=$(nix hash path "$(nix build --impure --no-link --print-out-paths --expr "$expr" 2>/dev/null | tail -1)" 2>/dev/null)
+            local drv suiout
+            drv=$($SUI eval --no-vm --raw --expr "($expr).drvPath" 2>/dev/null | tail -1)
+            suiout=$($SUI build --print-out-paths "$drv" 2>/dev/null | grep '^/nix/store' | tail -1)
+            suinar=$(nix hash path "$suiout" 2>/dev/null)
+            if [ -n "$nixnar" ] && [ "$nixnar" = "$suinar" ]; then
+              MATCH=$((MATCH+1)); echo "  ✓ $name  $nixnar"
+            else
+              FAIL=$((FAIL+1)); echo "  ✘ $name  nix=$nixnar sui=$suinar"
+            fi
+          }
+
+          # ── the basket (grow this list one byte-verified row at a time) ──
+          bp "trivial-echo" 'derivation { name = "bp-trivial"; system = builtins.currentSystem; builder = "/bin/sh"; args = [ "-c" "echo byte-parity > $out" ]; }'
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### build-parity: $MATCH/$TOTAL byte-identical ($FAIL diverge)" >> "$GITHUB_STEP_SUMMARY"
+          # A DIVERGENCE fails the job (a real build-graph or realize bug to fix).
+          # An empty basket or a still-maturing realize path is surfaced, not hidden.
+          [ "$FAIL" -eq 0 ]

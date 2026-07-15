@@ -3,6 +3,24 @@
 **sui continuously, automatically, and publicly proves it tracks-and-builds
 nixpkgs — byte-identically — and self-fixes when it doesn't.**
 
+> **★ THE DOMINANCE FRAME (operator, 2026-07-15).** Dominance is NOT "close the
+> local cid marquee." That marquee builds a whole darwin-system toplevel on the
+> operator's 32 GB Mac and OOMs at ~18.8 GB — *local* compute, genuinely
+> memory-blocked, and **accepted as parked** (scoped to a dedicated
+> attrs-API/`UnsafeCell` refactor in `EVAL-MEMORY.md`; not the dominance path).
+> Dominance IS **this machine**: sui **moment-to-moment proving it is ever-more
+> compatible — eventually building every single nixpkg, verifiably — on FREE
+> GitHub Actions public compute (public repo ⇒ zero charges to the operator).**
+> Coverage grows one byte-verified package at a time, forever; each divergence is
+> a red gate fixed at the eval/build root (the neovim loop). The unit of progress
+> is *"one more nixpkg proven byte-identical on free CI,"* never a local heroic
+> build. **Build-parity is unblocked on CI:** the realization gap was
+> daemon-mediated writes to the Mac's root-owned `/nix/store`; a GHA runner uses a
+> **single-user store the runner user can write**, and sui already detects this
+> (`WritableStore::probe` / `detect_with`, `sui-store/src/daemon_realize.rs`), so
+> sui builds directly — no daemon, no cost, no local memory wall (CI builds
+> individual leaf derivations, not the 18.8 GB cid toplevel).
+
 This is a *machine*, not a coverage number. The operator's law for it:
 
 > Build and improve the machine; let coverage grow legitimately; never inflate
