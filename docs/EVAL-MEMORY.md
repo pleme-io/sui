@@ -140,6 +140,22 @@ node because every node is reachable from the root being hashed.** (verify verdi
       at value.rs:533 "flattened AND cloned both backing", `len`, iterators),
       **(2)** THEN release post-flatten. Part (1) is the byte-risk surface the corpus
       must gate — which is why this is a dedicated, guarded effort, not a tail edit.
+    - **ARCHITECTURAL OBSTACLE (code-confirmed 2026-07-15 by an attempted impl —
+      the crucial design constraint):** a naive `left`/`right` → `RefCell<Rc<NixAttrs>>`
+      release does NOT compile against the current attrs API. `get_sym` returns
+      `Option<&Value>` (value.rs:1815) and its cache-miss arm returns a reference
+      borrowed *into* `left`/`right`; behind a `RefCell`, `left.borrow().get_sym(sym)`
+      returns a reference into a `Ref` temporary that drops at the semicolon —
+      borrow-of-dropped-temporary. The **borrow-returning attrs API is incompatible
+      with a simple interior-mutable release.** So the release requires ONE of:
+      **(a)** change `get_sym` (+ `get`, and every caller) to OWNED return
+      (`Option<Value>` — a cheap O(1) `Rc`-bump per lookup, but it touches the hot
+      cache path and the whole call graph), or **(b)** `UnsafeCell` with
+      hand-maintained single-threaded invariants (the pattern `ThunkInner` already
+      uses, value.rs — proven but must be audited). Either is a real architectural
+      change with a full corpus + perf-seal re-verification. This is the honest,
+      code-level floor of the marquee memory fix: it is a dedicated architectural
+      effort, NOT a quick guarded edit — the naive version does not even build.
 
 **The ranking is a code-derived HYPOTHESIS, not measured bytes.** A `dhat`/massif
 profile (or the `perf.rs` `ThunkForce`/`ImportHit`/`EnvClone` counters) at the OOM
