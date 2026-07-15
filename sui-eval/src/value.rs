@@ -1511,7 +1511,26 @@ impl Thunk {
                     Some(v) => v,
                     None if in_promise_eval() => Value::Null,
                     None => {
-                        return Err(EvalError::UndefinedVar(format!("'{name}'")));
+                        // Last-ditch, ERROR-PATH ONLY: the cache-first with-scope
+                        // search may have skipped a scope whose CACHE is a stale
+                        // mid-fixpoint PARTIAL — e.g. `f self` cached BEFORE
+                        // makeScope's `self = f self // { callPackage = …; }`
+                        // merged the scope infra in, so `callPackage` is absent
+                        // from the stale partial yet present in the completed
+                        // `self`. Re-resolve by force_value-ing each with-scope
+                        // FRESH (bypassing the cache), catching errors so a
+                        // genuinely mid-fixpoint / throwing scope simply skips.
+                        // This runs ONLY here on the about-to-throw path, so it
+                        // can NEVER affect a lookup that already succeeds — every
+                        // passing corpus row bypasses it — and the in_promise_eval
+                        // softening above is untouched. Fixes the python27
+                        // `with self; with super; callPackage` root (the last
+                        // KnownDiverge / neovim). Byte-neutral: the same completed
+                        // value nix's lazy `self` exposes.
+                        match env.lookup_fresh(&name) {
+                            Some(v) => v,
+                            None => return Err(EvalError::UndefinedVar(format!("'{name}'"))),
+                        }
                     }
                 };
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(result.clone()));
@@ -2189,6 +2208,36 @@ impl Env {
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<Value> {
         self.lookup_fast(intern(name), name)
+    }
+
+    /// Cache-BYPASSING with-scope lookup: force each `with`-scope value FRESH
+    /// (through the full thunk chain) and check for `name`, refreshing the
+    /// per-scope cache on the way. A force that errors (a mid-fixpoint blackhole
+    /// or a `with (throw …); …` namespace) is caught and the scope skipped.
+    ///
+    /// This exists ONLY for the last-ditch retry on the about-to-throw
+    /// `UndefinedVar` path (see the WithIdent force): the normal cache-first
+    /// [`lookup_fast`] can trust a stale mid-fixpoint PARTIAL cached for a scope
+    /// (e.g. `f self` before makeScope merged `callPackage` into `self`) and skip
+    /// it; a fresh force sees the now-completed scope. Never call this on a hot
+    /// path — it re-forces every scope.
+    #[must_use]
+    pub fn lookup_fresh(&self, name: &str) -> Option<Value> {
+        let sym = intern(name);
+        if let Some(v) = self.0.bindings.get(&sym) {
+            return Some(v.clone());
+        }
+        for scope in self.0.with_scopes.iter().rev() {
+            if let Ok(Value::Attrs(attrs)) = crate::eval::force_value(&scope.value) {
+                if let Some(v) = attrs.get_sym(&sym) {
+                    // Refresh the stale cache with the completed scope so a later
+                    // lookup of a sibling name also sees it.
+                    *scope.cached.borrow_mut() = Some((*attrs).clone());
+                    return Some(v.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Lookup by pre-interned Symbol + string name. Avoids re-interning.

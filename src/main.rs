@@ -4048,7 +4048,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
         // the 50+ green rows. Sealed KnownDiverge so a fix auto-graduates the
         // gate and a further silent regression is caught. (ffmpeg, the sibling
         // "open" package, is already CLOSED above — byte-identical, clean strict.)
-        (ParityProbe { name: "eval neovim drvPath (x86_64-linux)", description: "nixpkgs neovim — TRACKED: python2.7 build-hook `with self; callPackage` (python2Extension layer), sibling of the closed nettle root; un-blinded via SUI_PARITY_STRICT", expect: Expect::KnownDiverge }, {
+        (ParityProbe { name: "eval neovim drvPath (x86_64-linux)", description: "nixpkgs neovim — CLOSED 2026-07-15: python2Extension `with self; with super; callPackage` resolved a STALE mid-fixpoint partial `self` from the with-scope cache (missing callPackage that the completed `self` has). Fixed by an error-path-only cache-bypassing `lookup_fresh` in the WithIdent force. Byte-identical: rjlgmvccqkmdbsgh0aazqcz7bxnhwagb-neovim-0.11.7.drv", expect: Expect::Match }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
                 let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
@@ -4069,43 +4069,32 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
         // because the swallow drops the dep instead of propagating the throw, so
         // it is a clean `Diverge` the gate tracks + auto-graduates on the fix.
         //
-        // SHARPENED (2026-07-15) — the root repros CHEAPLY (6s, a plain error, NOT
-        // the OOM-prone full drvPath eval), which makes iterating on a fix
-        // tractable:
-        //   sui eval --no-vm --raw \
-        //     '(import <nixpkgs> { system = "x86_64-linux"; }).python27.pkgs.pip.drvPath'
-        //   → Error: Eval(UndefinedVar("'callPackage'"))   [python27.pkgs.setuptools too]
-        // Bisected scope boundary (all 6s):
-        //   • python3.pkgs.pip.drvPath        → CLEAN (control; python3 has no py2Extension)
-        //   • python27.pkgs.callPackage       → `<<lambda>>`  ← callPackage IS in the FINAL set
-        //   • python27.callPackage            → AttrNotFound (only under `.pkgs`)
-        // So the divergence is NOT a missing attr and NOT the `with` eval itself
-        // (both are correct): callPackage is present in the fully-composed
-        // `python27.pkgs`, yet the py2Extension body `self: super: with self; with
-        // super; { pip = callPackage …; }` throws UndefinedVar when `pip` is forced.
-        //
-        // MECHANISM (traced through eval.rs/value.rs 2026-07-15 — a nested-with
-        // FALLTHROUGH hypothesis was raised then REJECTED: `Env::lookup_fast`
-        // (value.rs:2202) already iterates ALL with-scopes innermost-first, and
-        // the `callPackage` WithIdent's miss path (value.rs:1510) falls back to
-        // that full `env.lookup`). The real root: at WithIdent-RESOLUTION time,
-        // `env.lookup` forces the OUTER `self` with-scope (value.rs:2246) and it
-        // FORCES TO A BLACKHOLE — the `makeScopeWithSplicing'`/`extends`/
-        // `composeManyExtensions` fixpoint is mid-construction and re-entered by
-        // pip's own demand → `Err(_) => None` (value.rs:2256) → scopes exhausted
-        // → `None` (2283) → `UndefinedVar` (value.rs:1514). The `in_promise_eval()
-        // => Null` softening (value.rs:1512) does NOT cover this resolution-time
-        // timing, so it errors. `python27.pkgs.callPackage` from OUTSIDE works
-        // only because the fixpoint is already complete there.
-        //
-        // FIX = the SAME deep item M2.6 already names: the proper `Promise(NixAttrs)`
-        // thunk variant (value.rs:1526 / docs/M2.6-MODULE-SYSTEM-FIXPOINT.md) so a
-        // blackholed with-scope RE-DEFERS the WithIdent until the fixpoint resolves
-        // instead of erroring — distinguishing "name genuinely absent" from "name
-        // in a not-yet-resolved scope". So NEOVIM AND THE DEEP MODULE-FIXPOINT WORK
-        // SHARE ONE ROOT; one architectural fix closes both. Dedicated byte-risky
-        // effort (a wrong touch risks the 50+ green rows) — but now iterable at
-        // 6s/probe via the `python27.pkgs.pip.drvPath` repro above.
+        // CLOSED (2026-07-15). Repro (6s, a plain error — NOT the OOM-prone full
+        // eval): `sui eval --no-vm --raw '(import <nixpkgs> { system =
+        // "x86_64-linux"; }).python27.pkgs.pip.drvPath'`. Bisected: python3.pkgs.pip
+        // is clean; `python27.pkgs.callPackage` IS present in the completed set;
+        // only the py2Extension body `self: super: with self; with super; { pip =
+        // callPackage …; }` throws. Instrumented `Env::debug_with_scope_summary`
+        // at the failure showed the two with-scopes as `[super] n=10644
+        // has_callPackage=FALSE` and `[self] n=10656 has_callPackage=TRUE` — yet
+        // `env.lookup` returned None. ROOT: the with-scope CACHE for `self` held a
+        // STALE mid-fixpoint PARTIAL (`f self` at 10644, cached before makeScope's
+        // `self = f self // { callPackage = …; }` merged the scope infra in), and
+        // `lookup_fast`'s cache-first search trusted it + skipped (value.rs, the
+        // `continue` on a cached miss). A FRESH `force_value` gives the completed
+        // 10656 `self` with callPackage. (Earlier nested-with-fallthrough and
+        // blackhole-at-resolution hypotheses were both raised then DISPROVEN by
+        // the trace — no promotion/blackhole fires; recorded so they don't recur.)
+        // FIX (byte-safe, guarded by this 65-row corpus): `Env::lookup_fresh` —
+        // a cache-BYPASSING fresh force of each with-scope, called ONLY on the
+        // about-to-throw `UndefinedVar` arm of the WithIdent force (value.rs). It
+        // can never affect a lookup that already succeeds (passing rows never reach
+        // it) and never re-forces on the hot path. Byte-verified: neovim.drvPath ==
+        // nix (rjlgmvccqkmdbsgh0aazqcz7bxnhwagb-neovim-0.11.7.drv), corpus 65 match
+        // · 0 tracked · 0 regressions. (An always-re-force-on-cached-miss variant
+        // was tried first and REVERTED — it broke 32 rows by re-forcing
+        // mid-fixpoint scopes on the hot path; the error-path-only placement is
+        // what makes it safe.)
         // CLOSED (2026-07-11): nettle — bottomed out at bare `inherit x`
         // resolving EAGERLY. all-packages.nix is
         // `with pkgs; { nettle = import … { inherit callPackage fetchurl; }; }`,
