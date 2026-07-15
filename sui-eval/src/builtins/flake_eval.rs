@@ -364,10 +364,38 @@ fn evaluate_flake_inner(
     ))?;
     let source_store_path = source_hash.store_path.clone();
     let source_nar_sri = source_hash.nar_hash_sri.clone();
+    // Byte-parity root (marquee darwin, GATE 1 2026-07-15): a LOCKED flake
+    // input's `self` must carry the input's own `rev`/`shortRev`/`lastModified`
+    // — exactly as CppNix populates `sourceInfo` for a fetched git input.
+    // nix-darwin's `flake.nix` derives the system label from
+    // `self.shortRev or self.dirtyShortRev or "dirty"` (→ `darwin-system-25.11.<shortRev>`);
+    // without the input's own self-rev, sui fell to `"dirty"` and the cid
+    // toplevel drvPath diverged only in that one label string. `current_node`
+    // is this flake's node in the ROOT lock (transitive ctx → the locked input;
+    // ROOT ctx → the dirty local tree, which carries no `rev` and stays
+    // `dirty`-capable, matching CppNix's dirty top-level self).
+    let (self_rev, self_last_modified): (Option<String>, Option<i64>) = lock
+        .as_ref()
+        .and_then(|l| l.nodes.get(&current_node))
+        .and_then(|n| n.locked.as_ref())
+        .map(|lk| (lk.rev.clone(), lk.last_modified.map(|m| m as i64)))
+        .unwrap_or((None, None));
+    let self_short_rev: Option<String> =
+        self_rev.as_ref().map(|r| r.chars().take(7).collect());
+
     let source_info = {
         let mut a = NixAttrs::new();
         a.insert("outPath".to_string(), Value::string(source_store_path.clone()));
         a.insert("narHash".to_string(), Value::string(source_nar_sri.clone()));
+        if let Some(ref rev) = self_rev {
+            a.insert("rev".to_string(), Value::string(rev.clone()));
+        }
+        if let Some(ref short) = self_short_rev {
+            a.insert("shortRev".to_string(), Value::string(short.clone()));
+        }
+        if let Some(lm) = self_last_modified {
+            a.insert("lastModified".to_string(), Value::Int(lm));
+        }
         a
     };
 
@@ -443,6 +471,18 @@ fn evaluate_flake_inner(
     final_attrs.insert("outPath".to_string(), Value::string(source_store_path));
     final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info)));
     final_attrs.insert("narHash".to_string(), Value::string(source_nar_sri));
+    // Self-rev at the TOP LEVEL of `self` (not only under `sourceInfo`):
+    // nix-darwin reads `self.shortRev` / `self.rev` directly. See the
+    // source_info block above for the byte-parity rationale.
+    if let Some(ref rev) = self_rev {
+        final_attrs.insert("rev".to_string(), Value::string(rev.clone()));
+    }
+    if let Some(ref short) = self_short_rev {
+        final_attrs.insert("shortRev".to_string(), Value::string(short.clone()));
+    }
+    if let Some(lm) = self_last_modified {
+        final_attrs.insert("lastModified".to_string(), Value::Int(lm));
+    }
     final_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs)));
     final_attrs.insert("outputs".to_string(), result.clone());
 
