@@ -37,6 +37,18 @@ instant byte-identical hit. The streaming-release / hot-path work below is now t
 path to making that ONE seeding eval itself cheap+bounded, not a prerequisite for the
 marquee. See `project_sui_eval_cache_wired_flip_win` (operator memory).
 
+**THIRD run same day (09:31, `f87fd07`, with ~21 GB reclaimable headroom
+deliberately arranged): peak RSS 18.8 GB, Jetsam-killed at 18 min anyway.** This
+is the load-bearing datum: even with headroom well above the earlier 14.6 GB peak,
+the eval climbed HIGHER (18.8 GB — the GC-less evaluator's retention is
+run-variant) and still died. So the cid OOM is **NOT merely machine-load** — the
+peak is inherent and unbounded-enough that a 32 GB machine can't reliably hold it.
+**Conclusion promoted: streaming-release (§2) is a genuine PREREQUISITE for the cid
+marquee, not just "run it on an idle box."** Three measured OOMs (masked / 14.6 GB /
+18.8 GB); the eval-cache wiring is innocent (empty pre-eval, populated only after a
+success that never occurs). Seeding the marquee entry therefore requires the
+bounded-memory work first.
+
 **Prior finding (2026-07-12, `SUI_PERF_TRACE` cid eval, 40-min window @ `b3568bb`):
 the blocker was un-traced EVAL-TIME slowness, NOT memory, on a less-loaded machine.**
 Retained — it is the OTHER half of the environment-dependent picture, not superseded.
