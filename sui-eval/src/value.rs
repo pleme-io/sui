@@ -918,8 +918,21 @@ pub enum ThunkRepr {
     /// stylix `darwinModules` marquee root).  A re-force re-throws the
     /// original error, exactly as cppnix re-throws a thunk that failed.
     Failed(EvalError),
-    /// Already evaluated and memoized.
+    /// Already evaluated and memoized as a THUNK value.  The `cache`
+    /// `OnceCell` is intentionally empty for this variant (caching a thunk
+    /// would spin `force_value`), so the boxed `Value` is the sole store.
     Evaluated(Box<Value>),
+    /// Already evaluated and memoized as a CONCRETE (non-thunk) value.
+    /// The value lives ONLY in the `cache` `OnceCell` (`Box<Concrete>`);
+    /// this variant is a valueless terminal marker that collapses the
+    /// former double-store (a redundant `Evaluated(Box<Value>)` alongside
+    /// the cache).  Any reader that finds this marker reconstructs the
+    /// `Value` from `cache` via `Concrete::into_value()`, which is a
+    /// byte-identical, lossless inverse of `demand_unchecked` (same enum
+    /// shape, moves the inner `Rc`/`Box` — preserving string context and
+    /// list/attrs `Rc` identity).  In practice the `cache` fast path in
+    /// `force`/`force_inner` returns before this arm is ever matched.
+    EvaluatedConcrete,
 }
 
 /// Inner storage for a thunk: a fast-path `OnceCell` cache plus the
@@ -1040,12 +1053,18 @@ impl Thunk {
         crate::trace::inc_thunks_created();
         crate::perf::inc(crate::perf::Counter::ThunkSiteEvaluated);
         let cache = OnceCell::new();
-        if !matches!(value, Value::Thunk(_)) {
-            let _ = cache.set(Box::new(value.clone().demand_unchecked()));
-        }
+        // Collapse the double-store: a concrete value lives ONLY in the
+        // cache with an `EvaluatedConcrete` marker repr; a thunk value
+        // keeps the boxed `Evaluated` repr and an empty cache.
+        let repr = if matches!(value, Value::Thunk(_)) {
+            ThunkRepr::Evaluated(Box::new(value))
+        } else {
+            let _ = cache.set(Box::new(value.demand_unchecked()));
+            ThunkRepr::EvaluatedConcrete
+        };
         Self(Rc::new(ThunkInner {
             cache,
-            repr: UnsafeCell::new(ThunkRepr::Evaluated(Box::new(value))),
+            repr: UnsafeCell::new(repr),
             recursive: false,
         }))
     }
@@ -1092,6 +1111,38 @@ impl Thunk {
                 source_thunk.update_env(new_env);
             }
             _ => {}
+        }
+    }
+
+    /// Store a forced result into this thunk's terminal state, collapsing
+    /// the former thunk double-store.
+    ///
+    /// - A CONCRETE (non-thunk) result is stored ONLY in the `cache`
+    ///   `OnceCell` (`Box<Concrete>`), and `repr` becomes the valueless
+    ///   `EvaluatedConcrete` marker — freeing the redundant
+    ///   `Box<Value>` that `Evaluated` used to hold. Reconstruction via
+    ///   `Concrete::into_value()` is a byte-identical inverse of the
+    ///   `demand_unchecked()` used to fill the cache.
+    /// - A THUNK result keeps `repr = Evaluated(Box<Value>)` and leaves
+    ///   the cache empty (caching a thunk would spin `force_value`).
+    ///
+    /// SAFETY: single-threaded evaluator (`Rc`, not `Arc`); the caller
+    /// must hold no other borrow of `repr` — every call site here is on
+    /// the sequential `Suspended → Blackhole/Promise → Evaluated`
+    /// transition, so no overlapping mutable access exists.
+    ///
+    /// Takes `&Value` and clones exactly as the former open-coded stores
+    /// did (`Box::new(value.clone())` for the thunk repr,
+    /// `Box::new(value.clone().demand_unchecked())` for the cache) — so the
+    /// clone count is identical to the pre-collapse code and the change is
+    /// byte-neutral by construction.
+    #[inline]
+    unsafe fn store_evaluated(&self, value: &Value) {
+        if matches!(value, Value::Thunk(_)) {
+            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
+        } else {
+            let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked()));
+            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::EvaluatedConcrete;
         }
     }
 
@@ -1295,10 +1346,9 @@ impl Thunk {
                                 *cell.borrow_mut() = value.clone();
                             }
                         }
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        if !matches!(value, Value::Thunk(_)) {
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
-                        }
+                        // Collapse the double-store: concrete → cache-only +
+                        // `EvaluatedConcrete`; thunk → `Evaluated(Box)`.
+                        unsafe { self.store_evaluated(&value) };
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
                         // Chase already-resolved thunks only (peek).
@@ -1337,10 +1387,7 @@ impl Thunk {
                         if !matches!(value, Value::Thunk(_)) {
                             crate::perf::inc(crate::perf::Counter::ThunkStoreLoopMutated);
                         }
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        if !matches!(value, Value::Thunk(_)) {
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
-                        }
+                        unsafe { self.store_evaluated(&value) };
                         crate::trace::pop_force();
                         if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
@@ -1403,10 +1450,7 @@ impl Thunk {
                         while let Value::Thunk(ref inner) = value {
                             match inner.peek() { Some(c) => value = c.clone().into_value(), None => break }
                         }
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        if !matches!(value, Value::Thunk(_)) {
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
-                        }
+                        unsafe { self.store_evaluated(&value) };
                         crate::trace::pop_force();
                         if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
@@ -1441,10 +1485,7 @@ impl Thunk {
                         while let Value::Thunk(ref inner) = value {
                             match inner.peek() { Some(c) => value = c.clone().into_value(), None => break }
                         }
-                        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                        if !matches!(value, Value::Thunk(_)) {
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
-                        }
+                        unsafe { self.store_evaluated(&value) };
                         crate::trace::pop_force();
                         if tracing { crate::trace::trace_force_exit(); }
                         Ok(value)
@@ -1483,8 +1524,7 @@ impl Thunk {
                     if let Some(ref attrs) = *cache {
                         if let Some(v) = attrs.get(&name) {
                             let value = v.clone();
-                            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
+                            unsafe { self.store_evaluated(&value) };
                             return Ok(value);
                         }
                         // Name not in cached attrset — fall through to env lookup
@@ -1496,8 +1536,7 @@ impl Thunk {
                         *scope_cache.borrow_mut() = Some((**attrs).clone());
                         if let Some(v) = attrs.get(&name) {
                             let value = v.clone();
-                            *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
-                            if !matches!(value, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(value.clone().demand_unchecked())); }
+                            unsafe { self.store_evaluated(&value) };
                             return Ok(value);
                         }
                     }
@@ -1533,8 +1572,7 @@ impl Thunk {
                         }
                     }
                 };
-                *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(result.clone()));
-                if !matches!(result, Value::Thunk(_)) { let _ = self.0.cache.set(Box::new(result.clone().demand_unchecked())); }
+                unsafe { self.store_evaluated(&result) };
                 Ok(result)
             }
             ThunkRepr::Blackhole => {
@@ -1667,6 +1705,28 @@ impl Thunk {
                 *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(v);
                 Ok(cloned)
             }
+            ThunkRepr::EvaluatedConcrete => {
+                // The concrete value lives in `cache`; the repr is a valueless
+                // marker (the collapsed former double-store). In practice this
+                // arm is unreachable: `force`/`force_inner` check the `cache`
+                // fast path BEFORE the `mem::replace` that consumes the repr,
+                // and `EvaluatedConcrete` always co-occurs with a populated
+                // cache — so the fast path returns first. Handle it faithfully
+                // anyway: reconstruct the `Value` from the cache (a byte-
+                // identical inverse of `demand_unchecked`) and restore the
+                // marker (the outer `mem::replace` swapped in Blackhole/Promise).
+                crate::perf::inc(crate::perf::Counter::ThunkHit);
+                let value = self
+                    .0
+                    .cache
+                    .get()
+                    .expect("EvaluatedConcrete implies a populated cache")
+                    .as_ref()
+                    .clone()
+                    .into_value();
+                *unsafe { &mut *self.0.repr.get() } = ThunkRepr::EvaluatedConcrete;
+                Ok(value)
+            }
             ThunkRepr::Failed(e) => {
                 // A previously-forced `Native` thunk whose closure threw.
                 // Re-raise the memoized error — never fall through to a
@@ -1692,6 +1752,10 @@ impl fmt::Debug for Thunk {
             ThunkRepr::Promise(_) => write!(f, "<promise>"),
             ThunkRepr::Failed(e) => write!(f, "<failed-thunk: {e}>"),
             ThunkRepr::Evaluated(v) => write!(f, "{v:?}"),
+            ThunkRepr::EvaluatedConcrete => match self.0.cache.get() {
+                Some(c) => write!(f, "{:?}", c.as_ref().clone().into_value()),
+                None => write!(f, "<evaluated-concrete>"),
+            },
         }
     }
 }
