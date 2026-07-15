@@ -186,6 +186,13 @@ enum Commands {
         /// Emit machine-readable JSON instead of the Nord table.
         #[arg(long)]
         json: bool,
+        /// Pin `<nixpkgs>` to the current HEAD of a nixpkgs channel ref (e.g.
+        /// `nixpkgs-unstable`) before running the corpus, so a divergence
+        /// introduced by an UPSTREAM nixpkgs change surfaces. Folds the machine's
+        /// `nix flake metadata | jq` pin glue into the typed binary — the
+        /// resolved rev is printed, and NIX_PATH is set for the corpus eval.
+        #[arg(long)]
+        track_nixpkgs: Option<String>,
     },
     /// BUILD-parity: realize a basket of derivations with sui AND nix, then
     /// byte-compare the built output NAR (via nix's own `nix hash path` on both).
@@ -3715,6 +3722,29 @@ fn run_bytes(bin: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// Resolve the current HEAD rev of a nixpkgs channel ref (e.g. `nixpkgs-unstable`)
+/// via `nix flake metadata --json`, typed — the machine's `--track-nixpkgs` pin.
+/// Replaces the workflow's `nix flake metadata | jq -r .locked.rev` shell.
+fn resolve_nixpkgs_rev(nix: &std::path::Path, reference: &str) -> Result<String, CliError> {
+    let meta = run_capture(
+        nix,
+        &[
+            "flake", "metadata",
+            &format!("github:NixOS/nixpkgs/{reference}"),
+            "--json",
+            "--extra-experimental-features", "nix-command flakes",
+        ],
+    )
+    .map_err(|e| CliError::Orchestrate { operation: "track-nixpkgs", message: format!("nix flake metadata: {e}") })?;
+    let v: serde_json::Value = serde_json::from_str(&meta)
+        .map_err(|e| CliError::Orchestrate { operation: "track-nixpkgs", message: format!("parse metadata json: {e}") })?;
+    v.get("locked")
+        .and_then(|l| l.get("rev"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| CliError::Orchestrate { operation: "track-nixpkgs", message: "no locked.rev in flake metadata".into() })
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     let d = sha2::Sha256::digest(bytes);
@@ -6414,7 +6444,23 @@ async fn main() -> Result<(), CliError> {
             println!("Cache now has {entries} entries at {}", drv_cache::DrvCache::default_path().display());
         }
         Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
-        Commands::Parity { nix, json } => {
+        Commands::Parity { nix, json, track_nixpkgs } => {
+            if let Some(reference) = track_nixpkgs {
+                let rev = resolve_nixpkgs_rev(&nix, &reference)?;
+                // Pin <nixpkgs> for the corpus eval to the tracked rev (typed
+                // equivalent of the workflow's `nix flake metadata | jq` + export).
+                // SAFETY: single-threaded CLI setup, before any eval thread spawns
+                // — no concurrent env access (Rust 2024 made `set_var` unsafe).
+                unsafe {
+                    std::env::set_var(
+                        "NIX_PATH",
+                        format!("nixpkgs=https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz"),
+                    );
+                }
+                if !json {
+                    println!("tracking nixpkgs `{reference}` @ {rev}");
+                }
+            }
             cmd_parity(&nix, json)?;
         }
         Commands::ParityBisect { expr, nix } => {

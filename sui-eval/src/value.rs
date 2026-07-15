@@ -1712,9 +1712,17 @@ enum AttrsInner {
     Flat(FxHashMap<Symbol, Value>),
     /// Lazy overlay: right overrides left. O(1) construction.
     /// `cache` is populated on first full iteration (attrNames, etc.).
+    ///
+    /// `left`/`right` are interior-mutable so they can be RELEASED (swapped to an
+    /// empty attrs) once `cache` is populated: after flatten the merged `cache`
+    /// is the complete answer and every reader (`get_sym`/`contains_key`/
+    /// `is_empty`) routes through `as_flat()` (the cache), so the un-merged
+    /// parents are dead weight. Releasing them cascade-frees the intermediate
+    /// overlay chain (the 50+-deep module-fixpoint retention — `EVAL-MEMORY.md`).
+    /// Byte-neutral: the cache is the same map nix's flatten yields.
     Overlay {
-        left: Rc<NixAttrs>,
-        right: Rc<NixAttrs>,
+        left: RefCell<Rc<NixAttrs>>,
+        right: RefCell<Rc<NixAttrs>>,
         cache: Rc<OnceCell<FxHashMap<Symbol, Value>>>,
     },
 }
@@ -1752,14 +1760,14 @@ impl NixAttrs {
             AttrsInner::Flat(m) => m,
             AttrsInner::Overlay { left, right, cache } => {
                 crate::perf::inc(crate::perf::Counter::OverlayFlattenAttempt);
-                cache.get_or_init(|| {
+                let flat = cache.get_or_init(|| {
                     // Cache MISS: this Overlay node is being flattened for the
                     // first time — real O(left+right) merge work.
                     crate::perf::inc(crate::perf::Counter::OverlayFlattenBuild);
                     let timed = crate::perf::enabled();
                     let t0 = if timed { Some(std::time::Instant::now()) } else { None };
-                    let mut result = left.as_flat().clone();
-                    for (k, v) in right.as_flat().iter() {
+                    let mut result = left.borrow().as_flat().clone();
+                    for (k, v) in right.borrow().as_flat().iter() {
                         result.insert(*k, v.clone());
                     }
                     crate::perf::add(
@@ -1770,7 +1778,23 @@ impl NixAttrs {
                         crate::trace::add_overlay_flatten_nanos(t0.elapsed().as_nanos());
                     }
                     result
-                })
+                });
+                // RELEASE the parents now that `cache` is the complete answer —
+                // cascade-frees the intermediate overlay chain + their caches
+                // (nothing else references them). Byte-neutral: every reader now
+                // routes through this `cache`. Only swaps a still-held parent; a
+                // second as_flat sees them already empty and skips. The closure's
+                // borrows above are dropped by here, so these borrow_muts can't
+                // conflict (single-threaded, sequential).
+                {
+                    let mut l = left.borrow_mut();
+                    if !l.is_empty() { *l = Rc::new(NixAttrs::new()); }
+                }
+                {
+                    let mut r = right.borrow_mut();
+                    if !r.is_empty() { *r = Rc::new(NixAttrs::new()); }
+                }
+                flat
             }
         }
     }
@@ -1815,13 +1839,12 @@ impl NixAttrs {
     pub fn get_sym(&self, sym: &Symbol) -> Option<&Value> {
         match &self.0 {
             AttrsInner::Flat(m) => m.get(sym),
-            AttrsInner::Overlay { left, right, cache } => {
-                if let Some(flat) = cache.get() {
-                    return flat.get(sym);
-                }
-                // Right overrides left
-                right.get_sym(sym).or_else(|| left.get_sym(sym))
-            }
+            // Route through `as_flat()` (the memoized cache) rather than borrowing
+            // into `left`/`right` — this is what lets the parents be released
+            // post-flatten. `as_flat` returns the cached map in O(1) when warm and
+            // flattens+caches on the first cold lookup; the returned `&Value`
+            // borrows the stable `cache`, never a `RefCell`.
+            AttrsInner::Overlay { .. } => self.as_flat().get(sym),
         }
     }
 
@@ -1850,12 +1873,8 @@ impl NixAttrs {
     pub fn contains_key_sym(&self, sym: &Symbol) -> bool {
         match &self.0 {
             AttrsInner::Flat(m) => m.contains_key(sym),
-            AttrsInner::Overlay { left, right, cache } => {
-                if let Some(flat) = cache.get() {
-                    return flat.contains_key(sym);
-                }
-                right.contains_key_sym(sym) || left.contains_key_sym(sym)
-            }
+            // Route through the cache (see get_sym) so left/right stay releasable.
+            AttrsInner::Overlay { .. } => self.as_flat().contains_key(sym),
         }
     }
 
@@ -1902,7 +1921,10 @@ impl NixAttrs {
     pub fn is_empty(&self) -> bool {
         match &self.0 {
             AttrsInner::Flat(m) => m.is_empty(),
-            AttrsInner::Overlay { left, right, .. } => left.is_empty() && right.is_empty(),
+            // Cache-first (see get_sym): a released-parent overlay is NOT empty —
+            // its content lives in the flattened cache. Reading left/right here
+            // (which post-release are empty) would wrongly report empty.
+            AttrsInner::Overlay { .. } => self.as_flat().is_empty(),
         }
     }
 
@@ -1913,8 +1935,8 @@ impl NixAttrs {
         if self.is_empty() { return other; }
         crate::perf::inc(crate::perf::Counter::OverlayCreated);
         NixAttrs(AttrsInner::Overlay {
-            left: Rc::new(self),
-            right: Rc::new(other),
+            left: RefCell::new(Rc::new(self)),
+            right: RefCell::new(Rc::new(other)),
             cache: Rc::new(OnceCell::new()),
         })
     }

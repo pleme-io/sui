@@ -60,28 +60,15 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = true
 
-      # Pin <nixpkgs> to the tracked ref's CURRENT HEAD. The resolved rev is
-      # recorded in the job summary so every run says exactly which nixpkgs it
-      # proved parity against — no moving-tag ambiguity in the receipt.
-      - name: Resolve + pin latest nixpkgs
-        id: pin
-        run: |
-          REF="${{ github.event.inputs.nixpkgs-ref || 'nixpkgs-unstable' }}"
-          REV=$(nix flake metadata "github:NixOS/nixpkgs/${REF}" --json | nix run nixpkgs#jq -- -r .locked.rev)
-          echo "rev=$REV" >> "$GITHUB_OUTPUT"
-          echo "NIX_PATH=nixpkgs=https://github.com/NixOS/nixpkgs/archive/${REV}.tar.gz" >> "$GITHUB_ENV"
-          echo "### Tracking nixpkgs \`${REF}\` @ \`${REV}\`" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Build sui
         run: cargo build -p sui --bin sui
 
-      # The byte gate, now against the freshly-pinned nixpkgs. A non-zero exit is
-      # a real divergence between sui and nix on the CURRENT nixpkgs — the public,
-      # dated red check that drives the fix loop.
-      - name: Run byte-parity gate vs tracked nixpkgs
+      # `sui parity --track-nixpkgs <ref>` resolves the ref's CURRENT HEAD, pins
+      # <nixpkgs> to it, runs the byte-corpus, and prints the exact rev — ALL in
+      # the typed binary (the `nix flake metadata | jq` pin logic moved into
+      # `resolve_nixpkgs_rev`, no shell). A non-zero exit is a real sui-vs-nix
+      # divergence on the current nixpkgs — the public, dated red check that
+      # drives the fix loop. `| tee $GITHUB_STEP_SUMMARY` is the one line of glue.
+      - name: Run byte-parity gate vs tracked nixpkgs (typed)
         run: |
-          set -o pipefail
-          ./target/debug/sui parity | tee parity.out
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -3 parity.out >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ./target/debug/sui parity --track-nixpkgs "${{ github.event.inputs.nixpkgs-ref || 'nixpkgs-unstable' }}" | tee "$GITHUB_STEP_SUMMARY"

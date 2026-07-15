@@ -53,17 +53,9 @@ jobs:
           echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
           echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
 
-      - name: Confirm the store is writable (the build-parity precondition)
-        run: |
-          . "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
-          if touch /nix/store/.bp-probe 2>/dev/null; then
-            rm -f /nix/store/.bp-probe
-            echo "✓ /nix/store is writable — sui builds directly" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::/nix/store not writable — single-user install failed"
-            exit 1
-          fi
-
+      # (No separate writable-store check: `sui build-parity` opens the store
+      # read-write and errors out typed if it isn't writable — the precondition
+      # is enforced in the binary, not a bash `touch` probe.)
       - name: Build sui
         run: cargo build -p sui --bin sui
 
