@@ -7,12 +7,28 @@
 > `sui/docs/` eval-engine plan, deliberately NOT a minted theory doctrine (minting one
 > for a ~2-change fix would be the over-abstraction the verdicts warn against).
 
-## 0. Ground before building (Care #1) — VERIFIED: it is NOT (currently) an OOM
+## 0. Ground before building (Care #1) — the failure mode is ENVIRONMENT-DEPENDENT
 
-**M0-A verification is IN (2026-07-12, `SUI_PERF_TRACE` cid eval, 40-min window @ `b3568bb`).
-The current cid blocker is NOT memory, NOT the NAR storm, NOT IFD — it is un-traced
-EVAL-TIME slowness. So §1–§4 (the memory analysis) is retained only as the answer *if*
-the symptom ever becomes a genuine RSS OOM; it is NOT the current target.**
+**UPDATE 2026-07-15 (`f87fd07`, release build, `/usr/bin/time -l`): M0-A re-run FLIPPED —
+today the cid toplevel eval IS a genuine RSS OOM.** Measured: peak RSS **14.57 GB**,
+killed by signal (macOS Jetsam) at **18.4 min** — NOT the 30-min `timeout`, and sui
+printed no error of its own. Machine: 32 GB RAM, and swap was already **12.4 GB
+committed by other work** before the run. So sui's 14.6 GB peak on a pre-saturated
+32 GB box → Jetsam SIGKILL. The 2026-07-12 run (below) reached 40 min WITHOUT OOM on a
+less-loaded machine — so **the cid eval is blocked by BOTH ~14.6 GB peak memory AND
+40+-min eval time, and WHICH one kills it depends on machine load.** Neither has a cheap
+byte-safe win: the double-store collapse (§1) is re-verified as a ~1–2 GB reprieve only
+(the heavy `NixAttrs`/`Vec`/`NixString` payloads are `Rc`-SHARED between `cache:
+Box<Concrete>` and `repr: Evaluated(Box<Value>)` — `clone()` bumps the Rc, so only ~2
+enum-shell boxes/forced-thunk duplicate, NOT the payload). The 14.6 GB dominant term is
+the INHERENT live working-set (§1) confirmed against the types. Real fixes remain
+streaming-release (memory) + hot-path localization (time), both multi-step; a warm
+cross-run eval-output memo (§4 step 3 / atatame-adjacent) would make the expensive eval a
+one-time cost — the structural sidestep.
+
+**Prior finding (2026-07-12, `SUI_PERF_TRACE` cid eval, 40-min window @ `b3568bb`):
+the blocker was un-traced EVAL-TIME slowness, NOT memory, on a less-loaded machine.**
+Retained — it is the OTHER half of the environment-dependent picture, not superseded.
 
 Dispositive trace evidence:
 - **NAR-hash storm: FIXED** — `redundant:0`, `nar_time` plateaus at ~30s (the content-
