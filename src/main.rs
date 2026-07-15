@@ -5823,11 +5823,24 @@ async fn main() -> Result<(), CliError> {
             // The basket — grown one byte-verified row at a time (the build-parity
             // sibling of `parity_corpus`). Starts self-contained (no network); real
             // nixpkgs leaves are added as each proves byte-identical here.
-            let basket: &[(&str, &str)] = &[(
-                "trivial-echo",
-                "derivation { name = \"bp-trivial\"; system = builtins.currentSystem; \
-                 builder = \"/bin/sh\"; args = [ \"-c\" \"echo byte-parity > $out\" ]; }",
-            )];
+            let basket: &[(&str, &str)] = &[
+                (
+                    "trivial-echo",
+                    "derivation { name = \"bp-trivial\"; system = builtins.currentSystem; \
+                     builder = \"/bin/sh\"; args = [ \"-c\" \"echo byte-parity > $out\" ]; }",
+                ),
+                // A DIRECTORY output with a regular file + an EXECUTABLE — proves
+                // sui's NAR serialization of nested structure + the executable bit
+                // (both encoded in the NAR) matches nix, a real step past a single
+                // flat file. Still self-contained (no network, fast on CI).
+                (
+                    "dir-structure",
+                    "derivation { name = \"bp-dir\"; system = builtins.currentSystem; \
+                     builder = \"/bin/sh\"; args = [ \"-c\" \
+                     \"mkdir -p $out/bin $out/share; echo hello > $out/share/msg; \
+                     printf '#!/bin/sh\\necho hi\\n' > $out/bin/run; chmod +x $out/bin/run\" ]; }",
+                ),
+            ];
             // Writable-store precondition: single-user store, so sui writes the .drv
             // + output directly (WritableStore path). On a root-owned multi-user
             // store this build path can't write — that is the daemon-write brick.
