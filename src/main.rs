@@ -5336,6 +5336,14 @@ fn hash_file(path: &str, hash_type: &str, base: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Fires a final census dump when `main` returns (Drop at scope exit).
+struct CensusExitGuard;
+impl Drop for CensusExitGuard {
+    fn drop(&mut self) {
+        sui_eval::value::census::dump("exit");
+    }
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), CliError> {
@@ -5345,6 +5353,13 @@ async fn main() -> Result<(), CliError> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .init();
+
+    // LIVE-OBJECT CENSUS (SUI_LIVE_CENSUS=1). Zero-cost when off. Spawns a
+    // thread that dumps live/made counts + RSS to stderr every 2s so a 30s+
+    // eval captures the high-water region; a final dump fires at process exit
+    // via the guard below.
+    sui_eval::value::census::spawn_poller();
+    let _census_exit_guard = CensusExitGuard;
 
     // Pre-intern the hot nixpkgs/flake/stdenv identifier set on the
     // main thread. Subsequent intern() calls for these are hashmap

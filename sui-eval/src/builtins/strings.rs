@@ -277,7 +277,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         None => Value::Null,
                     })
                     .collect();
-                Ok(Value::List(Rc::new(groups)))
+                Ok(Value::List(Rc::new(NixList::new(groups))))
             }
             None => Ok(Value::Null),
         }
@@ -304,12 +304,12 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         None => Value::Null,
                     })
                     .collect();
-                result.push(Value::List(Rc::new(groups)));
+                result.push(Value::List(Rc::new(NixList::new(groups))));
             }
             last_end = m.end();
         }
         // Add trailing non-matching part
         result.push(Value::string(&input[last_end..]));
-        Ok(Value::List(Rc::new(result)))
+        Ok(Value::List(Rc::new(NixList::new(result))))
     });
 }

@@ -700,7 +700,7 @@ fn build_derivation_result(
     }
 
     // CppNix: `all` is a list of all output derivation attrsets
-    result.insert("all".to_string(), Value::List(Rc::new(all_outputs)));
+    result.insert("all".to_string(), Value::List(Rc::new(NixList::new(all_outputs))));
 
     Ok(Value::Attrs(Rc::new(result)))
 }

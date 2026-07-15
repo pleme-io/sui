@@ -201,7 +201,7 @@ pub(crate) fn attrs_required_list(
     attrs: &NixAttrs,
     key: &str,
     bridge: &str,
-) -> Result<Rc<Vec<Value>>, EvalError> {
+) -> Result<Rc<NixList>, EvalError> {
     let v = attrs.get(key).ok_or_else(|| EvalError::type_error(format!(
         "{bridge}: missing required field `{key}`",
     )))?;
@@ -215,7 +215,7 @@ pub(crate) fn attrs_required_list(
 }
 
 /// Force a value and coerce to list.
-pub(crate) fn as_list(value: &Value, bridge: &str) -> Result<Rc<Vec<Value>>, EvalError> {
+pub(crate) fn as_list(value: &Value, bridge: &str) -> Result<Rc<NixList>, EvalError> {
     match crate::eval::force_value(value)? {
         Value::List(l) => Ok(l),
         other => Err(EvalError::type_error(format!(

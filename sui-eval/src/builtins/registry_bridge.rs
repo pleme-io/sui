@@ -117,7 +117,7 @@ mod tests {
     }
 
     fn _list(items: Vec<Value>) -> Value {
-        Value::List(Rc::new(items))
+        Value::List(Rc::new(NixList::new(items)))
     }
 
     #[test]

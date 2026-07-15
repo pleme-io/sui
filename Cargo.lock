@@ -6503,6 +6503,7 @@ dependencies = [
  "flate2",
  "gix",
  "im-rc",
+ "libc",
  "md-5",
  "pretty_assertions",
  "proptest",

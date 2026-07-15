@@ -927,7 +927,7 @@ fn eval_drv_in_temp_store_inner(expr: &str, dir: &std::path::Path) -> Value {
                         };
                         out.push(fit);
                     }
-                    crate::value::Value::List(std::rc::Rc::new(out))
+                    crate::value::Value::List(std::rc::Rc::new(crate::value::NixList::new(out)))
                 }
                 other => other,
             };

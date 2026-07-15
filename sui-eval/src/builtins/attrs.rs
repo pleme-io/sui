@@ -14,7 +14,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     // bump for heap-backed Value variants (no deep copy).
     register_builtin(builtins, "attrValues", |args| {
         let attrs = args[0].to_attrs()?;
-        Ok(Value::List(Rc::new(attrs.values().cloned().collect())))
+        Ok(Value::List(Rc::new(NixList::new(attrs.values().cloned().collect()))))
     });
     register_builtin(builtins, "hasAttr", |args| {
         let name = args[0].as_string()?.to_string();
@@ -151,7 +151,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                             result.push(v.clone());
                         }
                 }
-                Ok(Value::List(Rc::new(result)))
+                Ok(Value::List(Rc::new(NixList::new(result))))
             }),
         })))
     });
@@ -208,7 +208,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                             f,
                             Value::string(key),
                         )?;
-                        crate::eval::apply(partial, Value::List(Rc::new(vs)))
+                        crate::eval::apply(partial, Value::List(Rc::new(NixList::new(vs))))
                     });
                     result.insert(k, Value::Thunk(thunk));
                 }

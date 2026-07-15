@@ -24,6 +24,136 @@ use sui_intern::Symbol;
 /// the hash is a single multiply-shift — no SipHash overhead.
 pub type FxHashMap<K, V> = im_rc::HashMap<K, V, FxBuildHasher>;
 
+/// Env-gated LIVE-OBJECT CENSUS.
+///
+/// A permanent, zero-cost-when-off diagnostic answering the question:
+/// when sui's eval peak is ~2× nix's, is the overhead (a) cyclic/lingering
+/// producer garbage sui retains, or (b) a uniform per-object representation
+/// overhead? These need different fixes, so we MEASURE.
+///
+/// Gated behind `SUI_LIVE_CENSUS=1`. The atomics are always compiled but the
+/// `_MADE`/`_LIVE` bookkeeping and the RSS/dump thread only run when enabled.
+/// All counters use `Relaxed` — we want a cheap high-water snapshot, not a
+/// linearizable total.
+///
+/// `_MADE` + `_LIVE` are incremented in the INNER heap type's constructor;
+/// `_LIVE` is decremented in the inner type's `Drop` so it fires exactly once
+/// when the last `Rc` drops. Counters live on the inner heap types
+/// (`NixAttrs`, `ThunkInner`, `EnvInner`, `NixString`, the list `Vec`) so we
+/// count distinct heap allocations, not `Rc` clones.
+pub mod census {
+    use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
+    use std::sync::OnceLock;
+
+    pub static ATTRS_LIVE: AtomicI64 = AtomicI64::new(0);
+    pub static ATTRS_MADE: AtomicI64 = AtomicI64::new(0);
+    pub static THUNK_LIVE: AtomicI64 = AtomicI64::new(0);
+    pub static THUNK_MADE: AtomicI64 = AtomicI64::new(0);
+    pub static THUNK_EVALUATED: AtomicI64 = AtomicI64::new(0);
+    pub static ENV_LIVE: AtomicI64 = AtomicI64::new(0);
+    pub static ENV_MADE: AtomicI64 = AtomicI64::new(0);
+    pub static NIXSTR_LIVE: AtomicI64 = AtomicI64::new(0);
+    pub static NIXSTR_MADE: AtomicI64 = AtomicI64::new(0);
+    pub static LIST_LIVE: AtomicI64 = AtomicI64::new(0);
+    pub static LIST_MADE: AtomicI64 = AtomicI64::new(0);
+
+    /// True iff `SUI_LIVE_CENSUS=1`. Cached — read once.
+    #[inline]
+    pub fn enabled() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("SUI_LIVE_CENSUS").as_deref() == Ok("1"))
+    }
+
+    #[inline(always)]
+    pub fn made(made: &AtomicI64, live: &AtomicI64) {
+        if enabled() {
+            made.fetch_add(1, Relaxed);
+            live.fetch_add(1, Relaxed);
+        }
+    }
+
+    #[inline(always)]
+    pub fn dropped(live: &AtomicI64) {
+        if enabled() {
+            live.fetch_sub(1, Relaxed);
+        }
+    }
+
+    #[inline(always)]
+    pub fn evaluated() {
+        if enabled() {
+            THUNK_EVALUATED.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Resident set size of this process, in bytes (macOS + Linux).
+    pub fn rss_bytes() -> u64 {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            let mut info: libc::mach_task_basic_info = std::mem::zeroed();
+            let mut count = (std::mem::size_of::<libc::mach_task_basic_info>()
+                / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            let kr = libc::task_info(
+                libc::mach_task_self(),
+                libc::MACH_TASK_BASIC_INFO,
+                std::ptr::addr_of_mut!(info).cast(),
+                &mut count,
+            );
+            if kr == libc::KERN_SUCCESS {
+                return info.resident_size;
+            }
+            0
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::fs::read_to_string("/proc/self/statm")
+                .ok()
+                .and_then(|s| s.split_whitespace().nth(1).map(String::from))
+                .and_then(|pages| pages.parse::<u64>().ok())
+                .map(|pages| pages * 4096)
+                .unwrap_or(0)
+        }
+    }
+
+    /// Print all live/made counts + RSS to stderr, tagged.
+    pub fn dump(tag: &str) {
+        let rss = rss_bytes();
+        eprintln!(
+            "[census {tag}] rss={rss_mb:.1}MB \
+attrs_live={al} attrs_made={am} \
+thunk_live={tl} thunk_made={tm} thunk_eval={te} \
+env_live={el} env_made={em} \
+nixstr_live={sl} nixstr_made={sm} \
+list_live={ll} list_made={lm}",
+            rss_mb = rss as f64 / (1024.0 * 1024.0),
+            al = ATTRS_LIVE.load(Relaxed),
+            am = ATTRS_MADE.load(Relaxed),
+            tl = THUNK_LIVE.load(Relaxed),
+            tm = THUNK_MADE.load(Relaxed),
+            te = THUNK_EVALUATED.load(Relaxed),
+            el = ENV_LIVE.load(Relaxed),
+            em = ENV_MADE.load(Relaxed),
+            sl = NIXSTR_LIVE.load(Relaxed),
+            sm = NIXSTR_MADE.load(Relaxed),
+            ll = LIST_LIVE.load(Relaxed),
+            lm = LIST_MADE.load(Relaxed),
+        );
+    }
+
+    /// Spawn the periodic-dump thread (only when enabled). Dumps every 2s so a
+    /// 30s+ eval captures the high-water region. Also usable as an at-exit
+    /// hook via the returned guard.
+    pub fn spawn_poller() {
+        if !enabled() {
+            return;
+        }
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            dump("periodic");
+        });
+    }
+}
+
 // -- String interner (shared with sui-bytecode via sui-intern's thread-local) --
 //
 // Previously this module owned its own `thread_local! INTERNER`. That
@@ -217,7 +347,7 @@ impl StringContext {
 }
 
 /// A Nix string value with associated context (store-path references).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NixString {
     /// The character data.
     pub chars: SmolStr,
@@ -225,9 +355,29 @@ pub struct NixString {
     pub context: StringContext,
 }
 
+// `Clone` is hand-written so the census counts every NixString that comes
+// into existence (a clone is a fresh heap object once Rc-wrapped), keeping
+// `NIXSTR_MADE`/`NIXSTR_LIVE` consistent with the `Drop` below.
+impl Clone for NixString {
+    fn clone(&self) -> Self {
+        census::made(&census::NIXSTR_MADE, &census::NIXSTR_LIVE);
+        Self {
+            chars: self.chars.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl Drop for NixString {
+    fn drop(&mut self) {
+        census::dropped(&census::NIXSTR_LIVE);
+    }
+}
+
 impl NixString {
     /// Create a context-free string.
     pub fn plain(s: impl Into<SmolStr>) -> Self {
+        census::made(&census::NIXSTR_MADE, &census::NIXSTR_LIVE);
         Self {
             chars: s.into(),
             context: StringContext::default(),
@@ -236,6 +386,7 @@ impl NixString {
 
     /// Create a string with an explicit context.
     pub fn with_context(s: impl Into<SmolStr>, ctx: StringContext) -> Self {
+        census::made(&census::NIXSTR_MADE, &census::NIXSTR_LIVE);
         Self {
             chars: s.into(),
             context: ctx,
@@ -258,6 +409,103 @@ impl NixString {
 impl AsRef<str> for NixString {
     fn as_ref(&self) -> &str {
         &self.chars
+    }
+}
+
+/// Census wrapper around a list's backing `Vec<Value>`.
+///
+/// `#[repr(transparent)]` + `Deref`/`DerefMut` to `Vec<Value>` so nearly every
+/// existing call site (`.len()`, `.iter()`, indexing, `.as_slice()`, `.clone()`
+/// → produces a `NixList`) works unchanged. Its sole job is to carry the census
+/// hooks (`LIST_MADE`/`LIST_LIVE`) on the inner heap allocation.
+#[repr(transparent)]
+#[derive(Debug, PartialEq)]
+pub struct NixList(pub Vec<Value>);
+
+impl NixList {
+    #[inline]
+    pub fn new(v: Vec<Value>) -> Self {
+        census::made(&census::LIST_MADE, &census::LIST_LIVE);
+        NixList(v)
+    }
+
+    /// Consume into the backing `Vec<Value>`. `mem::take` because `NixList`
+    /// has a `Drop` impl (can't move the field out); the emptied husk's Drop
+    /// still fires, decrementing LIVE — correct, the list is consumed.
+    #[inline]
+    pub fn into_vec(mut self) -> Vec<Value> {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl From<Vec<Value>> for NixList {
+    #[inline]
+    fn from(v: Vec<Value>) -> Self {
+        NixList::new(v)
+    }
+}
+
+// Slice/array comparison so `assert_eq!(nixlist, [..])` in tests keeps working.
+impl<T: AsRef<[Value]>> PartialEq<T> for NixList {
+    #[inline]
+    fn eq(&self, other: &T) -> bool {
+        self.0.as_slice() == other.as_ref()
+    }
+}
+
+impl Clone for NixList {
+    fn clone(&self) -> Self {
+        census::made(&census::LIST_MADE, &census::LIST_LIVE);
+        NixList(self.0.clone())
+    }
+}
+
+impl Drop for NixList {
+    fn drop(&mut self) {
+        census::dropped(&census::LIST_LIVE);
+    }
+}
+
+impl FromIterator<Value> for NixList {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = Value>>(iter: I) -> Self {
+        NixList::new(iter.into_iter().collect())
+    }
+}
+
+impl std::ops::Deref for NixList {
+    type Target = Vec<Value>;
+    #[inline]
+    fn deref(&self) -> &Vec<Value> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for NixList {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a NixList {
+    type Item = &'a Value;
+    type IntoIter = std::slice::Iter<'a, Value>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for NixList {
+    type Item = Value;
+    type IntoIter = std::vec::IntoIter<Value>;
+    #[inline]
+    fn into_iter(mut self) -> Self::IntoIter {
+        // Move the Vec out. `NixList`'s Drop still fires on the emptied husk,
+        // decrementing LIVE — correct, since the elements move to the iterator
+        // and the list allocation is consumed.
+        std::mem::take(&mut self.0).into_iter()
     }
 }
 
@@ -292,7 +540,7 @@ pub enum Value {
     Float(f64),
     String(Rc<NixString>),
     Path(Box<SmolStr>),
-    List(Rc<Vec<Value>>),
+    List(Rc<NixList>),
     Attrs(Rc<NixAttrs>),
     Lambda(Rc<Closure>),
     Builtin(Box<BuiltinFn>),
@@ -323,7 +571,7 @@ pub enum Concrete {
     Float(f64),
     String(Rc<NixString>),
     Path(Box<SmolStr>),
-    List(Rc<Vec<Value>>),      // elements may be lazy (correct for Nix)
+    List(Rc<NixList>),      // elements may be lazy (correct for Nix)
     Attrs(Rc<NixAttrs>),       // values may be lazy (correct for Nix)
     Lambda(Rc<Closure>),
     Builtin(Box<BuiltinFn>),
@@ -444,7 +692,7 @@ impl Concrete {
     /// Extract owned list — guaranteed no thunk at this level.
     pub fn to_list(&self) -> Result<Vec<Value>, EvalError> {
         match self {
-            Concrete::List(l) => Ok((**l).clone()),
+            Concrete::List(l) => Ok((**l).0.clone()),
             other => Err(EvalError::TypeMismatch { expected: "list", got: other.type_name() }),
         }
     }
@@ -584,9 +832,9 @@ pub fn concat_lists(left: Value, right_elems: &[Value]) -> Result<Value, EvalErr
     let mut la = match left {
         Value::List(rc) => {
             let reused = Rc::strong_count(&rc) == 1;
-            let vec = match Rc::try_unwrap(rc) {
-                Ok(v) => v,        // uniquely owned: allocation reused
-                Err(rc) => (*rc).clone(), // shared: clone the left (unchanged)
+            let vec: Vec<Value> = match Rc::try_unwrap(rc) {
+                Ok(v) => v.into_vec(), // uniquely owned: allocation reused
+                Err(rc) => (*rc).0.clone(), // shared: clone the left (unchanged)
             };
             if crate::perf::enabled() {
                 crate::perf::inc(crate::perf::Counter::ListConcatCalls);
@@ -959,6 +1207,12 @@ struct ThunkInner {
     recursive: bool,
 }
 
+impl Drop for ThunkInner {
+    fn drop(&mut self) {
+        census::dropped(&census::THUNK_LIVE);
+    }
+}
+
 /// A lazy value with memoization and blackhole detection.
 #[derive(Clone)]
 pub struct Thunk(pub(crate) Rc<ThunkInner>);
@@ -967,6 +1221,7 @@ impl Thunk {
     /// Create a thunk that will evaluate `expr` in `env` when forced.
     pub fn new_suspended(expr: rnix::ast::Expr, env: Env) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
             repr: UnsafeCell::new(ThunkRepr::Suspended { expr, env }),
@@ -982,6 +1237,7 @@ impl Thunk {
     /// (see `eval::is_self_recursive_binding`).
     pub fn new_suspended_recursive(expr: rnix::ast::Expr, env: Env) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         crate::perf::inc(crate::perf::Counter::ThunkSiteLetForward);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
@@ -999,6 +1255,7 @@ impl Thunk {
     /// once regardless of how many names are inherited.
     pub fn new_inherit_select(source_thunk: Thunk, name: impl Into<SmolStr>) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         crate::perf::inc(crate::perf::Counter::ThunkSiteInheritSrc);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
@@ -1020,6 +1277,7 @@ impl Thunk {
         env: Env,
     ) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         crate::perf::inc(crate::perf::Counter::ThunkSiteOther);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
@@ -1038,6 +1296,7 @@ impl Thunk {
     /// This is used for lazy flake input evaluation.
     pub fn new_native(f: impl FnOnce() -> Result<Value, EvalError> + 'static) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         crate::perf::inc(crate::perf::Counter::ThunkSiteNative);
         Self(Rc::new(ThunkInner {
             cache: OnceCell::new(),
@@ -1051,6 +1310,7 @@ impl Thunk {
     /// immediately available.
     pub fn new_evaluated(value: Value) -> Self {
         crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         crate::perf::inc(crate::perf::Counter::ThunkSiteEvaluated);
         let cache = OnceCell::new();
         // Collapse the double-store: a concrete value lives ONLY in the
@@ -1138,6 +1398,7 @@ impl Thunk {
     /// byte-neutral by construction.
     #[inline]
     unsafe fn store_evaluated(&self, value: &Value) {
+        census::evaluated();
         if matches!(value, Value::Thunk(_)) {
             *unsafe { &mut *self.0.repr.get() } = ThunkRepr::Evaluated(Box::new(value.clone()));
         } else {
@@ -1603,7 +1864,7 @@ impl Thunk {
                     return Ok(Value::Null);
                 }
                 if std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_LIST").is_some() {
-                    return Ok(Value::List(Rc::new(Vec::new())));
+                    return Ok(Value::List(Rc::new(NixList::new(Vec::new()))));
                 }
                 if std::env::var_os("SUI_BLACKHOLE_AS_EMPTY_ATTRS").is_some() {
                     return Ok(Value::Attrs(Rc::new(NixAttrs::new())));
@@ -1766,8 +2027,24 @@ impl fmt::Debug for Thunk {
 /// The `//` operator creates O(1) overlay nodes instead of O(m log n) merges.
 /// Attribute access walks the chain right-to-left in O(depth).
 /// Full iteration (attrNames, attrValues) flattens on demand.
-#[derive(Clone)]
 pub struct NixAttrs(AttrsInner);
+
+// Hand-written `Clone`/`Drop` so the census counts every NixAttrs value that
+// comes into existence (a clone is a fresh heap object once Rc-wrapped),
+// keeping `ATTRS_MADE`/`ATTRS_LIVE` consistent. Fresh (non-clone)
+// constructions bump the counter at each `NixAttrs(...)` tuple-construct site.
+impl Clone for NixAttrs {
+    fn clone(&self) -> Self {
+        census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
+        NixAttrs(self.0.clone())
+    }
+}
+
+impl Drop for NixAttrs {
+    fn drop(&mut self) {
+        census::dropped(&census::ATTRS_LIVE);
+    }
+}
 
 /// Internal representation: either a flat map or an overlay chain.
 #[derive(Clone)]
@@ -1799,6 +2076,7 @@ impl fmt::Debug for NixAttrs {
 
 impl Default for NixAttrs {
     fn default() -> Self {
+        census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
         Self(AttrsInner::Flat(FxHashMap::default()))
     }
 }
@@ -1998,6 +2276,7 @@ impl NixAttrs {
         if other.is_empty() { return self; }
         if self.is_empty() { return other; }
         crate::perf::inc(crate::perf::Counter::OverlayCreated);
+        census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
         NixAttrs(AttrsInner::Overlay {
             left: RefCell::new(Rc::new(self)),
             right: RefCell::new(Rc::new(other)),
@@ -2014,6 +2293,7 @@ impl NixAttrs {
                 for (k, v) in r.iter() {
                     result.insert(*k, v.clone());
                 }
+                census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
                 NixAttrs(AttrsInner::Flat(result))
             }
             _ => {
@@ -2023,6 +2303,7 @@ impl NixAttrs {
                 for (k, v) in other_flat.iter() {
                     result.insert(*k, v.clone());
                 }
+                census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
                 NixAttrs(AttrsInner::Flat(result))
             }
         }
@@ -2031,6 +2312,7 @@ impl NixAttrs {
 
 impl FromIterator<(String, Value)> for NixAttrs {
     fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
+        census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
         NixAttrs(AttrsInner::Flat(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect()))
     }
 }
@@ -2553,7 +2835,7 @@ impl Value {
     /// `List` variant.
     #[must_use]
     pub fn list(items: Vec<Value>) -> Self {
-        Value::List(Rc::new(items))
+        Value::List(Rc::new(NixList::new(items)))
     }
 
     /// True when `self` is a `List` whose backing `Rc<Vec>` is uniquely owned
@@ -2826,7 +3108,7 @@ impl Value {
     /// Force-aware list extraction. Forces the value if it is a thunk.
     pub fn to_list(&self) -> Result<Vec<Value>, EvalError> {
         match self {
-            Value::List(l) => Ok((**l).clone()),
+            Value::List(l) => Ok((**l).0.clone()),
             Value::Thunk(thunk) => {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_list()
@@ -3136,7 +3418,7 @@ impl From<&serde_json::Value> for Value {
             }
             serde_json::Value::String(s) => Value::string(s.clone()),
             serde_json::Value::Array(arr) => {
-                Value::List(Rc::new(arr.iter().map(Value::from).collect()))
+                Value::List(Rc::new(NixList::new(arr.iter().map(Value::from).collect())))
             }
             serde_json::Value::Object(obj) => {
                 let mut attrs = NixAttrs::new();
@@ -3157,7 +3439,7 @@ impl From<&toml::Value> for Value {
             toml::Value::Float(f) => Value::Float(*f),
             toml::Value::Boolean(b) => Value::Bool(*b),
             toml::Value::Array(arr) => {
-                Value::List(Rc::new(arr.iter().map(Value::from).collect()))
+                Value::List(Rc::new(NixList::new(arr.iter().map(Value::from).collect())))
             }
             toml::Value::Table(t) => {
                 let mut attrs = NixAttrs::new();
@@ -3206,7 +3488,7 @@ impl From<NixAttrs> for Value {
 
 impl From<Vec<Value>> for Value {
     fn from(list: Vec<Value>) -> Self {
-        Value::List(Rc::new(list))
+        Value::List(Rc::new(NixList::new(list)))
     }
 }
 
@@ -3599,7 +3881,7 @@ mod tests {
     fn concat_lists_shared_left_is_left_untouched_and_correct() {
         // Keep an outstanding Rc clone so the left is NOT uniquely owned;
         // the clone-extend fallback fires and the shared list is unchanged.
-        let shared = Rc::new(vec![Value::Int(1), Value::Int(2)]);
+        let shared = Rc::new(NixList::new(vec![Value::Int(1), Value::Int(2)]));
         let left = Value::List(Rc::clone(&shared));
         assert!(!left.is_uniquely_owned_list());
         let right = [Value::Int(3)];

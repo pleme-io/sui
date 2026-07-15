@@ -47,6 +47,8 @@ im-rc.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 smol_str.workspace = true
+# Census RSS-poll (mach_task_basic_info on macOS; /proc/self/statm elsewhere).
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

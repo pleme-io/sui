@@ -85,7 +85,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             work_list.extend(new_list);
         }
 
-        Ok(Value::List(Rc::new(result)))
+        Ok(Value::List(Rc::new(NixList::new(result))))
     });
 
     // scopedImport

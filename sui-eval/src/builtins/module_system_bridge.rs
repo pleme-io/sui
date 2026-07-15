@@ -265,7 +265,7 @@ mod tests {
     /// Build a tiny module-list Value (the input shape for the
     /// builtin) directly via Value constructors.
     fn module_list(modules: Vec<Value>) -> Value {
-        Value::List(Rc::new(modules))
+        Value::List(Rc::new(NixList::new(modules)))
     }
 
     fn attrs_of(pairs: &[(&str, Value)]) -> Value {

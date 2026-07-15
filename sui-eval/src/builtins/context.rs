@@ -110,6 +110,6 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 nc.add_drv_deep(key.clone());
             }
         }
-        Ok(Value::String(Rc::new(NixString::with_context(ns.chars, nc))))
+        Ok(Value::String(Rc::new(NixString::with_context(ns.chars.clone(), nc))))
     });
 }
