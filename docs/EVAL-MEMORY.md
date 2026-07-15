@@ -131,6 +131,15 @@ node because every node is reachable from the root being hashed.** (verify verdi
     a session-tail change. This is the concrete next brick for the marquee: not
     "streaming-release, deep + vague" but "release the Overlay parents post-flatten,
     byte-safe, mind the hot-path RefCell cost."
+    - **ENTANGLEMENT (found 2026-07-15, must handle first):** not every reader is
+      cache-first. `is_empty` (value.rs, `AttrsInner::Overlay { left, right, .. } =>
+      left.is_empty() && right.is_empty()`) reads `left`/`right` DIRECTLY with no
+      cache check — so releasing them to empty would make `is_empty` wrongly return
+      `true` for a flattened non-empty overlay. So the refactor is two parts:
+      **(1)** make EVERY `left`/`right` reader cache-first (`is_empty`; audit `eq`
+      at value.rs:533 "flattened AND cloned both backing", `len`, iterators),
+      **(2)** THEN release post-flatten. Part (1) is the byte-risk surface the corpus
+      must gate — which is why this is a dedicated, guarded effort, not a tail edit.
 
 **The ranking is a code-derived HYPOTHESIS, not measured bytes.** A `dhat`/massif
 profile (or the `perf.rs` `ThunkForce`/`ImportHit`/`EnvClone` counters) at the OOM
