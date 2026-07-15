@@ -23,8 +23,19 @@ Box<Concrete>` and `repr: Evaluated(Box<Value>)` — `clone()` bumps the Rc, so 
 enum-shell boxes/forced-thunk duplicate, NOT the payload). The 14.6 GB dominant term is
 the INHERENT live working-set (§1) confirmed against the types. Real fixes remain
 streaming-release (memory) + hot-path localization (time), both multi-step; a warm
-cross-run eval-output memo (§4 step 3 / atatame-adjacent) would make the expensive eval a
+cross-run eval-output memo (§4 step 3 / atatame-adjacent) makes the expensive eval a
 one-time cost — the structural sidestep.
+
+**UPDATE 2026-07-15 — the structural sidestep is now SHIPPED (sui `ec72c59`).** The
+3-tier content-addressed cross-run eval-cache (`sui-eval/src/eval_cache.rs`) is now
+WIRED into `sui eval --no-vm` (it existed but was disconnected): an installable
+drvPath is served byte-identically from a warm entry keyed on `(source+mode, lock)`.
+Measured 407× on nixpkgs `hello.drvPath` (7329ms→18ms, == nix oracle). So the cid
+marquee no longer requires the memory work to be USABLE — it requires the expensive
+eval to complete ONCE (with headroom) to seed the entry, after which every eval is an
+instant byte-identical hit. The streaming-release / hot-path work below is now the
+path to making that ONE seeding eval itself cheap+bounded, not a prerequisite for the
+marquee. See `project_sui_eval_cache_wired_flip_win` (operator memory).
 
 **Prior finding (2026-07-12, `SUI_PERF_TRACE` cid eval, 40-min window @ `b3568bb`):
 the blocker was un-traced EVAL-TIME slowness, NOT memory, on a less-loaded machine.**
