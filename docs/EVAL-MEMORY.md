@@ -110,6 +110,27 @@ node because every node is reachable from the root being hashed.** (verify verdi
     one amplifier from HYPOTHESIS to MEASURED, and confirms §1's inherent-closure
     conclusion: **the dominant 14.6–18.8 GB is the live derivation-closure working-set,
     and streaming-release (§2) — not amplifier-bounding — is the load-bearing fix.**
+  - **SCOPED 2026-07-15 — the `NixAttrs::Overlay` amplifier now has a VALIDATED
+    byte-safe fix direction (the most tractable slice of streaming-release).**
+    `AttrsInner::Overlay { left: Rc<NixAttrs>, right: Rc<NixAttrs>, cache:
+    Rc<OnceCell<FxHashMap>> }` (value.rs:1715) retains BOTH parent `Rc`s **forever**,
+    even after `as_flat()` populates `cache` — so the whole 50+-deep module-fixpoint
+    overlay chain (each node + its flattened cache) stays live. **Byte-safety is
+    PROVEN by code:** `get_sym` (value.rs:1819) and `contains_key_sym` (1854) both
+    check `cache` FIRST and only read `left`/`right` when the cache is *unpopulated*
+    — so once flattened, `left`/`right` are dead. Releasing them after
+    `cache.get_or_init` would cascade-free the intermediate overlay nodes (+ their
+    caches) that nothing else references — a large slice of the dominant retention,
+    and byte-neutral (the completed `cache` is the same map nix's flatten yields).
+    **The cost/tradeoff a focused effort must weigh:** `NixAttrs` is immutable-shared
+    (`Rc`), so releasing needs interior mutability — `left`/`right` become
+    `RefCell<…>` (or an empty-`NixAttrs` swap) — which adds a borrow to the HOT attrs
+    path (150M+ lookups); the perf-seal gate must be re-verified. Iteration is
+    expensive (each cid re-measure is an ~18-min OOM), so this is a dedicated,
+    carefully-guarded effort (corpus 65 + hello + perf-seal + a cid re-measure), not
+    a session-tail change. This is the concrete next brick for the marquee: not
+    "streaming-release, deep + vague" but "release the Overlay parents post-flatten,
+    byte-safe, mind the hot-path RefCell cost."
 
 **The ranking is a code-derived HYPOTHESIS, not measured bytes.** A `dhat`/massif
 profile (or the `perf.rs` `ThunkForce`/`ImportHit`/`EnvClone` counters) at the OOM
