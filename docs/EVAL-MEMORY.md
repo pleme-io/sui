@@ -100,6 +100,16 @@ node because every node is reachable from the root being hashed.** (verify verdi
   caching the flattened map (`value.rs:1581`, ~2× per iterated overlay node across the
   50+-deep module-system fixpoint); the thunk double-store above. Bounding these helps
   the constant, not the O(closure-size) scaling.
+  - **MEASURED 2026-07-15 — IMPORT_CACHE bounding RULED OUT (byte-safe FIFO evict,
+    env-gated, since reverted).** A byte-safety proof passed (aggressive `MAX=32`
+    eviction+recompute gave a byte-identical `hello.drvPath`), but the peak-RSS
+    measurement was *counterproductive*: `hello.drvPath` peaked **0.62 GB unbounded →
+    0.77 GB at MAX=32** — the evict+recompute churn allocated MORE than the retention
+    it freed. So IMPORT_CACHE is confirmed a minor retainer, NOT the dominant term;
+    bounding it cannot fix the cid OOM and hurts. This upgrades verdict §5.4 for this
+    one amplifier from HYPOTHESIS to MEASURED, and confirms §1's inherent-closure
+    conclusion: **the dominant 14.6–18.8 GB is the live derivation-closure working-set,
+    and streaming-release (§2) — not amplifier-bounding — is the load-bearing fix.**
 
 **The ranking is a code-derived HYPOTHESIS, not measured bytes.** A `dhat`/massif
 profile (or the `perf.rs` `ThunkForce`/`ImportHit`/`EnvClone` counters) at the OOM
