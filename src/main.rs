@@ -6910,12 +6910,26 @@ fn eval_cache_key_for_installable(
     let lock_path = std::path::Path::new(dir).join("flake.lock");
     let lock_bytes = std::fs::read(&lock_path).ok()?;
     let lock_hash = format!("{:x}", sha2::Sha256::digest(&lock_bytes));
-    // Fold the render mode into the source hash so json / raw / display outputs
-    // (which differ byte-for-byte) never collide on the same key.
+    // The flake's OWN git state — `self.rev`/`self.shortRev`/`self.lastModified`
+    // (and `self.dirtyShortRev`) — is NOT captured by `desugared_expr` or the
+    // lock (the lock pins INPUTS, not `self`). A derivation embedding a
+    // self-derived value (a `system.configurationRevision`, a build stamped
+    // with its own git rev) changes drvPath across a commit even when the
+    // expression + lock are byte-identical. So fold the flake dir's CLEAN
+    // committed rev into the key, and REFUSE to cache a dirty (or non-git) tree
+    // whose `self.dirtyShortRev` hashes the whole worktree we cannot cheaply
+    // capture — otherwise a `…-dirty` result gets served stale after the commit
+    // that made it clean (observed: cid served `darwin-system-…dirty` post-commit).
+    let git_rev = sui_eval::git::clean_worktree_rev(std::path::Path::new(dir))?;
+    // Fold the render mode + the flake's clean git rev into the source hash so
+    // json / raw / display outputs (byte-different) and distinct commits never
+    // collide on the same key.
     let mut h = sha2::Sha256::new();
     h.update(desugared_expr.as_bytes());
     h.update(b"\0mode=");
     h.update(render_mode.as_bytes());
+    h.update(b"\0rev=");
+    h.update(git_rev.as_bytes());
     let source_hash = format!("{:x}", h.finalize());
     Some(sui_eval::eval_cache::CacheKey { source_hash, lock_hash: Some(lock_hash) })
 }

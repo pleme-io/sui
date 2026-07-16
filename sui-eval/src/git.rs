@@ -233,6 +233,36 @@ pub fn head_rev(repo_path: &Path) -> Result<String, String> {
     Ok(head.id.to_string())
 }
 
+/// Fingerprint a local flake directory's git state for eval-cache keying.
+///
+/// Returns `Some(head_rev)` iff `dir` is a git worktree with NO uncommitted
+/// changes to TRACKED files (clean) — the committed rev then fully identifies
+/// everything a git flake's `self.rev`/`self.lastModified` exposes AND the
+/// tree's tracked content (a git flake's source excludes untracked files, so
+/// they are correctly ignored here, matching nix's flake-source semantics).
+///
+/// Returns `None` when the tree is DIRTY (its `self.dirtyShortRev` hashes the
+/// whole working tree — content the eval-cache key cannot cheaply capture) or
+/// is not a git repo. The caller treats `None` as "do not cache", so a stale
+/// self-derived byte (e.g. `darwin-system-…dirty` served after a commit) can
+/// never be returned from the cache across a git-state change.
+///
+/// Uses `git diff --quiet HEAD` (exit 0 = clean, 1 = dirty, other = not-a-repo
+/// / no-HEAD) — the cheapest reliable tracked-changes check.
+#[must_use]
+pub fn clean_worktree_rev(dir: &Path) -> Option<String> {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["diff", "--quiet", "HEAD"])
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None; // dirty tracked changes, not a repo, or no HEAD → don't cache
+    }
+    head_rev(dir).ok()
+}
+
 /// Count the number of commits reachable from HEAD
 /// (equivalent to `git rev-list --count HEAD`).
 pub fn rev_count(repo_path: &Path) -> Result<i64, String> {
@@ -588,6 +618,59 @@ mod tests {
         assert!(head_timestamp(&dir).unwrap() > 0);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_worktree_rev_clean_vs_dirty() {
+        // Build the repo with the `git` CLI — the faithful real-world scenario
+        // (operator flake dirs are git-CLI-managed with a consistent index).
+        // `clean_worktree_rev` uses `git diff --quiet HEAD`, which reads that
+        // index; a gix-created repo can leave a stale index the CLI reads as
+        // dirty (harmless — it would just return None / not-cache — but not the
+        // case under test here).
+        let dir = temp_dir("clean_rev");
+        fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C").arg(&dir).args(args)
+                .output().unwrap()
+        };
+        // A CI/sandbox may have no `git` on PATH — skip rather than false-fail.
+        if git(&["init", "-q"]).status.success() == false {
+            eprintln!("skip clean_worktree_rev test: git init unavailable");
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        git(&["config", "user.email", "test@sui.local"]);
+        git(&["config", "user.name", "sui-test"]);
+        fs::write(dir.join("flake.nix"), "{ outputs = _: {}; }").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "initial"]);
+
+        // Clean worktree → Some(head_rev).
+        let rev = clean_worktree_rev(&dir);
+        assert_eq!(rev.as_deref(), Some(head_rev(&dir).unwrap().as_str()),
+            "a clean git worktree must fingerprint to its HEAD rev");
+
+        // Untracked file → still clean (a git flake's source excludes untracked
+        // files, so they do not change self.rev / drvPaths — matching nix).
+        fs::write(dir.join("result"), "untracked-artifact").unwrap();
+        assert!(clean_worktree_rev(&dir).is_some(),
+            "untracked files must NOT mark the tree dirty (nix excludes them)");
+
+        // Modify a TRACKED file → dirty → None (do not cache).
+        fs::write(dir.join("flake.nix"), "{ outputs = _: { x = 1; }; }").unwrap();
+        assert!(clean_worktree_rev(&dir).is_none(),
+            "an uncommitted change to a tracked file must return None (dirty → don't cache)");
+
+        // A non-git directory → None (do not cache).
+        let plain = temp_dir("clean_rev_plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert!(clean_worktree_rev(&plain).is_none(),
+            "a non-git directory must return None");
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&plain);
     }
 
     #[test]
