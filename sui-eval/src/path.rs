@@ -73,6 +73,43 @@ pub fn materialize_str(path: &str) -> String {
     materialize(Path::new(path)).to_string_lossy().into_owned()
 }
 
+/// Reverse of [`materialize`] for the copy-to-store NAMING rule: given a
+/// REAL on-disk directory (the fetcher-cache `read_dir` a `materialize`
+/// already resolved to, then `canonicalize`d), return the store-path
+/// BASENAME of the flake input that tree belongs to — i.e. CppNix's
+/// `-source` name — when `real` IS that input's whole tree root.
+///
+/// This closes the darwin `system-path` root: a fetched flake input's
+/// `src = ./.` copies the input's own tree back into the store; CppNix names
+/// that copy after the input's `/nix/store/<h>-source` basename
+/// (`<h>-source`), but sui reads the tree from `~/.cache/sui/inputs/<narhash>`
+/// whose basename is `<repo>-<rev>`. Only the NAME needs correcting — the
+/// bytes (→ NAR hash) are identical either way — so this maps the physical
+/// read location back to the logical `-source` name.
+///
+/// Both sides are `canonicalize`d before comparison so a symlinked cache dir
+/// (macOS `/tmp` → `/private/tmp`, `~` expansion) still matches. Returns
+/// `None` when `real` is not a registered input root (a normal local
+/// `src = ./.` keeps its own directory basename).
+#[must_use]
+pub fn source_name_for_read_dir(real: &Path) -> Option<String> {
+    let real_canon = real.canonicalize().ok()?;
+    INPUT_SOURCE_MAP.with(|m| {
+        for (store_path, read_dir) in m.borrow().iter() {
+            let rd_canon = read_dir.canonicalize().unwrap_or_else(|_| read_dir.clone());
+            // Only the WHOLE tree root maps to the input's `-source` name; a
+            // subpath (`src = ./subdir`) copies a sub-tree CppNix names after
+            // that subdir, so require an exact root match.
+            if real_canon == rd_canon {
+                return store_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
+            }
+        }
+        None
+    })
+}
+
 /// Normalize a path by removing `.` components and resolving `..` components.
 /// Unlike `canonicalize()`, this doesn't require the path to exist on disk.
 #[must_use]
@@ -383,5 +420,41 @@ mod tests {
         );
         let sibling = "/nix/store/cccccccccccccccccccccccccccccccc-source-extra/x";
         assert_eq!(materialize(Path::new(sibling)), PathBuf::from(sibling));
+    }
+
+    #[test]
+    fn source_name_maps_read_dir_root_to_store_source_name() {
+        // The darwin `system-path` root: a fetched flake input's `src = ./.`
+        // copies the tree read from the fetcher cache `read_dir`, but the copy
+        // must carry the input's `/nix/store/<h>-source` BASENAME (CppNix's
+        // name), not the cache dir's `<repo>-<rev>` basename.
+        let cache = tempfile::tempdir().unwrap();
+        let store_path = Path::new(
+            "/nix/store/9qcaaxf4dyy09df0gv4ibfj93aplq3jk-source",
+        );
+        register_input_source(store_path, cache.path());
+        // The whole-tree root maps to the input's `-source` name.
+        assert_eq!(
+            source_name_for_read_dir(cache.path()).as_deref(),
+            Some("9qcaaxf4dyy09df0gv4ibfj93aplq3jk-source"),
+        );
+    }
+
+    #[test]
+    fn source_name_returns_none_for_unregistered_or_subpath() {
+        // A local `src = ./.` (unregistered) keeps its own basename → None,
+        // so the caller falls back to the real dir's file_name. A SUBpath of a
+        // registered root also returns None (only the whole-tree root is the
+        // `-source` copy — `src = ./subdir` is named after the subdir).
+        let unrelated = tempfile::tempdir().unwrap();
+        assert_eq!(source_name_for_read_dir(unrelated.path()), None);
+
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir(cache.path().join("subdir")).unwrap();
+        register_input_source(
+            Path::new("/nix/store/dddddddddddddddddddddddddddddddd-source"),
+            cache.path(),
+        );
+        assert_eq!(source_name_for_read_dir(&cache.path().join("subdir")), None);
     }
 }

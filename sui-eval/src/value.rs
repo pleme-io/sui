@@ -3346,9 +3346,24 @@ impl Value {
                             abs.display()
                         ))
                     })?;
-                    let name = canon
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
+                    // The copied source's STORE-PATH NAME must match CppNix's
+                    // `baseNameOf` of the input's own `-source` store path when
+                    // the path being copied IS a fetched flake input's whole
+                    // tree (the darwin `system-path` root): blx's `src = ./.`
+                    // copies the blx input tree back into the store, and CppNix
+                    // names that copy `<inner>-source` (blx's `/nix/store/<h>-
+                    // source` basename), NOT `blx-<rev>`. sui reads the bytes
+                    // from the fetcher cache (`canon`, basename `blx-<rev>`), so
+                    // `canon.file_name()` gave the wrong NAME while the bytes
+                    // (→ NAR hash) were already correct. Recover the logical
+                    // `-source` name from the input-source map; fall back to the
+                    // real dir's basename for a normal local `src = ./.`.
+                    let name = crate::path::source_name_for_read_dir(&canon)
+                        .or_else(|| {
+                            canon
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                        })
                         .unwrap_or_else(|| "source".to_string());
                     let src = sui_compat::source::nar_hash_source_tree(&canon, &name)
                         .map_err(|e| {
