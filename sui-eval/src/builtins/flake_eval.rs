@@ -383,9 +383,31 @@ fn evaluate_flake_inner(
     let self_short_rev: Option<String> =
         self_rev.as_ref().map(|r| r.chars().take(7).collect());
 
+    // `self.outPath` (and `self.sourceInfo.outPath`) is a
+    // `/nix/store/<narhash>-source` store reference — the flake's OWN source
+    // tree copied into the store. It MUST carry copy-to-store STRING CONTEXT so
+    // that, when a downstream derivation embeds it as `src` (the substrate rust
+    // builder's `src = self`/`./.` workspace source — `rust_sui`'s whole tree),
+    // the dependent's ATerm records the matching `source` inputSrc. cppnix
+    // records exactly this; the parity-bisect on the cid darwin toplevel flagged
+    // its absence as the `rust_sui` `nix-only=["source"]` inputSrc gap. This is
+    // the `self` sibling of the input-outPath context fix above (the input
+    // branch attaches this context to each resolved input's `outPath`; here we
+    // do the same for the flake's own `self`). Non-store `self_path` (a dirty
+    // local tree whose source-hash is still a `-source` store path) also carries
+    // the context — `source_store_path` is always a `/nix/store/<h>-source` here.
+    let self_out_path_val = {
+        let mut ctx = crate::value::StringContext::new();
+        ctx.add_plain(source_store_path.as_str());
+        Value::String(std::rc::Rc::new(crate::value::NixString::with_context(
+            source_store_path.as_str(),
+            ctx,
+        )))
+    };
+
     let source_info = {
         let mut a = NixAttrs::new();
-        a.insert("outPath".to_string(), Value::string(source_store_path.clone()));
+        a.insert("outPath".to_string(), self_out_path_val.clone());
         a.insert("narHash".to_string(), Value::string(source_nar_sri.clone()));
         if let Some(ref rev) = self_rev {
             a.insert("rev".to_string(), Value::string(rev.clone()));
@@ -424,7 +446,11 @@ fn evaluate_flake_inner(
     let self_promise: Rc<std::cell::OnceCell<Rc<NixAttrs>>> = Rc::new(std::cell::OnceCell::new());
     let self_thunk = {
         let self_promise = self_promise.clone();
-        let fallback_out_path = source_store_path.clone();
+        // Carry the same store-path context on the fallback skeleton's
+        // `outPath` (see `self_out_path_val` above) so a `src = self`
+        // coerced in the rare pre-output path still records its `source`
+        // inputSrc.
+        let fallback_out_path = self_out_path_val.clone();
         Thunk::new_native(move || {
             if let Some(attrs) = self_promise.get() {
                 Ok(Value::Attrs(attrs.clone()))
@@ -437,7 +463,7 @@ fn evaluate_flake_inner(
                 // have so the caller can read outPath etc.
                 let mut fallback = NixAttrs::new();
                 fallback.insert("outPath".to_string(),
-                    Value::string(fallback_out_path.clone()));
+                    fallback_out_path.clone());
                 Ok(Value::Attrs(Rc::new(fallback)))
             }
         })
@@ -468,7 +494,7 @@ fn evaluate_flake_inner(
     })?;
     let mut final_attrs = NixAttrs::new();
     final_attrs.insert("_type".to_string(), Value::string(shape.type_marker.clone()));
-    final_attrs.insert("outPath".to_string(), Value::string(source_store_path));
+    final_attrs.insert("outPath".to_string(), self_out_path_val.clone());
     final_attrs.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info)));
     final_attrs.insert("narHash".to_string(), Value::string(source_nar_sri));
     // Self-rev at the TOP LEVEL of `self` (not only under `sourceInfo`):
