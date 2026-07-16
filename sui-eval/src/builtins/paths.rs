@@ -186,7 +186,12 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         });
         let hash_root: std::path::PathBuf = if let Some(filter_fn) = filter {
             let filter_fn = crate::eval::force_value(filter_fn)?;
-            materialize_filtered(&canon, &filter_fn, &name)?
+            // The filter must see the path string CppNix would pass — rooted
+            // at the ORIGINAL src the caller wrote (`abs`, e.g. a
+            // `/nix/store/<h>-source` flake-input path), not the materialized
+            // on-disk cache tree (`canon`) sui walks. They differ only for a
+            // redirected flake input.
+            materialize_filtered(&canon, &filter_fn, &name, &abs)?
         } else {
             canon.clone()
         };
@@ -273,7 +278,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "source".into());
         let pred_fn = crate::eval::force_value(&pred)?;
-        let hash_root = materialize_filtered(&canon, &pred_fn, &name)?;
+        // Filter sees the ORIGINAL src path string (`src_path`, the store
+        // path a flake input carries), not the materialized cache tree
+        // (`canon`) sui walks. See materialize_filtered's CRITICAL semantic #2.
+        let hash_root =
+            materialize_filtered(&canon, &pred_fn, &name, std::path::Path::new(&*src_path))?;
         let s = sui_compat::source::nar_hash_source_tree(&hash_root, &name).map_err(|e| {
             EvalError::IoError {
                 context: format!("filterSource: NAR-hashing '{}'", hash_root.display()),
@@ -300,6 +309,7 @@ fn materialize_filtered(
     src_root: &std::path::Path,
     filter_fn: &Value,
     name: &str,
+    reported_root: &std::path::Path,
 ) -> Result<std::path::PathBuf, EvalError> {
     // Recursively decide + record kept entries (relative paths).
     //
@@ -317,8 +327,25 @@ fn materialize_filtered(
     // empty-directory store path (0ccnxa25…) instead of nix's l2kdhi9h…,
     // and every drv consuming a filtered source diverged its output path
     // (Darwin Root #2).
+    //
+    // CRITICAL semantic #2 (cid Root: rust_sui-compat filtered `src`):
+    // the path STRING handed to the filter must be the one CppNix would
+    // pass — i.e. rooted at the ORIGINAL src path the caller wrote
+    // (`reported_root`, typically a `/nix/store/<h>-source` flake-input
+    // path), NOT the real on-disk tree sui walks (`base`, a materialized
+    // `~/.cache/sui/inputs/…` cache dir). A fetched flake input's store
+    // path is REDIRECTED to its cache dir before the walk (so reads land
+    // on real bytes), but the filter is a value the evaluator observes,
+    // so it MUST see the store path. Passing the cache path broke every
+    // `lib.cleanSourceWith { filter = p: t: … removePrefix (toString src)
+    // … }` filter (`removePrefix` no-ops on the mismatched prefix, so the
+    // filter's `rel == "src"` / `hasPrefix "src/"` checks never fire and
+    // the excluded `src/` subtree is wrongly KEPT). `reported_root` +
+    // `base` differ only when the src is a redirected flake input; when
+    // they're equal this is a no-op.
     fn walk(
         base: &std::path::Path,
+        reported_root: &std::path::Path,
         current: &std::path::Path,
         current_md: &std::fs::Metadata,
         filter_fn: &Value,
@@ -354,15 +381,22 @@ fn materialize_filtered(
                 } else {
                     "regular"
                 };
-                // nix passes the absolute path string as the first arg.
-                let path_arg = Value::string(child.to_string_lossy().to_string());
+                // nix passes the absolute path string as the first arg —
+                // rooted at the ORIGINAL src (`reported_root`), NOT the
+                // materialized on-disk cache tree (`base`) sui actually
+                // walks. Rewrite the child's `base`-relative suffix onto
+                // `reported_root` so a user filter comparing against
+                // `toString src` sees the store path CppNix would pass.
+                let child_rel = child.strip_prefix(base).unwrap_or(&child);
+                let reported_path = reported_root.join(child_rel);
+                let path_arg = Value::string(reported_path.to_string_lossy().to_string());
                 let type_arg = Value::string(type_str);
                 let partial = crate::eval::apply(filter_fn.clone(), path_arg)?;
                 let keep = crate::eval::apply_and_force(partial, type_arg)?.as_bool()?;
                 if !keep {
                     continue;
                 }
-                walk(base, &child, &child_md, filter_fn, kept)?;
+                walk(base, reported_root, &child, &child_md, filter_fn, kept)?;
             }
         }
         Ok(())
@@ -373,7 +407,7 @@ fn materialize_filtered(
         context: format!("builtins.path filter: {}", src_root.display()),
         message: e.to_string(),
     })?;
-    walk(src_root, src_root, &root_md, filter_fn, &mut kept)?;
+    walk(src_root, reported_root, src_root, &root_md, filter_fn, &mut kept)?;
 
     // Deterministic temp dir keyed by the source path + the sorted set
     // of kept relative paths (so two different filters over the same
