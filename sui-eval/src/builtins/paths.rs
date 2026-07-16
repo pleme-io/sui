@@ -6,20 +6,40 @@ use super::*;
 pub(crate) fn register(builtins: &mut NixAttrs) {
     // baseNameOf — extract filename from path
     register_builtin(builtins, "baseNameOf", |args| {
-        let s = match &args[0] {
-            Value::String(ns) => ns.chars.to_string(),
-            Value::Path(p) => p.to_string(),
-            _ => return Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
-        };
-        let base = s.rsplit('/').next().unwrap_or(&s);
-        Ok(Value::string(base))
+        match &args[0] {
+            Value::String(ns) => {
+                let s = ns.chars.to_string();
+                let base = s.rsplit('/').next().unwrap_or(&s).to_string();
+                // nix: baseNameOf preserves string context (verified
+                // `nix eval` hasContext=true) — the store-path dep survives.
+                Ok(Value::String(std::rc::Rc::new(
+                    crate::value::NixString::with_context(base, ns.context.clone()),
+                )))
+            }
+            Value::Path(p) => {
+                let s = p.to_string();
+                let base = s.rsplit('/').next().unwrap_or(&s).to_string();
+                Ok(Value::string(base))
+            }
+            _ => Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
+        }
     });
 
     // dirOf — extract directory from path
     register_builtin(builtins, "dirOf", |args| {
-        let (s, is_path) = match &args[0] {
-            Value::String(ns) => (ns.chars.to_string(), false),
-            Value::Path(p) => (p.to_string(), true),
+        let (s, ctx) = match &args[0] {
+            // nix: dirOf preserves string context for a String arg (verified
+            // `nix eval` hasContext=true).
+            Value::String(ns) => (ns.chars.to_string(), Some(ns.context.clone())),
+            Value::Path(p) => {
+                let s = p.to_string();
+                let dir = match s.rfind('/') {
+                    Some(0) => "/".to_string(),
+                    Some(i) => s[..i].to_string(),
+                    None => ".".to_string(),
+                };
+                return Ok(Value::Path(Box::new(SmolStr::from(dir.as_str()))));
+            }
             _ => return Err(EvalError::TypeError("dirOf: expected string or path".to_string())),
         };
         let dir = match s.rfind('/') {
@@ -27,10 +47,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             Some(i) => s[..i].to_string(),
             None => ".".to_string(),
         };
-        if is_path {
-            Ok(Value::Path(Box::new(SmolStr::from(dir.as_str()))))
-        } else {
-            Ok(Value::string(dir))
+        match ctx {
+            Some(ctx) => Ok(Value::String(std::rc::Rc::new(
+                crate::value::NixString::with_context(dir, ctx),
+            ))),
+            None => Ok(Value::string(dir)),
         }
     });
 

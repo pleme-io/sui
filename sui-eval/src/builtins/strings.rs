@@ -65,7 +65,17 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 Ok(Value::Builtin(Box::new(BuiltinFn {
                     name: "substring<p2>",
                     func: Rc::new(move |args3| {
-                        let s = args3[0].as_string()?;
+                        // nix: `substring` is context-PRESERVING — the slice
+                        // carries the input string's context (a store-path dep
+                        // survives a substring). Preserve it for the String
+                        // case (verified `nix eval` hasContext=true); a coerced
+                        // path arg keeps prior behavior.
+                        let (s, ctx) = match &args3[0] {
+                            Value::String(ns) => {
+                                (ns.chars.to_string(), Some(ns.context.clone()))
+                            }
+                            _ => (args3[0].as_string()?.to_string(), None),
+                        };
                         if start_i < 0 {
                             return Err(EvalError::TypeError(
                                 "substring: negative start position".into(),
@@ -78,7 +88,13 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         } else {
                             start.saturating_add(len_i as usize).min(s_len)
                         };
-                        Ok(Value::string(&s[start..end]))
+                        let slice = s[start..end].to_string();
+                        match ctx {
+                            Some(ctx) => Ok(Value::String(Rc::new(
+                                NixString::with_context(slice, ctx),
+                            ))),
+                            None => Ok(Value::string(slice)),
+                        }
                     }),
                 })))
             }),
