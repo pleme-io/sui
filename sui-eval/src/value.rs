@@ -1822,35 +1822,41 @@ impl Thunk {
                     }
                 }
                 // Name not in with-scope — fall back to full env lookup.
-                // Inside a Promise body (M2.6 fix-point evaluation), an
-                // unresolved with-scope ident typically means the
-                // with-source was the empty-attrset sentinel; return
-                // null so eval can proceed rather than erroring.
+                //
+                // The cache-first with-scope search may have skipped a scope
+                // whose CACHE is a stale mid-fixpoint PARTIAL — e.g. `f self`
+                // cached BEFORE makeScope's `self = f self // { callPackage = …; }`
+                // merged the scope infra in, so `callPackage` is absent from
+                // the stale partial yet present in the COMPLETED `self`. On any
+                // lexical-scope miss (both inside and outside a Promise body),
+                // re-resolve by force_value-ing each with-scope FRESH (bypassing
+                // the cache) via `lookup_fresh`. It catches errors, so a
+                // genuinely mid-fixpoint / throwing scope simply skips and
+                // returns None — leaving the Promise-body null softening (below)
+                // for the case where the with-source really IS the empty-attrset
+                // sentinel. A completed value always wins over the null sentinel.
+                //
+                // This is the SAME class as the neovim/python27
+                // `with self; with super; callPackage` root, but reached through
+                // the resholve `python27' = (…).override { self = python27'; }`
+                // recursive-fixpoint hooks scope, where the miss lands inside a
+                // Promise body (`in_promise_eval()` true) and was previously
+                // softened to `null` BEFORE `lookup_fresh` ran — silently
+                // dropping `pip = callPackage …` (→ empty `propagatedBuildInputs`
+                // on `pip-install-hook.drv`). Trying the completed-`self`
+                // resolution first restores the drop.
+                //
+                // Byte-neutral: `lookup_fresh` only ever returns a value nix's
+                // single lazy `self` would ALSO expose; when it misses (genuine
+                // empty-partial sentinel) the softening / error behavior below is
+                // exactly as before.
                 let result = match env.lookup(&name) {
                     Some(v) => v,
-                    None if in_promise_eval() => Value::Null,
-                    None => {
-                        // Last-ditch, ERROR-PATH ONLY: the cache-first with-scope
-                        // search may have skipped a scope whose CACHE is a stale
-                        // mid-fixpoint PARTIAL — e.g. `f self` cached BEFORE
-                        // makeScope's `self = f self // { callPackage = …; }`
-                        // merged the scope infra in, so `callPackage` is absent
-                        // from the stale partial yet present in the completed
-                        // `self`. Re-resolve by force_value-ing each with-scope
-                        // FRESH (bypassing the cache), catching errors so a
-                        // genuinely mid-fixpoint / throwing scope simply skips.
-                        // This runs ONLY here on the about-to-throw path, so it
-                        // can NEVER affect a lookup that already succeeds — every
-                        // passing corpus row bypasses it — and the in_promise_eval
-                        // softening above is untouched. Fixes the python27
-                        // `with self; with super; callPackage` root (the last
-                        // KnownDiverge / neovim). Byte-neutral: the same completed
-                        // value nix's lazy `self` exposes.
-                        match env.lookup_fresh(&name) {
-                            Some(v) => v,
-                            None => return Err(EvalError::UndefinedVar(format!("'{name}'"))),
-                        }
-                    }
+                    None => match env.lookup_fresh(&name) {
+                        Some(v) => v,
+                        None if in_promise_eval() => Value::Null,
+                        None => return Err(EvalError::UndefinedVar(format!("'{name}'"))),
+                    },
                 };
                 unsafe { self.store_evaluated(&result) };
                 Ok(result)
