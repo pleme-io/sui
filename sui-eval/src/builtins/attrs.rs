@@ -134,7 +134,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             let value = item_attrs.get("value")
                 .ok_or_else(|| EvalError::AttrNotFound("value".to_string()))?
                 .clone();
-            attrs.insert(name, value);
+            // Nix `listToAttrs` semantics: on a duplicate `name`, the FIRST
+            // occurrence wins (later duplicates are ignored). cppnix builds
+            // the attrset with an ordered insert that refuses to overwrite an
+            // existing key. `NixAttrs::insert` is last-wins, so guard with an
+            // explicit first-wins skip. (Byte-parity root: a Cargo.lock that
+            // lists a crate twice — a registry entry then a git entry of the
+            // same name+version — must resolve to the FIRST/registry source,
+            // exactly as nix does; last-wins picked the git source and
+            // produced a structurally different rust_<crate> derivation.)
+            if !attrs.contains_key(&name) {
+                attrs.insert(name, value);
+            }
         }
         Ok(Value::Attrs(Rc::new(attrs)))
     });

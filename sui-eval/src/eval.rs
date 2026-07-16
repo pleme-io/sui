@@ -4567,6 +4567,22 @@ mod tests {
     }
 
     #[test]
+    fn builtins_list_to_attrs_duplicate_key_first_wins() {
+        // Nix `listToAttrs` keeps the FIRST occurrence of a duplicate `name`
+        // (later duplicates are ignored). cppnix returns 1 here, not 2.
+        // Byte-parity root (cid darwin): a Cargo.lock listing a crate twice
+        // (registry entry then git entry of the same name+version) must
+        // resolve to the FIRST source, so `substrate/lockfile-delta.nix`'s
+        // `lockByKey` picks the registry crate exactly as nix does. Last-wins
+        // silently switched the source to git and produced a structurally
+        // different `rust_<crate>` derivation.
+        assert_eq!(
+            ev(r#"(builtins.listToAttrs [{ name = "k"; value = 1; } { name = "k"; value = 2; }]).k"#),
+            Value::Int(1),
+        );
+    }
+
+    #[test]
     fn builtins_concat_map() {
         assert_eq!(
             ev("builtins.concatMap (x: [x (x * 2)]) [1 2 3]"),

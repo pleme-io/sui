@@ -2014,7 +2014,13 @@ impl<'a> VM<'a> {
                             }
                         };
                         let key_sym = self.interner.intern(&key_str);
-                        result.insert(key_sym, NanBox::from_vmvalue(value_val));
+                        // Nix `listToAttrs` first-wins duplicate semantics:
+                        // a repeated `name` keeps the FIRST occurrence (later
+                        // duplicates ignored), matching cppnix + the tree-walker.
+                        // BTreeMap::insert is last-wins, so guard with entry().
+                        result
+                            .entry(key_sym)
+                            .or_insert_with(|| NanBox::from_vmvalue(value_val));
                     } else {
                         return Err(VMError::TypeError {
                             expected: "set",
