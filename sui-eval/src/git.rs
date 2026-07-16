@@ -186,8 +186,37 @@ fn write_tree_to_workdir(
                     .into_tree();
                 write_tree_to_workdir(repo, &subtree, &path)?;
             }
+            gix::objs::tree::EntryKind::Link => {
+                // Symlink (git mode 120000): the blob's bytes ARE the link
+                // target. CppNix's fetchGit materialises these as real
+                // symlinks and NARs them as `type=symlink` nodes; skipping
+                // them (the prior behaviour) dropped every symlinked file
+                // from the tree, so the copy-to-store NAR — and every
+                // dependent output path — diverged from nix.
+                let obj = repo
+                    .find_object(entry.oid())
+                    .map_err(|e| format!("find symlink blob {}: {e}", entry.oid()))?;
+                let target = std::path::PathBuf::from(
+                    std::str::from_utf8(&obj.data)
+                        .map_err(|e| format!("symlink target not utf-8 for {}: {e}", path.display()))?,
+                );
+                #[cfg(unix)]
+                {
+                    let _ = std::fs::remove_file(&path);
+                    std::os::unix::fs::symlink(&target, &path)
+                        .map_err(|e| format!("symlink {} -> {}: {e}", path.display(), target.display()))?;
+                }
+                #[cfg(not(unix))]
+                {
+                    // Non-unix: fall back to writing the target text (best
+                    // effort; the fleet's fetch parity target is unix).
+                    std::fs::write(&path, &obj.data)
+                        .map_err(|e| format!("write symlink-as-file {}: {e}", path.display()))?;
+                }
+            }
             _ => {
-                // Skip symlinks, submodules, etc.
+                // Skip gitlinks (submodule commits); submodule content is
+                // materialised separately via init_submodules_recursive.
             }
         }
     }

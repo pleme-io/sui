@@ -129,7 +129,19 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
         .join("sui-fetchGit")
         .join(&cache_hash);
     let head_ref = ref_opt.as_deref().unwrap_or("HEAD");
-    if !target.exists() {
+    // The metadata sidecar records the values that were only readable while
+    // `.git` still existed (rev / lastModified / revCount).  We strip `.git`
+    // from the result tree for byte-parity with CppNix (its fetchGit copies
+    // the tree WITHOUT `.git`), so a cache-hit — where the tree is already
+    // stripped — must read those values from here instead of re-opening a
+    // repo that no longer has its `.git`.
+    let sidecar = target.with_extension("meta.json");
+    // A dir with no `.git` AND no sidecar is a stale/partial artifact from an
+    // interrupted fetch — re-fetch rather than trust it.
+    let cache_ready = target.exists()
+        && (target.join(".git").exists() || sidecar.exists());
+    if !cache_ready {
+        let _ = std::fs::remove_dir_all(&target);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| EvalError::IoError {
                 context: format!("fetchGit: {}", target.display()),
@@ -172,10 +184,44 @@ pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Re
     // Bytes-neutral: only the NAME changes; the NAR hash is unaffected.
     crate::path::register_fetched_source(target, "source");
     let target_str = target.to_string_lossy().into_owned();
-    let rev = crate::git::head_rev(target).unwrap_or_default();
+
+    // Metadata sidecar: `<target>.meta.json` (a sibling FILE, not inside the
+    // result tree, so it never enters the copy-to-store NAR). On a fresh
+    // fetch `.git` is present → read metadata from it, persist the sidecar,
+    // then strip `.git`. On a cache hit `.git` is already gone → read the
+    // sidecar. This keeps the result tree byte-identical to CppNix's `.git`-
+    // free `-source` while still returning correct rev/lastModified/revCount.
+    let sidecar = std::path::PathBuf::from(format!("{target_str}.meta.json"));
+    let (rev, last_modified, rev_count) = if target.join(".git").exists() {
+        let rev = crate::git::head_rev(target).unwrap_or_default();
+        let last_modified: i64 = crate::git::head_timestamp(target).unwrap_or(0);
+        let rev_count: i64 = crate::git::rev_count(target).unwrap_or(0);
+        // Persist BEFORE stripping so a later cache hit can recover it.
+        let meta = serde_json::json!({
+            "rev": rev, "lastModified": last_modified, "revCount": rev_count,
+        });
+        if let Ok(s) = serde_json::to_string(&meta) {
+            let _ = std::fs::write(&sidecar, s);
+        }
+        // Byte-parity (2026-07-16, zsh-syntax-highlighting-config root):
+        // CppNix's fetchGit copies the checked-out tree to the store WITHOUT
+        // the `.git` metadata directory. sui left `.git` in the temp dir, so
+        // its copy-to-store NAR (and every dependent output path) carried the
+        // whole `.git` subtree and diverged from nix. Strip it here — after
+        // the metadata reads above, which need `.git` present.
+        let _ = std::fs::remove_dir_all(target.join(".git"));
+        (rev, last_modified, rev_count)
+    } else if let Ok(s) = std::fs::read_to_string(&sidecar) {
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap_or_default();
+        (
+            v.get("rev").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            v.get("lastModified").and_then(serde_json::Value::as_i64).unwrap_or(0),
+            v.get("revCount").and_then(serde_json::Value::as_i64).unwrap_or(0),
+        )
+    } else {
+        (String::new(), 0, 0)
+    };
     let short_rev = if rev.len() >= 7 { rev[..7].to_string() } else { rev.clone() };
-    let last_modified: i64 = crate::git::head_timestamp(target).unwrap_or(0);
-    let rev_count: i64 = crate::git::rev_count(target).unwrap_or(0);
     let last_modified_date = format_unix_yyyymmddhhmmss(last_modified);
     use sha2::{Digest, Sha256};
     let narhash_hex = format!("{:x}", Sha256::digest(rev.as_bytes()));

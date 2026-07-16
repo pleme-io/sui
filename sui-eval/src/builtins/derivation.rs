@@ -468,6 +468,9 @@ fn compute_derivation_outputs(
             use sha2::{Digest, Sha256};
             Sha256::digest(modulo_preimage.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
         };
+        if std::env::var_os("SUI_DUMP_MODULO").is_some() {
+            eprintln!("[SUI_DUMP_MODULO] (FOD) {drv_path} = {modulo_hex}");
+        }
         sui_spec::derivation::remember_modulo_hash(&drv_path, &modulo_hex);
 
         let mut out_paths = BTreeMap::new();

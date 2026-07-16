@@ -438,6 +438,9 @@ fn cache_self_modulo(phase: &Phase, s: &mut DerivationState) -> Result<(), SpecE
             message: format!("slot {from} is not valid utf-8: {e}"),
         })?.to_string()
     };
+    if std::env::var_os("SUI_DUMP_MODULO").is_some() {
+        eprintln!("[SUI_DUMP_MODULO] {drv_path} = {hex}");
+    }
     remember_modulo_hash(&drv_path, &hex);
     Ok(())
 }
@@ -595,4 +598,5 @@ mod tests {
             Some("/nix/store/k6lq59b6dilrfy0blhkr10m27ga7ncwr-hello"),
         );
     }
+
 }
