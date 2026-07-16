@@ -975,4 +975,55 @@ mod tests {
         // A drv absent everywhere resolves to None.
         assert!(resolve_drv_on_disk("/nix/store/zzz-missing.drv", &fallback).is_none());
     }
+
+    /// LIVE GATE-2 PROBE — proves sui's worker-protocol client handshakes and
+    /// queries a REAL nix daemon (the untested surface for a cid switch: sui
+    /// sends PROTOCOL_VERSION 1.37; cid's daemon is nix 2.34.7 ≈ 1.38). The
+    /// fast path (`is_valid_path` true on an already-valid output) exercises
+    /// connect → handshake → set_options → is_valid_path → query_nar_hash in
+    /// <1s with ZERO build. A framing drift (misparsed handshake, wrong
+    /// ValidPathInfo layout, STDERR-drain desync) surfaces here as an Err.
+    ///
+    /// `#[ignore]` because CI has no nix daemon; run on cid:
+    ///   `cargo test -p sui-store daemon_live_probe -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "live probe: requires a running nix daemon (run on cid)"]
+    async fn daemon_live_probe_handshake_and_query() {
+        let socket = std::path::PathBuf::from("/nix/var/nix/daemon-socket/socket");
+        let Some(store) = DaemonStore::at(socket) else {
+            eprintln!("SKIP daemon_live_probe: no daemon socket present");
+            return;
+        };
+        // Discover any already-valid store OUTPUT path (a real dir, not a .drv).
+        let valid = std::fs::read_dir("/nix/store")
+            .expect("read /nix/store")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.is_dir() && !p.to_string_lossy().ends_with(".drv"))
+            .expect("at least one valid store output path");
+        let valid_s = valid.to_string_lossy().into_owned();
+
+        // Fast path: is_valid_path==true → returns after the handshake round-trip
+        // without building anything. A wrong protocol negotiation Errs here — the
+        // exact GATE-2 de-risk signal.
+        let realized = realize_via_daemon_bounded(
+            &store,
+            "/nix/store/00000000000000000000000000000000-unused.drv",
+            &valid_s,
+            std::time::Duration::from_secs(15),
+        )
+        .await
+        .expect(
+            "daemon handshake + set_options + is_valid_path + query_nar_hash must \
+             succeed against the live nix daemon (GATE-2 protocol proof)",
+        );
+
+        assert_eq!(realized.out_path(), &valid_s);
+        eprintln!(
+            "DAEMON LIVE PROBE OK: handshake+set_options+is_valid_path+query_nar_hash \
+             succeeded on {valid_s} (nar_hash={:?}) — sui's worker-protocol client \
+             speaks the live nix daemon.",
+            realized.nar_hash()
+        );
+    }
 }
