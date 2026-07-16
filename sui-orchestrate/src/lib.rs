@@ -14,6 +14,7 @@ pub use fleet::{
 };
 pub use node::{Node, NodeError, NodeRegistry, NodeStatus, StatusCounts};
 pub use system::{
-    GenerationInfo, Platform, RebuildAction, RebuildResult, SubstituterConfig, SystemError,
-    SystemOrchestrator, build_caches, get_substituters, realize_bound, realize_drv,
+    GenerationInfo, Platform, RebuildAction, RebuildResult, SubstituterConfig, SwitchPlan,
+    SystemError, SystemOrchestrator, build_caches, classify_activate_user, get_substituters,
+    realize_bound, realize_drv, running_as_root,
 };

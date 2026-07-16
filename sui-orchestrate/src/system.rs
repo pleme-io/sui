@@ -4,10 +4,11 @@ use crate::command::{CommandRunner, TokioCommandRunner};
 
 /// Rebuild action type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum RebuildAction {
-    /// Build and activate immediately.
+    /// Build and activate immediately (sets the system profile + runs the
+    /// activate script — the destructive path; requires root).
     Switch,
     /// Build and set as boot default (activate on next boot).
     Boot,
@@ -15,6 +16,16 @@ pub enum RebuildAction {
     Test,
     /// Build only (don't activate).
     Build,
+    /// Build the toplevel, then PRINT the switch plan and execute nothing.
+    ///
+    /// The safe preview: no profile is set, no activate script runs, the real
+    /// system is never touched. The output is the exact steps a `Switch` would
+    /// perform (current generation → next generation, the profile-set, the
+    /// `${toplevel}/activate` exec, and whether an `activate-user` script would
+    /// run). Modern nix-darwin's activate script has no `--dry-activate` flag,
+    /// so the dry preview is computed and rendered by sui, never by execing the
+    /// activate script in a "dry mode" it does not have.
+    DryActivate,
 }
 
 impl RebuildAction {
@@ -26,7 +37,18 @@ impl RebuildAction {
             Self::Boot => "boot",
             Self::Test => "test",
             Self::Build => "build",
+            Self::DryActivate => "dry-activate",
         }
+    }
+
+    /// Whether this action, if run for real, would mutate the live system
+    /// (set the system profile and/or run the activate script).
+    ///
+    /// `DryActivate` and `Build` are non-mutating; `Switch`/`Test`/`Boot`
+    /// change real system state and therefore require root.
+    #[must_use]
+    pub fn mutates_system(&self) -> bool {
+        matches!(self, Self::Switch | Self::Boot | Self::Test)
     }
 }
 
@@ -45,6 +67,7 @@ impl std::str::FromStr for RebuildAction {
             "boot" => Ok(Self::Boot),
             "test" => Ok(Self::Test),
             "build" => Ok(Self::Build),
+            "dry-activate" => Ok(Self::DryActivate),
             other => Err(format!("invalid rebuild action: {other}")),
         }
     }
@@ -63,6 +86,81 @@ pub struct RebuildResult {
     pub log: String,
     /// Wall-clock duration of the rebuild in seconds.
     pub duration_secs: f64,
+}
+
+/// A typed, non-executing description of what a real `switch` (or `test`/`boot`)
+/// activation WOULD do, computed after the toplevel is built.
+///
+/// This is the value the `DryActivate` action renders. It is a pure data value:
+/// constructing or printing it touches nothing on the real system. The `Display`
+/// impl is the safe switch preview an operator reads before committing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SwitchPlan {
+    /// The built toplevel store path the switch would activate.
+    pub system_path: String,
+    /// The system profile symlink that would be advanced
+    /// (e.g. `/nix/var/nix/profiles/system`).
+    pub profile_path: String,
+    /// The current system generation number (`None` if no profile exists yet).
+    pub current_generation: Option<u32>,
+    /// The generation number a real switch would create next.
+    pub next_generation: u32,
+    /// The absolute path of the activate script that would be exec'd as root.
+    pub activate_script: String,
+    /// Whether an `activate-user` script exists in the built toplevel.
+    pub has_activate_user: bool,
+    /// Whether that `activate-user` script is the deprecated nix-darwin stub
+    /// (second line `# nix-darwin: deprecated`) and would therefore be skipped.
+    pub activate_user_deprecated: bool,
+    /// Whether the current process is running as root. A real switch requires
+    /// root; if this is `false` the plan notes that `sudo` is required.
+    pub is_root: bool,
+}
+
+impl std::fmt::Display for SwitchPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "dry-activate — switch preview (NOTHING was executed)")?;
+        writeln!(f, "  toplevel:     {}", self.system_path)?;
+        writeln!(f, "  profile:      {}", self.profile_path)?;
+        match self.current_generation {
+            Some(cur) => writeln!(
+                f,
+                "  generation:   {cur} -> {} (would create)",
+                self.next_generation
+            )?,
+            None => writeln!(
+                f,
+                "  generation:   (none) -> {} (would create first generation)",
+                self.next_generation
+            )?,
+        }
+        writeln!(f, "  would set profile symlink -> system-{}-link", self.next_generation)?;
+        writeln!(f, "  would exec (as root):  {}", self.activate_script)?;
+        if self.has_activate_user {
+            if self.activate_user_deprecated {
+                writeln!(
+                    f,
+                    "  activate-user: present but DEPRECATED (nix-darwin stub) -> would SKIP"
+                )?;
+            } else {
+                writeln!(
+                    f,
+                    "  activate-user: present and active -> would exec {}/activate-user",
+                    self.system_path
+                )?;
+            }
+        } else {
+            writeln!(f, "  activate-user: absent -> nothing to run")?;
+        }
+        if self.is_root {
+            write!(f, "  root:         yes (a real switch could proceed)")
+        } else {
+            write!(
+                f,
+                "  root:         NO — a real switch requires root: sudo sui system rebuild switch"
+            )
+        }
+    }
 }
 
 /// Detected platform.
@@ -134,6 +232,18 @@ pub enum SystemError {
     RebuildFailed(String),
     #[error("command not found: {0}")]
     CommandNotFound(String),
+    /// A mutating activation (`switch`/`test`/`boot`) was requested but the
+    /// process is not root. We never silently escalate; the operator must
+    /// re-run under `sudo`.
+    #[error(
+        "{action} requires root (it sets the system profile and runs the activate script). \
+         Re-run as root: sudo sui system rebuild {action}"
+    )]
+    RootRequired { action: RebuildAction },
+    /// The activate script ran but exited non-zero (e.g. the nix-darwin
+    /// `activate must be run as root` exit-2). The activate output is included.
+    #[error("activate script failed (exit {exit:?}): {log}")]
+    ActivateFailed { exit: Option<i32>, log: String },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("command error: {0}")]
@@ -241,10 +351,27 @@ impl SystemOrchestrator {
             .next()
             .ok_or_else(|| SystemError::RebuildFailed("no build outputs".into()))?;
 
-        // 4. Activate the system profile
+        // 4. DryActivate short-circuits here: the toplevel is BUILT, but instead
+        // of touching the profile or running the activate script we compute the
+        // switch plan and print it. Nothing on the real system is mutated.
+        if action == RebuildAction::DryActivate {
+            let plan = self.compute_switch_plan(&system_path)?;
+            return Ok(RebuildResult {
+                success: true,
+                generation: plan.current_generation.map(i64::from),
+                action: action.to_string(),
+                log: plan.to_string(),
+                duration_secs: start.elapsed().as_secs_f64(),
+            });
+        }
+
+        // 5. Activate the system profile (mutating: Switch/Test/Boot). Gated by
+        // root inside `activate_system` — a non-root mutating activation has no
+        // code path, so cid's real system can never be touched by an
+        // unprivileged run.
         self.activate_system(&system_path, action).await?;
 
-        // 5. Get the new generation
+        // 6. Get the new generation
         let current_gen = self.current_generation().await.ok();
 
         Ok(RebuildResult {
@@ -256,38 +383,110 @@ impl SystemOrchestrator {
         })
     }
 
+    /// Compute the typed [`SwitchPlan`] for a built toplevel WITHOUT executing
+    /// anything — the safe switch preview backing `DryActivate`.
+    ///
+    /// Pure read: it inspects the profile symlink (to read the current/next
+    /// generation) and the built toplevel (to classify `activate-user`), then
+    /// returns a value. It never sets the profile, never runs the activate
+    /// script, never escalates.
+    pub fn compute_switch_plan(&self, system_path: &str) -> Result<SwitchPlan, SystemError> {
+        let pm = sui_store::ProfileManager::system();
+        let current_generation = pm
+            .current_generation()
+            .map_err(|e| SystemError::RebuildFailed(format!("read current generation: {e}")))?;
+        // A real switch would create current+1, or generation 1 if no profile
+        // exists yet — mirroring `ProfileManager::set`'s `next_generation_number`.
+        let next_generation = current_generation.map_or(1, |c| c + 1);
+        let (has_activate_user, activate_user_deprecated) = classify_activate_user(system_path);
+
+        Ok(SwitchPlan {
+            system_path: system_path.to_string(),
+            profile_path: pm.profile_path().to_string_lossy().into_owned(),
+            current_generation,
+            next_generation,
+            activate_script: format!("{system_path}/activate"),
+            has_activate_user,
+            activate_user_deprecated,
+            is_root: running_as_root(),
+        })
+    }
+
     /// Activate a built system profile.
     ///
     /// Sets the system profile via [`ProfileManager`] and runs activation
     /// scripts as appropriate for the given [`RebuildAction`].
+    ///
+    /// **Root-gated (fail-closed).** Every mutating action
+    /// ([`RebuildAction::mutates_system`]) requires root: it advances the
+    /// root-owned system profile symlink and (for Switch/Test) runs the
+    /// root-only activate script. If the process is not root this returns
+    /// [`SystemError::RootRequired`] BEFORE touching anything — sui never
+    /// silently `sudo`s and never writes a partial state. So an unprivileged
+    /// `rebuild switch` has no code path that mutates the live system.
+    ///
+    /// **Activate output is checked.** The activate script itself gates on root
+    /// (`activate must be run as root` → exit 2); a non-zero activate exit is
+    /// surfaced as [`SystemError::ActivateFailed`], never silently swallowed.
+    ///
+    /// **`activate-user` is only run when non-deprecated.** Modern nix-darwin
+    /// ships a self-exiting deprecated `activate-user` stub (marked
+    /// `# nix-darwin: deprecated`); exec'ing it is pointless and it is being
+    /// removed in 25.11, so we skip it and only exec a genuinely active
+    /// `activate-user`.
     async fn activate_system(
         &self,
         system_path: &str,
         action: RebuildAction,
     ) -> Result<(), SystemError> {
+        // Fail-closed root gate for every mutating action. This is the safety
+        // seal: a non-root process cannot reach the profile-set or activate exec.
+        if action.mutates_system() && !running_as_root() {
+            return Err(SystemError::RootRequired { action });
+        }
+
         match action {
             RebuildAction::Switch | RebuildAction::Test => {
-                // Set the system profile natively.
+                // Set the system profile natively (root-owned; the root gate
+                // above guarantees we have permission).
                 let pm = sui_store::ProfileManager::system();
                 pm.set(std::path::Path::new(system_path))
                     .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
 
-                // Run the activate script.
+                // Run the activate script and CHECK its result — the script's own
+                // `id -u` root check exits 2 otherwise, which must surface.
                 let activate = format!("{system_path}/activate");
-                self.runner
+                let output = self
+                    .runner
                     .run(&activate, &[])
                     .await
                     .map_err(|e| SystemError::RebuildFailed(format!("activate: {e}")))?;
+                if !output.success {
+                    return Err(SystemError::ActivateFailed {
+                        exit: output.exit_code,
+                        log: output.combined_log(),
+                    });
+                }
 
+                // Only Switch runs activate-user, and only when it is genuinely
+                // active (not the deprecated nix-darwin stub).
                 if action == RebuildAction::Switch && self.platform == Platform::Darwin {
-                    let activate_user = format!("{system_path}/activate-user");
-                    if std::path::Path::new(&activate_user).exists() {
-                        self.runner
+                    let (present, deprecated) = classify_activate_user(system_path);
+                    if present && !deprecated {
+                        let activate_user = format!("{system_path}/activate-user");
+                        let output = self
+                            .runner
                             .run(&activate_user, &[])
                             .await
                             .map_err(|e| {
                                 SystemError::RebuildFailed(format!("activate-user: {e}"))
                             })?;
+                        if !output.success {
+                            return Err(SystemError::ActivateFailed {
+                                exit: output.exit_code,
+                                log: output.combined_log(),
+                            });
+                        }
                     }
                 }
             }
@@ -297,8 +496,10 @@ impl SystemOrchestrator {
                 pm.set(std::path::Path::new(system_path))
                     .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
             }
-            RebuildAction::Build => {
-                // Build only — nothing to activate.
+            RebuildAction::Build | RebuildAction::DryActivate => {
+                // Build-only / dry-activate never reach here (rebuild_native
+                // short-circuits DryActivate before activation and Build has
+                // nothing to activate). Present for exhaustiveness.
             }
         }
         Ok(())
@@ -582,6 +783,40 @@ pub fn realize_bound() -> std::time::Duration {
         .filter(|&s| s > 0)
         .unwrap_or(DEFAULT_SECS);
     std::time::Duration::from_secs(secs)
+}
+
+/// Whether the current process is running as root (uid 0).
+///
+/// A mutating activation requires this; `DryActivate` only reports it.
+#[must_use]
+pub fn running_as_root() -> bool {
+    // SAFETY: `geteuid` is always safe — it takes no arguments, reads no memory,
+    // and cannot fail.
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// Detect whether an `activate-user` script exists in the built toplevel and,
+/// if so, whether it is the deprecated nix-darwin stub.
+///
+/// Modern nix-darwin (25.05+) emits an `activate-user` script whose SECOND LINE
+/// is the literal marker `# nix-darwin: deprecated`; that stub self-exits and
+/// `darwin-rebuild` will stop running it in 25.11. Reading the file to classify
+/// it is a pure read — it executes nothing.
+///
+/// Returns `(present, deprecated)`. `deprecated` is only meaningful when
+/// `present` is `true`.
+#[must_use]
+pub fn classify_activate_user(system_path: &str) -> (bool, bool) {
+    let path = std::path::Path::new(system_path).join("activate-user");
+    if !path.exists() {
+        return (false, false);
+    }
+    // A deprecated stub carries `# nix-darwin: deprecated` on its second line.
+    let deprecated = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|contents| contents.lines().nth(1).map(str::to_string))
+        .is_some_and(|second_line| second_line.trim() == "# nix-darwin: deprecated");
+    (true, deprecated)
 }
 
 /// Realize a `.drv`'s closure into the store, dispatching on the detected store
@@ -1667,5 +1902,331 @@ mod tests {
         }];
         let caches = build_caches(&configs);
         assert_eq!(caches[0].trusted_keys().len(), 2);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // GATE-3 — dry-activate + gated switch path
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── DryActivate: as_str / Display / FromStr / serde round-trip ─────────
+
+    #[test]
+    fn dry_activate_as_str_is_kebab() {
+        assert_eq!(RebuildAction::DryActivate.as_str(), "dry-activate");
+        assert_eq!(RebuildAction::DryActivate.to_string(), "dry-activate");
+    }
+
+    #[test]
+    fn dry_activate_from_str_roundtrip() {
+        use std::str::FromStr;
+        assert_eq!(
+            RebuildAction::from_str("dry-activate").unwrap(),
+            RebuildAction::DryActivate
+        );
+        // The old lowercase-serde variants are untouched.
+        assert_eq!(RebuildAction::from_str("switch").unwrap(), RebuildAction::Switch);
+    }
+
+    #[test]
+    fn dry_activate_serde_is_kebab_and_old_variants_unchanged() {
+        // The rename to kebab-case is byte-neutral for the single-word variants.
+        assert_eq!(serde_json::to_string(&RebuildAction::Switch).unwrap(), "\"switch\"");
+        assert_eq!(serde_json::to_string(&RebuildAction::Boot).unwrap(), "\"boot\"");
+        assert_eq!(serde_json::to_string(&RebuildAction::Test).unwrap(), "\"test\"");
+        assert_eq!(serde_json::to_string(&RebuildAction::Build).unwrap(), "\"build\"");
+        // Only the new multi-word variant differs.
+        assert_eq!(
+            serde_json::to_string(&RebuildAction::DryActivate).unwrap(),
+            "\"dry-activate\""
+        );
+        let parsed: RebuildAction = serde_json::from_str("\"dry-activate\"").unwrap();
+        assert_eq!(parsed, RebuildAction::DryActivate);
+    }
+
+    // ── mutates_system: exactly Switch/Test/Boot ───────────────────────────
+
+    #[test]
+    fn mutates_system_classification() {
+        assert!(RebuildAction::Switch.mutates_system());
+        assert!(RebuildAction::Test.mutates_system());
+        assert!(RebuildAction::Boot.mutates_system());
+        assert!(!RebuildAction::Build.mutates_system());
+        assert!(!RebuildAction::DryActivate.mutates_system());
+    }
+
+    // ── classify_activate_user against a temp toplevel ─────────────────────
+
+    #[test]
+    fn classify_activate_user_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (present, deprecated) =
+            classify_activate_user(&dir.path().to_string_lossy());
+        assert!(!present);
+        assert!(!deprecated);
+    }
+
+    #[test]
+    fn classify_activate_user_deprecated_stub() {
+        let dir = tempfile::tempdir().unwrap();
+        // Mirror the real nix-darwin deprecated stub: 2nd line is the marker.
+        std::fs::write(
+            dir.path().join("activate-user"),
+            "#! /bin/bash\n# nix-darwin: deprecated\nexit 0\n",
+        )
+        .unwrap();
+        let (present, deprecated) =
+            classify_activate_user(&dir.path().to_string_lossy());
+        assert!(present);
+        assert!(deprecated, "the `# nix-darwin: deprecated` 2nd line must classify as deprecated");
+    }
+
+    #[test]
+    fn classify_activate_user_active_script() {
+        let dir = tempfile::tempdir().unwrap();
+        // A genuinely-active activate-user (2nd line is NOT the deprecation marker).
+        std::fs::write(
+            dir.path().join("activate-user"),
+            "#! /bin/bash\necho real work\n",
+        )
+        .unwrap();
+        let (present, deprecated) =
+            classify_activate_user(&dir.path().to_string_lossy());
+        assert!(present);
+        assert!(!deprecated, "an active activate-user must NOT classify as deprecated");
+    }
+
+    // ── SwitchPlan Display renders the safe preview ────────────────────────
+
+    #[test]
+    fn switch_plan_display_first_generation_active_user() {
+        let plan = SwitchPlan {
+            system_path: "/nix/store/abc-darwin-system".to_string(),
+            profile_path: "/nix/var/nix/profiles/system".to_string(),
+            current_generation: None,
+            next_generation: 1,
+            activate_script: "/nix/store/abc-darwin-system/activate".to_string(),
+            has_activate_user: true,
+            activate_user_deprecated: false,
+            is_root: false,
+        };
+        let s = plan.to_string();
+        assert!(s.contains("NOTHING was executed"));
+        assert!(s.contains("(none) -> 1"));
+        assert!(s.contains("would exec (as root):  /nix/store/abc-darwin-system/activate"));
+        assert!(s.contains("activate-user: present and active"));
+        assert!(s.contains("requires root: sudo sui system rebuild switch"));
+    }
+
+    #[test]
+    fn switch_plan_display_bump_generation_deprecated_user_as_root() {
+        let plan = SwitchPlan {
+            system_path: "/nix/store/xyz".to_string(),
+            profile_path: "/nix/var/nix/profiles/system".to_string(),
+            current_generation: Some(41),
+            next_generation: 42,
+            activate_script: "/nix/store/xyz/activate".to_string(),
+            has_activate_user: true,
+            activate_user_deprecated: true,
+            is_root: true,
+        };
+        let s = plan.to_string();
+        assert!(s.contains("41 -> 42"));
+        assert!(s.contains("would set profile symlink -> system-42-link"));
+        assert!(s.contains("activate-user: present but DEPRECATED"));
+        assert!(s.contains("would SKIP"));
+        assert!(s.contains("root:         yes"));
+    }
+
+    #[test]
+    fn switch_plan_display_no_activate_user() {
+        let plan = SwitchPlan {
+            system_path: "/nix/store/q".to_string(),
+            profile_path: "/nix/var/nix/profiles/system".to_string(),
+            current_generation: Some(1),
+            next_generation: 2,
+            activate_script: "/nix/store/q/activate".to_string(),
+            has_activate_user: false,
+            activate_user_deprecated: false,
+            is_root: true,
+        };
+        let s = plan.to_string();
+        assert!(s.contains("activate-user: absent"));
+    }
+
+    #[test]
+    fn switch_plan_serde_roundtrip() {
+        let plan = SwitchPlan {
+            system_path: "/nix/store/abc".to_string(),
+            profile_path: "/nix/var/nix/profiles/system".to_string(),
+            current_generation: Some(7),
+            next_generation: 8,
+            activate_script: "/nix/store/abc/activate".to_string(),
+            has_activate_user: true,
+            activate_user_deprecated: false,
+            is_root: true,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let back: SwitchPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(plan, back);
+    }
+
+    // ── compute_switch_plan reads a temp profile without mutating it ───────
+
+    #[test]
+    fn compute_switch_plan_next_generation_from_temp_profile() {
+        // Build a real ProfileManager over a temp dir with 2 generations, then
+        // point compute_switch_plan at a toplevel that is just a temp dir.
+        // NOTE: compute_switch_plan uses ProfileManager::system() internally, so
+        // here we test the underlying arithmetic directly against a temp PM to
+        // avoid touching /nix/var/nix/profiles. The `next = current + 1` rule is
+        // the shared invariant with ProfileManager::set.
+        let tmp = tempfile::tempdir().unwrap();
+        let profiles = tmp.path().join("profiles");
+        let pm = sui_store::ProfileManager::new(&profiles, "system");
+        let store = tmp.path().join("store");
+        std::fs::create_dir_all(store.join("g1")).unwrap();
+        std::fs::create_dir_all(store.join("g2")).unwrap();
+        pm.set(&store.join("g1")).unwrap();
+        pm.set(&store.join("g2")).unwrap();
+        let current = pm.current_generation().unwrap();
+        assert_eq!(current, Some(2));
+        // The plan's next-generation rule: current + 1.
+        let next = current.map_or(1, |c| c + 1);
+        assert_eq!(next, 3);
+    }
+
+    // ── activate_system: mutating action as non-root is fail-closed ────────
+
+    #[tokio::test]
+    async fn switch_as_non_root_is_root_required_and_runs_nothing() {
+        // The test process is not root, so a Switch must be rejected BEFORE any
+        // command runs. Use a capturing runner to prove the activate script is
+        // never invoked. This never touches the real system: no profile set, no
+        // activate exec.
+        if running_as_root() {
+            // On the off chance a test runner is root, this invariant is vacuous;
+            // skip rather than assert the wrong thing.
+            return;
+        }
+        use std::sync::{Arc, Mutex};
+        struct Recorder(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Recorder {
+            async fn run(&self, program: &str, _args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.lock().unwrap().push(program.to_string());
+                Ok(CommandOutput { success: true, stdout: String::new(), stderr: String::new(), exit_code: Some(0) })
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Recorder(Arc::clone(&calls))),
+        );
+        let err = sys
+            .activate_system("/nix/store/fake-darwin-system", RebuildAction::Switch)
+            .await
+            .unwrap_err();
+        match err {
+            SystemError::RootRequired { action } => {
+                assert_eq!(action, RebuildAction::Switch);
+                assert!(err_display_mentions_sudo(&SystemError::RootRequired { action }));
+            }
+            other => panic!("expected RootRequired, got {other:?}"),
+        }
+        // The safety proof: NO command was executed.
+        assert!(calls.lock().unwrap().is_empty(), "activate must not run for a non-root switch");
+    }
+
+    fn err_display_mentions_sudo(e: &SystemError) -> bool {
+        e.to_string().contains("sudo sui system rebuild")
+    }
+
+    #[tokio::test]
+    async fn build_action_as_non_root_is_allowed() {
+        // Build never mutates, so it is not root-gated — activate_system returns
+        // Ok and runs nothing.
+        use std::sync::{Arc, Mutex};
+        struct Recorder(Arc<Mutex<Vec<String>>>);
+        #[async_trait::async_trait]
+        impl CommandRunner for Recorder {
+            async fn run(&self, program: &str, _args: &[&str]) -> Result<CommandOutput, CommandError> {
+                self.0.lock().unwrap().push(program.to_string());
+                Ok(CommandOutput { success: true, stdout: String::new(), stderr: String::new(), exit_code: Some(0) })
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let sys = SystemOrchestrator::with_runner(
+            Platform::Darwin,
+            Box::new(Recorder(Arc::clone(&calls))),
+        );
+        sys.activate_system("/nix/store/fake", RebuildAction::Build)
+            .await
+            .unwrap();
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn root_required_error_message_is_actionable() {
+        let e = SystemError::RootRequired { action: RebuildAction::Switch };
+        let s = e.to_string();
+        assert!(s.contains("requires root"));
+        assert!(s.contains("sudo sui system rebuild switch"));
+    }
+
+    #[test]
+    fn activate_failed_error_carries_exit_and_log() {
+        let e = SystemError::ActivateFailed { exit: Some(2), log: "activate must be run as root".to_string() };
+        let s = e.to_string();
+        assert!(s.contains("exit"));
+        assert!(s.contains("must be run as root"));
+    }
+
+    /// SAFE GATE-3 proof against a REAL already-built `/nix/store/*-darwin-system-*`
+    /// toplevel. `#[ignore]`d so it never runs in CI (it needs a real store path
+    /// via `SUI_GATE3_PROOF_TOPLEVEL`) — run it explicitly with:
+    ///
+    /// ```sh
+    /// SUI_GATE3_PROOF_TOPLEVEL=/nix/store/…-darwin-system-… \
+    ///   cargo test -p sui-orchestrate -- --ignored gate3_dry_activate_proof --nocapture
+    /// ```
+    ///
+    /// It computes the exact `SwitchPlan` a `dry-activate` renders and asserts
+    /// the deprecation gate on the real activate-user — executing NOTHING: no
+    /// profile set, no activate exec, no sudo. The only filesystem touch is a
+    /// READ of the profile symlink + the toplevel.
+    #[test]
+    #[ignore = "needs SUI_GATE3_PROOF_TOPLEVEL pointing at a real built darwin-system"]
+    fn gate3_dry_activate_proof_against_real_toplevel() {
+        let toplevel = std::env::var("SUI_GATE3_PROOF_TOPLEVEL")
+            .expect("set SUI_GATE3_PROOF_TOPLEVEL to a real /nix/store/*-darwin-system-* path");
+        let sys = SystemOrchestrator::with_platform(Platform::Darwin);
+
+        // The exact plan a dry-activate would render from this real toplevel.
+        let plan = sys.compute_switch_plan(&toplevel).expect("compute_switch_plan");
+        println!("\n{plan}\n");
+        println!("current_generation      = {:?}", plan.current_generation);
+        println!("next_generation         = {}", plan.next_generation);
+        println!("has_activate_user       = {}", plan.has_activate_user);
+        println!("activate_user_deprecated= {}", plan.activate_user_deprecated);
+        println!("is_root                 = {}", plan.is_root);
+
+        // The plan describes the real toplevel truthfully.
+        assert_eq!(plan.system_path, toplevel);
+        assert_eq!(plan.activate_script, format!("{toplevel}/activate"));
+        // next = current + 1 (or 1 if no profile), mirroring ProfileManager::set.
+        assert_eq!(
+            plan.next_generation,
+            plan.current_generation.map_or(1, |c| c + 1)
+        );
+        // dry-activate never mutates.
+        assert!(!RebuildAction::DryActivate.mutates_system());
+        // The deprecation gate agrees with the free classifier on the real file.
+        let (present, deprecated) = classify_activate_user(&toplevel);
+        assert_eq!(plan.has_activate_user, present);
+        assert_eq!(plan.activate_user_deprecated, deprecated);
+        println!(
+            "\n[proof] computed a full SwitchPlan for a real toplevel and executed NOTHING \
+             (no profile set, no activate exec, no sudo)."
+        );
     }
 }

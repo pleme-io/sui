@@ -618,10 +618,18 @@ enum FlakeCommands {
 #[derive(Subcommand)]
 enum SystemCommands {
     Rebuild {
-        /// One of: switch | boot | test | build (mirrors nixos-rebuild).
+        /// One of: switch | boot | test | build | dry-activate.
+        ///
+        /// `switch`/`test`/`boot` MUTATE the live system and require root.
+        /// `dry-activate` builds the toplevel then prints the switch plan and
+        /// executes nothing (safe preview). `--dry-run` is a convenience alias
+        /// that forces `dry-activate` regardless of the positional action.
         #[arg(value_enum, default_value_t = CliRebuildAction::Switch)]
         action: CliRebuildAction,
         #[arg(long)] flake: Option<String>,
+        /// Force a non-mutating dry-activate preview (overrides `action`).
+        /// Nothing on the real system is touched.
+        #[arg(long)] dry_run: bool,
     },
     Status,
     Rollback,
@@ -634,7 +642,7 @@ enum SystemCommands {
 /// The `From` is exhaustive — if the upstream enum gains a variant
 /// the compiler forces this wrapper to track it.
 #[derive(ValueEnum, Clone, Copy, Debug)]
-enum CliRebuildAction { Switch, Boot, Test, Build }
+enum CliRebuildAction { Switch, Boot, Test, Build, DryActivate }
 
 impl std::fmt::Display for CliRebuildAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -645,10 +653,11 @@ impl std::fmt::Display for CliRebuildAction {
 impl From<CliRebuildAction> for sui_orchestrate::RebuildAction {
     fn from(v: CliRebuildAction) -> Self {
         match v {
-            CliRebuildAction::Switch => Self::Switch,
-            CliRebuildAction::Boot   => Self::Boot,
-            CliRebuildAction::Test   => Self::Test,
-            CliRebuildAction::Build  => Self::Build,
+            CliRebuildAction::Switch      => Self::Switch,
+            CliRebuildAction::Boot        => Self::Boot,
+            CliRebuildAction::Test        => Self::Test,
+            CliRebuildAction::Build       => Self::Build,
+            CliRebuildAction::DryActivate => Self::DryActivate,
         }
     }
 }
@@ -6042,8 +6051,17 @@ async fn main() -> Result<(), CliError> {
                 }
             })?;
             match command {
-                SystemCommands::Rebuild { action, flake } => {
-                    let action: sui_orchestrate::RebuildAction = action.into();
+                SystemCommands::Rebuild { action, flake, dry_run } => {
+                    // `--dry-run` forces the non-mutating dry-activate preview,
+                    // overriding whatever positional action was given — so it is
+                    // impossible to ask for a preview and accidentally get a real
+                    // switch.
+                    let action: sui_orchestrate::RebuildAction = if dry_run {
+                        sui_orchestrate::RebuildAction::DryActivate
+                    } else {
+                        action.into()
+                    };
+                    let is_dry = action == sui_orchestrate::RebuildAction::DryActivate;
                     let flake_ref = flake.unwrap_or_else(|| ".".to_string());
                     let result = sys.rebuild_native(&flake_ref, action).await.map_err(|e| {
                         CliError::Orchestrate {
@@ -6051,12 +6069,19 @@ async fn main() -> Result<(), CliError> {
                             message: e.to_string(),
                         }
                     })?;
-                    println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
-                    if let Some(generation) = result.generation {
-                        println!("generation: {generation}");
-                    }
-                    if !result.success {
-                        eprintln!("{}", result.log);
+                    if is_dry {
+                        // The dry-activate plan lives in `log`; print it verbatim.
+                        // Nothing was executed against the real system.
+                        println!("{}", result.log);
+                        println!("(dry-activate: built the toplevel, executed nothing — {:.1}s)", result.duration_secs);
+                    } else {
+                        println!("rebuild {} in {:.1}s", if result.success { "succeeded" } else { "failed" }, result.duration_secs);
+                        if let Some(generation) = result.generation {
+                            println!("generation: {generation}");
+                        }
+                        if !result.success {
+                            eprintln!("{}", result.log);
+                        }
                     }
                 }
                 SystemCommands::Status => {
