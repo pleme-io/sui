@@ -2831,9 +2831,14 @@ pub enum EvalError {
     /// An I/O error from the host filesystem.
     #[error("I/O error: {context}: {message}")]
     IoError { context: String, message: String },
-    /// Explicit `throw` or `abort` from Nix code.
+    /// Explicit `throw` from Nix code — CATCHABLE by `builtins.tryEval`.
     #[error("{0}")]
     Throw(String),
+    /// An `abort` from Nix code — UNCATCHABLE (CppNix's `abort`/`builtins.abort`
+    /// is a hard error `tryEval` does NOT catch, unlike `throw`/`assert`).
+    /// Verified: `nix eval '(builtins.tryEval (abort "x")).success'` errors.
+    #[error("{0}")]
+    Abort(String),
     /// A language feature that is not yet implemented.
     #[error("not yet implemented: {0}")]
     NotImplemented(String),

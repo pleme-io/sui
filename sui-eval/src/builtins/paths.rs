@@ -5,22 +5,23 @@ use super::*;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     // baseNameOf — extract filename from path
+    // CppNix strips TRAILING slashes first, then takes the last component:
+    // `baseNameOf "/a/b/"` → "b" (not ""). Verified vs `nix eval`.
+    fn base_name_of(s: &str) -> String {
+        let trimmed = s.trim_end_matches('/');
+        trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+    }
     register_builtin(builtins, "baseNameOf", |args| {
         match &args[0] {
             Value::String(ns) => {
-                let s = ns.chars.to_string();
-                let base = s.rsplit('/').next().unwrap_or(&s).to_string();
+                let base = base_name_of(&ns.chars);
                 // nix: baseNameOf preserves string context (verified
                 // `nix eval` hasContext=true) — the store-path dep survives.
                 Ok(Value::String(std::rc::Rc::new(
                     crate::value::NixString::with_context(base, ns.context.clone()),
                 )))
             }
-            Value::Path(p) => {
-                let s = p.to_string();
-                let base = s.rsplit('/').next().unwrap_or(&s).to_string();
-                Ok(Value::string(base))
-            }
+            Value::Path(p) => Ok(Value::string(base_name_of(&p.to_string()))),
             _ => Err(EvalError::TypeError("baseNameOf: expected string or path".to_string())),
         }
     });

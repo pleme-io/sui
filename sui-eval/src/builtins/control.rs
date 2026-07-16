@@ -26,8 +26,9 @@ fn deep_force(val: &Value) -> Result<(), EvalError> {
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "tryEval", |args| {
-        // CppNix: tryEval ONLY catches `throw` and `abort` — NOT evaluation
-        // errors like AttrNotFound, TypeMismatch, InfiniteRecursion, etc.
+        // CppNix: tryEval ONLY catches `throw` and `assert` — NOT `abort`
+        // (uncatchable) and NOT evaluation errors like AttrNotFound,
+        // TypeMismatch, InfiniteRecursion, etc.
         // Catching all errors breaks the nixpkgs module system which uses
         // tryEval to detect if an option value throws, NOT to swallow
         // real evaluation errors.
@@ -88,7 +89,9 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
     register_builtin(builtins, "abort", |args| {
         let msg = args[0].as_string()?;
-        Err(EvalError::Throw(format!("abort: {msg}")))
+        // `abort` is UNCATCHABLE — a distinct variant from `throw` so
+        // `tryEval` does not swallow it (CppNix parity).
+        Err(EvalError::Abort(format!("evaluation aborted with the following error message: '{msg}'")))
     });
     // seq: force first arg to WHNF, return second arg unchanged.
     // First arg is already forced by apply's force_value.
