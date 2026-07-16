@@ -24,6 +24,22 @@ use sui_intern::Symbol;
 /// the hash is a single multiply-shift — no SipHash overhead.
 pub type FxHashMap<K, V> = im_rc::HashMap<K, V, FxBuildHasher>;
 
+/// Compact attrset map — a real `hashbrown` (std) `HashMap` with `FxBuildHasher`.
+///
+/// Used ONLY for `NixAttrs` (attribute sets), which are immutable-after-
+/// construction. Unlike `FxHashMap` (the persistent `im_rc` HAMT, retained for
+/// `Env` where `child()`/scope-push relies on O(1) structural sharing), this is a
+/// flat open-addressing table with ~0.875 load factor and NO branch-node
+/// allocations — a symbolicated dhat profile proved the `im_rc` HAMT branch nodes
+/// dominate eval heap, and the attrset slice is the safe one to compact.
+///
+/// BYTE-NEUTRAL: attrset observation order (which feeds drvPath hashing) comes
+/// from `NixAttrs::sorted_entries()` — it resolves each `Symbol` to its `String`
+/// and string-sorts on observation — NOT from this map's internal iteration
+/// order. Both `im_rc::HashMap` and `std::HashMap` are unordered, so swapping the
+/// implementation cannot change any observed order → drvPaths are unchanged.
+pub type AttrsMap<K, V> = std::collections::HashMap<K, V, FxBuildHasher>;
+
 /// Env-gated LIVE-OBJECT CENSUS.
 ///
 /// A permanent, zero-cost-when-off diagnostic answering the question:
@@ -779,13 +795,16 @@ impl PartialEq for Concrete {
                 }
                 // Structural compare by BORROW, not by clone. The prior
                 // `a.inner() == b.inner()` flattened AND cloned *both* backing
-                // FxHashMaps (`inner()` = `as_flat().clone()`) purely to feed
+                // `AttrsMap`s (`inner()` = `as_flat().clone()`) purely to feed
                 // `HashMap::eq` — the clone is dead work. `as_flat()` returns a
                 // borrow into the (memoized-if-overlay) map, so
                 // `a.as_flat() == b.as_flat()` runs the *identical*
-                // `HashMap::eq`: same keys, same per-value `Value::eq` calls, in
-                // the same iteration order (FxHashMap clone preserves order, so
-                // even the clone path iterated in this order). PROVABLY-NEUTRAL
+                // `HashMap::eq`: same keys, same per-value `Value::eq` calls.
+                // `HashMap::eq` is ORDER-INDEPENDENT by construction (it iterates
+                // one map and looks each key up in the other), so this holds
+                // regardless of the map's internal iteration order — true for the
+                // std `AttrsMap` exactly as it was for the old `im_rc` map.
+                // PROVABLY-NEUTRAL
                 // on the demand axis: cloning a `Value` is an `Rc`-bump that
                 // forces NOTHING; the only `.demand()` calls in this arm are (1)
                 // the derivation short-circuit above (unchanged) and (2) inside
@@ -2023,7 +2042,7 @@ impl fmt::Debug for Thunk {
 
 /// A Nix attribute set with lazy overlay support.
 ///
-/// Internally uses either a concrete `FxHashMap` or a lazy overlay chain.
+/// Internally uses either a concrete compact `AttrsMap` or a lazy overlay chain.
 /// The `//` operator creates O(1) overlay nodes instead of O(m log n) merges.
 /// Attribute access walks the chain right-to-left in O(depth).
 /// Full iteration (attrNames, attrValues) flattens on demand.
@@ -2049,8 +2068,8 @@ impl Drop for NixAttrs {
 /// Internal representation: either a flat map or an overlay chain.
 #[derive(Clone)]
 enum AttrsInner {
-    /// Concrete attribute set — O(log32 n) FxHashMap.
-    Flat(FxHashMap<Symbol, Value>),
+    /// Concrete attribute set — compact flat `AttrsMap` (std hashbrown).
+    Flat(AttrsMap<Symbol, Value>),
     /// Lazy overlay: right overrides left. O(1) construction.
     /// `cache` is populated on first full iteration (attrNames, etc.).
     ///
@@ -2064,7 +2083,7 @@ enum AttrsInner {
     Overlay {
         left: RefCell<Rc<NixAttrs>>,
         right: RefCell<Rc<NixAttrs>>,
-        cache: Rc<OnceCell<FxHashMap<Symbol, Value>>>,
+        cache: Rc<OnceCell<AttrsMap<Symbol, Value>>>,
     },
 }
 
@@ -2077,7 +2096,7 @@ impl fmt::Debug for NixAttrs {
 impl Default for NixAttrs {
     fn default() -> Self {
         census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-        Self(AttrsInner::Flat(FxHashMap::default()))
+        Self(AttrsInner::Flat(AttrsMap::default()))
     }
 }
 
@@ -2092,12 +2111,12 @@ impl NixAttrs {
 
     /// Borrow the underlying map. Flattens if overlay.
     #[must_use]
-    pub fn inner(&self) -> FxHashMap<Symbol, Value> {
+    pub fn inner(&self) -> AttrsMap<Symbol, Value> {
         self.as_flat().clone()
     }
 
-    /// Get a reference to a flat FxHashMap, populating cache if overlay.
-    fn as_flat(&self) -> &FxHashMap<Symbol, Value> {
+    /// Get a reference to a flat `AttrsMap`, populating cache if overlay.
+    fn as_flat(&self) -> &AttrsMap<Symbol, Value> {
         match &self.0 {
             AttrsInner::Flat(m) => m,
             AttrsInner::Overlay { left, right, cache } => {
