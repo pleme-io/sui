@@ -229,33 +229,16 @@ impl SystemOrchestrator {
             }
         };
 
-        // 3. Build the system derivation natively.
-        let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
-            .await
-            .map_err(|e| SystemError::RebuildFailed(format!("store: {e}")))?;
-        let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
-        let caches = build_caches(&get_substituters());
-        let substitutor = sui_store::Substitutor::new(store.clone(), caches);
-
-        #[cfg(target_os = "macos")]
-        let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
-            Box::new(sui_build::sandbox::DarwinSandbox::new());
-        #[cfg(not(target_os = "macos"))]
-        let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
-            Box::new(sui_build::sandbox::LinuxSandbox::new());
-
-        let builder = sui_build::LocalBuilder::new(store, sandbox);
-        let closure = sui_build::BuildClosure::compute(&drv_path)
-            .map_err(|e| SystemError::RebuildFailed(format!("closure: {e}")))?;
-        let build_result = builder
-            .build_closure(&closure, Some(&substitutor))
-            .await
-            .map_err(|e| SystemError::RebuildFailed(format!("build: {e}")))?;
-
-        let system_path = build_result
-            .outputs
-            .first()
-            .map(|p| p.to_absolute_path())
+        // 3. Realize the system derivation natively — daemon-aware. On a
+        // single-user store `realize_drv` builds through the local pipeline; on
+        // cid's root-owned multi-user store it routes the privileged write through
+        // the nix daemon (the direct-write path can't open the root-owned
+        // db.sqlite). Both produce byte-identical output at the same
+        // content-addressed path.
+        let realized = realize_drv(&drv_path).await?;
+        let system_path = realized
+            .into_iter()
+            .next()
             .ok_or_else(|| SystemError::RebuildFailed("no build outputs".into()))?;
 
         // 4. Activate the system profile
@@ -582,6 +565,152 @@ pub fn build_caches(configs: &[SubstituterConfig]) -> Vec<std::sync::Arc<sui_sto
             std::sync::Arc::new(builder.build())
         })
         .collect()
+}
+
+/// The per-realize wall-clock bound for the operator build path (the MOVE-1 seal,
+/// the sibling of `sui`'s `ifd_realize_bound`). A single derivation's
+/// substitute-or-build must complete within this bound or the realize fails-fast
+/// with a typed error — an unbounded hang has no code path. Overridable via
+/// `SUI_REALIZE_TIMEOUT_SECS`; the default is generous enough to substitute a
+/// large closure yet well under any outer harness timeout.
+#[must_use]
+pub fn realize_bound() -> std::time::Duration {
+    const DEFAULT_SECS: u64 = 600;
+    let secs = std::env::var("SUI_REALIZE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Realize a `.drv`'s closure into the store, dispatching on the detected store
+/// access mode — the operator-build sibling of `sui`'s IFD `ifd_realize` hook.
+///
+/// The write path is chosen by [`sui_store::StoreAccess::detect`]:
+/// - `Direct` — the store is genuinely writable (single-user / CI store) → build
+///   the closure through the local pipeline (store + substitutor + builder),
+///   substitute-first (the substitutor pulls already-built paths from the cache
+///   rather than rebuilding).
+/// - `Daemon` — the store is a root-owned multi-user store (e.g. cid) → realize
+///   each demanded output through the running nix daemon over the worker protocol
+///   ([`sui_store::realize_via_daemon_bounded`]). The daemon's `SetOptions
+///   useSubstitutes=1` means it too substitutes-first rather than forcing a local
+///   rebuild.
+/// - `None` — no writable store and no reachable daemon socket → a clear typed
+///   error, never a silent degrade.
+///
+/// The dispatch IS the seal (see [`sui_store::daemon_realize`]): the `Direct` arm
+/// carries a `WritableStore` proof obtainable only over a writable store, so a
+/// direct store write against a multi-user store has no code path — the exact
+/// `cannot read <drv>` / `db.sqlite` failure the operator's Mac hit is
+/// unrepresentable, not retried.
+///
+/// **Byte-parity-safe:** the `drv_path` is computed by the evaluator (already
+/// byte-identical to nix), so the realized output is byte-identical to nix's — a
+/// `Direct` build and a `Daemon` build both produce the same bytes at the same
+/// content-addressed path. This function is store-path plumbing only; it does not
+/// touch eval.
+///
+/// **Bounded (the MOVE-1 seal):** each output's realize either resolves (a
+/// validated output) or returns a typed error within [`realize_bound`] — an
+/// unbounded hang has no code path.
+///
+/// Returns the absolute store paths of the realized outputs (deduplicated, in
+/// declared order).
+pub async fn realize_drv(drv_path: &str) -> Result<Vec<String>, SystemError> {
+    use sui_store::StoreAccess;
+
+    let bound = realize_bound();
+    let closure = sui_build::BuildClosure::compute(drv_path)
+        .map_err(|e| SystemError::RebuildFailed(format!("closure {drv_path}: {e}")))?;
+
+    match StoreAccess::detect() {
+        // Single-user / CI store: build directly through the local pipeline.
+        // (The `WritableStore` proof is discarded — `open_rw` re-probes; carrying
+        // it would just duplicate the probe.)
+        Some(StoreAccess::Direct(_writable)) => {
+            let store = sui_store::LocalStore::open_rw(NIX_DB_PATH)
+                .await
+                .map_err(|e| SystemError::RebuildFailed(format!("store open ({NIX_DB_PATH}): {e}")))?;
+            let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+            let caches = build_caches(&get_substituters());
+            let substitutor = sui_store::Substitutor::new(store.clone(), caches);
+
+            #[cfg(target_os = "macos")]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::DarwinSandbox::new());
+            #[cfg(not(target_os = "macos"))]
+            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+                Box::new(sui_build::sandbox::LinuxSandbox::new());
+
+            let builder = sui_build::LocalBuilder::new(store, sandbox);
+            // Substitute-first: the substitutor pulls already-built paths from the
+            // cache; the builder only builds what the cache can't supply.
+            let build = builder.build_closure(&closure, Some(&substitutor));
+            let result = tokio::time::timeout(bound, build)
+                .await
+                .map_err(|_elapsed| {
+                    SystemError::RebuildFailed(format!(
+                        "realize of {drv_path} exceeded its {}s bound (local build stalled — \
+                         likely a sui↔nix output-path divergence; NOT a hang)",
+                        bound.as_secs()
+                    ))
+                })?
+                .map_err(|e| SystemError::RebuildFailed(format!("build {drv_path}: {e}")))?;
+            if !result.success {
+                return Err(SystemError::RebuildFailed(format!(
+                    "build failed for {drv_path}:\n{}",
+                    result.log
+                )));
+            }
+            Ok(result.outputs.iter().map(|o| o.to_absolute_path()).collect())
+        }
+        // Multi-user root-owned store: realize through the nix daemon. The daemon
+        // does the privileged work (AddToStore the byte-identical `.drv` closure,
+        // then BuildPaths substitute-or-build) and returns a `Realized` proof that
+        // is only constructible when the demanded output is valid at its
+        // content-addressed path.
+        Some(StoreAccess::Daemon(store)) => {
+            // The demanded output paths come from the target derivation itself.
+            // The daemon realizes each declared output; the ordinary case is a
+            // single `"out"` output. We realize in declared (BTreeMap) order, with
+            // `"out"` first when present so the common case is deterministic.
+            let (_target_drv, derivation) = closure.target();
+            let mut wanted: Vec<String> = Vec::with_capacity(derivation.outputs.len());
+            if let Some(out) = derivation.outputs.get("out") {
+                wanted.push(out.path.clone());
+            }
+            for (name, output) in &derivation.outputs {
+                if name != "out" {
+                    wanted.push(output.path.clone());
+                }
+            }
+            if wanted.is_empty() {
+                return Err(SystemError::RebuildFailed(format!(
+                    "derivation {drv_path} declares no output paths to realize"
+                )));
+            }
+
+            let mut realized_paths = Vec::with_capacity(wanted.len());
+            for out_path in &wanted {
+                let realized =
+                    sui_store::realize_via_daemon_bounded(&store, drv_path, out_path, bound)
+                        .await
+                        .map_err(|e| {
+                            SystemError::RebuildFailed(format!("daemon realize {drv_path}: {e}"))
+                        })?;
+                debug_assert_eq!(realized.out_path(), out_path.as_str());
+                realized_paths.push(realized.out_path().to_string());
+            }
+            Ok(realized_paths)
+        }
+        None => Err(SystemError::RebuildFailed(format!(
+            "no store-write path: /nix/store is not writable and no nix daemon socket is \
+             reachable at {} (set NIX_REMOTE=daemon or run the daemon)",
+            sui_store::default_daemon_socket().display()
+        ))),
+    }
 }
 
 /// Information about a single system generation.
