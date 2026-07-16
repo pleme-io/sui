@@ -208,7 +208,13 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
     builtins_set.insert("null".to_string(), Value::Null);
-    builtins_set.insert("nixVersion".to_string(), Value::string("2.24.0"));
+    // Impersonate the version of the nix sui produces byte-parity against
+    // (the cid oracle is 2.34.7). nixpkgs/nix-darwin modules feature-gate on
+    // `lib.versionAtLeast builtins.nixVersion X`; a stale value (was "2.24.0")
+    // took the WRONG branch for every gate between the stale value and the real
+    // host version, silently forking the evaluated derivation graph. Tracks the
+    // impersonation target — bump alongside the host nix sui mirrors.
+    builtins_set.insert("nixVersion".to_string(), Value::string("2.34.7"));
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
     builtins_set.insert("langVersion".to_string(), Value::Int(6));
 

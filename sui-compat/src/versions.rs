@@ -86,7 +86,19 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
         let cb = pb.get(i).map(String::as_str).unwrap_or("");
         let ord = match (ca.parse::<i64>(), cb.parse::<i64>()) {
             (Ok(na), Ok(nb)) => na.cmp(&nb),
-            _ => match (ca, cb) {
+            // CppNix (libstore/names.cc `compareVersionComponent`): a NUMERIC
+            // component is always GREATER than any non-numeric one (including
+            // "pre", the smallest). The prior `ca.cmp(cb)` fallback used
+            // byte-lexicographic order, so a letter like "a" (0x61) wrongly
+            // sorted GREATER than "1" (0x31) — the exact opposite of nix, which
+            // flipped every `lib.versionAtLeast`/`versionOlder` gate comparing a
+            // letter component (RC/date suffixes, `1.0.a`) against a number.
+            // (An empty component parses as Err, so `"" < number` — matching
+            // nix's `compareVersions "1" "1.0" == -1`.)
+            (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+            (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+            // Both non-numeric: "pre" sorts below everything, else lexicographic.
+            (Err(_), Err(_)) => match (ca, cb) {
                 ("pre", "pre") => std::cmp::Ordering::Equal,
                 ("pre", _) => std::cmp::Ordering::Less,
                 (_, "pre") => std::cmp::Ordering::Greater,
@@ -218,6 +230,22 @@ mod tests {
         assert_eq!(compare_versions("1.10", "1.2"), 1);
         assert_eq!(compare_versions("1.2", "1.10"), -1);
         assert_eq!(compare_versions("1.0", "1.0"), 0);
+    }
+
+    #[test]
+    fn numeric_component_beats_letter_component() {
+        // CppNix (libstore/names.cc): a numeric component is ALWAYS greater
+        // than a non-numeric (letter) one. Verified against `nix eval`.
+        assert_eq!(compare_versions("1.a", "1.1"), -1); // "a" < "1"
+        assert_eq!(compare_versions("1.1", "1.a"), 1); // "1" > "a"
+        assert_eq!(compare_versions("1.0.0", "1.0.a"), 1); // "0" > "a"
+        assert_eq!(compare_versions("a", "1"), -1); // letter < number
+        assert_eq!(compare_versions("1", "a"), 1);
+        // a number also beats "pre" (pre is the smallest non-numeric)
+        assert_eq!(compare_versions("1.1", "1.pre"), 1);
+        assert_eq!(compare_versions("1.pre", "1.1"), -1);
+        // two letters still compare lexicographically
+        assert_eq!(compare_versions("1.a", "1.b"), -1);
     }
 
     #[test]

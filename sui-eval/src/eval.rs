@@ -1788,7 +1788,16 @@ fn eval_interpol_path_parts(
         // mirroring the plain `PathRel` branch.
         PathKind::Rel => {
             if let Some(dir) = current_eval_dir() {
-                normalize_path(&dir.join(&text)).to_string_lossy().into_owned()
+                let norm = normalize_path(&dir.join(&text));
+                // Lift cache→store exactly like the plain `PathRel` branch (the
+                // store↔cache seam value-half). Without this, an interpolated
+                // relative-path literal (`./${x}`, `./modules/${name}.nix`)
+                // inside a fetched flake input yielded a Value::Path holding the
+                // fetcher CACHE dir instead of the input's `/nix/store/<h>-source`
+                // path — so its `toString`/copy-to-store/inputSrc diverged from
+                // CppNix (the plain `./x` sibling already dematerializes; the two
+                // must agree).
+                crate::path::dematerialize(&norm).to_string_lossy().into_owned()
             } else {
                 // No eval-file context (top-level `sui eval -E`): the
                 // plain branch keeps the raw text, so match it — but the
