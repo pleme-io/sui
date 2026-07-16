@@ -1,5 +1,15 @@
+// Exactly one global allocator is active. Default build: mimalloc (fast).
+// `--features dhat-heap`: dhat's tracking allocator, which records bytes +
+// blocks per allocation call-stack and, at exit, writes `dhat-heap.json`
+// whose at-t-gmax snapshot is the heap breakdown at peak. The two conflict
+// (two `#[global_allocator]`s won't link), so they are mutually cfg-gated.
+#[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use std::sync::Arc;
 
@@ -5347,6 +5357,12 @@ impl Drop for CensusExitGuard {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), CliError> {
+    // Heap profiler guard (feature `dhat-heap`). Held for the whole process;
+    // on drop at exit it flushes `dhat-heap.json` (at-t-gmax = the peak-heap
+    // per-call-stack byte breakdown). No-op / absent in a normal build.
+    #[cfg(feature = "dhat-heap")]
+    let _dhat_profiler = dhat::Profiler::new_heap();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

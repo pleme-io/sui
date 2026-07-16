@@ -335,6 +335,13 @@ regex.workspace = true
 # Parse the operator's `cache serve --backend-config <file.toml>` /
 # `--supercache-config <file.toml>` into a typed config (never a stringly path).
 toml.workspace = true
+# Heap-allocation profiler — keeper diagnostic, gated behind the `dhat-heap`
+# feature. Under that feature it REPLACES the mimalloc global allocator (see
+# src/main.rs) and writes a `dhat-heap.json` at exit whose at-t-gmax snapshot
+# gives per-call-stack bytes/blocks at eval peak. Answers "which representation
+# dominates the heap" (attrset FxHashMap vs thunks vs env-maps vs strings vs
+# value spines) with hard bytes, not intuition. Never in a release build.
+dhat = { version = "0.3", optional = true }
 
 [features]
 # The `sui` binary IS the super-cache / cache-serve daemon, so its default build
@@ -354,6 +361,13 @@ postgres = ["sui-cache/postgres", "sui-store/postgres"]
 redis-client = ["sui-cache/redis-client"]
 # The full super-cache-ci posture: Redis L1 + Postgres L2 tiered backend.
 tiered = ["postgres", "redis-client"]
+# Heap-allocation profiling (keeper diagnostic). Swaps the mimalloc global
+# allocator for dhat::Alloc and installs a profiler guard in main so a run
+# writes `dhat-heap.json`. Exactly one global allocator is active — the
+# mimalloc `#[global_allocator]` in src/main.rs is `#[cfg(not(feature =
+# "dhat-heap"))]`, the dhat one is `#[cfg(feature = "dhat-heap")]`. Never
+# combine with a release/shipping build.
+dhat-heap = ["dep:dhat"]
 
 [dev-dependencies]
 async-trait.workspace = true
