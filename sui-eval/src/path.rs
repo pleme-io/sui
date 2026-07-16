@@ -106,6 +106,60 @@ pub fn materialize_str(path: &str) -> String {
     materialize(Path::new(path)).to_string_lossy().into_owned()
 }
 
+/// REVERSE of [`materialize`] for SOURCE POSITIONS: given a REAL on-disk
+/// path (a fetcher-cache `~/.cache/sui/inputs/…` file that eval actually
+/// read from), return the flake input's `/nix/store/<narhash>-source`
+/// STORE-PATH equivalent (with the same relative subpath appended); returns
+/// `path` unchanged when it is not under any registered input's cache dir.
+///
+/// This closes the position half of the store↔cache seam. `materialize`
+/// redirects a store-path READ down to the cache; `dematerialize` lifts a
+/// cache-path back up to the store path for REPORTING — so
+/// `builtins.unsafeGetAttrPos`/`__curPos` reports the store-source `.file`
+/// CppNix reports (`/nix/store/<h>-source/lib/foo.nix`), NOT the sui fetcher
+/// cache dir. nix-darwin's `doc/manual` `hasPrefix <nix-darwin>.outPath decl`
+/// rewrite only fires when `decl` carries the store prefix — the
+/// `options.json` dock-declarations root.
+///
+/// Both sides are compared after `canonicalize` on the cache side (a
+/// symlinked cache dir — macOS `/tmp` → `/private/tmp`, `~` expansion —
+/// still matches the registered `read_dir`, which is canonicalized here
+/// too). Only the reported STRING changes; no value the evaluator observes
+/// is mutated — the byte-parity invariant.
+#[must_use]
+pub fn dematerialize(path: &Path) -> PathBuf {
+    let canon = path.canonicalize();
+    let probe: &Path = canon.as_deref().unwrap_or(path);
+    INPUT_SOURCE_MAP.with(|m| {
+        for (store_path, read_dir) in m.borrow().iter() {
+            let rd_canon = read_dir
+                .canonicalize()
+                .unwrap_or_else(|_| read_dir.clone());
+            if probe == rd_canon {
+                return store_path.clone();
+            }
+            if let Ok(suffix) = probe.strip_prefix(&rd_canon) {
+                return store_path.join(suffix);
+            }
+            // Also try the un-canonicalized read_dir (registration may have
+            // stored a symlinked path); harmless when it already matched above.
+            if path == read_dir.as_path() {
+                return store_path.clone();
+            }
+            if let Ok(suffix) = path.strip_prefix(read_dir) {
+                return store_path.join(suffix);
+            }
+        }
+        path.to_path_buf()
+    })
+}
+
+/// Convenience: [`dematerialize`] a `&str` path, returning an owned `String`.
+#[must_use]
+pub fn dematerialize_str(path: &str) -> String {
+    dematerialize(Path::new(path)).to_string_lossy().into_owned()
+}
+
 /// Reverse of [`materialize`] for the copy-to-store NAMING rule: given a
 /// REAL on-disk directory (the fetcher-cache `read_dir` a `materialize`
 /// already resolved to, then `canonicalize`d), return the store-path
@@ -440,6 +494,39 @@ mod tests {
             )),
             PathBuf::from("/home/u/.cache/sui/inputs/dead"),
         );
+    }
+
+    #[test]
+    fn dematerialize_lifts_cache_path_to_store_source() {
+        // The options.json dock-declarations root (Layer B): a source
+        // position read from the fetcher-cache dir must be REPORTED as the
+        // input's `/nix/store/<h>-source` path so nix-darwin's `hasPrefix`
+        // rewrite fires. `dematerialize` is the reverse of `materialize`.
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cache.path().join("modules/system")).unwrap();
+        let store = Path::new(
+            "/nix/store/npm9dap7j0i92l524y09x255zi9447qp-source",
+        );
+        register_input_source(store, cache.path());
+        // A subpath under the cache dir lifts to the store path + subpath.
+        let real = cache.path().join("modules/system/dock.nix");
+        assert_eq!(
+            dematerialize(&real),
+            store.join("modules/system/dock.nix"),
+        );
+        // The cache root itself lifts to the bare store path.
+        assert_eq!(dematerialize(cache.path()), store.to_path_buf());
+    }
+
+    #[test]
+    fn dematerialize_passes_unregistered_paths_through() {
+        // A local (unregistered) path is reported verbatim — only a
+        // registered input's cache subtree is lifted to its store path.
+        let unrelated = tempfile::tempdir().unwrap();
+        let p = unrelated.path().join("some/file.nix");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"x").unwrap();
+        assert_eq!(dematerialize(&p), p);
     }
 
     #[test]

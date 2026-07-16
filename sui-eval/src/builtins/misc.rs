@@ -179,9 +179,40 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(value)
     });
 
-    // unsafeGetAttrPos
-    register_curried(builtins, "unsafeGetAttrPos", |_name, _set| {
-        Ok(Value::Null)
+    // unsafeGetAttrPos name set
+    //
+    // Returns `{ file; line; column; }` for the source position of key
+    // `name` in `set` (or `null` when the key/position is unknown). nixpkgs
+    // `lib/types.nix`'s `attrTag` derives each tag's `declarations` from
+    // `[ pos.file ]`; a `null`-returning stub made every `attrTag` sub-option
+    // `declarations` empty (the options.json dock-declarations divergence:
+    // `system.defaults.dock.persistent-{apps,others}.*`).
+    //
+    // The position table is attached to `set` by `eval_attrset` when the set
+    // was built from a literal with static keys; `pos_for` resolves the key's
+    // byte offset to a file (store-source-lifted) + 1-based line/column.
+    register_curried(builtins, "unsafeGetAttrPos", |name, set| {
+        let name = crate::eval::force_value(name)?;
+        let name = name.as_string()?;
+        let set = crate::eval::force_value(set)?;
+        let attrs = match &set {
+            Value::Attrs(a) => a,
+            // CppNix returns null when the first arg isn't found in an
+            // attrset; a non-attrset second arg is a type error there, but
+            // returning null is the safe, byte-faithful behavior for the
+            // paths nixpkgs exercises (it always passes an attrset).
+            _ => return Ok(Value::Null),
+        };
+        match attrs.pos_for(&name) {
+            Some(p) => {
+                let mut result = NixAttrs::new();
+                result.insert("file".to_string(), Value::string(p.file));
+                result.insert("line".to_string(), Value::Int(p.line as i64));
+                result.insert("column".to_string(), Value::Int(p.column as i64));
+                Ok(Value::Attrs(Rc::new(result)))
+            }
+            None => Ok(Value::Null),
+        }
     });
 
     // findFile (curried)

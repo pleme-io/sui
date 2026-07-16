@@ -25,6 +25,8 @@ pub mod flake_lock;
 pub mod git;
 /// Centralized path resolution (normalize, resolve relative, import).
 pub mod path;
+/// Source positions for `builtins.unsafeGetAttrPos` / `__curPos`.
+pub mod pos;
 /// Lightweight evaluation profiling counters.
 pub mod perf;
 /// Infinite recursion debugging tools (force chain, trace, depth limit, stats).

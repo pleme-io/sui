@@ -121,6 +121,7 @@ pub fn current_eval_file() -> Option<PathBuf> {
     EVAL_FILE_STACK.with(|s| s.borrow().last().cloned())
 }
 
+
 /// Snapshot the entire eval file stack (debug).
 pub fn eval_file_stack_snapshot() -> Vec<String> {
     EVAL_FILE_STACK.with(|s| {
@@ -367,6 +368,10 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         // Clear the identifier symbol cache so that offsets from
         // previous top-level evaluations don't persist.
         clear_ident_cache();
+        // Clear the source-position registry for the same reason — a stale
+        // `source_id → text` entry from a prior pass would resolve a key
+        // offset against the wrong file.
+        crate::pos::clear_sources();
     }
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {
@@ -379,6 +384,12 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     // at the same byte offset in different files don't collide in
     // the symbol cache.
     let src_id = next_source_id();
+    // Register this parse tree's file + text so a static key's byte offset
+    // (recorded by `eval_attrset`) resolves to a file/line/column for
+    // `builtins.unsafeGetAttrPos`. The file flows through the eval-file
+    // stack (store-path prefixed for imported inputs); the position resolver
+    // lifts a cache-dir path to its `/nix/store/<h>-source` store path.
+    crate::pos::register_source(file.as_deref(), input);
     let prev_src_id = CURRENT_SOURCE_ID.with(|s| {
         let old = s.get();
         s.set(src_id);
@@ -998,11 +1009,21 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 // Use normalize_path instead of canonicalize so that
                 // paths with ./  and .. are cleaned without requiring
                 // the path to exist on disk.
-                normalize_path(&joined)
+                let norm = normalize_path(&joined);
+                // A relative path literal (`./x`, `../..`) resolves against the
+                // eval-dir, which for a fetched flake input is the sui fetcher
+                // CACHE dir. CppNix resolves it against the input's
+                // `/nix/store/<h>-source` STORE path, so the resulting path
+                // VALUE must carry the store prefix (this is the value half of
+                // the store↔cache seam — `materialize`/`dematerialize`). Lift
+                // the cache path back to the store path so `toString ../..`
+                // matches CppNix — the options.json `hasPrefix
+                // <nix-darwin>.outPath decl` rewrite root (`prefix = ../..`).
+                crate::path::dematerialize(&norm)
                     .to_string_lossy()
                     .into_owned()
             } else {
-                text
+                text.clone()
             };
             return Ok(Value::Path(Box::new(SmolStr::from(resolved.as_str()))));
         }
@@ -1837,6 +1858,59 @@ fn ident_text(ident: &ast::Ident) -> String {
     ident.syntax().text().to_string()
 }
 
+/// Byte offset of a STATIC attr key (`Ident` or `Str`) in its source text —
+/// the position `builtins.unsafeGetAttrPos` reports for that key. Returns
+/// `None` for a dynamic key (`${e}`), which has no fixed source position.
+///
+/// CppNix points a binding's position at the KEY token's start; rnix exposes
+/// it via the syntax node's `text_range().start()`.
+fn static_attr_offset(attr: &ast::Attr) -> Option<u32> {
+    let node = match attr {
+        ast::Attr::Ident(i) => i.syntax(),
+        ast::Attr::Str(s) => s.syntax(),
+        ast::Attr::Dynamic(_) => return None,
+    };
+    Some(u32::from(node.text_range().start()))
+}
+
+/// Collect a literal attrset's static top-level KEY offsets into an
+/// [`crate::pos::AttrPositions`] and attach it to `attrs` (behind the value's
+/// `Rc<AttrPositions>` slot). Records only single-key static bindings — the
+/// shape `attrTag`'s `tags_` (`{ app = …; file = …; }`) is built from and the
+/// only shape `builtins.unsafeGetAttrPos` reads in nixpkgs. `None`-costs a
+/// pointer when the set has no such keys (attaches nothing).
+fn attach_attrset_positions(set: &ast::AttrSet, attrs: &mut NixAttrs, env: &Env) {
+    // The FILE is the one the literal is being built in — from the eval-file
+    // stack, which a thunk restores to its captured file when it forces. This
+    // is correct under laziness: a `dock.nix` attrset literal forced later
+    // records `dock.nix`, not whatever file is top-of-stack at force time.
+    // (`current_source_id`/`CURRENT_SOURCE_ID` is per-`eval_with_file`, NOT
+    // per-env, so it would mis-attribute a lazily-forced literal.)
+    let mut table = crate::pos::AttrPositions::new(current_eval_file());
+    for entry in set.entries() {
+        if let ast::Entry::AttrpathValue(apv) = entry {
+            let Some(attrpath) = apv.attrpath() else { continue };
+            let path_attrs: Vec<ast::Attr> = attrpath.attrs().collect();
+            // Only a single-segment static key gets a position (a dotted path
+            // `a.b = …` desugars to a nested set; CppNix points the position
+            // at the head, and nixpkgs never `unsafeGetAttrPos`es a dotted
+            // tag). Skip anything else.
+            if path_attrs.len() != 1 {
+                continue;
+            }
+            let Some(offset) = static_attr_offset(&path_attrs[0]) else { continue };
+            // Resolve the static key name (Ident/Str) — never forces (a
+            // dynamic key already returned None above).
+            if let Ok(Some(name)) = eval_attr_maybe_null(&path_attrs[0], env) {
+                table.insert(intern(&name), offset);
+            }
+        }
+    }
+    if !table.is_empty() {
+        attrs.set_positions(std::rc::Rc::new(table));
+    }
+}
+
 fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Attrset);
     let mut attrs = NixAttrs::new();
@@ -2074,6 +2148,13 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
             }
         }
     }
+
+    // Record the literal's static-key source positions for
+    // `builtins.unsafeGetAttrPos` (the `attrTag` `declarations` — options.json
+    // dock root). Cheap: one entry walk over static Ident/Str keys, no
+    // forcing; attaches nothing (a pointer-sized `None`) when the set has no
+    // single-static-key bindings.
+    attach_attrset_positions(set, &mut attrs, env);
 
     Ok(Value::Attrs(Rc::new(attrs)))
 }
@@ -6417,6 +6498,57 @@ mod tests {
         let p = std::path::PathBuf::from("/tmp/imaginary.nix");
         let result = eval_with_file("1 + 2", Some(p)).unwrap();
         assert_eq!(result, Value::Int(3));
+    }
+
+    // ── unsafeGetAttrPos — the options.json `attrTag` declarations root ──
+    //
+    // Seals the CppNix-matching behavior: for a literal attrset built in a
+    // FILE, `builtins.unsafeGetAttrPos <key> <set>` returns
+    // `{ file; line=1; column=<key byte offset>+1; }`; for a `<string>` eval
+    // (no file) it returns `null`. Byte-verified against `nix eval`.
+
+    #[test]
+    fn unsafe_get_attr_pos_reports_file_and_offset_column() {
+        // The real `attrTag` path: a literal attrset built in an IMPORTED file.
+        // `import` registers the file's source text + pushes it on the eval
+        // stack, so `eval_attrset` captures the key positions against that file
+        // and `unsafeGetAttrPos` resolves them. CppNix reports the file, line 1,
+        // and column = the KEY's 1-based byte offset (verified against `nix eval`).
+        let dir = tempfile::tempdir().unwrap();
+        // The literal's `b` key sits at a known byte offset in this file.
+        let file_body = "{ a = 1;\n  b = 2; }\n";
+        let f = dir.path().join("lit.nix");
+        std::fs::write(&f, file_body).unwrap();
+        let src = format!("builtins.unsafeGetAttrPos \"b\" (import {})", f.display());
+        let v = eval(&src).unwrap();
+        let attrs = match v { Value::Attrs(a) => a, other => panic!("expected attrs, got {other:?}") };
+        assert_eq!(
+            attrs.get("file").unwrap().as_string().unwrap(),
+            f.to_string_lossy(),
+        );
+        assert_eq!(*attrs.get("line").unwrap(), Value::Int(1));
+        // Column = the `b` KEY token's 1-based byte offset in file_body.
+        let expected_col = (file_body.find("b = 2").unwrap() as i64) + 1;
+        let col = match attrs.get("column").unwrap() { Value::Int(n) => *n, o => panic!("{o:?}") };
+        assert_eq!(col, expected_col, "column must be the 1-based byte offset");
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_null_for_string_origin() {
+        // A `<string>`-eval'd literal (no file on the stack) has no position → null.
+        let v = eval("builtins.unsafeGetAttrPos \"a\" { a = 1; }").unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_null_for_missing_key() {
+        // A key absent from an imported set → null.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("lit.nix");
+        std::fs::write(&f, "{ a = 1; }\n").unwrap();
+        let src = format!("builtins.unsafeGetAttrPos \"zzz\" (import {})", f.display());
+        let v = eval(&src).unwrap();
+        assert_eq!(v, Value::Null);
     }
 
     // ── String interpolation primitive coercions ───────────

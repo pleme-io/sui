@@ -2052,7 +2052,14 @@ impl fmt::Debug for Thunk {
 /// The `//` operator creates O(1) overlay nodes instead of O(m log n) merges.
 /// Attribute access walks the chain right-to-left in O(depth).
 /// Full iteration (attrNames, attrValues) flattens on demand.
-pub struct NixAttrs(AttrsInner);
+///
+/// The second tuple field is an OPTIONAL source-position table (`None` for
+/// the vast majority of attrsets — merges, overlays, builtin-built, dynamic
+/// keys). `eval_attrset` attaches it for a literal with static keys so
+/// `builtins.unsafeGetAttrPos` can report a key's file/line/column (the
+/// `attrTag` `declarations` — options.json dock root). It is behind `Rc`, so
+/// a clone is a refcount bump; `None` costs one pointer-sized word.
+pub struct NixAttrs(AttrsInner, Option<Rc<crate::pos::AttrPositions>>);
 
 // Hand-written `Clone`/`Drop` so the census counts every NixAttrs value that
 // comes into existence (a clone is a fresh heap object once Rc-wrapped),
@@ -2061,7 +2068,7 @@ pub struct NixAttrs(AttrsInner);
 impl Clone for NixAttrs {
     fn clone(&self) -> Self {
         census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-        NixAttrs(self.0.clone())
+        NixAttrs(self.0.clone(), self.1.clone())
     }
 }
 
@@ -2102,7 +2109,7 @@ impl fmt::Debug for NixAttrs {
 impl Default for NixAttrs {
     fn default() -> Self {
         census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-        Self(AttrsInner::Flat(AttrsMap::default()))
+        Self(AttrsInner::Flat(AttrsMap::default()), None)
     }
 }
 
@@ -2113,6 +2120,33 @@ impl NixAttrs {
 
     pub fn with_capacity(_capacity: usize) -> Self {
         Self::default()
+    }
+
+    /// Attach a source-position table (the static keys' byte offsets of the
+    /// literal that built this attrset). Called by `eval_attrset`; consumed
+    /// by `builtins.unsafeGetAttrPos`. Never affects any observed value.
+    pub fn set_positions(&mut self, pos: Rc<crate::pos::AttrPositions>) {
+        self.1 = Some(pos);
+    }
+
+    /// The source-position table, if this attrset carries one (a literal with
+    /// static keys). `None` for merges/overlays/builtin-built/dynamic-key
+    /// attrsets.
+    #[must_use]
+    pub fn positions(&self) -> Option<&Rc<crate::pos::AttrPositions>> {
+        self.1.as_ref()
+    }
+
+    /// Resolve the source position of `key` in this attrset — the file/line/
+    /// column `builtins.unsafeGetAttrPos` returns. `None` when the attrset
+    /// has no position table, the key is absent from it, or the source has
+    /// no file (a `<string>`-eval'd literal).
+    #[must_use]
+    pub fn pos_for(&self, key: &str) -> Option<crate::pos::ResolvedPos> {
+        let table = self.1.as_ref()?;
+        let sym = intern(key);
+        let offset = *table.keys.get(&sym)?;
+        crate::pos::resolve(table.file.as_deref(), offset)
     }
 
     /// Borrow the underlying map. Flattens if overlay.
@@ -2306,7 +2340,7 @@ impl NixAttrs {
             left: RefCell::new(Rc::new(self)),
             right: RefCell::new(Rc::new(other)),
             cache: Rc::new(OnceCell::new()),
-        })
+        }, None)
     }
 
     /// Eager merge (legacy API — prefer `overlay` for `//`).
@@ -2319,7 +2353,7 @@ impl NixAttrs {
                     result.insert(*k, v.clone());
                 }
                 census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-                NixAttrs(AttrsInner::Flat(result))
+                NixAttrs(AttrsInner::Flat(result), None)
             }
             _ => {
                 // For overlay inputs, flatten then merge
@@ -2329,7 +2363,7 @@ impl NixAttrs {
                     result.insert(*k, v.clone());
                 }
                 census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-                NixAttrs(AttrsInner::Flat(result))
+                NixAttrs(AttrsInner::Flat(result), None)
             }
         }
     }
@@ -2338,7 +2372,7 @@ impl NixAttrs {
 impl FromIterator<(String, Value)> for NixAttrs {
     fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
         census::made(&census::ATTRS_MADE, &census::ATTRS_LIVE);
-        NixAttrs(AttrsInner::Flat(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect()))
+        NixAttrs(AttrsInner::Flat(iter.into_iter().map(|(k, v)| (intern(&k), v)).collect()), None)
     }
 }
 
