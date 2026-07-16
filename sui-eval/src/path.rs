@@ -26,6 +26,39 @@ thread_local! {
     /// registry closes its sibling: arbitrary `${outPath}/subpath` reads
     /// (the prior peel special-cased only reading `flake.nix`).
     static INPUT_SOURCE_MAP: RefCell<Vec<(PathBuf, PathBuf)>> = const { RefCell::new(Vec::new()) };
+
+    /// Registry of `builtins.fetch*` result trees: each entry maps the REAL
+    /// on-disk fetcher-cache directory (e.g. `$TMPDIR/sui-fetchGit/<cache-hash>`)
+    /// to the STORE-PATH NAME CppNix gives the tree when it is copied into the
+    /// store as a derivation `src` — `"source"` for `fetchGit`/`fetchTree`/
+    /// `fetchTarball` (or the explicit `name` arg where one is honored).
+    ///
+    /// sui's fetchers return a raw temp `Value::Path` whose basename is a
+    /// content-addressing cache-hash (a 64-char sha256 hex), NOT a store path.
+    /// When that path is later coerced-to-store as a derivation `src`
+    /// (`zshSynHlSrc = builtins.fetchGit {…}`), the copy-to-store code named
+    /// the store path after the temp basename (`<store-hash>-<cache-hash>`)
+    /// instead of CppNix's `<store-hash>-source`. This registry is the
+    /// fetcher-family sibling of `INPUT_SOURCE_MAP`: it records the correct
+    /// `-source` NAME for each fetcher result so `source_name_for_read_dir`
+    /// resolves the copy-to-store name to CppNix's convention. Only the NAME
+    /// changes — the bytes (→ NAR hash) are identical either way.
+    static FETCHED_SOURCE_NAMES: RefCell<Vec<(PathBuf, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Register a `builtins.fetch*` result directory with the store-path NAME
+/// CppNix would give its copied-to-store tree (`"source"` for
+/// `fetchGit`/`fetchTree`/`fetchTarball`). Idempotent per `read_dir`. Does
+/// not affect any string value — only the name a later copy-to-store
+/// coercion of this exact path assigns to its store path.
+pub fn register_fetched_source(read_dir: &Path, name: &str) {
+    FETCHED_SOURCE_NAMES.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.iter().any(|(rd, _)| rd == read_dir) {
+            return;
+        }
+        m.push((read_dir.to_path_buf(), name.to_string()));
+    });
 }
 
 /// Register a fetched flake-input source tree so subsequent filesystem
@@ -94,7 +127,9 @@ pub fn materialize_str(path: &str) -> String {
 #[must_use]
 pub fn source_name_for_read_dir(real: &Path) -> Option<String> {
     let real_canon = real.canonicalize().ok()?;
-    INPUT_SOURCE_MAP.with(|m| {
+    // 1) Flake-input trees: a fetched input's `src = ./.` copies the input's
+    //    whole tree, named after the input's `/nix/store/<h>-source` basename.
+    let from_input = INPUT_SOURCE_MAP.with(|m| {
         for (store_path, read_dir) in m.borrow().iter() {
             let rd_canon = read_dir.canonicalize().unwrap_or_else(|_| read_dir.clone());
             // Only the WHOLE tree root maps to the input's `-source` name; a
@@ -104,6 +139,22 @@ pub fn source_name_for_read_dir(real: &Path) -> Option<String> {
                 return store_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned());
+            }
+        }
+        None
+    });
+    if from_input.is_some() {
+        return from_input;
+    }
+    // 2) `builtins.fetch*` result trees: `zshSynHlSrc = builtins.fetchGit {…}`
+    //    coerced-to-store must be named `source` (CppNix's convention), NOT the
+    //    fetcher-cache temp basename (a 64-char sha256 cache-hash). The fetcher
+    //    registered the correct name for this exact dir.
+    FETCHED_SOURCE_NAMES.with(|m| {
+        for (read_dir, name) in m.borrow().iter() {
+            let rd_canon = read_dir.canonicalize().unwrap_or_else(|_| read_dir.clone());
+            if real_canon == rd_canon {
+                return Some(name.clone());
             }
         }
         None
@@ -456,5 +507,31 @@ mod tests {
             cache.path(),
         );
         assert_eq!(source_name_for_read_dir(&cache.path().join("subdir")), None);
+    }
+
+    #[test]
+    fn fetched_source_dir_maps_to_source_name() {
+        // The zsh-syntax-highlighting-config root: `builtins.fetchGit` returns a
+        // temp dir whose basename is a 64-char sha256 cache-hash. Coerced-to-
+        // store as a derivation `src`, CppNix names it `-source`, not the
+        // cache-hash. `register_fetched_source` records that intended name.
+        let cache = tempfile::tempdir().unwrap();
+        register_fetched_source(cache.path(), "source");
+        assert_eq!(
+            source_name_for_read_dir(cache.path()).as_deref(),
+            Some("source"),
+        );
+    }
+
+    #[test]
+    fn fetched_source_registry_honors_explicit_name() {
+        // The registered name flows through verbatim (a fetcher that honors an
+        // explicit `name` arg would register that name instead of "source").
+        let cache = tempfile::tempdir().unwrap();
+        register_fetched_source(cache.path(), "my-thing");
+        assert_eq!(
+            source_name_for_read_dir(cache.path()).as_deref(),
+            Some("my-thing"),
+        );
     }
 }

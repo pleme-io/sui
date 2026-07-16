@@ -91,6 +91,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 .unpack(&extract_dir)
                 .map_err(|e| EvalError::TypeError(format!("fetchTarball: {e}")))?;
         }
+        // `builtins.fetchTarball` copied-to-store is named `-source` by CppNix.
+        crate::path::register_fetched_source(&extract_dir, "source");
         Ok(Value::Path(Box::new(SmolStr::from(extract_dir.to_string_lossy().as_ref()))))
     });
 }
@@ -160,6 +162,15 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
 /// Read git metadata from the already-cloned target directory and
 /// assemble the result attrset.
 pub(crate) fn git_result_attrs(target: &std::path::Path, submodules: bool) -> Result<Value, EvalError> {
+    // Whole-class byte-parity (2026-07-16): CppNix names a `builtins.fetchGit`/
+    // `fetchTree(git)` tree `<store-hash>-source` when it is copied-to-store as
+    // a derivation `src` (`zshSynHlSrc = builtins.fetchGit {…}`). sui returns a
+    // raw temp `Value::Path` whose basename is the sha256 cache-hash, so the
+    // copy-to-store coercion previously named the store path `<store-hash>-
+    // <cache-hash>`. Register this exact result dir with CppNix's `-source`
+    // name so `path::source_name_for_read_dir` corrects the copy-to-store name.
+    // Bytes-neutral: only the NAME changes; the NAR hash is unaffected.
+    crate::path::register_fetched_source(target, "source");
     let target_str = target.to_string_lossy().into_owned();
     let rev = crate::git::head_rev(target).unwrap_or_default();
     let short_rev = if rev.len() >= 7 { rev[..7].to_string() } else { rev.clone() };
@@ -239,6 +250,9 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
                 .status();
         }
     }
+    // Same whole-class rule: a `fetchMercurial` tree copied-to-store is
+    // named `-source` by CppNix, not the cache-hash basename.
+    crate::path::register_fetched_source(&target, "source");
     let mut result = NixAttrs::new();
     result.insert(
         "outPath".into(),
@@ -332,6 +346,10 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                     message: e.to_string(),
                 })?;
             }
+            // Same whole-class rule as fetchGit: a `fetchTree(tarball)` tree
+            // copied-to-store is named `-source` by CppNix, not the extract
+            // dir's cache-hash basename.
+            crate::path::register_fetched_source(&extract_dir, "source");
             let mut result = NixAttrs::new();
             result.insert(
                 "outPath".into(),
