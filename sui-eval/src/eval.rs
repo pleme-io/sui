@@ -368,10 +368,24 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         // Clear the identifier symbol cache so that offsets from
         // previous top-level evaluations don't persist.
         clear_ident_cache();
-        // Clear the source-position registry for the same reason — a stale
-        // `source_id → text` entry from a prior pass would resolve a key
-        // offset against the wrong file.
-        crate::pos::clear_sources();
+        // SOURCE_TEXTS is deliberately NOT cleared here — it is append-only
+        // for the life of the process. Clearing it on a `nesting == 0`
+        // re-entry was a shared-mutable-cell bug: the top-level
+        // `eval_with_file` RETURNS (nesting → 0) BEFORE its caller
+        // deep-forces the result (e.g. `value.to_json()` at the CLI), and
+        // that deep force triggers lazy `import`s which re-enter
+        // `eval_with_file` at nesting == 0 — so clearing here wiped every
+        // registered file's text mid-force. Any `unsafeGetAttrPos` resolved
+        // after the first deep-force import then failed its `text_for()`
+        // existence check and returned null (the cid `options.json` attrTag
+        // `declarations = []` divergence). SOURCE_TEXTS is keyed by canonical
+        // path and `register_source` stores each path's text only once
+        // (identical on re-parse), so append-only is correct — a path always
+        // maps to its own text — and matches CppNix, which never clears its
+        // source registry. The only cost is bounded growth within one process
+        // (a non-issue for a per-invocation CLI). Removing the clearable cell
+        // makes the whole "absent/wrong source text at resolve time" class
+        // unrepresentable rather than merely guarded.
     }
     let parse = rnix::Root::parse(input);
     if !parse.errors().is_empty() {
