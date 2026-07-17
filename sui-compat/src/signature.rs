@@ -122,6 +122,19 @@ impl std::fmt::Display for StorePathSignature {
 /// so a sui-signed path whose references were not already in canonical
 /// order failed its own verifier. Sorting here closes that mismatch at the
 /// one place the order is decided.
+///
+/// References are also *absolutized* **inside** this function, for the same
+/// single-canonical-point reason as sorting. Nix's fingerprint uses absolute
+/// `/nix/store/...` references, but a narinfo's `References:` wire field
+/// carries bare basenames — so every reference is prefixed with the same store
+/// directory as `store_path` (an already-absolute reference passes through
+/// unchanged, so this is idempotent). This closes the second site of the
+/// basename-vs-absolute mismatch the substituter accept path
+/// (`verify_narinfo_signatures`) hit: doing it here means the signer, the
+/// verifier, and any future caller all fingerprint the identical canonical
+/// bytes regardless of the reference form they hold — a sui-signed path with
+/// basename references verifies against real Nix, and the illegal
+/// wrong-form fingerprint has no code path left to construct.
 #[must_use]
 pub fn compute_fingerprint(
     store_path: &str,
@@ -129,7 +142,17 @@ pub fn compute_fingerprint(
     nar_size: u64,
     references: &[String],
 ) -> String {
-    let mut sorted_refs: Vec<&str> = references.iter().map(String::as_str).collect();
+    let store_dir = store_path.rsplit_once('/').map_or("/nix/store", |(dir, _)| dir);
+    let mut sorted_refs: Vec<String> = references
+        .iter()
+        .map(|r| {
+            if r.starts_with('/') {
+                r.clone()
+            } else {
+                format!("{store_dir}/{r}")
+            }
+        })
+        .collect();
     sorted_refs.sort_unstable();
     let refs = sorted_refs.join(",");
     format!("1;{store_path};{nar_hash};{nar_size};{refs}")
@@ -210,13 +233,29 @@ mod tests {
 
     #[test]
     fn compute_fingerprint_format() {
+        // Basename references are absolutized to the store dir of store_path
+        // (Nix's canonical fingerprint form) — the second-site fix matching the
+        // substituter accept path, so sui-signed paths verify against real Nix.
         let fp = compute_fingerprint(
             "/nix/store/abc-hello",
             "sha256:deadbeef",
             1024,
             &["dep1".to_string(), "dep2".to_string()],
         );
-        assert_eq!(fp, "1;/nix/store/abc-hello;sha256:deadbeef;1024;dep1,dep2");
+        assert_eq!(
+            fp,
+            "1;/nix/store/abc-hello;sha256:deadbeef;1024;/nix/store/dep1,/nix/store/dep2"
+        );
+        // Already-absolute references pass through unchanged (idempotent), so a
+        // caller that pre-absolutized (the accept path) computes the identical
+        // fingerprint.
+        let fp_abs = compute_fingerprint(
+            "/nix/store/abc-hello",
+            "sha256:deadbeef",
+            1024,
+            &["/nix/store/dep1".to_string(), "/nix/store/dep2".to_string()],
+        );
+        assert_eq!(fp_abs, fp);
     }
 
     #[test]
@@ -300,8 +339,8 @@ mod tests {
         let ref_part = parts[4];
         let ref_entries: Vec<&str> = ref_part.split(',').collect();
         assert_eq!(ref_entries.len(), 20);
-        assert_eq!(ref_entries[0], "dep-00");
-        assert_eq!(ref_entries[19], "dep-19");
+        assert_eq!(ref_entries[0], "/nix/store/dep-00");
+        assert_eq!(ref_entries[19], "/nix/store/dep-19");
     }
 
     #[test]
@@ -376,7 +415,7 @@ mod tests {
     #[test]
     fn fingerprint_with_single_reference() {
         let fp = compute_fingerprint("/nix/store/abc", "sha256:xxx", 500, &["dep".to_string()]);
-        assert_eq!(fp, "1;/nix/store/abc;sha256:xxx;500;dep");
+        assert_eq!(fp, "1;/nix/store/abc;sha256:xxx;500;/nix/store/dep");
     }
 
     #[test]
@@ -546,8 +585,8 @@ mod tests {
     #[test]
     fn fingerprint_with_three_references_comma_separated() {
         let refs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let fp = compute_fingerprint("/p", "h", 1, &refs);
-        assert!(fp.ends_with(";a,b,c"));
+        let fp = compute_fingerprint("/nix/store/p", "h", 1, &refs);
+        assert!(fp.ends_with(";/nix/store/a,/nix/store/b,/nix/store/c"));
     }
 
     // ── Ref-ordering canonicalization (the latent-bug fix) ──────
@@ -557,8 +596,8 @@ mod tests {
         // Unsorted input must produce the SAME canonical fingerprint as the
         // sorted input — this is the property the signer and verifier rely on.
         let unsorted = vec!["c".to_string(), "a".to_string(), "b".to_string()];
-        let fp = compute_fingerprint("/p", "h", 1, &unsorted);
-        assert!(fp.ends_with(";a,b,c"), "references must be sorted, got {fp}");
+        let fp = compute_fingerprint("/nix/store/p", "h", 1, &unsorted);
+        assert!(fp.ends_with(";/nix/store/a,/nix/store/b,/nix/store/c"), "references must be sorted, got {fp}");
     }
 
     #[test]
