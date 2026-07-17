@@ -121,32 +121,46 @@ fn is_tty(fd: i32) -> bool {
 
 // ── Primitive styling helpers ─────────────────────────────────────
 
-/// Wrap text in a foreground-color ANSI escape.  When styling is
-/// disabled, returns the text unchanged (no escapes added).
+/// The capability kazari should paint at, honoring sui's `styling_enabled()`
+/// gate. When styling is off → plain (no SGR). When on → the terminal's
+/// probed depth (so sui now degrades truecolor → 256 → 16 instead of always
+/// emitting truecolor); when forced-on over a pipe (`SUI_FORCE_COLOR` / the
+/// test override) the probe sees no tty, so we honor the force at truecolor
+/// — sui's historical behavior.
+fn paint_caps() -> kazari::Capability {
+    if !styling_enabled() {
+        return kazari::Capability::plain();
+    }
+    let probed = kazari::Capability::probe();
+    if probed.level.is_colored() {
+        probed
+    } else {
+        kazari::Capability::fixed(kazari::ColorLevel::Truecolor, probed.width, true)
+    }
+}
+
+fn kz(color: Rgb) -> kazari::Rgb {
+    kazari::Rgb::new(color.0, color.1, color.2)
+}
+
+/// Wrap text in a foreground color.  Routes through kazari — typed SGR via
+/// anstyle (no `format!()` of an escape), capability-honest degradation.
+/// When styling is disabled, returns the text unchanged.
 #[must_use]
 pub fn fg(color: Rgb, text: &str) -> String {
-    if !styling_enabled() {
-        return text.to_string();
-    }
-    format!("\x1b[38;2;{};{};{}m{}\x1b[0m", color.0, color.1, color.2, text)
+    kazari::paint_rgb_at(kz(color), text, false, false, &paint_caps())
 }
 
-/// Bold + foreground.
+/// Bold + foreground (via kazari).
 #[must_use]
 pub fn bold_fg(color: Rgb, text: &str) -> String {
-    if !styling_enabled() {
-        return text.to_string();
-    }
-    format!("\x1b[1;38;2;{};{};{}m{}\x1b[0m", color.0, color.1, color.2, text)
+    kazari::paint_rgb_at(kz(color), text, true, false, &paint_caps())
 }
 
-/// Dim (faint) + foreground.
+/// Dim (faint) + foreground (via kazari).
 #[must_use]
 pub fn dim_fg(color: Rgb, text: &str) -> String {
-    if !styling_enabled() {
-        return text.to_string();
-    }
-    format!("\x1b[2;38;2;{};{};{}m{}\x1b[0m", color.0, color.1, color.2, text)
+    kazari::paint_rgb_at(kz(color), text, false, true, &paint_caps())
 }
 
 // ── Semantic helpers (the everyday surface) ───────────────────────

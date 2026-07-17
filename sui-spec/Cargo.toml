@@ -10,6 +10,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# kazari (飾り) — the fleet line-output typescape. sui's style.rs now routes
+# every styled byte through kazari's typed, capability-honest (truecolor →
+# 256 → 16 → plain), format!()-free emission instead of hand-rolled ANSI.
+# M0: path dep for the local proof; flips to a published git dep on release.
+kazari = { path = "../../kazari" }
 tatara-lisp.workspace = true
 tatara-lisp-derive.workspace = true
 serde.workspace = true
