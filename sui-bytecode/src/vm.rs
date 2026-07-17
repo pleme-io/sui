@@ -2396,6 +2396,71 @@ impl<'a> VM<'a> {
             _ => Ok(None),
         }
     }
+    /// Coerce an already-forced [`VMValue`] to a derivation-env string the way
+    /// CppNix (and the tree-walker's `coerce_to_string_copy_to_store`) does.
+    ///
+    /// Returns `None` for values with no meaningful string form (closures,
+    /// builtins, un-`outPath`'d attrsets) — the caller skips those env entries
+    /// rather than erroring, matching the tree-walker's `_opt` coercion.
+    ///
+    /// Mirrors `sui-eval/src/value.rs::coerce_to_string_impl` for every value
+    /// type the VM can represent:
+    ///   - `Float` → `%f` (6 decimals), NOT Rust's shortest form.
+    ///   - `List` → items coerced + space-joined.
+    ///   - `Attrs` → `outPath` (or `__toString`) coerced; else `None`.
+    ///
+    /// NOTE (parity tier): the VM does NOT track string context (VMValue::String
+    /// carries no context — deferred to Phase 2), so this coercion cannot
+    /// populate inputDrvs/inputSrcs edges the way the tree-walker does. For
+    /// context-free derivation shapes the env bytes match; context-bearing
+    /// shapes still diverge until the VM's Phase-2 context work lands. The
+    /// differential test names exactly which shapes reach parity here.
+    fn coerce_drv_env_value(&mut self, v: &VMValue) -> Option<String> {
+        match v {
+            VMValue::String(s) => Some(s.clone()),
+            VMValue::Path(p) => Some(p.clone()),
+            VMValue::Int(n) => Some(n.to_string()),
+            // CppNix uses C printf "%f" → always 6 decimals (`1.5` → "1.500000").
+            // Rust's `{}` strips trailing zeros; match the tree-walker's `{f:.6}`.
+            VMValue::Float(f) => Some(format!("{f:.6}")),
+            VMValue::Bool(true) => Some("1".to_string()),
+            VMValue::Bool(false) => Some(String::new()),
+            VMValue::Null => Some(String::new()),
+            VMValue::List(items) => {
+                let mut parts = Vec::with_capacity(items.len());
+                for item in items {
+                    // Force each item then coerce (tree-walker forces list items).
+                    let forced = self
+                        .force_value(NanBox::from_vmvalue(item))
+                        .ok()?
+                        .to_vmvalue();
+                    parts.push(self.coerce_drv_env_value(&forced)?);
+                }
+                Some(parts.join(" "))
+            }
+            VMValue::Attrs(map) => {
+                // CppNix: an attrset coerces via `__toString` then `outPath`;
+                // otherwise it has no string form (tree-walker errors, but the
+                // env loop uses the `_opt` variant → skip).
+                let to_string_sym = self.interner.intern("__toString");
+                if map.contains_key(&to_string_sym) {
+                    // A `__toString`-bearing attrset requires applying the
+                    // function; that goes through the tree-walker seam the VM
+                    // does not have here. Leave to the tree-walker (skip) rather
+                    // than emit a wrong value — honest under-approximation.
+                    return None;
+                }
+                let out_path_sym = self.interner.intern("outPath");
+                let out_path = map.get(&out_path_sym)?;
+                let forced = self
+                    .force_value(NanBox::from_vmvalue(out_path))
+                    .ok()?
+                    .to_vmvalue();
+                self.coerce_drv_env_value(&forced)
+            }
+            _ => None,
+        }
+    }
     /// Build a derivation from a VM attrset (with interner access).
     fn vm_build_derivation(&mut self, arg: NanBox) -> Result<NanBox, VMError> {
         use sui_compat::derivation::{Derivation, DerivationOutput};
@@ -2484,15 +2549,23 @@ impl<'a> VM<'a> {
             Vec::new()
         };
         // Optional `outputs` list.
+        // IMPORTANT (parity fix): list items arrive as NanBox entries that are
+        // frequently still thunks. The previous reader pattern-matched directly
+        // on `VMValue::String(s)` and SKIPPED thunks — so every multi-output
+        // derivation (glibc/openssl/systemd/gcc/most of stdenv) silently
+        // collapsed to a single `out`-only drv, diverging the .drv path from
+        // both nix and the tree-walker. Force each item exactly like the `args`
+        // reader above so declared outputs survive.
         let outputs_sym = self.interner.intern("outputs");
         let outputs: Vec<String> = if let Some(o) = attrs.get(&outputs_sym) {
-            let vmval = o.to_vmvalue();
-            match vmval {
+            let forced_o = self.force_value(o.clone())?;
+            match forced_o.to_vmvalue() {
                 VMValue::List(l) => {
                     let mut out = Vec::with_capacity(l.len());
                     for item in &l {
-                        if let VMValue::String(s) = item {
-                            out.push(s.clone());
+                        let forced = self.force_value(NanBox::from_vmvalue(item))?;
+                        if let VMValue::String(s) = forced.to_vmvalue() {
+                            out.push(s);
                         }
                     }
                     if out.is_empty() {
@@ -2506,33 +2579,66 @@ impl<'a> VM<'a> {
         } else {
             vec!["out".to_string()]
         };
+        // `__ignoreNulls = true` (CppNix): attrs whose value is null are dropped
+        // from the env, and `__ignoreNulls` itself is consumed (never emitted).
+        // Every stdenv mkDerivation sets this, so without it the VM env carried
+        // extra `__ignoreNulls` + any null attr, diverging the modulo hash from
+        // both nix and the tree-walker (derivation.rs ~224).
+        let ignore_nulls_sym = self.interner.intern("__ignoreNulls");
+        let ignore_nulls = attrs
+            .get(&ignore_nulls_sym)
+            .map(|v| self.force_value(v.clone()))
+            .transpose()?
+            .map(|v| matches!(v.to_vmvalue(), VMValue::Bool(true)))
+            .unwrap_or(false);
+
         // Build env vars from non-special attributes.
+        // Excluded from env: `name`/`system`/`builder` (re-inserted below from
+        // the coerced locals), `args` (structural, not an env var), and the
+        // control flags CppNix consumes rather than emits (`__ignoreNulls`,
+        // `__impure`, `__contentAddressed`). NOT excluded — matching the
+        // tree-walker (derivation.rs ~286): `outputs` (coerced to "out dev …")
+        // and `__structuredAttrs` (coerced to "" for a non-structured drv);
+        // CppNix emits both, and dropping either diverges the modulo hash.
         let special = [
-            "name", "system", "builder", "args", "outputs",
-            "__impure", "__contentAddressed", "__structuredAttrs",
+            "name", "system", "builder", "args",
+            "__ignoreNulls", "__impure", "__contentAddressed",
         ];
         let special_syms: Vec<Symbol> = special
             .iter()
             .map(|s| self.interner.intern(s))
             .collect();
         let mut env_vars: BTreeMap<String, String> = BTreeMap::new();
-        for (k, v) in &attrs {
-            if special_syms.contains(k) {
+        // Collect the (sym, key_str) pairs first to avoid borrowing `attrs`
+        // across the `&mut self` force calls in the loop below.
+        let env_keys: Vec<(Symbol, String)> = attrs
+            .iter()
+            .filter(|(k, _)| !special_syms.contains(k))
+            .map(|(k, _)| (*k, self.interner.resolve(*k).to_string()))
+            .collect();
+        for (k, key_str) in env_keys {
+            let Some(v) = attrs.get(&k) else { continue };
+            // Force the value BEFORE coercion: nearly every real env attr is a
+            // thunk (the previous `v.to_vmvalue()` + `_ => continue` dropped
+            // every thunk-valued env var — i.e. almost all of them). This
+            // mirrors the tree-walker's force-then-coerce in construct_derivation.
+            let forced = self.force_value(v.clone())?;
+            let fv = forced.to_vmvalue();
+            // `__ignoreNulls` drops null-valued attrs entirely.
+            if ignore_nulls && matches!(fv, VMValue::Null) {
                 continue;
             }
-            let key_str = self.interner.resolve(*k).to_string();
-            let vmval = v.to_vmvalue();
-            let s = match &vmval {
-                VMValue::String(s) => s.clone(),
-                VMValue::Int(n) => n.to_string(),
-                VMValue::Float(f) => format!("{f}"),
-                VMValue::Bool(true) => "1".to_string(),
-                VMValue::Bool(false) => String::new(),
-                VMValue::Null => String::new(),
-                VMValue::Path(p) => p.clone(),
-                _ => continue,
-            };
-            env_vars.insert(key_str, s);
+            // Coerce with the SAME semantics as the tree-walker's
+            // `coerce_to_string_copy_to_store` for the value types the VM can
+            // represent (lists space-join, attrs use outPath, floats use %f).
+            // A value with no meaningful string form is skipped (matches the
+            // tree-walker's `coerce_..._opt` returning None), not errored.
+            match self.coerce_drv_env_value(&fv) {
+                Some(s) => {
+                    env_vars.insert(key_str, s);
+                }
+                None => continue,
+            }
         }
         env_vars.insert("name".to_string(), name.clone());
         env_vars.insert("system".to_string(), system.clone());
@@ -2597,11 +2703,55 @@ impl<'a> VM<'a> {
                     hash: output_hash_hex,
                 },
             );
+            // CppNix hashes the FOD with `env["out"] = <out-path>` present (the
+            // input-addressed spec's FillOutputs phase sets it; this hand-rolled
+            // fixed-output branch skipped it) — without it the FOD drvPath
+            // diverges from nix + the tree-walker while its outPath already
+            // matches (derivation.rs ~437).
+            drv.env.insert("out".to_string(), out_path.clone());
+
             let drv_content = drv.serialize();
-            let drv_path = sui_compat::store_path::compute_drv_path(
-                drv_content.as_bytes(),
-                &name,
-            );
+            // Fold the .drv's references (inputDrvs + inputSrcs) into the store
+            // path — CppNix's makeTextPath does this for EVERY derivation,
+            // including fixed-output ones. A fetchurl FOD consumes curl /
+            // mirrors-list / stdenv as inputDrvs, so without the refs its .drv
+            // path diverges from nix. (A bare FOD with no inputs has an empty
+            // ref set, so the simple FOD case matched even while this hid.)
+            // NOTE: the VM does not yet collect string context, so
+            // `input_derivations`/`input_sources` are empty here — this fold is
+            // a no-op today but matches the tree-walker's construction so the
+            // path stays correct once VM context lands (derivation.rs ~446).
+            let drv_refs: Vec<String> = drv.input_derivations.keys().cloned()
+                .chain(drv.input_sources.iter().cloned())
+                .collect();
+            let drv_path = sui_compat::store_path::compute_drv_path_with_refs(
+                drv_content.as_bytes(), &name, &drv_refs);
+
+            // CppNix `hashDerivationModulo` for a FIXED-OUTPUT derivation is the
+            // special sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>"), NOT
+            // the input-addressed ATerm hash. Cache it against this FOD's drv
+            // path so every input-addressed derivation that consumes this FOD
+            // substitutes the correct modulo hash — without it the consumer's
+            // output path (and everything transitively above it) diverges from
+            // nix + the tree-walker (derivation.rs ~452).
+            let out_output = drv.outputs.get("out");
+            let method_algo = out_output
+                .map(|o| o.hash_algo.clone())
+                .unwrap_or_default();
+            let output_hash_hex = out_output
+                .map(|o| o.hash.clone())
+                .unwrap_or_default();
+            let modulo_preimage =
+                format!("fixed:out:{method_algo}:{output_hash_hex}:{out_path}");
+            let modulo_hex: String = {
+                use sha2::{Digest, Sha256};
+                Sha256::digest(modulo_preimage.as_bytes())
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect()
+            };
+            sui_spec::derivation::remember_modulo_hash(&drv_path, &modulo_hex);
+
             let mut out_paths = BTreeMap::new();
             out_paths.insert("out".to_string(), out_path);
             (drv_path, out_paths, drv)
