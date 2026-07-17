@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "4ad4761d7f57edb13297d25879c770389e8360cca7783f318053bac2b23cc33d",
+  "cargo_lock_sha256": "72a39544acf10aabf833cc40593edfb3769e45d7dc657b232d195607f315fa33",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -12952,6 +12952,34 @@
           "std"
         ]
       },
+      "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "is-terminal-0.4.17": {
         "runtime_dependencies": [
           {
@@ -13120,6 +13148,52 @@
             "uses_default_features": true,
             "optional": false,
             "target": "cfg(unix)",
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": {
+        "runtime_dependencies": [
+          {
+            "name": "anstyle",
+            "package_key": "anstyle-1.0.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "irodori",
+            "package_key": "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "terminal_size",
+            "package_key": "terminal_size-0.4.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "unicode_width",
+            "package_key": "unicode-width-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
             "tree": "target"
           }
         ],
@@ -25635,6 +25709,16 @@
             "tree": "target"
           },
           {
+            "name": "kazari",
+            "package_key": "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "libc",
             "package_key": "libc-0.2.186",
             "kind": "normal",
@@ -26406,6 +26490,24 @@
           "default",
           "getrandom"
         ]
+      },
+      "terminal_size-0.4.4": {
+        "runtime_dependencies": [
+          {
+            "name": "rustix",
+            "package_key": "rustix-1.1.4",
+            "kind": "normal",
+            "features": [
+              "termios"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(unix)",
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "termtree-0.5.1": {
         "runtime_dependencies": [],
@@ -28908,6 +29010,14 @@
           "default",
           "emoji",
           "general-category"
+        ]
+      },
+      "unicode-width-0.2.2": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "cjk",
+          "default"
         ]
       },
       "unicode-xid-0.2.6": {
@@ -37366,6 +37476,9 @@
     "ipnet-2.12.0": {
       "edition": "2018"
     },
+    "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": {
+      "edition": "2024"
+    },
     "is-terminal-0.4.17": {
       "edition": "2018"
     },
@@ -37396,6 +37509,9 @@
     },
     "jobserver-0.1.34": {
       "edition": "2021"
+    },
+    "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": {
+      "edition": "2024"
     },
     "keccak-0.1.6": {
       "edition": "2018"
@@ -38436,6 +38552,9 @@
     "tempfile-3.27.0": {
       "edition": "2021"
     },
+    "terminal_size-0.4.4": {
+      "edition": "2021"
+    },
     "termtree-0.5.1": {
       "edition": "2021"
     },
@@ -38616,6 +38735,9 @@
     "unicode-properties-0.1.4": {
       "edition": "2021"
     },
+    "unicode-width-0.2.2": {
+      "edition": "2021"
+    },
     "unicode-xid-0.2.6": {
       "edition": "2015"
     },
@@ -38770,6 +38892,9 @@
       "links": "zstd"
     }
   },
-  "git_nar_sha256": {},
+  "git_nar_sha256": {
+    "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": "sha256-L5f5NWFug3pZduBK+HLJwt6+lQptNIXLank+Mh8326c=",
+    "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": "sha256-RkJPEHUzVEf4L9kiJvRQ9Zdjru4Q7DjNOZsbOUN+Ipg="
+  },
   "flake_metadata": {}
 }

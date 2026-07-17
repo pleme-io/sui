@@ -14,7 +14,7 @@ repository.workspace = true
 # every styled byte through kazari's typed, capability-honest (truecolor →
 # 256 → 16 → plain), format!()-free emission instead of hand-rolled ANSI.
 # M0: path dep for the local proof; flips to a published git dep on release.
-kazari = { path = "../../kazari" }
+kazari = { git = "https://github.com/pleme-io/kazari", rev = "e3811a22a9de376820d0a482fa71578b64a38497" }
 tatara-lisp.workspace = true
 tatara-lisp-derive.workspace = true
 serde.workspace = true
