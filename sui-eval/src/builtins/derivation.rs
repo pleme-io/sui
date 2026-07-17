@@ -325,11 +325,29 @@ fn construct_derivation(
             if ignore_nulls && matches!(forced_v, Value::Null) {
                 continue;
             }
-            if let Some((s, ctx)) = coerce_drv_value_to_string_opt_with_context(&forced_v) {
-                collected_ctx.merge(&ctx);
-                env_vars.insert(k.clone(), s);
-            } else if std::env::var_os("SUI_DEBUG_DRV").is_some() {
-                eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} COERCE-NONE type={}", forced_v.type_name());
+            // A genuine throw/abort/assert (e.g. check-meta's unsupported-
+            // platform assertion on a linux-only build input) PROPAGATES here
+            // via `?`, matching CppNix's derivationStrict; a benign coerce-none
+            // (empty-attrs partial = TypeError) drops the attr as before.
+            match coerce_drv_value_to_string_opt_with_context(&forced_v)? {
+                Some((s, ctx)) => {
+                    collected_ctx.merge(&ctx);
+                    env_vars.insert(k.clone(), s);
+                }
+                None => {
+                    if std::env::var_os("SUI_DEBUG_DRV").is_some() {
+                        eprintln!("[SUI_DEBUG_DRV] drv={name} attr={k} COERCE-NONE type={}", forced_v.type_name());
+                    }
+                    // Record the drop for SUI_PARITY_STRICT — previously only the
+                    // FORCE-ERR path recorded, so a strict run never enumerated a
+                    // coerce-none drop (the fan-out's secondary gap).
+                    parity_strict::record(
+                        &name,
+                        &k,
+                        parity_strict::DropSite::FlatEnv,
+                        &format!("coerce-none type={}", forced_v.type_name()),
+                    );
+                }
             }
         }
         env_vars.insert("name".to_string(), name.clone());

@@ -35,11 +35,28 @@ pub(crate) fn coerce_drv_value_to_string_opt(v: &Value) -> Option<String> {
 }
 
 /// Like [`coerce_drv_value_to_string_opt`] but keeps the context.
-/// Returns `None` if the value has no meaningful string form.
+///
+/// Returns `Ok(None)` for a value with no meaningful string form (a benign
+/// coercion failure — an empty-attrs partial with no `__toString`/`outPath`,
+/// which is the cross-system `libxcrypt` case the FORCE-ERR skip in
+/// `derivation.rs` deliberately tolerates by dropping). But a genuine Nix
+/// `throw`/`abort`/`assert` is PROPAGATED, not swallowed: CppNix propagates
+/// `check-meta`'s unsupported-platform assertion (fired while forcing an
+/// unsupported build input's `outPath`) during `derivationStrict`, so the
+/// derivation fails rather than silently dropping the input. Swallowing it via
+/// `.ok()` is exactly what made sui include a linux-only package
+/// (`android-file-transfer`, via its transitive `fuse` dep) on darwin where
+/// nix throws + excludes it.
 pub(crate) fn coerce_drv_value_to_string_opt_with_context(
     v: &Value,
-) -> Option<(String, StringContext)> {
-    v.coerce_to_string_copy_to_store().ok()
+) -> Result<Option<(String, StringContext)>, EvalError> {
+    match v.coerce_to_string_copy_to_store() {
+        Ok(pair) => Ok(Some(pair)),
+        Err(e @ (EvalError::Throw(_) | EvalError::Abort(_) | EvalError::AssertionFailed(_))) => {
+            Err(e)
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 /// Force an attribute and require it to be present + string-coercible.
