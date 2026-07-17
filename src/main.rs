@@ -4033,6 +4033,134 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).hello.drvPath"))
             })
         }),
+        // ── WHOLE-WORLD FOUNDATION SEAL (wave-4, 2026-07-16) ──────────────────
+        // The Linux stdenv bootstrap + cross-compile splice + the universal
+        // trivial-builders are byte-identical to nix TODAY (proven by ~80 live
+        // probes), but were guarded only TRANSITIVELY through leaf packages.
+        // These rows seal the FOUNDATION every Linux package builds on, so a
+        // regression in the bootstrap / splice / a trivial-builder is a RED GATE,
+        // not a silent pass (Parity Method / DOMINATION REFLEX). All verified
+        // byte-matching nix 2.34.7 at seal time.
+        (ParityProbe { name: "eval stdenv drvPath (x86_64-linux)", description: "the LINUX stdenv — the load-bearing foundation every linux package builds on", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).stdenv.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval stdenv.cc drvPath (x86_64-linux)", description: "the linux stdenv C compiler (gcc-wrapper) — bootstrap chain seal", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).stdenv.cc.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval bootstrapTools drvPath (x86_64-linux)", description: "the stdenv bootstrap-tools — stage0 of the linux bootstrap", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).stdenv.bootstrapTools.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval buildPackages.hello splice identity (x86_64-linux)", description: "the __spliced/buildPackages identity — the pervasive nixpkgs splice machinery", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).buildPackages.hello.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval pkgsCross.musl64.hello drvPath", description: "full cross-compile (x86_64→musl64) — the most fragile nixpkgs machinery", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("(import {np} {{ system = \"x86_64-linux\"; }}).pkgsCross.musl64.hello.drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval lib.systems.elaborate config (x86_64-linux)", description: "platform elaboration — the config triple every stdenv derives from", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ }}).lib.systems.elaborate \"x86_64-linux\").config"))
+            })
+        }),
+        (ParityProbe { name: "eval writeText drvPath (builder-class)", description: "trivial-builder writeText — appears in nearly every closure", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).writeText \"t\" \"hi\").drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval writeShellScript drvPath (builder-class)", description: "trivial-builder writeShellScript — script derivations fleet-wide", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).writeShellScript \"s\" \"echo hi\").drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval buildEnv drvPath (builder-class)", description: "trivial-builder buildEnv — the union-of-paths derivation (system.path etc.)", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).buildEnv {{ name = \"e\"; paths = []; }}).drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval linkFarm drvPath (builder-class)", description: "trivial-builder linkFarm — symlink tree derivations", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).linkFarm \"l\" []).drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval runCommand drvPath (builder-class)", description: "trivial-builder runCommand — the ubiquitous ad-hoc derivation", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).runCommand \"r\" {{ }} \"echo hi\").drvPath"))
+            })
+        }),
+        (ParityProbe { name: "eval symlinkJoin drvPath (builder-class)", description: "trivial-builder symlinkJoin — the merge-many-outputs derivation", expect: Expect::Match }, {
+            let sui = sui_bin.clone(); let nix = nix.to_path_buf();
+            Box::new(move || {
+                let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
+                    Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => return ParityVerdict::Skipped("<nixpkgs> not resolvable".into()),
+                };
+                diff_eval(&sui, &nix, &format!("((import {np} {{ system = \"x86_64-linux\"; }}).symlinkJoin {{ name = \"s\"; paths = []; }}).drvPath"))
+            })
+        }),
         // CLOSED (2026-07-10): curl + git — the last two divergent packages in
         // the 23-package parity basket. Both bottomed out at the SAME root:
         // `python3.13-flit-core-3.12.0.drv` was missing `propagatedBuildInputs`
