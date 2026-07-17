@@ -50,6 +50,16 @@ pub struct BinaryCacheStore {
     trusted_keys: Vec<String>,
     /// Optional authorization header (`("Bearer", "<token>")` or `("Basic", "<creds>")`).
     auth_header: Option<(String, String)>,
+    /// Whether a valid trusted-key signature is REQUIRED before a path
+    /// from this cache is accepted (nix's `require-sigs`, default `true`).
+    ///
+    /// When `true` (the secure default), a substituted path must carry a
+    /// valid signature from one of `trusted_keys` OR be a self-verifying
+    /// content-addressed path — otherwise it is refused. When `false`
+    /// (explicit opt-out, e.g. a trusted local cache the operator
+    /// controls) the signature gate is skipped. Turning off signatures
+    /// does NOT turn off the NAR-hash byte-integrity check.
+    require_signatures: bool,
 }
 
 /// Builder for [`BinaryCacheStore`].
@@ -58,6 +68,7 @@ pub struct BinaryCacheStoreBuilder {
     trusted_keys: Vec<String>,
     client: Option<Box<dyn HttpClient>>,
     auth_header: Option<(String, String)>,
+    require_signatures: bool,
 }
 
 impl BinaryCacheStoreBuilder {
@@ -82,6 +93,18 @@ impl BinaryCacheStoreBuilder {
         self
     }
 
+    /// Set whether a valid trusted-key signature is required to accept a
+    /// path from this cache (nix's `require-sigs`; the default is `true`).
+    ///
+    /// Pass `false` only for a cache the operator fully controls where the
+    /// transport itself is the trust boundary. The NAR-hash integrity
+    /// check still runs either way.
+    #[must_use]
+    pub fn require_signatures(mut self, require: bool) -> Self {
+        self.require_signatures = require;
+        self
+    }
+
     /// Build the [`BinaryCacheStore`].
     #[must_use]
     pub fn build(self) -> BinaryCacheStore {
@@ -90,12 +113,18 @@ impl BinaryCacheStoreBuilder {
             base_url: self.base_url,
             trusted_keys: self.trusted_keys,
             auth_header: self.auth_header,
+            require_signatures: self.require_signatures,
         }
     }
 }
 
 impl BinaryCacheStore {
     /// Create a builder for a binary cache store with the given base URL.
+    ///
+    /// `require_signatures` defaults to `true` — the SECURE default. A path
+    /// with no valid trusted-key signature (and no self-verifying CA) is
+    /// refused unless the operator explicitly opts out via
+    /// [`BinaryCacheStoreBuilder::require_signatures`].
     #[must_use]
     pub fn builder(base_url: &str) -> BinaryCacheStoreBuilder {
         BinaryCacheStoreBuilder {
@@ -103,6 +132,7 @@ impl BinaryCacheStore {
             trusted_keys: Vec::new(),
             client: None,
             auth_header: None,
+            require_signatures: true,
         }
     }
 
@@ -178,6 +208,13 @@ impl BinaryCacheStore {
         &self.trusted_keys
     }
 
+    /// Whether this cache requires a valid trusted-key signature to accept
+    /// a path (nix's `require-sigs`; default `true`).
+    #[must_use]
+    pub fn require_signatures(&self) -> bool {
+        self.require_signatures
+    }
+
     /// Return the configured authorization header, if any.
     #[must_use]
     pub fn auth_header(&self) -> Option<(&str, &str)> {
@@ -228,17 +265,35 @@ impl BinaryCacheStore {
             return Ok(false);
         }
 
-        // `compute_fingerprint` sorts references into Nix's canonical order
-        // internally, so we pass them through as-is — the signer used the
-        // same canonical fingerprint. (This previously sorted here while the
-        // signer did not, which broke verification of any path whose
-        // references were not already sorted; the ordering now lives in one
-        // place — `compute_fingerprint`.)
+        // Nix's canonical fingerprint prints references as ABSOLUTE store
+        // paths (`/nix/store/<hash>-<name>`), but the narinfo `References:`
+        // wire field carries BARE basenames. Feeding the basenames verbatim
+        // computes the WRONG fingerprint, so no real cache.nixos.org
+        // signature ever verifies — empirically confirmed: the real
+        // hello-2.12.3 sig verifies iff the references are absolutized
+        // (`sui-compat/tests/real_cache_fingerprint.rs`). Absolutize here,
+        // matching the exact prefixing the `PathInfo::from(&NarInfo)`
+        // conversion already performs (basename → `/nix/store/<basename>`;
+        // anything already absolute passes through unchanged).
+        // `compute_fingerprint` then sorts into Nix's canonical order
+        // internally, so signer and verifier fingerprint identical bytes.
+        let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+        let absolute_refs: Vec<String> = narinfo
+            .references
+            .iter()
+            .map(|r| {
+                if r.starts_with('/') {
+                    r.clone()
+                } else {
+                    format!("{store_dir}/{r}")
+                }
+            })
+            .collect();
         let fingerprint = compute_fingerprint(
             &narinfo.store_path,
             &narinfo.nar_hash,
             narinfo.nar_size,
-            &narinfo.references,
+            &absolute_refs,
         );
 
         // Build a map of key_name -> public_key_bytes from trusted keys.
@@ -271,6 +326,121 @@ impl BinaryCacheStore {
         }
 
         Ok(false)
+    }
+
+    /// Decide whether a narinfo is acceptable to substitute FROM THIS CACHE,
+    /// applying nix's exact trust model.
+    ///
+    /// A path is acceptable iff:
+    /// 1. this cache does not require signatures (`require_signatures ==
+    ///    false`, an explicit operator opt-out), OR
+    /// 2. the path is content-addressed (`CA:` present) — a CA path is
+    ///    self-verifying: its store-path digest is derived from its
+    ///    content, so a valid CA assertion is trust independent of any
+    ///    signer, exactly as nix treats it, OR
+    /// 3. the narinfo carries ≥1 valid signature from one of this cache's
+    ///    trusted keys.
+    ///
+    /// Otherwise the path is REFUSED with
+    /// [`StoreError::SignatureVerificationFailed`] — matching nix, which
+    /// declines to substitute an unsigned/untrusted path (falling back to a
+    /// local build).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::SignatureVerificationFailed`] when none of the
+    /// acceptance conditions hold.
+    pub fn check_narinfo_acceptable(&self, narinfo: &NarInfo) -> StoreResult<()> {
+        // (1) Operator explicitly turned off the signature requirement.
+        if !self.require_signatures {
+            return Ok(());
+        }
+
+        // (2) Content-addressed paths are self-verifying — the store-path
+        // digest is a function of the content, so a CA assertion needs no
+        // signer. (The NAR-hash check downstream still enforces byte
+        // integrity of the delivered bytes.)
+        if narinfo.ca.as_deref().is_some_and(|ca| !ca.is_empty()) {
+            return Ok(());
+        }
+
+        // (3) Require a valid signature from a trusted key.
+        if Self::verify_narinfo_signatures(narinfo, &self.trusted_keys)? {
+            return Ok(());
+        }
+
+        // No acceptance condition held — refuse.
+        let reason = if self.trusted_keys.is_empty() {
+            "no trusted public keys configured for this cache and the path is not content-addressed".to_string()
+        } else if narinfo.signatures.is_empty() {
+            "narinfo carries no signature".to_string()
+        } else {
+            "no signature matched a trusted public key".to_string()
+        };
+        Err(StoreError::SignatureVerificationFailed {
+            path: narinfo.store_path.clone(),
+            reason,
+        })
+    }
+
+    /// Verify that the SHA-256 hash of the decompressed NAR bytes equals the
+    /// `NarHash` declared in the narinfo.
+    ///
+    /// nix hashes the received NAR and asserts it matches `narinfo.narHash`
+    /// before accepting a substituted path; a corrupt or MITM'd cache could
+    /// otherwise inject arbitrary bytes. Both sides are normalized through
+    /// [`NixHash::parse_any`](sui_compat::hash::NixHash::parse_any) so the
+    /// comparison is over raw digest bytes and is independent of the
+    /// declared encoding (nix uses `sha256:<nix-base32>`; sui's local store
+    /// records `sha256:<hex>` — both decode to the same 32 bytes).
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::NarHashMismatch`] if the computed digest differs from
+    ///   the declared one.
+    /// - [`StoreError::NarInfo`] if the declared `narHash` cannot be decoded.
+    /// - [`StoreError::NotSupported`] if the algorithm is not SHA-256.
+    pub fn verify_nar_hash(narinfo: &NarInfo, nar_bytes: &[u8]) -> StoreResult<()> {
+        use sha2::{Digest, Sha256};
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+
+        // nix narinfo NarHash is always sha256 in practice; be explicit.
+        let raw = narinfo
+            .nar_hash
+            .strip_prefix("sha256:")
+            .or_else(|| narinfo.nar_hash.strip_prefix("sha256-"))
+            .unwrap_or(&narinfo.nar_hash);
+        if narinfo.nar_hash.starts_with("sha1:")
+            || narinfo.nar_hash.starts_with("md5:")
+        {
+            return Err(StoreError::NotSupported(format!(
+                "unsupported NarHash algorithm in {}: {}",
+                narinfo.store_path, narinfo.nar_hash
+            )));
+        }
+
+        // Decode the declared hash to raw digest bytes (hex / nix-base32 /
+        // SRI all accepted).
+        let expected = NixHash::parse_any(HashAlgorithm::Sha256, raw).map_err(|e| {
+            StoreError::NarInfo(format!(
+                "cannot decode NarHash {:?} for {}: {e:?}",
+                narinfo.nar_hash, narinfo.store_path
+            ))
+        })?;
+
+        // Compute the digest of the actual bytes.
+        let actual_digest = Sha256::digest(nar_bytes);
+
+        if actual_digest.as_slice() != expected.digest.as_slice() {
+            let actual = NixHash::new(HashAlgorithm::Sha256, actual_digest.to_vec());
+            return Err(StoreError::NarHashMismatch {
+                path: narinfo.store_path.clone(),
+                expected: narinfo.nar_hash.clone(),
+                actual: actual.to_nix_string(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -1914,6 +2084,7 @@ References:
         let signing_key = SigningKey::from_bytes(&[10u8; 32]);
         let verifying_key = signing_key.verifying_key();
 
+        // The narinfo wire form carries BARE basenames…
         let refs = vec![
             "dep-b".to_string(),
             "dep-a".to_string(),
@@ -1933,8 +2104,14 @@ References:
             ca: None,
         };
 
-        // The verify method sorts references, so we must sign with sorted refs.
-        let mut sorted_refs = refs;
+        // …but nix (and now `verify_narinfo_signatures`) signs/verifies the
+        // fingerprint over ABSOLUTE store paths, sorted. Reproduce that here
+        // so the test signs exactly what the consumer will verify.
+        let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+        let mut sorted_refs: Vec<String> = refs
+            .iter()
+            .map(|r| format!("{store_dir}/{r}"))
+            .collect();
         sorted_refs.sort();
         let fingerprint = compute_fingerprint(
             &narinfo.store_path,
@@ -2015,6 +2192,188 @@ References:
         )
         .unwrap();
         assert!(result, "an unsorted-reference signature must verify");
+    }
+
+    // ── verify_nar_hash (byte-integrity gate) ────────────────────
+
+    fn make_hello_nar() -> Vec<u8> {
+        use sui_compat::nar::{NarNode, NarWriter};
+        let node = NarNode::Regular {
+            executable: false,
+            contents: b"hello".to_vec(),
+        };
+        let mut buf = Vec::new();
+        NarWriter::write(&mut buf, &node).unwrap();
+        buf
+    }
+
+    /// The real sha256 (hex) of `make_hello_nar()`.
+    const HELLO_NAR_HASH_HEX: &str =
+        "sha256:0a430879c266f8b57f4092a0f935cf3facd48bbccde5760d4748ca405171e969";
+
+    fn narinfo_with_nar_hash(nar_hash: &str) -> NarInfo {
+        NarInfo {
+            store_path: "/nix/store/abc-hello".to_string(),
+            url: "nar/abc.nar".to_string(),
+            compression: "none".to_string(),
+            file_hash: "sha256:aaa".to_string(),
+            file_size: 10,
+            nar_hash: nar_hash.to_string(),
+            nar_size: 120,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            ca: None,
+        }
+    }
+
+    #[test]
+    fn verify_nar_hash_matches_hex() {
+        let nar = make_hello_nar();
+        let info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        assert!(BinaryCacheStore::verify_nar_hash(&info, &nar).is_ok());
+    }
+
+    #[test]
+    fn verify_nar_hash_matches_nix_base32() {
+        // The SAME digest expressed in nix-base32 (the form real narinfos use)
+        // must also verify — the check is over raw digest bytes, not encoding.
+        use sui_compat::hash::{HashAlgorithm, NixHash};
+        let nar = make_hello_nar();
+        let raw = HELLO_NAR_HASH_HEX.strip_prefix("sha256:").unwrap();
+        let digest = NixHash::parse_any(HashAlgorithm::Sha256, raw).unwrap();
+        // Re-encode as nix-base32 via the store_path helper.
+        let b32 = sui_compat::store_path::nix_base32_encode(&digest.digest);
+        let info = narinfo_with_nar_hash(&format!("sha256:{b32}"));
+        assert!(
+            BinaryCacheStore::verify_nar_hash(&info, &nar).is_ok(),
+            "nix-base32 NarHash of the same bytes must verify",
+        );
+    }
+
+    #[test]
+    fn verify_nar_hash_rejects_mismatch() {
+        let nar = make_hello_nar();
+        // Declared hash is of DIFFERENT bytes → must be rejected.
+        let wrong = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let info = narinfo_with_nar_hash(wrong);
+        match BinaryCacheStore::verify_nar_hash(&info, &nar) {
+            Err(StoreError::NarHashMismatch { expected, .. }) => {
+                assert_eq!(expected, wrong);
+            }
+            other => panic!("expected NarHashMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_nar_hash_rejects_tampered_bytes() {
+        // Correct declared hash, but the bytes are different → rejected.
+        let info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        let tampered = b"not the hello nar bytes at all".to_vec();
+        assert!(matches!(
+            BinaryCacheStore::verify_nar_hash(&info, &tampered),
+            Err(StoreError::NarHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_nar_hash_rejects_unsupported_algorithm() {
+        let nar = make_hello_nar();
+        let info = narinfo_with_nar_hash("sha1:deadbeef");
+        assert!(matches!(
+            BinaryCacheStore::verify_nar_hash(&info, &nar),
+            Err(StoreError::NotSupported(_))
+        ));
+    }
+
+    // ── check_narinfo_acceptable (the trust gate) ────────────────
+
+    #[test]
+    fn acceptable_when_require_signatures_off() {
+        // Explicit opt-out: unsigned path is accepted.
+        let store = BinaryCacheStore::builder("https://cache.example.com")
+            .require_signatures(false)
+            .build();
+        let info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        assert!(store.check_narinfo_acceptable(&info).is_ok());
+    }
+
+    #[test]
+    fn acceptable_when_content_addressed() {
+        // Secure default on, no trusted keys, but the path is CA → accepted.
+        let store = BinaryCacheStore::builder("https://cache.example.com").build();
+        assert!(store.require_signatures());
+        let mut info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        info.ca = Some("fixed:r:sha256:deadbeef".to_string());
+        assert!(store.check_narinfo_acceptable(&info).is_ok());
+    }
+
+    #[test]
+    fn refused_when_unsigned_and_require_signatures_on() {
+        let store = BinaryCacheStore::builder("https://cache.example.com").build();
+        let info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        assert!(matches!(
+            store.check_narinfo_acceptable(&info),
+            Err(StoreError::SignatureVerificationFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn acceptable_with_trusted_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        let signing_key = SigningKey::from_bytes(&[3u8; 32]);
+        let mut info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        // Non-empty references, given as basenames in the narinfo; the gate
+        // must absolutize them to match nix's signed fingerprint.
+        info.references = vec!["dep-b".to_string(), "dep-a".to_string()];
+
+        let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+        let abs: Vec<String> = info
+            .references
+            .iter()
+            .map(|r| format!("{store_dir}/{r}"))
+            .collect();
+        let fingerprint =
+            compute_fingerprint(&info.store_path, &info.nar_hash, info.nar_size, &abs);
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        info.signatures = vec![format!("k:{}", base64_encode(&sig.to_bytes()))];
+
+        let trusted = format!("k:{}", base64_encode(signing_key.verifying_key().as_bytes()));
+        let store = BinaryCacheStore::builder("https://cache.example.com")
+            .trusted_keys(vec![trusted])
+            .build();
+        assert!(
+            store.check_narinfo_acceptable(&info).is_ok(),
+            "a validly-signed (absolutized-refs) narinfo must be accepted",
+        );
+    }
+
+    #[test]
+    fn refused_with_untrusted_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        let signing_key = SigningKey::from_bytes(&[3u8; 32]);
+        let mut info = narinfo_with_nar_hash(HELLO_NAR_HASH_HEX);
+        let fingerprint =
+            compute_fingerprint(&info.store_path, &info.nar_hash, info.nar_size, &[]);
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        info.signatures = vec![format!("k:{}", base64_encode(&sig.to_bytes()))];
+
+        // Trust a DIFFERENT key under the same name.
+        let other = SigningKey::from_bytes(&[4u8; 32]);
+        let trusted = format!("k:{}", base64_encode(other.verifying_key().as_bytes()));
+        let store = BinaryCacheStore::builder("https://cache.example.com")
+            .trusted_keys(vec![trusted])
+            .build();
+        assert!(matches!(
+            store.check_narinfo_acceptable(&info),
+            Err(StoreError::SignatureVerificationFailed { .. })
+        ));
     }
 
     // ── Auth header tests ────────────────────────────────────────

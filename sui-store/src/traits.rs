@@ -30,6 +30,31 @@ pub enum StoreError {
     /// An internal invariant was violated.
     #[error("internal error: {0}")]
     Internal(String),
+    /// A substituted path's narinfo carried no valid signature from a
+    /// trusted key (and was not a self-verifying content-addressed path,
+    /// and the store requires signatures). Nix REFUSES such a path — it
+    /// falls back to building rather than trusting an unsigned/untrusted
+    /// cache path.
+    #[error("signature verification failed for {path}: {reason}")]
+    SignatureVerificationFailed {
+        /// The store path whose signature could not be verified.
+        path: String,
+        /// Why verification failed (no trusted key matched, etc.).
+        reason: String,
+    },
+    /// The hash of the downloaded NAR bytes did not match the
+    /// `NarHash` declared in the narinfo. A corrupt or MITM'd cache
+    /// could inject bad bytes; nix hashes the received NAR and asserts
+    /// it equals `narinfo.narHash` before accepting the path.
+    #[error("NAR hash mismatch for {path}: narinfo says {expected}, downloaded bytes hash to {actual}")]
+    NarHashMismatch {
+        /// The store path whose NAR failed the integrity check.
+        path: String,
+        /// The `NarHash` the narinfo declared.
+        expected: String,
+        /// The hash actually computed from the downloaded bytes.
+        actual: String,
+    },
 }
 
 /// Information about a store path.

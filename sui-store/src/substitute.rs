@@ -118,6 +118,13 @@ impl Substitutor {
     ///
     /// Returns `Ok(Some(result))` on success, `Ok(None)` if the path is not
     /// in this cache, or `Err` on a hard failure.
+    ///
+    /// The accept path is only reachable through a [`VerifiedNar`] — a value
+    /// whose sole constructor runs BOTH the trust check (a valid trusted-key
+    /// signature or a self-verifying CA path, per nix's `require-sigs`) AND
+    /// the NAR-hash byte-integrity check. `add_to_store` is called only with
+    /// a `VerifiedNar`, so registering an unverified path is unrepresentable
+    /// in this pipeline.
     async fn try_cache(
         &self,
         cache: &BinaryCacheStore,
@@ -130,17 +137,12 @@ impl Substitutor {
             None => return Ok(None),
         };
 
-        // 2. Verify signatures if the cache has trusted keys
-        let trusted_keys = cache.trusted_keys();
-        if !trusted_keys.is_empty() {
-            let valid = BinaryCacheStore::verify_narinfo_signatures(&narinfo, trusted_keys)?;
-            if !valid {
-                return Err(StoreError::Http(format!(
-                    "no valid signature for {} from cache {}",
-                    path, cache.base_url()
-                )));
-            }
-        }
+        // 2. Trust gate (nix's exact model): a path is acceptable iff the
+        //    cache does not require signatures, OR the path is a
+        //    self-verifying content-addressed path, OR the narinfo carries a
+        //    valid signature from one of this cache's trusted keys. A path
+        //    with no valid trusted signature is REFUSED — never substituted.
+        cache.check_narinfo_acceptable(&narinfo)?;
 
         // 3. Download NAR
         let compressed_nar = cache
@@ -151,7 +153,14 @@ impl Substitutor {
         // 4. Decompress
         let nar_data = decompress_nar(&compressed_nar, &narinfo.compression)?;
 
-        // 5. Add to local store
+        // 5. NAR-hash byte-integrity gate: hash the received (decompressed)
+        //    NAR bytes and assert they equal narinfo.narHash. A corrupt or
+        //    MITM'd cache that returns different bytes than it advertised is
+        //    rejected here — the only way to obtain a `VerifiedNar` is to
+        //    pass this check.
+        let verified = VerifiedNar::verify(cache, &narinfo, nar_data)?;
+
+        // 6. Add to local store — takes VERIFIED bytes only.
         let name = path.name();
         let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
         let refs: Vec<String> = narinfo
@@ -166,19 +175,80 @@ impl Substitutor {
             })
             .collect();
 
-        let _ = self.local_store.add_to_store(name, &nar_data, &refs).await?;
+        let _ = self
+            .local_store
+            .add_to_store(name, verified.bytes(), &refs)
+            .await?;
 
         tracing::info!(
             path = %path.to_absolute_path(),
             cache_url = cache.base_url(),
             nar_size = narinfo.nar_size,
-            "substituted from cache",
+            "substituted from cache (signature + NAR-hash verified)",
         );
 
         Ok(Some(SubstituteResult::Substituted {
             cache_url: cache.base_url().to_string(),
             nar_size: narinfo.nar_size,
         }))
+    }
+}
+
+/// A NAR whose bytes have passed BOTH the substituter trust check and the
+/// NAR-hash byte-integrity check.
+///
+/// This is a proof-carrying newtype: the ONLY constructor,
+/// [`VerifiedNar::verify`], runs the two checks and returns `Err` on
+/// failure. Downstream code (`add_to_store`) accepts only a `VerifiedNar`,
+/// so an unverified NAR cannot flow to the local store by construction —
+/// the "download and TRUST" bug class is unrepresentable in this pipeline.
+///
+/// (Tier: this is truly-unrepresentable WITHIN the substitute pipeline — no
+/// expressible path in `try_cache` reaches `add_to_store` without a
+/// `VerifiedNar`. The underlying `Store::add_to_store` trait method still
+/// takes raw bytes for other callers such as local builds, so at the trait
+/// boundary the guarantee is checked-gate, not type-enforced.)
+pub struct VerifiedNar {
+    nar_data: Vec<u8>,
+}
+
+impl VerifiedNar {
+    /// Verify `nar_data` against `narinfo` for a substitution from `cache`.
+    ///
+    /// Runs the trust check ([`BinaryCacheStore::check_narinfo_acceptable`])
+    /// and the byte-integrity check
+    /// ([`BinaryCacheStore::verify_nar_hash`]). Returns the wrapped bytes on
+    /// success.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::SignatureVerificationFailed`] if the narinfo is not
+    ///   trusted.
+    /// - [`StoreError::NarHashMismatch`] if the bytes don't match the
+    ///   declared NarHash.
+    pub fn verify(
+        cache: &BinaryCacheStore,
+        narinfo: &sui_compat::narinfo::NarInfo,
+        nar_data: Vec<u8>,
+    ) -> StoreResult<Self> {
+        // Re-assert the trust gate (defense in depth — verify() alone is a
+        // complete gate even if a caller forgot the earlier check).
+        cache.check_narinfo_acceptable(narinfo)?;
+        // Byte integrity.
+        BinaryCacheStore::verify_nar_hash(narinfo, &nar_data)?;
+        Ok(Self { nar_data })
+    }
+
+    /// The verified NAR bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.nar_data
+    }
+
+    /// Consume and return the verified NAR bytes.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.nar_data
     }
 }
 
@@ -320,10 +390,25 @@ mod tests {
     const TEST_HASH: &str = "sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6";
     const TEST_PATH: &str = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1";
 
+    /// The real sha256 of `make_nar_bytes()` (120-byte NAR of a regular file
+    /// containing `hello`). The NAR-hash gate compares the DECLARED NarHash to
+    /// the hash of the actual bytes, so every mechanics test that expects a
+    /// successful substitution MUST declare this exact hash — a fake NarHash
+    /// is (correctly) rejected. Recompute with a probe if `make_nar_bytes`
+    /// ever changes.
+    const TEST_NAR_HASH: &str =
+        "sha256:0a430879c266f8b57f4092a0f935cf3facd48bbccde5760d4748ca405171e969";
+    const TEST_NAR_SIZE: u64 = 120;
+
     fn test_store_path() -> StorePath {
         StorePath::from_absolute_path(TEST_PATH).unwrap()
     }
 
+    /// A narinfo whose `NarHash`/`NarSize` match `make_nar_bytes()`, so the
+    /// NAR-hash integrity gate passes. References empty; the `Sig:` here is a
+    /// placeholder — mechanics tests build the cache with
+    /// `require_signatures(false)` so the trust gate is skipped (a cache the
+    /// operator controls), isolating the download/decompress/register path.
     fn make_narinfo_text(compression: &str) -> String {
         format!(
             "StorePath: {TEST_PATH}\n\
@@ -331,14 +416,15 @@ mod tests {
              Compression: {compression}\n\
              FileHash: sha256:aaaa\n\
              FileSize: 100\n\
-             NarHash: sha256:bbbb\n\
-             NarSize: 200\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
              References: \n\
              Sig: cache.nixos.org-1:fakesig\n"
         )
     }
 
-    /// Create a minimal valid NAR (single regular file).
+    /// Create a minimal valid NAR (single regular file). Its sha256 is
+    /// [`TEST_NAR_HASH`] and its length is [`TEST_NAR_SIZE`].
     fn make_nar_bytes() -> Vec<u8> {
         use sui_compat::nar::{NarNode, NarWriter};
         let node = NarNode::Regular {
@@ -363,6 +449,11 @@ mod tests {
         zstd::encode_all(std::io::Cursor::new(data), 1).unwrap()
     }
 
+    /// Build a mock cache serving `narinfo_text` + `nar_bytes`, with the
+    /// signature trust gate turned OFF (`require_signatures(false)`) so these
+    /// tests isolate the download/decompress/register + NAR-hash mechanics.
+    /// The dedicated trust-gate tests below exercise `require_signatures(true)`
+    /// with real keys.
     fn make_cache_with_narinfo(
         base_url: &str,
         narinfo_text: &str,
@@ -380,6 +471,7 @@ mod tests {
         Arc::new(
             BinaryCacheStore::builder(base_url)
                 .http_client(Box::new(client))
+                .require_signatures(false)
                 .build(),
         )
     }
@@ -462,7 +554,7 @@ mod tests {
         } = result
         {
             assert_eq!(cache_url, "https://cache.example.com");
-            assert_eq!(nar_size, 200);
+            assert_eq!(nar_size, TEST_NAR_SIZE);
         }
     }
 
@@ -587,15 +679,15 @@ mod tests {
 
     #[tokio::test]
     async fn substitute_registers_with_correct_references() {
-        // Create narinfo with references
+        // Create narinfo with references (NarHash matches make_nar_bytes()).
         let narinfo_text = format!(
             "StorePath: {TEST_PATH}\n\
              URL: nar/{TEST_HASH}.nar.none\n\
              Compression: none\n\
              FileHash: sha256:aaaa\n\
              FileSize: 100\n\
-             NarHash: sha256:bbbb\n\
-             NarSize: 200\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
              References: abc123-glibc-2.37\n\
              Sig: cache.nixos.org-1:fakesig\n"
         );
@@ -627,8 +719,8 @@ mod tests {
              Compression: none\n\
              FileHash: sha256:aaaa\n\
              FileSize: 100\n\
-             NarHash: sha256:bbbb\n\
-             NarSize: 200\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
              References: /nix/store/abc123-glibc-2.37\n\
              Sig: cache.nixos.org-1:fakesig\n"
         );
@@ -647,5 +739,254 @@ mod tests {
 
         let added = store.added.lock().unwrap();
         assert_eq!(added[0].2, vec!["/nix/store/abc123-glibc-2.37"]);
+    }
+
+    // ── Trust gate + NAR-hash gate (require_signatures = true) ──────────
+    //
+    // These exercise the SECURITY path end-to-end: with the secure default
+    // (require_signatures = true), a substituted path is accepted only if it
+    // carries a valid signature from a trusted key AND its NAR bytes hash to
+    // the declared NarHash. A failed gate never reaches `add_to_store`.
+
+    /// Sign the (empty-references) test narinfo with `signing_key` over Nix's
+    /// canonical fingerprint (absolute refs — here none — sorted), returning
+    /// `(narinfo_text, trusted_key_string)`.
+    fn signed_narinfo_text(
+        signing_key: &ed25519_dalek::SigningKey,
+        key_name: &str,
+    ) -> (String, String) {
+        use ed25519_dalek::Signer;
+        use sui_compat::hash::base64_encode;
+        use sui_compat::signature::compute_fingerprint;
+
+        // Empty references → fingerprint's ref field is empty; matches the
+        // narinfo we build below (References: <empty>).
+        let fingerprint =
+            compute_fingerprint(TEST_PATH, TEST_NAR_HASH, TEST_NAR_SIZE, &[]);
+        let sig = signing_key.sign(fingerprint.as_bytes());
+        let sig_str = format!("{key_name}:{}", base64_encode(&sig.to_bytes()));
+        let trusted_key =
+            format!("{key_name}:{}", base64_encode(signing_key.verifying_key().as_bytes()));
+
+        let narinfo_text = format!(
+            "StorePath: {TEST_PATH}\n\
+             URL: nar/{TEST_HASH}.nar.none\n\
+             Compression: none\n\
+             FileHash: sha256:aaaa\n\
+             FileSize: 100\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
+             References: \n\
+             Sig: {sig_str}\n"
+        );
+        (narinfo_text, trusted_key)
+    }
+
+    /// (a) A valid signature from a TRUSTED key + a matching NAR hash is
+    /// accepted and registered — real substitution still works with the gate
+    /// on.
+    #[tokio::test]
+    async fn substitute_trusted_signature_accepted() {
+        use ed25519_dalek::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let (narinfo_text, trusted_key) = signed_narinfo_text(&signing_key, "sui-test-1");
+
+        let nar = make_nar_bytes();
+        let store = Arc::new(MockLocalStore::new());
+        let client = MockHttpClient::new()
+            .with_text(
+                &format!("https://cache.example.com/{TEST_HASH}.narinfo"),
+                200,
+                &narinfo_text,
+            )
+            .with_bytes(
+                &format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"),
+                nar,
+            );
+        // require_signatures defaults to TRUE — do not opt out here.
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .trusted_keys(vec![trusted_key])
+                .build(),
+        );
+        assert!(cache.require_signatures(), "secure default must be on");
+
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+        let result = sub.substitute(&test_store_path()).await.unwrap();
+        assert!(result.is_substituted(), "trusted-signed path must substitute");
+        assert_eq!(store.added_count(), 1);
+    }
+
+    /// (b1) A validly-signed narinfo whose signing key is NOT in the trusted
+    /// set is REFUSED — nothing is registered, the result is NotFound (→ build).
+    #[tokio::test]
+    async fn substitute_untrusted_key_refused() {
+        use ed25519_dalek::SigningKey;
+
+        // Signed by key A, but the cache trusts an unrelated key B.
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let (narinfo_text, _real_key) = signed_narinfo_text(&signing_key, "sui-test-1");
+        let untrusted = {
+            use sui_compat::hash::base64_encode;
+            let other = SigningKey::from_bytes(&[9u8; 32]);
+            format!("sui-test-1:{}", base64_encode(other.verifying_key().as_bytes()))
+        };
+
+        let nar = make_nar_bytes();
+        let store = Arc::new(MockLocalStore::new());
+        let client = MockHttpClient::new()
+            .with_text(
+                &format!("https://cache.example.com/{TEST_HASH}.narinfo"),
+                200,
+                &narinfo_text,
+            )
+            .with_bytes(
+                &format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"),
+                nar,
+            );
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .trusted_keys(vec![untrusted])
+                .build(),
+        );
+
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+        let result = sub.substitute(&test_store_path()).await.unwrap();
+        assert!(result.is_not_found(), "untrusted-key path must be refused");
+        assert_eq!(store.added_count(), 0, "refused path must NOT be registered");
+    }
+
+    /// (b2) An UNSIGNED narinfo (no `Sig:`) with the secure default and no
+    /// trusted keys is refused — nothing registered.
+    #[tokio::test]
+    async fn substitute_unsigned_refused_by_default() {
+        let nar = make_nar_bytes();
+        let store = Arc::new(MockLocalStore::new());
+        // Narinfo with NO Sig line at all.
+        let narinfo_text = format!(
+            "StorePath: {TEST_PATH}\n\
+             URL: nar/{TEST_HASH}.nar.none\n\
+             Compression: none\n\
+             FileHash: sha256:aaaa\n\
+             FileSize: 100\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
+             References: \n"
+        );
+        let client = MockHttpClient::new()
+            .with_text(
+                &format!("https://cache.example.com/{TEST_HASH}.narinfo"),
+                200,
+                &narinfo_text,
+            )
+            .with_bytes(
+                &format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"),
+                nar,
+            );
+        // Default require_signatures = true, no trusted keys.
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .build(),
+        );
+
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+        let result = sub.substitute(&test_store_path()).await.unwrap();
+        assert!(result.is_not_found(), "unsigned path must be refused by default");
+        assert_eq!(store.added_count(), 0);
+    }
+
+    /// (c) A path that passes the trust gate but whose downloaded NAR bytes do
+    /// NOT hash to the declared NarHash is REJECTED by the byte-integrity gate
+    /// — a corrupt/MITM'd cache cannot inject bytes. Nothing is registered.
+    #[tokio::test]
+    async fn substitute_nar_hash_mismatch_rejected() {
+        use ed25519_dalek::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        // The narinfo declares TEST_NAR_HASH and is validly signed for it…
+        let (narinfo_text, trusted_key) = signed_narinfo_text(&signing_key, "sui-test-1");
+
+        // …but the cache serves DIFFERENT bytes than advertised.
+        let tampered = {
+            use sui_compat::nar::{NarNode, NarWriter};
+            let node = NarNode::Regular {
+                executable: false,
+                contents: b"EVIL-INJECTED-PAYLOAD".to_vec(),
+            };
+            let mut buf = Vec::new();
+            NarWriter::write(&mut buf, &node).unwrap();
+            buf
+        };
+
+        let store = Arc::new(MockLocalStore::new());
+        let client = MockHttpClient::new()
+            .with_text(
+                &format!("https://cache.example.com/{TEST_HASH}.narinfo"),
+                200,
+                &narinfo_text,
+            )
+            .with_bytes(
+                &format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"),
+                tampered,
+            );
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .trusted_keys(vec![trusted_key])
+                .build(),
+        );
+
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+        let result = sub.substitute(&test_store_path()).await.unwrap();
+        assert!(
+            result.is_not_found(),
+            "NAR bytes != declared NarHash must be rejected (not registered)"
+        );
+        assert_eq!(store.added_count(), 0, "tampered NAR must NOT be registered");
+    }
+
+    /// A content-addressed (CA) path is accepted even with no trusted key and
+    /// no signature — it is self-verifying — provided its NAR bytes still hash
+    /// to the declared NarHash.
+    #[tokio::test]
+    async fn substitute_content_addressed_accepted_without_signature() {
+        let nar = make_nar_bytes();
+        let store = Arc::new(MockLocalStore::new());
+        let narinfo_text = format!(
+            "StorePath: {TEST_PATH}\n\
+             URL: nar/{TEST_HASH}.nar.none\n\
+             Compression: none\n\
+             FileHash: sha256:aaaa\n\
+             FileSize: 100\n\
+             NarHash: {TEST_NAR_HASH}\n\
+             NarSize: {TEST_NAR_SIZE}\n\
+             References: \n\
+             CA: fixed:r:sha256:{TEST_HASH}\n"
+        );
+        let client = MockHttpClient::new()
+            .with_text(
+                &format!("https://cache.example.com/{TEST_HASH}.narinfo"),
+                200,
+                &narinfo_text,
+            )
+            .with_bytes(
+                &format!("https://cache.example.com/nar/{TEST_HASH}.nar.none"),
+                nar,
+            );
+        // Secure default on, NO trusted keys — CA acceptance is the only path.
+        let cache = Arc::new(
+            BinaryCacheStore::builder("https://cache.example.com")
+                .http_client(Box::new(client))
+                .build(),
+        );
+
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+        let result = sub.substitute(&test_store_path()).await.unwrap();
+        assert!(result.is_substituted(), "CA path must self-verify + substitute");
+        assert_eq!(store.added_count(), 1);
     }
 }
