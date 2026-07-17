@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "114a11dafaecb2e2a1ea86c6e73f781442de298354d306ac6939f4fb6c541edd",
+  "cargo_lock_sha256": "d95642d38411a07e0c5f83ad7f0dc30ec38492623c0b2c9ffc4fb7ed67a5d8d3",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -26090,6 +26090,16 @@
             "tree": "target"
           },
           {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "shikumi",
             "package_key": "shikumi-0.1.108",
             "kind": "normal",
@@ -26118,6 +26128,26 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "tatara_lisp",
+            "package_key": "tatara-lisp-0.2.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tatara_lisp_derive",
+            "package_key": "tatara-lisp-derive-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
           },
           {
             "name": "thiserror",

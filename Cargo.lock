@@ -6745,9 +6745,12 @@ version = "0.1.118"
 dependencies = [
  "async-trait",
  "serde",
+ "serde_json",
  "shikumi",
  "sui-cache",
  "sui-store",
+ "tatara-lisp",
+ "tatara-lisp-derive",
  "thiserror 2.0.18",
  "tokio",
 ]

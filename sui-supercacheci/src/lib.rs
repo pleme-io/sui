@@ -49,14 +49,13 @@
 //! - **LiveTODO(discovered)** — [`SuperCacheCiConfig::discovered`] is the
 //!   trait default (returns `bare()`); cluster `.svc` DNS + breathe-catalog
 //!   discovery is unbuilt.
-//! - **LiveTODO(lisp)** — the `(defsupercacheci …)` authoring surface (the
-//!   Rust + Lisp primary pattern, `#[derive(DeriveTataraDomain)]`) is designed
-//!   but not attached: the sui workspace currently locks a mismatched
-//!   `tatara-lisp 0.2.4` / `tatara-lisp-derive 0.2.107` pair that does not
-//!   compile (a pre-existing skew, not this crate's). The exact re-attach shape
-//!   is preserved as a commented block on [`SuperCacheCiConfig`]; keeping the
-//!   derive off here keeps the schema + tests green in isolation rather than
-//!   rounding the Lisp surface up to "working".
+//! - ~~LiveTODO(lisp)~~ **shipped** — [`SuperCacheCiConfig`] carries
+//!   `#[derive(DeriveTataraDomain)]` + `#[tatara(keyword = "defsupercacheci")]`;
+//!   the workspace's tatara-lisp lib/derive pin skew was already fixed at the
+//!   root (`tatara-lisp-derive = "=0.2.2"`), this crate just hadn't been
+//!   repointed at it. Parsing an authored `(defsupercacheci …)` form and
+//!   feeding it to a runtime `ConfigStore` is still unwired — the derive
+//!   makes the struct *authorable*, not yet *authored from*.
 //!
 //! [`sui`]: https://github.com/pleme-io/sui
 
@@ -415,19 +414,10 @@ pub struct CooptCfg {
 /// hot-reload). See the crate docs for the tier contract and the LiveTODO
 /// ledger.
 ///
-/// **LiveTODO(lisp):** the config is designed to be authored as
-/// `(defsupercacheci :store (…) :cache (…) :sandbox (…) …)` (the Rust + Lisp
-/// primary pattern). Re-attaching the derive is exactly this, once the
-/// workspace's tatara-lisp lib/derive pin skew is resolved:
-///
-/// ```ignore
-/// use tatara_lisp::DeriveTataraDomain;
-///
-/// #[derive(DeriveTataraDomain, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-/// #[tatara(keyword = "defsupercacheci")]
-/// pub struct SuperCacheCiConfig { /* … unchanged fields … */ }
-/// ```
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+/// Authored as `(defsupercacheci :store (…) :cache (…) :sandbox (…) …)` (the
+/// Rust + Lisp primary pattern) via [`tatara_lisp::DeriveTataraDomain`].
+#[derive(tatara_lisp::DeriveTataraDomain, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[tatara(keyword = "defsupercacheci")]
 pub struct SuperCacheCiConfig {
     /// The durable store tier (Postgres at the destination).
     pub store: StoreCfg,

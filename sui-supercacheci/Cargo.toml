@@ -26,16 +26,18 @@ sui-store.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 
+# `(defsupercacheci ...)` authoring surface (Rust + Lisp primary pattern).
+# The workspace root already exact-pins tatara-lisp-derive to "=0.2.2" (the
+# last release matching what tatara-lisp 0.2.4 actually exports) -- the
+# lib/derive skew this crate's LiveTODO(lisp) note described as blocking
+# was already fixed at the workspace level; this crate had just never been
+# repointed at the fix.
+tatara-lisp.workspace = true
+tatara-lisp-derive.workspace = true
+# DeriveTataraDomain's generated impl references serde_json directly.
+serde_json.workspace = true
+
 [dev-dependencies]
 # Async freshness-pass tests + the in-memory sui_cache::StorageBackend double
 # (proves composition of the real collect_garbage with zero disk).
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
-
-# LiveTODO(lisp): the `(defsupercacheci ...)` authoring surface (Rust + Lisp
-# primary pattern, `#[derive(DeriveTataraDomain)]`) is intentionally NOT wired
-# here. The sui workspace's tatara-lisp is currently locked at a mismatched
-# lib/derive pair (`tatara-lisp 0.2.4` + `tatara-lisp-derive 0.2.107`) that does
-# not compile — a pre-existing skew, unrelated to this crate. Re-attaching the
-# derive is a one-line change (see the commented shape in src/lib.rs) once that
-# workspace pin is fixed; keeping the dep out here keeps the config schema + its
-# tests green in isolation rather than rounding the Lisp surface up to "working".
