@@ -4826,15 +4826,28 @@ mod tests {
         }
     }
     #[test]
-    fn builtin_try_eval_with_throw_propagates() {
-        // NOTE: tryEval with a throwing expression currently propagates the
-        // throw because the VM dispatch path forces the argument before
-        // dispatching to tryEval (open upvalue limitation). This test
-        // documents the current behavior.
-        let result = crate::eval_full(
+    fn builtin_try_eval_with_throw_catches() {
+        // tryEval CATCHES a throwing expression (nix parity):
+        // `{ success = false; value = false; }` — verified byte-identical
+        // to cppnix (`nix eval --json` returns the same). The VM previously
+        // PROPAGATED the throw (an open-upvalue dispatch limitation); that
+        // is now fixed, so this test pins the correct catching behavior.
+        let result = eval_full_helper(
             "let bad = builtins.throw \"oops\"; in builtins.tryEval bad"
         );
-        assert!(result.is_err(), "throw propagates through tryEval (current limitation)");
+        match result {
+            StringKeyedValue::Attrs(map) => {
+                assert_eq!(
+                    map.get("success"),
+                    Some(&StringKeyedValue::Bool(false))
+                );
+                assert_eq!(
+                    map.get("value"),
+                    Some(&StringKeyedValue::Bool(false))
+                );
+            }
+            _ => panic!("expected Attrs, got {result:?}"),
+        }
     }
     // -- Regression: stack_depth tracking for branches -------------------
     #[test]
