@@ -2755,7 +2755,10 @@ fn eval_binop(
 
     match op {
         ast::BinOpKind::Add => match (&l, &r) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (Value::Int(a), Value::Int(b)) => a
+                .checked_add(*b)
+                .map(Value::Int)
+                .ok_or_else(|| int_overflow("adding", *a, '+', *b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
@@ -2782,8 +2785,20 @@ fn eval_binop(
             }
             _ => Err(EvalError::op_type("add", l.type_name(), r.type_name())),
         },
-        ast::BinOpKind::Sub => num_op(&l, &r, |a, b| a - b, |a, b| a - b),
-        ast::BinOpKind::Mul => num_op(&l, &r, |a, b| a * b, |a, b| a * b),
+        ast::BinOpKind::Sub => num_op(
+            &l,
+            &r,
+            |a, b| a.checked_sub(b),
+            |a, b| a - b,
+            |a, b| int_overflow("subtracting", a, '-', b),
+        ),
+        ast::BinOpKind::Mul => num_op(
+            &l,
+            &r,
+            |a, b| a.checked_mul(b),
+            |a, b| a * b,
+            |a, b| int_overflow("multiplying", a, '*', b),
+        ),
         ast::BinOpKind::Div => {
             // CppNix rejects division by zero for both int and float
             // operands; Rust's native int-div-by-0 panics (we handle
@@ -2801,7 +2816,13 @@ fn eval_binop(
             if rhs_is_zero {
                 return Err(EvalError::DivisionByZero);
             }
-            num_op(&l, &r, |a, b| a / b, |a, b| a / b)
+            num_op(
+                &l,
+                &r,
+                |a, b| a.checked_div(b),
+                |a, b| a / b,
+                |a, b| int_overflow("dividing", a, '/', b),
+            )
         }
         ast::BinOpKind::Equal => Ok(Value::Bool(l == r)),
         ast::BinOpKind::NotEqual => Ok(Value::Bool(l != r)),
@@ -2836,14 +2857,26 @@ fn eval_binop(
     }
 }
 
+/// CppNix aborts (uncatchably) on i64 arithmetic overflow, e.g.
+/// `integer overflow in adding 9223372036854775807 + 1`. `EvalError::Abort` is
+/// the uncatchable variant (`tryEval` catches only `Throw`/`AssertionFailed`),
+/// matching nix — a wrapping result would silently produce a wrong drvPath.
+#[inline]
+fn int_overflow(verb: &str, a: i64, sym: char, b: i64) -> EvalError {
+    EvalError::Abort(format!("integer overflow in {verb} {a} {sym} {b}"))
+}
+
 fn num_op(
     l: &Value,
     r: &Value,
-    int_op: impl Fn(i64, i64) -> i64,
+    int_op: impl Fn(i64, i64) -> Option<i64>,
     float_op: impl Fn(f64, f64) -> f64,
+    overflow: impl Fn(i64, i64) -> EvalError,
 ) -> Result<Value, EvalError> {
     match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
+        (Value::Int(a), Value::Int(b)) => {
+            int_op(*a, *b).map(Value::Int).ok_or_else(|| overflow(*a, *b))
+        }
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
