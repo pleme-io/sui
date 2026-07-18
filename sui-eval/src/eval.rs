@@ -45,21 +45,109 @@ thread_local! {
 }
 
 /// A single frame in the Nix-level error trace.
+///
+/// The frame is only ever *observed* on the cold error path (via
+/// `attach_trace`). To keep the hot lambda-call path allocation-free,
+/// the per-call lambda frame stores the raw ingredients (a cheap
+/// `Rc`-clone of the closure env + the raw current-eval-file `PathBuf`)
+/// and defers the `format!` / path-strip work into `attach_trace`. The
+/// rendered `(description, file)` pair is byte-identical to the eager
+/// form either way (see the `description()` / `file()` accessors).
 #[derive(Debug, Clone)]
-pub struct NixTraceFrame {
-    pub file: Option<String>,
-    pub description: String,
+pub enum NixTraceFrame {
+    /// Pre-formatted frame (the builtin-call path — kept eager because
+    /// the builtin name is already a `&'static str`, so there is no
+    /// per-call heap-`String` to defer).
+    Eager {
+        file: Option<String>,
+        description: String,
+    },
+    /// Lazy per-lambda-call frame. The `description` string and the
+    /// stripped `file` string are built on demand in `attach_trace`.
+    ///
+    /// - `closure_env` provides the *description*'s file (from
+    ///   `closure.env.eval_file()`) — an O(1) `Rc` refcount bump.
+    /// - `current_file` is the raw `current_eval_file()` snapshot taken
+    ///   at push time (the stack top after the file guard pushed the
+    ///   closure's file), used verbatim for the frame's `file` field so
+    ///   the rendered `loc` matches the eager form byte-for-byte.
+    Lambda {
+        closure_env: Env,
+        current_file: Option<PathBuf>,
+    },
+}
+
+/// Strip the `-source/` store-path prefix from a rendered path exactly
+/// as the eager trace path did (`p.display()...rsplit_once("-source/")`).
+fn strip_source_prefix(p: &std::path::Path) -> String {
+    let s = p.display().to_string();
+    s.rsplit_once("-source/")
+        .map_or_else(|| p.display().to_string(), |(_, tail)| tail.to_string())
+}
+
+impl NixTraceFrame {
+    /// The frame's `file` field (for the trace `loc`), matching the
+    /// eager `frame.file` byte-for-byte.
+    fn file(&self) -> Option<String> {
+        match self {
+            NixTraceFrame::Eager { file, .. } => file.clone(),
+            NixTraceFrame::Lambda { current_file, .. } => {
+                current_file.as_deref().map(strip_source_prefix)
+            }
+        }
+    }
+
+    /// The frame's `description`, matching the eager `frame.description`
+    /// byte-for-byte. Rendered through the `Display` impl (a `write!`
+    /// surface — the description is the frame's canonical serialization,
+    /// per the fleet TYPED-EMISSION rule; no `format!()`).
+    fn description(&self) -> String {
+        self.to_string()
+    }
+}
+
+/// The frame's rendered description IS its `Display` — the typed emission
+/// surface for the trace message (`write!`, never `format!()`). The
+/// `Lambda` arm defers the path-strip to this cold error-path render.
+impl std::fmt::Display for NixTraceFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NixTraceFrame::Eager { description, .. } => f.write_str(description),
+            NixTraceFrame::Lambda { closure_env, .. } => {
+                let file = closure_env.eval_file().map(|p| strip_source_prefix(p));
+                write!(
+                    f,
+                    "while calling function defined in {}",
+                    file.as_deref().unwrap_or("<eval>")
+                )
+            }
+        }
+    }
 }
 
 /// Push a Nix-level trace frame. Returns a guard that pops on drop.
 fn push_nix_trace(desc: impl Into<String>) -> NixTraceGuard {
-    let frame = NixTraceFrame {
+    let frame = NixTraceFrame::Eager {
         file: current_eval_file().map(|p| {
             p.display().to_string()
                 .rsplit_once("-source/")
                 .map_or_else(|| p.display().to_string(), |(_, s)| s.to_string())
         }),
         description: desc.into(),
+    };
+    NIX_TRACE_STACK.with(|s| s.borrow_mut().push(frame));
+    NixTraceGuard
+}
+
+/// Push a *lazy* Nix-level trace frame for a lambda call. Stores only the
+/// raw ingredients (an O(1) `Rc`-clone of the closure env + the raw
+/// `current_eval_file()` snapshot) — the `format!`/path-strip work is
+/// deferred to the cold `attach_trace` path. Returns a guard that pops on
+/// drop. The rendered frame is byte-identical to the eager form.
+fn push_nix_trace_lambda(closure_env: &Env) -> NixTraceGuard {
+    let frame = NixTraceFrame::Lambda {
+        closure_env: closure_env.clone(),
+        current_file: current_eval_file(),
     };
     NIX_TRACE_STACK.with(|s| s.borrow_mut().push(frame));
     NixTraceGuard
@@ -83,8 +171,9 @@ pub fn attach_trace(err: EvalError) -> EvalError {
             .and_then(|s| s.parse::<usize>().ok()).unwrap_or(15);
         let mut trace = format!("{err}");
         for (i, frame) in stack.iter().rev().take(max_frames).enumerate() {
-            let loc = frame.file.as_deref().unwrap_or("<eval>");
-            trace.push_str(&format!("\n  {} ({loc})", frame.description));
+            let file = frame.file();
+            let loc = file.as_deref().unwrap_or("<eval>");
+            trace.push_str(&format!("\n  {} ({loc})", frame.description()));
             if i + 1 >= max_frames && stack.len() > max_frames {
                 trace.push_str(&format!("\n  ... ({} more frames)", stack.len() - max_frames));
             }
@@ -2962,14 +3051,12 @@ fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
                 .eval_file()
                 .cloned()
                 .map(push_eval_file);
-            // Push Nix-level trace frame for function calls
-            let _trace = {
-                let file = closure.env.eval_file()
-                    .map(|p| p.display().to_string()
-                        .rsplit_once("-source/")
-                        .map_or_else(|| p.display().to_string(), |(_, s)| s.to_string()));
-                push_nix_trace(format!("while calling function defined in {}", file.as_deref().unwrap_or("<eval>")))
-            };
+            // Push Nix-level trace frame for function calls. Lazy: stores
+            // only the raw ingredients (O(1) Rc-clone of the closure env +
+            // the current-eval-file snapshot) and defers the format!/strip
+            // work to the cold `attach_trace` path. Renders byte-identical
+            // to the eager form.
+            let _trace = push_nix_trace_lambda(&closure.env);
             match &closure.param {
                 rnix::ast::Param::IdentParam(_) => {
                     // Simple ident param: bind argument WITHOUT forcing.
