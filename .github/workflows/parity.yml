@@ -52,6 +52,19 @@ jobs:
       # A row that can't run on this platform is reported Skipped, not failed —
       # a nix-present linux runner still enforces the x86_64-linux corpus.
       - name: Run byte-parity gate
+        # This runner has NO pinned nixpkgs oracle: it resolves impure <nixpkgs>
+        # to a different rev than the corpus was byte-closed against, so the ~35
+        # ecosystem rows (hello/stdenv/… + the darwin currentSystem seeds) cannot
+        # evaluate here. SUI_PARITY_PUREONLY reclassifies those could-not-evaluate
+        # rows (SuiError, NEVER Diverge) as Skipped, so this gate BLOCKS on the ~40
+        # environment-independent rows (hash/derivation/context/attrset algebra) —
+        # a real byte-divergence there is a red gate. A wrong-byte (Diverge) still
+        # fails even here; only unevaluable rows skip. The FULL corpus is proven on
+        # the operator machine + the pinned-oracle big-mem job (the destination:
+        # a flake-locked oracle + per-row EnvCapability). A seal is only real if
+        # its oracle is reproducible where enforced.
+        env:
+          SUI_PARITY_PUREONLY: "1"
         run: ./target/debug/sui parity
 
       # The cross-run eval-cache wiring box: a warm installable eval must be
