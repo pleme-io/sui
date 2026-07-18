@@ -41,6 +41,37 @@ fn write_fixture(dir: &Path) {
         "{\n  \"nodes\": { \"root\": {} },\n  \"root\": \"root\",\n  \"version\": 7\n}\n",
     )
     .unwrap();
+    // The cross-run eval-cache keys a LOCAL flake on its CLEAN git rev
+    // (`eval_cache_key_for_installable` → `git::clean_worktree_rev`): a non-git
+    // or dirty worktree is REFUSED so a `…-dirty` result is never served stale
+    // after the commit that made it clean (the cid darwin-system regression).
+    // So the hermetic fixture must be a committed, clean git worktree — else the
+    // key is `None`, the cache never populates, and the wiring can't be
+    // exercised. An untracked `eval-cache.json` written during the test does NOT
+    // dirty it (`git diff --quiet HEAD` ignores untracked files), so the warm
+    // eval still finds a clean worktree and serves from the cache. Identity is
+    // forced via GIT_* env so the commit succeeds with no ambient git config
+    // (CI runners have none).
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "sui-test")
+            .env("GIT_AUTHOR_EMAIL", "sui-test@pleme.io")
+            .env("GIT_COMMITTER_NAME", "sui-test")
+            .env("GIT_COMMITTER_EMAIL", "sui-test@pleme.io")
+            .output()
+            .expect("run git for the eval-cache fixture");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "eval-cache wiring fixture"]);
 }
 
 /// `sui --no-vm eval [--raw] <installable>` with a hermetic cache path.
