@@ -92,6 +92,7 @@ pub mod nar;
 pub mod narinfo;
 pub mod operator_view;
 pub mod parity;
+pub mod perf;
 pub mod store_analyze;
 pub mod store_diff;
 pub mod store_inventory;

@@ -37,6 +37,14 @@
   :cppnix-mirror      "libexpr/eval.cc (coerceToString + PathSet context)"
   :depends-on         ("laziness"))
 
+(defsubstrate-domain
+  :name               "perf"
+  :authoring-keywords ("defperf-lever")
+  :gate               M3TypedOnly
+  :purpose            "Performance-lever claim ledger for sui's eval hot path — honesty-gates every optimization's claim (technique→earned proof-tier, status→measured delta, sealed-positive Delta) so a null / regressed / over-claimed lever is caught, never shipped"
+  :cppnix-mirror      ""
+  :depends-on         ("laziness"))
+
 ;; ── M2: gated on module system implementation ────────────────────
 
 (defsubstrate-domain

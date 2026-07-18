@@ -270,6 +270,7 @@ mod tests {
             "dockerfile",
             "laziness",
             "coercion",
+            "perf",
         ] {
             assert!(
                 names.contains(required),
