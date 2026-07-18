@@ -259,10 +259,24 @@ pub fn next_source_id() -> u32 {
 /// (same cost as [`intern`]).
 /// Subsequent calls: `FxHashMap` u64 lookup (~5 ns) — no string hashing.
 pub fn intern_cached(name: &str, source_id: u32, text_offset: u32) -> Symbol {
+    intern_cached_with(source_id, text_offset, || intern(name))
+}
+
+/// Cache an interned `Symbol` by `(source_id, text_offset)`, computing it
+/// lazily via `cold` only on a cache miss.
+///
+/// Steady-state hit: `FxHashMap` u64 lookup — no string materialization, no
+/// string hashing. This lets the identifier-eval hot path avoid the
+/// per-lookup `ident_text().to_string()` heap allocation entirely, since the
+/// `&str` is only needed to intern on the (once-per-offset) cold miss.
+pub fn intern_cached_with<F>(source_id: u32, text_offset: u32, cold: F) -> Symbol
+where
+    F: FnOnce() -> Symbol,
+{
     let key = (u64::from(source_id) << 32) | u64::from(text_offset);
     IDENT_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
-        *cache.entry(key).or_insert_with(|| intern(name))
+        *cache.entry(key).or_insert_with(cold)
     })
 }
 

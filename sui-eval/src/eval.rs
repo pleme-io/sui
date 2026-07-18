@@ -783,21 +783,39 @@ fn maybe_thunk(
         // This approach: (1) is fast for resolved with-scopes (no thunk overhead),
         // (2) handles blackhole fixpoints correctly via WithIdent deferral.
         ast::Expr::Ident(ident) if !is_rec => {
-            let name = ident_text(ident);
-            match name.as_str() {
-                "true" => Value::Bool(true),
-                "false" => Value::Bool(false),
-                "null" => Value::Null,
-                _ => {
-                    let sym = crate::value::intern(&name);
-                    if let Some(v) = env.lookup_fast(sym, &name) {
+            // Cache the interned Symbol by (source_id, text_offset) — same
+            // zero-alloc steady-state path as the strict Ident arm in
+            // `eval_expr`. The ident text is materialized only on the
+            // once-per-offset cold miss and on the (rare) blackhole deferral.
+            let sym = {
+                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let offset = u32::from(ident.syntax().text_range().start());
+                crate::value::intern_cached_with(src_id, offset, || {
+                    crate::value::intern(&ident_text(ident))
+                })
+            };
+            // Zero-copy keyword check on the resolved Symbol.
+            if let Some(kw) = crate::value::with_resolved(sym, |s| match s {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                "null" => Some(Value::Null),
+                _ => None,
+            }) {
+                return kw;
+            }
+            {
+                {
+                    // `name` arg to `lookup_fast` is unused (lookup is by
+                    // Symbol) — pass "" to skip materializing the ident text on
+                    // the hot HIT path.
+                    if let Some(v) = env.lookup_fast(sym, "") {
                         return v;
                     }
                     // Failed — either blackhole or missing. Create WithIdent
                     // thunk for deferred resolution (only for the blackhole case).
                     if let Some((scope_cache, scope_value)) = env.innermost_with_scope() {
                         return Value::Thunk(Thunk::new_with_ident(
-                            SmolStr::from(name.as_str()),
+                            SmolStr::from(ident_text(ident).as_str()),
                             scope_cache,
                             scope_value,
                             env.clone(),
@@ -968,17 +986,41 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 }
                 // Miss / Dynamic → fall through to the unchanged path.
             }
-            let name = ident_text(ident);
-            return match name.as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                "null" => Ok(Value::Null),
-                _ => {
-                    // Intern once, use symbol for all lookups.
-                    let sym = crate::value::intern(&name);
-                    if let Some(v) = env.lookup_fast(sym, &name) {
+            // Cache the interned Symbol by (source_id, text_offset) so the
+            // steady-state identifier lookup pays neither a per-lookup
+            // `ident_text().to_string()` heap alloc nor a string re-hash — the
+            // ident's text is materialized only on the once-per-offset cold
+            // miss. The keyword check + the common `lookup_fast` HIT then run
+            // fully allocation-free; `name` is materialized lazily only on the
+            // miss/error branches, which need the string anyway.
+            let sym = {
+                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let offset = u32::from(ident.syntax().text_range().start());
+                crate::value::intern_cached_with(src_id, offset, || {
+                    crate::value::intern(&ident_text(ident))
+                })
+            };
+            // Zero-copy keyword check on the resolved Symbol — the resolver
+            // never records keywords, so this matches the prior `name.as_str()`
+            // arm exactly.
+            if let Some(kw) = crate::value::with_resolved(sym, |s| match s {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                "null" => Some(Value::Null),
+                _ => None,
+            }) {
+                return Ok(kw);
+            }
+            return {
+                {
+                    // `lookup_fast`'s `name` argument is unused (lookup is by
+                    // Symbol); pass "" to avoid materializing the ident text on
+                    // the hot HIT path.
+                    if let Some(v) = env.lookup_fast(sym, "") {
                         Ok(v)
-                    } else if env.with_scope_count() > 0 {
+                    } else {
+                        let name = ident_text(ident);
+                        if env.with_scope_count() > 0 {
                         // With-scope lookup failed (likely blackhole from fixpoint).
                         // Return a WithIdent thunk for deferred resolution.
                         // This is the eval_expr equivalent of maybe_thunk's deferral.
@@ -1027,8 +1069,9 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         Err(EvalError::UndefinedVar(
                             format!("'{name}'{}", eval_file_ctx()),
                         ))
+                        }
                     }
-                },
+                }
             };
         }
         ast::Expr::Literal(lit) => {

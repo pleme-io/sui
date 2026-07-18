@@ -462,9 +462,10 @@ mod tests {
     #[test]
     fn canonical_lisp_loads_this_sessions_levers() {
         let levers = load_canonical_levers().unwrap();
-        // The four original levers + `overlay-base-move` (the fan-out's
-        // measured-neutral, Discarded attempt).
-        assert_eq!(levers.len(), 5, "this session's authored levers");
+        // 4 original + overlay-base-move (Discarded) + round-2's ident-intern
+        // (the first Proven lever) + apply-trace-clone + force-roundtrip (both
+        // Discarded).
+        assert_eq!(levers.len(), 8, "this session's authored levers");
     }
 
     #[test]

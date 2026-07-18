@@ -117,3 +117,61 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── Round 2 (fan-out Workflow, 2026-07-18): 3 candidates tried in
+;; parallel worktree agents, each byte-verified + interleaved-A/B on a
+;; foldl'-over-1M-list (ident/apply/force-heavy) workload.  ONE Proven, two
+;; Discarded — the discipline landing real ground + refusing two non-wins.
+
+;; ★ ident-intern — THE FIRST PROVEN LEVER.  The strict + maybe_thunk Ident
+;; arms (eval.rs ~971 / ~786) allocated a fresh String per lookup
+;; (`ident_text().to_string()`) then re-hashed it (`intern(&name)`) even on a
+;; hit.  Rerouted through the existing-but-unused (source_id, text_offset)→
+;; Symbol cache via a new lazy `intern_cached_with` (value.rs) — the u64-keyed
+;; hit pays no alloc + no string-hash; the text is materialized only on the
+;; once-per-offset cold miss / rare deferral.  Keyword check preserved via
+;; zero-copy `with_resolved`; `lookup_fast(sym, "")` (its name arg is a dead
+;; param).  ReprSwap → ByteSufficient (same Symbol by construction → same
+;; binding → same value → same drv).  Byte-parity: 1384/1384 + 1 pre-existing
+;; net fail (agent AND my worktree, independently).  MEASURED: +9.5% (agent,
+;; mimalloc, fine-grained, every interleaved round) / +16.7% (mine, system-
+;; malloc, coarse, 6→7 iters 4/4 rounds).  Conservative recorded delta = the
+;; agent's fine-grained +9.5%.
+(defperf-lever
+  :name       "ident-intern"
+  :attacks    ("ident-text-alloc" "ident-intern-rehash")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Proven
+  :measured   Improved
+  :speedup-bp 950
+  :ceiling    NotApplicable)
+
+;; apply-trace-clone — drop the always-on dead current_eval_file() PathBuf
+;; clone per lambda call (the trace frame's current_file is dead; Display
+;; already derives from closure_env).  Byte-verified (1384/1384 + 1), but
+;; interleaved A/B measured NEUTRAL (-0.01%): the clone was not a measurable
+;; slice of throughput.  Byte-safe + neutral on the SACRED path → Discarded.
+(defperf-lever
+  :name       "apply-trace-clone"
+  :attacks    ("lambda-trace-frame-pathbuf-clone")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    NotApplicable)
+
+;; force-roundtrip (#6) — eliminate the Concrete→Value→Concrete round-trip on
+;; the memoized thunk cache-hit path.  Byte-verified (isomorphism + 1384/1384
+;; + 1), but interleaved A/B measured NEUTRAL (+1.15%, within run-to-run
+;; noise) — not a reliable win.  Byte-safe + neutral → Discarded.
+(defperf-lever
+  :name       "force-roundtrip"
+  :attacks    ("thunk-cache-hit-concrete-value-roundtrip")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    NotApplicable)
