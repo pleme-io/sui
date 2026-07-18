@@ -9,6 +9,13 @@ description = "porto — pleme-io-native OCI Distribution Spec v1.1 registry ser
 keywords = ["oci", "registry", "distribution", "container", "nix"]
 categories = ["web-programming::http-server", "caching"]
 
+# The `porto` server binary: read config → build the sui-cache backend →
+# serve the axum `/v2/` router. The library (`src/lib.rs`) stays the reusable
+# crate; this bin is the runtime shell over it.
+[[bin]]
+name = "porto"
+path = "src/main.rs"
+
 [dependencies]
 sui-cache.workspace = true
 sui-compat.workspace = true
@@ -18,6 +25,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 data-encoding = { workspace = true }
 async-trait = { workspace = true }

@@ -1,10 +1,28 @@
 //! porto's `== spec` proof — the sui-parity analog for the OCI Distribution
 //! Spec v1.1.
 //!
-//! Every implemented endpoint is driven against an in-memory [`MemStore`] via
+//! Every implemented endpoint is driven against a registry app via
 //! `tower::ServiceExt::oneshot`, asserting the spec behaviors. This is the
 //! forcing-function that makes "porto is a conformant registry" a mechanical
 //! test result, not an assertion: a regression on any behavior below goes red.
+//!
+//! ## The two-store matrix
+//!
+//! The whole conformance matrix runs against BOTH backing stores:
+//!
+//! - [`MemStore`] — the pure in-memory reference store, zero real I/O.
+//! - [`SuiCacheStore`] — the PRODUCTION store over a real
+//!   [`sui_cache::storage::StorageBackend`] (a `LocalStorage` rooted in a
+//!   tempdir). This exercises the empty-object tombstone / delete / immutability
+//!   semantics of the sui-cache path — the exact behaviors a store-specific
+//!   handler bug could differ on, and which the MemStore path alone would leave
+//!   unproven.
+//!
+//! A single set of behavior functions (`async fn <behavior>(app: Router)`) is
+//! defined once; two harness `#[tokio::test]`s (`mem_store_conformance` /
+//! `sui_cache_store_conformance`) drive EVERY behavior through EVERY store, so a
+//! new behavior is proven on both stores by construction and can never be added
+//! to only one path.
 //!
 //! The behaviors proven:
 //! - end-1 the API-version handshake
@@ -16,7 +34,7 @@
 //! - `DIGEST_INVALID` on a malformed digest; `MANIFEST_UNKNOWN` on a miss
 //! - cross-repo mount dedups a shared blob
 //! - tags-list pagination
-//! - blob/manifest/upload DELETE
+//! - blob/manifest/upload DELETE (and the deleted-is-tombstoned read-back)
 
 use std::sync::Arc;
 
@@ -24,19 +42,53 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use tempfile::TempDir;
 use tower::ServiceExt;
 
+use sui_cache::storage::{LocalStorage, StorageBackend};
 use sui_compat::hash::HashAlgorithm;
 use sui_registry::config::RegistryConfig;
 use sui_registry::digest::Digest;
 use sui_registry::server::{build_router, AppState};
-use sui_registry::store::MemStore;
+use sui_registry::store::{MemStore, SuiCacheStore};
 
-/// A fresh registry app over an in-memory store.
-fn app() -> Router {
+/// A registry app plus an optional live tempdir guard.
+///
+/// The `SuiCacheStore` path is backed by files under a [`TempDir`]; the guard
+/// must outlive every request the app serves (dropping it removes the backing
+/// files). The `MemStore` path carries `None`.
+struct TestApp {
+    router: Router,
+    _guard: Option<TempDir>,
+}
+
+impl TestApp {
+    fn router(&self) -> Router {
+        self.router.clone()
+    }
+}
+
+/// A fresh registry app over an in-memory [`MemStore`].
+fn mem_app() -> TestApp {
     let store = Arc::new(MemStore::new());
     let state = AppState::new(store, RegistryConfig::bare());
-    build_router(state)
+    TestApp {
+        router: build_router(state),
+        _guard: None,
+    }
+}
+
+/// A fresh registry app over a real [`SuiCacheStore`] on a tempdir-backed
+/// [`LocalStorage`] — the production storage path.
+fn sui_cache_app() -> TestApp {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let backend: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().to_path_buf()));
+    let store = Arc::new(SuiCacheStore::new(backend));
+    let state = AppState::new(store, RegistryConfig::bare());
+    TestApp {
+        router: build_router(state),
+        _guard: Some(dir),
+    }
 }
 
 async fn body_bytes(resp: axum::http::Response<Body>) -> Vec<u8> {
@@ -81,11 +133,73 @@ fn delete(uri: &str) -> Request<Body> {
     Request::builder().method("DELETE").uri(uri).body(Body::empty()).unwrap()
 }
 
-// ─────────────────────────── end-1 ───────────────────────────
+// ───────────────────────── the two-store harness ─────────────────────────
+
+/// The full conformance matrix.
+///
+/// Each behavior gets a FRESH app (built by `$fresh`) so state never bleeds
+/// across behaviors — the exact-equality assertions (tags list, referrers
+/// index) depend on a clean registry, just as the per-`#[test]` isolation of
+/// the original suite did. `$fresh` is a `fn() -> TestApp`, so the same matrix
+/// runs identically over [`mem_app`] and [`sui_cache_app`]. Adding a behavior
+/// here is the only edit needed for it to run on BOTH stores — the matrix
+/// cannot drift to a single-store proof.
+async fn run_matrix(fresh: fn() -> TestApp) {
+    // Each behavior runs against a freshly-built app, bound to a local so its
+    // tempdir guard (SuiCacheStore path) outlives the request — a dropped guard
+    // would delete the backing files mid-behavior. `run` names that pattern
+    // once: build → keep alive → drive.
+    async fn run<F, Fut>(fresh: fn() -> TestApp, behavior: F)
+    where
+        F: FnOnce(Router) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let app = fresh();
+        behavior(app.router()).await;
+        // `app` (and its tempdir guard) drops here, after the behavior.
+    }
+
+    run(fresh, end_1_api_version_handshake).await;
+    run(fresh, end_4b_monolithic_upload_verifies_digest_and_stores).await;
+    run(fresh, end_4b_monolithic_upload_wrong_digest_is_digest_invalid).await;
+    run(fresh, end_4a_5_6_chunked_upload_finalize_verifies_digest).await;
+    run(fresh, end_5_out_of_order_chunk_is_blob_upload_invalid).await;
+    run(fresh, end_6_finalize_wrong_digest_is_digest_invalid).await;
+    run(fresh, end_13_14_upload_status_and_cancel).await;
+    run(fresh, blob_is_immutable_at_its_content_address).await;
+    run(fresh, end_7_tag_is_a_mutable_pointer_end_3_get_by_tag_and_digest).await;
+    run(fresh, end_3_manifest_unknown_on_missing_tag).await;
+    run(fresh, head_manifest_returns_digest_and_length).await;
+    run(fresh, end_7a_12_referrers_index_returns_the_signing_manifest).await;
+    run(fresh, malformed_digest_is_digest_invalid).await;
+    run(fresh, blob_unknown_on_missing_blob).await;
+    run(fresh, end_11_cross_repo_mount_dedups_shared_blob).await;
+    run(fresh, end_11_mount_of_unknown_blob_falls_back_to_upload_session).await;
+    run(fresh, end_8_tags_list_and_pagination).await;
+    run(fresh, end_9_delete_manifest).await;
+    run(fresh, end_10_delete_blob).await;
+    run(fresh, put_manifest_by_digest_mismatch_is_digest_invalid).await;
+    // Store-path tombstone semantics: prove a deleted object reads back ABSENT,
+    // not present-but-empty — the SuiCacheStore empty-object tombstone contract,
+    // observable identically from MemStore's remove-the-entry delete.
+    run(fresh, deleted_blob_reads_back_absent).await;
+    run(fresh, deleted_manifest_reads_back_absent).await;
+}
 
 #[tokio::test]
-async fn end_1_api_version_handshake() {
-    let resp = app().oneshot(get("/v2/")).await.unwrap();
+async fn mem_store_conformance() {
+    run_matrix(mem_app).await;
+}
+
+#[tokio::test]
+async fn sui_cache_store_conformance() {
+    run_matrix(sui_cache_app).await;
+}
+
+// ─────────────────────────── end-1 ───────────────────────────
+
+async fn end_1_api_version_handshake(app: Router) {
+    let resp = app.oneshot(get("/v2/")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         resp.headers()
@@ -97,9 +211,7 @@ async fn end_1_api_version_handshake() {
 
 // ────────────────── end-4b: monolithic upload + digest-verify ──────────────────
 
-#[tokio::test]
-async fn end_4b_monolithic_upload_verifies_digest_and_stores() {
-    let app = app();
+async fn end_4b_monolithic_upload_verifies_digest_and_stores(app: Router) {
     let blob = b"the layer bytes".to_vec();
     let d = Digest::of(HashAlgorithm::Sha256, &blob);
 
@@ -126,9 +238,7 @@ async fn end_4b_monolithic_upload_verifies_digest_and_stores() {
     assert_eq!(body_bytes(resp).await, blob);
 }
 
-#[tokio::test]
-async fn end_4b_monolithic_upload_wrong_digest_is_digest_invalid() {
-    let app = app();
+async fn end_4b_monolithic_upload_wrong_digest_is_digest_invalid(app: Router) {
     let blob = b"real bytes".to_vec();
     let wrong = Digest::of(HashAlgorithm::Sha256, b"other bytes");
 
@@ -145,10 +255,7 @@ async fn end_4b_monolithic_upload_wrong_digest_is_digest_invalid() {
 
 // ────────────────── end-4a/5/6: chunked upload FSM ──────────────────
 
-#[tokio::test]
-async fn end_4a_5_6_chunked_upload_finalize_verifies_digest() {
-    let app = app();
-
+async fn end_4a_5_6_chunked_upload_finalize_verifies_digest(app: Router) {
     // end-4a: start.
     let resp = app.clone().oneshot(post_empty("/v2/lib/x/blobs/uploads/")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
@@ -202,9 +309,7 @@ async fn end_4a_5_6_chunked_upload_finalize_verifies_digest() {
     assert_eq!(body_bytes(resp).await, full);
 }
 
-#[tokio::test]
-async fn end_5_out_of_order_chunk_is_blob_upload_invalid() {
-    let app = app();
+async fn end_5_out_of_order_chunk_is_blob_upload_invalid(app: Router) {
     let resp = app.clone().oneshot(post_empty("/v2/lib/x/blobs/uploads/")).await.unwrap();
     let location = resp.headers().get("location").unwrap().to_str().unwrap().to_string();
 
@@ -230,9 +335,7 @@ async fn end_5_out_of_order_chunk_is_blob_upload_invalid() {
     assert_eq!(json["errors"][0]["code"], "BLOB_UPLOAD_INVALID");
 }
 
-#[tokio::test]
-async fn end_6_finalize_wrong_digest_is_digest_invalid() {
-    let app = app();
+async fn end_6_finalize_wrong_digest_is_digest_invalid(app: Router) {
     let resp = app.clone().oneshot(post_empty("/v2/lib/x/blobs/uploads/")).await.unwrap();
     let location = resp.headers().get("location").unwrap().to_str().unwrap().to_string();
 
@@ -250,9 +353,7 @@ async fn end_6_finalize_wrong_digest_is_digest_invalid() {
     assert_eq!(body_json(resp).await["errors"][0]["code"], "DIGEST_INVALID");
 }
 
-#[tokio::test]
-async fn end_13_14_upload_status_and_cancel() {
-    let app = app();
+async fn end_13_14_upload_status_and_cancel(app: Router) {
     let resp = app.clone().oneshot(post_empty("/v2/lib/x/blobs/uploads/")).await.unwrap();
     let location = resp.headers().get("location").unwrap().to_str().unwrap().to_string();
 
@@ -274,9 +375,7 @@ async fn end_13_14_upload_status_and_cancel() {
 
 // ────────────────── blob immutability at content-address ──────────────────
 
-#[tokio::test]
-async fn blob_is_immutable_at_its_content_address() {
-    let app = app();
+async fn blob_is_immutable_at_its_content_address(app: Router) {
     let blob = b"immutable".to_vec();
     let d = Digest::of(HashAlgorithm::Sha256, &blob);
 
@@ -318,9 +417,7 @@ fn image_manifest(config_digest: &Digest) -> Vec<u8> {
     .unwrap()
 }
 
-#[tokio::test]
-async fn end_7_tag_is_a_mutable_pointer_end_3_get_by_tag_and_digest() {
-    let app = app();
+async fn end_7_tag_is_a_mutable_pointer_end_3_get_by_tag_and_digest(app: Router) {
     let cfg = Digest::of(HashAlgorithm::Sha256, b"{}");
     let manifest = image_manifest(&cfg);
     let mdigest = Digest::of(HashAlgorithm::Sha256, &manifest);
@@ -367,17 +464,13 @@ async fn end_7_tag_is_a_mutable_pointer_end_3_get_by_tag_and_digest() {
     assert_eq!(resp.headers().get("docker-content-digest").unwrap(), &mdigest2.to_wire());
 }
 
-#[tokio::test]
-async fn end_3_manifest_unknown_on_missing_tag() {
-    let app = app();
+async fn end_3_manifest_unknown_on_missing_tag(app: Router) {
     let resp = app.oneshot(get("/v2/lib/x/manifests/nope")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(body_json(resp).await["errors"][0]["code"], "MANIFEST_UNKNOWN");
 }
 
-#[tokio::test]
-async fn head_manifest_returns_digest_and_length() {
-    let app = app();
+async fn head_manifest_returns_digest_and_length(app: Router) {
     let manifest = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"{}"));
     let mdigest = Digest::of(HashAlgorithm::Sha256, &manifest);
     let req = put_body(
@@ -415,10 +508,7 @@ fn signing_manifest(subject: &Digest) -> Vec<u8> {
     .unwrap()
 }
 
-#[tokio::test]
-async fn end_7a_12_referrers_index_returns_the_signing_manifest() {
-    let app = app();
-
+async fn end_7a_12_referrers_index_returns_the_signing_manifest(app: Router) {
     // Push a subject image manifest.
     let image = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"{}"));
     let image_digest = Digest::of(HashAlgorithm::Sha256, &image);
@@ -479,17 +569,13 @@ async fn end_7a_12_referrers_index_returns_the_signing_manifest() {
 
 // ────────────────── DIGEST_INVALID / malformed inputs ──────────────────
 
-#[tokio::test]
-async fn malformed_digest_is_digest_invalid() {
-    let app = app();
+async fn malformed_digest_is_digest_invalid(app: Router) {
     let resp = app.oneshot(get("/v2/lib/x/blobs/sha256:short")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(resp).await["errors"][0]["code"], "DIGEST_INVALID");
 }
 
-#[tokio::test]
-async fn blob_unknown_on_missing_blob() {
-    let app = app();
+async fn blob_unknown_on_missing_blob(app: Router) {
     let d = Digest::of(HashAlgorithm::Sha256, b"nonexistent");
     let resp = app.oneshot(get(&format!("/v2/lib/x/blobs/{}", d.to_wire()))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -498,9 +584,7 @@ async fn blob_unknown_on_missing_blob() {
 
 // ────────────────── end-11: cross-repo mount dedups ──────────────────
 
-#[tokio::test]
-async fn end_11_cross_repo_mount_dedups_shared_blob() {
-    let app = app();
+async fn end_11_cross_repo_mount_dedups_shared_blob(app: Router) {
     let blob = b"shared layer".to_vec();
     let d = Digest::of(HashAlgorithm::Sha256, &blob);
 
@@ -527,9 +611,7 @@ async fn end_11_cross_repo_mount_dedups_shared_blob() {
     assert_eq!(body_bytes(resp).await, blob);
 }
 
-#[tokio::test]
-async fn end_11_mount_of_unknown_blob_falls_back_to_upload_session() {
-    let app = app();
+async fn end_11_mount_of_unknown_blob_falls_back_to_upload_session(app: Router) {
     let d = Digest::of(HashAlgorithm::Sha256, b"not stored anywhere");
     let req = post_empty(&format!(
         "/v2/repo/b/blobs/uploads/?mount={}&from=repo/a",
@@ -543,9 +625,7 @@ async fn end_11_mount_of_unknown_blob_falls_back_to_upload_session() {
 
 // ────────────────── end-8: tags list + pagination ──────────────────
 
-#[tokio::test]
-async fn end_8_tags_list_and_pagination() {
-    let app = app();
+async fn end_8_tags_list_and_pagination(app: Router) {
     let manifest = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"{}"));
 
     // Push the same manifest under three tags.
@@ -581,9 +661,7 @@ async fn end_8_tags_list_and_pagination() {
 
 // ────────────────── end-9/10: deletes ──────────────────
 
-#[tokio::test]
-async fn end_9_delete_manifest() {
-    let app = app();
+async fn end_9_delete_manifest(app: Router) {
     let manifest = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"{}"));
     let mdigest = Digest::of(HashAlgorithm::Sha256, &manifest);
     let req = put_body(
@@ -607,9 +685,7 @@ async fn end_9_delete_manifest() {
     assert_eq!(body_json(resp).await["errors"][0]["code"], "MANIFEST_UNKNOWN");
 }
 
-#[tokio::test]
-async fn end_10_delete_blob() {
-    let app = app();
+async fn end_10_delete_blob(app: Router) {
     let blob = b"deletable".to_vec();
     let d = Digest::of(HashAlgorithm::Sha256, &blob);
     let req = Request::builder()
@@ -637,11 +713,86 @@ async fn end_10_delete_blob() {
     assert_eq!(body_json(resp).await["errors"][0]["code"], "BLOB_UNKNOWN");
 }
 
+// ────────────────── store-path tombstone semantics ──────────────────
+//
+// These prove that a DELETE makes the object read back ABSENT, not
+// present-but-empty. On `SuiCacheStore` a delete is an empty-object tombstone
+// over a content-addressed backend; the handler must treat empty-as-absent so a
+// GET/HEAD after delete is BLOB_UNKNOWN/MANIFEST_UNKNOWN, never a fake 200 with
+// zero bytes. `MemStore` deletes by removing the entry, so it proves the same
+// observable contract from the other implementation — a behavior a single-store
+// matrix would leave unproven on the production path.
+
+async fn deleted_blob_reads_back_absent(app: Router) {
+    let blob = b"tombstone me".to_vec();
+    let d = Digest::of(HashAlgorithm::Sha256, &blob);
+
+    // Store, then delete.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v2/lib/x/blobs/uploads/?digest={}", d.to_wire()))
+        .body(Body::from(blob))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::CREATED);
+    assert_eq!(
+        app.clone()
+            .oneshot(delete(&format!("/v2/lib/x/blobs/{}", d.to_wire())))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+
+    // GET after delete → BLOB_UNKNOWN (absent, NOT a 200 with empty bytes).
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/v2/lib/x/blobs/{}", d.to_wire())))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json(resp).await["errors"][0]["code"], "BLOB_UNKNOWN");
+
+    // HEAD after delete → BLOB_UNKNOWN too (has_blob must see the tombstone).
+    let resp = app
+        .oneshot(head(&format!("/v2/lib/x/blobs/{}", d.to_wire())))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+async fn deleted_manifest_reads_back_absent(app: Router) {
+    let manifest = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"tombstone-cfg"));
+    let mdigest = Digest::of(HashAlgorithm::Sha256, &manifest);
+
+    // Store by digest, then delete by digest.
+    let req = put_body(
+        &format!("/v2/lib/x/manifests/{}", mdigest.to_wire()),
+        "application/vnd.oci.image.manifest.v1+json",
+        manifest,
+    );
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::CREATED);
+    assert_eq!(
+        app.clone()
+            .oneshot(delete(&format!("/v2/lib/x/manifests/{}", mdigest.to_wire())))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::ACCEPTED
+    );
+
+    // GET by digest after delete → MANIFEST_UNKNOWN (the empty-tombstone reads
+    // as absent, not a 200 with a zero-length manifest).
+    let resp = app
+        .oneshot(get(&format!("/v2/lib/x/manifests/{}", mdigest.to_wire())))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json(resp).await["errors"][0]["code"], "MANIFEST_UNKNOWN");
+}
+
 // ────────────────── manifest digest-reference mismatch ──────────────────
 
-#[tokio::test]
-async fn put_manifest_by_digest_mismatch_is_digest_invalid() {
-    let app = app();
+async fn put_manifest_by_digest_mismatch_is_digest_invalid(app: Router) {
     let manifest = image_manifest(&Digest::of(HashAlgorithm::Sha256, b"{}"));
     // Reference a WRONG digest in the URL.
     let wrong = Digest::of(HashAlgorithm::Sha256, b"wrong");

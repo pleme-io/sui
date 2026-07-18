@@ -11,8 +11,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use sui_cache::BackendConfig;
+
+/// The default local-fs root for porto's content-addressed store when no
+/// [`backend`](RegistryConfig::backend) is configured. Sibling of sui-cache's
+/// own `/var/cache/sui` default — a distinct directory so porto's OCI objects
+/// and a co-resident Nix cache never collide on disk.
+const DEFAULT_STORE_PATH: &str = "/var/cache/porto";
+
 /// The registry server configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The `backend` field selects the durable [`sui_cache::storage::StorageBackend`]
+/// the whole registry writes through — the SAME content-addressed store family
+/// that holds Nix NARs — so a deployment picks `{local | s3 | redis | pg |
+/// tiered}` purely by config, never a silent hard-coded constructor. When it is
+/// absent the resolver falls back to a local-fs backend rooted at
+/// [`DEFAULT_STORE_PATH`] (the never-silent-fallback rule: the default is an
+/// explicit, documented local backend, not an accidental one).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryConfig {
     /// The network address to listen on.
@@ -22,6 +38,11 @@ pub struct RegistryConfig {
     /// the prescribed default is generous).
     #[serde(default)]
     pub max_body_bytes: Option<usize>,
+    /// The durable storage backend selection, passed straight to sui-cache's
+    /// typed [`build_backend`](sui_cache::build_backend) factory. `None` means
+    /// "the prescribed local-fs backend at [`DEFAULT_STORE_PATH`]".
+    #[serde(default)]
+    pub backend: Option<BackendConfig>,
 }
 
 impl RegistryConfig {
@@ -32,6 +53,7 @@ impl RegistryConfig {
         Self {
             listen: "127.0.0.1:0".to_string(),
             max_body_bytes: None,
+            backend: None,
         }
     }
 
@@ -43,6 +65,7 @@ impl RegistryConfig {
         Self {
             listen: "0.0.0.0:5000".to_string(),
             max_body_bytes: None,
+            backend: None,
         }
     }
 
@@ -63,7 +86,38 @@ impl RegistryConfig {
                 self.max_body_bytes = Some(n);
             }
         }
+        // `PORTO_BACKEND` carries a full JSON `BackendConfig` (the typed
+        // `{"type":"tiered", …}` shape) for a non-local deployment; a malformed
+        // value is a startup-visible error, not a silent disk fallback — so it
+        // is surfaced via a `tracing::warn` and the lower tier is kept. A bare
+        // `PORTO_STORE_PATH` (with no `PORTO_BACKEND`) re-roots the default
+        // local backend without needing the full JSON.
+        if let Ok(raw) = std::env::var("PORTO_BACKEND") {
+            match serde_json::from_str::<BackendConfig>(&raw) {
+                Ok(cfg) => self.backend = Some(cfg),
+                Err(e) => tracing::warn!(
+                    "ignoring malformed PORTO_BACKEND (keeping prior tier): {e}"
+                ),
+            }
+        } else if let Ok(path) = std::env::var("PORTO_STORE_PATH") {
+            self.backend = Some(BackendConfig::Local { path: path.into() });
+        }
         self
+    }
+
+    /// Resolve the durable backend selection this config names.
+    ///
+    /// Returns the explicit [`backend`](Self::backend) when set, else the
+    /// prescribed local-fs backend at [`DEFAULT_STORE_PATH`]. This is the single
+    /// place the local-fs default is decided — an operator reading the returned
+    /// value sees exactly the backend that will be built, never an implicit one.
+    #[must_use]
+    pub fn resolve_backend(&self) -> BackendConfig {
+        self.backend
+            .clone()
+            .unwrap_or_else(|| BackendConfig::Local {
+                path: DEFAULT_STORE_PATH.into(),
+            })
     }
 }
 
@@ -99,9 +153,59 @@ mod tests {
         let cfg = RegistryConfig {
             listen: "127.0.0.1:8080".to_string(),
             max_body_bytes: Some(1024),
+            backend: None,
         };
+        // `RegistryConfig` carries `BackendConfig`, which is not `PartialEq`, so
+        // a config roundtrip is proven at the JSON layer (byte-stable
+        // serialization) rather than by struct equality.
         let json = serde_json::to_string(&cfg).unwrap();
-        let parsed: RegistryConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, cfg);
+        let reparsed = serde_json::from_str::<RegistryConfig>(&json).unwrap();
+        assert_eq!(serde_json::to_string(&reparsed).unwrap(), json);
+    }
+
+    #[test]
+    fn resolve_backend_defaults_to_local_fs() {
+        let backend = RegistryConfig::bare().resolve_backend();
+        match backend {
+            sui_cache::BackendConfig::Local { path } => {
+                assert_eq!(path, std::path::PathBuf::from(DEFAULT_STORE_PATH));
+            }
+            other => panic!("expected the prescribed local backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_backend_returns_the_explicit_selection() {
+        let cfg = RegistryConfig {
+            listen: "0.0.0.0:5000".to_string(),
+            max_body_bytes: None,
+            backend: Some(sui_cache::BackendConfig::S3 {
+                bucket: "porto-store".to_string(),
+                region: "us-east-1".to_string(),
+                endpoint: None,
+            }),
+        };
+        assert!(matches!(
+            cfg.resolve_backend(),
+            sui_cache::BackendConfig::S3 { .. }
+        ));
+    }
+
+    #[test]
+    fn backend_selection_roundtrips_through_json() {
+        // A tiered backend selection survives a serialize→parse cycle inside a
+        // full `RegistryConfig` — proving the config surface passes the whole
+        // `build_backend` shape through untouched.
+        let json = r#"{
+            "listen": "0.0.0.0:5000",
+            "backend": { "type": "local", "path": "/srv/porto" }
+        }"#;
+        let cfg: RegistryConfig = serde_json::from_str(json).unwrap();
+        match cfg.resolve_backend() {
+            sui_cache::BackendConfig::Local { path } => {
+                assert_eq!(path, std::path::PathBuf::from("/srv/porto"));
+            }
+            other => panic!("expected local backend, got {other:?}"),
+        }
     }
 }

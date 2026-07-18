@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "e217b4acf8de25c990a9bbdb4262aa9b210ebbbc48078f07876fb30cb4be13de",
+  "cargo_lock_sha256": "602c56d033f51c6361b716eeecd33c2be1cf117b6d79400134c3599ecf5291bc",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25908,6 +25908,19 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "tracing_subscriber",
+            "package_key": "tracing-subscriber-0.3.23",
+            "kind": "normal",
+            "features": [
+              "env-filter",
+              "json"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
@@ -39707,7 +39720,13 @@
       "lib_target": {
         "name": "sui_registry",
         "path": "src/lib.rs"
-      }
+      },
+      "binaries": [
+        {
+          "name": "porto",
+          "path": "src/main.rs"
+        }
+      ]
     },
     "sui-resolve-0.1.129": {
       "edition": "2024",
