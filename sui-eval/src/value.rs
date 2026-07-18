@@ -132,7 +132,21 @@ pub mod census {
     }
 
     /// Print all live/made counts + RSS to stderr, tagged.
+    ///
+    /// No-op unless `SUI_LIVE_CENSUS=1`. The counters only accumulate when the
+    /// census is enabled, so dumping while disabled emits an all-zeros
+    /// `[census exit] …` line to stderr — pure noise that pollutes any tool
+    /// parsing sui's stderr. Concretely it regressed the `derivation show→add`
+    /// ATerm round-trip parity row: that probe collects every non-`#` stderr
+    /// line from `derivation add` as the round-tripped ATerm, and the
+    /// exit-guard's unconditional dump appended the census line to it. Gating
+    /// here makes census-pollution-when-disabled unrepresentable at EVERY call
+    /// site (the process-exit guard AND the periodic poller), not just the one
+    /// that regressed.
     pub fn dump(tag: &str) {
+        if !enabled() {
+            return;
+        }
         let rss = rss_bytes();
         eprintln!(
             "[census {tag}] rss={rss_mb:.1}MB \
