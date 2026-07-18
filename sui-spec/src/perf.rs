@@ -466,7 +466,7 @@ mod tests {
         // Proven, apply-trace-clone + force-roundtrip Discarded) + round-3
         // (select-ident-token + string-concat Proven, attrset-symcache Deferred,
         // overlay-merge-structural Discarded).
-        assert_eq!(levers.len(), 12, "this session's authored levers");
+        assert_eq!(levers.len(), 13, "this session's authored levers");
     }
 
     #[test]

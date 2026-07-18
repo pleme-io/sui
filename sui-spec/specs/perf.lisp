@@ -257,3 +257,31 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    PersistentLazyDesign)
+
+;; thunk-waste-elision — THE post-//-merge "real big lever", ESTIMATED + CLOSED
+;; as CAPPED (2026-07-18).  51.8% of thunks are created-but-never-forced, but
+;; that is laziness WORKING; the only byte-safe capture is to NOT create the
+;; thunk for a provably-TOTAL cheap expr (literal / already-forced ident) so
+;; eager eval is byte-identical.  MEASURED eager-eligible fraction of the
+;; never-forced thunks = ~0%: the only total kind left (Paren) always wraps an
+;; Apply (eliding it just moves the thunk inward — net zero), and the lambda-arg
+;; site's `eval_pure_constant_arg` already eager-takes Literal/Str/Path with 0
+;; remaining pure-constants (cross-confirmed on 2 byte-verified workloads).  The
+;; 3 landed levers + prior M2 eager cuts already captured ALL byte-safe eager-
+;; elidable thunk-waste; the rest wrap potentially-diverging exprs (Apply /
+;; Select / Ident-with-scope / BinOp / recursive-let / the //-fixpoint merge)
+;; whose laziness is LOAD-BEARING for correctness — eager-evaluating any breaks
+;; byte-parity.  ACHIEVABLE-GAIN UPPER BOUND ~0%.  The real remaining lever is a
+;; cheaper thunk REPRESENTATION (arena / bump-alloc Env chain / thunk-store
+;; collapse) — a memory-model change touching every thunk, NOT elision; bigger +
+;; riskier, named-not-attempted.  ForceOrderChange (eager-vs-lazy) earning
+;; ForceOrderProof; Discarded because the safe fraction is ~0 (NoImprovement).
+(defperf-lever
+  :name       "thunk-waste-elision"
+  :attacks    ("thunk-creation-never-forced")
+  :technique  ForceOrderChange
+  :proof-tier ForceOrderProof
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    PersistentLazyDesign)
