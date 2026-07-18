@@ -460,9 +460,11 @@ mod tests {
     // ── The M0 gate ────────────────────────────────────────────────
 
     #[test]
-    fn canonical_lisp_loads_this_sessions_four_levers() {
+    fn canonical_lisp_loads_this_sessions_levers() {
         let levers = load_canonical_levers().unwrap();
-        assert_eq!(levers.len(), 4, "the four real levers of this session");
+        // The four original levers + `overlay-base-move` (the fan-out's
+        // measured-neutral, Discarded attempt).
+        assert_eq!(levers.len(), 5, "this session's authored levers");
     }
 
     #[test]

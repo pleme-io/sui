@@ -90,3 +90,30 @@
   :measured   Pending
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── overlay-base-move (fan-out 2026-07-18, attempted + DISCARDED) ───
+;; A /fan-out found the //-merge's `as_flat` deep-clone (value.rs:2226,
+;; `let mut result = left.as_flat().clone()`) was the biggest MEASURED
+;; self-time slice (~33-50% under a self-time profile).  The lever: MOVE
+;; left's fully-merged map out (it is released right after) instead of
+;; deep-cloning it — O(1) vs O(n) HashMap::clone.  Byte-parity verified
+;; (1384/1384 relevant tests + the vm_vs_treewalker byte-for-byte oracle).
+;; BUT the rigorous INTERLEAVED A/B measured NEUTRAL (base 57.3 vs change
+;; 58.3 iters/15s — within noise), NOT a win: `overlay()` takes `self` by
+;; value so the cached attrs are cloned through a fold, which SHARES the
+;; `cache` Rc → `Rc::get_mut(cache)` fails → the steal falls back to clone
+;; anyway; and the real throughput cost is the 1.2M inserts + Value::clones
+;; + drops, which moving the base map does not touch.  A byte-safe change
+;; with no measured win on the SACRED hot path is DISCARDED (the
+;; never-ship-a-regression rule; the positional-frames precedent).  The
+;; first "HashMap::clone 8.9%->0.08%" signal was an apples-to-oranges
+;; mis-attribution (mimalloc vs system-malloc builds) the A/B corrected.
+(defperf-lever
+  :name       "overlay-base-move"
+  :attacks    ("overlay-flatten-build" "attrset-copy-on-merge")
+  :technique  SkipRedundantStore
+  :proof-tier ByteSufficient
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    NotApplicable)
