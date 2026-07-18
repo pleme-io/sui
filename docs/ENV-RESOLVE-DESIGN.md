@@ -125,16 +125,54 @@ HAMT probe itself, not just the re-intern). M0's value is the parity-proven reso
 **foundation M1 consumes** + this measurement redirecting the lever. Do NOT default
 the flag on for a null win — it earns default-on only when M1 makes it move fib.
 
+## 6b. M1 result (built + measured 2026-07-18) — coupling PROVEN, perf NET-NEGATIVE, NOT shipped
+
+M1 (the positional-frame overlay) was fully built + verified, then **NOT committed**
+per the §8 honest-stop escape. Two hard findings:
+
+1. **The coupling is AIRTIGHT (the design's #1 risk — RETIRED).** `Resolution` extended
+   to `Lexical{sym, up, slot}`; an additive `Env.frames: Vec<Rc<[RefCell<Option<Value>>]>>`
+   whose slots are `bindings.get(sym).clone()` — the SAME `Rc<ThunkInner>` the im_rc map
+   holds; the two-step install(empty)-before-capture / fill(in-place)-after ensures the
+   fixpoint thunks capture the shared frame `Rc` and `update_env` back-patches the shared
+   thunk interior (never replaces the map entry). 12 recursive-fixpoint tests (fib, rec-attr
+   `s.f` self-ref, mutual rec a/b + isEven/isOdd, chained let, deep 12-up chains, pattern
+   defaults incl `@`-bind forward-ref, with-barrier up-counting) all byte-identical under
+   `SUI_RESOLVE=1` and flag-off; fib20 = 65672 frame hits / 0 misses. Parity byte-identical
+   both modes (all suites + drv_path_parity 6/6). So the "dual-store coupling" hazard is
+   provably solvable — but that is not the same as a win.
+
+2. **Net-NEGATIVE perf (measured, median-of-31).** The array read IS faster per-lookup, but
+   per-binder-scope **frame construction** (`Rc<[RefCell]>` heap alloc + N map-probes to fill
+   + a frame-vec Rc-bump every `child()`) costs MORE than the interned-Symbol HAMT probe it
+   removes on call-heavy code: `rec_fib_20` **+7%**, `list_map_1000`/`foldl_1000` **+32–39%**;
+   `deep_let_100` (1 frame) neutral/faster. The regression scales with FRAME ALLOCS, not
+   lookups — exactly §8's "alloc-side" risk.
+
+**Verdict + the REAL redirect:** the HAMT probe was already cheap (interned `Symbol(u32)`);
+the lookup was never the bottleneck. **The lever is NOT faster lookup — it is removing the
+per-call frame ALLOCATION.** A real M2 must make a positional frame near-free: arena/slab/
+pooled frames, a fixed-capacity inline (SmallVec/stack) frame, or reusing the closure env's
+storage — only then does a positional read beat the HAMT probe. M1's frame-overlay code is
+the net-negative part a real M2 REPLACES (not extends); it was deliberately not committed.
+The `(up,slot)` resolver extension + this proven coupling recipe are the reusable parts.
+
 ## 7. Tier ledger (never round up)
 
 - **SHIPPED:** the im_rc env + O(1) `child()`; `lookup_fast`; the M2.6 ROOT #4a
   with-deferral; the #2 harness with `rec_fib_20` at 0.107×; the VM resolver as a
   template (not liftable). **NEW: M0 `sui-resolve` + the Ident-arm consume (flag-gated
   `SUI_RESOLVE=1`, parity-by-construction proven both modes) — the M1 foundation.**
-- **MEASURED NULL:** M0's re-intern elision does not move `rec_fib_20` (−0.5%). The
-  lever is M1's positional-frame HAMT-probe kill, not M0's re-intern.
-- **DESIGN (unwritten):** M1 (positional frame overlay + the Rc-shared-thunk coupling
-  proof) · M2 (nixpkgs measure) · M3 (VM shares the table).
+- **MEASURED NULL (M0):** re-intern elision does not move `rec_fib_20` (−0.5%).
+- **MEASURED NEGATIVE (M1, §6b):** the positional-frame overlay is +7% fib20 / +32–39%
+  call-heavy — the per-call frame ALLOCATION costs more than the HAMT probe it removes.
+  Coupling proven airtight (the #1 risk retired); code NOT committed (§8 honest-stop).
+- **THE REAL LEVER (M2, redirected by M1's measurement):** make a positional frame
+  near-FREE — arena/slab/pooled frames, a fixed-capacity inline (SmallVec/stack) frame,
+  or reuse the closure env's storage. The lookup was never the bottleneck; the ALLOCATION
+  is. Reuse M1's `(up,slot)` resolver + the proven coupling recipe (§6b); replace the
+  `Rc<[RefCell]>`-per-scope frame with a cheap representation.
+- **DESIGN (unwritten):** M2 (cheap-frame allocation — the real win) · M3 (VM shares the table).
 - **Not-landable-in-one-pass:** even M0 is a new crate + a resolver pass — a real
   prerequisite, not a one-careful-pass edit. Rounding it to "landable now" is the
   path-of-least-resistance sin.
