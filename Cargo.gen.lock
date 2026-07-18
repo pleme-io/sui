@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "cbbc2a12c086fffb019e3ec7cf22fee8a23b2573d63bd7f48018d844cc3b4b68",
+  "cargo_lock_sha256": "93da9fb2811f939792216b479ce529d0f94a85132ee76bf35977cf99bf982708",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25771,6 +25771,148 @@
         "build_dependencies": [],
         "features": []
       },
+      "sui-registry-0.1.128": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "axum",
+            "package_key": "axum-0.8.9",
+            "kind": "normal",
+            "features": [
+              "macros"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.12.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "data_encoding",
+            "package_key": "data-encoding-2.11.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha2",
+            "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_cache",
+            "package_key": "sui-cache-0.1.128",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_compat",
+            "package_key": "sui-compat-0.1.128",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sui-resolve-0.1.128": {
         "runtime_dependencies": [
           {
@@ -39557,6 +39699,13 @@
       "edition": "2024",
       "lib_target": {
         "name": "sui_protocol",
+        "path": "src/lib.rs"
+      }
+    },
+    "sui-registry-0.1.128": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_registry",
         "path": "src/lib.rs"
       }
     },

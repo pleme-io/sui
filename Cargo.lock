@@ -6756,6 +6756,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-registry"
+version = "0.1.128"
+dependencies = [
+ "async-trait",
+ "axum 0.8.9",
+ "bytes",
+ "data-encoding",
+ "futures",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sui-cache",
+ "sui-compat",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+]
+
+[[package]]
 name = "sui-resolve"
 version = "0.1.128"
 dependencies = [
