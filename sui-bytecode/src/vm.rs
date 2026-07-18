@@ -814,7 +814,7 @@ impl<'a> VM<'a> {
                             upvalues.push(val);
                         }
                     }
-                    closure.upvalues = upvalues.iter().map(NanBox::to_vmvalue).collect();
+                    closure.upvalues = upvalues;
                     self.push(NanBox::closure(closure));
                 } else {
                     return Err(VMError::Internal(
@@ -828,8 +828,7 @@ impl<'a> VM<'a> {
                 if let Some(closure) = func.as_closure() {
                     let is_tail = self.peek_next_is_return();
                     let chunk = closure.chunk.clone();
-                    let upvalues: Vec<NanBox> =
-                        closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+                    let upvalues = closure.upvalues.clone();
                     if is_tail && self.frames.len() > 1 {
                         let base = self.current_frame().stack_base;
                         self.stack.truncate(base);
@@ -888,8 +887,7 @@ impl<'a> VM<'a> {
                 let func = self.pop_forced()?;
                 if let Some(closure) = func.as_closure() {
                     let chunk = closure.chunk.clone();
-                    let upvalues: Vec<NanBox> =
-                        closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+                    let upvalues = closure.upvalues.clone();
                     if self.frames.len() > 1 {
                         // Tail-call optimization: reuse current frame.
                         let base = self.current_frame().stack_base;
@@ -965,9 +963,9 @@ impl<'a> VM<'a> {
                     let uv_index = self.read_u16()? as usize;
                     if is_local {
                         let abs_slot = self.current_frame().stack_base + uv_index;
-                        upvalues.push(self.stack[abs_slot].to_vmvalue());
+                        upvalues.push(self.stack[abs_slot].clone());
                     } else {
-                        let val = self.current_frame().upvalues[uv_index].to_vmvalue();
+                        let val = self.current_frame().upvalues[uv_index].clone();
                         upvalues.push(val);
                     }
                 }
@@ -983,7 +981,7 @@ impl<'a> VM<'a> {
                 let patch_slot = self.read_u16()? as usize;
                 let patch_uv_count = self.read_u16()? as usize;
                 let patch_abs = self.current_frame().stack_base + patch_slot;
-                let mut patch_uvs: Vec<VMValue> = Vec::with_capacity(patch_uv_count);
+                let mut patch_uvs: Vec<NanBox> = Vec::with_capacity(patch_uv_count);
                 for _ in 0..patch_uv_count {
                     let il = self.read_byte()? != 0;
                     let ui = self.read_u16()? as usize;
@@ -991,16 +989,16 @@ impl<'a> VM<'a> {
                         let a = self.current_frame().stack_base + ui;
                         if a >= self.stack.len() {
                             // Slot not yet allocated — skip this upvalue patch.
-                            patch_uvs.push(VMValue::Null);
+                            patch_uvs.push(NanBox::null());
                             continue;
                         }
-                        patch_uvs.push(self.stack[a].to_vmvalue());
+                        patch_uvs.push(self.stack[a].clone());
                     } else {
                         if ui >= self.current_frame().upvalues.len() {
-                            patch_uvs.push(VMValue::Null);
+                            patch_uvs.push(NanBox::null());
                             continue;
                         }
-                        patch_uvs.push(self.current_frame().upvalues[ui].to_vmvalue());
+                        patch_uvs.push(self.current_frame().upvalues[ui].clone());
                     }
                 }
                 if patch_abs < self.stack.len() {
@@ -1041,9 +1039,9 @@ impl<'a> VM<'a> {
                     let uv_index = self.read_u16()? as usize;
                     if is_local {
                         let abs_slot = self.current_frame().stack_base + uv_index;
-                        upvalues.push(self.stack[abs_slot].to_vmvalue());
+                        upvalues.push(self.stack[abs_slot].clone());
                     } else {
-                        let val = self.current_frame().upvalues[uv_index].to_vmvalue();
+                        let val = self.current_frame().upvalues[uv_index].clone();
                         upvalues.push(val);
                     }
                 }
@@ -1140,8 +1138,7 @@ impl<'a> VM<'a> {
                     if self.frames.len() >= MAX_CALL_DEPTH {
                         return Err(VMError::StackOverflow);
                     }
-                    let upvalues: Vec<NanBox> =
-                        closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+                    let upvalues = closure.upvalues.clone();
                     let chunk = closure.chunk.clone();
                     let stack_base = self.stack.len();
                     self.push(arg);
@@ -1580,11 +1577,10 @@ impl<'a> VM<'a> {
                         }
                         let return_depth = self.frames.len();
                         let stack_base = self.stack.len();
-                        // Convert captured upvalues to NanBox for the frame.
-                        let frame_upvalues: Vec<NanBox> = upvalues
-                            .iter()
-                            .map(|v| NanBox::from_vmvalue(v))
-                            .collect();
+                        // Upvalues are already NanBoxes (the frame representation);
+                        // clone (Rc refcount bumps) for the frame and keep the
+                        // original for the error-restore path.
+                        let frame_upvalues: Vec<NanBox> = upvalues.clone();
                         let upvalues_for_restore = upvalues;
                         self.frames.push(CallFrame {
                             chunk: chunk.clone(),
@@ -1675,10 +1671,9 @@ impl<'a> VM<'a> {
                         }
                         let return_depth = self.frames.len();
                         let stack_base = self.stack.len();
-                        let frame_upvalues: Vec<NanBox> = upvalues
-                            .iter()
-                            .map(|v| NanBox::from_vmvalue(v))
-                            .collect();
+                        // Upvalues are already NanBoxes; clone (Rc bumps) for the
+                        // frame, keeping the original for the error-restore path.
+                        let frame_upvalues: Vec<NanBox> = upvalues.clone();
                         self.frames.push(CallFrame {
                             chunk: chunk.clone(),
                             ip: 0,
@@ -3145,8 +3140,7 @@ impl<'a> VM<'a> {
             if self.frames.len() >= MAX_CALL_DEPTH {
                 return Err(VMError::StackOverflow);
             }
-            let upvalues: Vec<NanBox> =
-                closure.upvalues.iter().map(NanBox::from_vmvalue).collect();
+            let upvalues = closure.upvalues.clone();
             let chunk = closure.chunk.clone();
             let return_depth = self.frames.len();
             let stack_base = self.stack.len();
@@ -3432,9 +3426,13 @@ impl<'a> VM<'a> {
                     let partial = self.call_callable(&func_nb, NanBox::string(key_str))?;
                     // Defer the second application (partial value) as a thunk.
                     // This matches CppNix semantics: mapAttrs is lazy in values.
+                    // Upvalues are NanBoxes: `partial` already is one; `val`
+                    // came off the VMValue attrset so convert it locally here
+                    // (this is a per-entry conversion, not the per-Call/thunk
+                    // round-trip the optimization removes).
                     let thunk = VMThunk::new(
                         chunk.clone(),
-                        vec![partial.to_vmvalue(), val],
+                        vec![partial, NanBox::from_vmvalue(&val)],
                     );
                     result.insert(sym, NanBox::thunk(thunk));
                 }

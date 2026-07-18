@@ -19,6 +19,7 @@ use std::rc::Rc;
 
 use crate::chunk::Chunk;
 use crate::intern::{Interner, Symbol};
+use crate::nanbox::NanBox;
 
 /// A value in the bytecode VM.
 ///
@@ -110,7 +111,11 @@ pub struct VMClosure {
     /// The function's compiled bytecode.
     pub chunk: Rc<Chunk>,
     /// Captured upvalues (values from enclosing scopes).
-    pub upvalues: Vec<VMValue>,
+    ///
+    /// Stored as `NanBox` (the runtime frame representation) so that closure
+    /// capture and invocation are Rc-refcount clones, not deep VMValue<->NanBox
+    /// round-trips. The runtime `CallFrame` already holds `Vec<NanBox>`.
+    pub upvalues: Vec<NanBox>,
     /// Number of parameters this closure expects (1 for Nix lambdas,
     /// but pattern-match destructuring may set multiple locals).
     pub arity: u16,
@@ -153,7 +158,7 @@ pub enum ThunkState {
     /// captured upvalues for the thunk body.
     Pending {
         chunk: Rc<Chunk>,
-        upvalues: Vec<VMValue>,
+        upvalues: Vec<NanBox>,
     },
     /// Lazy source: the thunk body has not been compiled yet.
     /// On first force, the source span is compiled and then executed.
@@ -168,7 +173,7 @@ pub enum ThunkState {
         /// Base directory for resolving relative imports.
         base_dir: PathBuf,
         /// Captured upvalues (resolved at thunk creation time).
-        upvalues: Vec<VMValue>,
+        upvalues: Vec<NanBox>,
     },
     /// A native Rust callback that produces a value on demand.
     ///
@@ -191,7 +196,7 @@ pub struct VMThunk {
 
 impl VMThunk {
     /// Create a new pending thunk.
-    pub fn new(chunk: Rc<Chunk>, upvalues: Vec<VMValue>) -> Self {
+    pub fn new(chunk: Rc<Chunk>, upvalues: Vec<NanBox>) -> Self {
         Self {
             state: Rc::new(Cell::new(Some(ThunkState::Pending { chunk, upvalues }))),
         }
