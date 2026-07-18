@@ -12,6 +12,15 @@ operator's Mac (`darwinConfigurations.cid`) end-to-end — eval → build → st
 activate — byte/behavior-identical to nix.** Everything is ordered by what that
 proof needs.
 
+> **Runtime companion — running the proof forever.** This roadmap drives the
+> *one-shot* rebuild (`sui system rebuild`). The **continuous** form —
+> `sui system converge [--watch]`, the node kept *always rebuilt into place* via
+> a Viggy seven-beat reconcile loop — is [`CONVERGENCE.md`](./CONVERGENCE.md). It
+> reuses the exact `rebuild_native` pipeline behind a mockable Environment seam
+> and **rides this same M2.6 gate**: the loop is real + tested today, but a
+> *byte-identical* cid convergence is blocked on the module-system fixpoint just
+> as the one-shot rebuild is. The loop inherits the gate; it does not remove it.
+
 ---
 
 ## 0. The one blocker that gates the marquee proof

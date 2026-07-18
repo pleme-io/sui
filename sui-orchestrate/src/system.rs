@@ -296,60 +296,13 @@ impl SystemOrchestrator {
         action: RebuildAction,
     ) -> Result<RebuildResult, SystemError> {
         let start = std::time::Instant::now();
-        let flake_ref = sui_compat::flake_ref::FlakeRef::parse(flake_ref_str)
-            .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
 
-        // 1. Determine the attribute path based on platform
-        let platform_prefix = match self.platform {
-            Platform::Darwin => "darwinConfigurations",
-            Platform::NixOS => "nixosConfigurations",
-        };
-        let attr_path = format!(
-            "{platform_prefix}.{}.config.system.build.toplevel",
-            flake_ref.attribute
-        );
-
-        // 2. Evaluate the flake natively to get the derivation path.
-        let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)
-            .map_err(|e| SystemError::RebuildFailed(format!("eval: {e}")))?;
-
-        // Navigate the outputs attrset to the system derivation.
-        let attr_segments: Vec<&str> = attr_path.split('.').collect();
-        let drv_value = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
-            .map_err(|e| SystemError::RebuildFailed(format!("navigate attrs: {e}")))?;
-
-        // Extract drvPath from the derivation attrset.
-        let drv_path = match drv_value {
-            sui_eval::Value::Attrs(ref attrs) => {
-                attrs.get("drvPath")
-                    .and_then(|v| v.as_string().ok())
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| SystemError::RebuildFailed(
-                        "derivation attrset missing drvPath".into(),
-                    ))?
-            }
-            _ => {
-                return Ok(RebuildResult {
-                    success: false,
-                    generation: None,
-                    action: action.to_string(),
-                    log: format!("eval failed: expected derivation attrset, got {}", drv_value.type_name()),
-                    duration_secs: start.elapsed().as_secs_f64(),
-                });
-            }
-        };
-
-        // 3. Realize the system derivation natively — daemon-aware. On a
-        // single-user store `realize_drv` builds through the local pipeline; on
-        // cid's root-owned multi-user store it routes the privileged write through
-        // the nix daemon (the direct-write path can't open the root-owned
-        // db.sqlite). Both produce byte-identical output at the same
-        // content-addressed path.
-        let realized = realize_drv(&drv_path).await?;
-        let system_path = realized
-            .into_iter()
-            .next()
-            .ok_or_else(|| SystemError::RebuildFailed("no build outputs".into()))?;
+        // 1–3. Evaluate the flake + realize the declared toplevel. Extracted
+        // into `build_toplevel` so the continuous `reconcile` loop shares the
+        // EXACT same Observe primitive (Operating Principle #1: solve once, in
+        // one place). A malformed flake (parse error / missing attr / non-drv
+        // value) surfaces as `Err(RebuildFailed)` here, which the CLI wraps.
+        let system_path = self.build_toplevel(flake_ref_str).await?;
 
         // 4. DryActivate short-circuits here: the toplevel is BUILT, but instead
         // of touching the profile or running the activate script we compute the
@@ -381,6 +334,89 @@ impl SystemOrchestrator {
             log: format!("native rebuild completed: {system_path}"),
             duration_secs: start.elapsed().as_secs_f64(),
         })
+    }
+
+    /// Evaluate the flake and realize its declared system toplevel, returning
+    /// the built store path — the reusable **Observe/Build** primitive shared
+    /// by [`rebuild_native`](Self::rebuild_native) and the continuous
+    /// [`reconcile`](crate::reconcile) loop.
+    ///
+    /// Parses the flake ref, evaluates the flake natively, navigates to
+    /// `<platform>Configurations.<host>.config.system.build.toplevel`, extracts
+    /// its `drvPath`, and realizes the closure (daemon-aware — direct on a
+    /// single-user store, via the nix daemon on cid's root-owned multi-user
+    /// store; both produce byte-identical output at the same content-addressed
+    /// path).
+    ///
+    /// It **never** touches the system profile or runs an activate script:
+    /// building the desired toplevel is side-effect-free with respect to the
+    /// live system, so the reconcile loop calls it every tick to read the
+    /// *desired* state without any risk of mutating cid.
+    ///
+    /// # Errors
+    ///
+    /// [`SystemError::RebuildFailed`] on a malformed flake ref, an eval/navigate
+    /// failure, a value that is not a derivation attrset, a missing `drvPath`,
+    /// or a realize that yields no outputs.
+    pub async fn build_toplevel(&self, flake_ref_str: &str) -> Result<String, SystemError> {
+        // Evaluate + navigate to the drvPath in an inner scope so the non-`Send`
+        // `sui_eval::Value`s (they hold `Rc`) are dropped BEFORE the realize
+        // `await` below. This keeps `build_toplevel`'s future `Send` so it
+        // composes into an async service — the reconcile loop's `Controller`
+        // requires a `Send` tick, and the tick awaits this via the Environment
+        // seam. (`rebuild_native` never needed `Send`; the reconcile loop does.)
+        let drv_path = {
+            let flake_ref = sui_compat::flake_ref::FlakeRef::parse(flake_ref_str)
+                .map_err(|e| SystemError::RebuildFailed(e.to_string()))?;
+
+            // Determine the attribute path based on platform.
+            let platform_prefix = match self.platform {
+                Platform::Darwin => "darwinConfigurations",
+                Platform::NixOS => "nixosConfigurations",
+            };
+            let attr_path = format!(
+                "{platform_prefix}.{}.config.system.build.toplevel",
+                flake_ref.attribute
+            );
+
+            // Evaluate the flake natively to get the derivation.
+            let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)
+                .map_err(|e| SystemError::RebuildFailed(format!("eval: {e}")))?;
+
+            // Navigate the outputs attrset to the system derivation.
+            let attr_segments: Vec<&str> = attr_path.split('.').collect();
+            let drv_value = sui_eval::builtins::navigate_attrs(&flake_result, &attr_segments)
+                .map_err(|e| SystemError::RebuildFailed(format!("navigate attrs: {e}")))?;
+
+            // Extract drvPath from the derivation attrset.
+            match drv_value {
+                sui_eval::Value::Attrs(ref attrs) => attrs
+                    .get("drvPath")
+                    .and_then(|v| v.as_string().ok())
+                    .map(std::string::ToString::to_string)
+                    .ok_or_else(|| {
+                        SystemError::RebuildFailed("derivation attrset missing drvPath".into())
+                    })?,
+                _ => {
+                    return Err(SystemError::RebuildFailed(format!(
+                        "eval failed: expected derivation attrset, got {}",
+                        drv_value.type_name()
+                    )));
+                }
+            }
+        };
+
+        // Realize the system derivation natively — daemon-aware. On a
+        // single-user store `realize_drv` builds through the local pipeline; on
+        // cid's root-owned multi-user store it routes the privileged write
+        // through the nix daemon (the direct-write path can't open the
+        // root-owned db.sqlite). Both produce byte-identical output at the same
+        // content-addressed path.
+        let realized = realize_drv(&drv_path).await?;
+        realized
+            .into_iter()
+            .next()
+            .ok_or_else(|| SystemError::RebuildFailed("no build outputs".into()))
     }
 
     /// Compute the typed [`SwitchPlan`] for a built toplevel WITHOUT executing
@@ -503,6 +539,31 @@ impl SystemOrchestrator {
             }
         }
         Ok(())
+    }
+
+    /// Activate an already-built system toplevel — the reusable **Act**
+    /// primitive shared by [`rebuild_native`](Self::rebuild_native) and the
+    /// continuous [`reconcile`](crate::reconcile) loop.
+    ///
+    /// This is the public face of [`activate_system`](Self::activate_system):
+    /// it sets the system profile (the atomic generation-symlink swap — the
+    /// *streamed link change into place*) and runs the closure's own activate
+    /// script per the [`RebuildAction`]. It is **root-gated fail-closed** — a
+    /// non-root mutating action returns [`SystemError::RootRequired`] before
+    /// touching anything, so an unprivileged reconcile tick has no code path
+    /// that mutates the live system.
+    ///
+    /// # Errors
+    ///
+    /// [`SystemError::RootRequired`] for a mutating action off-root;
+    /// [`SystemError::ActivateFailed`] if the activate script exits non-zero;
+    /// [`SystemError::RebuildFailed`] on a profile-set failure.
+    pub async fn activate(
+        &self,
+        system_path: &str,
+        action: RebuildAction,
+    ) -> Result<(), SystemError> {
+        self.activate_system(system_path, action).await
     }
 
     /// **Deprecated.** Legacy rebuild via `darwin-rebuild`/`nixos-rebuild`.

@@ -14,7 +14,43 @@ sui-compat.workspace = true
 sui-eval.workspace = true
 sui-store.workspace = true
 sui-build.workspace = true
-tokio = { workspace = true, features = ["process"] }
+# REUSE — the fleet-standard seven-beat Controller contract
+# (`Controller` / `ReconcileOutcome` / `ReconcileResult` / `ReconcileReport` /
+# `ControllerError`), verbatim from the super-cache-ci controller. The
+# continuous system-`reconcile` loop is the THIRD consumer of this contract
+# (after super-cache-ci itself and the dockerfile-prewarmer's layers-stay-warm
+# loop) — the three-site threshold that justifies the named destination:
+# extracting the trait to a shared leaf crate both engenho and sui implement.
+sui-supercacheci.workspace = true
+# The reconcile STEP is a typed `shigoto::Dag` of re-derive Jobs (SHIGOTO.md),
+# not a bare loop — a work-graph value, ready for the day activation gains
+# ordered sub-steps.
+shigoto-dag.workspace = true
+shigoto-types.workspace = true
+# The typed `ReconcileConfig` is a `shikumi::TieredConfig` (default ← discovered
+# ← override, hot-reload) — configured exactly like every operator-facing
+# pleme-io tool (★★ CONFIGURATION MANAGEMENT).
+shikumi = "0.1"
+# The tick-by-tick attestation is a BLAKE3 content-addressed OutcomeChain
+# (tier-honest: a hash chain, NOT an Ed25519-signed chain — the signing rung is
+# a named destination, same as the prewarmer's chain).
+blake3.workspace = true
+# Hex-encode the 32-byte content-addressed link ids for JSON-safe, human-
+# diffable chain serialization.
+data-encoding = "2"
+# FSEvents/inotify source-watching — the "streaming" trigger that re-converges
+# the instant the flake source changes (debounced), alongside the interval
+# drift-catch tick. Behind a typed trigger seam so the tick brain stays mockable.
+notify = "6"
+tokio = { workspace = true, features = [
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "time",
+    "signal",
+    "sync",
+    "macros",
+] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,3 +63,4 @@ libc = "0.2"
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }

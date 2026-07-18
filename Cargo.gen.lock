@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "e69e745f17e92eb14397fe829a63f3afcb56d79ab8e813b5e177ed6dd7c375b3",
+  "cargo_lock_sha256": "33026c02909ec579b3d66412614f424f6621b2db551478a2d2ddd32caa5b3893",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -3720,6 +3720,25 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "crossbeam-channel-0.5.16": {
+        "runtime_dependencies": [
+          {
+            "name": "crossbeam_utils",
+            "package_key": "crossbeam-utils-0.8.21",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std"
+        ]
       },
       "crossbeam-deque-0.8.6": {
         "runtime_dependencies": [
@@ -25472,6 +25491,16 @@
             "tree": "host"
           },
           {
+            "name": "blake3",
+            "package_key": "blake3-1.8.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "chrono",
             "package_key": "chrono-0.4.45",
             "kind": "normal",
@@ -25484,8 +25513,28 @@
             "tree": "target"
           },
           {
+            "name": "data_encoding",
+            "package_key": "data-encoding-2.11.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "libc",
             "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "notify",
+            "package_key": "notify-6.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25522,6 +25571,36 @@
           {
             "name": "serde_json",
             "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_dag",
+            "package_key": "shigoto-dag-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_types",
+            "package_key": "shigoto-types-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shikumi",
+            "package_key": "shikumi-0.1.108",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -25570,6 +25649,16 @@
             "tree": "target"
           },
           {
+            "name": "sui_supercacheci",
+            "package_key": "sui-supercacheci-0.1.120",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "thiserror",
             "package_key": "thiserror-2.0.18",
             "kind": "normal",
@@ -25585,7 +25674,13 @@
             "kind": "normal",
             "features": [
               "full",
-              "process"
+              "macros",
+              "process",
+              "rt",
+              "rt-multi-thread",
+              "signal",
+              "sync",
+              "time"
             ],
             "uses_default_features": true,
             "optional": false,
@@ -30178,6 +30273,22 @@
               "zeroize"
             ]
           },
+          "fsevent-sys-4.1.0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -30492,6 +30603,87 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.13.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "fsevent_sys",
+                "package_key": "fsevent-sys-4.1.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -31518,6 +31710,42 @@
             "build_dependencies": [],
             "features": []
           },
+          "inotify-0.9.6": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-1.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify_sys",
+                "package_key": "inotify-sys-0.1.5",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "inotify-sys-0.1.5": {
             "runtime_dependencies": [
               {
@@ -31567,6 +31795,47 @@
               "xdp"
             ]
           },
+          "mio-0.8.11": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"wasi\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(unix)",
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "default",
+              "log",
+              "os-ext",
+              "os-poll"
+            ]
+          },
           "native-tls-0.2.18": {
             "runtime_dependencies": [
               {
@@ -31613,6 +31882,101 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify",
+                "package_key": "inotify-0.9.6",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\"))",
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -32595,6 +32959,42 @@
             "build_dependencies": [],
             "features": []
           },
+          "inotify-0.9.6": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-1.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify_sys",
+                "package_key": "inotify-sys-0.1.5",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "inotify-sys-0.1.5": {
             "runtime_dependencies": [
               {
@@ -32644,6 +33044,47 @@
               "xdp"
             ]
           },
+          "mio-0.8.11": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"wasi\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(unix)",
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "default",
+              "log",
+              "os-ext",
+              "os-poll"
+            ]
+          },
           "native-tls-0.2.18": {
             "runtime_dependencies": [
               {
@@ -32690,6 +33131,101 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify",
+                "package_key": "inotify-0.9.6",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\"))",
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -33534,6 +34070,22 @@
             "build_dependencies": [],
             "features": []
           },
+          "fsevent-sys-4.1.0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -33837,6 +34389,87 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.13.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "fsevent_sys",
+                "package_key": "fsevent-sys-4.1.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -34875,6 +35508,42 @@
             "build_dependencies": [],
             "features": []
           },
+          "inotify-0.9.6": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-1.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify_sys",
+                "package_key": "inotify-sys-0.1.5",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "inotify-sys-0.1.5": {
             "runtime_dependencies": [
               {
@@ -34911,6 +35580,47 @@
               "no_std",
               "prctl",
               "xdp"
+            ]
+          },
+          "mio-0.8.11": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"wasi\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(unix)",
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "default",
+              "log",
+              "os-ext",
+              "os-poll"
             ]
           },
           "native-tls-0.2.18": {
@@ -34959,6 +35669,101 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify",
+                "package_key": "inotify-0.9.6",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\"))",
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -35953,6 +36758,42 @@
             "build_dependencies": [],
             "features": []
           },
+          "inotify-0.9.6": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-1.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify_sys",
+                "package_key": "inotify-sys-0.1.5",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "inotify-sys-0.1.5": {
             "runtime_dependencies": [
               {
@@ -35989,6 +36830,47 @@
               "no_std",
               "prctl",
               "xdp"
+            ]
+          },
+          "mio-0.8.11": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"wasi\")",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(unix)",
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "default",
+              "log",
+              "os-ext",
+              "os-poll"
             ]
           },
           "native-tls-0.2.18": {
@@ -36037,6 +36919,101 @@
             "build_dependencies": [],
             "features": [
               "default"
+            ]
+          },
+          "notify-6.1.1": {
+            "runtime_dependencies": [
+              {
+                "name": "crossbeam_channel",
+                "package_key": "crossbeam-channel-0.5.16",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "filetime",
+                "package_key": "filetime-0.2.29",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "inotify",
+                "package_key": "inotify-0.9.6",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "log",
+                "package_key": "log-0.4.33",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\"))",
+                "tree": "target"
+              },
+              {
+                "name": "mio",
+                "package_key": "mio-0.8.11",
+                "kind": "normal",
+                "features": [
+                  "os-ext"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "walkdir",
+                "package_key": "walkdir-2.5.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "crossbeam-channel",
+              "default",
+              "fsevent-sys",
+              "macos_fsevent"
             ]
           },
           "notify-8.2.0": {
@@ -36913,6 +37890,9 @@
     "criterion-plot-0.5.0": {
       "edition": "2018"
     },
+    "crossbeam-channel-0.5.16": {
+      "edition": "2021"
+    },
     "crossbeam-deque-0.8.6": {
       "edition": "2021"
     },
@@ -37114,6 +38094,9 @@
       "edition": "2018"
     },
     "fs_extra-1.3.0": {
+      "edition": "2018"
+    },
+    "fsevent-sys-4.1.0": {
       "edition": "2018"
     },
     "funty-2.0.0": {
@@ -37494,6 +38477,9 @@
     "inotify-0.11.2": {
       "edition": "2018"
     },
+    "inotify-0.9.6": {
+      "edition": "2018"
+    },
     "inotify-sys-0.1.5": {
       "edition": "2015"
     },
@@ -37641,6 +38627,9 @@
     "miniz_oxide-0.8.9": {
       "edition": "2021"
     },
+    "mio-0.8.11": {
+      "edition": "2018"
+    },
     "mio-1.2.1": {
       "edition": "2021"
     },
@@ -37680,6 +38669,9 @@
     },
     "normalize-line-endings-0.3.0": {
       "edition": "2015"
+    },
+    "notify-6.1.1": {
+      "edition": "2021"
     },
     "notify-8.2.0": {
       "edition": "2021"

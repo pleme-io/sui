@@ -633,6 +633,31 @@ enum SystemCommands {
     },
     Status,
     Rollback,
+    /// Continuously reconcile this node's live system to the toplevel its flake
+    /// declares — the Viggy loop applied to the OS (always rebuilt into place).
+    ///
+    /// One-shot by default (a single reconcile pass, then exit); `--watch`
+    /// streams FSEvents on the flake source + a drift-catch interval and runs as
+    /// a daemon until SIGINT/SIGTERM. On drift it converges once and holds; at
+    /// the fixpoint it does nothing (the Diff-gate makes a redundant tick a
+    /// provable no-op).
+    Converge {
+        /// The flake reference including the host attribute (e.g. `.#cid`).
+        #[arg(long)] flake: Option<String>,
+        /// Stream source changes + run forever (the daemon). Without it, a
+        /// single reconcile pass runs and exits.
+        #[arg(long)] watch: bool,
+        /// The drift-catch interval in seconds (watch mode).
+        #[arg(long, default_value_t = 30)] interval_secs: u64,
+        /// The converge action on drift: switch (default, mutating) | boot |
+        /// test | dry-activate (shadow) | build.
+        #[arg(long, value_enum, default_value_t = CliRebuildAction::Switch)]
+        action: CliRebuildAction,
+        /// SHADOW override — force the non-mutating dry-activate posture
+        /// regardless of `--action` (observe + build the desired toplevel, but
+        /// activate nothing). The safe way to watch drift without converging.
+        #[arg(long)] shadow: bool,
+    },
 }
 
 /// CLI-facing wrapper for [`sui_orchestrate::RebuildAction`].
@@ -6225,6 +6250,66 @@ async fn main() -> Result<(), CliError> {
                     println!("rollback {} in {:.1}s",
                         if result.success { "succeeded" } else { "failed" },
                         result.duration_secs);
+                }
+                SystemCommands::Converge { flake, watch, interval_secs, action, shadow } => {
+                    let flake = flake.ok_or_else(|| CliError::Orchestrate {
+                        operation: "converge",
+                        message: "a flake reference is required (e.g. --flake .#cid)".to_string(),
+                    })?;
+                    // `--shadow` forces the non-mutating dry-activate posture,
+                    // overriding `--action` — so it is impossible to ask for a
+                    // shadow watch and accidentally converge the live system.
+                    let action: sui_orchestrate::RebuildAction = if shadow {
+                        sui_orchestrate::RebuildAction::DryActivate
+                    } else {
+                        action.into()
+                    };
+                    let config = sui_orchestrate::ReconcileConfig {
+                        name: "system-in-place".to_string(),
+                        flake,
+                        action,
+                        interval_secs,
+                        watch,
+                    };
+                    // Reuse the platform-detected orchestrator built above.
+                    let env = sui_orchestrate::LocalReconcileEnv::with_orchestrator(sys);
+                    let controller =
+                        sui_orchestrate::SystemReconciler::new(config.clone(), env);
+                    if watch {
+                        // The streaming daemon: reconcile on every source change +
+                        // interval tick until SIGINT/SIGTERM.
+                        println!(
+                            "system-reconcile: watching {} (action={}, interval={}s) — Ctrl-C to stop",
+                            config.flake, config.action, config.interval_secs
+                        );
+                        let driver = sui_orchestrate::ReconcileDriver::new(controller, config);
+                        let ticks = driver
+                            .run(sui_orchestrate::shutdown_signal())
+                            .await
+                            .map_err(|e| CliError::Orchestrate {
+                                operation: "converge watch",
+                                message: e.to_string(),
+                            })?;
+                        println!("system-reconcile: stopped after {ticks} attested ticks");
+                    } else {
+                        // One-shot: a single reconcile pass, then exit.
+                        use sui_orchestrate::Controller as _;
+                        let outcome =
+                            controller.tick().await.map_err(|e| CliError::Orchestrate {
+                                operation: "converge",
+                                message: e.to_string(),
+                            })?;
+                        println!(
+                            "system-reconcile: {}",
+                            outcome.report.note.as_deref().unwrap_or("")
+                        );
+                        println!(
+                            "  examined={} converged={} skipped={}",
+                            outcome.report.objects_examined,
+                            outcome.report.objects_changed,
+                            outcome.report.objects_skipped
+                        );
+                    }
                 }
             }
         },
