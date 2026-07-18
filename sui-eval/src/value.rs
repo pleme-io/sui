@@ -1426,6 +1426,41 @@ impl Thunk {
         }
     }
 
+    /// Owned-value variant of the concrete branch of [`store_evaluated`],
+    /// for the `force_inner` early-return that OWNS `value` and does not
+    /// need it afterward.
+    ///
+    /// `store_evaluated(&value)` clones the whole `Value` to fill the
+    /// cache (`Box::new(value.clone().demand_unchecked())`) and the caller
+    /// then returns the owned `value` separately — an extra *outer*
+    /// `Value` clone. Here we MOVE `value` into the cache (no outer clone)
+    /// and clone the cheaper inner `Concrete` for the return, trading one
+    /// `Value::clone` for one `Concrete::clone` (the same inner `Rc` bumps,
+    /// one fewer throwaway `Value` temporary).
+    ///
+    /// Content-, order-, and census-neutral versus the
+    /// `store_evaluated(&value); return Ok(value)` it replaces: the cache
+    /// holds the identical `Box<Concrete>`, `repr` becomes the identical
+    /// `EvaluatedConcrete` marker, `census::evaluated()` fires exactly
+    /// once, and the returned `Value` is a byte-identical reconstruction
+    /// of `value`.
+    ///
+    /// Panics (via `demand_unchecked`) if `value` is a `Thunk` — the sole
+    /// call site only reaches it on the `!was_thunk_before_loop` branch,
+    /// where `value` is guaranteed non-`Thunk`.
+    ///
+    /// SAFETY: same contract as [`store_evaluated`] — single-threaded,
+    /// no overlapping `repr` borrow.
+    #[inline]
+    unsafe fn store_evaluated_owned(&self, value: Value) -> Value {
+        census::evaluated();
+        let concrete = value.demand_unchecked();
+        let ret = concrete.clone().into_value();
+        let _ = self.0.cache.set(Box::new(concrete));
+        *unsafe { &mut *self.0.repr.get() } = ThunkRepr::EvaluatedConcrete;
+        ret
+    }
+
     /// Force this thunk using the given evaluator function.
     ///
     /// On first force: transitions Suspended -> Blackhole -> Evaluated.
@@ -1626,43 +1661,50 @@ impl Thunk {
                                 *cell.borrow_mut() = value.clone();
                             }
                         }
-                        // Collapse the double-store: concrete → cache-only +
-                        // `EvaluatedConcrete`; thunk → `Evaluated(Box)`.
+                        // Whether the body returned a Thunk decides the store
+                        // shape.  Computed BEFORE the store so the non-thunk
+                        // path can MOVE `value` into the cache (owned store)
+                        // instead of cloning it (see `store_evaluated_owned`).
+                        //
+                        // C-store PROVABLY-NEUTRAL narrow win (M2, byte-verified):
+                        // when `value` is NOT a Thunk, the collapse loop below
+                        // does not execute (its guard is `while let Value::Thunk`),
+                        // so the second store (in the thunk branch) would rewrite
+                        // BYTE-IDENTICAL repr content and re-attempt a no-op
+                        // OnceCell `cache.set`.  Skipping it is content-AND-order-
+                        // neutral: the single store already established the
+                        // terminal (cache=concrete, repr=EvaluatedConcrete);
+                        // nothing between the stores observes `self.0.repr` (the
+                        // body has returned — no re-entrant force of self is in
+                        // flight; the loop only `peek()`s OTHER thunks' OnceCell
+                        // caches, never self's repr), and no code observes the
+                        // `Box`'s pointer identity (repr is only ever read by
+                        // value — grep-confirmed). Only when `value` IS a Thunk
+                        // (the loop may collapse it to a different concrete) do we
+                        // re-store the unwrapped result.
+                        let was_thunk_before_loop = matches!(value, Value::Thunk(_));
+                        if !was_thunk_before_loop {
+                            // Non-thunk: single owned store (no outer Value clone),
+                            // return the reconstruction. Byte-, order-, and census-
+                            // identical to `store_evaluated(&value); return Ok(value)`
+                            // (Store#2 is pure redundant and skipped, as before).
+                            crate::perf::inc(crate::perf::Counter::ThunkStoreRedundant);
+                            let ret = unsafe { self.store_evaluated_owned(value) };
+                            crate::trace::pop_force();
+                            if tracing { crate::trace::trace_force_exit(); }
+                            return Ok(ret);
+                        }
+                        // Thunk path (unchanged): Store#1, collapse loop, Store#2.
                         unsafe { self.store_evaluated(&value) };
                         // Transitively unwrap thunk-in-thunk chains, with a
                         // depth limit to catch `let x = x; in x` cycles.
                         // Chase already-resolved thunks only (peek).
                         // force_value handles full transitive resolution.
-                        //
-                        // C-store PROVABLY-NEUTRAL narrow win (M2, byte-verified):
-                        // when `value` was NOT a Thunk at Store#1, this loop does
-                        // not execute (its guard is `while let Value::Thunk`), so
-                        // the second store (below) would rewrite BYTE-IDENTICAL
-                        // repr content and re-attempt a no-op OnceCell `cache.set`
-                        // (already populated by Store#1's guarded set). Skipping
-                        // it is content-AND-order-neutral: Store#1 already
-                        // established the terminal (repr=Evaluated(value),
-                        // cache=value); nothing between the two stores observes
-                        // `self.0.repr` (the body has returned — no re-entrant
-                        // force of self is in flight; the loop only `peek()`s
-                        // OTHER thunks' OnceCell caches, never self's repr), and
-                        // no code observes the `Box`'s pointer identity (repr is
-                        // only ever read by value — grep-confirmed). Only when
-                        // `value` WAS a Thunk (the loop may collapse it to a
-                        // different concrete) do we re-store the unwrapped result.
-                        let was_thunk_before_loop = matches!(value, Value::Thunk(_));
                         while let Value::Thunk(ref inner) = value {
                             match inner.peek() {
                                 Some(cached) => value = cached.clone().into_value(),
                                 None => break,
                             }
-                        }
-                        if !was_thunk_before_loop {
-                            // Store#1 already terminal; Store#2 is pure redundant.
-                            crate::perf::inc(crate::perf::Counter::ThunkStoreRedundant);
-                            crate::trace::pop_force();
-                            if tracing { crate::trace::trace_force_exit(); }
-                            return Ok(value);
                         }
                         if !matches!(value, Value::Thunk(_)) {
                             crate::perf::inc(crate::perf::Counter::ThunkStoreLoopMutated);
