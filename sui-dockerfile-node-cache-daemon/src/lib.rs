@@ -6,7 +6,7 @@
 //! Unix domain socket and answers `Get`/`Put`/`Warm` requests (see
 //! [`protocol`]) against a node-local disk cache ([`store`]), falling
 //! through to the existing remote
-//! [`sui_cache::storage::StorageBackend`] (Postgres L2 / Redis L1,
+//! [`sui_castore::StorageBackend`] (Postgres L2 / Redis L1,
 //! unmodified — see [`server`]) on a local miss, persisting the result
 //! locally so the next lookup on the same node is a zero-network-hop
 //! local hit.
@@ -28,7 +28,7 @@
 //!
 //! This crate does **not** invent a new remote cache abstraction — the
 //! "remote tier" side of [`server::NodeCacheDaemon`] is exactly
-//! [`sui_cache::storage::StorageBackend`], the same trait
+//! [`sui_castore::StorageBackend`], the same trait
 //! `sui-dockerfile-wrapper` (Phase 2) and `sui cache serve` already
 //! consume. Only the local L0 tier ([`store::LocalCacheStore`]) and the
 //! wire protocol ([`protocol`]) are new.
@@ -150,7 +150,7 @@ pub fn default_socket_path() -> PathBuf {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use sui_cache::storage::StorageBackend;
+    use sui_cache::StorageBackend;
     use sui_cache::CacheError;
     use tokio::net::UnixStream as ClientStream;
 

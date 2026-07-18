@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let commits_api = RealCommitsApi::new(config.github_api_base.clone(), config.github_raw_base.clone());
-    let cache = sui_cache::storage::build_backend(&config.cache_backend).await?;
+    let cache = sui_cache::build_backend(&config.cache_backend).await?;
     let prewarm_runner = RealPrewarmRunner::new(cache, std::env::current_dir()?);
 
     let controller = LayersWarmController::new(

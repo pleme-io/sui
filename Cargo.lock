@@ -6440,17 +6440,13 @@ dependencies = [
  "base64",
  "bytes",
  "ed25519-dalek",
- "futures",
  "http-body-util",
- "object_store",
  "rand_core 0.6.4",
- "redb",
- "redis",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
- "sqlx",
+ "sui-castore",
  "sui-compat",
  "tempfile",
  "thiserror 2.0.18",
@@ -6470,6 +6466,26 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sui-castore"
+version = "0.1.130"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "object_store",
+ "redb",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "sui-compat",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6768,7 +6784,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sui-cache",
+ "sui-castore",
  "sui-compat",
  "tempfile",
  "thiserror 2.0.18",

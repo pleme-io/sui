@@ -2,10 +2,9 @@
 //!
 //! This binary is the thin runtime shell around the library: it resolves the
 //! typed [`RegistryConfig`] from the environment, builds the durable
-//! [`sui_cache::storage::StorageBackend`] the config selects (via sui-cache's
-//! typed [`build_backend`](sui_cache::build_backend) factory — never a silent
-//! hard-coded constructor), wraps it in a [`SuiCacheStore`], and serves the
-//! axum `/v2/` router until shutdown.
+//! [`sui_castore::StorageBackend`] the config selects (via `sui_castore::build_backend`
+//! — never a silent hard-coded constructor), wraps it in a [`SuiCacheStore`],
+//! and serves the axum `/v2/` router until shutdown.
 //!
 //! Every fallible step returns a typed [`PortoError`] up through `main`; there
 //! is no `unwrap`/`expect`/`panic!` on the happy path — a bad config, an
@@ -25,7 +24,7 @@ use sui_registry::store::SuiCacheStore;
 enum PortoError {
     /// Building the durable storage backend the config selected failed.
     #[error("failed to build the storage backend: {0}")]
-    Backend(#[from] sui_cache::CacheError),
+    Backend(#[from] sui_castore::StoreError),
     /// Binding the listener or serving failed.
     #[error("registry serve failed: {0}")]
     Serve(#[from] std::io::Error),
@@ -46,10 +45,10 @@ async fn main() -> Result<(), PortoError> {
     let config = RegistryConfig::prescribed_default().from_env();
 
     // Config decides the backend; `build_backend` is the typed dispatch. A
-    // tiered/redis/pg arm whose sui-cache feature is not compiled in returns a
-    // typed `CacheError::NotImplemented` here rather than falling back to disk.
+    // tiered/redis/pg arm whose sui-castore feature is not compiled in returns a
+    // typed `StoreError::NotImplemented` here rather than falling back to disk.
     let backend_config = config.resolve_backend();
-    let backend = sui_cache::build_backend(&backend_config).await?;
+    let backend = sui_castore::build_backend(&backend_config).await?;
     tracing::info!("porto storage backend resolved: {backend_config:?}");
 
     let store = Arc::new(SuiCacheStore::new(backend));

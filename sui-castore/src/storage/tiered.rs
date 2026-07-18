@@ -59,7 +59,7 @@ use async_trait::async_trait;
 use tracing::warn;
 
 use super::StorageBackend;
-use crate::CacheError;
+use crate::StoreError;
 
 /// How a `put` propagates across the tiers. See the module docs for the full
 /// contract; every policy persists **both durable tiers before returning**.
@@ -152,7 +152,7 @@ impl TieredBackend {
 
 #[async_trait]
 impl StorageBackend for TieredBackend {
-    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         // L1
         if let Some(v) = self.l1.get_narinfo(hash).await? {
             return Ok(Some(v));
@@ -171,7 +171,7 @@ impl StorageBackend for TieredBackend {
         Ok(None)
     }
 
-    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         if let Some(v) = self.l1.get_nar(path).await? {
             return Ok(Some(v));
         }
@@ -187,7 +187,7 @@ impl StorageBackend for TieredBackend {
         Ok(None)
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         match self.write_policy {
             WritePolicy::WriteThrough => {
                 self.l2.put_narinfo(hash, content).await?;
@@ -207,7 +207,7 @@ impl StorageBackend for TieredBackend {
         Ok(())
     }
 
-    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
+    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
         match self.write_policy {
             WritePolicy::WriteThrough => {
                 self.l2.put_nar(path, data).await?;
@@ -227,7 +227,7 @@ impl StorageBackend for TieredBackend {
         Ok(())
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
         // Best-effort across all tiers: content-addressed delete is a GC op, not a
         // correctness one (a key resolves to its content or to nothing). Mirror
         // `S3Storage::delete` — warn, never hard-fail on one tier.
@@ -239,7 +239,7 @@ impl StorageBackend for TieredBackend {
         Ok(())
     }
 
-    async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+    async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         // Authoritative tiers only (L2 ∪ L3); L1 is a partial hot subset. A
         // durable-tier list failure surfaces (`?`).
         let mut set = BTreeSet::new();
@@ -253,7 +253,7 @@ impl StorageBackend for TieredBackend {
     /// tier's failure is logged, never aborting the others — the whole point is
     /// to return the store to cold. Reports the largest per-tier narinfo count
     /// removed (the authoritative tiers' full set).
-    async fn wipe_all(&self) -> Result<usize, CacheError> {
+    async fn wipe_all(&self) -> Result<usize, StoreError> {
         let mut cleared = 0usize;
         for (name, tier) in [("l1", &self.l1), ("l2", &self.l2), ("l3", &self.l3)] {
             match tier.wipe_all().await {
@@ -295,9 +295,6 @@ mod tests {
         fn has_nar(&self, path: &str) -> bool {
             self.nar.lock().unwrap().contains_key(path)
         }
-        fn narinfo_count(&self) -> usize {
-            self.narinfo.lock().unwrap().len()
-        }
         fn clear(&self) {
             self.narinfo.lock().unwrap().clear();
             self.nar.lock().unwrap().clear();
@@ -305,9 +302,9 @@ mod tests {
         fn set_writes_fail(&self, v: bool) {
             *self.writes_fail.lock().unwrap() = v;
         }
-        fn fail_if_configured(&self) -> Result<(), CacheError> {
+        fn fail_if_configured(&self) -> Result<(), StoreError> {
             if *self.writes_fail.lock().unwrap() {
-                Err(CacheError::NotImplemented("mock writes disabled"))
+                Err(StoreError::NotImplemented("mock writes disabled"))
             } else {
                 Ok(())
             }
@@ -316,30 +313,30 @@ mod tests {
 
     #[async_trait]
     impl StorageBackend for MemBackend {
-        async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+        async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+        async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
             self.fail_if_configured()?;
             self.narinfo.lock().unwrap().insert(hash.to_string(), content.to_string());
             Ok(())
         }
-        async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(self.nar.lock().unwrap().get(path).cloned())
         }
-        async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
+        async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
             self.fail_if_configured()?;
             self.nar.lock().unwrap().insert(path.to_string(), data.to_vec());
             Ok(())
         }
-        async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+        async fn delete(&self, hash: &str) -> Result<(), StoreError> {
             self.narinfo.lock().unwrap().remove(hash);
             for ext in ["nar.xz", "nar.zst", "nar"] {
                 self.nar.lock().unwrap().remove(&format!("nar/{hash}.{ext}"));
             }
             Ok(())
         }
-        async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+        async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().keys().cloned().collect())
         }
     }
@@ -472,7 +469,7 @@ mod tests {
         l2.set_writes_fail(true);
         let tiered = TieredBackend::new(l1.clone(), l2, l3);
         let err = tiered.put_narinfo("h", NARINFO).await.unwrap_err();
-        assert!(matches!(err, CacheError::NotImplemented(_)));
+        assert!(matches!(err, StoreError::NotImplemented(_)));
     }
 
     // ── durability (the never-touch-disk claim's real proof) ───────────────

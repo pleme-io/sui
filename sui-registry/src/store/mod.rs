@@ -4,9 +4,9 @@
 //! get/put, tag resolution, referrer indexing — flows through this async
 //! trait. Tests drive [`MemStore`] (pure in-memory) so the whole registry
 //! proves green with zero real I/O; production drives [`SuiCacheStore`]
-//! (blobs + manifests onto sui-cache's content-addressed
-//! [`StorageBackend`](sui_cache::storage::StorageBackend)). The two impls are
-//! interchangeable by construction — a handler names only the trait.
+//! (blobs + manifests onto the content-addressed [`sui_castore::StorageBackend`]).
+//! The two impls are interchangeable by construction — a handler names only the
+//! trait.
 //!
 //! Content model:
 //! - A **blob** is opaque bytes keyed by its [`Digest`]. Immutable at its
@@ -151,8 +151,8 @@ pub enum StoreError {
     Backend(String),
 }
 
-impl From<sui_cache::CacheError> for StoreError {
-    fn from(e: sui_cache::CacheError) -> Self {
+impl From<sui_castore::StoreError> for StoreError {
+    fn from(e: sui_castore::StoreError) -> Self {
         StoreError::Backend(e.to_string())
     }
 }

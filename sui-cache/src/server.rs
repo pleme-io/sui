@@ -18,7 +18,7 @@ use axum::Router;
 
 use crate::config::CacheConfig;
 use crate::signing::CacheSigner;
-use crate::storage::StorageBackend;
+use crate::StorageBackend;
 use sui_compat::narinfo::NarInfo;
 
 /// Shared application state for all handlers.
@@ -255,7 +255,7 @@ async fn put_nar(
 mod tests {
     use super::*;
     use crate::config::BackendConfig;
-    use crate::storage::local::LocalStorage;
+    use crate::LocalStorage;
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;

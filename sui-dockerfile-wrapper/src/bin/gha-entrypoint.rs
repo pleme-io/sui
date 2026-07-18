@@ -26,7 +26,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use sui_cache::config::BackendConfig;
-use sui_cache::storage::{build_backend, StorageBackend};
+use sui_cache::{build_backend, StorageBackend};
 use sui_dockerfile_node_cache_daemon::default_socket_path;
 use sui_dockerfile_wrapper::{run_wrapper, DaemonAwareCacheClient, FilesystemDockerfileEnvironment, RealCommandRunner, WrapperConfig};
 

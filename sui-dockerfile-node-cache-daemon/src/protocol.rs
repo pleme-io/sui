@@ -30,7 +30,7 @@ use crate::DaemonError;
 pub const MAX_MESSAGE_BYTES: u32 = 8 * 1024 * 1024;
 
 /// The cache payload: today, an image reference string — the same
-/// shape [`sui_cache::storage::StorageBackend::get_narinfo`] already
+/// shape [`sui_castore::StorageBackend::get_narinfo`] already
 /// returns for a Dockerfile-graph node hit. Kept as its own typed
 /// struct (rather than a bare `String`) so a future phase can widen it
 /// (e.g. add a `size_bytes` or `built_at`) without an incompatible wire

@@ -97,6 +97,11 @@ members = [
     # wire codes. lacre (the cartorio admission proxy) and doca (the client)
     # sit AROUND this store server; porto leaves the referrer seam for them.
     "sui-registry",
+    # Shared content-addressed store backends — the `StorageBackend` trait
+    # + Local/S3/Redis/Pg/Tiered implementations, shared by both sui-cache
+    # and sui-registry (=porto). Extracted from sui-cache so porto does not
+    # depend on the full cache server crate just for the store trait.
+    "sui-castore",
 ]
 resolver = "3"
 
@@ -136,6 +141,7 @@ sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.1
 sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.10" }
 sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.10" }
 sui-bigorna = { path = "sui-bigorna", version = "0.1.10" }
+sui-castore = { path = "sui-castore", version = "0.1.10" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader + derive macro, both published on crates.io.

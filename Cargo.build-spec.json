@@ -40,6 +40,10 @@
         "relative_path": "sui-cache"
       },
       {
+        "name": "sui-castore",
+        "relative_path": "sui-castore"
+      },
+      {
         "name": "sui-build",
         "relative_path": "sui-build"
       },
@@ -48451,9 +48455,9 @@
         "preBuild": "export CARGO_CRATE_NAME=subtle;"
       }
     },
-    "sui-0.1.129": {
+    "sui-0.1.130": {
       "name": "sui",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -48652,7 +48656,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.129",
+          "package_key": "sui-build-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48662,7 +48666,7 @@
         },
         {
           "name": "sui_bytecode",
-          "package_key": "sui-bytecode-0.1.129",
+          "package_key": "sui-bytecode-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48672,7 +48676,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48682,7 +48686,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48692,7 +48696,7 @@
         },
         {
           "name": "sui_daemon",
-          "package_key": "sui-daemon-0.1.129",
+          "package_key": "sui-daemon-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48702,7 +48706,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.129",
+          "package_key": "sui-eval-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48712,7 +48716,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.129",
+          "package_key": "sui-intern-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48722,7 +48726,7 @@
         },
         {
           "name": "sui_orchestrate",
-          "package_key": "sui-orchestrate-0.1.129",
+          "package_key": "sui-orchestrate-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48732,7 +48736,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48742,7 +48746,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48752,7 +48756,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.129",
+          "package_key": "sui-supercacheci-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48919,67 +48923,67 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_build"
           }
         ],
         "sui-bytecode": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_bytecode"
           }
         ],
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-daemon": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_daemon"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_eval"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_intern"
           }
         ],
         "sui-orchestrate": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_orchestrate"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_supercacheci"
           }
         ],
@@ -49004,7 +49008,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "features": [
           "default",
@@ -49051,67 +49055,67 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_build"
             }
           ],
           "sui-bytecode": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_bytecode"
             }
           ],
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-daemon": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_daemon"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_eval"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_intern"
             }
           ],
           "sui-orchestrate": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_orchestrate"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_supercacheci"
             }
           ],
@@ -49140,9 +49144,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui;"
       }
     },
-    "sui-bigorna-0.1.129": {
+    "sui-bigorna-0.1.130": {
       "name": "sui-bigorna",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49209,7 +49213,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49219,7 +49223,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.129",
+          "package_key": "sui-dockerfile-wrapper-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49242,31 +49246,31 @@
       "crate_renames": {
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_dockerfile_wrapper"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-bigorna",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_dockerfile_wrapper"
             }
           ]
@@ -49277,9 +49281,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_bigorna;"
       }
     },
-    "sui-build-0.1.129": {
+    "sui-build-0.1.130": {
       "name": "sui-build",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49337,7 +49341,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49347,7 +49351,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49404,20 +49408,20 @@
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-build",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "aho-corasick": [
@@ -49434,13 +49438,13 @@
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ]
@@ -49451,9 +49455,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_build;"
       }
     },
-    "sui-bytecode-0.1.129": {
+    "sui-bytecode-0.1.130": {
       "name": "sui-bytecode",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49511,7 +49515,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49521,7 +49525,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.129",
+          "package_key": "sui-intern-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49531,7 +49535,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49554,43 +49558,43 @@
       "crate_renames": {
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_intern"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-bytecode",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_intern"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ]
@@ -49601,9 +49605,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_bytecode;"
       }
     },
-    "sui-cache-0.1.129": {
+    "sui-cache-0.1.130": {
       "name": "sui-cache",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49680,28 +49684,6 @@
           "tree": "target"
         },
         {
-          "name": "futures",
-          "package_key": "futures-0.3.32",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "object_store",
-          "package_key": "object_store-0.12.5",
-          "kind": "normal",
-          "features": [
-            "aws"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
           "name": "rand_core",
           "package_key": "rand_core-0.6.4",
           "kind": "normal",
@@ -49710,29 +49692,6 @@
           ],
           "uses_default_features": true,
           "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "redb",
-          "package_key": "redb-2.6.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "redis",
-          "package_key": "redis-0.27.6",
-          "kind": "normal",
-          "features": [
-            "connection-manager",
-            "tokio-comp"
-          ],
-          "uses_default_features": false,
-          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -49769,21 +49728,18 @@
           "tree": "target"
         },
         {
-          "name": "sqlx",
-          "package_key": "sqlx-0.8.6",
+          "name": "sui_castore",
+          "package_key": "sui-castore-0.1.130",
           "kind": "normal",
-          "features": [
-            "postgres",
-            "runtime-tokio-rustls"
-          ],
-          "uses_default_features": false,
-          "optional": true,
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
           "target": null,
           "tree": "target"
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49848,16 +49804,22 @@
             "rename": "ed25519_dalek"
           }
         ],
+        "sui-castore": [
+          {
+            "version": "0.1.130",
+            "rename": "sui_castore"
+          }
+        ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-cache",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "features": [
           "default",
@@ -49877,9 +49839,15 @@
               "rename": "ed25519_dalek"
             }
           ],
+          "sui-castore": [
+            {
+              "version": "0.1.130",
+              "rename": "sui_castore"
+            }
+          ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ]
@@ -49890,9 +49858,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_cache;"
       }
     },
-    "sui-cache-eval-0.1.129": {
+    "sui-cache-eval-0.1.130": {
       "name": "sui-cache-eval",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49972,7 +49940,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-cache-eval",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "dirs-next": [
@@ -49988,9 +49956,208 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_cache_eval;"
       }
     },
-    "sui-compat-0.1.129": {
+    "sui-castore-0.1.130": {
+      "name": "sui-castore",
+      "version": "0.1.130",
+      "edition": "2024",
+      "source": {
+        "kind": "path",
+        "relative_path": "sui-castore"
+      },
+      "features": [
+        "default",
+        "postgres",
+        "redis-client"
+      ],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [],
+      "lib_target": {
+        "name": "sui_castore",
+        "path": "src/lib.rs"
+      },
+      "runtime_dependencies": [
+        {
+          "name": "async_trait",
+          "package_key": "async-trait-0.1.89",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "host"
+        },
+        {
+          "name": "bytes",
+          "package_key": "bytes-1.12.0",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "futures",
+          "package_key": "futures-0.3.32",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "object_store",
+          "package_key": "object_store-0.12.5",
+          "kind": "normal",
+          "features": [
+            "aws"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "redb",
+          "package_key": "redb-2.6.3",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "redis",
+          "package_key": "redis-0.27.6",
+          "kind": "normal",
+          "features": [
+            "connection-manager",
+            "tokio-comp"
+          ],
+          "uses_default_features": false,
+          "optional": true,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "serde",
+          "package_key": "serde-1.0.228",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sqlx",
+          "package_key": "sqlx-0.8.6",
+          "kind": "normal",
+          "features": [
+            "postgres",
+            "runtime-tokio-rustls"
+          ],
+          "uses_default_features": false,
+          "optional": true,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_compat",
+          "package_key": "sui-compat-0.1.130",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "thiserror",
+          "package_key": "thiserror-2.0.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tokio",
+          "package_key": "tokio-1.52.3",
+          "kind": "normal",
+          "features": [
+            "full"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tracing",
+          "package_key": "tracing-0.1.44",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        }
+      ],
+      "build_dependencies": [],
+      "crate_renames": {
+        "async-trait": [
+          {
+            "version": "0.1.89",
+            "rename": "async_trait"
+          }
+        ],
+        "sui-compat": [
+          {
+            "version": "0.1.130",
+            "rename": "sui_compat"
+          }
+        ]
+      },
+      "build_rust_crate_args": {
+        "crateName": "sui-castore",
+        "version": "0.1.130",
+        "edition": "2024",
+        "features": [
+          "default",
+          "postgres",
+          "redis-client"
+        ],
+        "crateRenames": {
+          "async-trait": [
+            {
+              "version": "0.1.89",
+              "rename": "async_trait"
+            }
+          ],
+          "sui-compat": [
+            {
+              "version": "0.1.130",
+              "rename": "sui_compat"
+            }
+          ]
+        },
+        "release": true,
+        "libName": "sui_castore",
+        "libPath": "src/lib.rs",
+        "preBuild": "export CARGO_CRATE_NAME=sui_castore;"
+      }
+    },
+    "sui-compat-0.1.130": {
       "name": "sui-compat",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50099,7 +50266,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-compat",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "ed25519-dalek": [
@@ -50121,9 +50288,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_compat;"
       }
     },
-    "sui-daemon-0.1.129": {
+    "sui-daemon-0.1.130": {
       "name": "sui-daemon",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50223,7 +50390,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.129",
+          "package_key": "sui-build-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50233,7 +50400,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50243,7 +50410,7 @@
         },
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.129",
+          "package_key": "sui-daemon-frame-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50253,7 +50420,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.129",
+          "package_key": "sui-eval-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50263,7 +50430,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50273,7 +50440,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.129",
+          "package_key": "sui-protocol-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50283,7 +50450,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50344,50 +50511,50 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_build"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-daemon-frame": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_eval"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ],
         "sui-protocol": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_protocol"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -50398,43 +50565,43 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_build"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-daemon-frame": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_eval"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ],
           "sui-protocol": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_protocol"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ]
@@ -50445,9 +50612,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon;"
       }
     },
-    "sui-daemon-client-0.1.129": {
+    "sui-daemon-client-0.1.130": {
       "name": "sui-daemon-client",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50465,7 +50632,7 @@
       "runtime_dependencies": [
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.129",
+          "package_key": "sui-daemon-frame-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50475,7 +50642,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50485,7 +50652,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.129",
+          "package_key": "sui-protocol-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50536,43 +50703,43 @@
       "crate_renames": {
         "sui-daemon-frame": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ],
         "sui-protocol": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_protocol"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-client",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-daemon-frame": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ],
           "sui-protocol": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_protocol"
             }
           ]
@@ -50583,9 +50750,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_client;"
       }
     },
-    "sui-daemon-frame-0.1.129": {
+    "sui-daemon-frame-0.1.130": {
       "name": "sui-daemon-frame",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50617,7 +50784,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.129",
+          "package_key": "sui-protocol-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50663,19 +50830,19 @@
       "crate_renames": {
         "sui-protocol": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_protocol"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-frame",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-protocol": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_protocol"
             }
           ]
@@ -50686,9 +50853,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_frame;"
       }
     },
-    "sui-daemon-graph-0.1.129": {
+    "sui-daemon-graph-0.1.130": {
       "name": "sui-daemon-graph",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50732,7 +50899,7 @@
         },
         {
           "name": "sui_daemon",
-          "package_key": "sui-daemon-0.1.129",
+          "package_key": "sui-daemon-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50742,7 +50909,7 @@
         },
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.129",
+          "package_key": "sui-daemon-frame-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50752,7 +50919,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50812,19 +50979,19 @@
       "crate_renames": {
         "sui-daemon": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_daemon"
           }
         ],
         "sui-daemon-frame": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ],
@@ -50837,24 +51004,24 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-graph",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-daemon": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_daemon"
             }
           ],
           "sui-daemon-frame": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ],
@@ -50869,9 +51036,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_graph;"
       }
     },
-    "sui-dockerfile-node-cache-daemon-0.1.129": {
+    "sui-dockerfile-node-cache-daemon-0.1.130": {
       "name": "sui-dockerfile-node-cache-daemon",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50926,7 +51093,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50999,7 +51166,7 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
@@ -51012,7 +51179,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-node-cache-daemon",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51023,7 +51190,7 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
@@ -51040,9 +51207,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_node_cache_daemon;"
       }
     },
-    "sui-dockerfile-prewarmer-0.1.129": {
+    "sui-dockerfile-prewarmer-0.1.130": {
       "name": "sui-dockerfile-prewarmer",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51181,7 +51348,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51191,7 +51358,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.129",
+          "package_key": "sui-dockerfile-wrapper-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51201,7 +51368,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51211,7 +51378,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.129",
+          "package_key": "sui-supercacheci-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51299,25 +51466,25 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_dockerfile_wrapper"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_supercacheci"
           }
         ],
@@ -51330,7 +51497,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-prewarmer",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51359,25 +51526,25 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_dockerfile_wrapper"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_supercacheci"
             }
           ],
@@ -51394,9 +51561,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_prewarmer;"
       }
     },
-    "sui-dockerfile-verify-0.1.129": {
+    "sui-dockerfile-verify-0.1.130": {
       "name": "sui-dockerfile-verify",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51446,7 +51613,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.129",
+          "package_key": "sui-dockerfile-wrapper-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51479,19 +51646,19 @@
       "crate_renames": {
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_dockerfile_wrapper"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-verify",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_dockerfile_wrapper"
             }
           ]
@@ -51502,9 +51669,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_verify;"
       }
     },
-    "sui-dockerfile-wrapper-0.1.129": {
+    "sui-dockerfile-wrapper-0.1.130": {
       "name": "sui-dockerfile-wrapper",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51569,7 +51736,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51579,7 +51746,7 @@
         },
         {
           "name": "sui_dockerfile_node_cache_daemon",
-          "package_key": "sui-dockerfile-node-cache-daemon-0.1.129",
+          "package_key": "sui-dockerfile-node-cache-daemon-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51589,7 +51756,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51647,26 +51814,26 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-node-cache-daemon": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_dockerfile_node_cache_daemon"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-wrapper",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51677,19 +51844,19 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-node-cache-daemon": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_dockerfile_node_cache_daemon"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ]
@@ -51700,9 +51867,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_wrapper;"
       }
     },
-    "sui-eval-0.1.129": {
+    "sui-eval-0.1.130": {
       "name": "sui-eval",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51951,7 +52118,7 @@
         },
         {
           "name": "sui_bytecode",
-          "package_key": "sui-bytecode-0.1.129",
+          "package_key": "sui-bytecode-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51961,7 +52128,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51971,7 +52138,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51981,7 +52148,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.129",
+          "package_key": "sui-intern-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51991,7 +52158,7 @@
         },
         {
           "name": "sui_resolve",
-          "package_key": "sui-resolve-0.1.129",
+          "package_key": "sui-resolve-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52001,7 +52168,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52011,7 +52178,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52110,50 +52277,50 @@
         ],
         "sui-bytecode": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_bytecode"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_intern"
           }
         ],
         "sui-resolve": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_resolve"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-eval",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "data-encoding": [
@@ -52182,43 +52349,43 @@
           ],
           "sui-bytecode": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_bytecode"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_intern"
             }
           ],
           "sui-resolve": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_resolve"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ]
@@ -52229,9 +52396,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_eval;"
       }
     },
-    "sui-graph-store-0.1.129": {
+    "sui-graph-store-0.1.130": {
       "name": "sui-graph-store",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52343,7 +52510,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-graph-store",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "data-encoding": [
@@ -52359,9 +52526,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_graph_store;"
       }
     },
-    "sui-intern-0.1.129": {
+    "sui-intern-0.1.130": {
       "name": "sui-intern",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52409,7 +52576,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-intern",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "rustc-hash": [
@@ -52425,9 +52592,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_intern;"
       }
     },
-    "sui-nix-wrap-0.1.129": {
+    "sui-nix-wrap-0.1.130": {
       "name": "sui-nix-wrap",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52447,7 +52614,7 @@
       "runtime_dependencies": [
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.129",
+          "package_key": "sui-spec-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52460,19 +52627,19 @@
       "crate_renames": {
         "sui-spec": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-nix-wrap",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-spec": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_spec"
             }
           ]
@@ -52481,9 +52648,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_nix_wrap;"
       }
     },
-    "sui-orchestrate-0.1.129": {
+    "sui-orchestrate-0.1.130": {
       "name": "sui-orchestrate",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52629,7 +52796,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.129",
+          "package_key": "sui-build-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52639,7 +52806,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52649,7 +52816,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.129",
+          "package_key": "sui-eval-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52659,7 +52826,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52669,7 +52836,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.129",
+          "package_key": "sui-supercacheci-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52745,38 +52912,38 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_build"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_eval"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_supercacheci"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-orchestrate",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -52805,31 +52972,31 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_build"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_eval"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_supercacheci"
             }
           ]
@@ -52840,9 +53007,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_orchestrate;"
       }
     },
-    "sui-protocol-0.1.129": {
+    "sui-protocol-0.1.130": {
       "name": "sui-protocol",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52894,7 +53061,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52917,19 +53084,19 @@
       "crate_renames": {
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-protocol",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ]
@@ -52940,9 +53107,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_protocol;"
       }
     },
-    "sui-registry-0.1.129": {
+    "sui-registry-0.1.130": {
       "name": "sui-registry",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53048,8 +53215,8 @@
           "tree": "target"
         },
         {
-          "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "name": "sui_castore",
+          "package_key": "sui-castore-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53059,7 +53226,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53127,15 +53294,15 @@
             "rename": "data_encoding"
           }
         ],
-        "sui-cache": [
+        "sui-castore": [
           {
-            "version": "0.1.129",
-            "rename": "sui_cache"
+            "version": "0.1.130",
+            "rename": "sui_castore"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
@@ -53148,7 +53315,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-registry",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -53163,15 +53330,15 @@
               "rename": "data_encoding"
             }
           ],
-          "sui-cache": [
+          "sui-castore": [
             {
-              "version": "0.1.129",
-              "rename": "sui_cache"
+              "version": "0.1.130",
+              "rename": "sui_castore"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
@@ -53188,9 +53355,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_registry;"
       }
     },
-    "sui-resolve-0.1.129": {
+    "sui-resolve-0.1.130": {
       "name": "sui-resolve",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53238,7 +53405,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.129",
+          "package_key": "sui-intern-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53257,14 +53424,14 @@
         ],
         "sui-intern": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_intern"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-resolve",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "rustc-hash": [
@@ -53275,7 +53442,7 @@
           ],
           "sui-intern": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_intern"
             }
           ]
@@ -53286,9 +53453,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_resolve;"
       }
     },
-    "sui-spec-0.1.129": {
+    "sui-spec-0.1.130": {
       "name": "sui-spec",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53451,7 +53618,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53524,7 +53691,7 @@
       "crate_renames": {
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
@@ -53543,12 +53710,12 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-spec",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
@@ -53571,9 +53738,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_spec;"
       }
     },
-    "sui-store-0.1.129": {
+    "sui-store-0.1.130": {
       "name": "sui-store",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53700,7 +53867,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.129",
+          "package_key": "sui-compat-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53710,7 +53877,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.129",
+          "package_key": "sui-graph-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53799,20 +53966,20 @@
         ],
         "sui-compat": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_compat"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_graph_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-store",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "features": [
           "default",
@@ -53845,13 +54012,13 @@
           ],
           "sui-compat": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_compat"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_graph_store"
             }
           ]
@@ -53862,9 +54029,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_store;"
       }
     },
-    "sui-supercacheci-0.1.129": {
+    "sui-supercacheci-0.1.130": {
       "name": "sui-supercacheci",
-      "version": "0.1.129",
+      "version": "0.1.130",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53924,7 +54091,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.129",
+          "package_key": "sui-cache-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53934,7 +54101,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.129",
+          "package_key": "sui-store-0.1.130",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53983,13 +54150,13 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_cache"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.129",
+            "version": "0.1.130",
             "rename": "sui_store"
           }
         ],
@@ -54008,7 +54175,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-supercacheci",
-        "version": "0.1.129",
+        "version": "0.1.130",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -54019,13 +54186,13 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_cache"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.129",
+              "version": "0.1.130",
               "rename": "sui_store"
             }
           ],
@@ -62219,34 +62386,35 @@
       }
     }
   },
-  "root_crate": "sui-0.1.129",
+  "root_crate": "sui-0.1.130",
   "workspace_members": [
-    "sui-intern-0.1.129",
-    "sui-resolve-0.1.129",
-    "sui-bytecode-0.1.129",
-    "sui-compat-0.1.129",
-    "sui-spec-0.1.129",
-    "sui-eval-0.1.129",
-    "sui-graph-store-0.1.129",
-    "sui-store-0.1.129",
-    "sui-cache-0.1.129",
-    "sui-build-0.1.129",
-    "sui-daemon-0.1.129",
-    "sui-daemon-frame-0.1.129",
-    "sui-protocol-0.1.129",
-    "sui-daemon-client-0.1.129",
-    "sui-orchestrate-0.1.129",
-    "sui-supercacheci-0.1.129",
-    "sui-cache-eval-0.1.129",
-    "sui-nix-wrap-0.1.129",
-    "sui-daemon-graph-0.1.129",
-    "sui-dockerfile-wrapper-0.1.129",
-    "sui-dockerfile-node-cache-daemon-0.1.129",
-    "sui-dockerfile-prewarmer-0.1.129",
-    "sui-dockerfile-verify-0.1.129",
-    "sui-bigorna-0.1.129",
-    "sui-registry-0.1.129",
-    "sui-0.1.129"
+    "sui-intern-0.1.130",
+    "sui-resolve-0.1.130",
+    "sui-bytecode-0.1.130",
+    "sui-compat-0.1.130",
+    "sui-spec-0.1.130",
+    "sui-eval-0.1.130",
+    "sui-graph-store-0.1.130",
+    "sui-store-0.1.130",
+    "sui-cache-0.1.130",
+    "sui-castore-0.1.130",
+    "sui-build-0.1.130",
+    "sui-daemon-0.1.130",
+    "sui-daemon-frame-0.1.130",
+    "sui-protocol-0.1.130",
+    "sui-daemon-client-0.1.130",
+    "sui-orchestrate-0.1.130",
+    "sui-supercacheci-0.1.130",
+    "sui-cache-eval-0.1.130",
+    "sui-nix-wrap-0.1.130",
+    "sui-daemon-graph-0.1.130",
+    "sui-dockerfile-wrapper-0.1.130",
+    "sui-dockerfile-node-cache-daemon-0.1.130",
+    "sui-dockerfile-prewarmer-0.1.130",
+    "sui-dockerfile-verify-0.1.130",
+    "sui-bigorna-0.1.130",
+    "sui-registry-0.1.130",
+    "sui-0.1.130"
   ],
   "flake_metadata": {
     "sui": {
@@ -62270,6 +62438,10 @@
       "repo": "pleme-io/sui"
     },
     "sui-cache-eval": {
+      "default_bin": null,
+      "repo": "pleme-io/sui"
+    },
+    "sui-castore": {
       "default_bin": null,
       "repo": "pleme-io/sui"
     },
@@ -85363,7 +85535,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-0.1.129": {
+      "sui-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_graphql",
@@ -85538,7 +85710,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.129",
+            "package_key": "sui-build-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85548,7 +85720,7 @@
           },
           {
             "name": "sui_bytecode",
-            "package_key": "sui-bytecode-0.1.129",
+            "package_key": "sui-bytecode-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85558,7 +85730,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85568,7 +85740,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85578,7 +85750,7 @@
           },
           {
             "name": "sui_daemon",
-            "package_key": "sui-daemon-0.1.129",
+            "package_key": "sui-daemon-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85588,7 +85760,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.129",
+            "package_key": "sui-eval-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85598,7 +85770,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.129",
+            "package_key": "sui-intern-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85608,7 +85780,7 @@
           },
           {
             "name": "sui_orchestrate",
-            "package_key": "sui-orchestrate-0.1.129",
+            "package_key": "sui-orchestrate-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85618,7 +85790,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85628,7 +85800,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85638,7 +85810,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.129",
+            "package_key": "sui-supercacheci-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85773,7 +85945,7 @@
           "tiered"
         ]
       },
-      "sui-bigorna-0.1.129": {
+      "sui-bigorna-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "clap",
@@ -85821,7 +85993,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85831,7 +86003,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.129",
+            "package_key": "sui-dockerfile-wrapper-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85853,7 +86025,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-build-0.1.129": {
+      "sui-build-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "aho_corasick",
@@ -85897,7 +86069,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85907,7 +86079,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85951,7 +86123,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-bytecode-0.1.129": {
+      "sui-bytecode-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "rnix",
@@ -85995,7 +86167,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86005,7 +86177,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.129",
+            "package_key": "sui-intern-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86015,7 +86187,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86037,7 +86209,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-cache-0.1.129": {
+      "sui-cache-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86096,28 +86268,6 @@
             "tree": "target"
           },
           {
-            "name": "futures",
-            "package_key": "futures-0.3.32",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "object_store",
-            "package_key": "object_store-0.12.5",
-            "kind": "normal",
-            "features": [
-              "aws"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "rand_core",
             "package_key": "rand_core-0.6.4",
             "kind": "normal",
@@ -86126,29 +86276,6 @@
             ],
             "uses_default_features": true,
             "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "redb",
-            "package_key": "redb-2.6.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "redis",
-            "package_key": "redis-0.27.6",
-            "kind": "normal",
-            "features": [
-              "connection-manager",
-              "tokio-comp"
-            ],
-            "uses_default_features": false,
-            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -86185,21 +86312,18 @@
             "tree": "target"
           },
           {
-            "name": "sqlx",
-            "package_key": "sqlx-0.8.6",
+            "name": "sui_castore",
+            "package_key": "sui-castore-0.1.130",
             "kind": "normal",
-            "features": [
-              "postgres",
-              "runtime-tokio-rustls"
-            ],
-            "uses_default_features": false,
-            "optional": true,
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
             "target": null,
             "tree": "target"
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86257,7 +86381,7 @@
           "redis-client"
         ]
       },
-      "sui-cache-eval-0.1.129": {
+      "sui-cache-eval-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -86315,7 +86439,149 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-compat-0.1.129": {
+      "sui-castore-0.1.130": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.12.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "object_store",
+            "package_key": "object_store-0.12.5",
+            "kind": "normal",
+            "features": [
+              "aws"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "redb",
+            "package_key": "redb-2.6.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "redis",
+            "package_key": "redis-0.27.6",
+            "kind": "normal",
+            "features": [
+              "connection-manager",
+              "tokio-comp"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sqlx",
+            "package_key": "sqlx-0.8.6",
+            "kind": "normal",
+            "features": [
+              "postgres",
+              "runtime-tokio-rustls"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_compat",
+            "package_key": "sui-compat-0.1.130",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "postgres",
+          "redis-client"
+        ]
+      },
+      "sui-compat-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -86396,7 +86662,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-0.1.129": {
+      "sui-daemon-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86482,7 +86748,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.129",
+            "package_key": "sui-build-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86492,7 +86758,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86502,7 +86768,7 @@
           },
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.129",
+            "package_key": "sui-daemon-frame-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86512,7 +86778,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.129",
+            "package_key": "sui-eval-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86522,7 +86788,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86532,7 +86798,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.129",
+            "package_key": "sui-protocol-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86542,7 +86808,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86596,11 +86862,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-client-0.1.129": {
+      "sui-daemon-client-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.129",
+            "package_key": "sui-daemon-frame-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86610,7 +86876,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86620,7 +86886,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.129",
+            "package_key": "sui-protocol-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86670,7 +86936,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-frame-0.1.129": {
+      "sui-daemon-frame-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "rkyv",
@@ -86688,7 +86954,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.129",
+            "package_key": "sui-protocol-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86733,7 +86999,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-graph-0.1.129": {
+      "sui-daemon-graph-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -86761,7 +87027,7 @@
           },
           {
             "name": "sui_daemon",
-            "package_key": "sui-daemon-0.1.129",
+            "package_key": "sui-daemon-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86771,7 +87037,7 @@
           },
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.129",
+            "package_key": "sui-daemon-frame-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86781,7 +87047,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86840,7 +87106,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-node-cache-daemon-0.1.129": {
+      "sui-dockerfile-node-cache-daemon-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86876,7 +87142,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86942,7 +87208,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-prewarmer-0.1.129": {
+      "sui-dockerfile-prewarmer-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -87062,7 +87328,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87072,7 +87338,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.129",
+            "package_key": "sui-dockerfile-wrapper-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87082,7 +87348,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87092,7 +87358,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.129",
+            "package_key": "sui-supercacheci-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87155,7 +87421,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-verify-0.1.129": {
+      "sui-dockerfile-verify-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -87191,7 +87457,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.129",
+            "package_key": "sui-dockerfile-wrapper-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87223,7 +87489,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-wrapper-0.1.129": {
+      "sui-dockerfile-wrapper-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -87269,7 +87535,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87279,7 +87545,7 @@
           },
           {
             "name": "sui_dockerfile_node_cache_daemon",
-            "package_key": "sui-dockerfile-node-cache-daemon-0.1.129",
+            "package_key": "sui-dockerfile-node-cache-daemon-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87289,7 +87555,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87340,7 +87606,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-eval-0.1.129": {
+      "sui-eval-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -87575,7 +87841,7 @@
           },
           {
             "name": "sui_bytecode",
-            "package_key": "sui-bytecode-0.1.129",
+            "package_key": "sui-bytecode-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87585,7 +87851,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87595,7 +87861,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87605,7 +87871,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.129",
+            "package_key": "sui-intern-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87615,7 +87881,7 @@
           },
           {
             "name": "sui_resolve",
-            "package_key": "sui-resolve-0.1.129",
+            "package_key": "sui-resolve-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87625,7 +87891,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87635,7 +87901,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87709,7 +87975,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-graph-store-0.1.129": {
+      "sui-graph-store-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -87799,7 +88065,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-intern-0.1.129": {
+      "sui-intern-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -87825,11 +88091,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-nix-wrap-0.1.129": {
+      "sui-nix-wrap-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.129",
+            "package_key": "sui-spec-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87841,7 +88107,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-orchestrate-0.1.129": {
+      "sui-orchestrate-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -87973,7 +88239,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.129",
+            "package_key": "sui-build-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87983,7 +88249,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87993,7 +88259,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.129",
+            "package_key": "sui-eval-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88003,7 +88269,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88013,7 +88279,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.129",
+            "package_key": "sui-supercacheci-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88064,7 +88330,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-protocol-0.1.129": {
+      "sui-protocol-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -88102,7 +88368,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88124,7 +88390,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-registry-0.1.129": {
+      "sui-registry-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88211,8 +88477,8 @@
             "tree": "target"
           },
           {
-            "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "name": "sui_castore",
+            "package_key": "sui-castore-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88222,7 +88488,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88279,7 +88545,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-resolve-0.1.129": {
+      "sui-resolve-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "rnix",
@@ -88313,7 +88579,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.129",
+            "package_key": "sui-intern-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88325,7 +88591,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-spec-0.1.129": {
+      "sui-spec-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -88465,7 +88731,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88537,7 +88803,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-store-0.1.129": {
+      "sui-store-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88647,7 +88913,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.129",
+            "package_key": "sui-compat-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88657,7 +88923,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.129",
+            "package_key": "sui-graph-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88724,7 +88990,7 @@
           "postgres"
         ]
       },
-      "sui-supercacheci-0.1.129": {
+      "sui-supercacheci-0.1.130": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88770,7 +89036,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.129",
+            "package_key": "sui-cache-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88780,7 +89046,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.129",
+            "package_key": "sui-store-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -100136,5 +100402,5 @@
       }
     }
   },
-  "cargo_lock_sha256": "602c56d033f51c6361b716eeecd33c2be1cf117b6d79400134c3599ecf5291bc"
+  "cargo_lock_sha256": "f321bb9c230876f7f91e0a93018406f9f125daa7517289ec4b8ac5d089e7f267"
 }

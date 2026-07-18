@@ -12,7 +12,7 @@ use sui_compat::nar::NarWriter;
 use sui_compat::narinfo::NarInfo;
 
 use crate::signing::CacheSigner;
-use crate::storage::StorageBackend;
+use crate::StorageBackend;
 use crate::CacheError;
 
 /// Result of pushing a single store path.
@@ -137,7 +137,7 @@ fn sha256_hex(data: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::signing::CacheSigner;
-    use crate::storage::local::LocalStorage;
+    use crate::LocalStorage;
 
     #[tokio::test]
     async fn push_single_file() {

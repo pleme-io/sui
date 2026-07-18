@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::storage::StorageBackend;
+use crate::StorageBackend;
 use crate::CacheError;
 
 /// Result of a garbage collection run.
@@ -63,7 +63,7 @@ pub async fn collect_garbage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::local::LocalStorage;
+    use crate::LocalStorage;
 
     fn make_narinfo(hash: &str, file_size: u64) -> String {
         format!(

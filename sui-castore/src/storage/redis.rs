@@ -34,7 +34,7 @@
 use async_trait::async_trait;
 
 use super::StorageBackend;
-use crate::CacheError;
+use crate::StoreError;
 
 /// Key namespace for narinfo strings, so they never collide with NAR blobs in a
 /// single Redis keyspace.
@@ -52,20 +52,20 @@ const NAR_PREFIX: &str = "sui:nar:";
 #[async_trait]
 pub trait RedisConn: Send + Sync {
     /// `GET key` — raw bytes, or `Ok(None)` on a miss / evicted key.
-    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError>;
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
 
     /// `SET key value [EX ttl_secs]` — store raw bytes, optionally with an
     /// expiry. `ttl_secs == None` means no explicit expiry (LRU-evicted by the
     /// `maxmemory` policy).
-    async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), CacheError>;
+    async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), StoreError>;
 
     /// `DEL key` — idempotent; deleting an absent key is `Ok(())`.
-    async fn del(&self, key: &str) -> Result<(), CacheError>;
+    async fn del(&self, key: &str) -> Result<(), StoreError>;
 
     /// Non-blocking `SCAN MATCH prefix*` — every key currently resident under
     /// `prefix`. Partial by nature (a cache), and must use `SCAN`, never the
     /// O(N) blocking `KEYS`.
-    async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, CacheError>;
+    async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
 }
 
 /// L1 hot cache: content-addressed key → value, sub-ms hits, TTL/eviction-aware.
@@ -112,34 +112,34 @@ impl<C: RedisConn> RedisBackend<C> {
 
 #[async_trait]
 impl<C: RedisConn> StorageBackend for RedisBackend<C> {
-    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         let key = Self::narinfo_key(hash);
         match self.conn.get_bytes(&key).await? {
             Some(bytes) => {
                 let text = String::from_utf8(bytes)
-                    .map_err(|e| CacheError::NarInfo(format!("invalid utf-8 in redis narinfo {hash}: {e}")))?;
+                    .map_err(|e| StoreError::NarInfo(format!("invalid utf-8 in redis narinfo {hash}: {e}")))?;
                 Ok(Some(text))
             }
             None => Ok(None),
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         let key = Self::narinfo_key(hash);
         self.conn.set_bytes(&key, content.as_bytes(), self.ttl_secs).await
     }
 
-    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let key = Self::nar_key(path);
         self.conn.get_bytes(&key).await
     }
 
-    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
+    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
         let key = Self::nar_key(path);
         self.conn.set_bytes(&key, data, self.ttl_secs).await
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
         // Narinfo is keyed directly by hash.
         self.conn.del(&Self::narinfo_key(hash)).await?;
         // NAR blobs are keyed by relative URL; we only have the hash here, so —
@@ -151,7 +151,7 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         Ok(())
     }
 
-    async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+    async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         let keys = self.conn.keys_with_prefix(NARINFO_PREFIX).await?;
         Ok(keys
             .into_iter()
@@ -162,7 +162,7 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
     /// Complete L1 wipe: `DEL` every key under BOTH the narinfo and NAR prefixes
     /// (a scoped clear — never `FLUSHDB`, which would blow away an unrelated
     /// co-tenant of the same Redis db). Returns the narinfo key count removed.
-    async fn wipe_all(&self) -> Result<usize, CacheError> {
+    async fn wipe_all(&self) -> Result<usize, StoreError> {
         let narinfos = self.conn.keys_with_prefix(NARINFO_PREFIX).await?;
         let n = narinfos.len();
         for key in &narinfos {
@@ -182,11 +182,11 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
 
 #[cfg(feature = "redis-client")]
 mod client {
-    use super::{CacheError, RedisBackend, RedisConn};
+    use super::{StoreError, RedisBackend, RedisConn};
     use async_trait::async_trait;
 
-    fn to_cache_err(e: redis::RedisError) -> CacheError {
-        CacheError::Io(std::io::Error::other(format!("redis: {e}")))
+    fn to_store_err(e: redis::RedisError) -> StoreError {
+        StoreError::Io(std::io::Error::other(format!("redis: {e}")))
     }
 
     /// Production [`RedisConn`] over a multiplexed, auto-reconnecting
@@ -203,51 +203,51 @@ mod client {
         ///
         /// # Errors
         ///
-        /// Returns [`CacheError::Io`] if the URL is invalid or the initial
+        /// Returns [`StoreError::Io`] if the URL is invalid or the initial
         /// connection cannot be established.
-        pub async fn connect(url: &str) -> Result<Self, CacheError> {
-            let client = redis::Client::open(url).map_err(to_cache_err)?;
+        pub async fn connect(url: &str) -> Result<Self, StoreError> {
+            let client = redis::Client::open(url).map_err(to_store_err)?;
             let mgr = redis::aio::ConnectionManager::new(client)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(Self { mgr })
         }
     }
 
     #[async_trait]
     impl RedisConn for RedisConnectionManager {
-        async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
             let mut c = self.mgr.clone();
             let v: Option<Vec<u8>> = redis::cmd("GET")
                 .arg(key)
                 .query_async(&mut c)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(v)
         }
 
-        async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), CacheError> {
+        async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), StoreError> {
             let mut c = self.mgr.clone();
             let mut cmd = redis::cmd("SET");
             cmd.arg(key).arg(value);
             if let Some(secs) = ttl_secs {
                 cmd.arg("EX").arg(secs);
             }
-            let _: () = cmd.query_async(&mut c).await.map_err(to_cache_err)?;
+            let _: () = cmd.query_async(&mut c).await.map_err(to_store_err)?;
             Ok(())
         }
 
-        async fn del(&self, key: &str) -> Result<(), CacheError> {
+        async fn del(&self, key: &str) -> Result<(), StoreError> {
             let mut c = self.mgr.clone();
             let _: i64 = redis::cmd("DEL")
                 .arg(key)
                 .query_async(&mut c)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(())
         }
 
-        async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, CacheError> {
+        async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
             let mut c = self.mgr.clone();
             let pattern = format!("{prefix}*");
             let mut cursor: u64 = 0;
@@ -261,7 +261,7 @@ mod client {
                     .arg(512)
                     .query_async(&mut c)
                     .await
-                    .map_err(to_cache_err)?;
+                    .map_err(to_store_err)?;
                 out.extend(batch);
                 if next == 0 {
                     break;
@@ -278,7 +278,7 @@ mod client {
         /// # Errors
         ///
         /// Propagates a connection failure from [`RedisConnectionManager::connect`].
-        pub async fn connect(url: &str) -> Result<Self, CacheError> {
+        pub async fn connect(url: &str) -> Result<Self, StoreError> {
             Ok(Self::new(RedisConnectionManager::connect(url).await?))
         }
 
@@ -287,7 +287,7 @@ mod client {
         /// # Errors
         ///
         /// Propagates a connection failure from [`RedisConnectionManager::connect`].
-        pub async fn connect_with_ttl(url: &str, ttl_secs: u64) -> Result<Self, CacheError> {
+        pub async fn connect_with_ttl(url: &str, ttl_secs: u64) -> Result<Self, StoreError> {
             Ok(Self::with_ttl(RedisConnectionManager::connect(url).await?, ttl_secs))
         }
     }
@@ -338,11 +338,11 @@ mod tests {
 
     #[async_trait]
     impl RedisConn for MockRedis {
-        async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(self.map.lock().unwrap().get(key).map(|(v, _)| v.clone()))
         }
 
-        async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), CacheError> {
+        async fn set_bytes(&self, key: &str, value: &[u8], ttl_secs: Option<u64>) -> Result<(), StoreError> {
             self.map
                 .lock()
                 .unwrap()
@@ -350,12 +350,12 @@ mod tests {
             Ok(())
         }
 
-        async fn del(&self, key: &str) -> Result<(), CacheError> {
+        async fn del(&self, key: &str) -> Result<(), StoreError> {
             self.map.lock().unwrap().remove(key);
             Ok(())
         }
 
-        async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, CacheError> {
+        async fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
             Ok(self
                 .map
                 .lock()
@@ -509,6 +509,6 @@ mod tests {
             .insert("sui:narinfo:bad".to_string(), (vec![0xff, 0xfe, 0xfd], None));
         let backend = RedisBackend::new(mock);
         let err = backend.get_narinfo("bad").await.unwrap_err();
-        assert!(matches!(err, CacheError::NarInfo(_)));
+        assert!(matches!(err, StoreError::NarInfo(_)));
     }
 }

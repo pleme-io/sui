@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "96672f4859f8e784fc789ba12bebb23046fa0774ca22034dd6d1b259d6740559",
+  "cargo_lock_sha256": "f321bb9c230876f7f91e0a93018406f9f125daa7517289ec4b8ac5d089e7f267",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -23743,28 +23743,6 @@
             "tree": "target"
           },
           {
-            "name": "futures",
-            "package_key": "futures-0.3.32",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "object_store",
-            "package_key": "object_store-0.12.5",
-            "kind": "normal",
-            "features": [
-              "aws"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "rand_core",
             "package_key": "rand_core-0.6.4",
             "kind": "normal",
@@ -23773,29 +23751,6 @@
             ],
             "uses_default_features": true,
             "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "redb",
-            "package_key": "redb-2.6.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "redis",
-            "package_key": "redis-0.27.6",
-            "kind": "normal",
-            "features": [
-              "connection-manager",
-              "tokio-comp"
-            ],
-            "uses_default_features": false,
-            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -23832,15 +23787,12 @@
             "tree": "target"
           },
           {
-            "name": "sqlx",
-            "package_key": "sqlx-0.8.6",
+            "name": "sui_castore",
+            "package_key": "sui-castore-0.1.130",
             "kind": "normal",
-            "features": [
-              "postgres",
-              "runtime-tokio-rustls"
-            ],
-            "uses_default_features": false,
-            "optional": true,
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
             "target": null,
             "tree": "target"
           },
@@ -23961,6 +23913,148 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "sui-castore-0.1.130": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.12.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "object_store",
+            "package_key": "object_store-0.12.5",
+            "kind": "normal",
+            "features": [
+              "aws"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "redb",
+            "package_key": "redb-2.6.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "redis",
+            "package_key": "redis-0.27.6",
+            "kind": "normal",
+            "features": [
+              "connection-manager",
+              "tokio-comp"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sqlx",
+            "package_key": "sqlx-0.8.6",
+            "kind": "normal",
+            "features": [
+              "postgres",
+              "runtime-tokio-rustls"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_compat",
+            "package_key": "sui-compat-0.1.130",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "postgres",
+          "redis-client"
+        ]
       },
       "sui-compat-0.1.130": {
         "runtime_dependencies": [
@@ -25858,8 +25952,8 @@
             "tree": "target"
           },
           {
-            "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "name": "sui_castore",
+            "package_key": "sui-castore-0.1.130",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -39585,6 +39679,13 @@
       "edition": "2024",
       "lib_target": {
         "name": "sui_cache_eval",
+        "path": "src/lib.rs"
+      }
+    },
+    "sui-castore-0.1.130": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_castore",
         "path": "src/lib.rs"
       }
     },

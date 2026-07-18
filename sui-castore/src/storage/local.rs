@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use super::StorageBackend;
-use crate::CacheError;
+use crate::StoreError;
 
 /// Filesystem-backed binary cache storage.
 #[derive(Debug, Clone)]
@@ -38,9 +38,9 @@ impl LocalStorage {
     }
 
     /// Ensure a directory exists.
-    async fn ensure_dir(&self, path: &Path) -> Result<(), CacheError> {
+    async fn ensure_dir(&self, path: &Path) -> Result<(), StoreError> {
         if !path.exists() {
-            fs::create_dir_all(path).await.map_err(CacheError::Io)?;
+            fs::create_dir_all(path).await.map_err(StoreError::Io)?;
         }
         Ok(())
     }
@@ -50,7 +50,8 @@ impl LocalStorage {
         self.root.join(format!("{hash}.narinfo"))
     }
 
-    /// Path to a NAR blob. The `nar_path` is a relative path like `nar/xyz.nar.xz`.
+    /// Path to a NAR blob. The `nar_path` is a relative path like
+    /// `nar/xyz.nar.xz`.
     fn nar_blob_path(&self, nar_path: &str) -> PathBuf {
         self.root.join(nar_path)
     }
@@ -58,39 +59,39 @@ impl LocalStorage {
 
 #[async_trait]
 impl StorageBackend for LocalStorage {
-    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         let path = self.narinfo_path(hash);
         match fs::read_to_string(&path).await {
             Ok(content) => Ok(Some(content)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(CacheError::Io(e)),
+            Err(e) => Err(StoreError::Io(e)),
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         self.ensure_dir(&self.root).await?;
         let path = self.narinfo_path(hash);
-        fs::write(&path, content).await.map_err(CacheError::Io)
+        fs::write(&path, content).await.map_err(StoreError::Io)
     }
 
-    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let full = self.nar_blob_path(path);
         match fs::read(&full).await {
             Ok(data) => Ok(Some(data)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(CacheError::Io(e)),
+            Err(e) => Err(StoreError::Io(e)),
         }
     }
 
-    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
+    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
         let full = self.nar_blob_path(path);
         if let Some(parent) = full.parent() {
             self.ensure_dir(parent).await?;
         }
-        fs::write(&full, data).await.map_err(CacheError::Io)
+        fs::write(&full, data).await.map_err(StoreError::Io)
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
         // Read narinfo to find the NAR blob path, then delete both.
         let narinfo_path = self.narinfo_path(hash);
         if narinfo_path.exists() {
@@ -103,18 +104,18 @@ impl StorageBackend for LocalStorage {
             }
             fs::remove_file(&narinfo_path)
                 .await
-                .map_err(CacheError::Io)?;
+                .map_err(StoreError::Io)?;
         }
         Ok(())
     }
 
-    async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+    async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         let mut hashes = Vec::new();
         if !self.root.exists() {
             return Ok(hashes);
         }
-        let mut entries = fs::read_dir(&self.root).await.map_err(CacheError::Io)?;
-        while let Some(entry) = entries.next_entry().await.map_err(CacheError::Io)? {
+        let mut entries = fs::read_dir(&self.root).await.map_err(StoreError::Io)?;
+        while let Some(entry) = entries.next_entry().await.map_err(StoreError::Io)? {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if let Some(hash) = name.strip_suffix(".narinfo") {
@@ -124,14 +125,14 @@ impl StorageBackend for LocalStorage {
         Ok(hashes)
     }
 
-    /// Complete L3 wipe: remove the entire cache directory (narinfos + the `nar/`
-    /// blob subtree), reclaiming NAR bytes a per-hash `delete` cannot reach. The
-    /// directory is re-created lazily on the next `put`. Returns the narinfo
-    /// count removed.
-    async fn wipe_all(&self) -> Result<usize, CacheError> {
+    /// Complete L3 wipe: remove the entire cache directory (narinfos + the
+    /// `nar/` blob subtree), reclaiming NAR bytes a per-hash `delete` cannot
+    /// reach. The directory is re-created lazily on the next `put`. Returns
+    /// the narinfo count removed.
+    async fn wipe_all(&self) -> Result<usize, StoreError> {
         let n = self.list_narinfos().await?.len();
         if self.root.exists() {
-            fs::remove_dir_all(&self.root).await.map_err(CacheError::Io)?;
+            fs::remove_dir_all(&self.root).await.map_err(StoreError::Io)?;
         }
         Ok(n)
     }
@@ -211,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_narinfos_on_nonexistent_dir() {
-        let storage = LocalStorage::new("/tmp/sui-cache-test-nonexistent-dir-12345");
+        let storage = LocalStorage::new("/tmp/sui-castore-test-nonexistent-dir-12345");
         let hashes = storage.list_narinfos().await.unwrap();
         assert!(hashes.is_empty());
     }
@@ -225,14 +226,11 @@ mod tests {
         storage.put_narinfo("xyz", narinfo).await.unwrap();
         storage.put_nar("nar/xyz.nar.xz", b"nar data").await.unwrap();
 
-        // Verify both exist.
         assert!(storage.get_narinfo("xyz").await.unwrap().is_some());
         assert!(storage.get_nar("nar/xyz.nar.xz").await.unwrap().is_some());
 
-        // Delete.
         storage.delete("xyz").await.unwrap();
 
-        // Both should be gone.
         assert!(storage.get_narinfo("xyz").await.unwrap().is_none());
         assert!(storage.get_nar("nar/xyz.nar.xz").await.unwrap().is_none());
     }
@@ -241,7 +239,6 @@ mod tests {
     async fn delete_nonexistent_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        // Should not error.
         storage.delete("nonexistent").await.unwrap();
     }
 

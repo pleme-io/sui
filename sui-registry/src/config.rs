@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use sui_cache::BackendConfig;
+use sui_castore::BackendConfig;
 
 /// The default local-fs root for porto's content-addressed store when no
 /// [`backend`](RegistryConfig::backend) is configured. Sibling of sui-cache's
@@ -21,7 +21,7 @@ const DEFAULT_STORE_PATH: &str = "/var/cache/porto";
 
 /// The registry server configuration.
 ///
-/// The `backend` field selects the durable [`sui_cache::storage::StorageBackend`]
+/// The `backend` field selects the durable [`sui_castore::StorageBackend`]
 /// the whole registry writes through — the SAME content-addressed store family
 /// that holds Nix NARs — so a deployment picks `{local | s3 | redis | pg |
 /// tiered}` purely by config, never a silent hard-coded constructor. When it is
@@ -38,8 +38,8 @@ pub struct RegistryConfig {
     /// the prescribed default is generous).
     #[serde(default)]
     pub max_body_bytes: Option<usize>,
-    /// The durable storage backend selection, passed straight to sui-cache's
-    /// typed [`build_backend`](sui_cache::build_backend) factory. `None` means
+    /// The durable storage backend selection, passed straight to
+    /// [`sui_castore::build_backend`]. `None` means
     /// "the prescribed local-fs backend at [`DEFAULT_STORE_PATH`]".
     #[serde(default)]
     pub backend: Option<BackendConfig>,
@@ -167,7 +167,7 @@ mod tests {
     fn resolve_backend_defaults_to_local_fs() {
         let backend = RegistryConfig::bare().resolve_backend();
         match backend {
-            sui_cache::BackendConfig::Local { path } => {
+            sui_castore::BackendConfig::Local { path } => {
                 assert_eq!(path, std::path::PathBuf::from(DEFAULT_STORE_PATH));
             }
             other => panic!("expected the prescribed local backend, got {other:?}"),
@@ -179,7 +179,7 @@ mod tests {
         let cfg = RegistryConfig {
             listen: "0.0.0.0:5000".to_string(),
             max_body_bytes: None,
-            backend: Some(sui_cache::BackendConfig::S3 {
+            backend: Some(sui_castore::BackendConfig::S3 {
                 bucket: "porto-store".to_string(),
                 region: "us-east-1".to_string(),
                 endpoint: None,
@@ -187,7 +187,7 @@ mod tests {
         };
         assert!(matches!(
             cfg.resolve_backend(),
-            sui_cache::BackendConfig::S3 { .. }
+            sui_castore::BackendConfig::S3 { .. }
         ));
     }
 
@@ -202,7 +202,7 @@ mod tests {
         }"#;
         let cfg: RegistryConfig = serde_json::from_str(json).unwrap();
         match cfg.resolve_backend() {
-            sui_cache::BackendConfig::Local { path } => {
+            sui_castore::BackendConfig::Local { path } => {
                 assert_eq!(path, std::path::PathBuf::from("/srv/porto"));
             }
             other => panic!("expected local backend, got {other:?}"),

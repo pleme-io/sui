@@ -1,12 +1,12 @@
 //! The cache seam this crate consumes.
 //!
 //! This crate does **not** invent a new cache abstraction — it consumes
-//! [`sui_cache::storage::StorageBackend`] exactly as `sui cache serve`
+//! [`sui_castore::StorageBackend`] exactly as `sui cache serve`
 //! does. A node is "cached" when its `content_hash` has a narinfo entry;
 //! the narinfo *content* is the image reference the node's cache write
 //! produced, so a cache hit can pull the already-built image instead of
 //! rebuilding it. Real callers construct the backend via
-//! [`sui_cache::storage::build_backend`] against a
+//! [`sui_cache::build_backend`] against a
 //! [`sui_cache::BackendConfig`] (Postgres L2 + Redis L1, per
 //! `sui-supercacheci`); tests use [`MockCacheBackend`], an in-memory
 //! implementation of the same trait — the identical shape the
@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_cache::CacheError;
 
 /// An in-memory [`StorageBackend`] for unit tests. Never touches a

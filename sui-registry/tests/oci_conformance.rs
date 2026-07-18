@@ -12,7 +12,7 @@
 //!
 //! - [`MemStore`] — the pure in-memory reference store, zero real I/O.
 //! - [`SuiCacheStore`] — the PRODUCTION store over a real
-//!   [`sui_cache::storage::StorageBackend`] (a `LocalStorage` rooted in a
+//!   [`sui_castore::StorageBackend`] (a `LocalStorage` rooted in a
 //!   tempdir). This exercises the empty-object tombstone / delete / immutability
 //!   semantics of the sui-cache path — the exact behaviors a store-specific
 //!   handler bug could differ on, and which the MemStore path alone would leave
@@ -45,7 +45,7 @@ use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-use sui_cache::storage::{LocalStorage, StorageBackend};
+use sui_castore::{LocalStorage, StorageBackend};
 use sui_compat::hash::HashAlgorithm;
 use sui_registry::config::RegistryConfig;
 use sui_registry::digest::Digest;

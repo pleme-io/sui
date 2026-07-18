@@ -4,13 +4,13 @@
 //! [`DaemonRequest`](crate::protocol::DaemonRequest) and produces a
 //! [`DaemonResponse`](crate::protocol::DaemonResponse) given a
 //! [`LocalCacheStore`] and a remote
-//! [`StorageBackend`](sui_cache::storage::StorageBackend). The UDS
+//! [`StorageBackend`](sui_castore::StorageBackend). The UDS
 //! listen loop (`listen`, in this crate's `lib.rs`) is a thin shell
 //! around [`NodeCacheDaemon::handle_request`].
 
 use std::sync::Arc;
 
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 
 use crate::protocol::{CachedArtifact, DaemonRequest, DaemonResponse, WarmStatus};
 use crate::store::LocalCacheStore;

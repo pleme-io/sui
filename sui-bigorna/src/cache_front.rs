@@ -5,7 +5,7 @@
 //! `BuildKit` already speaks a cache import/export protocol (`--cache-from` /
 //! `--cache-to`). bigorna does not re-implement it — it *points* it at an
 //! endpoint that fronts the shipped sui tiered content-addressed store
-//! (`sui_cache::storage::StorageBackend`: Redis L1 → Postgres L2 → object
+//! (`sui_castore::StorageBackend`: Redis L1 → Postgres L2 → object
 //! store L3). The wire `BuildKit` talks is one of the protocols it natively
 //! understands (`registry` / `s3` / `local` / `inline`); the sui store sits
 //! behind that wire. The map from a sui [`BackendConfig`] to a `BuildKit` cache
@@ -331,7 +331,7 @@ mod tests {
                 region: "r".to_string(),
                 endpoint: None,
             }),
-            write_policy: sui_cache::storage::WritePolicy::default(),
+            write_policy: sui_cache::WritePolicy::default(),
         };
         // Without a registry front → typed error (never a silent wrong wire).
         assert_eq!(

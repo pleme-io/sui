@@ -14,7 +14,7 @@ use object_store::ObjectStore;
 use tracing::{debug, warn};
 
 use super::StorageBackend;
-use crate::CacheError;
+use crate::StoreError;
 
 /// S3-compatible object storage backend.
 pub struct S3Storage {
@@ -29,7 +29,7 @@ impl S3Storage {
     ///
     /// Uses AWS default credential chain (IRSA, env vars, instance profile).
     /// Set `endpoint` for non-AWS S3-compatible services (MinIO, RustFS, R2).
-    pub fn new(bucket: String, region: String, endpoint: Option<String>) -> Result<Self, CacheError> {
+    pub fn new(bucket: String, region: String, endpoint: Option<String>) -> Result<Self, StoreError> {
         let mut builder = AmazonS3Builder::new()
             .with_bucket_name(&bucket)
             .with_region(&region);
@@ -40,7 +40,7 @@ impl S3Storage {
 
         let store = builder
             .build()
-            .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 init failed: {e}"))))?;
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 init failed: {e}"))))?;
 
         Ok(Self {
             store: Box::new(store),
@@ -71,60 +71,60 @@ impl S3Storage {
 
 #[async_trait]
 impl StorageBackend for S3Storage {
-    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         let path = Path::from(format!("{hash}.narinfo"));
         match self.store.get(&path).await {
             Ok(result) => {
                 let bytes = result
                     .bytes()
                     .await
-                    .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 read: {e}"))))?;
+                    .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 read: {e}"))))?;
                 Ok(Some(
                     String::from_utf8(bytes.to_vec())
-                        .map_err(|e| CacheError::NarInfo(format!("Invalid UTF-8: {e}")))?,
+                        .map_err(|e| StoreError::NarInfo(format!("Invalid UTF-8: {e}")))?,
                 ))
             }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(CacheError::Io(std::io::Error::other(format!("S3 get: {e}")))),
+            Err(e) => Err(StoreError::Io(std::io::Error::other(format!("S3 get: {e}")))),
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         let path = Path::from(format!("{hash}.narinfo"));
         self.store
             .put(&path, Bytes::from(content.to_string()).into())
             .await
-            .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
         debug!(hash = %hash, "Stored narinfo in S3");
         Ok(())
     }
 
-    async fn get_nar(&self, nar_path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    async fn get_nar(&self, nar_path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let path = Path::from(nar_path);
         match self.store.get(&path).await {
             Ok(result) => {
                 let bytes = result
                     .bytes()
                     .await
-                    .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 read: {e}"))))?;
+                    .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 read: {e}"))))?;
                 Ok(Some(bytes.to_vec()))
             }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(CacheError::Io(std::io::Error::other(format!("S3 get: {e}")))),
+            Err(e) => Err(StoreError::Io(std::io::Error::other(format!("S3 get: {e}")))),
         }
     }
 
-    async fn put_nar(&self, nar_path: &str, data: &[u8]) -> Result<(), CacheError> {
+    async fn put_nar(&self, nar_path: &str, data: &[u8]) -> Result<(), StoreError> {
         let path = Path::from(nar_path);
         self.store
             .put(&path, Bytes::from(data.to_vec()).into())
             .await
-            .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
         debug!(path = %nar_path, size = data.len(), "Stored NAR in S3");
         Ok(())
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
         // Delete narinfo
         let narinfo_path = Path::from(format!("{hash}.narinfo"));
         if let Err(e) = self.store.delete(&narinfo_path).await {
@@ -141,7 +141,7 @@ impl StorageBackend for S3Storage {
         Ok(())
     }
 
-    async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+    async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         use futures::TryStreamExt;
 
         let prefix = Path::from("");
@@ -152,7 +152,7 @@ impl StorageBackend for S3Storage {
         while let Some(meta) = list_stream
             .try_next()
             .await
-            .map_err(|e| CacheError::Io(std::io::Error::other(format!("S3 list: {e}"))))?
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 list: {e}"))))?
         {
             let key = meta.location.to_string();
             if let Some(hash) = key.strip_suffix(".narinfo") {

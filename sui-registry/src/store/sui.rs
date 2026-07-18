@@ -2,7 +2,7 @@
 //!
 //! This is the "naturalize(zot)" payload: OCI blobs and manifests become
 //! content-addressed objects in sui-cache's
-//! [`StorageBackend`](sui_cache::storage::StorageBackend), reusing the SAME
+//! [`StorageBackend`](sui_castore::StorageBackend), reusing the SAME
 //! durable store that holds Nix NARs. An OCI blob is stored via `put_nar` under
 //! a stable key derived from its digest; a manifest is stored the same way plus
 //! a sidecar object carrying its media-type. Content-addressed dedup across the
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use sui_cache::storage::StorageBackend;
+use sui_castore::StorageBackend;
 
 use crate::digest::Digest;
 
@@ -276,7 +276,7 @@ fn poisoned<T>(_: std::sync::PoisonError<T>) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sui_cache::storage::LocalStorage;
+    use sui_castore::LocalStorage;
     use sui_compat::hash::HashAlgorithm;
 
     fn store() -> (SuiCacheStore, tempfile::TempDir) {

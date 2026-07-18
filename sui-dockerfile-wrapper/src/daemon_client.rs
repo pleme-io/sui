@@ -1,7 +1,7 @@
 //! Daemon-aware cache client — Phase 3b of `supa-charge-akeyless-ci`.
 //!
 //! [`DaemonAwareCacheClient`] implements the same
-//! [`StorageBackend`](sui_cache::storage::StorageBackend) trait the
+//! [`StorageBackend`](sui_castore::StorageBackend) trait the
 //! plain Phase 2 wrapper already consumes, so wiring it in is a
 //! **substitution at construction time**, not a change to
 //! [`crate::run_wrapper`] or its 8 Phase 2 tests: whoever builds the
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_cache::CacheError;
 use sui_dockerfile_node_cache_daemon::protocol::{read_message, write_message};
 use sui_dockerfile_node_cache_daemon::{CachedArtifact, DaemonRequest, DaemonResponse};

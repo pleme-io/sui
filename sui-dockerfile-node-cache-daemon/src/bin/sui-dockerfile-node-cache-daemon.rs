@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use sui_cache::config::BackendConfig;
-use sui_cache::storage::build_backend;
+use sui_cache::build_backend;
 use sui_dockerfile_node_cache_daemon::{bind_unix_listener, default_socket_path, serve, NodeCacheDaemon, RealLocalCacheStore};
 use tokio::sync::watch;
 

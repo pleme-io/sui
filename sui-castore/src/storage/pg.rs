@@ -35,7 +35,7 @@
 use async_trait::async_trait;
 
 use super::StorageBackend;
-use crate::CacheError;
+use crate::StoreError;
 
 /// The two logical tables the cache tier keeps: narinfo text and NAR blobs.
 ///
@@ -72,24 +72,24 @@ impl PgTable {
 pub trait PgCacheConn: Send + Sync {
     /// `SELECT value FROM <table> WHERE key = $1` — raw bytes, or `Ok(None)` on a
     /// missing row.
-    async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, CacheError>;
+    async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
 
     /// Upsert (`INSERT … ON CONFLICT (key) DO UPDATE`) — idempotent by key; a
     /// re-`put` of a content-addressed key overwrites with identical bytes.
-    async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), CacheError>;
+    async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), StoreError>;
 
     /// `DELETE FROM <table> WHERE key = $1` — idempotent; deleting an absent key
     /// is `Ok(())`.
-    async fn delete(&self, table: PgTable, key: &str) -> Result<(), CacheError>;
+    async fn delete(&self, table: PgTable, key: &str) -> Result<(), StoreError>;
 
     /// `SELECT key FROM <table>` — the **authoritative** full key set (this is a
     /// durable tier, not a partial hot cache).
-    async fn keys(&self, table: PgTable) -> Result<Vec<String>, CacheError>;
+    async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError>;
 
     /// `DELETE FROM <table>` — clear the whole table, returning the row count
     /// removed. The typed whole-store wipe primitive (the inverse of a warm
     /// push); reaches NAR rows a per-key `delete` cannot.
-    async fn clear(&self, table: PgTable) -> Result<u64, CacheError>;
+    async fn clear(&self, table: PgTable) -> Result<u64, StoreError>;
 }
 
 /// L2 durable cache tier: content-addressed key → value over Postgres, shared
@@ -114,11 +114,11 @@ impl<C: PgCacheConn> PgStorageBackend<C> {
 
 #[async_trait]
 impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
-    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, CacheError> {
+    async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         match self.conn.select(PgTable::Narinfo, hash).await? {
             Some(bytes) => {
                 let text = String::from_utf8(bytes).map_err(|e| {
-                    CacheError::NarInfo(format!("invalid utf-8 in pg narinfo {hash}: {e}"))
+                    StoreError::NarInfo(format!("invalid utf-8 in pg narinfo {hash}: {e}"))
                 })?;
                 Ok(Some(text))
             }
@@ -126,19 +126,19 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         self.conn.upsert(PgTable::Narinfo, hash, content.as_bytes()).await
     }
 
-    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
+    async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         self.conn.select(PgTable::Nar, path).await
     }
 
-    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
+    async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
         self.conn.upsert(PgTable::Nar, path, data).await
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
         // narinfo keyed directly by hash.
         self.conn.delete(PgTable::Narinfo, hash).await?;
         // NAR blobs are keyed by relative URL; only the hash is in hand here, so —
@@ -151,14 +151,14 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
         Ok(())
     }
 
-    async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
+    async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         self.conn.keys(PgTable::Narinfo).await
     }
 
     /// Complete L2 wipe: truncate BOTH the narinfo and NAR tables. Unlike the
     /// per-hash `delete`, this reclaims NAR rows (keyed by narhash, unreachable
     /// from a store-path hash). Returns the narinfo row count removed.
-    async fn wipe_all(&self) -> Result<usize, CacheError> {
+    async fn wipe_all(&self) -> Result<usize, StoreError> {
         let narinfos = self.conn.clear(PgTable::Narinfo).await? as usize;
         self.conn.clear(PgTable::Nar).await?;
         Ok(narinfos)
@@ -173,13 +173,13 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
 
 #[cfg(feature = "postgres")]
 mod sqlx_conn {
-    use super::{CacheError, PgCacheConn, PgStorageBackend, PgTable};
+    use super::{StoreError, PgCacheConn, PgStorageBackend, PgTable};
     use async_trait::async_trait;
     use sqlx::postgres::{PgPool, PgPoolOptions};
     use sqlx::Row;
 
-    fn to_cache_err(e: sqlx::Error) -> CacheError {
-        CacheError::Io(std::io::Error::other(format!("postgres: {e}")))
+    fn to_store_err(e: sqlx::Error) -> StoreError {
+        StoreError::Io(std::io::Error::other(format!("postgres: {e}")))
     }
 
     impl PgTable {
@@ -249,22 +249,22 @@ mod sqlx_conn {
         ///
         /// # Errors
         ///
-        /// Returns [`CacheError::Io`] if the pool cannot be built or the schema
+        /// Returns [`StoreError::Io`] if the pool cannot be built or the schema
         /// DDL fails.
-        pub async fn connect(url: &str, max_conns: u32) -> Result<Self, CacheError> {
+        pub async fn connect(url: &str, max_conns: u32) -> Result<Self, StoreError> {
             let pool = PgPoolOptions::new()
                 .max_connections(max_conns)
                 .connect(url)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             let this = Self { pool };
             this.ensure_schema().await?;
             Ok(this)
         }
 
-        async fn ensure_schema(&self) -> Result<(), CacheError> {
+        async fn ensure_schema(&self) -> Result<(), StoreError> {
             for t in [PgTable::Narinfo, PgTable::Nar] {
-                sqlx::query(t.ddl()).execute(&self.pool).await.map_err(to_cache_err)?;
+                sqlx::query(t.ddl()).execute(&self.pool).await.map_err(to_store_err)?;
             }
             Ok(())
         }
@@ -272,55 +272,55 @@ mod sqlx_conn {
 
     #[async_trait]
     impl PgCacheConn for SqlxPgCacheConn {
-        async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
             let row = sqlx::query(table.select_sql())
                 .bind(key)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             match row {
                 Some(r) => {
-                    let v: Vec<u8> = r.try_get("value").map_err(to_cache_err)?;
+                    let v: Vec<u8> = r.try_get("value").map_err(to_store_err)?;
                     Ok(Some(v))
                 }
                 None => Ok(None),
             }
         }
 
-        async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), CacheError> {
+        async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), StoreError> {
             sqlx::query(table.upsert_sql())
                 .bind(key)
                 .bind(value)
                 .execute(&self.pool)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(())
         }
 
-        async fn delete(&self, table: PgTable, key: &str) -> Result<(), CacheError> {
+        async fn delete(&self, table: PgTable, key: &str) -> Result<(), StoreError> {
             sqlx::query(table.delete_sql())
                 .bind(key)
                 .execute(&self.pool)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(())
         }
 
-        async fn keys(&self, table: PgTable) -> Result<Vec<String>, CacheError> {
+        async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
             let rows = sqlx::query(table.keys_sql())
                 .fetch_all(&self.pool)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             rows.into_iter()
-                .map(|r| r.try_get::<String, _>("key").map_err(to_cache_err))
+                .map(|r| r.try_get::<String, _>("key").map_err(to_store_err))
                 .collect()
         }
 
-        async fn clear(&self, table: PgTable) -> Result<u64, CacheError> {
+        async fn clear(&self, table: PgTable) -> Result<u64, StoreError> {
             let res = sqlx::query(table.clear_sql())
                 .execute(&self.pool)
                 .await
-                .map_err(to_cache_err)?;
+                .map_err(to_store_err)?;
             Ok(res.rows_affected())
         }
     }
@@ -331,7 +331,7 @@ mod sqlx_conn {
         /// # Errors
         ///
         /// Propagates a connection/schema failure from [`SqlxPgCacheConn::connect`].
-        pub async fn connect(url: &str, max_conns: u32) -> Result<Self, CacheError> {
+        pub async fn connect(url: &str, max_conns: u32) -> Result<Self, StoreError> {
             Ok(Self::new(SqlxPgCacheConn::connect(url, max_conns).await?))
         }
     }
@@ -371,25 +371,25 @@ mod tests {
 
     #[async_trait]
     impl PgCacheConn for MockPg {
-        async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(self.table(table).lock().unwrap().get(key).cloned())
         }
 
-        async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), CacheError> {
+        async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), StoreError> {
             self.table(table).lock().unwrap().insert(key.to_string(), value.to_vec());
             Ok(())
         }
 
-        async fn delete(&self, table: PgTable, key: &str) -> Result<(), CacheError> {
+        async fn delete(&self, table: PgTable, key: &str) -> Result<(), StoreError> {
             self.table(table).lock().unwrap().remove(key);
             Ok(())
         }
 
-        async fn keys(&self, table: PgTable) -> Result<Vec<String>, CacheError> {
+        async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
             Ok(self.table(table).lock().unwrap().keys().cloned().collect())
         }
 
-        async fn clear(&self, table: PgTable) -> Result<u64, CacheError> {
+        async fn clear(&self, table: PgTable) -> Result<u64, StoreError> {
             let mut m = self.table(table).lock().unwrap();
             let n = m.len() as u64;
             m.clear();
@@ -507,6 +507,6 @@ mod tests {
         mock.narinfo.lock().unwrap().insert("bad".to_string(), vec![0xff, 0xfe, 0xfd]);
         let backend = PgStorageBackend::new(mock);
         let err = backend.get_narinfo("bad").await.unwrap_err();
-        assert!(matches!(err, CacheError::NarInfo(_)));
+        assert!(matches!(err, StoreError::NarInfo(_)));
     }
 }

@@ -6,7 +6,7 @@
 //! 1. computes the [`sui_spec::dockerfile`] content-addressed
 //!    [`DockerfileGraph`](sui_spec::dockerfile::DockerfileGraph);
 //! 2. checks every node's `content_hash` against a
-//!    [`sui_cache::storage::StorageBackend`] (the same trait `sui cache
+//!    [`sui_castore::StorageBackend`] (the same trait `sui cache
 //!    serve` runs — see [`cache`]);
 //! 3. on a **full** cache hit, materializes the already-built image via
 //!    `docker pull` instead of rebuilding — [`WrapperOutcome::CacheHit`];
@@ -19,10 +19,10 @@
 //!    [`WrapperOutcome::BuildFailed`] — never a panic.
 //!
 //! I/O is behind two injectable seams: [`command::CommandRunner`] (the
-//! `docker` subprocess) and [`sui_cache::storage::StorageBackend`] (the
+//! `docker` subprocess) and [`sui_castore::StorageBackend`] (the
 //! cache). Both are mocked in this crate's tests; production wires the
 //! real [`command::RealCommandRunner`] and a real backend built via
-//! [`sui_cache::storage::build_backend`].
+//! [`sui_cache::build_backend`].
 
 pub mod cache;
 pub mod command;
@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_spec::dockerfile::{self, DockerfileArgs, DockerfileEnvironment, DockerfileGraph};
 
 pub use command::{CommandOutcome, CommandRunError, CommandRunner, DockerBuildInvocation, MockCommandRunner, RealCommandRunner};

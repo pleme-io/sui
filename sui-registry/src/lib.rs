@@ -4,7 +4,7 @@
 //! rebuilt as native pleme-io substrate over sui-cache's content-addressed
 //! store — not a wrapper around zot, not a vendored fork. porto is an axum
 //! `/v2/` OCI registry whose durable bytes live in
-//! [`sui_cache::storage::StorageBackend`] (the same store that holds Nix NARs),
+//! [`sui_castore::StorageBackend`] (the same store that holds Nix NARs),
 //! whose every failure is a typed [`error::OciError`] wire code, and whose blob
 //! uploads pass through a typestate FSM that makes an out-of-order chunk or a
 //! wrong finalize-digest *unrepresentable-as-a-silent-success*.

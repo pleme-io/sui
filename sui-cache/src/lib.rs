@@ -5,61 +5,62 @@
 //!
 //! # Architecture
 //!
-//! - [`storage`] — pluggable storage backends (local filesystem, S3 stub)
+//! - [`sui_castore`] — pluggable storage backends (shared with sui-registry);
+//!   re-exported from here for backward compatibility.
 //! - [`server`] — axum HTTP server implementing the cache protocol
 //! - [`signing`] — ed25519 key management and narinfo signing
 //! - [`push`] — pipeline to push store paths to the cache
 //! - [`gc`] — garbage collection of unreferenced cache entries
-//! - [`config`] — cache configuration types
+//! - [`config`] — cache configuration types (CacheConfig; BackendConfig is in sui-castore)
 
 pub mod config;
 pub mod gc;
 pub mod push;
 pub mod server;
 pub mod signing;
-pub mod storage;
 
-pub use config::{BackendConfig, CacheConfig};
+// ---------------------------------------------------------------------------
+// Backward-compatibility re-exports from sui-castore.
+//
+// Every `sui_cache::X` path that existed before the extract-and-dominate
+// refactor continues to resolve — callers need zero changes. The canonical
+// home is now `sui_castore::X`.
+// ---------------------------------------------------------------------------
+
+/// `CacheError` is now `sui_castore::StoreError` (same variants, same derives).
+/// This type alias preserves every existing `sui_cache::CacheError` use site.
+pub use sui_castore::StoreError as CacheError;
+
+pub use config::CacheConfig;
+
+// BackendConfig lives in sui-castore; re-export at the sui-cache surface so
+// `sui_cache::BackendConfig` still resolves.
+pub use sui_castore::BackendConfig;
+
 pub use gc::GcResult;
 pub use push::PushResult;
 pub use server::{build_router, serve, AppState};
 pub use signing::{verify_narinfo_signature, CacheSigner};
-pub use storage::{
+
+// Storage primitives — all moved to sui-castore, re-exported here.
+pub use sui_castore::{
     build_backend, LocalStorage, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn,
     S3Storage, StorageBackend, StorageIndex, TieredBackend, TieredTier, WritePolicy,
     TIERED_BACKEND_TIER,
 };
 
-/// Errors from cache operations.
-#[derive(Debug, thiserror::Error)]
-pub enum CacheError {
-    /// An I/O operation failed.
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+#[cfg(feature = "redis-client")]
+pub use sui_castore::RedisConnectionManager;
 
-    /// A store path was not found on the local filesystem.
-    #[error("path not found: {0}")]
-    PathNotFound(String),
-
-    /// A signing or verification operation failed.
-    #[error("signing error: {0}")]
-    Signing(String),
-
-    /// A feature is not yet implemented.
-    #[error("not implemented: {0}")]
-    NotImplemented(&'static str),
-
-    /// A narinfo could not be parsed.
-    #[error("narinfo error: {0}")]
-    NarInfo(String),
-}
+#[cfg(feature = "postgres")]
+pub use sui_castore::SqlxPgCacheConn;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cache_error_display() {
+    fn cache_error_is_store_error_display() {
         let e = CacheError::PathNotFound("/nix/store/abc".to_string());
         assert!(format!("{e}").contains("/nix/store/abc"));
     }

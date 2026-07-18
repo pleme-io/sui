@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_dockerfile_wrapper::{WrapperConfig, WrapperError, WrapperReceipt};
 
 /// The one injectable seam over "run the wrapper against this fetched

@@ -27,7 +27,7 @@ use tower::ServiceExt;
 
 use sui_cache::server::{build_router, AppState};
 use sui_cache::signing::CacheSigner;
-use sui_cache::storage::LocalStorage;
+use sui_cache::LocalStorage;
 use sui_cache::{BackendConfig, CacheConfig, StorageBackend};
 use sui_compat::narinfo::NarInfo;
 

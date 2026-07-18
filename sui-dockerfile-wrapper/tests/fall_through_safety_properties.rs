@@ -37,7 +37,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use proptest::prelude::*;
 
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_cache::CacheError;
 use sui_dockerfile_wrapper::cache::MockCacheBackend;
 use sui_dockerfile_wrapper::command::MockCommandRunner;

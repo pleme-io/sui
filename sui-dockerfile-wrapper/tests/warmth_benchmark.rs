@@ -49,7 +49,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::Serialize;
-use sui_cache::storage::StorageBackend;
+use sui_cache::StorageBackend;
 use sui_dockerfile_wrapper::cache::MockCacheBackend;
 use sui_dockerfile_wrapper::command::{
     CommandOutcome, CommandRunError, CommandRunner, DockerBuildInvocation, RealCommandRunner,

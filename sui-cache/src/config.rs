@@ -1,10 +1,16 @@
 //! Cache configuration types.
+//!
+//! [`BackendConfig`] (the storage backend selector) lives in `sui-castore` and
+//! is re-exported here for backward compatibility. [`CacheConfig`] (the
+//! cache-server configuration) is owned by this module.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::storage::WritePolicy;
+// BackendConfig is defined in sui-castore; import it for use in CacheConfig.
+pub use sui_castore::BackendConfig;
+pub use sui_castore::WritePolicy;
 
 /// Top-level cache configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,66 +58,10 @@ impl Default for CacheConfig {
     }
 }
 
-/// Storage backend selection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum BackendConfig {
-    /// Local filesystem storage.
-    Local {
-        /// Root directory for NAR and narinfo files.
-        path: PathBuf,
-    },
-    /// S3-compatible object storage (stub).
-    S3 {
-        bucket: String,
-        region: String,
-        endpoint: Option<String>,
-    },
-    /// Redis L1 hot cache (requires the `redis-client` feature to construct).
-    Redis {
-        /// Connection URL, e.g. `redis://redis.super-cache-ci.svc:6379`.
-        url: String,
-        /// Optional per-write TTL in seconds; `None` relies on `maxmemory` LRU.
-        #[serde(default)]
-        ttl_secs: Option<u64>,
-    },
-    /// Postgres L2 durable cache tier (requires the `postgres` feature to
-    /// construct).
-    Pg {
-        /// Connection URL, e.g. `postgres://user@postgres.super-cache-ci.svc:5432/sui`.
-        url: String,
-        /// Connection-pool ceiling.
-        max_conns: u32,
-    },
-    /// Tiered `L1 → L2 → L3` resolver composing three nested backends.
-    ///
-    /// The canonical super-cache shape: `l1: Redis`, `l2: Pg`, `l3: S3`. Any
-    /// nesting is legal (the arms recurse), so a deployment can pick `{disk |
-    /// tiered}` — or any composition — purely by config.
-    Tiered {
-        /// L1 hot tier (typically [`Redis`](BackendConfig::Redis)).
-        l1: Box<BackendConfig>,
-        /// L2 durable tier (typically [`Pg`](BackendConfig::Pg)).
-        l2: Box<BackendConfig>,
-        /// L3 object tier (typically [`S3`](BackendConfig::S3)).
-        l3: Box<BackendConfig>,
-        /// How `put`s propagate across the tiers.
-        #[serde(default)]
-        write_policy: WritePolicy,
-    },
-}
-
-impl Default for BackendConfig {
-    fn default() -> Self {
-        Self::Local {
-            path: PathBuf::from("/var/cache/sui"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn default_config_has_sane_values() {
