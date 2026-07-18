@@ -157,6 +157,43 @@ storage — only then does a positional read beat the HAMT probe. M1's frame-ove
 the net-negative part a real M2 REPLACES (not extends); it was deliberately not committed.
 The `(up,slot)` resolver extension + this proven coupling recipe are the reusable parts.
 
+## 6c. M2 verdict (designed 2026-07-18) — NO clean proven win; the fib gap is largely inherent
+
+A big-bang design pass (recon: M1-alloc-cost · cppnix-arena · sui-capture-constraint →
+adversarial judge) assessed the whole cheap-frame space. **Verdict: there is no clean,
+proven, net-positive, no-regression M2 slice to build now.** The space collapses:
+
+- **cppnix's cheapness is a tracing-GC property sui can't copy.** cppnix bump-allocates
+  16-byte frames + collects them wholesale; a captured frame stays alive transparently.
+  sui uses `Rc` (no GC), so a bump-arena that frees on return dangles captured frames.
+- **Frame-representation swaps all fail the bar.** (A) inline/SmallVec — on `fib`, escape
+  is **~100%** (the arg BinOp thunks capture the param frame; `thunks_created==thunks_forced`,
+  0% waste), so inline slots heap-promote on capture and buy nothing exactly where the gap
+  is. (C) whole-eval bumpalo arena — a **memory regression** on nixpkgs (no GC to reclaim;
+  defeats the Rc reclamation the live-census proved), i.e. trading a time regression for a
+  memory one, which the never-regress rule forbids. Env-flattening — already
+  `/twin-reasoning`-ruled-out (EVAL-MEMORY.md:87: O(1) scope-push → O(n), "wrecks eval time").
+  (B) slab/pool — the ONLY sound swap (Rc-driven, capture-safe), but **UNPROVEN**: a bump-
+  alloc still touches the allocator + the Rc refcount, and M1 already proved a representation
+  change can *regress* the already-cheap interned-Symbol HAMT probe. Per never-ship-a-regression,
+  it is a **measure-first follow-up**, not a buildable win.
+- **Allocation-side levers are exhausted or small.** The judge named "skip the redundant 2nd
+  thunk-store" the #1 lever — but that is **ALREADY LANDED** (57da0d79 "C-store redundant-Store#2
+  skip"; HEAD value.rs:1685 `!was_thunk_before_loop` early-return + `store_evaluated_owned`; the
+  `thunk_store_redundant` counter measures how often it's *already elided*, not a pending
+  redundancy — a doc-tag-vs-source correction). child()+bind fusion is a per-call `make_mut`
+  (~small, "not the 9× gap"). demand-thunking is parity-edged (must stay conservative-to-thunk
+  on anything observing a fixpoint) + already partially landed (−6.5% variant).
+
+**The honest bottom line:** the ~9× deep-recursion gap is **substantially the PRICE of sui's
+persistent-lazy design** — a fresh `Rc<EnvInner>` per call + an `Rc<ThunkInner>` per non-constant
+arg, the cost of the O(1)-persistent-`child()` + call-by-need env that cppnix's tracing GC gets
+"for free" and sui's Rc cannot. sui *wins* 1.7–22× on allocation-bound shapes and pays this on
+deep recursion — a deliberate, correct trade, not a bug. The one remaining credible path
+(slab/pool frames) is an **unproven** measure-first experiment, explicitly NOT a rush. **M2 is
+not built; the fib gap is accepted as the honest current state until a measured slab/pool
+experiment proves a net-positive.**
+
 ## 7. Tier ledger (never round up)
 
 - **SHIPPED:** the im_rc env + O(1) `child()`; `lookup_fast`; the M2.6 ROOT #4a
@@ -167,12 +204,17 @@ The `(up,slot)` resolver extension + this proven coupling recipe are the reusabl
 - **MEASURED NEGATIVE (M1, §6b):** the positional-frame overlay is +7% fib20 / +32–39%
   call-heavy — the per-call frame ALLOCATION costs more than the HAMT probe it removes.
   Coupling proven airtight (the #1 risk retired); code NOT committed (§8 honest-stop).
-- **THE REAL LEVER (M2, redirected by M1's measurement):** make a positional frame
-  near-FREE — arena/slab/pooled frames, a fixed-capacity inline (SmallVec/stack) frame,
-  or reuse the closure env's storage. The lookup was never the bottleneck; the ALLOCATION
-  is. Reuse M1's `(up,slot)` resolver + the proven coupling recipe (§6b); replace the
-  `Rc<[RefCell]>`-per-scope frame with a cheap representation.
-- **DESIGN (unwritten):** M2 (cheap-frame allocation — the real win) · M3 (VM shares the table).
+- **M2 ASSESSED — NO clean proven win (§6c):** the cheap-frame space collapses. Representation
+  swaps regress (M1, inline-escape) / memory-regress (arena, no GC) / are unproven (slab/pool);
+  the allocation levers are already-landed (redundant store, 57da0d79) or small (fusion) or
+  parity-edged (demand-thunking). **The ~9× fib gap is substantially the PRICE of sui's
+  persistent-lazy design** (`Rc<EnvInner>`/call + `Rc<ThunkInner>`/arg — the O(1)-persistent
+  `child()` cppnix's GC gets free and Rc cannot). sui wins 1.7–22× on alloc-bound shapes, pays
+  this on deep recursion: a correct trade. **NOT built** (never-ship-a-regression: no proven
+  net-positive slice exists).
+- **UNPROVEN FOLLOW-UP:** slab/pool frames (the only sound representation swap) — measure-first,
+  not a build; M1 proved a representation change can regress.
+- **DESIGN (unwritten):** M3 (VM shares the resolver table — aspirational).
 - **Not-landable-in-one-pass:** even M0 is a new crate + a resolver pass — a real
   prerequisite, not a one-careful-pass edit. Rounding it to "landable now" is the
   path-of-least-resistance sin.
