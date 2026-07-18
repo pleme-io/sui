@@ -105,13 +105,36 @@ arm.
   `emit()` so both engines consume the one Symbol-keyed `sui-resolve` table (one
   shared scope model). Explicitly NOT claimed today.
 
+## 6a. M0 result (built 2026-07-18) — parity-proven, MEASURED NULL
+
+M0 is **SHIPPED behind `SUI_RESOLVE=1` (default off)**: the `sui-resolve` crate
+(`Resolution{Lexical{sym}|Dynamic}` + a `bind_vars` pass over a `StaticEnv` chain
+with `is_with` barriers, fail-safe-to-Dynamic; 16 unit tests) + a
+`(source_id<<32)|offset`-keyed side-table + a purely-additive `Env::lookup_lexical_sym`
++ the eval.rs Ident-arm fast path. **Parity-by-construction PROVEN both ways:**
+flag-off = baseline exactly; flag-on `SUI_RESOLVE=1` = byte-identical (all
+`with_shadowing_*` / `control_with_lexical_precedence` / `eval_recursive_let` /
+`error_infinite_recursion` tests green + drv_path_parity + hello/coreutils drvPath).
+
+**But the measured perf win on `rec_fib_20` is NULL (−0.5%, within jitter)** — even
+though the fast path fires on every lexical lookup (fib20 records 7 `Lexical` entries,
+all hit). **Finding: re-intern elision alone is NOT the fib bottleneck** (as §8
+warned) — fib's cost is recursive-call machinery + thunk force + arithmetic, not
+ident re-interning. The real per-lookup win is **M1** (positional frames killing the
+HAMT probe itself, not just the re-intern). M0's value is the parity-proven resolver
+**foundation M1 consumes** + this measurement redirecting the lever. Do NOT default
+the flag on for a null win — it earns default-on only when M1 makes it move fib.
+
 ## 7. Tier ledger (never round up)
 
 - **SHIPPED:** the im_rc env + O(1) `child()`; `lookup_fast`; the M2.6 ROOT #4a
   with-deferral; the #2 harness with `rec_fib_20` at 0.107×; the VM resolver as a
-  template (not liftable).
-- **DESIGN (this doc):** the `sui-resolve` crate + `Resolution` + `bind_vars` +
-  the eval.rs Ident consume — **none written.** M0 is designed-but-unwritten.
+  template (not liftable). **NEW: M0 `sui-resolve` + the Ident-arm consume (flag-gated
+  `SUI_RESOLVE=1`, parity-by-construction proven both modes) — the M1 foundation.**
+- **MEASURED NULL:** M0's re-intern elision does not move `rec_fib_20` (−0.5%). The
+  lever is M1's positional-frame HAMT-probe kill, not M0's re-intern.
+- **DESIGN (unwritten):** M1 (positional frame overlay + the Rc-shared-thunk coupling
+  proof) · M2 (nixpkgs measure) · M3 (VM shares the table).
 - **Not-landable-in-one-pass:** even M0 is a new crate + a resolver pass — a real
   prerequisite, not a one-careful-pass edit. Rounding it to "landable now" is the
   path-of-least-resistance sin.

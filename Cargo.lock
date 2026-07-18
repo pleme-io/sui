@@ -6666,6 +6666,7 @@ dependencies = [
  "sui-compat",
  "sui-graph-store",
  "sui-intern",
+ "sui-resolve",
  "sui-spec",
  "sui-store",
  "tar",
@@ -6752,6 +6753,16 @@ dependencies = [
  "rkyv 0.8.16",
  "sui-graph-store",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sui-resolve"
+version = "0.1.124"
+dependencies = [
+ "rnix",
+ "rowan",
+ "rustc-hash 2.1.2",
+ "sui-intern",
 ]
 
 [[package]]

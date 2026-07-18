@@ -13,6 +13,11 @@ categories = ["compilers", "parser-implementations"]
 sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-intern.workspace = true
+# ENV-RESOLVE M0 — parse-time variable-resolution side-table. Behind the
+# `SUI_RESOLVE=1` env flag (default off); the `Lexical` fast path skips the
+# per-lookup re-intern on the tree-walker's hot Ident arm. Parity by
+# construction — see `sui-resolve`'s crate docs + `docs/ENV-RESOLVE-DESIGN.md`.
+sui-resolve.workspace = true
 sui-store.workspace = true
 sui-spec.workspace = true
 # L1 substrate — optional cross-process / fleet-shared eval-cache tier.

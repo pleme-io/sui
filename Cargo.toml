@@ -1,6 +1,13 @@
 [workspace]
 members = [
     "sui-intern",
+    # Parse-time variable-resolution side-table (ENV-RESOLVE M0). A pure
+    # `bind_vars` pass over the rnix AST + a cppnix-shaped StaticEnv chain
+    # (with-scope frames as barriers) precomputes each ident's interned
+    # Symbol so the tree-walker's hot Ident arm skips the per-lookup
+    # re-intern. Fail-safe to Dynamic — parity-by-construction over the
+    # identical im_rc map + identical lookup_fast fallback.
+    "sui-resolve",
     "sui-bytecode",
     "sui-cache",
     "sui-compat",
@@ -99,6 +106,7 @@ repository = "https://github.com/pleme-io/sui"
 gen-nix = "0.1"
 # Internal crates
 sui-intern = { path = "sui-intern", version = "0.1.10" }
+sui-resolve = { path = "sui-resolve", version = "0.1.10" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.10" }
 sui-cache = { path = "sui-cache", version = "0.1.10" }
 sui-compat = { path = "sui-compat", version = "0.1.10" }

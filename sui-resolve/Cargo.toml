@@ -1,0 +1,21 @@
+[package]
+name = "sui-resolve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parse-time variable-resolution side-table for the sui tree-walker — precomputes each ident's interned Symbol so the hot Ident arm skips the per-lookup re-intern (ENV-RESOLVE M0, fail-safe to Dynamic)"
+keywords = ["nix", "evaluator", "resolver", "scope", "interning"]
+categories = ["compilers", "parser-implementations"]
+
+[dependencies]
+sui-intern.workspace = true
+rnix.workspace = true
+rowan.workspace = true
+rustc-hash = "2"
+
+[dev-dependencies]
+
+[lints.clippy]
+pedantic = "warn"

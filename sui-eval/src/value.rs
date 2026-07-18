@@ -2623,6 +2623,21 @@ impl Env {
         self.0.bindings.get(&sym).cloned()
     }
 
+    /// Lookup in LEXICAL scope only, by pre-interned [`Symbol`] — the
+    /// Symbol-keyed sibling of [`lookup_lexical`](Self::lookup_lexical).
+    ///
+    /// Probes ONLY the lexical `bindings` map (the first thing
+    /// [`lookup_fast`](Self::lookup_fast) does, by the same Symbol) — never
+    /// the `with`-chain. The ENV-RESOLVE M0 fast path uses this: a
+    /// `Resolution::Lexical{sym}` reference probes here directly with its
+    /// precomputed Symbol; on a hit the returned value is byte-identical to
+    /// `lookup_fast`'s (same map, same Symbol); on a miss the caller falls
+    /// back to today's exact runtime path.
+    #[must_use]
+    pub fn lookup_lexical_sym(&self, sym: Symbol) -> Option<Value> {
+        self.0.bindings.get(&sym).cloned()
+    }
+
     /// Look up a name using ONLY with-scope caches (no forcing).
     /// Returns Some if the name is in a cached with-scope, None otherwise.
     /// Used by maybe_thunk to resolve with-scope idents without forcing fixpoints.

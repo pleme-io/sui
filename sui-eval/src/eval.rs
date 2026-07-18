@@ -457,6 +457,10 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         // Clear the identifier symbol cache so that offsets from
         // previous top-level evaluations don't persist.
         clear_ident_cache();
+        // ENV-RESOLVE M0 (no-op unless `SUI_RESOLVE=1`): clear the per-source
+        // resolution side-table for the same reason — its `(source_id,
+        // offset)` keys must not survive across independent top-level evals.
+        crate::resolve_env::clear();
         // SOURCE_TEXTS is deliberately NOT cleared here — it is append-only
         // for the life of the process. Clearing it on a `nesting == 0`
         // re-entry was a shared-mutable-cell bug: the top-level
@@ -487,6 +491,16 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     // at the same byte offset in different files don't collide in
     // the symbol cache.
     let src_id = next_source_id();
+    // ENV-RESOLVE M0 (no-op unless `SUI_RESOLVE=1`): run the parse-time
+    // variable resolver over THIS parse tree and merge its `Lexical`
+    // resolutions into the per-source table under `src_id`. Pure + fail-safe
+    // (any uncertainty is left `Dynamic`), so the eval below is byte-identical
+    // — the `Lexical` fast path only shortcuts a lexical-bindings hit, which
+    // `lookup_fast` returns first anyway.
+    if crate::resolve_env::enabled() {
+        let table = sui_resolve::resolve(&parse.tree());
+        crate::resolve_env::populate(src_id, &table);
+    }
     // Register this parse tree's file + text so a static key's byte offset
     // (recorded by `eval_attrset`) resolves to a file/line/column for
     // `builtins.unsafeGetAttrPos`. The file flows through the eval-file
@@ -929,6 +943,30 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             crate::perf::inc(crate::perf::Counter::EvalExpr);
             if crate::perf::enabled() {
                 crate::perf::inc(crate::perf::Counter::ExprIdent);
+            }
+            // ── ENV-RESOLVE M0 fast path (no-op unless `SUI_RESOLVE=1`) ──
+            // A parse-time-`Lexical` reference carries its precomputed
+            // Symbol; probe the lexical bindings map DIRECTLY, skipping the
+            // per-lookup `ident_text().to_string()` + `intern()`. This is
+            // parity-by-construction: `lookup_fast` probes the SAME lexical
+            // map by the SAME Symbol FIRST, so a hit here is byte-identical
+            // to what the unchanged path below returns. Any miss (a
+            // mid-fixpoint blackhole where the binding isn't in scope yet, an
+            // unrecorded ident, or `Dynamic`) falls through to the EXACT
+            // unchanged path — including the whole with-chain + WithIdent
+            // deferral. The resolver never records keywords, so the
+            // true/false/null handling below is untouched on this path.
+            if crate::resolve_env::enabled() {
+                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let offset = u32::from(ident.syntax().text_range().start());
+                if let sui_resolve::Resolution::Lexical { sym } =
+                    crate::resolve_env::resolution_for(src_id, offset)
+                {
+                    if let Some(v) = env.lookup_lexical_sym(sym) {
+                        return Ok(v);
+                    }
+                }
+                // Miss / Dynamic → fall through to the unchanged path.
             }
             let name = ident_text(ident);
             return match name.as_str() {
