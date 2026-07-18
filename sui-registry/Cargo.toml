@@ -1,0 +1,34 @@
+[package]
+name = "sui-registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "porto — pleme-io-native OCI Distribution Spec v1.1 registry server over sui-cache's content-addressed store"
+keywords = ["oci", "registry", "distribution", "container", "nix"]
+categories = ["web-programming::http-server", "caching"]
+
+[dependencies]
+sui-cache.workspace = true
+sui-compat.workspace = true
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+data-encoding = { workspace = true }
+async-trait = { workspace = true }
+bytes = "1"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tower = { workspace = true }
+http-body-util = "0.1"
+
+[lints.clippy]
+pedantic = "warn"

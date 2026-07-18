@@ -88,6 +88,15 @@ members = [
     # sui-cache's storage-backend config; owns only the native-node guard
     # + topology + cache-front + keyway driver.
     "sui-bigorna",
+    # porto — the pleme-io-native OCI Distribution Spec v1.1 registry
+    # SERVER. Rebuilds zot's registry-server capability as native substrate:
+    # an axum `/v2/` OCI registry over a mockable `RegistryStore` seam,
+    # layering OCI blobs + manifests onto sui-cache's content-addressed
+    # `StorageBackend` (get_nar/put_nar keyed by the OCI digest). Typed
+    # `Digest` parse-at-boundary, typestate upload FSM, typed `OciError`
+    # wire codes. lacre (the cartorio admission proxy) and doca (the client)
+    # sit AROUND this store server; porto leaves the referrer seam for them.
+    "sui-registry",
 ]
 resolver = "3"
 
