@@ -24,8 +24,9 @@ Pure-Rust Nix evaluator + build system. Drop-in `nix` CLI replacement.
 sui replaces nix at the **binary level**: the fleet's default rebuild
 (`nix run .#rebuild`, darwin-/nixos-rebuild) will invoke sui over the **same
 shared `/nix/store`** — byte-identical hash/NAR/drv/binary-cache formats
-(proven at `sui parity` 7/0). The flip is the destination, not a maybe; a
-change moves toward it or is off-course.
+(the `sui parity` corpus gate — its enforcement status is stated
+tier-honestly below, not rounded up). The flip is the destination, not a
+maybe; a change moves toward it or is off-course.
 
 **The bar is 100%, byte for byte — table stakes, not a goal.** A replacement that
 matches 99% of the ecosystem is not a nix replacement; the missing 1% is exactly
@@ -45,6 +46,31 @@ every artifact, going red on a single differing byte. `sui == nix` is then a
 theorem the gate re-proves on every change — the mechanical observation of this
 fact over sui's evolution. Grow the gate's coverage with the evaluator so a green
 build never outruns the corpus it actually proves.
+
+**Tier-honest on the gate itself (2026-07-18 — never round up the enforcer).**
+The corpus is *split* by where it actually proves anything, and the doc must say
+so. The ~40 pure-builtins rows (hash / derivation / context / attrset-merge
+algebra) are environment-independent — genuine CI theorems, reproducible on any
+runner. The ~35 ecosystem rows (`hello`/`stdenv`/`neovim`/… + the darwin
+`currentSystem` seeds) import **impure `<nixpkgs>`** — an *unpinned,
+machine-dependent* oracle — so on CI (which resolves a different nixpkgs rev than
+the one those rows were byte-closed against) sui **errors** on them and they count
+as regressions. Net: `sui parity` is **green locally (against the operator's
+`<nixpkgs>`) but inert on CI — 0 successes in the last 40 runs — and releases have
+cut through the red.** A gate cannot be a "theorem re-proven on every change" while
+its oracle floats: **★★ DETERMINISTIC INSTANTIATION is violated at the gate's own
+ground truth,** and a chronically-red gate is *worse than none* because it blinds
+the ~40 rows that would otherwise catch a real regression on every push. The
+destination (one campaign, shared with the darwin/eval-memory work and
+super-cache-ci's hermetic oracle): (1) the corpus imports a **flake-locked**
+nixpkgs, not `<nixpkgs>`, so every machine evals the same bytes and red means a
+*real* sui divergence; (2) each row carries a typed `EnvCapability` (arch + memory)
+so it runs only where it can and **skips honestly** elsewhere (a linux runner skips
+the darwin rows; a small runner skips the OOM-heavy rows) instead of
+`sui-err`-as-regression; (3) CI then proves the reproducible subset as a
+**blocking** gate and a pinned-oracle big-mem job proves the full corpus. The law
+this taught, fleet-wide: *a seal is only real if its oracle is reproducible where
+the seal is enforced.* Tracked as the parity-gate task.
 
 Getting there is empirical — stock nix is the differential **oracle** (see
 *The sui rhythm* below). Every fix, **especially in the subtle
