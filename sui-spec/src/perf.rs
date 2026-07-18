@@ -462,10 +462,11 @@ mod tests {
     #[test]
     fn canonical_lisp_loads_this_sessions_levers() {
         let levers = load_canonical_levers().unwrap();
-        // 4 original + overlay-base-move (Discarded) + round-2's ident-intern
-        // (the first Proven lever) + apply-trace-clone + force-roundtrip (both
-        // Discarded).
-        assert_eq!(levers.len(), 8, "this session's authored levers");
+        // Rounds 1-3: 4 original + overlay-base-move + round-2 (ident-intern
+        // Proven, apply-trace-clone + force-roundtrip Discarded) + round-3
+        // (select-ident-token + string-concat Proven, attrset-symcache Deferred,
+        // overlay-merge-structural Discarded).
+        assert_eq!(levers.len(), 12, "this session's authored levers");
     }
 
     #[test]

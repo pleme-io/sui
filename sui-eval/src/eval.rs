@@ -2048,7 +2048,17 @@ fn eval_attr_maybe_null(attr: &ast::Attr, env: &Env) -> Result<Option<String>, E
 
 /// Get the text of an rnix Ident node.
 fn ident_text(ident: &ast::Ident) -> String {
-    ident.syntax().text().to_string()
+    // Fast path: a `NODE_IDENT` holds a single `TOKEN_IDENT`, whose `text()`
+    // borrows the source `&str` directly from the green node — no
+    // `PreorderWithTokens` cursor tree-walk and none of the `NodeData::new`
+    // allocations that `syntax().text()` (a `SyntaxText` over the node's whole
+    // descendant span) pays. Byte-identical fallback: the identifier `or` is
+    // lexed as a nested `TOKEN_OR` (rnix quirk), so `ident_token()` is `None`
+    // there — walk the full node text in that case, exactly as before.
+    match ident.ident_token() {
+        Some(tok) => tok.text().to_string(),
+        None => ident.syntax().text().to_string(),
+    }
 }
 
 /// Byte offset of a STATIC attr key (`Ident` or `Str`) in its source text —
@@ -2935,10 +2945,17 @@ fn eval_binop(
             (Value::String(a), Value::String(b)) => {
                 let mut ctx = a.context.clone();
                 ctx.merge(&b.context);
-                Ok(Value::String(Rc::new(NixString::with_context(
-                    format!("{}{}", a.chars, b.chars),
-                    ctx,
-                ))))
+                // Byte-identical to `format!("{}{}", a.chars, b.chars)` but
+                // routes around the `core::fmt` runtime (its dispatch was the
+                // #1 self-time frame on the string-concat hot path): a single
+                // exact-capacity `String` + two `push_str` reserves the final
+                // size once, so the left operand is copied exactly once instead
+                // of copied-then-regrown. Result string + context unchanged →
+                // ByteSufficient. (Also removes a `format!` — TYPED EMISSION.)
+                let mut s = String::with_capacity(a.chars.len() + b.chars.len());
+                s.push_str(&a.chars);
+                s.push_str(&b.chars);
+                Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
             }
             (Value::Path(a), Value::String(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}{}", b.chars).as_str())))),
             (Value::Path(a), Value::Path(b)) => Ok(Value::Path(Box::new(SmolStr::from(format!("{a}/{b}").as_str())))),

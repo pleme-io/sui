@@ -175,3 +175,85 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── Round 3 (discovery fan-out, 2026-07-18): profile 3 shapes, discover +
+;; try the cleanest lever per shape.  2 Proven (LANDED), 1 Deferred
+;; (soundness), plus the BIG-LEVER //-merge investigation → Discarded.
+
+;; ★ select-ident-token — PROVEN, LANDED (+12.6% on select-heavy).  `ident_text`
+;; walked the whole ident node's descendant span via `syntax().text()` (a
+;; SyntaxText Display over a rowan PreorderWithTokens cursor walk + NodeData
+;; allocs) on EVERY call — ~40% of the eval_select subtree.  Fix: fetch the
+;; single TOKEN_IDENT's text directly via `ident.ident_token().text()`, with a
+;; byte-identical fallback to the full walk for the `or` ident (lexed as a
+;; nested TOKEN_OR).  ReprSwap/ByteSufficient (same text → same key → same drv).
+;; WIDENS: every ident_text caller (idents, has-attr, attrset keys) inherits the
+;; cheap path.  NO source-id cache (a first source-id-cache attempt was caught
+;; UNSOUND — cross-source stale Symbol → InfiniteRecursion — and reverted).
+(defperf-lever
+  :name       "select-ident-token"
+  :attacks    ("ident-text-rowan-walk" "select-key-materialization")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Proven
+  :measured   Improved
+  :speedup-bp 1260
+  :ceiling    NotApplicable)
+
+;; ★ string-concat — PROVEN, LANDED (+16.5% on string-heavy).  The
+;; (String,String) arm of eval_binop's Add built the result with
+;; `format!("{}{}", a.chars, b.chars)` — the core::fmt runtime dispatch was the
+;; #1 self-time frame + grows the buffer twice.  Fix: one exact-capacity String
+;; + two push_str (reserve the final size once).  ByteSufficient (identical
+;; bytes + context).  Bonus: removes a `format!` — a TYPED EMISSION win too.
+(defperf-lever
+  :name       "string-concat"
+  :attacks    ("string-add-format-runtime")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Proven
+  :measured   Improved
+  :speedup-bp 1650
+  :ceiling    NotApplicable)
+
+;; attrset-symcache — measured +25.4% (attrset-construction) but HELD (Deferred),
+;; NOT landed.  It caches static attrset keys' Symbol by (source_id, offset) off
+;; CURRENT_SOURCE_ID — the SAME mechanism the select agent DEMONSTRATED can
+;; produce wrong bytes for a lazily-forced cross-source node.  It passes the full
+;; 1384-suite (incl the cross-source flake test), but a demonstrated failure of
+;; the mechanism is a real yellow flag; pending a source-id-soundness audit
+;; (why is it sound for ident-eval + attrset-construction but not select-
+;; traversal?).  Its single_attr + insert_sym parts are safe; a source-id-free
+;; rework is the follow-up.  Ceiling: PartialCorpus (the oracle can't prove the
+;; uncovered cross-source attrset case).
+(defperf-lever
+  :name       "attrset-symcache"
+  :attacks    ("attrset-static-key-materialization")
+  :technique  ResolutionChange
+  :proof-tier Rejected
+  :status     Deferred
+  :measured   Improved
+  :speedup-bp 2540
+  :ceiling    PartialCorpus)
+
+;; overlay-merge-structural — THE BIG LEVER, investigated + DISCARDED.  The
+;; //-merge LOOKED like 33-50% self-time on a synthetic //-tower smoke, but
+;; that shape is PATHOLOGICAL: docs/EVAL-CORE-DOMINANCE.md measures overlay-
+;; flatten at ≤2.1% of the REAL nixosSystem deep eval (82.5% cache-hit).  Three
+;; sub-levers proven dead by instrumentation + micro-bench: (A) in-place base-
+;; move NEVER fires (the bound accumulator retains the Rc — 0/505k uniquely
+;; owned, explaining overlay-base-move's neutral); (B) inert (right = 1 key/
+;; merge, base clone is 99%); (C) im_rc persistent map is a DOUBLE-LOSS TRAP
+;; (5-11× slower merge AND 1.1-3.4× slower lookup — the std flat-table memcpy is
+;; already near-optimal at realistic ≤300-key sizes).  Byte-parity held; all 3
+;; axes within noise → Neutral → Discarded.  REDIRECT: the marquee's real
+;; bottleneck is thunk-waste (51.8% never-forced) + retained HAMTs, NOT //-merge.
+(defperf-lever
+  :name       "overlay-merge-structural"
+  :attacks    ("overlay-flatten-base-clone")
+  :technique  ResolutionChange
+  :proof-tier Rejected
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    PersistentLazyDesign)
