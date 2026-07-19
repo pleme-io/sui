@@ -1048,6 +1048,30 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         Ok(v)
                     } else {
                         let name = ident_text(ident);
+                        // The `(src_id, text_offset)` identifier-symbol cache
+                        // (`intern_cached_with`) can hand back a STALE Symbol when
+                        // a lazily-forced thunk's identifier is resolved under a
+                        // force-time `CURRENT_SOURCE_ID` that differs from the
+                        // identifier's PARSE-time src_id — a thunk from file A can
+                        // be forced while B is the current source, so
+                        // `(B_src_id, offset)` aliases B's parse tree's identifier
+                        // at that same byte offset and returns ITS Symbol. (Proven
+                        // root: nixpkgs `lib/systems/parse.nix` `mkOptionType` — the
+                        // binding IS present in the env, but the cache returned
+                        // `Symbol(566)` while the binding was interned under
+                        // `Symbol(506)`, so `lookup_fast(566)` missed a defined
+                        // var.) `intern` is deterministic + append-only, so on a
+                        // miss re-intern the name from its text (the authoritative
+                        // Symbol) and retry the lexical lookup BEFORE considering
+                        // with-scopes or undefined. A genuinely undefined variable
+                        // is unaffected — its fresh lookup also misses and falls
+                        // through unchanged.
+                        let fresh = crate::value::intern(name.as_str());
+                        if fresh != sym {
+                            if let Some(v) = env.lookup_fast(fresh, name.as_str()) {
+                                return Ok(v);
+                            }
+                        }
                         if env.with_scope_count() > 0 {
                         // With-scope lookup failed (likely blackhole from fixpoint).
                         // Return a WithIdent thunk for deferred resolution.
