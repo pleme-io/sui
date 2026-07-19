@@ -266,6 +266,45 @@ fn nixos_system_empty_modules_terminates() {
     }
 }
 
+/// Regression guard for the cross-file SYMBOL-INTERNING COLLISION (the
+/// `parse.nix` `cannot select from null` / `undefined variable: 'attrValues'`
+/// bug): a thunk defined in an imported file, forced *after* `eval_with_file`
+/// restored the top-level `source_id`, must key its idents' `(source_id,
+/// offset)` symbol cache against the file the thunk was DEFINED in — not the
+/// ambient source at force time. Fixed by the source-id guard on `Thunk::force`
+/// (mirroring the eval-file guard). `lib.systems.elaborate` exercises exactly
+/// this cross-file lazy force; before the fix it raised `undefined variable`.
+/// Byte-identical to cppnix (`nix eval` gives the same string).
+#[test]
+fn systems_elaborate_cross_file_intern_parity() {
+    if common::skip_if_offline("cross_file_intern") {
+        return;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let nixpkgs_dir = std::path::PathBuf::from(home).join(
+        ".cache/sui/inputs/github-NixOS-nixpkgs-b77b3de/nixpkgs-b77b3de8775677f84492abe84635f87b0e153f0f",
+    );
+    if !nixpkgs_dir.exists() {
+        println!("skip: pinned nixpkgs source not in sui input cache");
+        return;
+    }
+    let expr = format!(
+        "((import {}/lib).systems.elaborate \"x86_64-linux\").config",
+        nixpkgs_dir.display(),
+    );
+    let value = sui_eval::eval(&expr)
+        .expect("elaborate must evaluate (no cross-file intern collision)");
+    let forced = sui_eval::eval::force_value(&value).expect("config forces");
+    match forced {
+        sui_eval::value::Value::String(s) => assert_eq!(
+            s.as_str(),
+            "x86_64-unknown-linux-gnu",
+            "elaborate .config must be byte-identical to cppnix",
+        ),
+        other => panic!("expected config string, got {}", other.type_name()),
+    }
+}
+
 // ── Marquee darwin proof — flake-input `outPath` store-materialization ─
 //
 // The darwin counterpart of the M2.6 nixosSystem proof surfaced its OWN

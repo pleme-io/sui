@@ -240,6 +240,29 @@ impl Drop for EvalFileGuard {
     }
 }
 
+/// Set `CURRENT_SOURCE_ID` to `id`, returning an RAII guard that restores
+/// the previous id on drop. Used at thunk force so a cross-file thunk's
+/// idents key the `(source_id, offset)` symbol cache against the file where
+/// the thunk was DEFINED, not the ambient source at force time — the sibling
+/// of the eval-file guard, closing the `parse.nix` cross-file collision.
+pub fn push_source_id(id: u32) -> SourceIdGuard {
+    let prev = CURRENT_SOURCE_ID.with(|s| {
+        let old = s.get();
+        s.set(id);
+        old
+    });
+    SourceIdGuard(prev)
+}
+
+/// RAII guard that restores the previous `CURRENT_SOURCE_ID` on drop.
+pub struct SourceIdGuard(u32);
+
+impl Drop for SourceIdGuard {
+    fn drop(&mut self) {
+        CURRENT_SOURCE_ID.with(|s| s.set(self.0));
+    }
+}
+
 // ── Path normalization ────────────────────────────────────────
 //
 // Normalize a path by removing `.` components and resolving `..`
@@ -524,6 +547,11 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
     };
     let mut env = Env::new();
     env.set_eval_file(file);
+    // Tag the env with THIS parse tree's source_id so a thunk created here
+    // and forced later (cross-file) restores this id on force (see the
+    // source-id guard in `Thunk::force`), keying `IDENT_CACHE` against the
+    // file where the thunk was defined.
+    env.set_source_id(src_id);
     builtins::register(&mut env);
     let result = eval_expr(&expr, &env).map_err(|e| attach_trace(e))?;
     // Force the top-level result so callers always see a concrete value.

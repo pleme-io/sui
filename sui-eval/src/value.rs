@@ -1649,6 +1649,15 @@ impl Thunk {
                 // *defined*, not where it is forced from. The RAII guard
                 // pops on drop (including on error paths).
                 let _file_guard = env.eval_file().cloned().map(crate::eval::push_eval_file);
+                // Restore the thunk's DEFINING source_id in lockstep with
+                // eval_file above, so idents evaluated in the thunk body key
+                // the `(source_id, offset)` symbol cache against the file the
+                // thunk was defined in — not the ambient source at force time.
+                // Without this a cross-file force (a lazy thunk from an
+                // imported file, forced after `eval_with_file` restored the
+                // top-level source_id) collides on a reused offset and returns
+                // a wrong Symbol (`parse.nix` `cannot select from null`).
+                let _srcid_guard = crate::eval::push_source_id(env.source_id());
                 // M2.6 Promise scope: bump the thread-local counter so
                 // downstream `eval_select` can soften `AttrNotFound`
                 // errors on the Promise's sentinel value to `null`.
@@ -2535,6 +2544,13 @@ struct EnvInner {
     /// literals (`./foo.nix`) inside function defaults that get
     /// evaluated *after* control has left the file scope.
     eval_file: Option<std::path::PathBuf>,
+    /// The `source_id` of the parse tree this env belongs to. Restored
+    /// on thunk force (in lockstep with `eval_file`) so a lazily-forced
+    /// thunk's idents key `IDENT_CACHE` against the file where the thunk
+    /// was DEFINED, not the ambient source at force time. Without this, a
+    /// cross-file force collides on `(source_id, text_offset)` and returns
+    /// a wrong Symbol (the `parse.nix` `cannot select from null` bug).
+    source_id: u32,
 }
 
 /// Evaluation environment — flattened binding map with structural sharing.
@@ -2561,6 +2577,7 @@ impl Env {
             bindings: FxHashMap::default(),
             with_scopes: Vec::new(),
             eval_file: None,
+            source_id: 0,
         }))
     }
 
@@ -2578,6 +2595,10 @@ impl Env {
             // path literals nested deep in let-chains still
             // resolve against the right directory.
             eval_file: self.0.eval_file.clone(),
+            // Children inherit the parent's source_id — a child scope is
+            // in the same parse tree as its parent (a new source_id only
+            // arises on `eval_with_file` for an imported file).
+            source_id: self.0.source_id,
         }))
     }
 
@@ -2622,6 +2643,18 @@ impl Env {
     /// Set the eval_file for this environment.
     pub fn set_eval_file(&mut self, file: Option<std::path::PathBuf>) {
         Rc::make_mut(&mut self.0).eval_file = file;
+    }
+
+    /// The `source_id` of the parse tree this env belongs to (0 = top level).
+    #[must_use]
+    pub fn source_id(&self) -> u32 {
+        self.0.source_id
+    }
+
+    /// Set the `source_id` for this environment (called by `eval_with_file`
+    /// for an imported parse tree).
+    pub fn set_source_id(&mut self, id: u32) {
+        Rc::make_mut(&mut self.0).source_id = id;
     }
 
     /// Number of direct bindings in this environment (debug).
