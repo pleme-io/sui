@@ -285,3 +285,33 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    PersistentLazyDesign)
+
+;; thunk-env-repr — the campaign's biggest swing (a cheaper thunk/Env memory
+;; representation), ESTIMATED + CLOSED as CAPPED (2026-07-18).  An exact dhat
+;; profile DISPROVED the premise: the dominant memory term is NOT
+;; Rc<ThunkInner> (2.7% bytes / 7.6% peak) nor Rc<EnvInner>/child (2.8% / 1.8%)
+;; — it is the im_rc HAMT-node COW on `Env::bind` under bind_param←apply
+;; (42.7% churn, 80.8% live peak: every lambda application clones a ~1KB HAMT
+;; chunk to insert one param), which is the flat-env project already
+;; /twin-reasoning-ruled-out (flattening → O(n) scope-push wrecks the 6.24M
+;; env_lookups).  Byte-safe upper bounds: thunk-repr ≤2.3% wall (72B is a cheap
+;; mimalloc small-block; shrink = same-size-class no-op); env-repr ≤~1% AND
+;; net-negative (ENV-RESOLVE M1 already measured a parent/positional-frame
+;; chain at +7% fib / +32-39% call-heavy — the frame ALLOC costs more than the
+;; interned-Symbol HAMT probe it removes).  Every candidate hits a PROVEN trap
+;; (parent-chain net-negative; whole-eval arena = RSS regression, no GC to
+;; free; slab/pool = allocator+Rc-touch, unproven).  The ~9× deep-recursion gap
+;; is the inherent PRICE of persistent-lazy GC-free design (Rc/call + Rc/arg +
+;; HAMT-COW/bind — what cppnix's tracing GC gets free).  REDIRECT: the profile
+;; surfaced the real next big lever — the ROWAN AST RE-WALK (40.7% bytes / 51%
+;; alloc-calls / 21% wall self-time; NodeData cursor re-allocation per node
+;; re-visit) — a SEPARATE AST-caching axis, NOT thunk/env repr.
+(defperf-lever
+  :name       "thunk-env-repr"
+  :attacks    ("env-hamt-cow-on-bind" "rc-thunkinner-per-thunk" "rc-envinner-per-child")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    PersistentLazyDesign)
