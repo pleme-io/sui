@@ -5,11 +5,47 @@
   # reconstructed to the full BuildSpec in pure Nix) — no crate2nix, no Cargo.nix.
   inputs.substrate.url = "github:pleme-io/substrate";
 
-  outputs = { substrate, ... }:
+  outputs = { self, substrate, ... }:
     let
       base = substrate.rust.workspace { src = ./.; member = "sui"; };
+
+      # dockerImage-amd64 output for the fleet's `ghcr.io/pleme-io/sui` image
+      # (image-release.yml + the super-cache-ci / camelot-builder / prewarmer /
+      # node-cache charts consume it). The substrate `rust` dispatcher exposes
+      # only tool|workspace|library|service|binary — none emits a dockerImage-*,
+      # and `service` is crate2nix-based (sui is gen-native). The image builder
+      # is the separate raw-import `tool-image-flake.nix`; on that path substrate
+      # does NOT pre-bind its inputs, so we thread them from `substrate.inputs`.
+      # genBuild=true keeps the gen lockfile-builder path (matches Cargo.gen.lock,
+      # no Cargo.nix); Entrypoint = /bin/sui (the tiered CLI); no Dockerfile
+      # (Pillar 8, dockerTools.buildLayeredImage). `src = self` carries .inputs.
+      imageFlake = (import "${substrate}/lib/build/rust/tool-image-flake.nix" {
+        nixpkgs = substrate.inputs.nixpkgs;
+        flake-utils = substrate.inputs.flake-utils;
+        fenix = substrate.inputs.fenix or null;
+      }) {
+        toolName = "sui";
+        src = self;
+        repo = "pleme-io/sui";
+        genBuild = true;
+        packageName = "sui";
+        architectures = [ "amd64" ];
+      };
+
+      # Deep-merge ONLY dockerImage-amd64 per system so the workspace's own
+      # crate-build packages in `base` are preserved (never clobbered).
+      mergedPackages = builtins.foldl'
+        (acc: sys: acc // {
+          ${sys} = (base.packages.${sys} or { }) // {
+            inherit (imageFlake.packages.${sys}) dockerImage-amd64;
+          };
+        })
+        (base.packages or { })
+        (builtins.attrNames imageFlake.packages);
     in
     base // {
+      packages = mergedPackages;
+
       # Re-attached after the bare substrate.rust.workspace migration (b1b9e09)
       # dropped the module trio. `overlays.default` + `packages` are still auto-emitted
       # by the builder; only the modules were lost. The fleet nix repo consumes
