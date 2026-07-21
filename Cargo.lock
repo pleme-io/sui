@@ -6700,6 +6700,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-ir"
+version = "0.1.136"
+dependencies = [
+ "gen-nix",
+ "proptest",
+ "rnix",
+ "rowan",
+ "sui-intern",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sui-nix-wrap"
 version = "0.1.136"
 dependencies = [

@@ -1,0 +1,26 @@
+[package]
+name = "sui-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "L3 lower-once flat IR for the sui evaluator — per source file one Program { exprs, spans } with ExprId(u32) indices, lowered from the rnix/rowan AST exactly once (docs/SPEED.md L3)"
+keywords = ["nix", "evaluator", "ir", "lowering", "compilers"]
+categories = ["compilers", "parser-implementations"]
+
+[dependencies]
+sui-intern.workspace = true
+rnix.workspace = true
+rowan.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The parity corpus generator (src/parity_corpus.rs, lifted verbatim via
+# #[path] in tests/differential.rs) builds its rows from the canonical typed
+# Nix AST — same crate the root workspace uses.
+gen-nix.workspace = true
+
+[lints.clippy]
+pedantic = "warn"

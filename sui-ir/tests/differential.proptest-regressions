@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c92b64b4494a94cfd52d802420bc842c0795d49fa621ab1f74d31a5bb8e80434 # shrinks to gen_expr = Apply(Int(0), Int(1))

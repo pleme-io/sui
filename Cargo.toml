@@ -8,6 +8,13 @@ members = [
     # re-intern. Fail-safe to Dynamic — parity-by-construction over the
     # identical im_rc map + identical lookup_fast fallback.
     "sui-resolve",
+    # L3 lower-once flat IR (SPEED.md L3). Per source file one
+    # `Program { exprs: Vec<Ir>, spans }` with `ExprId(u32)` indices,
+    # lowered from the rnix/rowan AST exactly once. This slice is the IR
+    # skeleton + total `lower()` + the rowan↔IR differential render
+    # harness only — no eval-through-IR yet (that is the next,
+    # separately-gated slice; dual-engine byte-diff is the flip gate).
+    "sui-ir",
     "sui-bytecode",
     "sui-cache",
     "sui-compat",
