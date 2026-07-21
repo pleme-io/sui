@@ -142,6 +142,18 @@ pub enum Technique {
     /// over a partial corpus → earns [`ProofTier::Rejected`].  (M1 this
     /// session: `positional-frames`; measured net-negative, discarded.)
     ResolutionChange,
+    /// Memoize an idempotent EXTERNAL query (a syscall, an OS lookup)
+    /// whose answer is stable under the evaluator's own frozen-inputs
+    /// assumption — the same assumption CppNix makes when it copies a
+    /// source tree to the store.  The observable value is identical by
+    /// that assumption, so a byte-identical corpus fully establishes it
+    /// (ByteSufficient) — but the ASSUMPTION must be named in the lever's
+    /// record, because it is where the class can go wrong (a tree mutated
+    /// mid-eval).  First instance: `canonicalize-memo` (2026-07-21) —
+    /// registration-time canonicalization of input read_dirs + a
+    /// success-only probe memo, after live-sampling showed 61% of the
+    /// eval thread inside `__getattrlist` via `realpath`.
+    MemoizeIdempotentQuery,
 }
 
 /// What proof a claim asserts is SUFFICIENT for parity — the session's
@@ -258,7 +270,8 @@ pub fn earned_tier(technique: Technique) -> ProofTier {
     match technique {
         Technique::ReprSwap
         | Technique::DropUnobservedOrder
-        | Technique::SkipRedundantStore => ProofTier::ByteSufficient,
+        | Technique::SkipRedundantStore
+        | Technique::MemoizeIdempotentQuery => ProofTier::ByteSufficient,
         Technique::HoistInvariant => ProofTier::CouplingProof,
         Technique::ForceOrderChange => ProofTier::ForceOrderProof,
         Technique::ResolutionChange => ProofTier::Rejected,
@@ -466,7 +479,9 @@ mod tests {
         // Proven, apply-trace-clone + force-roundtrip Discarded) + round-3
         // (select-ident-token + string-concat Proven, attrset-symcache Deferred,
         // overlay-merge-structural Discarded).
-        assert_eq!(levers.len(), 14, "this session's authored levers");
+        // +1 (2026-07-21): canonicalize-memo — the first MemoizeIdempotentQuery
+        // lever (the 61%-in-getattrlist live-sample root; Landed/Pending).
+        assert_eq!(levers.len(), 15, "authored levers");
     }
 
     #[test]

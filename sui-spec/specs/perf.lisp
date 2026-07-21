@@ -315,3 +315,31 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    PersistentLazyDesign)
+
+;; ── canonicalize-memo (2026-07-21) ─────────────────────────────────
+;; Found by SAMPLING THE LIVE cid marquee eval (/usr/bin/sample): 61% of
+;; the eval thread's wall-clock inside `__getattrlist` — macOS `realpath`
+;; issuing one metadata syscall per path component.  Root: `dematerialize`
+;; (called from EVERY path literal via eval_expr's Path arms) re-ran
+;; `read_dir.canonicalize()` inside its per-entry loop over ~60 registered
+;; flake inputs, on every call; `source_name_for_read_dir` same shape.
+;; Fix: canonicalize each read_dir ONCE at registration + a SUCCESS-ONLY
+;; probe memo (failures uncached so an IFD output that appears later still
+;; resolves).  The named frozen-inputs ASSUMPTION (the class's honesty
+;; condition per the Technique doc): registered trees are immutable
+;; fetcher caches; probe paths are frozen sources — the same assumption
+;; CppNix makes copying a tree to the store.
+;; Measured: syscall share 2143 -> 37 samples (61% -> ~2%) live, and
+;; parity 77/77 exit 0 post-fix.  Wall-clock delta honestly PENDING — the
+;; cid eval has NEVER completed (memory-bound at 25GB footprint), so no
+;; before/after wall number exists; recording Improved on the sample share
+;; alone would be the null-as-win mistake in a new costume.
+(defperf-lever
+  :name       "canonicalize-memo"
+  :attacks    ("realpath-per-path-literal" "read-dir-canon-per-lookup")
+  :technique  MemoizeIdempotentQuery
+  :proof-tier ByteSufficient
+  :status     Landed
+  :measured   Pending
+  :speedup-bp 0
+  :ceiling    NotApplicable)
