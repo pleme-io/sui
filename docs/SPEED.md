@@ -257,8 +257,19 @@ share's per-thunk term). Class: ReprSwap → ByteSufficient.
 > - **slice 2** (`fc3942a`): `eval_ir` over the pure subset — **2.5× vs the
 >   tree-walker** on the micro A/B (independently reproduced), ~463-expr
 >   differential, typed KnownGaps.
-> - **slice 3** (in flight): paths + `import` + a pure-builtins bridge +
->   a `ProgramCache`.
+> - **slice 3** (`fc3942a`): paths + `import` + a `ProgramCache` (lower-once) +
+>   36 builtins — **WARM lower-once = 3.0-3.4x**, cold ~neutral (honest).
+> - **slice 4** (v0.1.137 merge): pure-builtin surface completed (~50 more) +
+>   NIX_PATH search-paths + `tryEval` — **real nixpkgs `lib.*` evaluates through
+>   IR, 9/9 byte-match** (`recursiveUpdate`/`foldl'`/`splitVersion`/…). Allowlists
+>   shrank again (corpus 7->5, supplement 4->2). SCOPE CAVEAT (adversary-disclosed):
+>   version builtins reuse the SHARED `sui_compat` algorithm the walker also calls,
+>   so the differential proves IR==walker for those, not IR==CppNix-truth (the
+>   parity corpus owns that). FLAGGED for slice 5: the walker's M2.6 Promise-bridge
+>   softening of recursive-binding errors to partial values is a `(Val,Err)` class
+>   IR does not yet mirror — the foundation the module-system fixpoint needs.
+> - **slice 5** (next): rec-semantics parity — mirror the M2.6 Promise/Blackhole
+>   partial-value handling, the prerequisite for evaluating real `evalModules`.
 >
 > **KEYING BRIDGE — do not cement path-keying.** slice 3's `ProgramCache`
 > keys by **canonical path** as the pragmatic first cut. That is *interim*.
