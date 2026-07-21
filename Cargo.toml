@@ -236,7 +236,7 @@ flate2 = "1"
 tar = "0.4"
 
 # NATS (build agent mode)
-async-nats = "0.38"
+async-nats = "0.50"
 
 # Streaming
 tokio-stream = "0.1"
@@ -282,7 +282,7 @@ imbl = "5"
 # Daemon hot cache — bounded LRU keyed by `GraphHash`. Used by
 # graph_server to keep N most-recently-touched blobs hot in RAM so
 # repeat lookups bypass the mmap path.
-lru = "0.12"
+lru = "0.16"
 
 # Cheap byte ownership for daemon ↔ codec ↔ store handoff.
 bytes = "1"
