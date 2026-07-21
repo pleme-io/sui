@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "ade2ccc04bb2a16ae16c6d9b8f2ee9cf82cfb302a5e78b43f085cb6122d95697",
+  "cargo_lock_sha256": "c149a541cf7cf9034132f184bd9c8dfa9c9505d20c9a0aa2f2c11bd8d04d346a",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25598,6 +25598,16 @@
       "sui-ir-0.1.139": {
         "runtime_dependencies": [
           {
+            "name": "md5",
+            "package_key": "md-5-0.10.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "regex",
             "package_key": "regex-1.12.4",
             "kind": "normal",
@@ -25648,6 +25658,26 @@
             "tree": "target"
           },
           {
+            "name": "sha1",
+            "package_key": "sha1-0.10.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha2",
+            "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "sui_compat",
             "package_key": "sui-compat-0.1.139",
             "kind": "normal",
@@ -25660,6 +25690,16 @@
           {
             "name": "sui_intern",
             "package_key": "sui-intern-0.1.139",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_spec",
+            "package_key": "sui-spec-0.1.139",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
