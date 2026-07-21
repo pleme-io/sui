@@ -483,7 +483,9 @@ mod tests {
         // lever (the 61%-in-getattrlist live-sample root; Landed/Pending).
         // +1 (2026-07-21): sym-keyed-attrs — lever 1 of the 20s campaign
         // (interner cluster 27-39% -> <=6.7% measured; Landed/Pending).
-        assert_eq!(levers.len(), 16, "authored levers");
+        // +1 (2026-07-21): path-memo — L2 tried + honestly Discarded
+        // (NoImprovement on two harnesses; residual noted for post-S6).
+        assert_eq!(levers.len(), 17, "authored levers");
     }
 
     #[test]

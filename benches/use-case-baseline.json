@@ -12,7 +12,9 @@
       "sui_cold_s": 35.2,
       "sui_warm_s": 0.03,
       "byte_identical": true,
-      "note": "warm = eval-cache hit, clean-rev-keyed, --no-vm only"
+      "note": "warm = eval-cache hit, clean-rev-keyed, --no-vm only",
+      "sui_cold_s_post_582cede": 23.7,
+      "note_history": "35.2s was recorded under recon load 07-20; 22.8-24.5s measured quiet 07-21 post lever-1"
     },
     "U04_nixpkgs_hello_drvPath": {
       "nix_cold_s": 12.8,
@@ -26,7 +28,9 @@
         "sites": 39163,
         "top_retention": "im_rc HAMT Node<(Symbol,Value)> make_mut/clone (captured Env chains) + RcInner<ThunkInner>",
         "top_churn": "im_rc HAMT make_mut (env COW-per-bind) + rowan::cursor::NodeData (AST re-walk)"
-      }
+      },
+      "sui_plain_wall_s": 1.54,
+      "headline": "sui 1.54s vs nix warm 2.2s \u2014 sui ~1.4x FASTER on the classic leaf, byte-identical, 3 runs"
     },
     "U10_cid_toplevel": {
       "nix": {

@@ -367,3 +367,28 @@
   :measured   Pending
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── path-memo L2 (2026-07-21, tried + DISCARDED same session) ──────
+;; SPEED.md L2 targeted the ~5% std::path::Components cluster with memos
+;; on normalize/canon_abs (pure string fns — trivially sound).  Interleaved
+;; A/B, TWO harnesses, byte-identical outputs throughout: hello.drvPath
+;; (5 rounds: +9/+17/-9/+13/-35ms on ~1.55s = noise) and the kataFleet
+;; flake eval (3 rounds: -0.03/+0.06/+0.06s on ~23.7s = noise).  Measured
+;; NoImprovement -> Discarded per the overlay-base-move precedent (never
+;; ship a no-win on the sacred path).  HONEST RESIDUAL: neither harness
+;; registers cid-scale flake inputs (~60), so the cluster's real home may
+;; be the materialize/dematerialize strip_prefix loops that only a
+;; completing cid eval exercises — L2 may return post-S6 with that
+;; harness.  Session bonus datum recorded in the baseline: kataFleet cold
+;; measured 22.8-24.5s today post-582cede (recorded prior: 35.2s under
+;; recon load) — suggestive of sym-keyed-attrs' wall effect on U02, not
+;; claimed as its A/B.
+(defperf-lever
+  :name       "path-memo"
+  :attacks    ("path-components-parse" "canon-abs-parse")
+  :technique  MemoizeIdempotentQuery
+  :proof-tier ByteSufficient
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    NotApplicable)
