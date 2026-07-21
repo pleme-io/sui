@@ -1,7 +1,7 @@
 {
   "version": 10,
   "workspace": {
-    "root": "/Users/drzzln/code/github/pleme-io/sui/.claude/worktrees/ir-l3-slice3",
+    "root": "/Users/drzzln/code/github/pleme-io/sui",
     "members": [
       {
         "name": "sui-intern",

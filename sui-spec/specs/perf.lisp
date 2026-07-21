@@ -478,13 +478,27 @@
 ;; 12→4 (search-path ×2, legacy-let ×2); closed seed grew ~90 rows.  File
 ;; A/B (release, interleaved ×5, 300 evals/round, ab_file.nix importing
 ;; lib.nix + dir/, byte-agreeing result): walker 134-147ms/round vs
-;; ir-cold (ALL caches cleared per eval — pays parse+lower each time)
-;; 110-115ms (~1.2×) vs ir-warm (programs cached, value cache cleared —
-;; every file's code re-runs, lower-once amortized) 41-44ms → 3.0-3.4×
-;; (+220% → 22000 bp; round-0 warm outlier 93ms recorded as warmup).
-;; Micro A/B re-run this slice: 2.54-2.61× (slice-2's 2.49-2.57× held).
-;; HONEST SCOPE: dual-engine harness numbers over the pure subset; the
-;; engine is still wired into nothing (Proposed, not Landed); the
+;; ir-cold (ALL caches cleared per eval — pays parse+lower each time) vs
+;; ir-warm (programs cached, value cache cleared — every file's code
+;; re-runs, lower-once amortized) 41-44ms → 3.0-3.4× (+220% → 22000 bp;
+;; round-0 warm outlier 93ms recorded as warmup).  Micro A/B re-run this
+;; slice: 2.54-2.61× (slice-2's 2.49-2.57× held).
+;; :speedup-bp is the WARM number — the lever's actual thesis (lower once,
+;; eval many).  COLD is DELIBERATELY NOT the claim: the adversarial re-run
+;; measured cold at 0.95-1.3× (one round SLOWER than the walker) — within
+;; round-to-round noise, i.e. parse+lower cost ≈ the rowan-rewalk it saves
+;; on a first eval.  Cold neutrality is expected and honest; the win is
+;; the amortized re-eval the warm-daemon/incremental case delivers.
+;; TWO TEST-COVERAGE FOLLOW-UPS the adversary named (recorded, not blocking
+;; a Proposed row): (a) per-builtin kill-power is thin — ~1 differential
+;; row kills an elemAt off-by-one, and the proptest generator has no
+;; builtin-application node, so ≥2 rows/builtin (value + OOB/error) or a
+;; generator extension is owed before the --ir flip trusts the 36 natives;
+;; (b) adopt the ProgramCache byte-mutation probe (overwrite the cached
+;; file, confirm the stale Program still serves) as a permanent test — the
+;; shipped len-stability assertion alone would miss a re-parse-same-key
+;; regression.  HONEST SCOPE: dual-engine harness numbers over the pure
+;; subset; the engine is wired into nothing (Proposed, not Landed); the
 ;; string-interpolated-path copy-to-store coercion stays a typed gap
 ;; (Unsupported("path-copy-to-store") — needs the store).
 (defperf-lever
