@@ -2092,20 +2092,31 @@
         "preBuild": "export CARGO_CRATE_NAME=async_io;"
       }
     },
-    "async-nats-0.38.0": {
+    "async-nats-0.50.0": {
       "name": "async-nats",
-      "version": "0.38.0",
+      "version": "0.50.0",
       "edition": "2021",
       "source": {
         "kind": "registry",
-        "url": "https://static.crates.io/crates/async-nats/async-nats-0.38.0.crate",
-        "sha256": "76433c4de73442daedb3a59e991d94e85c14ebfc33db53dfcd347a21cd6ef4f8",
-        "name_with_ext": "async-nats-0.38.0.tar.gz"
+        "url": "https://static.crates.io/crates/async-nats/async-nats-0.50.0.crate",
+        "sha256": "d83a251fa1a4c9d0fe6e816b7acd60549e473e08d14f27a1d992c2675abff05f",
+        "name_with_ext": "async-nats-0.50.0.tar.gz"
       },
       "features": [
+        "crypto",
         "default",
+        "jetstream",
+        "kv",
+        "nkeys",
+        "nuid",
+        "object-store",
         "ring",
-        "server_2_10"
+        "server_2_10",
+        "server_2_11",
+        "server_2_12",
+        "server_2_14",
+        "service",
+        "websockets"
       ],
       "proc_macro": false,
       "build_script": null,
@@ -2119,7 +2130,7 @@
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2136,10 +2147,11 @@
           "tree": "target"
         },
         {
-          "name": "futures",
-          "package_key": "futures-0.3.32",
+          "name": "futures_util",
+          "package_key": "futures-util-0.3.32",
           "kind": "normal",
           "features": [
+            "sink",
             "std"
           ],
           "uses_default_features": false,
@@ -2163,7 +2175,7 @@
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2173,17 +2185,7 @@
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "once_cell",
-          "package_key": "once_cell-1.21.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2209,7 +2211,7 @@
         },
         {
           "name": "rand",
-          "package_key": "rand-0.8.6",
+          "package_key": "rand-0.10.2",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -2239,7 +2241,7 @@
         },
         {
           "name": "rustls_native_certs",
-          "package_key": "rustls-native-certs-0.7.3",
+          "package_key": "rustls-native-certs-0.8.4",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -2248,8 +2250,8 @@
           "tree": "target"
         },
         {
-          "name": "rustls_pemfile",
-          "package_key": "rustls-pemfile-2.2.0",
+          "name": "rustls_pki_types",
+          "package_key": "rustls-pki-types-1.15.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -2258,11 +2260,11 @@
           "tree": "target"
         },
         {
-          "name": "webpki",
-          "package_key": "rustls-webpki-0.102.8",
+          "name": "rustls_webpki",
+          "package_key": "rustls-webpki-0.103.13",
           "kind": "normal",
           "features": [],
-          "uses_default_features": true,
+          "uses_default_features": false,
           "optional": false,
           "target": null,
           "tree": "target"
@@ -2295,7 +2297,7 @@
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2311,7 +2313,7 @@
         },
         {
           "name": "thiserror",
-          "package_key": "thiserror-1.0.69",
+          "package_key": "thiserror-2.0.18",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -2330,7 +2332,7 @@
             "serde-well-known"
           ],
           "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2363,12 +2365,36 @@
           "tree": "target"
         },
         {
+          "name": "tokio_stream",
+          "package_key": "tokio-stream-0.1.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
           "name": "tokio_util",
           "package_key": "tokio-util-0.7.18",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
           "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tokio_websockets",
+          "package_key": "tokio-websockets-0.10.1",
+          "kind": "normal",
+          "features": [
+            "client",
+            "rand",
+            "rustls-webpki-roots"
+          ],
+          "uses_default_features": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2388,7 +2414,7 @@
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
-          "optional": false,
+          "optional": true,
           "target": null,
           "tree": "target"
         },
@@ -2405,6 +2431,12 @@
       ],
       "build_dependencies": [],
       "crate_renames": {
+        "futures-util": [
+          {
+            "version": "0.3.32",
+            "rename": "futures_util"
+          }
+        ],
         "pin-project": [
           {
             "version": "1.1.13",
@@ -2419,20 +2451,20 @@
         ],
         "rustls-native-certs": [
           {
-            "version": "0.7.3",
+            "version": "0.8.4",
             "rename": "rustls_native_certs"
           }
         ],
-        "rustls-pemfile": [
+        "rustls-pki-types": [
           {
-            "version": "2.2.0",
-            "rename": "rustls_pemfile"
+            "version": "1.15.0",
+            "rename": "rustls_pki_types"
           }
         ],
         "rustls-webpki": [
           {
-            "version": "0.102.8",
-            "rename": "webpki"
+            "version": "0.103.13",
+            "rename": "rustls_webpki"
           }
         ],
         "tokio-rustls": [
@@ -2441,23 +2473,52 @@
             "rename": "tokio_rustls"
           }
         ],
+        "tokio-stream": [
+          {
+            "version": "0.1.18",
+            "rename": "tokio_stream"
+          }
+        ],
         "tokio-util": [
           {
             "version": "0.7.18",
             "rename": "tokio_util"
           }
+        ],
+        "tokio-websockets": [
+          {
+            "version": "0.10.1",
+            "rename": "tokio_websockets"
+          }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "async-nats",
-        "version": "0.38.0",
+        "version": "0.50.0",
         "edition": "2021",
         "features": [
+          "crypto",
           "default",
+          "jetstream",
+          "kv",
+          "nkeys",
+          "nuid",
+          "object-store",
           "ring",
-          "server_2_10"
+          "server_2_10",
+          "server_2_11",
+          "server_2_12",
+          "server_2_14",
+          "service",
+          "websockets"
         ],
         "crateRenames": {
+          "futures-util": [
+            {
+              "version": "0.3.32",
+              "rename": "futures_util"
+            }
+          ],
           "pin-project": [
             {
               "version": "1.1.13",
@@ -2472,20 +2533,20 @@
           ],
           "rustls-native-certs": [
             {
-              "version": "0.7.3",
+              "version": "0.8.4",
               "rename": "rustls_native_certs"
             }
           ],
-          "rustls-pemfile": [
+          "rustls-pki-types": [
             {
-              "version": "2.2.0",
-              "rename": "rustls_pemfile"
+              "version": "1.15.0",
+              "rename": "rustls_pki_types"
             }
           ],
           "rustls-webpki": [
             {
-              "version": "0.102.8",
-              "rename": "webpki"
+              "version": "0.103.13",
+              "rename": "rustls_webpki"
             }
           ],
           "tokio-rustls": [
@@ -2494,10 +2555,22 @@
               "rename": "tokio_rustls"
             }
           ],
+          "tokio-stream": [
+            {
+              "version": "0.1.18",
+              "rename": "tokio_stream"
+            }
+          ],
           "tokio-util": [
             {
               "version": "0.7.18",
               "rename": "tokio_util"
+            }
+          ],
+          "tokio-websockets": [
+            {
+              "version": "0.10.1",
+              "rename": "tokio_websockets"
             }
           ]
         },
@@ -6001,6 +6074,74 @@
         "edition": "2018",
         "release": true,
         "preBuild": "export CARGO_CRATE_NAME=cfg_aliases;"
+      }
+    },
+    "chacha20-0.10.1": {
+      "name": "chacha20",
+      "version": "0.10.1",
+      "edition": "2024",
+      "source": {
+        "kind": "registry",
+        "url": "https://static.crates.io/crates/chacha20/chacha20-0.10.1.crate",
+        "sha256": "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81",
+        "name_with_ext": "chacha20-0.10.1.tar.gz"
+      },
+      "features": [
+        "rng"
+      ],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [],
+      "lib_target": null,
+      "runtime_dependencies": [
+        {
+          "name": "cfg_if",
+          "package_key": "cfg-if-1.0.4",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "rand_core",
+          "package_key": "rand_core-0.10.1",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": false,
+          "optional": true,
+          "target": null,
+          "tree": "target"
+        }
+      ],
+      "build_dependencies": [],
+      "crate_renames": {
+        "cfg-if": [
+          {
+            "version": "1.0.4",
+            "rename": "cfg_if"
+          }
+        ]
+      },
+      "build_rust_crate_args": {
+        "crateName": "chacha20",
+        "version": "0.10.1",
+        "edition": "2024",
+        "features": [
+          "rng"
+        ],
+        "crateRenames": {
+          "cfg-if": [
+            {
+              "version": "1.0.4",
+              "rename": "cfg_if"
+            }
+          ]
+        },
+        "release": true,
+        "preBuild": "export CARGO_CRATE_NAME=chacha20;"
       }
     },
     "chrono-0.4.45": {
@@ -13258,7 +13399,10 @@
         "sha256": "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
         "name_with_ext": "getrandom-0.4.3.tar.gz"
       },
-      "features": [],
+      "features": [
+        "std",
+        "sys_rng"
+      ],
       "proc_macro": false,
       "build_script": "build.rs",
       "links": null,
@@ -13354,6 +13498,16 @@
           "optional": false,
           "target": "cfg(target_os = \"vxworks\")",
           "tree": "target"
+        },
+        {
+          "name": "rand_core",
+          "package_key": "rand_core-0.10.1",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": true,
+          "target": null,
+          "tree": "target"
         }
       ],
       "build_dependencies": [],
@@ -13369,6 +13523,10 @@
         "crateName": "getrandom",
         "version": "0.4.3",
         "edition": "2024",
+        "features": [
+          "std",
+          "sys_rng"
+        ],
         "crateRenames": {
           "cfg-if": [
             {
@@ -28734,15 +28892,15 @@
         "preBuild": "export CARGO_CRATE_NAME=log;"
       }
     },
-    "lru-0.12.5": {
+    "lru-0.16.4": {
       "name": "lru",
-      "version": "0.12.5",
+      "version": "0.16.4",
       "edition": "2015",
       "source": {
         "kind": "registry",
-        "url": "https://static.crates.io/crates/lru/lru-0.12.5.crate",
-        "sha256": "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38",
-        "name_with_ext": "lru-0.12.5.tar.gz"
+        "url": "https://static.crates.io/crates/lru/lru-0.16.4.crate",
+        "sha256": "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39",
+        "name_with_ext": "lru-0.16.4.tar.gz"
       },
       "features": [
         "default",
@@ -28756,7 +28914,7 @@
       "runtime_dependencies": [
         {
           "name": "hashbrown",
-          "package_key": "hashbrown-0.15.5",
+          "package_key": "hashbrown-0.16.1",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -28769,7 +28927,7 @@
       "crate_renames": {},
       "build_rust_crate_args": {
         "crateName": "lru",
-        "version": "0.12.5",
+        "version": "0.16.4",
         "edition": "2015",
         "features": [
           "default",
@@ -32105,33 +32263,6 @@
         "release": true,
         "procMacro": true,
         "preBuild": "export CARGO_CRATE_NAME=openssl_macros;"
-      }
-    },
-    "openssl-probe-0.1.6": {
-      "name": "openssl-probe",
-      "version": "0.1.6",
-      "edition": "2021",
-      "source": {
-        "kind": "registry",
-        "url": "https://static.crates.io/crates/openssl-probe/openssl-probe-0.1.6.crate",
-        "sha256": "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e",
-        "name_with_ext": "openssl-probe-0.1.6.tar.gz"
-      },
-      "features": [],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [],
-      "lib_target": null,
-      "runtime_dependencies": [],
-      "build_dependencies": [],
-      "crate_renames": {},
-      "build_rust_crate_args": {
-        "crateName": "openssl-probe",
-        "version": "0.1.6",
-        "edition": "2021",
-        "release": true,
-        "preBuild": "export CARGO_CRATE_NAME=openssl_probe;"
       }
     },
     "openssl-probe-0.2.1": {
@@ -36122,6 +36253,81 @@
         "preBuild": "export CARGO_CRATE_NAME=rancor;"
       }
     },
+    "rand-0.10.2": {
+      "name": "rand",
+      "version": "0.10.2",
+      "edition": "2024",
+      "source": {
+        "kind": "registry",
+        "url": "https://static.crates.io/crates/rand/rand-0.10.2.crate",
+        "sha256": "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80",
+        "name_with_ext": "rand-0.10.2.tar.gz"
+      },
+      "features": [
+        "alloc",
+        "default",
+        "std",
+        "std_rng",
+        "sys_rng",
+        "thread_rng"
+      ],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [],
+      "lib_target": null,
+      "runtime_dependencies": [
+        {
+          "name": "chacha20",
+          "package_key": "chacha20-0.10.1",
+          "kind": "normal",
+          "features": [
+            "rng"
+          ],
+          "uses_default_features": false,
+          "optional": true,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "getrandom",
+          "package_key": "getrandom-0.4.3",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": true,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "rand_core",
+          "package_key": "rand_core-0.10.1",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": false,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        }
+      ],
+      "build_dependencies": [],
+      "crate_renames": {},
+      "build_rust_crate_args": {
+        "crateName": "rand",
+        "version": "0.10.2",
+        "edition": "2024",
+        "features": [
+          "alloc",
+          "default",
+          "std",
+          "std_rng",
+          "sys_rng",
+          "thread_rng"
+        ],
+        "release": true,
+        "preBuild": "export CARGO_CRATE_NAME=rand;"
+      }
+    },
     "rand-0.8.6": {
       "name": "rand",
       "version": "0.8.6",
@@ -36404,6 +36610,33 @@
         },
         "release": true,
         "preBuild": "export CARGO_CRATE_NAME=rand_chacha;"
+      }
+    },
+    "rand_core-0.10.1": {
+      "name": "rand_core",
+      "version": "0.10.1",
+      "edition": "2024",
+      "source": {
+        "kind": "registry",
+        "url": "https://static.crates.io/crates/rand_core/rand_core-0.10.1.crate",
+        "sha256": "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69",
+        "name_with_ext": "rand_core-0.10.1.tar.gz"
+      },
+      "features": [],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [],
+      "lib_target": null,
+      "runtime_dependencies": [],
+      "build_dependencies": [],
+      "crate_renames": {},
+      "build_rust_crate_args": {
+        "crateName": "rand_core",
+        "version": "0.10.1",
+        "edition": "2024",
+        "release": true,
+        "preBuild": "export CARGO_CRATE_NAME=rand_core;"
       }
     },
     "rand_core-0.6.4": {
@@ -40025,115 +40258,6 @@
         "preBuild": "export CARGO_CRATE_NAME=rustls;"
       }
     },
-    "rustls-native-certs-0.7.3": {
-      "name": "rustls-native-certs",
-      "version": "0.7.3",
-      "edition": "2021",
-      "source": {
-        "kind": "registry",
-        "url": "https://static.crates.io/crates/rustls-native-certs/rustls-native-certs-0.7.3.crate",
-        "sha256": "e5bfb394eeed242e909609f56089eecfe5fda225042e8b171791b9c95f5931e5",
-        "name_with_ext": "rustls-native-certs-0.7.3.tar.gz"
-      },
-      "features": [],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [],
-      "lib_target": null,
-      "runtime_dependencies": [
-        {
-          "name": "rustls_pemfile",
-          "package_key": "rustls-pemfile-2.2.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "pki_types",
-          "package_key": "rustls-pki-types-1.15.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "security_framework",
-          "package_key": "security-framework-2.11.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": "cfg(target_os = \"macos\")",
-          "tree": "target"
-        }
-      ],
-      "build_dependencies": [],
-      "crate_renames": {
-        "openssl-probe": [
-          {
-            "version": "0.1.6",
-            "rename": "openssl_probe"
-          }
-        ],
-        "rustls-pemfile": [
-          {
-            "version": "2.2.0",
-            "rename": "rustls_pemfile"
-          }
-        ],
-        "rustls-pki-types": [
-          {
-            "version": "1.15.0",
-            "rename": "pki_types"
-          }
-        ],
-        "security-framework": [
-          {
-            "version": "2.11.1",
-            "rename": "security_framework"
-          }
-        ]
-      },
-      "build_rust_crate_args": {
-        "crateName": "rustls-native-certs",
-        "version": "0.7.3",
-        "edition": "2021",
-        "crateRenames": {
-          "openssl-probe": [
-            {
-              "version": "0.1.6",
-              "rename": "openssl_probe"
-            }
-          ],
-          "rustls-pemfile": [
-            {
-              "version": "2.2.0",
-              "rename": "rustls_pemfile"
-            }
-          ],
-          "rustls-pki-types": [
-            {
-              "version": "1.15.0",
-              "rename": "pki_types"
-            }
-          ],
-          "security-framework": [
-            {
-              "version": "2.11.1",
-              "rename": "security_framework"
-            }
-          ]
-        },
-        "release": true,
-        "preBuild": "export CARGO_CRATE_NAME=rustls_native_certs;"
-      }
-    },
     "rustls-native-certs-0.8.4": {
       "name": "rustls-native-certs",
       "version": "0.8.4",
@@ -40221,66 +40345,6 @@
         },
         "release": true,
         "preBuild": "export CARGO_CRATE_NAME=rustls_native_certs;"
-      }
-    },
-    "rustls-pemfile-2.2.0": {
-      "name": "rustls-pemfile",
-      "version": "2.2.0",
-      "edition": "2018",
-      "source": {
-        "kind": "registry",
-        "url": "https://static.crates.io/crates/rustls-pemfile/rustls-pemfile-2.2.0.crate",
-        "sha256": "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50",
-        "name_with_ext": "rustls-pemfile-2.2.0.tar.gz"
-      },
-      "features": [
-        "default",
-        "std"
-      ],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [],
-      "lib_target": null,
-      "runtime_dependencies": [
-        {
-          "name": "pki_types",
-          "package_key": "rustls-pki-types-1.15.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        }
-      ],
-      "build_dependencies": [],
-      "crate_renames": {
-        "rustls-pki-types": [
-          {
-            "version": "1.15.0",
-            "rename": "pki_types"
-          }
-        ]
-      },
-      "build_rust_crate_args": {
-        "crateName": "rustls-pemfile",
-        "version": "2.2.0",
-        "edition": "2018",
-        "features": [
-          "default",
-          "std"
-        ],
-        "crateRenames": {
-          "rustls-pki-types": [
-            {
-              "version": "1.15.0",
-              "rename": "pki_types"
-            }
-          ]
-        },
-        "release": true,
-        "preBuild": "export CARGO_CRATE_NAME=rustls_pemfile;"
       }
     },
     "rustls-pki-types-1.15.0": {
@@ -40497,95 +40561,6 @@
         },
         "release": true,
         "preBuild": "export CARGO_CRATE_NAME=rustls_platform_verifier;"
-      }
-    },
-    "rustls-webpki-0.102.8": {
-      "name": "rustls-webpki",
-      "version": "0.102.8",
-      "edition": "2021",
-      "source": {
-        "kind": "registry",
-        "url": "https://static.crates.io/crates/rustls-webpki/rustls-webpki-0.102.8.crate",
-        "sha256": "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9",
-        "name_with_ext": "rustls-webpki-0.102.8.tar.gz"
-      },
-      "features": [
-        "alloc",
-        "default",
-        "ring",
-        "std"
-      ],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [],
-      "lib_target": {
-        "name": "webpki",
-        "path": "src/lib.rs"
-      },
-      "runtime_dependencies": [
-        {
-          "name": "ring",
-          "package_key": "ring-0.17.14",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": false,
-          "optional": true,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "pki_types",
-          "package_key": "rustls-pki-types-1.15.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": false,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "untrusted",
-          "package_key": "untrusted-0.9.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        }
-      ],
-      "build_dependencies": [],
-      "crate_renames": {
-        "rustls-pki-types": [
-          {
-            "version": "1.15.0",
-            "rename": "pki_types"
-          }
-        ]
-      },
-      "build_rust_crate_args": {
-        "crateName": "rustls-webpki",
-        "version": "0.102.8",
-        "edition": "2021",
-        "features": [
-          "alloc",
-          "default",
-          "ring",
-          "std"
-        ],
-        "crateRenames": {
-          "rustls-pki-types": [
-            {
-              "version": "1.15.0",
-              "rename": "pki_types"
-            }
-          ]
-        },
-        "release": true,
-        "libName": "webpki",
-        "libPath": "src/lib.rs",
-        "preBuild": "export CARGO_CRATE_NAME=webpki;"
       }
     },
     "rustls-webpki-0.103.13": {
@@ -42755,136 +42730,6 @@
         "preBuild": "export CARGO_CRATE_NAME=seahash;"
       }
     },
-    "security-framework-2.11.1": {
-      "name": "security-framework",
-      "version": "2.11.1",
-      "edition": "2021",
-      "source": {
-        "kind": "registry",
-        "url": "https://static.crates.io/crates/security-framework/security-framework-2.11.1.crate",
-        "sha256": "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02",
-        "name_with_ext": "security-framework-2.11.1.tar.gz"
-      },
-      "features": [
-        "OSX_10_10",
-        "OSX_10_11",
-        "OSX_10_12",
-        "OSX_10_9",
-        "default"
-      ],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [],
-      "lib_target": null,
-      "runtime_dependencies": [
-        {
-          "name": "bitflags",
-          "package_key": "bitflags-2.13.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "core_foundation",
-          "package_key": "core-foundation-0.9.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "core_foundation_sys",
-          "package_key": "core-foundation-sys-0.8.7",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "libc",
-          "package_key": "libc-0.2.186",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "security_framework_sys",
-          "package_key": "security-framework-sys-2.17.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": false,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        }
-      ],
-      "build_dependencies": [],
-      "crate_renames": {
-        "core-foundation": [
-          {
-            "version": "0.9.4",
-            "rename": "core_foundation"
-          }
-        ],
-        "core-foundation-sys": [
-          {
-            "version": "0.8.7",
-            "rename": "core_foundation_sys"
-          }
-        ],
-        "security-framework-sys": [
-          {
-            "version": "2.17.0",
-            "rename": "security_framework_sys"
-          }
-        ]
-      },
-      "build_rust_crate_args": {
-        "crateName": "security-framework",
-        "version": "2.11.1",
-        "edition": "2021",
-        "features": [
-          "OSX_10_10",
-          "OSX_10_11",
-          "OSX_10_12",
-          "OSX_10_9",
-          "default"
-        ],
-        "crateRenames": {
-          "core-foundation": [
-            {
-              "version": "0.9.4",
-              "rename": "core_foundation"
-            }
-          ],
-          "core-foundation-sys": [
-            {
-              "version": "0.8.7",
-              "rename": "core_foundation_sys"
-            }
-          ],
-          "security-framework-sys": [
-            {
-              "version": "2.17.0",
-              "rename": "security_framework_sys"
-            }
-          ]
-        },
-        "release": true,
-        "preBuild": "export CARGO_CRATE_NAME=security_framework;"
-      }
-    },
     "security-framework-3.7.0": {
       "name": "security-framework",
       "version": "3.7.0",
@@ -43024,11 +42869,7 @@
         "name_with_ext": "security-framework-sys-2.17.0.tar.gz"
       },
       "features": [
-        "OSX_10_10",
-        "OSX_10_11",
-        "OSX_10_12",
         "OSX_10_13",
-        "OSX_10_9",
         "default"
       ],
       "proc_macro": false,
@@ -43072,11 +42913,7 @@
         "version": "2.17.0",
         "edition": "2021",
         "features": [
-          "OSX_10_10",
-          "OSX_10_11",
-          "OSX_10_12",
           "OSX_10_13",
-          "OSX_10_9",
           "default"
         ],
         "crateRenames": {
@@ -48455,9 +48292,9 @@
         "preBuild": "export CARGO_CRATE_NAME=subtle;"
       }
     },
-    "sui-0.1.130": {
+    "sui-0.1.136": {
       "name": "sui",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -48507,7 +48344,7 @@
         },
         {
           "name": "async_nats",
-          "package_key": "async-nats-0.38.0",
+          "package_key": "async-nats-0.50.0",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48656,7 +48493,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.130",
+          "package_key": "sui-build-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48666,7 +48503,7 @@
         },
         {
           "name": "sui_bytecode",
-          "package_key": "sui-bytecode-0.1.130",
+          "package_key": "sui-bytecode-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48676,7 +48513,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48686,7 +48523,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48696,7 +48533,7 @@
         },
         {
           "name": "sui_daemon",
-          "package_key": "sui-daemon-0.1.130",
+          "package_key": "sui-daemon-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48706,7 +48543,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.130",
+          "package_key": "sui-eval-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48716,7 +48553,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.130",
+          "package_key": "sui-intern-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48726,7 +48563,7 @@
         },
         {
           "name": "sui_orchestrate",
-          "package_key": "sui-orchestrate-0.1.130",
+          "package_key": "sui-orchestrate-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48736,7 +48573,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48746,7 +48583,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48756,7 +48593,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.130",
+          "package_key": "sui-supercacheci-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -48899,7 +48736,7 @@
         ],
         "async-nats": [
           {
-            "version": "0.38.0",
+            "version": "0.50.0",
             "rename": "async_nats"
           }
         ],
@@ -48923,67 +48760,67 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_build"
           }
         ],
         "sui-bytecode": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_bytecode"
           }
         ],
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-daemon": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_daemon"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_eval"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_intern"
           }
         ],
         "sui-orchestrate": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_orchestrate"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_supercacheci"
           }
         ],
@@ -49008,7 +48845,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "features": [
           "default",
@@ -49031,7 +48868,7 @@
           ],
           "async-nats": [
             {
-              "version": "0.38.0",
+              "version": "0.50.0",
               "rename": "async_nats"
             }
           ],
@@ -49055,67 +48892,67 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_build"
             }
           ],
           "sui-bytecode": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_bytecode"
             }
           ],
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-daemon": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_daemon"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_eval"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_intern"
             }
           ],
           "sui-orchestrate": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_orchestrate"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_supercacheci"
             }
           ],
@@ -49144,9 +48981,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui;"
       }
     },
-    "sui-bigorna-0.1.130": {
+    "sui-bigorna-0.1.136": {
       "name": "sui-bigorna",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49213,7 +49050,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49223,7 +49060,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.130",
+          "package_key": "sui-dockerfile-wrapper-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49246,31 +49083,31 @@
       "crate_renames": {
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_dockerfile_wrapper"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-bigorna",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_dockerfile_wrapper"
             }
           ]
@@ -49281,9 +49118,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_bigorna;"
       }
     },
-    "sui-build-0.1.130": {
+    "sui-build-0.1.136": {
       "name": "sui-build",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49341,7 +49178,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49351,7 +49188,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49408,20 +49245,20 @@
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-build",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "aho-corasick": [
@@ -49438,13 +49275,13 @@
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ]
@@ -49455,9 +49292,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_build;"
       }
     },
-    "sui-bytecode-0.1.130": {
+    "sui-bytecode-0.1.136": {
       "name": "sui-bytecode",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49515,7 +49352,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49525,7 +49362,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.130",
+          "package_key": "sui-intern-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49535,7 +49372,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49558,43 +49395,43 @@
       "crate_renames": {
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_intern"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-bytecode",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_intern"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ]
@@ -49605,9 +49442,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_bytecode;"
       }
     },
-    "sui-cache-0.1.130": {
+    "sui-cache-0.1.136": {
       "name": "sui-cache",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49729,7 +49566,7 @@
         },
         {
           "name": "sui_castore",
-          "package_key": "sui-castore-0.1.130",
+          "package_key": "sui-castore-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49739,7 +49576,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -49806,20 +49643,20 @@
         ],
         "sui-castore": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_castore"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-cache",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "features": [
           "default",
@@ -49841,13 +49678,13 @@
           ],
           "sui-castore": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_castore"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ]
@@ -49858,9 +49695,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_cache;"
       }
     },
-    "sui-cache-eval-0.1.130": {
+    "sui-cache-eval-0.1.136": {
       "name": "sui-cache-eval",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -49940,7 +49777,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-cache-eval",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "dirs-next": [
@@ -49956,9 +49793,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_cache_eval;"
       }
     },
-    "sui-castore-0.1.130": {
+    "sui-castore-0.1.136": {
       "name": "sui-castore",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50070,7 +49907,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50121,14 +49958,14 @@
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-castore",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "features": [
           "default",
@@ -50144,7 +49981,7 @@
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ]
@@ -50155,9 +49992,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_castore;"
       }
     },
-    "sui-compat-0.1.130": {
+    "sui-compat-0.1.136": {
       "name": "sui-compat",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50266,7 +50103,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-compat",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "ed25519-dalek": [
@@ -50288,9 +50125,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_compat;"
       }
     },
-    "sui-daemon-0.1.130": {
+    "sui-daemon-0.1.136": {
       "name": "sui-daemon",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50348,7 +50185,7 @@
         },
         {
           "name": "lru",
-          "package_key": "lru-0.12.5",
+          "package_key": "lru-0.16.4",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50390,7 +50227,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.130",
+          "package_key": "sui-build-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50400,7 +50237,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50410,7 +50247,7 @@
         },
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.130",
+          "package_key": "sui-daemon-frame-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50420,7 +50257,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.130",
+          "package_key": "sui-eval-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50430,7 +50267,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50440,7 +50277,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.130",
+          "package_key": "sui-protocol-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50450,7 +50287,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50511,50 +50348,50 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_build"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-daemon-frame": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_eval"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ],
         "sui-protocol": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_protocol"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -50565,43 +50402,43 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_build"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-daemon-frame": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_eval"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ],
           "sui-protocol": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_protocol"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ]
@@ -50612,9 +50449,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon;"
       }
     },
-    "sui-daemon-client-0.1.130": {
+    "sui-daemon-client-0.1.136": {
       "name": "sui-daemon-client",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50632,7 +50469,7 @@
       "runtime_dependencies": [
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.130",
+          "package_key": "sui-daemon-frame-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50642,7 +50479,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50652,7 +50489,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.130",
+          "package_key": "sui-protocol-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50703,43 +50540,43 @@
       "crate_renames": {
         "sui-daemon-frame": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ],
         "sui-protocol": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_protocol"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-client",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-daemon-frame": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ],
           "sui-protocol": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_protocol"
             }
           ]
@@ -50750,9 +50587,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_client;"
       }
     },
-    "sui-daemon-frame-0.1.130": {
+    "sui-daemon-frame-0.1.136": {
       "name": "sui-daemon-frame",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50784,7 +50621,7 @@
         },
         {
           "name": "sui_protocol",
-          "package_key": "sui-protocol-0.1.130",
+          "package_key": "sui-protocol-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50830,19 +50667,19 @@
       "crate_renames": {
         "sui-protocol": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_protocol"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-frame",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-protocol": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_protocol"
             }
           ]
@@ -50853,9 +50690,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_frame;"
       }
     },
-    "sui-daemon-graph-0.1.130": {
+    "sui-daemon-graph-0.1.136": {
       "name": "sui-daemon-graph",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -50899,7 +50736,7 @@
         },
         {
           "name": "sui_daemon",
-          "package_key": "sui-daemon-0.1.130",
+          "package_key": "sui-daemon-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50909,7 +50746,7 @@
         },
         {
           "name": "sui_daemon_frame",
-          "package_key": "sui-daemon-frame-0.1.130",
+          "package_key": "sui-daemon-frame-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50919,7 +50756,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -50979,19 +50816,19 @@
       "crate_renames": {
         "sui-daemon": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_daemon"
           }
         ],
         "sui-daemon-frame": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_daemon_frame"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ],
@@ -51004,24 +50841,24 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-daemon-graph",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-daemon": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_daemon"
             }
           ],
           "sui-daemon-frame": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_daemon_frame"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ],
@@ -51036,9 +50873,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_daemon_graph;"
       }
     },
-    "sui-dockerfile-node-cache-daemon-0.1.130": {
+    "sui-dockerfile-node-cache-daemon-0.1.136": {
       "name": "sui-dockerfile-node-cache-daemon",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51093,7 +50930,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51166,7 +51003,7 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
@@ -51179,7 +51016,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-node-cache-daemon",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51190,7 +51027,7 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
@@ -51207,9 +51044,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_node_cache_daemon;"
       }
     },
-    "sui-dockerfile-prewarmer-0.1.130": {
+    "sui-dockerfile-prewarmer-0.1.136": {
       "name": "sui-dockerfile-prewarmer",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51348,7 +51185,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51358,7 +51195,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.130",
+          "package_key": "sui-dockerfile-wrapper-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51368,7 +51205,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51378,7 +51215,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.130",
+          "package_key": "sui-supercacheci-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51466,25 +51303,25 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_dockerfile_wrapper"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_supercacheci"
           }
         ],
@@ -51497,7 +51334,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-prewarmer",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51526,25 +51363,25 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_dockerfile_wrapper"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_supercacheci"
             }
           ],
@@ -51561,9 +51398,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_prewarmer;"
       }
     },
-    "sui-dockerfile-verify-0.1.130": {
+    "sui-dockerfile-verify-0.1.136": {
       "name": "sui-dockerfile-verify",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51613,7 +51450,7 @@
         },
         {
           "name": "sui_dockerfile_wrapper",
-          "package_key": "sui-dockerfile-wrapper-0.1.130",
+          "package_key": "sui-dockerfile-wrapper-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51646,19 +51483,19 @@
       "crate_renames": {
         "sui-dockerfile-wrapper": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_dockerfile_wrapper"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-verify",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-dockerfile-wrapper": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_dockerfile_wrapper"
             }
           ]
@@ -51669,9 +51506,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_verify;"
       }
     },
-    "sui-dockerfile-wrapper-0.1.130": {
+    "sui-dockerfile-wrapper-0.1.136": {
       "name": "sui-dockerfile-wrapper",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -51736,7 +51573,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51746,7 +51583,7 @@
         },
         {
           "name": "sui_dockerfile_node_cache_daemon",
-          "package_key": "sui-dockerfile-node-cache-daemon-0.1.130",
+          "package_key": "sui-dockerfile-node-cache-daemon-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51756,7 +51593,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -51814,26 +51651,26 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
         "sui-dockerfile-node-cache-daemon": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_dockerfile_node_cache_daemon"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-dockerfile-wrapper",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -51844,19 +51681,19 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
           "sui-dockerfile-node-cache-daemon": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_dockerfile_node_cache_daemon"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ]
@@ -51867,9 +51704,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_dockerfile_wrapper;"
       }
     },
-    "sui-eval-0.1.130": {
+    "sui-eval-0.1.136": {
       "name": "sui-eval",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52118,7 +51955,7 @@
         },
         {
           "name": "sui_bytecode",
-          "package_key": "sui-bytecode-0.1.130",
+          "package_key": "sui-bytecode-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52128,7 +51965,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52138,7 +51975,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52148,7 +51985,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.130",
+          "package_key": "sui-intern-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52158,7 +51995,7 @@
         },
         {
           "name": "sui_resolve",
-          "package_key": "sui-resolve-0.1.130",
+          "package_key": "sui-resolve-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52168,7 +52005,7 @@
         },
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52178,7 +52015,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52277,50 +52114,50 @@
         ],
         "sui-bytecode": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_bytecode"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ],
         "sui-intern": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_intern"
           }
         ],
         "sui-resolve": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_resolve"
           }
         ],
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-eval",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "data-encoding": [
@@ -52349,43 +52186,43 @@
           ],
           "sui-bytecode": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_bytecode"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ],
           "sui-intern": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_intern"
             }
           ],
           "sui-resolve": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_resolve"
             }
           ],
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ]
@@ -52396,9 +52233,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_eval;"
       }
     },
-    "sui-graph-store-0.1.130": {
+    "sui-graph-store-0.1.136": {
       "name": "sui-graph-store",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52510,7 +52347,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-graph-store",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "data-encoding": [
@@ -52526,9 +52363,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_graph_store;"
       }
     },
-    "sui-intern-0.1.130": {
+    "sui-intern-0.1.136": {
       "name": "sui-intern",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52576,7 +52413,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-intern",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "rustc-hash": [
@@ -52592,9 +52429,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_intern;"
       }
     },
-    "sui-nix-wrap-0.1.130": {
+    "sui-nix-wrap-0.1.136": {
       "name": "sui-nix-wrap",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52614,7 +52451,7 @@
       "runtime_dependencies": [
         {
           "name": "sui_spec",
-          "package_key": "sui-spec-0.1.130",
+          "package_key": "sui-spec-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52627,19 +52464,19 @@
       "crate_renames": {
         "sui-spec": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_spec"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-nix-wrap",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-spec": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_spec"
             }
           ]
@@ -52648,9 +52485,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_nix_wrap;"
       }
     },
-    "sui-orchestrate-0.1.130": {
+    "sui-orchestrate-0.1.136": {
       "name": "sui-orchestrate",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -52796,7 +52633,7 @@
         },
         {
           "name": "sui_build",
-          "package_key": "sui-build-0.1.130",
+          "package_key": "sui-build-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52806,7 +52643,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52816,7 +52653,7 @@
         },
         {
           "name": "sui_eval",
-          "package_key": "sui-eval-0.1.130",
+          "package_key": "sui-eval-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52826,7 +52663,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52836,7 +52673,7 @@
         },
         {
           "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.130",
+          "package_key": "sui-supercacheci-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -52912,38 +52749,38 @@
         ],
         "sui-build": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_build"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-eval": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_eval"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ],
         "sui-supercacheci": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_supercacheci"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-orchestrate",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -52972,31 +52809,31 @@
           ],
           "sui-build": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_build"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-eval": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_eval"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ],
           "sui-supercacheci": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_supercacheci"
             }
           ]
@@ -53007,9 +52844,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_orchestrate;"
       }
     },
-    "sui-protocol-0.1.130": {
+    "sui-protocol-0.1.136": {
       "name": "sui-protocol",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53061,7 +52898,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53084,19 +52921,19 @@
       "crate_renames": {
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-protocol",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ]
@@ -53107,9 +52944,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_protocol;"
       }
     },
-    "sui-registry-0.1.130": {
+    "sui-registry-0.1.136": {
       "name": "sui-registry",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53216,7 +53053,7 @@
         },
         {
           "name": "sui_castore",
-          "package_key": "sui-castore-0.1.130",
+          "package_key": "sui-castore-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53226,7 +53063,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53296,13 +53133,13 @@
         ],
         "sui-castore": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_castore"
           }
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
@@ -53315,7 +53152,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-registry",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -53332,13 +53169,13 @@
           ],
           "sui-castore": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_castore"
             }
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
@@ -53355,9 +53192,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_registry;"
       }
     },
-    "sui-resolve-0.1.130": {
+    "sui-resolve-0.1.136": {
       "name": "sui-resolve",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53405,7 +53242,7 @@
         },
         {
           "name": "sui_intern",
-          "package_key": "sui-intern-0.1.130",
+          "package_key": "sui-intern-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53424,14 +53261,14 @@
         ],
         "sui-intern": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_intern"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-resolve",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "rustc-hash": [
@@ -53442,7 +53279,7 @@
           ],
           "sui-intern": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_intern"
             }
           ]
@@ -53453,9 +53290,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_resolve;"
       }
     },
-    "sui-spec-0.1.130": {
+    "sui-spec-0.1.136": {
       "name": "sui-spec",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53618,7 +53455,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53691,7 +53528,7 @@
       "crate_renames": {
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
@@ -53710,12 +53547,12 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-spec",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
@@ -53738,9 +53575,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_spec;"
       }
     },
-    "sui-store-0.1.130": {
+    "sui-store-0.1.136": {
       "name": "sui-store",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -53867,7 +53704,7 @@
         },
         {
           "name": "sui_compat",
-          "package_key": "sui-compat-0.1.130",
+          "package_key": "sui-compat-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53877,7 +53714,7 @@
         },
         {
           "name": "sui_graph_store",
-          "package_key": "sui-graph-store-0.1.130",
+          "package_key": "sui-graph-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -53966,20 +53803,20 @@
         ],
         "sui-compat": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_compat"
           }
         ],
         "sui-graph-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_graph_store"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "sui-store",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "features": [
           "default",
@@ -54012,13 +53849,13 @@
           ],
           "sui-compat": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_compat"
             }
           ],
           "sui-graph-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_graph_store"
             }
           ]
@@ -54029,9 +53866,9 @@
         "preBuild": "export CARGO_CRATE_NAME=sui_store;"
       }
     },
-    "sui-supercacheci-0.1.130": {
+    "sui-supercacheci-0.1.136": {
       "name": "sui-supercacheci",
-      "version": "0.1.130",
+      "version": "0.1.136",
       "edition": "2024",
       "source": {
         "kind": "path",
@@ -54091,7 +53928,7 @@
         },
         {
           "name": "sui_cache",
-          "package_key": "sui-cache-0.1.130",
+          "package_key": "sui-cache-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -54101,7 +53938,7 @@
         },
         {
           "name": "sui_store",
-          "package_key": "sui-store-0.1.130",
+          "package_key": "sui-store-0.1.136",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -54150,13 +53987,13 @@
         ],
         "sui-cache": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_cache"
           }
         ],
         "sui-store": [
           {
-            "version": "0.1.130",
+            "version": "0.1.136",
             "rename": "sui_store"
           }
         ],
@@ -54175,7 +54012,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "sui-supercacheci",
-        "version": "0.1.130",
+        "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
           "async-trait": [
@@ -54186,13 +54023,13 @@
           ],
           "sui-cache": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_cache"
             }
           ],
           "sui-store": [
             {
-              "version": "0.1.130",
+              "version": "0.1.136",
               "rename": "sui_store"
             }
           ],
@@ -56988,7 +56825,7 @@
         "client",
         "rand",
         "ring",
-        "rustls-native-roots"
+        "rustls-webpki-roots"
       ],
       "proc_macro": false,
       "build_script": null,
@@ -57082,16 +56919,6 @@
           "tree": "target"
         },
         {
-          "name": "rustls_native_certs",
-          "package_key": "rustls-native-certs-0.8.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": false,
-          "optional": true,
-          "target": null,
-          "tree": "target"
-        },
-        {
           "name": "rustls_pki_types",
           "package_key": "rustls-pki-types-1.15.0",
           "kind": "normal",
@@ -57133,6 +56960,16 @@
           "optional": false,
           "target": null,
           "tree": "target"
+        },
+        {
+          "name": "webpki_roots",
+          "package_key": "webpki-roots-0.26.11",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": false,
+          "optional": true,
+          "target": null,
+          "tree": "target"
         }
       ],
       "build_dependencies": [],
@@ -57147,12 +56984,6 @@
           {
             "version": "0.3.32",
             "rename": "futures_sink"
-          }
-        ],
-        "rustls-native-certs": [
-          {
-            "version": "0.8.4",
-            "rename": "rustls_native_certs"
           }
         ],
         "rustls-pki-types": [
@@ -57172,6 +57003,12 @@
             "version": "0.7.18",
             "rename": "tokio_util"
           }
+        ],
+        "webpki-roots": [
+          {
+            "version": "0.26.11",
+            "rename": "webpki_roots"
+          }
         ]
       },
       "build_rust_crate_args": {
@@ -57182,7 +57019,7 @@
           "client",
           "rand",
           "ring",
-          "rustls-native-roots"
+          "rustls-webpki-roots"
         ],
         "crateRenames": {
           "futures-core": [
@@ -57195,12 +57032,6 @@
             {
               "version": "0.3.32",
               "rename": "futures_sink"
-            }
-          ],
-          "rustls-native-certs": [
-            {
-              "version": "0.8.4",
-              "rename": "rustls_native_certs"
             }
           ],
           "rustls-pki-types": [
@@ -57219,6 +57050,12 @@
             {
               "version": "0.7.18",
               "rename": "tokio_util"
+            }
+          ],
+          "webpki-roots": [
+            {
+              "version": "0.26.11",
+              "rename": "webpki_roots"
             }
           ]
         },
@@ -62386,35 +62223,35 @@
       }
     }
   },
-  "root_crate": "sui-0.1.130",
+  "root_crate": "sui-0.1.136",
   "workspace_members": [
-    "sui-intern-0.1.130",
-    "sui-resolve-0.1.130",
-    "sui-bytecode-0.1.130",
-    "sui-compat-0.1.130",
-    "sui-spec-0.1.130",
-    "sui-eval-0.1.130",
-    "sui-graph-store-0.1.130",
-    "sui-store-0.1.130",
-    "sui-cache-0.1.130",
-    "sui-castore-0.1.130",
-    "sui-build-0.1.130",
-    "sui-daemon-0.1.130",
-    "sui-daemon-frame-0.1.130",
-    "sui-protocol-0.1.130",
-    "sui-daemon-client-0.1.130",
-    "sui-orchestrate-0.1.130",
-    "sui-supercacheci-0.1.130",
-    "sui-cache-eval-0.1.130",
-    "sui-nix-wrap-0.1.130",
-    "sui-daemon-graph-0.1.130",
-    "sui-dockerfile-wrapper-0.1.130",
-    "sui-dockerfile-node-cache-daemon-0.1.130",
-    "sui-dockerfile-prewarmer-0.1.130",
-    "sui-dockerfile-verify-0.1.130",
-    "sui-bigorna-0.1.130",
-    "sui-registry-0.1.130",
-    "sui-0.1.130"
+    "sui-intern-0.1.136",
+    "sui-resolve-0.1.136",
+    "sui-bytecode-0.1.136",
+    "sui-compat-0.1.136",
+    "sui-spec-0.1.136",
+    "sui-eval-0.1.136",
+    "sui-graph-store-0.1.136",
+    "sui-store-0.1.136",
+    "sui-cache-0.1.136",
+    "sui-castore-0.1.136",
+    "sui-build-0.1.136",
+    "sui-daemon-0.1.136",
+    "sui-daemon-frame-0.1.136",
+    "sui-protocol-0.1.136",
+    "sui-daemon-client-0.1.136",
+    "sui-orchestrate-0.1.136",
+    "sui-supercacheci-0.1.136",
+    "sui-cache-eval-0.1.136",
+    "sui-nix-wrap-0.1.136",
+    "sui-daemon-graph-0.1.136",
+    "sui-dockerfile-wrapper-0.1.136",
+    "sui-dockerfile-node-cache-daemon-0.1.136",
+    "sui-dockerfile-prewarmer-0.1.136",
+    "sui-dockerfile-verify-0.1.136",
+    "sui-bigorna-0.1.136",
+    "sui-registry-0.1.136",
+    "sui-0.1.136"
   ],
   "flake_metadata": {
     "sui": {
@@ -63560,7 +63397,7 @@
         ],
         "features": []
       },
-      "async-nats-0.38.0": {
+      "async-nats-0.50.0": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -63568,7 +63405,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63585,10 +63422,11 @@
             "tree": "target"
           },
           {
-            "name": "futures",
-            "package_key": "futures-0.3.32",
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
             "kind": "normal",
             "features": [
+              "sink",
               "std"
             ],
             "uses_default_features": false,
@@ -63612,7 +63450,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63622,17 +63460,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "once_cell",
-            "package_key": "once_cell-1.21.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63658,7 +63486,7 @@
           },
           {
             "name": "rand",
-            "package_key": "rand-0.8.6",
+            "package_key": "rand-0.10.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -63688,7 +63516,7 @@
           },
           {
             "name": "rustls_native_certs",
-            "package_key": "rustls-native-certs-0.7.3",
+            "package_key": "rustls-native-certs-0.8.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -63697,8 +63525,8 @@
             "tree": "target"
           },
           {
-            "name": "rustls_pemfile",
-            "package_key": "rustls-pemfile-2.2.0",
+            "name": "rustls_pki_types",
+            "package_key": "rustls-pki-types-1.15.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -63707,11 +63535,11 @@
             "tree": "target"
           },
           {
-            "name": "webpki",
-            "package_key": "rustls-webpki-0.102.8",
+            "name": "rustls_webpki",
+            "package_key": "rustls-webpki-0.103.13",
             "kind": "normal",
             "features": [],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -63744,7 +63572,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63760,7 +63588,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-1.0.69",
+            "package_key": "thiserror-2.0.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -63779,7 +63607,7 @@
               "serde-well-known"
             ],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63812,12 +63640,36 @@
             "tree": "target"
           },
           {
+            "name": "tokio_stream",
+            "package_key": "tokio-stream-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "tokio_util",
             "package_key": "tokio-util-0.7.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
             "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_websockets",
+            "package_key": "tokio-websockets-0.10.1",
+            "kind": "normal",
+            "features": [
+              "client",
+              "rand",
+              "rustls-webpki-roots"
+            ],
+            "uses_default_features": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63837,7 +63689,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -63854,9 +63706,20 @@
         ],
         "build_dependencies": [],
         "features": [
+          "crypto",
           "default",
+          "jetstream",
+          "kv",
+          "nkeys",
+          "nuid",
+          "object-store",
           "ring",
-          "server_2_10"
+          "server_2_10",
+          "server_2_11",
+          "server_2_12",
+          "server_2_14",
+          "service",
+          "websockets"
         ]
       },
       "async-stream-0.3.6": {
@@ -68694,10 +68557,23 @@
             "optional": false,
             "target": "cfg(target_os = \"vxworks\")",
             "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "std",
+          "sys_rng"
+        ]
       },
       "gix-0.83.0": {
         "runtime_dependencies": [
@@ -75892,11 +75768,11 @@
           "std"
         ]
       },
-      "lru-0.12.5": {
+      "lru-0.16.4": {
         "runtime_dependencies": [
           {
             "name": "hashbrown",
-            "package_key": "hashbrown-0.15.5",
+            "package_key": "hashbrown-0.16.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -79095,6 +78971,51 @@
           "alloc"
         ]
       },
+      "rand-0.10.2": {
+        "runtime_dependencies": [
+          {
+            "name": "chacha20",
+            "package_key": "chacha20-0.10.1",
+            "kind": "normal",
+            "features": [
+              "rng"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "getrandom",
+            "package_key": "getrandom-0.4.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "std",
+          "std_rng",
+          "sys_rng",
+          "thread_rng"
+        ]
+      },
       "rand-0.8.6": {
         "runtime_dependencies": [
           {
@@ -79234,6 +79155,11 @@
         "features": [
           "std"
         ]
+      },
+      "rand_core-0.10.1": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "rand_core-0.6.4": {
         "runtime_dependencies": [
@@ -81072,25 +80998,6 @@
           "tls12"
         ]
       },
-      "rustls-pemfile-2.2.0": {
-        "runtime_dependencies": [
-          {
-            "name": "pki_types",
-            "package_key": "rustls-pki-types-1.15.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "default",
-          "std"
-        ]
-      },
       "rustls-pki-types-1.15.0": {
         "runtime_dependencies": [
           {
@@ -81111,47 +81018,6 @@
           "std",
           "web",
           "web-time"
-        ]
-      },
-      "rustls-webpki-0.102.8": {
-        "runtime_dependencies": [
-          {
-            "name": "ring",
-            "package_key": "ring-0.17.14",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "pki_types",
-            "package_key": "rustls-pki-types-1.15.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "untrusted",
-            "package_key": "untrusted-0.9.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "alloc",
-          "default",
-          "ring",
-          "std"
         ]
       },
       "rustls-webpki-0.103.13": {
@@ -85535,7 +85401,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-0.1.130": {
+      "sui-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_graphql",
@@ -85561,7 +85427,7 @@
           },
           {
             "name": "async_nats",
-            "package_key": "async-nats-0.38.0",
+            "package_key": "async-nats-0.50.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85710,7 +85576,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.130",
+            "package_key": "sui-build-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85720,7 +85586,7 @@
           },
           {
             "name": "sui_bytecode",
-            "package_key": "sui-bytecode-0.1.130",
+            "package_key": "sui-bytecode-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85730,7 +85596,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85740,7 +85606,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85750,7 +85616,7 @@
           },
           {
             "name": "sui_daemon",
-            "package_key": "sui-daemon-0.1.130",
+            "package_key": "sui-daemon-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85760,7 +85626,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.130",
+            "package_key": "sui-eval-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85770,7 +85636,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.130",
+            "package_key": "sui-intern-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85780,7 +85646,7 @@
           },
           {
             "name": "sui_orchestrate",
-            "package_key": "sui-orchestrate-0.1.130",
+            "package_key": "sui-orchestrate-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85790,7 +85656,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85800,7 +85666,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85810,7 +85676,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.130",
+            "package_key": "sui-supercacheci-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -85945,7 +85811,7 @@
           "tiered"
         ]
       },
-      "sui-bigorna-0.1.130": {
+      "sui-bigorna-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "clap",
@@ -85993,7 +85859,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86003,7 +85869,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.130",
+            "package_key": "sui-dockerfile-wrapper-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86025,7 +85891,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-build-0.1.130": {
+      "sui-build-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "aho_corasick",
@@ -86069,7 +85935,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86079,7 +85945,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86123,7 +85989,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-bytecode-0.1.130": {
+      "sui-bytecode-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "rnix",
@@ -86167,7 +86033,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86177,7 +86043,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.130",
+            "package_key": "sui-intern-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86187,7 +86053,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86209,7 +86075,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-cache-0.1.130": {
+      "sui-cache-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86313,7 +86179,7 @@
           },
           {
             "name": "sui_castore",
-            "package_key": "sui-castore-0.1.130",
+            "package_key": "sui-castore-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86323,7 +86189,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86381,7 +86247,7 @@
           "redis-client"
         ]
       },
-      "sui-cache-eval-0.1.130": {
+      "sui-cache-eval-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -86439,7 +86305,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-castore-0.1.130": {
+      "sui-castore-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86533,7 +86399,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86581,7 +86447,7 @@
           "redis-client"
         ]
       },
-      "sui-compat-0.1.130": {
+      "sui-compat-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -86662,7 +86528,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-0.1.130": {
+      "sui-daemon-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -86706,7 +86572,7 @@
           },
           {
             "name": "lru",
-            "package_key": "lru-0.12.5",
+            "package_key": "lru-0.16.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86748,7 +86614,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.130",
+            "package_key": "sui-build-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86758,7 +86624,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86768,7 +86634,7 @@
           },
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.130",
+            "package_key": "sui-daemon-frame-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86778,7 +86644,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.130",
+            "package_key": "sui-eval-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86788,7 +86654,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86798,7 +86664,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.130",
+            "package_key": "sui-protocol-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86808,7 +86674,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86862,11 +86728,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-client-0.1.130": {
+      "sui-daemon-client-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.130",
+            "package_key": "sui-daemon-frame-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86876,7 +86742,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86886,7 +86752,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.130",
+            "package_key": "sui-protocol-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86936,7 +86802,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-frame-0.1.130": {
+      "sui-daemon-frame-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "rkyv",
@@ -86954,7 +86820,7 @@
           },
           {
             "name": "sui_protocol",
-            "package_key": "sui-protocol-0.1.130",
+            "package_key": "sui-protocol-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -86999,7 +86865,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-daemon-graph-0.1.130": {
+      "sui-daemon-graph-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -87027,7 +86893,7 @@
           },
           {
             "name": "sui_daemon",
-            "package_key": "sui-daemon-0.1.130",
+            "package_key": "sui-daemon-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87037,7 +86903,7 @@
           },
           {
             "name": "sui_daemon_frame",
-            "package_key": "sui-daemon-frame-0.1.130",
+            "package_key": "sui-daemon-frame-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87047,7 +86913,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87106,7 +86972,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-node-cache-daemon-0.1.130": {
+      "sui-dockerfile-node-cache-daemon-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -87142,7 +87008,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87208,7 +87074,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-prewarmer-0.1.130": {
+      "sui-dockerfile-prewarmer-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -87328,7 +87194,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87338,7 +87204,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.130",
+            "package_key": "sui-dockerfile-wrapper-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87348,7 +87214,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87358,7 +87224,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.130",
+            "package_key": "sui-supercacheci-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87421,7 +87287,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-verify-0.1.130": {
+      "sui-dockerfile-verify-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -87457,7 +87323,7 @@
           },
           {
             "name": "sui_dockerfile_wrapper",
-            "package_key": "sui-dockerfile-wrapper-0.1.130",
+            "package_key": "sui-dockerfile-wrapper-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87489,7 +87355,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-dockerfile-wrapper-0.1.130": {
+      "sui-dockerfile-wrapper-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -87535,7 +87401,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87545,7 +87411,7 @@
           },
           {
             "name": "sui_dockerfile_node_cache_daemon",
-            "package_key": "sui-dockerfile-node-cache-daemon-0.1.130",
+            "package_key": "sui-dockerfile-node-cache-daemon-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87555,7 +87421,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87606,7 +87472,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-eval-0.1.130": {
+      "sui-eval-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -87841,7 +87707,7 @@
           },
           {
             "name": "sui_bytecode",
-            "package_key": "sui-bytecode-0.1.130",
+            "package_key": "sui-bytecode-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87851,7 +87717,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87861,7 +87727,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87871,7 +87737,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.130",
+            "package_key": "sui-intern-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87881,7 +87747,7 @@
           },
           {
             "name": "sui_resolve",
-            "package_key": "sui-resolve-0.1.130",
+            "package_key": "sui-resolve-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87891,7 +87757,7 @@
           },
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87901,7 +87767,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -87975,7 +87841,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-graph-store-0.1.130": {
+      "sui-graph-store-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -88065,7 +87931,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-intern-0.1.130": {
+      "sui-intern-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -88091,11 +87957,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-nix-wrap-0.1.130": {
+      "sui-nix-wrap-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "sui_spec",
-            "package_key": "sui-spec-0.1.130",
+            "package_key": "sui-spec-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88107,7 +87973,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-orchestrate-0.1.130": {
+      "sui-orchestrate-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88239,7 +88105,7 @@
           },
           {
             "name": "sui_build",
-            "package_key": "sui-build-0.1.130",
+            "package_key": "sui-build-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88249,7 +88115,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88259,7 +88125,7 @@
           },
           {
             "name": "sui_eval",
-            "package_key": "sui-eval-0.1.130",
+            "package_key": "sui-eval-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88269,7 +88135,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88279,7 +88145,7 @@
           },
           {
             "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.130",
+            "package_key": "sui-supercacheci-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88330,7 +88196,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-protocol-0.1.130": {
+      "sui-protocol-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -88368,7 +88234,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88390,7 +88256,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-registry-0.1.130": {
+      "sui-registry-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88478,7 +88344,7 @@
           },
           {
             "name": "sui_castore",
-            "package_key": "sui-castore-0.1.130",
+            "package_key": "sui-castore-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88488,7 +88354,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88545,7 +88411,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-resolve-0.1.130": {
+      "sui-resolve-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "rnix",
@@ -88579,7 +88445,7 @@
           },
           {
             "name": "sui_intern",
-            "package_key": "sui-intern-0.1.130",
+            "package_key": "sui-intern-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88591,7 +88457,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-spec-0.1.130": {
+      "sui-spec-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -88731,7 +88597,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88803,7 +88669,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "sui-store-0.1.130": {
+      "sui-store-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -88913,7 +88779,7 @@
           },
           {
             "name": "sui_compat",
-            "package_key": "sui-compat-0.1.130",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88923,7 +88789,7 @@
           },
           {
             "name": "sui_graph_store",
-            "package_key": "sui-graph-store-0.1.130",
+            "package_key": "sui-graph-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -88990,7 +88856,7 @@
           "postgres"
         ]
       },
-      "sui-supercacheci-0.1.130": {
+      "sui-supercacheci-0.1.136": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -89036,7 +88902,7 @@
           },
           {
             "name": "sui_cache",
-            "package_key": "sui-cache-0.1.130",
+            "package_key": "sui-cache-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -89046,7 +88912,7 @@
           },
           {
             "name": "sui_store",
-            "package_key": "sui-store-0.1.130",
+            "package_key": "sui-store-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -90403,16 +90269,6 @@
             "tree": "target"
           },
           {
-            "name": "rustls_native_certs",
-            "package_key": "rustls-native-certs-0.8.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "rustls_pki_types",
             "package_key": "rustls-pki-types-1.15.0",
             "kind": "normal",
@@ -90454,6 +90310,16 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "webpki_roots",
+            "package_key": "webpki-roots-0.26.11",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
@@ -90461,7 +90327,7 @@
           "client",
           "rand",
           "ring",
-          "rustls-native-roots"
+          "rustls-webpki-roots"
         ]
       },
       "toml-0.8.23": {
@@ -92929,6 +92795,34 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -93782,42 +93676,6 @@
               "time"
             ]
           },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-2.11.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
               {
@@ -93914,68 +93772,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "security-framework-2.11.1": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation",
-                "package_key": "core-foundation-0.9.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation_sys",
-                "package_key": "core-foundation-sys-0.8.7",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
-              "OSX_10_9",
-              "default"
-            ]
-          },
           "security-framework-3.7.0": {
             "runtime_dependencies": [
               {
@@ -94062,11 +93858,7 @@
             ],
             "build_dependencies": [],
             "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
               "OSX_10_13",
-              "OSX_10_9",
               "default"
             ]
           },
@@ -94194,6 +93986,34 @@
             "features": [
               "default",
               "std"
+            ]
+          },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
             ]
           },
           "cpufeatures-0.2.17": {
@@ -95011,11 +94831,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -95248,42 +95063,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -95445,6 +95224,34 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "cpufeatures-0.2.17": {
             "runtime_dependencies": [
               {
@@ -96260,11 +96067,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -96497,42 +96299,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -96704,6 +96470,44 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -97548,42 +97352,6 @@
               "time"
             ]
           },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-2.11.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
               {
@@ -97680,68 +97448,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "security-framework-2.11.1": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation",
-                "package_key": "core-foundation-0.9.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation_sys",
-                "package_key": "core-foundation-sys-0.8.7",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
-              "OSX_10_9",
-              "default"
-            ]
-          },
           "security-framework-3.7.0": {
             "runtime_dependencies": [
               {
@@ -97828,11 +97534,7 @@
             ],
             "build_dependencies": [],
             "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
               "OSX_10_13",
-              "OSX_10_9",
               "default"
             ]
           },
@@ -97970,6 +97672,44 @@
             "features": [
               "default",
               "std"
+            ]
+          },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
             ]
           },
           "cpufeatures-0.2.17": {
@@ -98798,11 +98538,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -99015,42 +98750,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -99222,6 +98921,44 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "cpufeatures-0.2.17": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -100048,11 +99785,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -100266,42 +99998,6 @@
               "time"
             ]
           },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
               {
@@ -100402,5 +100098,5 @@
       }
     }
   },
-  "cargo_lock_sha256": "f321bb9c230876f7f91e0a93018406f9f125daa7517289ec4b8ac5d089e7f267"
+  "cargo_lock_sha256": "e33aa59aa269c1d90bc79865aa48e19609e2fc2f99c31cf344e7f10060dcb24f"
 }

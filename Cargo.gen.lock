@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "d36b8a61473f67ffb56d17eabf058fad269a5bb37f775234e83e0d01879ba894",
+  "cargo_lock_sha256": "e33aa59aa269c1d90bc79865aa48e19609e2fc2f99c31cf344e7f10060dcb24f",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -1035,7 +1035,7 @@
         ],
         "features": []
       },
-      "async-nats-0.38.0": {
+      "async-nats-0.50.0": {
         "runtime_dependencies": [
           {
             "name": "base64",
@@ -1043,7 +1043,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1060,10 +1060,11 @@
             "tree": "target"
           },
           {
-            "name": "futures",
-            "package_key": "futures-0.3.32",
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
             "kind": "normal",
             "features": [
+              "sink",
               "std"
             ],
             "uses_default_features": false,
@@ -1087,7 +1088,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1097,17 +1098,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "once_cell",
-            "package_key": "once_cell-1.21.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1133,7 +1124,7 @@
           },
           {
             "name": "rand",
-            "package_key": "rand-0.8.6",
+            "package_key": "rand-0.10.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1163,7 +1154,7 @@
           },
           {
             "name": "rustls_native_certs",
-            "package_key": "rustls-native-certs-0.7.3",
+            "package_key": "rustls-native-certs-0.8.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1172,8 +1163,8 @@
             "tree": "target"
           },
           {
-            "name": "rustls_pemfile",
-            "package_key": "rustls-pemfile-2.2.0",
+            "name": "rustls_pki_types",
+            "package_key": "rustls-pki-types-1.15.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1182,11 +1173,11 @@
             "tree": "target"
           },
           {
-            "name": "webpki",
-            "package_key": "rustls-webpki-0.102.8",
+            "name": "rustls_webpki",
+            "package_key": "rustls-webpki-0.103.13",
             "kind": "normal",
             "features": [],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -1219,7 +1210,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1235,7 +1226,7 @@
           },
           {
             "name": "thiserror",
-            "package_key": "thiserror-1.0.69",
+            "package_key": "thiserror-2.0.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -1254,7 +1245,7 @@
               "serde-well-known"
             ],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1287,12 +1278,36 @@
             "tree": "target"
           },
           {
+            "name": "tokio_stream",
+            "package_key": "tokio-stream-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "tokio_util",
             "package_key": "tokio-util-0.7.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
             "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_websockets",
+            "package_key": "tokio-websockets-0.10.1",
+            "kind": "normal",
+            "features": [
+              "client",
+              "rand",
+              "rustls-webpki-roots"
+            ],
+            "uses_default_features": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1312,7 +1327,7 @@
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
-            "optional": false,
+            "optional": true,
             "target": null,
             "tree": "target"
           },
@@ -1329,9 +1344,20 @@
         ],
         "build_dependencies": [],
         "features": [
+          "crypto",
           "default",
+          "jetstream",
+          "kv",
+          "nkeys",
+          "nuid",
+          "object-store",
           "ring",
-          "server_2_10"
+          "server_2_10",
+          "server_2_11",
+          "server_2_12",
+          "server_2_14",
+          "service",
+          "websockets"
         ]
       },
       "async-stream-0.3.6": {
@@ -6169,10 +6195,23 @@
             "optional": false,
             "target": "cfg(target_os = \"vxworks\")",
             "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "std",
+          "sys_rng"
+        ]
       },
       "gix-0.83.0": {
         "runtime_dependencies": [
@@ -13367,11 +13406,11 @@
           "std"
         ]
       },
-      "lru-0.12.5": {
+      "lru-0.16.4": {
         "runtime_dependencies": [
           {
             "name": "hashbrown",
-            "package_key": "hashbrown-0.15.5",
+            "package_key": "hashbrown-0.16.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -16570,6 +16609,51 @@
           "alloc"
         ]
       },
+      "rand-0.10.2": {
+        "runtime_dependencies": [
+          {
+            "name": "chacha20",
+            "package_key": "chacha20-0.10.1",
+            "kind": "normal",
+            "features": [
+              "rng"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "getrandom",
+            "package_key": "getrandom-0.4.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "std",
+          "std_rng",
+          "sys_rng",
+          "thread_rng"
+        ]
+      },
       "rand-0.8.6": {
         "runtime_dependencies": [
           {
@@ -16709,6 +16793,11 @@
         "features": [
           "std"
         ]
+      },
+      "rand_core-0.10.1": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "rand_core-0.6.4": {
         "runtime_dependencies": [
@@ -18547,25 +18636,6 @@
           "tls12"
         ]
       },
-      "rustls-pemfile-2.2.0": {
-        "runtime_dependencies": [
-          {
-            "name": "pki_types",
-            "package_key": "rustls-pki-types-1.15.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "default",
-          "std"
-        ]
-      },
       "rustls-pki-types-1.15.0": {
         "runtime_dependencies": [
           {
@@ -18586,47 +18656,6 @@
           "std",
           "web",
           "web-time"
-        ]
-      },
-      "rustls-webpki-0.102.8": {
-        "runtime_dependencies": [
-          {
-            "name": "ring",
-            "package_key": "ring-0.17.14",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "pki_types",
-            "package_key": "rustls-pki-types-1.15.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "untrusted",
-            "package_key": "untrusted-0.9.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "alloc",
-          "default",
-          "ring",
-          "std"
         ]
       },
       "rustls-webpki-0.103.13": {
@@ -23036,7 +23065,7 @@
           },
           {
             "name": "async_nats",
-            "package_key": "async-nats-0.38.0",
+            "package_key": "async-nats-0.50.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -24181,7 +24210,7 @@
           },
           {
             "name": "lru",
-            "package_key": "lru-0.12.5",
+            "package_key": "lru-0.16.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -27878,16 +27907,6 @@
             "tree": "target"
           },
           {
-            "name": "rustls_native_certs",
-            "package_key": "rustls-native-certs-0.8.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": true,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "rustls_pki_types",
             "package_key": "rustls-pki-types-1.15.0",
             "kind": "normal",
@@ -27929,6 +27948,16 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "webpki_roots",
+            "package_key": "webpki-roots-0.26.11",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
@@ -27936,7 +27965,7 @@
           "client",
           "rand",
           "ring",
-          "rustls-native-roots"
+          "rustls-webpki-roots"
         ]
       },
       "toml-0.8.23": {
@@ -30404,6 +30433,34 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -31257,42 +31314,6 @@
               "time"
             ]
           },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-2.11.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
               {
@@ -31389,68 +31410,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "security-framework-2.11.1": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation",
-                "package_key": "core-foundation-0.9.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation_sys",
-                "package_key": "core-foundation-sys-0.8.7",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
-              "OSX_10_9",
-              "default"
-            ]
-          },
           "security-framework-3.7.0": {
             "runtime_dependencies": [
               {
@@ -31537,11 +31496,7 @@
             ],
             "build_dependencies": [],
             "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
               "OSX_10_13",
-              "OSX_10_9",
               "default"
             ]
           },
@@ -31669,6 +31624,34 @@
             "features": [
               "default",
               "std"
+            ]
+          },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
             ]
           },
           "cpufeatures-0.2.17": {
@@ -32486,11 +32469,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -32723,42 +32701,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -32920,6 +32862,34 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "cpufeatures-0.2.17": {
             "runtime_dependencies": [
               {
@@ -33735,11 +33705,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -33972,42 +33937,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -34179,6 +34108,44 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -35023,42 +34990,6 @@
               "time"
             ]
           },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-2.11.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
               {
@@ -35155,68 +35086,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "security-framework-2.11.1": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation",
-                "package_key": "core-foundation-0.9.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "core_foundation_sys",
-                "package_key": "core-foundation-sys-0.8.7",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
-              "OSX_10_9",
-              "default"
-            ]
-          },
           "security-framework-3.7.0": {
             "runtime_dependencies": [
               {
@@ -35303,11 +35172,7 @@
             ],
             "build_dependencies": [],
             "features": [
-              "OSX_10_10",
-              "OSX_10_11",
-              "OSX_10_12",
               "OSX_10_13",
-              "OSX_10_9",
               "default"
             ]
           },
@@ -35445,6 +35310,44 @@
             "features": [
               "default",
               "std"
+            ]
+          },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
             ]
           },
           "cpufeatures-0.2.17": {
@@ -36273,11 +36176,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -36490,42 +36388,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -36697,6 +36559,44 @@
               "std"
             ]
           },
+          "chacha20-0.10.1": {
+            "runtime_dependencies": [
+              {
+                "name": "cfg_if",
+                "package_key": "cfg-if-1.0.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "cpufeatures",
+                "package_key": "cpufeatures-0.3.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(any(target_arch = \"x86_64\", target_arch = \"x86\"))",
+                "tree": "target"
+              },
+              {
+                "name": "rand_core",
+                "package_key": "rand_core-0.10.1",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "rng"
+            ]
+          },
           "cpufeatures-0.2.17": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -37523,11 +37423,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "openssl-probe-0.1.6": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -37740,42 +37635,6 @@
               "termios",
               "time"
             ]
-          },
-          "rustls-native-certs-0.7.3": {
-            "runtime_dependencies": [
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.1.6",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(all(unix, not(target_os = \"macos\")))",
-                "tree": "target"
-              },
-              {
-                "name": "rustls_pemfile",
-                "package_key": "rustls-pemfile-2.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "pki_types",
-                "package_key": "rustls-pki-types-1.15.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
           },
           "rustls-native-certs-0.8.4": {
             "runtime_dependencies": [
@@ -37965,7 +37824,7 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "async-nats-0.38.0": {
+    "async-nats-0.50.0": {
       "edition": "2021"
     },
     "async-stream-0.3.6": {
@@ -38108,6 +37967,9 @@
     },
     "cfg_aliases-0.2.1": {
       "edition": "2018"
+    },
+    "chacha20-0.10.1": {
+      "edition": "2024"
     },
     "chrono-0.4.45": {
       "edition": "2021"
@@ -38879,7 +38741,7 @@
     "log-0.4.33": {
       "edition": "2021"
     },
-    "lru-0.12.5": {
+    "lru-0.16.4": {
       "edition": "2015"
     },
     "lru-slab-0.1.2": {
@@ -39036,9 +38898,6 @@
     "openssl-macros-0.1.1": {
       "edition": "2018",
       "proc_macro": true
-    },
-    "openssl-probe-0.1.6": {
-      "edition": "2021"
     },
     "openssl-probe-0.2.1": {
       "edition": "2021"
@@ -39236,6 +39095,9 @@
     "rancor-0.1.1": {
       "edition": "2021"
     },
+    "rand-0.10.2": {
+      "edition": "2024"
+    },
     "rand-0.8.6": {
       "edition": "2018"
     },
@@ -39247,6 +39109,9 @@
     },
     "rand_chacha-0.9.0": {
       "edition": "2021"
+    },
+    "rand_core-0.10.1": {
+      "edition": "2024"
     },
     "rand_core-0.6.4": {
       "edition": "2018"
@@ -39347,27 +39212,14 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "rustls-native-certs-0.7.3": {
-      "edition": "2021"
-    },
     "rustls-native-certs-0.8.4": {
       "edition": "2021"
-    },
-    "rustls-pemfile-2.2.0": {
-      "edition": "2018"
     },
     "rustls-pki-types-1.15.0": {
       "edition": "2021"
     },
     "rustls-platform-verifier-0.7.0": {
       "edition": "2021"
-    },
-    "rustls-webpki-0.102.8": {
-      "edition": "2021",
-      "lib_target": {
-        "name": "webpki",
-        "path": "src/lib.rs"
-      }
     },
     "rustls-webpki-0.103.13": {
       "edition": "2021",
@@ -39447,9 +39299,6 @@
     },
     "seahash-4.1.0": {
       "edition": "2015"
-    },
-    "security-framework-2.11.1": {
-      "edition": "2021"
     },
     "security-framework-3.7.0": {
       "edition": "2024"
