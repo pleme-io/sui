@@ -4504,14 +4504,71 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
     // honest floor; the destination (a flake-locked oracle + per-row EnvCapability
     // on a big-mem job) makes it precise and restores the ecosystem rows as CI
     // theorems. A seal is only real if its oracle is reproducible where enforced.
+    //
+    // ── THE RECLASSIFICATION IS BUDGETED, AND IT DISTINGUISHES WHOSE FAULT ──
+    //
+    // The rationale above is sound; the implementation was not, and it made the
+    // gate lie. Measured on cid 2026-07-20 at HEAD, same binary, same host:
+    //
+    //     sui parity --json                 -> 41 match / 35 regressions / exit 1
+    //     SUI_PARITY_PUREONLY=1 sui parity  -> exit 0, 0 regressions, 35 skipped
+    //
+    // Every one of those 35 was `Eval(TypeError("cannot add string and null"))`
+    // — sui could not evaluate nixpkgs AT ALL on aarch64-darwin — and that shipped
+    // as a GREEN `parity.yml` (which sets the var unconditionally). The failure
+    // the gate exists to catch was the exact failure it reclassified away.
+    //
+    // Two corrections, both cheap:
+    //
+    // 1. WHOSE FAULT. `NixError` means the ORACLE could not evaluate — a genuine
+    //    property of a runner with no pinned nixpkgs, exactly the case the
+    //    rationale describes. `SuiError` means SUI failed. Those are not the same
+    //    event and must not share a policy: an unpinned oracle explains the
+    //    former completely and the latter only partially (a rev skew can make sui
+    //    fail on an expression nix handles).
+    //
+    // 2. A BUDGET. So `SuiError` stays reclassifiable — rev skew is real — but
+    //    only up to a committed ceiling. Past it, the excess counts as
+    //    `unexpected` and the gate goes red naming the count. A handful of rows
+    //    failing under skew is plausible; wholesale collapse is capability loss.
+    //
+    // TIER, stated so it is never rounded up: this is a BUDGETED MITIGATION, not
+    // a type. It does not make "the gate lies" unrepresentable — it makes the
+    // specific, measured, total-collapse case impossible to ship green. The typed
+    // destination is unchanged and still unbuilt: a flake-locked oracle plus a
+    // per-row `EnvCapability`, so a row declares what it needs and an unmet need
+    // is a parse-time fact rather than a runtime guess.
+    const PUREONLY_SUI_ERROR_BUDGET: usize = 8;
+    let mut pureonly_oracle_skips = 0usize;
+    let mut pureonly_sui_skips = 0usize;
     if std::env::var_os("SUI_PARITY_PUREONLY").is_some() {
+        let budget = std::env::var("SUI_PARITY_PUREONLY_BUDGET")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(PUREONLY_SUI_ERROR_BUDGET);
         for (_, _, ex, v) in results.iter_mut() {
-            if *ex == Expect::Match
-                && matches!(v, ParityVerdict::SuiError(_) | ParityVerdict::NixError(_))
-            {
-                *v = ParityVerdict::Skipped(
-                    "env-independent subset (SUI_PARITY_PUREONLY): unevaluable without the pinned nixpkgs oracle — proven on the operator machine + the pinned-oracle job".into(),
-                );
+            if *ex != Expect::Match {
+                continue;
+            }
+            match v {
+                // Oracle-side: the runner cannot provide the comparison at all.
+                // Unlimited — this says nothing about sui.
+                ParityVerdict::NixError(_) => {
+                    pureonly_oracle_skips += 1;
+                    *v = ParityVerdict::Skipped(
+                        "SUI_PARITY_PUREONLY: oracle (nix) could not evaluate — no pinned nixpkgs on this runner".into(),
+                    );
+                }
+                // sui-side: budgeted. Beyond the ceiling these stay SuiError and
+                // are counted as regressions below, so a total loss of eval
+                // capability cannot present as green.
+                ParityVerdict::SuiError(_) if pureonly_sui_skips < budget => {
+                    pureonly_sui_skips += 1;
+                    *v = ParityVerdict::Skipped(
+                        "SUI_PARITY_PUREONLY: sui could not evaluate (within budget) — likely nixpkgs rev skew vs the byte-closed oracle".into(),
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -4555,6 +4612,12 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             "graduated": graduated,
             "unexpected": unexpected,
             "skipped": skipped,
+            // Split the skip tally by whose fault it was, so a machine reader
+            // (and the CI log) can tell "this runner has no oracle" from "sui
+            // stopped evaluating". An aggregate `skipped` hid exactly that.
+            "pureonly_oracle_skips": pureonly_oracle_skips,
+            "pureonly_sui_skips": pureonly_sui_skips,
+            "pureonly_sui_budget": PUREONLY_SUI_ERROR_BUDGET,
             "probes": probes_json,
         });
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
@@ -4606,6 +4669,19 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             if graduated > 0 { warn(&graduated.to_string()) } else { muted("0") },
             muted(&skipped.to_string()),
         );
+        // Never let a reclassification be invisible again — an unexplained
+        // "skip" tally is exactly how a total loss of nixpkgs eval shipped green.
+        // Split by WHOSE fault, and say the budget out loud when sui-side skips
+        // were spent, so a reader can see how close the gate is to its ceiling.
+        if pureonly_oracle_skips > 0 || pureonly_sui_skips > 0 {
+            println!("  {} SUI_PARITY_PUREONLY reclassified {} row(s): {} oracle-side (unbudgeted), {} sui-side (budget {})",
+                warn("!"),
+                warn(&(pureonly_oracle_skips + pureonly_sui_skips).to_string()),
+                muted(&pureonly_oracle_skips.to_string()),
+                if pureonly_sui_skips > 0 { warn(&pureonly_sui_skips.to_string()) } else { muted("0") },
+                muted(&PUREONLY_SUI_ERROR_BUDGET.to_string()),
+            );
+        }
         if unexpected == 0 {
             println!("  {} corpus sealed — every Match row byte-identical to nix",
                 success("✔"));

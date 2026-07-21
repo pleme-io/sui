@@ -158,3 +158,127 @@ fn working_commands_show_in_helper_count() {
     assert!(working.len() >= 20,
         "expected ≥20 working sui commands, got {}", working.len());
 }
+
+// ── THE CATALOG↔SOURCE INVARIANT THIS FILE ALREADY ADVERTISED ────────────
+//
+// The module doc above promises: "Adding a new `Commands::` pattern without
+// landing its catalog entry is impossible." That was never true. Until
+// 2026-07-20 no test in this crate read `sui/src/main.rs` at all — the only
+// occurrence of the string `Commands::` in the whole test suite was inside that
+// doc comment. The invariant was documentation, not a gate.
+//
+// Landed here for real: parse the `Commands::` variants out of `main.rs` at test
+// time and assert each has a catalog entry. It catches the drift the header
+// claims to catch — a NEW subcommand shipped without a catalog row.
+//
+// Tier: this is a CI forcing-function (C1 ceiling), not a type. A macro-generated
+// catalog derived FROM the `Commands` enum would make the drift genuinely
+// unrepresentable; this only makes it red.
+
+/// Variants that exist in `main.rs` today with no catalog entry.
+///
+/// Two honestly-different groups, kept in one list so the count is visible:
+///
+///   * sui-native, no `nix` counterpart — a catalog of *nix-replacement*
+///     coverage is the wrong home for these:
+///     `build-parity`, `parity-bisect`, `perf-seal`, `diff-closures`, `fleet`
+///
+///   * has a real `nix` counterpart and SHOULD get an entry (`nix store`,
+///     `nix key`, `nix system`/`darwin-rebuild`, cache/substituter):
+///     `store`, `key`, `system`, `cache`
+///     These are recorded, not excused — closing them shrinks this list.
+///
+/// The list may only SHRINK. Adding to it means a new command shipped without a
+/// catalog row, which is exactly what this test exists to prevent.
+const UNCATALOGUED: &[&str] = &[
+    "build-parity", "cache", "diff-closures", "fleet", "key",
+    "parity-bisect", "perf-seal", "store", "system",
+];
+
+fn kebab(ident: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in ident.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if i != 0 {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+#[test]
+fn every_cli_subcommand_has_a_catalog_entry() {
+    // CARGO_MANIFEST_DIR is sui-spec/; main.rs lives one level up.
+    let main_rs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/main.rs");
+    let src = std::fs::read_to_string(&main_rs)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", main_rs.display()));
+
+    // Collect `Commands::<Ident>` occurrences without pulling in a regex dep.
+    // WORD BOUNDARY IS LOAD-BEARING: "Commands::" is a SUBSTRING of
+    // "StoreCommands::", "FlakeCommands::", "ProfileCommands::" and friends, so a
+    // naive match_indices sweeps up every nested subcommand variant — 79 of them,
+    // which is how the first draft of this test "failed" with a list that looked
+    // like a catastrophic finding and was purely a parser bug.
+    let mut variants: Vec<String> = Vec::new();
+    for (idx, _) in src.match_indices("Commands::") {
+        let preceded_by_ident = idx > 0
+            && src[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if preceded_by_ident {
+            continue;
+        }
+        let rest = &src[idx + "Commands::".len()..];
+        let ident: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if ident.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && !variants.contains(&ident)
+        {
+            variants.push(ident);
+        }
+    }
+    assert!(
+        variants.len() >= 30,
+        "parsed only {} Commands:: variants from {} — the parser broke, which would \
+         make this invariant vacuously green (the failure mode it exists to prevent)",
+        variants.len(),
+        main_rs.display(),
+    );
+
+    let cat = cli_coverage::load_canonical().expect("catalog must load");
+    let missing: Vec<String> = variants
+        .iter()
+        .map(|v| kebab(v))
+        .filter(|n| !UNCATALOGUED.contains(&n.as_str()))
+        // A top-level command counts as catalogued if the catalog carries it
+        // bare OR carries any of its subcommands — entries are full paths
+        // ("nix flake show"), so `flake` is covered by its children rather than
+        // by a bare row of its own.
+        // Catalog names are BARE and space-separated ("eval", "flake show") —
+        // not "nix …"-prefixed. A dispatcher like `flake` legitimately has no
+        // row of its own; it is covered by its children.
+        .filter(|n| {
+            let child_prefix = format!("{n} ");
+            !cat.iter()
+                .any(|c| c.name == *n || c.name.starts_with(&child_prefix))
+        })
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{} CLI subcommand(s) in main.rs have no cli_coverage entry: {:?}\n\
+         Land a catalog entry in the same commit that adds the subcommand. If the \
+         command is genuinely sui-native with no nix counterpart, add it to \
+         UNCATALOGUED with a one-line reason — that list may only shrink.",
+        missing.len(),
+        missing,
+    );
+}
