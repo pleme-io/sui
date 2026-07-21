@@ -53,7 +53,8 @@ use sui_compat::versions::{
 };
 
 use crate::eval_ir::{
-    apply, coerce_to_string_plain, ir_eq, IrAttrs, IrEnv, IrEvalError, IrThunk, IrValue,
+    apply, coerce_to_string_plain, ir_eq, IrAttrs, IrContextElem, IrEnv, IrEvalError, IrThunk,
+    IrValue,
 };
 use crate::file_eval;
 
@@ -104,6 +105,10 @@ pub enum IrBuiltin {
     ToUpper,
     BaseNameOf,
     DirOf,
+    // arity 1 — slice 6 (derivation + crypto)
+    Derivation,
+    DerivationStrict,
+    ConvertHash,
     // arity 2
     Map,
     Filter,
@@ -144,6 +149,8 @@ pub enum IrBuiltin {
     FindFile,
     Trace,
     TraceVerbose,
+    // arity 2 — slice 6 (curried, like the walker's `register_curried`)
+    HashString,
     // arity 3
     Foldl,
     Substring,
@@ -195,7 +202,10 @@ impl IrBuiltin {
             | B::ToLower
             | B::ToUpper
             | B::BaseNameOf
-            | B::DirOf => 1,
+            | B::DirOf
+            | B::Derivation
+            | B::DerivationStrict
+            | B::ConvertHash => 1,
             B::Map
             | B::Filter
             | B::ElemAt
@@ -233,7 +243,8 @@ impl IrBuiltin {
             | B::HasSuffix
             | B::FindFile
             | B::Trace
-            | B::TraceVerbose => 2,
+            | B::TraceVerbose
+            | B::HashString => 2,
             B::Foldl | B::Substring | B::ReplaceStrings => 3,
         }
     }
@@ -283,6 +294,10 @@ impl IrBuiltin {
             B::ToUpper => "toUpper",
             B::BaseNameOf => "baseNameOf",
             B::DirOf => "dirOf",
+            B::Derivation => "derivation",
+            B::DerivationStrict => "derivationStrict",
+            B::ConvertHash => "convertHash",
+            B::HashString => "hashString",
             B::Add => "add",
             B::Sub => "sub",
             B::Mul => "mul",
@@ -364,7 +379,8 @@ impl IrBuiltin {
                 | B::BitOr
                 | B::BitXor
                 | B::Match
-                | B::FindFile,
+                | B::FindFile
+                | B::HashString,
                 _,
             ) => "curried<partial>",
             // The `register_builtin` staged-closure family names its partial.
@@ -447,6 +463,10 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::ToUpper,
     IrBuiltin::BaseNameOf,
     IrBuiltin::DirOf,
+    IrBuiltin::Derivation,
+    IrBuiltin::DerivationStrict,
+    IrBuiltin::ConvertHash,
+    IrBuiltin::HashString,
     IrBuiltin::Map,
     IrBuiltin::Filter,
     IrBuiltin::ElemAt,
@@ -502,14 +522,13 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     // (`addErrorContext`/`warn`/`break`/`appendContext`/…) left as typed
     // gaps for a later slice. `nixPath` moved OUT of this list — it is now a
     // real constant value (built from NIX_PATH), like the walker's.
+    // Slice 6 implemented `derivation`/`derivationStrict`/`hashString`/
+    // `convertHash`, so they moved OUT of this list into `ALL_IMPLEMENTED`.
     "addDrvOutputDependencies",
     "addErrorContext",
     "appendContext",
     "break",
-    "convertHash",
     "currentTime",
-    "derivation",
-    "derivationStrict",
     "fetchGit",
     "fetchMercurial",
     "fetchTarball",
@@ -521,7 +540,6 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     "getEnv",
     "getFlake",
     "hashFile",
-    "hashString",
     "parseFlakeRef",
     "path",
     "pathExists",
@@ -683,7 +701,7 @@ fn as_attrs(v: &IrValue) -> Result<&Rc<IrAttrs>, IrEvalError> {
 
 fn as_str(v: &IrValue) -> Result<&str, IrEvalError> {
     match v {
-        IrValue::Str(s) => Ok(s),
+        IrValue::Str(s, _) => Ok(s),
         other => Err(IrEvalError::TypeMismatch {
             expected: "string",
             got: other.type_name(),
@@ -807,7 +825,7 @@ fn run_saturated(
         B::IsInt => Ok(IrValue::Bool(matches!(arg, IrValue::Int(_)))),
         B::IsFloat => Ok(IrValue::Bool(matches!(arg, IrValue::Float(_)))),
         B::IsBool => Ok(IrValue::Bool(matches!(arg, IrValue::Bool(_)))),
-        B::IsString => Ok(IrValue::Bool(matches!(arg, IrValue::Str(_)))),
+        B::IsString => Ok(IrValue::Bool(matches!(arg, IrValue::Str(..)))),
         B::IsList => Ok(IrValue::Bool(matches!(arg, IrValue::List(_)))),
         B::IsAttrs => Ok(IrValue::Bool(matches!(arg, IrValue::Attrs(_)))),
         B::IsFunction => Ok(IrValue::Bool(matches!(
@@ -968,16 +986,25 @@ fn run_saturated(
         // deeply); `b` arrives UNFORCED and is returned as-is.
         B::Seq | B::DeepSeq => Ok(arg),
         B::ConcatStringsSep => {
+            // Mirror the walker: ACCUMULATE each element's string context into
+            // the result (CppNix `prim_concatStringsSep` does `mkString(res,
+            // context)`). Dropping it loses every input-drv edge a coerced
+            // `${pkg.out}/lib` element carried — which diverges a consuming
+            // derivation's drvPath (the `concatStringsSep multi-output context`
+            // corpus row). PLAIN coercion (elements are already strings).
             let sep = as_str(&captured[0])?;
             let list = as_list(&arg)?;
             let mut result = String::new();
+            let mut ctx = crate::eval_ir::IrStringContext::new();
             for (i, v) in list.iter().enumerate() {
                 if i > 0 {
                     result.push_str(sep);
                 }
-                result.push_str(&coerce_to_string_plain(&v.force()?)?);
+                let (s, c) = crate::eval_ir::coerce_to_string_ctx(&v.force()?, false)?;
+                result.push_str(&s);
+                ctx.merge(&c);
             }
-            Ok(IrValue::string(result))
+            Ok(IrValue::string_with_context(result, ctx))
         }
         B::Split => {
             let pattern = as_str(&captured[0])?;
@@ -1190,12 +1217,16 @@ fn run_saturated(
 
         // ── slice 4: strings + versions ───────────────────────────────────
         B::ConcatStrings => {
+            // Same context-accumulation contract as `concatStringsSep`.
             let list = as_list(&arg)?;
             let mut result = String::new();
+            let mut ctx = crate::eval_ir::IrStringContext::new();
             for v in list.iter() {
-                result.push_str(&coerce_to_string_plain(v)?);
+                let (s, c) = crate::eval_ir::coerce_to_string_ctx(v, false)?;
+                result.push_str(&s);
+                ctx.merge(&c);
             }
-            Ok(IrValue::string(result))
+            Ok(IrValue::string_with_context(result, ctx))
         }
         B::ToLower => Ok(IrValue::string(as_str(&arg)?.to_lowercase())),
         B::ToUpper => Ok(IrValue::string(as_str(&arg)?.to_uppercase())),
@@ -1222,36 +1253,93 @@ fn run_saturated(
             Ok(IrValue::Attrs(Rc::new(result)))
         }
 
-        // ── slice 4: context (pure subset carries no context) ─────────────
+        // ── slice 6: context — wired to REAL string context ───────────────
+        // Since derivations now produce context-bearing `.drvPath`/`.outPath`
+        // strings, `${pkg}`-derived strings carry context and these builtins
+        // report it, mirroring the walker's `context.rs` byte-for-byte.
         B::HasContext => match &arg {
-            // A pure-subset string never carries context, so `hasContext` is
-            // always `false` (a store dep would need a derivation/store path,
-            // both absent here). Non-string is a type error, like the walker.
-            IrValue::Str(_) => Ok(IrValue::Bool(false)),
+            IrValue::Str(_, c) => Ok(IrValue::Bool(c.is_some())),
             other => Err(IrEvalError::TypeError(format!(
                 "hasContext: expected string, got {}",
                 other.type_name()
             ))),
         },
         B::GetContext => match &arg {
-            IrValue::Str(_) => Ok(IrValue::Attrs(Rc::new(IrAttrs::new()))),
+            // Mirror of the walker's `getContext`: group the context elements
+            // into `{ "<path>" = { path = true; }; "<drv>" = { outputs = [...]; };
+            // "<drv>" = { allOutputs = true; }; }`. BTreeMap/BTreeSet give the
+            // walker's sorted-attrset iteration order by construction.
+            IrValue::Str(_, c) => {
+                use std::collections::{BTreeMap, BTreeSet};
+                let mut plains: BTreeSet<String> = BTreeSet::new();
+                let mut om: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                let mut deep: BTreeSet<String> = BTreeSet::new();
+                if let Some(c) = c {
+                    for elem in c.iter() {
+                        match elem {
+                            IrContextElem::Plain(p) => {
+                                plains.insert(p.clone());
+                            }
+                            IrContextElem::Output { drv, output } => {
+                                om.entry(drv.clone()).or_default().push(output.clone());
+                            }
+                            IrContextElem::DrvDeep(d) => {
+                                deep.insert(d.clone());
+                            }
+                        }
+                    }
+                }
+                let mut result = IrAttrs::new();
+                for p in &plains {
+                    let mut a = IrAttrs::new();
+                    a.insert("path".to_string(), IrValue::Bool(true));
+                    result.insert(p.clone(), IrValue::Attrs(Rc::new(a)));
+                }
+                for (d, os) in &om {
+                    let mut a = IrAttrs::new();
+                    a.insert(
+                        "outputs".to_string(),
+                        IrValue::List(Rc::new(
+                            os.iter().map(|o| IrValue::string(o.clone())).collect(),
+                        )),
+                    );
+                    result.insert(d.clone(), IrValue::Attrs(Rc::new(a)));
+                }
+                for d in &deep {
+                    let mut a = IrAttrs::new();
+                    a.insert("allOutputs".to_string(), IrValue::Bool(true));
+                    result.insert(d.clone(), IrValue::Attrs(Rc::new(a)));
+                }
+                Ok(IrValue::Attrs(Rc::new(result)))
+            }
             other => Err(IrEvalError::TypeError(format!(
                 "getContext: expected string, got {}",
                 other.type_name()
             ))),
         },
         B::UnsafeDiscardStringContext => match &arg {
-            // Context-free already — return the string unchanged (identity).
-            IrValue::Str(s) => Ok(IrValue::Str(s.clone())),
+            // Strip the context, keep the chars (the walker's identity-on-chars).
+            IrValue::Str(s, _) => Ok(IrValue::Str(s.clone(), None)),
             other => Err(IrEvalError::TypeError(format!(
                 "unsafeDiscardStringContext: expected string, got {}",
                 other.type_name()
             ))),
         },
 
+        // ── slice 6: derivation + crypto ──────────────────────────────────
+        // `derivation` / `derivationStrict` route to the shared spec
+        // interpreter (byte-identical drvPath to the walker + nix).
+        B::Derivation | B::DerivationStrict => crate::derivation::build_derivation(&arg),
+        // `hashString "<algo>" "<str>"` → lowercase-hex digest, mirroring the
+        // walker's md5/sha1/sha256/sha512 (same crates, same bytes).
+        B::HashString => hash_string(as_str(&captured[0])?, as_str(&arg)?),
+        // `convertHash { hash; hashAlgo?; toHashFormat; }` — decode a hash and
+        // re-encode it; mirror of the walker's `convertHash`.
+        B::ConvertHash => convert_hash(as_attrs(&arg)?),
+
         // ── slice 4: paths (string ops) + search path ─────────────────────
         B::BaseNameOf => match &arg {
-            IrValue::Str(s) => Ok(IrValue::string(base_name_of(s))),
+            IrValue::Str(s, _) => Ok(IrValue::string(base_name_of(s))),
             IrValue::Path(p) => Ok(IrValue::string(base_name_of(p))),
             other => Err(IrEvalError::TypeError(format!(
                 "baseNameOf: expected string or path, got {}",
@@ -1259,7 +1347,7 @@ fn run_saturated(
             ))),
         },
         B::DirOf => match &arg {
-            IrValue::Str(s) => Ok(IrValue::string(dir_of(s))),
+            IrValue::Str(s, _) => Ok(IrValue::string(dir_of(s))),
             IrValue::Path(p) => Ok(IrValue::Path(Rc::new(dir_of(p)))),
             other => Err(IrEvalError::TypeError(format!(
                 "dirOf: expected string or path, got {}",
@@ -1297,13 +1385,139 @@ fn genlist_negative(n: i64) -> String {
     s
 }
 
+/// `builtins.hashString "<algo>" "<str>"` → lowercase-hex digest. Byte-mirror
+/// of the walker's `hashString` (`sui_eval::builtins::strings`): the SAME
+/// md5/sha1/sha256/sha512 crates, the same `{:x}` hex formatting, so the digest
+/// bytes cannot drift.
+fn hash_string(algo: &str, input: &str) -> Result<IrValue, IrEvalError> {
+    let hex = match algo {
+        "md5" => {
+            use md5::{Digest, Md5};
+            format!("{:x}", Md5::digest(input.as_bytes()))
+        }
+        "sha1" => {
+            use sha1::{Digest, Sha1};
+            format!("{:x}", Sha1::digest(input.as_bytes()))
+        }
+        "sha256" => {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(input.as_bytes()))
+        }
+        "sha512" => {
+            use sha2::{Digest, Sha512};
+            format!("{:x}", Sha512::digest(input.as_bytes()))
+        }
+        other => {
+            return Err(IrEvalError::TypeError(format!(
+                "hashString: unsupported algorithm: {other}"
+            )))
+        }
+    };
+    Ok(IrValue::string(hex))
+}
+
+/// `builtins.convertHash { hash; hashAlgo?; toHashFormat; }` — decode a hash
+/// from hex / nix32 / base64 and re-encode to base16 / nix32 / base64 / sri.
+/// Byte-mirror of the walker's `convertHash` (`sui_eval::builtins::convert`),
+/// sharing `sui_compat`'s base64 (STANDARD) + nix-base32 codecs so the output
+/// bytes cannot drift.
+fn convert_hash(attrs: &IrAttrs) -> Result<IrValue, IrEvalError> {
+    let hash_str = as_str(&attr_force(attrs, "hash")?)?.to_string();
+    let to_format = as_str(&attr_force(attrs, "toHashFormat")?)?.to_string();
+
+    let (algo, raw_hash): (String, String) = if let Some(av) = attrs.get("hashAlgo") {
+        (as_str(&av.force()?)?.to_string(), hash_str.clone())
+    } else if let Some(stripped) = hash_str.strip_prefix("sha256-") {
+        ("sha256".to_string(), stripped.to_string())
+    } else if let Some(stripped) = hash_str.strip_prefix("sha512-") {
+        ("sha512".to_string(), stripped.to_string())
+    } else {
+        return Err(IrEvalError::TypeError("convertHash: missing hashAlgo".into()));
+    };
+
+    let expected_len = match algo.as_str() {
+        "md5" => 16,
+        "sha1" => 20,
+        "sha256" => 32,
+        "sha512" => 64,
+        other => {
+            return Err(IrEvalError::TypeError(format!(
+                "convertHash: unsupported algo {other}"
+            )))
+        }
+    };
+
+    let bytes: Vec<u8> = if raw_hash.len() == expected_len * 2
+        && raw_hash.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        (0..raw_hash.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&raw_hash[i..i + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IrEvalError::TypeError(format!("convertHash hex: {e}")))?
+    } else if let Ok(b) = sui_compat::store_path::nix_base32_decode(&raw_hash) {
+        if expected_len != 20 {
+            return Err(IrEvalError::TypeError(
+                "convertHash: nix32 only supported for 20-byte (sha1) hashes".into(),
+            ));
+        }
+        b.to_vec()
+    } else if let Ok(b) = sui_compat::hash::base64_decode(&raw_hash) {
+        b
+    } else {
+        return Err(IrEvalError::TypeError(format!(
+            "convertHash: cannot decode hash '{raw_hash}'"
+        )));
+    };
+    if bytes.len() != expected_len {
+        return Err(IrEvalError::TypeError(format!(
+            "convertHash: decoded {} bytes, expected {expected_len} for {algo}",
+            bytes.len()
+        )));
+    }
+
+    let out = match to_format.as_str() {
+        "base16" => {
+            let mut s = String::with_capacity(bytes.len() * 2);
+            for b in &bytes {
+                s.push_str(&format!("{b:02x}"));
+            }
+            s
+        }
+        "nix32" => {
+            if expected_len != 20 {
+                return Err(IrEvalError::TypeError(
+                    "convertHash: nix32 output only supported for 20-byte hashes".into(),
+                ));
+            }
+            sui_compat::store_path::nix_base32_encode(&bytes)
+        }
+        "base64" => sui_compat::hash::base64_encode(&bytes),
+        "sri" => format!("{algo}-{}", sui_compat::hash::base64_encode(&bytes)),
+        other => {
+            return Err(IrEvalError::TypeError(format!(
+                "convertHash: unsupported toHashFormat {other}"
+            )))
+        }
+    };
+    Ok(IrValue::string(out))
+}
+
+/// Force a required attr (the walker forces `convertHash`'s attrs strictly).
+fn attr_force(attrs: &IrAttrs, key: &str) -> Result<IrValue, IrEvalError> {
+    attrs
+        .get(key)
+        .ok_or_else(|| IrEvalError::AttrNotFound(key.to_string()))?
+        .force()
+}
+
 /// The walker's `coerce_to_realized_path` restricted to the pure subset:
 /// path and string values pass through; an attrset follows `outPath`
 /// (derivation *realization* is unreachable here — no `derivation`).
 fn coerce_import_path(v: &IrValue) -> Result<String, IrEvalError> {
     match v {
         IrValue::Path(p) => Ok((**p).clone()),
-        IrValue::Str(s) => Ok((**s).clone()),
+        IrValue::Str(s, _) => Ok((**s).clone()),
         IrValue::Attrs(attrs) => match attrs.get("outPath") {
             Some(out) => coerce_import_path(&out.force()?),
             None => Err(IrEvalError::TypeError(
@@ -1468,7 +1682,7 @@ fn less_than(a: &IrValue, b: &IrValue) -> Result<IrValue, IrEvalError> {
         (IrValue::Float(x), IrValue::Float(y)) => x < y,
         (IrValue::Int(x), IrValue::Float(y)) => (*x as f64) < *y,
         (IrValue::Float(x), IrValue::Int(y)) => *x < (*y as f64),
-        (IrValue::Str(x), IrValue::Str(y)) => x < y,
+        (IrValue::Str(x, _), IrValue::Str(y, _)) => x < y,
         _ => {
             return Err(IrEvalError::TypeError(
                 "lessThan: expected comparable types".to_string(),
@@ -1588,7 +1802,7 @@ fn display_ir_value(v: &IrValue) -> String {
         IrValue::Bool(b) => b.to_string(),
         IrValue::Int(n) => n.to_string(),
         IrValue::Float(f) => cppnix_format_float(*f),
-        IrValue::Str(s) => {
+        IrValue::Str(s, _) => {
             let mut out = String::from("\"");
             out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
             out.push('"');
@@ -1719,7 +1933,7 @@ fn ir_to_json(v: &IrValue) -> Result<serde_json::Value, IrEvalError> {
         IrValue::Bool(b) => serde_json::Value::Bool(*b),
         IrValue::Int(n) => serde_json::json!(*n),
         IrValue::Float(f) => serde_json::json!(*f),
-        IrValue::Str(s) => serde_json::Value::String((**s).clone()),
+        IrValue::Str(s, _) => serde_json::Value::String((**s).clone()),
         IrValue::Path(_) => return Err(IrEvalError::Unsupported("path-copy-to-store")),
         IrValue::List(items) => {
             let mut arr = Vec::with_capacity(items.len());
@@ -1793,7 +2007,7 @@ fn value_to_xml(v: &IrValue, indent: usize) -> String {
         IrValue::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
         IrValue::Int(n) => format!("{pad}<int value=\"{n}\" />"),
         IrValue::Float(f) => format!("{pad}<float value=\"{f}\" />"),
-        IrValue::Str(s) => format!("{pad}<string value=\"{}\" />", xml_escape(s)),
+        IrValue::Str(s, _) => format!("{pad}<string value=\"{}\" />", xml_escape(s)),
         IrValue::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
         IrValue::List(items) => {
             let mut out = format!("{pad}<list>\n");

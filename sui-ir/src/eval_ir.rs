@@ -253,6 +253,92 @@ pub struct IrClosure {
     pub env: IrEnv,
 }
 
+/// One element of a Nix string's context — the mirror of the walker's
+/// `sui_eval::value::ContextElement` (a store-path reference a string
+/// depends on). String context is how a derivation output flows into a
+/// consuming derivation's `inputDrvs` / `inputSrcs`, and therefore into its
+/// drvPath: dropping it silently diverges the drv hash from nix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrContextElem {
+    /// Store-path reference (e.g. `/nix/store/abc-hello`).
+    Plain(String),
+    /// Derivation output reference (`drv!output`) → `inputDrvs[drv] += output`.
+    Output { drv: String, output: String },
+    /// Entire derivation closure (`=drv`) — carried by a `.drvPath` string;
+    /// NOT consumed into `inputDrvs`/`inputSrcs` (mirrors the walker).
+    DrvDeep(String),
+}
+
+/// The context attached to a Nix string — the mirror of the walker's
+/// `sui_eval::value::StringContext`. A **dedup `Vec`** (NOT a set), same as
+/// the walker: most strings carry 0–2 elements where linear search beats tree
+/// overhead, and — critically — the fold into `inputDrvs`/`inputSrcs` (which
+/// then sorts) makes element *order* irrelevant to the drvPath, so a Vec is
+/// byte-faithful. `add_plain`/`add_output`/`add_drv_deep`/`merge` mirror the
+/// walker's dedup-insert semantics one-for-one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IrStringContext(Vec<IrContextElem>);
+
+impl IrStringContext {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Merge another context into this one (dedup union).
+    pub fn merge(&mut self, other: &IrStringContext) {
+        for elem in &other.0 {
+            if !self.0.contains(elem) {
+                self.0.push(elem.clone());
+            }
+        }
+    }
+
+    /// Add a plain store-path reference (dedup).
+    pub fn add_plain(&mut self, path: impl Into<String>) {
+        let elem = IrContextElem::Plain(path.into());
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
+    }
+
+    /// Add a derivation-output reference (dedup).
+    pub fn add_output(&mut self, drv: impl Into<String>, output: impl Into<String>) {
+        let elem = IrContextElem::Output {
+            drv: drv.into(),
+            output: output.into(),
+        };
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
+    }
+
+    /// Add a derivation-deep reference (dedup).
+    pub fn add_drv_deep(&mut self, drv: impl Into<String>) {
+        let elem = IrContextElem::DrvDeep(drv.into());
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
+    }
+
+    /// Insert a raw element (dedup) — used by `unsafeDiscardOutputDependency`
+    /// / `addDrvOutputDependencies` mirrors.
+    pub fn insert(&mut self, elem: IrContextElem) {
+        if !self.0.contains(&elem) {
+            self.0.push(elem);
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &IrContextElem> {
+        self.0.iter()
+    }
+}
+
 /// A Nix value produced by the IR engine — the minimal mirror of
 /// `sui_eval::Value` for the pure subset (see module docs for why a mirror).
 #[derive(Debug, Clone, Default)]
@@ -262,7 +348,14 @@ pub enum IrValue {
     Bool(bool),
     Int(i64),
     Float(f64),
-    Str(Rc<String>),
+    /// A string + its (usually empty) context. Context is boxed behind
+    /// `Option<Rc<…>>` so the overwhelmingly-common context-free string pays
+    /// zero allocation and `IrValue` stays lean (the A/B force path is
+    /// unchanged for plain strings). Equality/ordering/render all ignore the
+    /// context — nix `==` and rendering are context-blind — so the second
+    /// field is matched `_` everywhere except the derivation fold + the
+    /// `hasContext`/`getContext`/`unsafeDiscard*` builtins.
+    Str(Rc<String>, Option<Rc<IrStringContext>>),
     /// A path value — the resolved path string (the walker's
     /// `Value::Path` mirror; renders raw, unquoted).
     Path(Rc<String>),
@@ -276,9 +369,33 @@ pub enum IrValue {
 }
 
 impl IrValue {
+    /// A context-free string (the common case — a literal, an int coercion,
+    /// a pure-builtin result). No allocation for the (absent) context.
     #[must_use]
     pub fn string(s: impl Into<String>) -> Self {
-        IrValue::Str(Rc::new(s.into()))
+        IrValue::Str(Rc::new(s.into()), None)
+    }
+
+    /// A string carrying string context — the constructor a derivation's
+    /// `.drvPath` / `.outPath` (and any coercion that merges context) uses.
+    /// An empty context collapses back to the context-free representation.
+    #[must_use]
+    pub fn string_with_context(s: impl Into<String>, ctx: IrStringContext) -> Self {
+        let boxed = if ctx.is_empty() {
+            None
+        } else {
+            Some(Rc::new(ctx))
+        };
+        IrValue::Str(Rc::new(s.into()), boxed)
+    }
+
+    /// The string's context if it carries any (borrowed through the `Rc`).
+    #[must_use]
+    pub fn str_context(&self) -> Option<&IrStringContext> {
+        match self {
+            IrValue::Str(_, Some(c)) => Some(c),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -288,7 +405,7 @@ impl IrValue {
             IrValue::Bool(_) => "bool",
             IrValue::Int(_) => "int",
             IrValue::Float(_) => "float",
-            IrValue::Str(_) => "string",
+            IrValue::Str(..) => "string",
             IrValue::Path(_) => "path",
             IrValue::List(_) => "list",
             IrValue::Attrs(_) => "set",
@@ -894,7 +1011,10 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
                 },
             }
         }
-        Ir::Str(parts) => eval_str_parts(prog, parts, env).map(IrValue::string),
+        Ir::Str(parts) => {
+            let (s, ctx) = eval_str_parts_ctx(prog, parts, env)?;
+            Ok(IrValue::string_with_context(s, ctx))
+        }
         Ir::Path { kind, parts } => eval_path_parts(prog, *kind, parts, env),
         // `<name>` / `<name/sub>` — resolve via NIX_PATH exactly like the
         // walker's `PathSearch` arm: a hit is a `Path` value; a miss is a
@@ -1009,17 +1129,35 @@ fn eval_str_parts(
     parts: &[StrPart],
     env: &IrEnv,
 ) -> Result<String, IrEvalError> {
+    eval_str_parts_ctx(prog, parts, env).map(|(s, _)| s)
+}
+
+/// Context-tracking string interpolation — the mirror of the walker's
+/// interpolation, which merges every interpolated part's context into the
+/// resulting string. An interpolated `${derivation}` coerces to its `.outPath`
+/// (carrying an `Output{drv,output}` element); that element rides the produced
+/// string so a consuming derivation can rediscover the dependency edge and
+/// populate `inputDrvs`. Splices use copy-to-store coercion (`true`), exactly
+/// like the walker's string interpolation.
+fn eval_str_parts_ctx(
+    prog: &Rc<Program>,
+    parts: &[StrPart],
+    env: &IrEnv,
+) -> Result<(String, IrStringContext), IrEvalError> {
     let mut out = String::new();
+    let mut ctx = IrStringContext::new();
     for part in parts {
         match part {
             StrPart::Literal(text) => out.push_str(text),
             StrPart::Interp(e) => {
                 let v = eval_ir(prog, *e, env)?.force()?;
-                out.push_str(&coerce_to_string_impl(&v, true)?);
+                let (s, c) = coerce_to_string_ctx(&v, true)?;
+                out.push_str(&s);
+                ctx.merge(&c);
             }
         }
     }
-    Ok(out)
+    Ok((out, ctx))
 }
 
 /// Evaluate a path literal (plain or interpolated), mirroring the walker's
@@ -1076,48 +1214,88 @@ pub(crate) fn coerce_to_string_plain(v: &IrValue) -> Result<String, IrEvalError>
     coerce_to_string_impl(v, false)
 }
 
-/// The walker's `coerce_to_string_impl`. `copy_to_store` mirrors the mode
-/// split: string interpolation copies path values to the store — a store
-/// reach the pure engine types as a gap; plain mode splices the raw path.
+/// String-only façade over [`coerce_to_string_ctx`] for the many callers that
+/// don't need the context (`toString`, `concatStringsSep`, `replaceStrings`,
+/// `+` attrs coercion, path interpolation). Same behavior as before this
+/// slice; the context is computed and discarded.
 fn coerce_to_string_impl(v: &IrValue, copy_to_store: bool) -> Result<String, IrEvalError> {
-    match v {
-        IrValue::Str(s) => Ok((**s).clone()),
+    coerce_to_string_ctx(v, copy_to_store).map(|(s, _)| s)
+}
+
+/// The walker's `coerce_to_string_impl`, context-preserving. `copy_to_store`
+/// mirrors the mode split. This is the SINGLE context sink — every string that
+/// acquires context (a `${derivation}` output ref, a plain-mode path's own
+/// store-path ref) does so here, exactly as the walker does, so an interpolated
+/// derivation output flows its `Output{drv,output}` edge into the consumer.
+///
+/// The one deliberate divergence is a typed gap, not a silent one:
+/// `copy_to_store` of a **`Path` value** (`src = ./.`) NAR-copies the tree into
+/// the store in the walker; the pure IR engine has no store, so it stays
+/// `Unsupported("path-copy-to-store")` (a `src = ./.` derivation is a reported
+/// gap, not a wrong answer). Plain-mode path coercion mirrors the walker's
+/// `add_plain(raw)`.
+pub(crate) fn coerce_to_string_ctx(
+    v: &IrValue,
+    copy_to_store: bool,
+) -> Result<(String, IrStringContext), IrEvalError> {
+    let mut ctx = IrStringContext::new();
+    let s = match v {
+        IrValue::Str(s, c) => {
+            if let Some(c) = c {
+                ctx.merge(c);
+            }
+            (**s).clone()
+        }
         IrValue::Path(p) => {
             if copy_to_store {
-                Err(IrEvalError::Unsupported("path-copy-to-store"))
-            } else {
-                Ok((**p).clone())
+                return Err(IrEvalError::Unsupported("path-copy-to-store"));
             }
+            // Walker plain-mode: the raw path IS its own context element.
+            ctx.add_plain((**p).clone());
+            (**p).clone()
         }
-        IrValue::Int(n) => Ok(n.to_string()),
-        IrValue::Float(f) => Ok(format!("{f:.6}")),
-        IrValue::Bool(true) => Ok("1".to_string()),
-        IrValue::Bool(false) | IrValue::Null => Ok(String::new()),
+        IrValue::Int(n) => n.to_string(),
+        IrValue::Float(f) => format!("{f:.6}"),
+        IrValue::Bool(true) => "1".to_string(),
+        IrValue::Bool(false) | IrValue::Null => String::new(),
         IrValue::Attrs(attrs) => {
             if let Some(to_str) = attrs.get("__toString") {
                 let r = apply(to_str.force()?, IrValue::Attrs(attrs.clone()))?.force()?;
-                coerce_to_string_impl(&r, copy_to_store)
+                let (s, c) = coerce_to_string_ctx(&r, copy_to_store)?;
+                ctx.merge(&c);
+                s
             } else if let Some(out_path) = attrs.get("outPath") {
-                coerce_to_string_impl(&out_path.force()?, copy_to_store)
+                let (s, c) = coerce_to_string_ctx(&out_path.force()?, copy_to_store)?;
+                ctx.merge(&c);
+                s
             } else {
-                Err(IrEvalError::TypeError(
+                return Err(IrEvalError::TypeError(
                     "cannot coerce set to string (no __toString or outPath)".into(),
-                ))
+                ));
             }
         }
         IrValue::List(items) => {
             let mut parts = Vec::with_capacity(items.len());
             for item in items.iter() {
-                parts.push(coerce_to_string_impl(&item.force()?, copy_to_store)?);
+                let (s, c) = coerce_to_string_ctx(&item.force()?, copy_to_store)?;
+                ctx.merge(&c);
+                parts.push(s);
             }
-            Ok(parts.join(" "))
+            parts.join(" ")
         }
-        IrValue::Thunk(_) => coerce_to_string_impl(&v.force()?, copy_to_store),
-        other => Err(IrEvalError::TypeError(format!(
-            "cannot coerce {} to string",
-            other.type_name()
-        ))),
-    }
+        IrValue::Thunk(_) => {
+            let (s, c) = coerce_to_string_ctx(&v.force()?, copy_to_store)?;
+            ctx.merge(&c);
+            s
+        }
+        other => {
+            return Err(IrEvalError::TypeError(format!(
+                "cannot coerce {} to string",
+                other.type_name()
+            )))
+        }
+    };
+    Ok((s, ctx))
 }
 
 /// Evaluate an attr name to a key string; `None` = null dynamic key (CppNix
@@ -1135,7 +1313,7 @@ fn eval_attr_maybe_null(
             let v = eval_ir(prog, *e, env)?.force()?;
             match v {
                 IrValue::Null => Ok(None),
-                IrValue::Str(s) => Ok(Some((*s).clone())),
+                IrValue::Str(s, _) => Ok(Some((*s).clone())),
                 other => Err(IrEvalError::TypeMismatch {
                     expected: "string",
                     got: other.type_name(),
@@ -1390,16 +1568,27 @@ fn eval_binop(
             (IrValue::Float(a), IrValue::Float(b)) => Ok(IrValue::Float(a + b)),
             (IrValue::Int(a), IrValue::Float(b)) => Ok(IrValue::Float(*a as f64 + b)),
             (IrValue::Float(a), IrValue::Int(b)) => Ok(IrValue::Float(a + *b as f64)),
-            (IrValue::Str(a), IrValue::Str(b)) => {
+            (IrValue::Str(a, ca), IrValue::Str(b, cb)) => {
                 let mut s = String::with_capacity(a.len() + b.len());
                 s.push_str(a);
                 s.push_str(b);
-                Ok(IrValue::string(s))
+                // Walker `+` on strings unions both operands' context
+                // (eval.rs String+String), so `"${pkg}" + "/bin"` keeps the
+                // dependency edge and a concatenated derivation attr still
+                // populates `inputDrvs`.
+                let mut ctx = IrStringContext::new();
+                if let Some(ca) = ca {
+                    ctx.merge(ca);
+                }
+                if let Some(cb) = cb {
+                    ctx.merge(cb);
+                }
+                Ok(IrValue::string_with_context(s, ctx))
             }
             // Walker: path + string concatenates raw; path + path joins
             // with a `/`. (string + path is NOT matched there — it falls
             // through to the type error, mirrored here.)
-            (IrValue::Path(a), IrValue::Str(b)) => {
+            (IrValue::Path(a), IrValue::Str(b, _)) => {
                 Ok(IrValue::Path(Rc::new(format_concat(a, b))))
             }
             (IrValue::Path(a), IrValue::Path(b)) => {
@@ -1534,7 +1723,7 @@ fn compare(
         (IrValue::Float(a), IrValue::Int(b)) => a
             .partial_cmp(&(*b as f64))
             .unwrap_or(std::cmp::Ordering::Equal),
-        (IrValue::Str(a), IrValue::Str(b)) => a.cmp(b),
+        (IrValue::Str(a, _), IrValue::Str(b, _)) => a.cmp(b),
         _ => return Err(op_type_error("compare", l, r)),
     };
     Ok(IrValue::Bool(pred(ord)))
@@ -1559,7 +1748,7 @@ pub fn ir_eq(l: &IrValue, r: &IrValue) -> bool {
         (IrValue::Int(a), IrValue::Float(b)) | (IrValue::Float(b), IrValue::Int(a)) => {
             (*a as f64) == *b
         }
-        (IrValue::Str(a), IrValue::Str(b)) => a == b,
+        (IrValue::Str(a, _), IrValue::Str(b, _)) => a == b,
         // Walker `Concrete::PartialEq`: paths compare by string; a path
         // never equals a string.
         (IrValue::Path(a), IrValue::Path(b)) => a == b,
@@ -1586,13 +1775,13 @@ pub fn ir_eq(l: &IrValue, r: &IrValue) -> bool {
 
 fn derivation_out_path(attrs: &IrAttrs) -> Option<String> {
     let ty = attrs.get("type")?.force().ok()?;
-    let IrValue::Str(s) = ty else { return None };
+    let IrValue::Str(s, _) = ty else { return None };
     if &**s != "derivation" {
         return None;
     }
     let out = attrs.get("outPath")?.force().ok()?;
     match out {
-        IrValue::Str(p) => Some((*p).clone()),
+        IrValue::Str(p, _) => Some((*p).clone()),
         _ => None,
     }
 }
@@ -2059,7 +2248,7 @@ mod tests {
 
     fn ev_str(src: &str) -> String {
         match ev(src) {
-            Ok(IrValue::Str(s)) => (*s).clone(),
+            Ok(IrValue::Str(s, _)) => (*s).clone(),
             other => panic!("expected string for {src:?}, got {other:?}"),
         }
     }
@@ -2167,11 +2356,20 @@ mod tests {
             ev("builtins.sort (a: b: a < b) [ 2 1 ]"),
             Ok(IrValue::List(_))
         ));
-        // Store-/IO-bound builtins stay TYPED gaps, pre-seeded in `builtins`.
+        // `derivation` is IMPLEMENTED (slice 6): `derivation {}` now reaches
+        // the impl and fails on the missing required `name` attr (an
+        // `AttrNotFound`), NOT a `MissingBuiltin` gap. A well-formed leaf
+        // derivation produces a `derivation`-typed attrset (see
+        // `tests/derivation_milestone.rs` for the three-way drvPath match).
         assert!(matches!(
             ev("derivation { }"),
-            Err(IrEvalError::MissingBuiltin(n)) if n == "derivation"
+            Err(IrEvalError::AttrNotFound(n)) if n == "name"
         ));
+        assert!(matches!(
+            ev("(derivation { name = \"x\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; }).type"),
+            Ok(IrValue::Str(s, _)) if *s == "derivation"
+        ));
+        // The remaining store-/IO-bound builtins stay TYPED gaps.
         assert!(matches!(
             ev("builtins.getEnv \"PATH\""),
             Err(IrEvalError::MissingBuiltin(n)) if n == "getEnv"
@@ -2194,7 +2392,7 @@ mod tests {
         assert!(matches!(ev("/.."), Ok(IrValue::Path(p)) if *p == "/"));
         // Interpolation splices with PLAIN coercion; `//` seams collapse.
         assert!(
-            matches!(ev("toString /bar/${/tmp/foo}"), Ok(IrValue::Str(s)) if *s == "/bar/tmp/foo")
+            matches!(ev("toString /bar/${/tmp/foo}"), Ok(IrValue::Str(s, _)) if *s == "/bar/tmp/foo")
         );
         assert_eq!(ev_str(r#"let x = "foo"; in toString /a/${x}/b"#), "/a/foo/b");
         // Path arithmetic mirrors the walker's Add arms.
