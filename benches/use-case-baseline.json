@@ -1,0 +1,60 @@
+{
+  "minted": "2026-07-21",
+  "machine": "cid (M1 Max, 32GB, aarch64-darwin), macOS 25.5.0",
+  "sui_rev": "582cede (post lever-1 sym-keyed-attrs; ident-cache fix 8bad3ef included)",
+  "provenance_note": "every number below is a recorded run from 2026-07-20/21; UNMEASURED rows say so",
+  "rows": {
+    "U01_tiny_expr": {
+      "sui": "sub-second (1+1 -> 2 measured)",
+      "status": "measured-coarse"
+    },
+    "U02_flake_small_kataFleet": {
+      "sui_cold_s": 35.2,
+      "sui_warm_s": 0.03,
+      "byte_identical": true,
+      "note": "warm = eval-cache hit, clean-rev-keyed, --no-vm only"
+    },
+    "U04_nixpkgs_hello_drvPath": {
+      "nix_cold_s": 12.8,
+      "nix_warm_s": 2.2,
+      "byte_identical": true,
+      "sui_dhat_s": 290,
+      "sui_dhat_note": "dhat-instrumented wall \u2014 NOT a perf number; plain wall unmeasured today",
+      "dhat": {
+        "churn_gb": 2.4,
+        "peak_live_mb": 488,
+        "sites": 39163,
+        "top_retention": "im_rc HAMT Node<(Symbol,Value)> make_mut/clone (captured Env chains) + RcInner<ThunkInner>",
+        "top_churn": "im_rc HAMT make_mut (env COW-per-bind) + rowan::cursor::NodeData (AST re-walk)"
+      }
+    },
+    "U10_cid_toplevel": {
+      "nix": {
+        "real_s": 121.2,
+        "cpu_s": 78.1,
+        "peak_rss_gb": 12.37,
+        "churn_gb": 16.81,
+        "gc_time_pct": 29.1,
+        "provenance": "live re-measure, NIX_SHOW_STATS + /usr/bin/time -l, research task b86cxdo59"
+      },
+      "sui": {
+        "status": "DNF",
+        "attempts": 5,
+        "slope_mb_per_s_mean": 154,
+        "slope_series_points": 33,
+        "max_recorded_footprint_gb": 73.0,
+        "elapsed_at_kill_s": 484,
+        "death": "swap-exhaustion (root-disk swapfiles)",
+        "resident_vs_footprint": "7GB resident of 64GB footprint at prior run t=304s; 90% of writable pages written once"
+      }
+    },
+    "parity_corpus": {
+      "match": 77,
+      "total": 77,
+      "diverged": 0,
+      "skipped": 0,
+      "exit": 0
+    }
+  },
+  "struck_replaced": "the 64GB/7GB pair + 140MB/s now carry recorded provenance (this file); the 29.1% GC price carries the b86cxdo59 run"
+}
