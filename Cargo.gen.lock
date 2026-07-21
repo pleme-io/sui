@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "fa72c4d126e364115008a9cce59af02aafc8a706b491c7d65962fac7294bd946",
+  "cargo_lock_sha256": "c74c91957c1bd616f9d6daeed5f000791f4281c24c064ab38a7056abd583450b",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25630,6 +25630,26 @@
           {
             "name": "rustc_hash",
             "package_key": "rustc-hash-2.1.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_compat",
+            "package_key": "sui-compat-0.1.136",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

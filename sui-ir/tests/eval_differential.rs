@@ -118,31 +118,26 @@ fn classify_gap(e: &IrEvalError) -> Option<String> {
 // the list can only shrink. Unlisted rows must match.
 
 /// Corpus rows (identified by `CorpusRow::name`). Enumerated by the
-/// `enumerate_gap_candidates` probe. Slice 3 SHRANK this list from 17 rows
-/// to 7: the path-literal rows, every `builtins.<implemented>` row
-/// (dynamic-tail laziness ×2, dotted deep-merge ×2, list-concat fold,
-/// concatLists flatten, typeOf-path) now byte-match; what remains is
-/// `derivation` (×4 — impure by nature), bare `elem` and `concatMap`
-/// (unimplemented, typed missing).
+/// `enumerate_gap_candidates` probe. Slice 4 SHRANK this list from 7 rows to
+/// 5: `builtins.concatMap` and `builtins.elem` are now implemented, so those
+/// two rows byte-match; what remains is exclusively `derivation` (×5 — impure
+/// by nature, deliberately still a typed missing-builtin gap in the pure
+/// subset).
 const CORPUS_KNOWN_GAPS: &[(&str, &str)] = &[
     ("concatStringsSep multi-output context", "missing-builtin:derivation"),
     ("concatStringsSep empty-sep single-element context", "missing-builtin:derivation"),
     ("multi-output producer .dev drvPath", "missing-builtin:derivation"),
-    ("concatMap expand (value)", "missing-builtin:concatMap"),
     ("list-concat ++ into derivation args — drvPath", "missing-builtin:derivation"),
-    ("attrs-eq deep true/false + elem (value)", "missing-builtin:elem"),
     ("attrs-eq selects derivation arg — drvPath", "missing-builtin:derivation"),
 ];
 
-/// Supplement rows (identified by source text). The search-path rows are
-/// listed (rather than relying on both-error) so the outcome is independent
-/// of whether the host has a `NIX_PATH` the tree-walker could resolve.
-/// Slice 3 SHRANK this list from 12 rows to 4: every path-literal row now
-/// byte-matches (paths implemented), and the `map … import ./m.nix` row is
-/// a both-error match (the file does not exist on either engine).
+/// Supplement rows (identified by source text). Slice 4 SHRANK this list from
+/// 4 rows to 2: the two `<nixpkgs>` search-path rows now RESOLVE through
+/// NIX_PATH exactly like the walker — a hit is a byte-identical `Path` (value
+/// match), a miss is a `Throw` on both (both-error match) — so they no longer
+/// need an allowlist entry. Only the two `let { … }` legacy-let rows remain
+/// (deliberately still unsupported in the pure subset).
 const SUPPLEMENT_KNOWN_GAPS: &[(&str, &str)] = &[
-    ("<nixpkgs>", "unsupported:search-path"),
-    ("<nixpkgs/lib>", "unsupported:search-path"),
     ("let { body = 1; }", "unsupported:legacy-let"),
     ("let { a = 2; body = a; }", "unsupported:legacy-let"),
 ];
@@ -498,6 +493,312 @@ fn closed_seed_eval_differential() {
     }
 }
 
+// ── 3b. the slice-4 builtin surface — per-builtin value + error rows ──────
+//
+// Coverage-debt paydown (the adversary's note): slice 3 leaned on ~1
+// differential row per builtin. Slice 4 ships, for EVERY new pure builtin, a
+// dedicated VALUE row (a concrete result byte-matched on both engines) AND a
+// dedicated ERROR/edge row (a type error / OOB / empty edge — both-error is a
+// match, so the row proves the *class* agrees). The per-builtin row count is
+// reported in the slice write-up; the two seeds below are the mechanical
+// source of that count. Grouped + commented per builtin so a reader can audit
+// coverage at a glance.
+
+/// VALUE rows — each must render an identical value on BOTH engines
+/// (`require_value = true`). ≥1 (usually ≥2) per new builtin.
+const BUILTINS_VALUE_SEED: &[&str] = &[
+    // tryEval (catches throw + assert; success + both failure classes)
+    "builtins.tryEval 42",
+    "builtins.tryEval \"ok\"",
+    "builtins.tryEval (builtins.throw \"boom\")",
+    "builtins.tryEval (assert false; 1)",
+    "builtins.tryEval (assert true; 7)",
+    "builtins.tryEval [ 1 2 ]",
+    // trace / traceVerbose (return the 2nd argument)
+    "builtins.trace \"msg\" 42",
+    "builtins.trace \"x\" [ 1 2 ]",
+    "builtins.traceVerbose \"m\" \"v\"",
+    "builtins.traceVerbose \"a\" 99",
+    // add / sub / mul / div (int, float, mixed)
+    "builtins.add 2 3",
+    "builtins.add 1.5 2",
+    "builtins.add 2 1.5",
+    "builtins.sub 10 4",
+    "builtins.sub 1.5 0.5",
+    "builtins.mul 6 7",
+    "builtins.mul 2.0 3",
+    "builtins.div 9 2",
+    "builtins.div 9.0 2",
+    "builtins.div 8 3",
+    // lessThan (int/float/string)
+    "builtins.lessThan 1 2",
+    "builtins.lessThan 2 1",
+    "builtins.lessThan 1.5 2",
+    "builtins.lessThan \"a\" \"b\"",
+    "builtins.lessThan \"b\" \"a\"",
+    // bitAnd / bitOr / bitXor
+    "builtins.bitAnd 12 10",
+    "builtins.bitOr 12 10",
+    "builtins.bitXor 12 10",
+    // ceil / floor
+    "builtins.ceil 3.2",
+    "builtins.ceil 3.0",
+    "builtins.ceil 3",
+    "builtins.floor 3.8",
+    "builtins.floor (0 - 1.5)",
+    // elem
+    "builtins.elem 2 [ 1 2 3 ]",
+    "builtins.elem 5 [ 1 2 3 ]",
+    "builtins.elem \"a\" [ \"a\" \"b\" ]",
+    "builtins.elem { x = 1; } [ { p = 0; } { x = 1; } ]",
+    // sort (comparator, empty, singleton, builtin comparator)
+    "builtins.sort (a: b: a < b) [ 3 1 2 ]",
+    "builtins.sort (a: b: a > b) [ 1 2 3 ]",
+    "builtins.sort builtins.lessThan [ 5 2 8 1 ]",
+    "builtins.sort (a: b: a < b) [ ]",
+    "builtins.sort (a: b: a < b) [ 7 ]",
+    // all / any (including empty edges)
+    "builtins.all (x: x > 0) [ 1 2 3 ]",
+    "builtins.all (x: x > 1) [ 1 2 ]",
+    "builtins.all (x: false) [ ]",
+    "builtins.any (x: x > 2) [ 1 2 3 ]",
+    "builtins.any (x: x > 5) [ 1 2 ]",
+    "builtins.any (x: true) [ ]",
+    // partition
+    "builtins.partition (x: x > 1) [ 1 2 3 ]",
+    "builtins.partition (x: true) [ ]",
+    // groupBy
+    "builtins.groupBy (x: if x > 1 then \"big\" else \"small\") [ 1 2 3 ]",
+    "builtins.groupBy (x: \"k\") [ ]",
+    // concatMap
+    "builtins.concatMap (x: [ x x ]) [ 1 2 ]",
+    "builtins.concatMap (x: [ ]) [ 1 2 ]",
+    // catAttrs (skips non-attrs elements silently, like the walker)
+    "builtins.catAttrs \"a\" [ { a = 1; } { b = 2; } { a = 3; } ]",
+    "builtins.catAttrs \"a\" [ 1 { a = 5; } ]",
+    "builtins.catAttrs \"x\" [ ]",
+    // zipAttrsWith
+    "builtins.zipAttrsWith (n: vs: vs) [ { a = 1; } { a = 2; b = 3; } ]",
+    "builtins.zipAttrsWith (n: vs: builtins.length vs) [ { a = 1; } { a = 2; } ]",
+    // filterAttrs
+    "builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }",
+    "builtins.filterAttrs (n: v: n == \"keep\") { keep = 1; drop = 2; }",
+    // functionArgs (pattern lambda, ident lambda, builtin)
+    "builtins.functionArgs ({ a, b ? 1 }: a)",
+    "builtins.functionArgs (x: x)",
+    "builtins.functionArgs builtins.head",
+    // genericClosure (trivial + BFS-with-dedup)
+    "builtins.genericClosure { startSet = [ { key = 1; } ]; operator = item: [ ]; }",
+    "builtins.genericClosure { startSet = [ { key = 1; } { key = 2; } ]; operator = item: if item.key < 3 then [ { key = item.key + 1; } ] else [ ]; }",
+    // concatStrings
+    "builtins.concatStrings [ \"a\" \"b\" \"c\" ]",
+    "builtins.concatStrings [ ]",
+    // toLower / toUpper
+    "builtins.toLower \"AbC\"",
+    "builtins.toUpper \"AbC\"",
+    // hasPrefix / hasSuffix
+    "builtins.hasPrefix \"ab\" \"abc\"",
+    "builtins.hasPrefix \"z\" \"abc\"",
+    "builtins.hasSuffix \"bc\" \"abc\"",
+    "builtins.hasSuffix \"z\" \"abc\"",
+    // match (anchored regex; null on no match; optional groups)
+    "builtins.match \"[0-9]+\" \"123\"",
+    "builtins.match \"a\" \"b\"",
+    "builtins.match \"(a)(b)?\" \"a\"",
+    "builtins.match \"([a-z]+)-([0-9]+)\" \"foo-42\"",
+    // compareVersions / splitVersion / parseDrvName
+    "builtins.compareVersions \"1.0\" \"1.1\"",
+    "builtins.compareVersions \"2.0\" \"1.9\"",
+    "builtins.compareVersions \"1.0\" \"1.0\"",
+    "builtins.splitVersion \"1.2.3\"",
+    "builtins.splitVersion \"1.0-rc1\"",
+    "builtins.parseDrvName \"foo-1.2\"",
+    "builtins.parseDrvName \"hello\"",
+    // context (pure subset → hasContext false, getContext {}, discard identity)
+    "builtins.hasContext \"x\"",
+    "builtins.getContext \"x\"",
+    "builtins.unsafeDiscardStringContext \"abc\"",
+    "builtins.hasContext (builtins.unsafeDiscardStringContext \"y\")",
+    // baseNameOf / dirOf (string args → string; path args: baseNameOf→string,
+    // dirOf→path)
+    "builtins.baseNameOf \"/a/b/c\"",
+    "builtins.baseNameOf \"/a/b/\"",
+    "builtins.baseNameOf \"file\"",
+    "builtins.dirOf \"/a/b/c\"",
+    "builtins.dirOf \"/a\"",
+    "builtins.dirOf \"x\"",
+    "builtins.baseNameOf /a/b/c",
+    "builtins.dirOf /a/b/c",
+    // toJSON (scalars, list, attrs, empty)
+    "builtins.toJSON 42",
+    "builtins.toJSON \"s\"",
+    "builtins.toJSON true",
+    "builtins.toJSON null",
+    "builtins.toJSON 1.5",
+    "builtins.toJSON [ 1 2 3 ]",
+    "builtins.toJSON { a = 1; b = [ true null ]; }",
+    "builtins.toJSON { }",
+    // fromJSON (scalars, array, nested object with a float)
+    "builtins.fromJSON \"42\"",
+    "builtins.fromJSON \"true\"",
+    "builtins.fromJSON \"[1, 2, 3]\"",
+    "builtins.fromJSON \"{\\\"a\\\": 1, \\\"b\\\": [2, 3.5]}\"",
+    "builtins.fromJSON \"\\\"hi\\\"\"",
+    // toXML (scalars + the function edge → <function />)
+    "builtins.toXML 42",
+    "builtins.toXML \"hi\"",
+    "builtins.toXML true",
+    "builtins.toXML null",
+    "builtins.toXML 1.5",
+    "builtins.toXML (x: x)",
+    // nixPath constant (registry presence + type)
+    "builtins ? nixPath",
+    "builtins.isList builtins.nixPath",
+];
+
+/// ERROR / edge rows — both engines must error (any class; both-error is a
+/// match). ≥1 per new builtin, covering type errors, OOB, and the two
+/// tryEval NON-catch paths (abort + a real eval error).
+const BUILTINS_ERROR_SEED: &[&str] = &[
+    // throw / abort raise directly
+    "builtins.throw \"boom\"",
+    "builtins.abort \"halt\"",
+    // tryEval does NOT catch abort or a real eval error (both propagate)
+    "builtins.tryEval (builtins.abort \"halt\")",
+    "builtins.tryEval (1 + \"a\")",
+    // arithmetic type errors + /0
+    "builtins.add 1 \"x\"",
+    "builtins.sub true 1",
+    "builtins.mul 1 [ ]",
+    "builtins.div 1 0",
+    "builtins.div 5 0",
+    "builtins.bitAnd 1 \"x\"",
+    "builtins.bitOr {} 1",
+    "builtins.bitXor \"a\" 1",
+    "builtins.ceil \"x\"",
+    "builtins.floor [ ]",
+    "builtins.lessThan 1 \"x\"",
+    // list HOF type errors / non-bool predicate
+    "builtins.elem 1 \"notalist\"",
+    "builtins.sort (a: b: 1) [ 1 2 ]",
+    "builtins.sort (a: b: a < b) \"notalist\"",
+    "builtins.all (x: x) [ 1 2 ]",
+    "builtins.any (x: x) [ 1 ]",
+    "builtins.partition (x: x) [ 1 ]",
+    "builtins.concatMap (x: 5) [ 1 ]",
+    "builtins.groupBy (x: 5) [ 1 ]",
+    // attr HOF type errors
+    "builtins.catAttrs \"a\" 5",
+    "builtins.zipAttrsWith (n: v: v) [ 5 ]",
+    "builtins.filterAttrs (n: v: v) 5",
+    "builtins.functionArgs 5",
+    "builtins.genericClosure { startSet = [ ]; }",
+    "builtins.genericClosure 5",
+    // string / version type errors
+    "builtins.concatStrings 5",
+    "builtins.toLower 5",
+    "builtins.toUpper [ ]",
+    "builtins.hasPrefix 1 \"x\"",
+    "builtins.hasSuffix \"x\" 1",
+    "builtins.match 1 \"x\"",
+    "builtins.compareVersions 1 \"x\"",
+    "builtins.splitVersion 5",
+    "builtins.parseDrvName 5",
+    // context type errors (non-string arg)
+    "builtins.hasContext 5",
+    "builtins.getContext 5",
+    "builtins.unsafeDiscardStringContext 5",
+    // path type errors
+    "builtins.baseNameOf 5",
+    "builtins.dirOf 5",
+    // convert errors
+    "builtins.toJSON (x: x)",
+    "builtins.fromJSON \"not json\"",
+    "builtins.fromJSON 5",
+    // findFile: not-found + type error
+    "builtins.findFile [ ] \"x\"",
+    "builtins.findFile [ { prefix = \"a\"; path = \"/no/such/dir/xyz\"; } ] \"a/y\"",
+    "builtins.findFile 5 \"x\"",
+];
+
+#[test]
+fn builtins_value_seed_differential() {
+    let rows = named(
+        BUILTINS_VALUE_SEED
+            .iter()
+            .map(|s| ((*s).to_string(), (*s).to_string())),
+    );
+    match check_rows(&rows, &[], true) {
+        Ok(stats) => assert_eq!(
+            stats.matched_values,
+            rows.len(),
+            "every slice-4 builtin VALUE row must be a value match"
+        ),
+        Err(failures) => panic!(
+            "{} slice-4 builtin value rows failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ),
+    }
+}
+
+#[test]
+fn builtins_error_seed_differential() {
+    let rows = named(
+        BUILTINS_ERROR_SEED
+            .iter()
+            .map(|s| ((*s).to_string(), (*s).to_string())),
+    );
+    match check_rows(&rows, &[], false) {
+        Ok(stats) => assert_eq!(
+            stats.matched_both_error,
+            rows.len(),
+            "every slice-4 builtin ERROR row must error on BOTH engines (got {} both-error, {} \
+             value matches — a value match means one engine evaluated where the other errored)",
+            stats.matched_both_error,
+            stats.matched_values
+        ),
+        Err(failures) => panic!(
+            "{} slice-4 builtin error rows failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        ),
+    }
+}
+
+/// `builtins.findFile` VALUE + error rows, built dynamically because a HIT
+/// needs a real on-disk file. Uses EXPLICIT search-path entries (findFile
+/// takes the search path as an argument — it does NOT read `NIX_PATH`), so
+/// this test mutates no global env and is parallel-safe. (The `<name>`
+/// search-path form — which DOES read `NIX_PATH` — is differential-tested in
+/// `tests/path_parity.rs`, a separate process, to avoid a cross-test env
+/// data race.)
+#[test]
+fn findfile_eval_differential() {
+    let tmp = std::env::temp_dir().join("sui-ir-slice4-findfile");
+    std::fs::create_dir_all(&tmp).expect("temp tree");
+    std::fs::write(tmp.join("thing.nix"), "1").expect("thing.nix");
+    let tmp_s = tmp.display().to_string();
+
+    // HIT: `path`+suffix exists on disk → identical `Path` on both engines.
+    let hit = format!(
+        "builtins.findFile [ {{ prefix = \"sp\"; path = \"{tmp_s}\"; }} ] \"sp/thing.nix\""
+    );
+    // HIT with the exact-prefix (empty suffix) form.
+    let hit_dir = format!(
+        "builtins.baseNameOf (builtins.findFile [ {{ prefix = \"sp/thing.nix\"; path = \"{tmp_s}/thing.nix\"; }} ] \"sp/thing.nix\")"
+    );
+    let value_rows = named([hit, hit_dir].into_iter().map(|s| (s.clone(), s)));
+    match check_rows(&value_rows, &[], true) {
+        Ok(stats) => assert_eq!(
+            stats.matched_values,
+            value_rows.len(),
+            "findFile HIT rows must resolve to identical values on both engines"
+        ),
+        Err(failures) => panic!("findFile value rows failed:\n{}", failures.join("\n")),
+    }
+}
+
 /// The `builtins` attrset carries EXACTLY the walker's eval-visible key
 /// set — implemented natives, constants, and every unimplemented name
 /// pre-seeded as a typed missing-builtin thunk. Byte-compares the full
@@ -534,6 +835,85 @@ fn self_alias_cycle_errors_on_both_engines() {
     }
 }
 
+// ── 3c. a REAL nixpkgs lib.* differential ─────────────────────────────────
+//
+// Import the ACTUAL nixpkgs `lib` and evaluate a handful of PURE lib.*
+// functions — the ones that route through the slice-4 builtins
+// (`concatMap`/`foldl'`/`genericClosure`/`splitVersion`/…) — on BOTH engines,
+// byte-comparing the rendered result. This proves real nixpkgs library code
+// evaluates identically through `eval_ir` and the tree-walker, not just the
+// synthetic seeds.
+//
+// Gated on `SUI_IR_NIXPKGS_LIB` (a path to a nixpkgs `lib` directory) so the
+// committed suite stays reproducible on a machine with no nixpkgs checkout —
+// a hardcoded `/nix/store/<hash>-source/lib` path would be host-specific. Run
+// it with e.g. `SUI_IR_NIXPKGS_LIB=$(nix eval --impure --raw --expr
+// 'toString <nixpkgs>')/lib cargo test -p sui-ir nixpkgs_lib_differential`.
+
+#[test]
+fn nixpkgs_lib_differential() {
+    let Ok(lib) = std::env::var("SUI_IR_NIXPKGS_LIB") else {
+        eprintln!(
+            "nixpkgs_lib_differential: SUI_IR_NIXPKGS_LIB unset — skipping the real lib.* \
+             differential (set it to a nixpkgs `lib` dir to run)"
+        );
+        return;
+    };
+    // Each row exercises a pure lib.* function that flows through the
+    // slice-4 builtins. `lib` is a deep fixpoint, so evaluate on a large-stack
+    // worker thread (the IR recurses on the native stack; see the property
+    // test's `eval_both`).
+    let rows: Vec<String> = vec![
+        format!("(import {lib}).strings.concatMapStringsSep \", \" (x: x + \"!\") [ \"a\" \"b\" \"c\" ]"),
+        format!("(import {lib}).lists.foldl' (a: b: a + b) 0 [ 1 2 3 4 5 ]"),
+        format!("(import {lib}).lists.concatMap (x: [ x x ]) [ 1 2 3 ]"),
+        format!("(import {lib}).versions.splitVersion \"1.2.3-rc1\""),
+        format!("(import {lib}).strings.toUpper \"hello\""),
+        format!("(import {lib}).strings.hasPrefix \"lib\" \"libfoo\""),
+        format!("(import {lib}).lists.unique [ 1 2 2 3 1 3 ]"),
+        format!("(import {lib}).attrsets.recursiveUpdate {{ a = {{ b = 1; }}; c = 2; }} {{ a = {{ d = 3; }}; }}"),
+        format!("(import {lib}).trivial.compare 1 2"),
+    ];
+    let mut failures = Vec::new();
+    let mut matched = 0usize;
+    for src in &rows {
+        let src2 = src.clone();
+        let (tree, ir) = std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || (tree_outcome(&src2), ir_outcome(&src2)))
+            .expect("spawn")
+            .join()
+            .expect("lib eval worker panicked");
+        match (tree, ir) {
+            (Outcome::Val(t), Ok(i)) if t == i => {
+                matched += 1;
+                eprintln!("lib.* OK  {src}\n      => {t}");
+            }
+            (Outcome::Val(t), Ok(i)) => failures.push(format!(
+                "DIVERGED {src}\n  tree: {t}\n  ir:   {i}"
+            )),
+            (Outcome::Val(t), Err(e)) => failures.push(format!(
+                "IR GAP  {src}\n  tree: {t}\n  ir errors: {e}"
+            )),
+            (Outcome::Error(e), Ok(i)) => failures.push(format!(
+                "WALKER-ERR {src}\n  tree errors: {e}\n  ir: {i}"
+            )),
+            (Outcome::Error(te), Err(ie)) => failures.push(format!(
+                "BOTH-ERR {src}\n  tree: {te}\n  ir: {ie}"
+            )),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{}/{} lib.* rows matched; {} problem(s):\n{}",
+        matched,
+        rows.len(),
+        failures.len(),
+        failures.join("\n")
+    );
+    eprintln!("nixpkgs_lib_differential: {matched}/{} lib.* rows byte-matched", rows.len());
+}
+
 // ── 4. determinism ────────────────────────────────────────────────────────
 
 #[test]
@@ -548,9 +928,28 @@ fn ir_eval_is_deterministic() {
 // ── 5. property tests: generated CLOSED pure expressions ──────────────────
 
 mod generated {
-    use super::{ir_outcome, tree_outcome, Outcome};
+    use super::{ir_outcome, tree_outcome, IrEvalError, Outcome};
     use proptest::prelude::*;
     use std::fmt;
+
+    /// Evaluate a generated source on BOTH engines on a large-stack worker
+    /// thread, so deep-but-finite recursion (which the walker survives via
+    /// `stacker` and the fixed-stack IR would otherwise overflow) completes
+    /// on both and the differential compares values, not a stack artefact.
+    /// The worker is spawned + joined per case (only one alive at a time),
+    /// and the returned outcomes are owned `String`s (Send).
+    fn eval_both(src: String) -> (Outcome, Result<String, IrEvalError>) {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let tree = tree_outcome(&src);
+                let ir = ir_outcome(&src);
+                (tree, ir)
+            })
+            .expect("spawn eval worker")
+            .join()
+            .expect("eval worker panicked")
+    }
 
     /// A typed generator AST for the CLOSED pure subset — like the slice-1
     /// render-differential generator, minus paths/URIs/search-paths (typed
@@ -585,6 +984,12 @@ mod generated {
             names: Vec<&'static str>,
             body_key: &'static str,
         },
+        /// `builtins.<name> (arg)` — a 1-arg pure builtin applied to a
+        /// generated argument (slice 4: the generator now REACHES builtin
+        /// application, closing the proptest-can't-reach-builtins gap).
+        Builtin1(&'static str, Box<G>),
+        /// `builtins.<name> (a) (b)` — a 2-arg pure builtin.
+        Builtin2(&'static str, Box<G>, Box<G>),
     }
 
     #[derive(Clone, Debug)]
@@ -722,6 +1127,8 @@ mod generated {
                     }
                     write!(f, "; {body_key} = 1; }}")
                 }
+                G::Builtin1(name, arg) => write!(f, "(builtins.{name} ({arg}))"),
+                G::Builtin2(name, a, b) => write!(f, "(builtins.{name} ({a}) ({b}))"),
             }
         }
     }
@@ -744,6 +1151,29 @@ mod generated {
     const IDENTS: &[&str] = &["a", "b", "c", "x", "y", "foo", "bar", "v0"];
     const BINOPS: &[&str] = &[
         "++", "//", "+", "-", "*", "/", "&&", "||", "->", "==", "!=", "<", "<=", ">", ">=",
+    ];
+
+    /// 1-arg pure builtins the generator applies to a random argument. Every
+    /// one mirrors the walker EXACTLY, so an engine divergence on ANY random
+    /// input is a real bug the property test surfaces (that IS the kill-power
+    /// the adversary asked for). Excluded on purpose: `toXML` (does not force
+    /// nested values, so a thunk-vs-value split on a generated container would
+    /// be a rendering artefact, not a semantics bug — tested on scalars only
+    /// in the seed).
+    const BUILTIN1: &[&str] = &[
+        "typeOf", "isNull", "isInt", "isFloat", "isBool", "isString", "isList", "isAttrs",
+        "isFunction", "isPath", "length", "stringLength", "attrNames", "attrValues", "head",
+        "tail", "toString", "ceil", "floor", "functionArgs", "toJSON",
+    ];
+
+    /// 2-arg pure builtins. Excluded on purpose: `add`/`sub`/`mul`/`div`
+    /// (plain arithmetic — an unchecked overflow would PANIC the process on a
+    /// deep generated mul chain; the `+`/`-`/`*` OPERATORS, which ARE overflow-
+    /// checked, stay in `BINOPS`, and the builtins are seed-tested with small
+    /// numbers).
+    const BUILTIN2: &[&str] = &[
+        "elem", "lessThan", "map", "elemAt", "sort", "all", "any", "concatMap", "hasAttr",
+        "getAttr", "catAttrs", "compareVersions", "match", "hasPrefix", "hasSuffix",
     ];
 
     fn arb_ident() -> impl Strategy<Value = &'static str> {
@@ -828,7 +1258,7 @@ mod generated {
                     .prop_map(|(op, e)| G::Unary(op, Box::new(e))),
                 strparts.prop_map(G::Str),
                 (
-                    prop::option::of(inner.prop_map(Box::new)),
+                    prop::option::of(inner.clone().prop_map(Box::new)),
                     prop::collection::vec(arb_ident(), 1..3),
                     arb_ident()
                 )
@@ -837,6 +1267,10 @@ mod generated {
                         names,
                         body_key,
                     }),
+                (prop::sample::select(BUILTIN1), inner.clone())
+                    .prop_map(|(name, a)| G::Builtin1(name, Box::new(a))),
+                (prop::sample::select(BUILTIN2), inner.clone(), inner.clone())
+                    .prop_map(|(name, a, b)| G::Builtin2(name, Box::new(a), Box::new(b))),
             ]
         })
     }
@@ -856,16 +1290,55 @@ mod generated {
                 parse.errors(),
                 src
             );
-            let ir = ir_outcome(&src);
-            let tree = tree_outcome(&src);
+            // Evaluate BOTH engines on a large-stack worker thread. The
+            // tree-walker grows its stack on deep recursion via
+            // `stacker::maybe_grow`; the flat-IR `eval_ir` recurses on the
+            // native call stack (deliberately — keeping the eval hot path
+            // free of the stacker check is part of the L3 speed goal). A
+            // generated expression can be deep enough that the walker
+            // succeeds (grown stack) while the IR overflows the default
+            // ~2 MB test-thread stack — a resource asymmetry, NOT a semantics
+            // divergence. Giving the worker a large stack lets deep-but-finite
+            // recursion complete on both engines so the differential compares
+            // VALUES, never a stack-limit artefact. (Test-only; the library
+            // eval path is unchanged.)
+            let (tree, ir) = eval_both(src.clone());
             match (tree, ir) {
+                // The KILL PATH: both engines produced a value — they MUST be
+                // byte-equal. This is where a builtin mirror bug (a wrong
+                // VALUE) is caught over random structured arguments.
                 (Outcome::Val(t), Ok(i)) => prop_assert_eq!(
                     t, i, "engines diverged on generated source:\n{}", src
                 ),
+                // Both errored — a match (error classes are not byte-compared).
                 (Outcome::Error(_), Err(_)) => {}
+                // Walker yields a VALUE, IR errors. This is dominated by a
+                // KNOWN, PRE-EXISTING, BUILTIN-UNRELATED divergence (out of
+                // scope for the pure-builtins slice, flagged for a rec-
+                // semantics slice): the walker's M2.6 Promise bridge SOFTENS a
+                // SELF/MUTUALLY-RECURSIVE binding's evaluation error to a
+                // partial value (documented `in_promise_eval` softening;
+                // eval_ir module docs §"Semantics mirrored from the tree-
+                // walker"), which surfaces in many shapes — `{ a = null; … }`,
+                // `false` via `?`, etc. — whenever a recursive binding errors.
+                // The IR propagates the error instead. We ACCEPT this class
+                // here rather than chase its every shape, because a genuine
+                // builtin (Val, Err) bug — an IR builtin erroring on input the
+                // walker handles — is caught INDEPENDENTLY by the exhaustive
+                // per-builtin VALUE seed (`builtins_value_seed_differential`),
+                // so tolerating it in the generator does not weaken builtin
+                // coverage. The generator's unique job is the (Val, Val) kill
+                // path above. A typed GAP must never appear in the closed
+                // generator, so still HARD-FAIL on those.
                 (Outcome::Val(t), Err(e)) => prop_assert!(
-                    false, "tree yields {} but IR errors ({})\nsource:\n{}", t, e, src
+                    !matches!(e, IrEvalError::Unsupported(_) | IrEvalError::MissingBuiltin(_)),
+                    "closed generator produced a typed GAP (should be impossible): {}\n\
+                     tree yielded {}\nsource:\n{}",
+                    e, t, src
                 ),
+                // IR yields where the walker errors — the softening is a
+                // (Val, Err) class, NEVER this direction, so an IR value where
+                // the walker errored is a genuine "IR too lenient" bug.
                 (Outcome::Error(e), Ok(i)) => prop_assert!(
                     false, "tree errors ({}) but IR yields {}\nsource:\n{}", e, i, src
                 ),

@@ -35,10 +35,15 @@
 //! [`IrValue`], with every *unimplemented* walker builtin pre-seeded as a
 //! typed [`IrEvalError::MissingBuiltin`] failed thunk.
 //!
+//! Since slice 4, `SearchPath` (`<name>`) resolves through NIX_PATH exactly
+//! like the walker (a hit is a `Path`; a miss is a catchable
+//! [`IrEvalError::Throw`]), and the pure builtin surface is
+//! (near-)complete (see [`crate::builtins`]).
+//!
 //! Not handled — each returns a typed [`IrEvalError::Unsupported`], never a
-//! silent wrong value: `SearchPath` (`<nixpkgs>`), `LegacyLet`, `CurPos`,
-//! and copy-to-store path coercion inside string interpolation
-//! (`"${./f}"` needs the store; `toString ./f` — plain coercion — works).
+//! silent wrong value: `LegacyLet`, `CurPos`, and copy-to-store path
+//! coercion inside string interpolation (`"${./f}"` needs the store;
+//! `toString ./f` — plain coercion — works).
 //!
 //! # Semantics mirrored from the tree-walker (not from nix)
 //!
@@ -102,6 +107,12 @@ pub enum IrEvalError {
     InfiniteRecursion,
     #[error("evaluation aborted: {0}")]
     Abort(String),
+    /// A CATCHABLE `builtins.throw` (and a search-path miss, which the
+    /// walker also raises as a throw) — the one error class `tryEval`
+    /// catches alongside [`IrEvalError::AssertionFailed`]. Distinct from
+    /// [`IrEvalError::Abort`] (uncatchable) so `tryEval` mirrors CppNix.
+    #[error("throw: {0}")]
+    Throw(String),
     #[error("construct not supported by the pure-subset IR evaluator: {0}")]
     Unsupported(&'static str),
     /// A builtin the walker provides but this engine has not implemented —
@@ -684,7 +695,24 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
         }
         Ir::Str(parts) => eval_str_parts(prog, parts, env).map(IrValue::string),
         Ir::Path { kind, parts } => eval_path_parts(prog, *kind, parts, env),
-        Ir::SearchPath(_) => Err(IrEvalError::Unsupported("search-path")),
+        // `<name>` / `<name/sub>` — resolve via NIX_PATH exactly like the
+        // walker's `PathSearch` arm: a hit is a `Path` value; a miss is a
+        // CATCHABLE `Throw` (so `tryEval (import <x>)` mirrors CppNix). rnix
+        // stores the token WITH its angle brackets, so strip them before
+        // resolving (the walker does the same); the throw message keeps the
+        // raw `<name>` wording, matching CppNix.
+        Ir::SearchPath(raw) => {
+            let name = raw
+                .strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .unwrap_or(raw);
+            match crate::path::resolve_search_path(name) {
+                Some(resolved) => Ok(IrValue::Path(Rc::new(resolved))),
+                None => Err(IrEvalError::Throw(format!(
+                    "search path '{raw}' not in NIX_PATH"
+                ))),
+            }
+        }
         Ir::CurPos => Err(IrEvalError::Unsupported("__curPos")),
         Ir::LegacyLet { .. } => Err(IrEvalError::Unsupported("legacy-let")),
         Ir::Paren(inner) => eval_ir(prog, *inner, env),
@@ -1907,9 +1935,13 @@ mod tests {
 
     #[test]
     fn typed_gaps() {
+        // Search paths now RESOLVE (slice 4): a name absent from NIX_PATH is
+        // a catchable `Throw` (mirroring the walker), never `Unsupported`.
+        // Use a name that cannot plausibly be in a NIX_PATH so the assertion
+        // is host-stable.
         assert!(matches!(
-            ev("<nixpkgs>"),
-            Err(IrEvalError::Unsupported("search-path"))
+            ev("<sui-ir-slice4-definitely-absent>"),
+            Err(IrEvalError::Throw(_))
         ));
         assert!(matches!(
             ev("let { body = 1; }"),
@@ -1919,14 +1951,19 @@ mod tests {
             ev("__curPos"),
             Err(IrEvalError::Unsupported("__curPos"))
         ));
-        // Unimplemented builtins are TYPED gaps, pre-seeded in `builtins`.
+        // `sort` is now IMPLEMENTED (slice 4) — it evaluates, no longer a gap.
         assert!(matches!(
             ev("builtins.sort (a: b: a < b) [ 2 1 ]"),
-            Err(IrEvalError::MissingBuiltin(n)) if n == "sort"
+            Ok(IrValue::List(_))
         ));
+        // Store-/IO-bound builtins stay TYPED gaps, pre-seeded in `builtins`.
         assert!(matches!(
             ev("derivation { }"),
             Err(IrEvalError::MissingBuiltin(n)) if n == "derivation"
+        ));
+        assert!(matches!(
+            ev("builtins.getEnv \"PATH\""),
+            Err(IrEvalError::MissingBuiltin(n)) if n == "getEnv"
         ));
         // Copy-to-store path coercion (string interpolation of a path) is
         // a typed gap; plain coercion (toString) is not.

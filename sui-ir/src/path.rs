@@ -1,6 +1,8 @@
 //! Path algorithms for the IR engine — **byte-for-byte mirrors** of
 //! `sui-eval/src/path.rs` (`canon_abs`, `normalize`, `resolve_relative`,
-//! `resolve_import`).
+//! `resolve_import`) plus the NIX_PATH search-path resolver from
+//! `sui-eval/src/builtins/nav.rs` (`parse_nix_path`, `resolve_search_path`),
+//! all parity-tested against their originals in `tests/path_parity.rs`.
 //!
 //! # Mirror, not reuse — and why
 //!
@@ -110,6 +112,73 @@ pub fn resolve_import(base_dir: Option<&Path>, raw: &str) -> Result<PathBuf, Str
     } else {
         Ok(resolved)
     }
+}
+
+// ── NIX_PATH search-path resolution (mirror of `sui_eval::builtins::nav`) ──
+
+/// Parse a `NIX_PATH` env-var value into `(prefix, path)` pairs. Mirror of
+/// `sui_eval::builtins::parse_nix_path`: `prefix1=path1:prefix2=path2:…`; an
+/// entry with no `=` has an empty prefix; empty entries are skipped.
+#[must_use]
+pub fn parse_nix_path(s: &str) -> Vec<(String, String)> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(':')
+        .filter(|e| !e.is_empty())
+        .map(|entry| match entry.split_once('=') {
+            Some((prefix, path)) => (prefix.to_string(), path.to_string()),
+            None => (String::new(), entry.to_string()),
+        })
+        .collect()
+}
+
+/// Resolve a `<name>` / `<name/sub>` search-path token to an absolute
+/// filesystem path by walking the `NIX_PATH` entries. Mirror of
+/// `sui_eval::builtins::resolve_search_path`, minus the `<nix/…>` embedded
+/// corepkgs branch — the pure-subset engine ships no corepkgs, so a
+/// `nix/`-prefixed token resolves to `None` (a miss → a typed throw at the
+/// eval site) rather than a temp-materialized corepkg file. Parity for the
+/// NIX_PATH-driven cases is gated in `tests/path_parity.rs`.
+#[must_use]
+pub fn resolve_search_path(name: &str) -> Option<String> {
+    // Embedded corepkgs (`<nix/fetchurl.nix>`) are a sui-eval-side impurity
+    // with no counterpart here; mirror the walker's structure but leave the
+    // corepkg materialization out (documented divergence — never exercised
+    // by the pure subset, which has no fetchers).
+    if name.strip_prefix("nix/").is_some() {
+        return None;
+    }
+
+    let nix_path = std::env::var("NIX_PATH").unwrap_or_default();
+    if nix_path.is_empty() {
+        return None;
+    }
+    for (prefix, path) in parse_nix_path(&nix_path) {
+        if !prefix.is_empty() && name == prefix {
+            if Path::new(&path).exists() {
+                return Some(path);
+            }
+            continue;
+        }
+        if !prefix.is_empty() {
+            let needle = format!("{prefix}/");
+            if let Some(rest) = name.strip_prefix(&needle) {
+                let full = format!("{path}/{rest}");
+                if Path::new(&full).exists() {
+                    return Some(full);
+                }
+                continue;
+            }
+        }
+        if prefix.is_empty() {
+            let full = format!("{path}/{name}");
+            if Path::new(&full).exists() {
+                return Some(full);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

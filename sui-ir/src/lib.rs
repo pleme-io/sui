@@ -33,9 +33,15 @@
 //! the walker's `canon_abs`/`normalize`/`resolve_import`), `import` through
 //! the lower-once [`file_eval`] program cache (parse + lower ONCE per
 //! canonical path, typed circular-import detection), and the [`builtins`]
-//! bridge (the most-used pure builtins natively on `IrValue`, every
-//! unimplemented walker builtin pre-seeded as a typed missing-builtin gap)
-//! — gated by `tests/eval_differential.rs` + `tests/file_differential.rs`.
+//! bridge — gated by `tests/eval_differential.rs` + `tests/file_differential.rs`.
+//!
+//! **Pure builtin surface + search paths (slice 4)** completes the [`builtins`]
+//! bridge (the whole PURE builtin set natively on `IrValue`; only store-/IO-/
+//! derivation-/flake-bound names stay typed missing-builtin gaps) and resolves
+//! `<name>` search paths through NIX_PATH (a hit is a `Path`, a miss a
+//! catchable `Throw`, plus `builtins.nixPath` / `findFile`). Per-builtin value
+//! + error differential rows and a builtin-application property generator gate
+//! the surface; the NIX_PATH resolver is parity-tested in `tests/path_parity.rs`.
 //!
 //! # Id discipline
 //!
