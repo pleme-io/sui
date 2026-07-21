@@ -450,3 +450,49 @@
   :measured   Improved
   :speedup-bp 15000
   :ceiling    NotApplicable)
+
+;; ── ir-file-eval — L3 slice 3 (2026-07-21, branch ir/l3-file-slice3) ──
+;; eval_ir goes FILE-CAPABLE.  Three additions, all differential-gated
+;; against the tree-walker oracle: (1) PATH literals — abs/rel/home with
+;; interpolation, resolved through byte-mirrors of the walker's
+;; canon_abs/normalize/resolve_import (sui-ir::path, parity-tested
+;; against sui-eval::path in tests/path_parity.rs — the walker fns are
+;; pub but sui-eval is dev-dep-only, so mirror-plus-parity-gate is the
+;; honest shape); (2) IMPORT — a thread-local canonical-path-keyed
+;; ProgramCache (parse+lower ONCE per file: the SPEED.md L3 lower-once
+;; destination in miniature, proven by tests/file_differential.rs'
+;; program_cache_len assertions), a walker-mirroring import VALUE cache
+;; (identity equality holds: import ./a == import ./a), the
+;; directory→default.nix rule, and TYPED circular-import detection
+;; (IrEvalError::ImportCycle — the walker/CppNix would recurse to stack
+;; death; IR-only test); (3) the BUILTINS BRIDGE — 36 pure builtins
+;; natively on IrValue (attrNames/attrValues/hasAttr/getAttr/length/
+;; head/tail/elemAt/filter/concatLists/listToAttrs/mapAttrs/removeAttrs/
+;; intersectAttrs/toString/typeOf/is* ×9/seq/deepSeq/foldl'/genList/
+;; substring/stringLength/split/concatStringsSep/replaceStrings/map/
+;; import), constants (currentSystem/storeDir/nixVersion/langVersion),
+;; and EVERY unimplemented walker builtin pre-seeded as a typed
+;; MissingBuiltin failed thunk — builtins KEY-SET parity with the walker
+;; is byte-gated (builtins_registry_parity).  Known-gap allowlists
+;; SHRANK: corpus 17→7 rows (derivation ×4 + elem + concatMap), supplement
+;; 12→4 (search-path ×2, legacy-let ×2); closed seed grew ~90 rows.  File
+;; A/B (release, interleaved ×5, 300 evals/round, ab_file.nix importing
+;; lib.nix + dir/, byte-agreeing result): walker 134-147ms/round vs
+;; ir-cold (ALL caches cleared per eval — pays parse+lower each time)
+;; 110-115ms (~1.2×) vs ir-warm (programs cached, value cache cleared —
+;; every file's code re-runs, lower-once amortized) 41-44ms → 3.0-3.4×
+;; (+220% → 22000 bp; round-0 warm outlier 93ms recorded as warmup).
+;; Micro A/B re-run this slice: 2.54-2.61× (slice-2's 2.49-2.57× held).
+;; HONEST SCOPE: dual-engine harness numbers over the pure subset; the
+;; engine is still wired into nothing (Proposed, not Landed); the
+;; string-interpolated-path copy-to-store coercion stays a typed gap
+;; (Unsupported("path-copy-to-store") — needs the store).
+(defperf-lever
+  :name       "ir-file-eval"
+  :attacks    ("rowan-per-eval-rewalk" "per-import-reparse-relower")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Proposed
+  :measured   Improved
+  :speedup-bp 22000
+  :ceiling    NotApplicable)

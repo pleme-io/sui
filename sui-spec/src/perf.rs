@@ -492,7 +492,12 @@ mod tests {
         // the pure expression subset (Proposed; differential-gated; micro
         // A/B ~2.5x vs the tree-walker on the synthetic harness — honest
         // scope: not a sacred-path measurement).
-        assert_eq!(levers.len(), 19, "authored levers");
+        // +1 (2026-07-21): ir-file-eval — L3 slice 3, file-capable eval_ir
+        // (paths + import through the lower-once ProgramCache + the 36-
+        // builtin bridge; Proposed; file A/B warm ~3.0-3.4x / cold ~1.2x
+        // vs the walker — honest scope: dual-engine harness, wired into
+        // nothing).
+        assert_eq!(levers.len(), 20, "authored levers");
     }
 
     #[test]

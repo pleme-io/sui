@@ -25,7 +25,7 @@
 
 use std::rc::Rc;
 
-use sui_ir::eval_ir::{eval_ir, IrEnv, IrEvalError, IrValue};
+use sui_ir::eval_ir::{eval_ir, IrEnv, IrEvalError};
 use sui_ir::lower_file;
 
 /// The generated parity-corpus rows, lifted verbatim from the root crate —
@@ -36,109 +36,11 @@ use sui_ir::lower_file;
 mod parity_corpus;
 
 /// The shared hand-authored supplement (also consumed by the slice-1 render
-/// differential in `differential.rs`).
+/// differential in `differential.rs`) + the shared two-engine render (also
+/// consumed by the slice-3 file differential in `file_differential.rs`).
 mod common;
+use common::render::{render_ir_value, render_tree};
 use common::SUPPLEMENT;
-
-// ── the normalized render (one textual form, two implementations) ─────────
-
-fn escape_str(s: &str) -> String {
-    // Byte-identical to the walker's Display escaping.
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Render a TREE-WALKER value: deep-forcing, error-propagating (unlike the
-/// walker's `Display`, which swallows a failed force as `<<thunk:error>>` —
-/// the differential must see errors as errors).
-fn render_tree(v: &sui_eval::Value) -> Result<String, String> {
-    use sui_eval::value::Concrete;
-    let c = sui_eval::eval::force_concrete(v).map_err(|e| e.to_string())?;
-    Ok(match c {
-        Concrete::Null => "null".to_string(),
-        Concrete::Bool(b) => b.to_string(),
-        Concrete::Int(n) => n.to_string(),
-        Concrete::Float(f) => sui_compat::versions::cppnix_format_float(f),
-        Concrete::String(s) => {
-            let mut out = String::from("\"");
-            out.push_str(&escape_str(&s));
-            out.push('"');
-            out
-        }
-        Concrete::Path(p) => p.to_string(),
-        Concrete::List(items) => {
-            let mut out = String::from("[ ");
-            for item in items.iter() {
-                out.push_str(&render_tree(item)?);
-                out.push(' ');
-            }
-            out.push(']');
-            out
-        }
-        Concrete::Attrs(attrs) => {
-            let mut out = String::from("{ ");
-            for (k, v) in attrs.iter() {
-                out.push_str(&k);
-                out.push_str(" = ");
-                out.push_str(&render_tree(v)?);
-                out.push_str("; ");
-            }
-            out.push('}');
-            out
-        }
-        Concrete::Lambda(_) => "<<lambda>>".to_string(),
-        Concrete::Builtin(b) => {
-            let mut out = String::from("<<builtin ");
-            out.push_str(b.name);
-            out.push_str(">>");
-            out
-        }
-    })
-}
-
-/// Render an IR value through the SAME normalized form.
-fn render_ir_value(v: &IrValue) -> Result<String, IrEvalError> {
-    let f = v.force()?;
-    Ok(match f {
-        IrValue::Null => "null".to_string(),
-        IrValue::Bool(b) => b.to_string(),
-        IrValue::Int(n) => n.to_string(),
-        IrValue::Float(x) => sui_compat::versions::cppnix_format_float(x),
-        IrValue::Str(s) => {
-            let mut out = String::from("\"");
-            out.push_str(&escape_str(&s));
-            out.push('"');
-            out
-        }
-        IrValue::List(items) => {
-            let mut out = String::from("[ ");
-            for item in items.iter() {
-                out.push_str(&render_ir_value(item)?);
-                out.push(' ');
-            }
-            out.push(']');
-            out
-        }
-        IrValue::Attrs(attrs) => {
-            let mut out = String::from("{ ");
-            for (k, v) in attrs.iter() {
-                out.push_str(k);
-                out.push_str(" = ");
-                out.push_str(&render_ir_value(v)?);
-                out.push_str("; ");
-            }
-            out.push('}');
-            out
-        }
-        IrValue::Lambda(_) => "<<lambda>>".to_string(),
-        IrValue::Builtin(kind, _) => {
-            let mut out = String::from("<<builtin ");
-            out.push_str(kind.name());
-            out.push_str(">>");
-            out
-        }
-        IrValue::Thunk(_) => unreachable!("force() returned a thunk"),
-    })
-}
 
 // ── outcomes + typed gap classification ───────────────────────────────────
 
@@ -190,6 +92,15 @@ fn classify_gap(e: &IrEvalError) -> Option<String> {
             s.push_str(c);
             Some(s)
         }
+        // Since slice 3 every walker builtin NAME is bound (implemented or
+        // pre-seeded failed thunk), so unimplemented builtins surface as
+        // the typed `MissingBuiltin` — the UndefinedVar arm below only
+        // remains for idents that are unbound on BOTH engines.
+        IrEvalError::MissingBuiltin(n) => {
+            let mut s = String::from("missing-builtin:");
+            s.push_str(n);
+            Some(s)
+        }
         IrEvalError::UndefinedVar(n) if KNOWN_BUILTIN_IDENTS.contains(&n.as_str()) => {
             let mut s = String::from("missing-builtin:");
             s.push_str(n);
@@ -207,50 +118,33 @@ fn classify_gap(e: &IrEvalError) -> Option<String> {
 // the list can only shrink. Unlisted rows must match.
 
 /// Corpus rows (identified by `CorpusRow::name`). Enumerated by the
-/// `enumerate_gap_candidates` probe — 17 of the 26 rows reach
-/// `derivation`/`builtins`/path literals; the 9 rows that stay inside the
-/// pure subset (attr-merge ×3, dynamic-attrpath laziness ×4, colliding-head
-/// dynamic tail ×2) are NOT listed and must byte-match.
+/// `enumerate_gap_candidates` probe. Slice 3 SHRANK this list from 17 rows
+/// to 7: the path-literal rows, every `builtins.<implemented>` row
+/// (dynamic-tail laziness ×2, dotted deep-merge ×2, list-concat fold,
+/// concatLists flatten, typeOf-path) now byte-match; what remains is
+/// `derivation` (×4 — impure by nature), bare `elem` and `concatMap`
+/// (unimplemented, typed missing).
 const CORPUS_KNOWN_GAPS: &[(&str, &str)] = &[
     ("concatStringsSep multi-output context", "missing-builtin:derivation"),
     ("concatStringsSep empty-sep single-element context", "missing-builtin:derivation"),
     ("multi-output producer .dev drvPath", "missing-builtin:derivation"),
-    ("multi-level dynamic-tail attrpath — middle-level read stays lazy", "missing-builtin:builtins"),
-    ("with-namespace laziness — body WHNF does not force the namespace", "missing-builtin:builtins"),
-    ("dotted full-set leaf deep-merges with a deeper sibling (forward)", "missing-builtin:builtins"),
-    ("dotted full-set leaf deep-merges with a deeper sibling (reverse)", "missing-builtin:builtins"),
-    ("path-literal interp (absolute, string splice)", "unsupported:path"),
-    ("path-literal interp (absolute, slash in value)", "unsupported:path"),
-    ("path-literal interp (path-typed splice, seam normalized)", "unsupported:path"),
-    ("path-literal interp yields a path value", "missing-builtin:builtins"),
-    ("list-concat fold — left-associative ++ (value)", "missing-builtin:builtins"),
-    ("concatLists flatten (value)", "missing-builtin:builtins"),
-    ("concatMap expand (value)", "missing-builtin:builtins"),
+    ("concatMap expand (value)", "missing-builtin:concatMap"),
     ("list-concat ++ into derivation args — drvPath", "missing-builtin:derivation"),
-    ("attrs-eq deep true/false + elem (value)", "missing-builtin:builtins"),
+    ("attrs-eq deep true/false + elem (value)", "missing-builtin:elem"),
     ("attrs-eq selects derivation arg — drvPath", "missing-builtin:derivation"),
 ];
 
 /// Supplement rows (identified by source text). The search-path rows are
 /// listed (rather than relying on both-error) so the outcome is independent
-/// of whether the host has a `NIX_PATH` the tree-walker could resolve; same
-/// for the `import` row and the working directory.
+/// of whether the host has a `NIX_PATH` the tree-walker could resolve.
+/// Slice 3 SHRANK this list from 12 rows to 4: every path-literal row now
+/// byte-matches (paths implemented), and the `map … import ./m.nix` row is
+/// a both-error match (the file does not exist on either engine).
 const SUPPLEMENT_KNOWN_GAPS: &[(&str, &str)] = &[
     ("<nixpkgs>", "unsupported:search-path"),
     ("<nixpkgs/lib>", "unsupported:search-path"),
-    ("~/dir/file", "unsupported:path"),
-    ("/abs/path", "unsupported:path"),
-    ("./rel/path", "unsupported:path"),
-    ("../up/one", "unsupported:path"),
-    (r#"let x = "foo"; in /a/${x}/b"#, "unsupported:path"),
-    (r#"let x = "foo"; in ./${x}.nix"#, "unsupported:path"),
-    (r"toString /bar/${/tmp/foo}", "unsupported:path"),
     ("let { body = 1; }", "unsupported:legacy-let"),
     ("let { a = 2; body = a; }", "unsupported:legacy-let"),
-    (
-        "map (x: import ./m.nix { inherit x; }) [ 1 2 ]",
-        "missing-builtin:import",
-    ),
 ];
 
 // ── the row driver ────────────────────────────────────────────────────────
@@ -487,6 +381,98 @@ const CLOSED_SEED: &[&str] = &[
     "toString [ 1 2 ]",
     "\"${{ __toString = self: \"ts\"; }}\"",
     "\"${{ outPath = \"op\"; }}\"",
+    // ── slice 3: path literals (plain coercion only — value rows) ──
+    "/abs/path",
+    "./rel/path",
+    "../up/one",
+    "~/dir/file",
+    "/foo/../bar",
+    "/..",
+    "/foo/./bar/baz",
+    r#"let x = "foo"; in /a/${x}/b"#,
+    r#"let x = "a/b"; in /root/${x}.nix"#,
+    r#"let x = "foo"; in ./${x}.nix"#,
+    "toString /bar/${/tmp/foo}",
+    "toString ./x",
+    "toString [ 1 ./p true ]",
+    "/a/b == /a/b",
+    "/a/b == /a/c",
+    r#"/a/b == "/a/b""#,
+    "./x + \"/y\"",
+    "/a + /b",
+    "builtins.typeOf /a",
+    "builtins.isPath ./x",
+    "builtins.isPath \"/x\"",
+    // ── slice 3: the builtins bridge — dedicated rows per builtin ──
+    "builtins.attrNames { b = 1; a = 2; }",
+    "builtins.attrValues { b = 10; a = 20; }",
+    "builtins.hasAttr \"a\" { a = 1; }",
+    "builtins.hasAttr \"z\" { a = 1; }",
+    "builtins.getAttr \"a\" { a = 41; }",
+    "builtins.length [ 1 2 3 ]",
+    "builtins.length [ ]",
+    "builtins.head [ 7 8 ]",
+    "builtins.tail [ 7 8 9 ]",
+    "builtins.elemAt [ 1 2 3 ] 1",
+    "builtins.filter (x: x > 1) [ 1 2 3 ]",
+    "builtins.filter (x: false) [ 1 2 ]",
+    "builtins.concatLists [ [ 1 ] [ ] [ 2 3 ] ]",
+    "builtins.concatLists [ ]",
+    "builtins.listToAttrs [ { name = \"a\"; value = 1; } { name = \"a\"; value = 2; } { name = \"b\"; value = 3; } ]",
+    "builtins.mapAttrs (k: v: k + toString v) { a = 1; b = 2; }",
+    "builtins.removeAttrs { a = 1; b = 2; c = 3; } [ \"a\" \"c\" \"zz\" ]",
+    "builtins.intersectAttrs { a = 1; b = 2; } { b = 20; c = 30; }",
+    "builtins.toString 42",
+    "builtins.typeOf { }",
+    "builtins.typeOf (x: x)",
+    "builtins.typeOf builtins.length",
+    "builtins.isInt 1",
+    "builtins.isInt 1.5",
+    "builtins.isFloat 1.5",
+    "builtins.isBool true",
+    "builtins.isString \"s\"",
+    "builtins.isList [ ]",
+    "builtins.isAttrs { }",
+    "builtins.isFunction (x: x)",
+    "builtins.isFunction builtins.head",
+    "builtins.isNull null",
+    "builtins.isNull 0",
+    "builtins.seq 1 2",
+    "builtins.deepSeq [ 1 2 ] 3",
+    "builtins.foldl' (a: b: a + b) 0 [ 1 2 3 4 ]",
+    "builtins.foldl' (a: b: a - b) 100 [ ]",
+    "builtins.genList (i: i * i) 5",
+    "builtins.genList (i: i) 0",
+    "builtins.substring 1 2 \"abcdef\"",
+    "builtins.substring 3 (-1) \"abcdef\"",
+    "builtins.substring 10 2 \"abc\"",
+    "builtins.substring 0 0 \"abc\"",
+    "builtins.stringLength \"abc\"",
+    "builtins.stringLength \"\"",
+    "builtins.split \"b\" \"abc\"",
+    "builtins.split \"([0-9]+)\" \"a1b22c\"",
+    "builtins.split \"x\" \"\"",
+    "builtins.split \"(a)|(b)\" \"ab\"",
+    "builtins.concatStringsSep \", \" [ \"a\" \"b\" ]",
+    "builtins.concatStringsSep \"-\" [ ]",
+    "builtins.concatStringsSep \"-\" [ 1 ./p ]",
+    "builtins.replaceStrings [ \"a\" \"b\" ] [ \"x\" \"y\" ] \"aabbc\"",
+    "builtins.replaceStrings [ \"\" ] [ \"-\" ] \"ab\"",
+    "builtins.replaceStrings [ ] [ ] \"abc\"",
+    "builtins.map (x: x * 2) [ 1 2 ]",
+    "map (x: x + 1) (builtins.tail [ 1 2 3 ])",
+    // Constants + registry surface.
+    "builtins.currentSystem",
+    "builtins.storeDir",
+    "builtins.nixVersion",
+    "builtins.langVersion",
+    "builtins ? sort",
+    "builtins ? builtins",
+    "builtins.builtins ? builtins",
+    "builtins.hasAttr \"map\" builtins.builtins",
+    // DEFAULT_SCOPE bare globals.
+    "isNull null",
+    "removeAttrs { a = 1; b = 2; } [ \"a\" ]",
 ];
 
 #[test]
@@ -509,6 +495,24 @@ fn closed_seed_eval_differential() {
             failures.len(),
             failures.join("\n")
         ),
+    }
+}
+
+/// The `builtins` attrset carries EXACTLY the walker's eval-visible key
+/// set — implemented natives, constants, and every unimplemented name
+/// pre-seeded as a typed missing-builtin thunk. Byte-compares the full
+/// sorted key list through both engines, so a builtin added to the walker
+/// without a bridge entry (or a phantom IR-only name) is a red test.
+#[test]
+fn builtins_registry_parity() {
+    let src = "builtins.attrNames builtins";
+    let ir = ir_outcome(src).expect("IR renders the builtins key list");
+    match tree_outcome(src) {
+        Outcome::Val(tree) => assert_eq!(
+            tree, ir,
+            "builtins key sets diverge between the walker and the IR bridge"
+        ),
+        Outcome::Error(e) => panic!("walker failed to enumerate builtins: {e}"),
     }
 }
 

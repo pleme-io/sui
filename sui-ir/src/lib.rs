@@ -29,6 +29,14 @@
 //! known-gap allowlist. Nothing here is wired into sui-eval; the live
 //! engines are untouched.
 //!
+//! **File-capable eval (slice 3)** adds path literals ([`path`] mirrors of
+//! the walker's `canon_abs`/`normalize`/`resolve_import`), `import` through
+//! the lower-once [`file_eval`] program cache (parse + lower ONCE per
+//! canonical path, typed circular-import detection), and the [`builtins`]
+//! bridge (the most-used pure builtins natively on `IrValue`, every
+//! unimplemented walker builtin pre-seeded as a typed missing-builtin gap)
+//! — gated by `tests/eval_differential.rs` + `tests/file_differential.rs`.
+//!
 //! # Id discipline
 //!
 //! Ids are assigned post-order: every child id is strictly less than its
@@ -37,11 +45,17 @@
 //! parents, which the later precompute passes (needed-bindings, free-var
 //! sets, attrset shapes) rely on.
 
+pub mod builtins;
 pub mod eval_ir;
+pub mod file_eval;
 pub mod ir;
 pub mod lower;
+pub mod path;
 pub mod render;
 
+pub use file_eval::{
+    clear_file_caches, clear_import_value_cache, eval_ir_file, program_cache_len,
+};
 pub use ir::{
     AttrName, BinOp, Binding, ExprId, Ir, Param, PathKind, PathPart, PatternEntry, Program,
     Span, StrPart, UnaryOp,

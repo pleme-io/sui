@@ -25,14 +25,20 @@
 //! Handled: Int / Float / Bool / Null / Str (interpolation over pure parts) /
 //! Uri / Ident / LetIn / Lambda / Apply / BinOp (all) / UnaryOp / IfElse /
 //! List / AttrSet (non-rec + rec) / Select (+ `or`) / HasAttr / With /
-//! Assert / Paren / Inherit (+ `inherit (from)`), plus a tiny pure builtin
-//! set: `toString`, `map`.
+//! Assert / Paren / Inherit (+ `inherit (from)`), plus — since slice 3 —
+//! **`Path` literals** (abs/rel/home, with interpolation, mirroring the
+//! walker's `canon_abs`/`normalize`/eval-dir resolution via the
+//! [`crate::path`] mirrors), **`import`** (file loading through the
+//! lower-once [`crate::file_eval`] program cache, with typed
+//! circular-import detection) and the **builtins bridge**
+//! ([`crate::builtins`]) — the most-used pure builtins natively on
+//! [`IrValue`], with every *unimplemented* walker builtin pre-seeded as a
+//! typed [`IrEvalError::MissingBuiltin`] failed thunk.
 //!
 //! Not handled — each returns a typed [`IrEvalError::Unsupported`], never a
-//! silent wrong value: `Path` (all kinds), `SearchPath`, `LegacyLet`,
-//! `CurPos`. Everything else the full evaluator provides (builtins,
-//! `derivation`, `import`, …) is simply an unbound identifier here, which the
-//! differential classifies as a typed known gap.
+//! silent wrong value: `SearchPath` (`<nixpkgs>`), `LegacyLet`, `CurPos`,
+//! and copy-to-store path coercion inside string interpolation
+//! (`"${./f}"` needs the store; `toString ./f` — plain coercion — works).
 //!
 //! # Semantics mirrored from the tree-walker (not from nix)
 //!
@@ -57,12 +63,17 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use sui_intern::{intern, resolve, Symbol};
 
-use crate::ir::{AttrName, BinOp, Binding, ExprId, Ir, Param, Program, StrPart, UnaryOp};
+pub use crate::builtins::IrBuiltin;
+use crate::file_eval::{current_eval_dir, push_eval_file};
+use crate::ir::{
+    AttrName, BinOp, Binding, ExprId, Ir, Param, PathKind, PathPart, Program, StrPart, UnaryOp,
+};
 
 // ── errors ────────────────────────────────────────────────────────────────
 
@@ -93,6 +104,21 @@ pub enum IrEvalError {
     Abort(String),
     #[error("construct not supported by the pure-subset IR evaluator: {0}")]
     Unsupported(&'static str),
+    /// A builtin the walker provides but this engine has not implemented —
+    /// pre-seeded as a failed thunk in the `builtins` attrset so the gap is
+    /// typed, never a wrong value or a bare `AttrNotFound`.
+    #[error("builtin not implemented by the pure-subset IR evaluator: {0}")]
+    MissingBuiltin(String),
+    /// Circular `import` chain (typed where the walker would recurse until
+    /// the stack dies). Carries the `a -> b -> a` chain.
+    #[error("circular import: {0}")]
+    ImportCycle(String),
+    /// File-system failure while loading an imported file.
+    #[error("{context}: {message}")]
+    Io { context: String, message: String },
+    /// Parse (or lower) failure of an imported file.
+    #[error("parse error: {0}")]
+    Parse(String),
 }
 
 // ── values ────────────────────────────────────────────────────────────────
@@ -100,30 +126,6 @@ pub enum IrEvalError {
 /// Attribute set payload — a sorted map so iteration order is the walker's
 /// `sorted_entries()` order (lexicographic by key string) by construction.
 pub type IrAttrs = std::collections::BTreeMap<String, IrValue>;
-
-/// The tiny pure builtin set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IrBuiltin {
-    /// `toString` — the walker's PLAIN string coercion.
-    ToString,
-    /// `map` (no args yet).
-    Map,
-    /// `map f` — partial application awaiting the list.
-    MapPartial,
-}
-
-impl IrBuiltin {
-    /// The walker's display name for this builtin (byte-mirrored — partial
-    /// `map` renders as `map<partial>` there).
-    #[must_use]
-    pub fn name(&self) -> &'static str {
-        match self {
-            IrBuiltin::ToString => "toString",
-            IrBuiltin::Map => "map",
-            IrBuiltin::MapPartial => "map<partial>",
-        }
-    }
-}
 
 /// A lambda closure over the flat IR: the body is an [`ExprId`] into the
 /// owned [`Program`], never an AST node.
@@ -145,12 +147,15 @@ pub enum IrValue {
     Int(i64),
     Float(f64),
     Str(Rc<String>),
+    /// A path value — the resolved path string (the walker's
+    /// `Value::Path` mirror; renders raw, unquoted).
+    Path(Rc<String>),
     List(Rc<Vec<IrValue>>),
     Attrs(Rc<IrAttrs>),
     Lambda(Rc<IrClosure>),
-    /// Partial applications of the tiny pure builtin set. `MapPartial`
-    /// carries the captured function.
-    Builtin(IrBuiltin, Option<Rc<IrValue>>),
+    /// A builtin with its captured arguments so far (uniform partial
+    /// application — see [`crate::builtins`]).
+    Builtin(IrBuiltin, Rc<Vec<IrValue>>),
     Thunk(IrThunk),
 }
 
@@ -168,6 +173,7 @@ impl IrValue {
             IrValue::Int(_) => "int",
             IrValue::Float(_) => "float",
             IrValue::Str(_) => "string",
+            IrValue::Path(_) => "path",
             IrValue::List(_) => "list",
             IrValue::Attrs(_) => "set",
             IrValue::Lambda(_) | IrValue::Builtin(..) => "lambda",
@@ -234,9 +240,9 @@ enum IrThunkState {
         value: ExprId,
         env: IrEnv,
     },
-    /// `map f` element — apply `func` to `arg` on force (the walker's
-    /// `Thunk::new_native` in the `map` builtin).
-    NativeApply { func: IrValue, arg: IrValue },
+    /// Deferred application — apply `func` to `args` in order on force
+    /// (the walker's `Thunk::new_native` in `map` / `mapAttrs`).
+    NativeApply { func: IrValue, args: Vec<IrValue> },
     /// Being forced (non-recursive) — re-entrance is infinite recursion.
     Blackhole,
     /// Being forced (recursive) — re-entrance yields the partial cell.
@@ -308,11 +314,18 @@ impl IrThunk {
         })))
     }
 
-    fn native_apply(func: IrValue, arg: IrValue) -> Self {
+    pub(crate) fn native_apply(func: IrValue, args: Vec<IrValue>) -> Self {
         Self(Rc::new(RefCell::new(IrThunkState::NativeApply {
             func,
-            arg,
+            args,
         })))
+    }
+
+    /// A thunk that is BORN failed — every force re-raises `err`. Used to
+    /// pre-seed unimplemented builtins as typed gaps.
+    #[must_use]
+    pub fn failed(err: IrEvalError) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::Failed(err))))
     }
 
     /// Two-phase binding: replace the captured env of a still-suspended
@@ -361,7 +374,7 @@ impl IrThunk {
             },
             NativeApply {
                 func: IrValue,
-                arg: IrValue,
+                args: Vec<IrValue>,
             },
         }
         let todo = {
@@ -409,9 +422,9 @@ impl IrThunk {
                     value: *value,
                     env: env.clone(),
                 },
-                IrThunkState::NativeApply { func, arg } => Todo::NativeApply {
+                IrThunkState::NativeApply { func, args } => Todo::NativeApply {
                     func: func.clone(),
-                    arg: arg.clone(),
+                    args: args.clone(),
                 },
             };
             *state = match &todo {
@@ -430,6 +443,13 @@ impl IrThunk {
                 env,
                 promise,
             } => {
+                // Mirror the walker's thunk force: re-enter the DEFINING
+                // file's context (the captured env's file) so relative path
+                // literals inside a late-forced thunk resolve against the
+                // file that wrote them, not whoever forced them.
+                let _file_guard = env
+                    .eval_file()
+                    .map(|f| push_eval_file((*f).clone()));
                 // NO deep force here — the (possibly lazy) result is
                 // memoized as-is and the caller's force chain chases it.
                 let r = eval_ir(&prog, expr, &env);
@@ -461,7 +481,13 @@ impl IrThunk {
                 value,
                 env,
             } => build_tail_attrs(&prog, &tail, value, &env),
-            Todo::NativeApply { func, arg } => apply(func, arg),
+            Todo::NativeApply { func, args } => {
+                let mut result = Ok(func);
+                for arg in args {
+                    result = result.and_then(|f| apply(f, arg));
+                }
+                result
+            }
         };
         let mut state = self.0.borrow_mut();
         match &result {
@@ -487,6 +513,10 @@ struct IrEnvInner {
     bindings: FxHashMap<Symbol, IrValue>,
     /// Innermost LAST (lookup iterates in reverse).
     with_scopes: Vec<IrWithScope>,
+    /// The source file this env's evaluation belongs to (the walker's
+    /// `Env::eval_file` mirror) — restored on lambda apply + thunk force
+    /// so relative paths resolve against their defining file.
+    eval_file: Option<Rc<PathBuf>>,
 }
 
 /// Evaluation environment — the mirror of `sui_eval::value::Env`: a flat
@@ -512,22 +542,21 @@ impl IrEnv {
         Self::default()
     }
 
-    /// The base environment for the pure subset: just the tiny builtin set.
+    /// The base environment for the pure subset: the builtins bridge
+    /// (`builtins` + the walker's `DEFAULT_SCOPE` bare names).
     /// (`true`/`false`/`null` are handled at `Ident` eval, like the walker.)
     #[must_use]
     pub fn with_pure_builtins() -> Self {
-        let mut env = Self::new();
-        env.bind_sym(intern("toString"), IrValue::Builtin(IrBuiltin::ToString, None));
-        env.bind_sym(intern("map"), IrValue::Builtin(IrBuiltin::Map, None));
-        env
+        crate::builtins::base_env()
     }
 
-    /// Child environment (inherits bindings + with-scopes).
+    /// Child environment (inherits bindings + with-scopes + eval file).
     #[must_use]
     pub fn child(&self) -> Self {
         Self(Rc::new(IrEnvInner {
             bindings: self.0.bindings.clone(),
             with_scopes: self.0.with_scopes.clone(),
+            eval_file: self.0.eval_file.clone(),
         }))
     }
 
@@ -537,12 +566,34 @@ impl IrEnv {
         let mut inner = IrEnvInner {
             bindings: self.0.bindings.clone(),
             with_scopes: self.0.with_scopes.clone(),
+            eval_file: self.0.eval_file.clone(),
         };
         inner.with_scopes.push(IrWithScope {
             value,
             cached: Rc::new(RefCell::new(None)),
         });
         Self(Rc::new(inner))
+    }
+
+    /// Tag this env with its source file (the walker's `set_eval_file`).
+    pub fn set_eval_file(&mut self, file: Option<Rc<PathBuf>>) {
+        match Rc::get_mut(&mut self.0) {
+            Some(inner) => inner.eval_file = file,
+            None => {
+                let inner = IrEnvInner {
+                    bindings: self.0.bindings.clone(),
+                    with_scopes: self.0.with_scopes.clone(),
+                    eval_file: file,
+                };
+                self.0 = Rc::new(inner);
+            }
+        }
+    }
+
+    /// The source file this env belongs to, if any.
+    #[must_use]
+    pub fn eval_file(&self) -> Option<Rc<PathBuf>> {
+        self.0.eval_file.clone()
     }
 
     pub fn bind_sym(&mut self, sym: Symbol, value: IrValue) {
@@ -554,6 +605,7 @@ impl IrEnv {
                 let mut inner = IrEnvInner {
                     bindings: self.0.bindings.clone(),
                     with_scopes: self.0.with_scopes.clone(),
+                    eval_file: self.0.eval_file.clone(),
                 };
                 inner.bindings.insert(sym, value);
                 self.0 = Rc::new(inner);
@@ -631,7 +683,7 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
             }
         }
         Ir::Str(parts) => eval_str_parts(prog, parts, env).map(IrValue::string),
-        Ir::Path { .. } => Err(IrEvalError::Unsupported("path")),
+        Ir::Path { kind, parts } => eval_path_parts(prog, *kind, parts, env),
         Ir::SearchPath(_) => Err(IrEvalError::Unsupported("search-path")),
         Ir::CurPos => Err(IrEvalError::Unsupported("__curPos")),
         Ir::LegacyLet { .. } => Err(IrEvalError::Unsupported("legacy-let")),
@@ -650,15 +702,9 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
         }))),
         Ir::Apply { func, arg } => {
             let f = eval_ir(prog, *func, env)?.force()?;
-            let arg_value = match &f {
-                IrValue::Lambda(_) => {
-                    // Call-by-need: always thunk the argument.
-                    IrValue::Thunk(IrThunk::suspended(prog.clone(), *arg, env.clone()))
-                }
-                // Builtin args are evaluated eagerly (the walker does the
-                // same — builtins force their args anyway).
-                _ => eval_ir(prog, *arg, env)?,
-            };
+            // Call-by-need: ALWAYS thunk the argument (the walker does the
+            // same); `apply` forces it for builtins that want a forced arg.
+            let arg_value = IrValue::Thunk(IrThunk::suspended(prog.clone(), *arg, env.clone()));
             apply(f, arg_value)
         }
         Ir::IfElse {
@@ -723,9 +769,12 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
 
 // ── strings + attr names ──────────────────────────────────────────────────
 
-/// Evaluate normalized string parts to the concatenated content. Mirrors the
-/// walker's `eval_str` (interpolations force + copy-to-store coerce; without
-/// paths in the subset, copy-to-store and plain coercion coincide).
+/// Evaluate normalized string parts to the concatenated content. Mirrors
+/// the walker's `eval_str`: interpolations force + **copy-to-store**
+/// coerce — for every value the pure subset can hold, that coincides with
+/// plain coercion EXCEPT path values, which the walker NAR-copies into the
+/// store; that store reach is a typed gap here
+/// (`Unsupported("path-copy-to-store")`).
 fn eval_str_parts(
     prog: &Rc<Program>,
     parts: &[StrPart],
@@ -737,19 +786,80 @@ fn eval_str_parts(
             StrPart::Literal(text) => out.push_str(text),
             StrPart::Interp(e) => {
                 let v = eval_ir(prog, *e, env)?.force()?;
-                out.push_str(&coerce_to_string(&v)?);
+                out.push_str(&coerce_to_string_impl(&v, true)?);
             }
         }
     }
     Ok(out)
 }
 
-/// The walker's `coerce_to_string_impl` restricted to the pure subset —
-/// used by interpolation and `toString`. (Paths can't occur: a path literal
-/// already failed with a typed Unsupported.)
-fn coerce_to_string(v: &IrValue) -> Result<String, IrEvalError> {
+/// Evaluate a path literal (plain or interpolated), mirroring the walker's
+/// `PathAbs`/`PathRel`/`PathHome` arms + `eval_interpol_path_parts`:
+/// interpolations splice with PLAIN coercion (a path-typed splice inserts
+/// the raw path), then the concatenated text resolves by kind —
+/// absolute → `canon_abs`; relative → joined + normalized against the
+/// current eval dir (raw text when there is none, e.g. top-level
+/// expression eval); home → raw text when plain, `normalize` when
+/// interpolated (the walker's exact asymmetry).
+fn eval_path_parts(
+    prog: &Rc<Program>,
+    kind: PathKind,
+    parts: &[PathPart],
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    let has_interp = parts.iter().any(|p| matches!(p, PathPart::Interp(_)));
+    let mut text = String::new();
+    for part in parts {
+        match part {
+            PathPart::Literal(t) => text.push_str(t),
+            PathPart::Interp(e) => {
+                let v = eval_ir(prog, *e, env)?.force()?;
+                text.push_str(&coerce_to_string_impl(&v, false)?);
+            }
+        }
+    }
+    let resolved = match kind {
+        PathKind::Abs => crate::path::canon_abs(&text),
+        PathKind::Rel => match current_eval_dir() {
+            Some(dir) => crate::path::normalize(&dir.join(&text))
+                .to_string_lossy()
+                .into_owned(),
+            None => text,
+        },
+        PathKind::Home => {
+            if has_interp {
+                crate::path::normalize(std::path::Path::new(&text))
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                text
+            }
+        }
+    };
+    Ok(IrValue::Path(Rc::new(resolved)))
+}
+
+/// The walker's PLAIN string coercion (`Value::coerce_to_string`) — used
+/// by `toString`, path interpolation, `concatStringsSep`,
+/// `replaceStrings`, and `+` attrs coercion. A path splices its raw
+/// string.
+pub(crate) fn coerce_to_string_plain(v: &IrValue) -> Result<String, IrEvalError> {
+    coerce_to_string_impl(v, false)
+}
+
+/// The walker's `coerce_to_string_impl`. `copy_to_store` mirrors the mode
+/// split: string interpolation copies path values to the store — a store
+/// reach the pure engine types as a gap; plain mode splices the raw path.
+fn coerce_to_string_impl(v: &IrValue, copy_to_store: bool) -> Result<String, IrEvalError> {
     match v {
         IrValue::Str(s) => Ok((**s).clone()),
+        IrValue::Path(p) => {
+            if copy_to_store {
+                Err(IrEvalError::Unsupported("path-copy-to-store"))
+            } else {
+                Ok((**p).clone())
+            }
+        }
         IrValue::Int(n) => Ok(n.to_string()),
         IrValue::Float(f) => Ok(format!("{f:.6}")),
         IrValue::Bool(true) => Ok("1".to_string()),
@@ -757,9 +867,9 @@ fn coerce_to_string(v: &IrValue) -> Result<String, IrEvalError> {
         IrValue::Attrs(attrs) => {
             if let Some(to_str) = attrs.get("__toString") {
                 let r = apply(to_str.force()?, IrValue::Attrs(attrs.clone()))?.force()?;
-                coerce_to_string(&r)
+                coerce_to_string_impl(&r, copy_to_store)
             } else if let Some(out_path) = attrs.get("outPath") {
-                coerce_to_string(&out_path.force()?)
+                coerce_to_string_impl(&out_path.force()?, copy_to_store)
             } else {
                 Err(IrEvalError::TypeError(
                     "cannot coerce set to string (no __toString or outPath)".into(),
@@ -769,11 +879,11 @@ fn coerce_to_string(v: &IrValue) -> Result<String, IrEvalError> {
         IrValue::List(items) => {
             let mut parts = Vec::with_capacity(items.len());
             for item in items.iter() {
-                parts.push(coerce_to_string(&item.force()?)?);
+                parts.push(coerce_to_string_impl(&item.force()?, copy_to_store)?);
             }
             Ok(parts.join(" "))
         }
-        IrValue::Thunk(_) => coerce_to_string(&v.force()?),
+        IrValue::Thunk(_) => coerce_to_string_impl(&v.force()?, copy_to_store),
         other => Err(IrEvalError::TypeError(format!(
             "cannot coerce {} to string",
             other.type_name()
@@ -894,6 +1004,13 @@ pub fn apply(func: IrValue, arg: IrValue) -> Result<IrValue, IrEvalError> {
     match func {
         IrValue::Lambda(closure) => {
             let mut call_env = closure.env.child();
+            // Mirror the walker's `apply_inner`: re-enter the closure's
+            // defining file so relative path literals in the body resolve
+            // against it.
+            let _file_guard = closure
+                .env
+                .eval_file()
+                .map(|f| push_eval_file((*f).clone()));
             match &closure.param {
                 Param::Ident(sym) => {
                     // Simple param: bind WITHOUT forcing (fixpoints).
@@ -954,7 +1071,17 @@ pub fn apply(func: IrValue, arg: IrValue) -> Result<IrValue, IrEvalError> {
             }
             eval_ir(&closure.prog, closure.body, &call_env)
         }
-        IrValue::Builtin(kind, captured) => apply_builtin(&kind, captured.as_deref(), arg),
+        IrValue::Builtin(kind, captured) => {
+            // Mirror the walker: builtin args are chain-forced to WHNF
+            // before the builtin runs — except the `seq<partial>` /
+            // `deepSeq<partial>` stages, which receive the arg UNFORCED.
+            let arg = if kind.wants_unforced_arg(captured.len()) {
+                arg
+            } else {
+                arg.force()?
+            };
+            crate::builtins::apply_builtin(kind, &captured, arg)
+        }
         IrValue::Attrs(attrs) => {
             if let Some(functor) = attrs.get("__functor") {
                 let f = apply(functor.force()?, IrValue::Attrs(attrs.clone()))?;
@@ -969,37 +1096,6 @@ pub fn apply(func: IrValue, arg: IrValue) -> Result<IrValue, IrEvalError> {
             "attempt to call something which is not a function but a {}",
             other.type_name()
         ))),
-    }
-}
-
-fn apply_builtin(
-    kind: &IrBuiltin,
-    captured: Option<&IrValue>,
-    arg: IrValue,
-) -> Result<IrValue, IrEvalError> {
-    match kind {
-        IrBuiltin::ToString => Ok(IrValue::string(coerce_to_string(&arg.force()?)?)),
-        IrBuiltin::Map => Ok(IrValue::Builtin(
-            IrBuiltin::MapPartial,
-            Some(Rc::new(arg)),
-        )),
-        IrBuiltin::MapPartial => {
-            let func = captured.expect("map<partial> carries its function").clone();
-            let list = arg.force()?;
-            let IrValue::List(items) = list else {
-                return Err(IrEvalError::TypeMismatch {
-                    expected: "list",
-                    got: list.type_name(),
-                });
-            };
-            // Lazy list of `f elem` applications — mirrors the walker's map.
-            Ok(IrValue::List(Rc::new(
-                items
-                    .iter()
-                    .map(|v| IrValue::Thunk(IrThunk::native_apply(func.clone(), v.clone())))
-                    .collect(),
-            )))
-        }
     }
 }
 
@@ -1061,10 +1157,24 @@ fn eval_binop(
                 s.push_str(b);
                 Ok(IrValue::string(s))
             }
-            // Walker: attrsets coerce (outPath / __toString) on either side.
+            // Walker: path + string concatenates raw; path + path joins
+            // with a `/`. (string + path is NOT matched there — it falls
+            // through to the type error, mirrored here.)
+            (IrValue::Path(a), IrValue::Str(b)) => {
+                Ok(IrValue::Path(Rc::new(format_concat(a, b))))
+            }
+            (IrValue::Path(a), IrValue::Path(b)) => {
+                let mut s = String::with_capacity(a.len() + b.len() + 1);
+                s.push_str(a);
+                s.push('/');
+                s.push_str(b);
+                Ok(IrValue::Path(Rc::new(s)))
+            }
+            // Walker: attrsets coerce (outPath / __toString) on either
+            // side, PLAIN mode.
             (IrValue::Attrs(_), _) | (_, IrValue::Attrs(_)) => {
-                let ls = coerce_to_string(&l)?;
-                let rs = coerce_to_string(&r)?;
+                let ls = coerce_to_string_plain(&l)?;
+                let rs = coerce_to_string_plain(&r)?;
                 Ok(IrValue::string(format_concat(&ls, &rs)))
             }
             _ => Err(op_type_error("add", &l, &r)),
@@ -1211,6 +1321,9 @@ pub fn ir_eq(l: &IrValue, r: &IrValue) -> bool {
             (*a as f64) == *b
         }
         (IrValue::Str(a), IrValue::Str(b)) => a == b,
+        // Walker `Concrete::PartialEq`: paths compare by string; a path
+        // never equals a string.
+        (IrValue::Path(a), IrValue::Path(b)) => a == b,
         (IrValue::List(a), IrValue::List(b)) => {
             Rc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| ir_eq(x, y)))
         }
@@ -1794,7 +1907,6 @@ mod tests {
 
     #[test]
     fn typed_gaps() {
-        assert!(matches!(ev("./x"), Err(IrEvalError::Unsupported("path"))));
         assert!(matches!(
             ev("<nixpkgs>"),
             Err(IrEvalError::Unsupported("search-path"))
@@ -1807,7 +1919,57 @@ mod tests {
             ev("__curPos"),
             Err(IrEvalError::Unsupported("__curPos"))
         ));
-        assert!(matches!(ev("builtins.length [ ]"), Err(IrEvalError::UndefinedVar(n)) if n == "builtins"));
+        // Unimplemented builtins are TYPED gaps, pre-seeded in `builtins`.
+        assert!(matches!(
+            ev("builtins.sort (a: b: a < b) [ 2 1 ]"),
+            Err(IrEvalError::MissingBuiltin(n)) if n == "sort"
+        ));
+        assert!(matches!(
+            ev("derivation { }"),
+            Err(IrEvalError::MissingBuiltin(n)) if n == "derivation"
+        ));
+        // Copy-to-store path coercion (string interpolation of a path) is
+        // a typed gap; plain coercion (toString) is not.
+        assert!(matches!(
+            ev(r#""${./x}""#),
+            Err(IrEvalError::Unsupported("path-copy-to-store"))
+        ));
+    }
+
+    #[test]
+    fn paths_evaluate_like_the_walker() {
+        // No eval-file context: relative + home stay raw; absolute
+        // canonicalizes CppNix-style.
+        assert!(matches!(ev("./x"), Ok(IrValue::Path(p)) if *p == "./x"));
+        assert!(matches!(ev("~/dir/file"), Ok(IrValue::Path(p)) if *p == "~/dir/file"));
+        assert!(matches!(ev("/foo/../bar"), Ok(IrValue::Path(p)) if *p == "/bar"));
+        assert!(matches!(ev("/.."), Ok(IrValue::Path(p)) if *p == "/"));
+        // Interpolation splices with PLAIN coercion; `//` seams collapse.
+        assert!(
+            matches!(ev("toString /bar/${/tmp/foo}"), Ok(IrValue::Str(s)) if *s == "/bar/tmp/foo")
+        );
+        assert_eq!(ev_str(r#"let x = "foo"; in toString /a/${x}/b"#), "/a/foo/b");
+        // Path arithmetic mirrors the walker's Add arms.
+        assert!(matches!(ev(r#"./x + "/y""#), Ok(IrValue::Path(p)) if *p == "./x/y"));
+        assert!(matches!(ev("/a + /b"), Ok(IrValue::Path(p)) if *p == "/a//b"));
+        assert!(matches!(ev(r#""s" + /a"#), Err(IrEvalError::TypeError(_))));
+        // typeOf + equality.
+        assert_eq!(ev_str("builtins.typeOf ./x"), "path");
+        assert!(matches!(ev("/a/b == /a/b"), Ok(IrValue::Bool(true))));
+        assert!(matches!(ev(r#"/a/b == "/a/b""#), Ok(IrValue::Bool(false))));
+    }
+
+    #[test]
+    fn builtins_bridge_basics() {
+        assert_eq!(ev_int("builtins.length [ 1 2 3 ]"), 3);
+        assert_eq!(ev_str("builtins.concatStringsSep \"-\" [ \"a\" \"b\" ]"), "a-b");
+        assert_eq!(ev_int("builtins.foldl' (a: b: a + b) 0 [ 1 2 3 ]"), 6);
+        assert_eq!(ev_str("builtins.substring 1 2 \"abcd\""), "bc");
+        assert!(matches!(ev("builtins ? sort"), Ok(IrValue::Bool(true))));
+        // The walker's snapshot: `builtins.builtins` exists but does not
+        // contain `builtins` itself.
+        assert!(matches!(ev("builtins ? builtins"), Ok(IrValue::Bool(true))));
+        assert!(matches!(ev("builtins.builtins ? builtins"), Ok(IrValue::Bool(false))));
     }
 
     #[test]

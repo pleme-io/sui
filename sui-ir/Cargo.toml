@@ -15,6 +15,9 @@ rnix.workspace = true
 rowan.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
+# `builtins.split` mirrors the tree-walker's regex-backed implementation —
+# same crate, same semantics, differential-gated.
+regex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

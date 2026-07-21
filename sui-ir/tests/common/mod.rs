@@ -5,6 +5,12 @@
 //! consumed by BOTH test binaries: `differential.rs` (slice 1 — the
 //! rowan↔IR render differential) and `eval_differential.rs` (slice 2 — the
 //! tree-walker↔eval_ir result differential). One list, two proofs.
+//! `render` is the shared normalized two-engine render (slices 2 + 3).
+
+// Each integration-test binary compiles `common` independently and uses a
+// different subset of it.
+#[allow(dead_code)]
+pub mod render;
 
 /// Hand-authored rows covering the rest of rnix's expression surface:
 /// floats, URIs, search/home paths, path interpolation, multiline strings,
