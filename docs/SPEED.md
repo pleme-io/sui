@@ -251,6 +251,26 @@ to `(Rc<Program>, ExprId)` capture as a **separately-gated follow-up
 commit** (it changes what `Suspended` holds; also removes the rnix heap
 share's per-thunk term). Class: ReprSwap → ByteSufficient.
 
+> **L3 slice progress (living, 2026-07-21):**
+> - **slice 1** (`daca0d8`): total `lower()` — 23/24 rnix variants, `Program`
+>   with post-order `ExprId(u32)`, rowan↔IR differential (mutation-proven).
+> - **slice 2** (`fc3942a`): `eval_ir` over the pure subset — **2.5× vs the
+>   tree-walker** on the micro A/B (independently reproduced), ~463-expr
+>   differential, typed KnownGaps.
+> - **slice 3** (in flight): paths + `import` + a pure-builtins bridge +
+>   a `ProgramCache`.
+>
+> **KEYING BRIDGE — do not cement path-keying.** slice 3's `ProgramCache`
+> keys by **canonical path** as the pragmatic first cut. That is *interim*.
+> The destination this doc's §III specifies is **content-hash keying**
+> (BLAKE3 of source): identical content across different paths shares one
+> `Program`, a changed file self-invalidates, and — the load-bearing win —
+> the twice-proven `(source_id, offset)` cross-source-collision class
+> becomes *unrepresentable*, because the key IS the content and there is no
+> path/id to confuse. Path-keying cannot deliver that last property. Slice 4+
+> migrates the cache key path→content-hash before the `--ir` flip; the flip
+> must not ship on a path-keyed cache.
+
 **L4 — Symcache re-open, per-(Program, ExprId)** (after L3). The +25.4%
 Deferred lever, structurally closed by per-Program ids. Corrected framing:
 main already hardened the ident-cache class (`8bad3ef`, `b35b74d`, §II) —
