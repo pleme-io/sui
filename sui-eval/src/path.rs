@@ -25,7 +25,20 @@ thread_local! {
     /// The marquee darwin root (2026-07-11) set the store-path string; this
     /// registry closes its sibling: arbitrary `${outPath}/subpath` reads
     /// (the prior peel special-cased only reading `flake.nix`).
-    static INPUT_SOURCE_MAP: RefCell<Vec<(PathBuf, PathBuf)>> = const { RefCell::new(Vec::new()) };
+    /// Tuple is `(store_path, read_dir, read_dir_canon)` — the third field is
+    /// `read_dir.canonicalize()` computed ONCE at registration (falling back to
+    /// `read_dir` on failure, the same semantics the per-call fallback had).
+    ///
+    /// WHY REGISTRATION-TIME (perf root, found live 2026-07-21): `dematerialize`
+    /// used to call `read_dir.canonicalize()` INSIDE its per-entry loop, on
+    /// every call — and its callers are the path-literal arms of `eval_expr`,
+    /// i.e. every `./x` in every .nix file. On the cid marquee eval (~60
+    /// registered inputs), sampling the live process showed **61% of the eval
+    /// thread's wall-clock inside `__getattrlist`**, the syscall macOS
+    /// `realpath` issues per path component. One canonicalize per registration
+    /// replaces N-per-dematerialize-call; the registered trees are immutable
+    /// fetcher caches, so the value cannot go stale.
+    static INPUT_SOURCE_MAP: RefCell<Vec<(PathBuf, PathBuf, PathBuf)>> = const { RefCell::new(Vec::new()) };
 
     /// Registry of `builtins.fetch*` result trees: each entry maps the REAL
     /// on-disk fetcher-cache directory (e.g. `$TMPDIR/sui-fetchGit/<cache-hash>`)
@@ -43,7 +56,38 @@ thread_local! {
     /// `-source` NAME for each fetcher result so `source_name_for_read_dir`
     /// resolves the copy-to-store name to CppNix's convention. Only the NAME
     /// changes — the bytes (→ NAR hash) are identical either way.
-    static FETCHED_SOURCE_NAMES: RefCell<Vec<(PathBuf, String)>> = const { RefCell::new(Vec::new()) };
+    /// Tuple is `(read_dir, name, read_dir_canon)` — canon computed once at
+    /// registration, same rationale as `INPUT_SOURCE_MAP` above.
+    static FETCHED_SOURCE_NAMES: RefCell<Vec<(PathBuf, String, PathBuf)>> = const { RefCell::new(Vec::new()) };
+
+    /// Success-only memo for probe-side `canonicalize` calls.
+    ///
+    /// `dematerialize`/`source_name_for_read_dir` canonicalize their argument
+    /// on every call, and eval hands them the same paths over and over (every
+    /// path literal in a file, every position report). A SUCCESSFUL
+    /// canonicalization of a source path is stable for the life of an eval —
+    /// the same frozen-source assumption CppNix itself makes when it copies a
+    /// tree to the store. FAILURES are deliberately NOT memoized: a path that
+    /// does not exist yet (an IFD output, a store path about to be realized)
+    /// may exist later, and caching the failure would wrongly pin it.
+    static CANON_MEMO: RefCell<std::collections::HashMap<PathBuf, PathBuf>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// `path.canonicalize()` through the success-only thread-local memo.
+fn canonicalize_memo(path: &Path) -> Option<PathBuf> {
+    if let Some(hit) = CANON_MEMO.with(|m| m.borrow().get(path).cloned()) {
+        return Some(hit);
+    }
+    match path.canonicalize() {
+        Ok(canon) => {
+            CANON_MEMO.with(|m| {
+                m.borrow_mut().insert(path.to_path_buf(), canon.clone());
+            });
+            Some(canon)
+        }
+        Err(_) => None,
+    }
 }
 
 /// Register a `builtins.fetch*` result directory with the store-path NAME
@@ -54,10 +98,16 @@ thread_local! {
 pub fn register_fetched_source(read_dir: &Path, name: &str) {
     FETCHED_SOURCE_NAMES.with(|m| {
         let mut m = m.borrow_mut();
-        if m.iter().any(|(rd, _)| rd == read_dir) {
+        if m.iter().any(|(rd, _, _)| rd == read_dir) {
             return;
         }
-        m.push((read_dir.to_path_buf(), name.to_string()));
+        // Canon once here instead of per lookup — the tree is an immutable
+        // fetcher cache, so this cannot go stale. Fallback mirrors the old
+        // per-call `unwrap_or_else`.
+        let canon = read_dir
+            .canonicalize()
+            .unwrap_or_else(|_| read_dir.to_path_buf());
+        m.push((read_dir.to_path_buf(), name.to_string(), canon));
     });
 }
 
@@ -74,10 +124,15 @@ pub fn register_input_source(store_path: &Path, read_dir: &Path) {
     }
     INPUT_SOURCE_MAP.with(|m| {
         let mut m = m.borrow_mut();
-        if m.iter().any(|(sp, _)| sp == store_path) {
+        if m.iter().any(|(sp, _, _)| sp == store_path) {
             return;
         }
-        m.push((store_path.to_path_buf(), read_dir.to_path_buf()));
+        // Canon once at registration — see the INPUT_SOURCE_MAP doc for the
+        // measured 61%-of-eval-in-getattrlist root this replaces.
+        let canon = read_dir
+            .canonicalize()
+            .unwrap_or_else(|_| read_dir.to_path_buf());
+        m.push((store_path.to_path_buf(), read_dir.to_path_buf(), canon));
     });
 }
 
@@ -88,7 +143,7 @@ pub fn register_input_source(store_path: &Path, read_dir: &Path) {
 #[must_use]
 pub fn materialize(path: &Path) -> PathBuf {
     INPUT_SOURCE_MAP.with(|m| {
-        for (store_path, read_dir) in m.borrow().iter() {
+        for (store_path, read_dir, _) in m.borrow().iter() {
             if path == store_path {
                 return read_dir.clone();
             }
@@ -128,17 +183,20 @@ pub fn materialize_str(path: &str) -> String {
 /// is mutated — the byte-parity invariant.
 #[must_use]
 pub fn dematerialize(path: &Path) -> PathBuf {
-    let canon = path.canonicalize();
+    // Probe canon through the success-only memo; a failed canon falls back to
+    // the raw path exactly as before. The per-entry `read_dir` canon is now
+    // precomputed at registration — this loop used to re-realpath every
+    // registered input on every call, which sampling showed as 61% of the
+    // eval thread's wall-clock on the cid marquee (getattrlist per component,
+    // per input, per path literal).
+    let canon = canonicalize_memo(path);
     let probe: &Path = canon.as_deref().unwrap_or(path);
     INPUT_SOURCE_MAP.with(|m| {
-        for (store_path, read_dir) in m.borrow().iter() {
-            let rd_canon = read_dir
-                .canonicalize()
-                .unwrap_or_else(|_| read_dir.clone());
-            if probe == rd_canon {
+        for (store_path, read_dir, rd_canon) in m.borrow().iter() {
+            if probe == rd_canon.as_path() {
                 return store_path.clone();
             }
-            if let Ok(suffix) = probe.strip_prefix(&rd_canon) {
+            if let Ok(suffix) = probe.strip_prefix(rd_canon) {
                 return store_path.join(suffix);
             }
             // Also try the un-canonicalized read_dir (registration may have
@@ -180,16 +238,17 @@ pub fn dematerialize_str(path: &str) -> String {
 /// `src = ./.` keeps its own directory basename).
 #[must_use]
 pub fn source_name_for_read_dir(real: &Path) -> Option<String> {
-    let real_canon = real.canonicalize().ok()?;
+    // Probe via the success-only memo; per-entry canons are precomputed at
+    // registration (see the INPUT_SOURCE_MAP doc for the measured root).
+    let real_canon = canonicalize_memo(real)?;
     // 1) Flake-input trees: a fetched input's `src = ./.` copies the input's
     //    whole tree, named after the input's `/nix/store/<h>-source` basename.
     let from_input = INPUT_SOURCE_MAP.with(|m| {
-        for (store_path, read_dir) in m.borrow().iter() {
-            let rd_canon = read_dir.canonicalize().unwrap_or_else(|_| read_dir.clone());
+        for (store_path, _read_dir, rd_canon) in m.borrow().iter() {
             // Only the WHOLE tree root maps to the input's `-source` name; a
             // subpath (`src = ./subdir`) copies a sub-tree CppNix names after
             // that subdir, so require an exact root match.
-            if real_canon == rd_canon {
+            if real_canon == *rd_canon {
                 return store_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned());
@@ -205,9 +264,8 @@ pub fn source_name_for_read_dir(real: &Path) -> Option<String> {
     //    fetcher-cache temp basename (a 64-char sha256 cache-hash). The fetcher
     //    registered the correct name for this exact dir.
     FETCHED_SOURCE_NAMES.with(|m| {
-        for (read_dir, name) in m.borrow().iter() {
-            let rd_canon = read_dir.canonicalize().unwrap_or_else(|_| read_dir.clone());
-            if real_canon == rd_canon {
+        for (_read_dir, name, rd_canon) in m.borrow().iter() {
+            if real_canon == *rd_canon {
                 return Some(name.clone());
             }
         }
