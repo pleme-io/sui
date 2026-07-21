@@ -13,10 +13,18 @@ categories = ["compilers", "parser-implementations"]
 sui-intern.workspace = true
 rnix.workspace = true
 rowan.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The eval differential (tests/eval_differential.rs) drives BOTH engines:
+# the tree-walker (sui-eval, the semantic oracle) and eval_ir, and
+# byte-compares their rendered results. sui-compat supplies the CppNix
+# float formatting both renders share. Dev-only — the sui-ir library
+# itself never links the live engines.
+sui-eval.workspace = true
+sui-compat.workspace = true
 # The parity corpus generator (src/parity_corpus.rs, lifted verbatim via
 # #[path] in tests/differential.rs) builds its rows from the canonical typed
 # Nix AST — same crate the root workspace uses.

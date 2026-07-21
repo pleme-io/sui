@@ -1,0 +1,1826 @@
+//! L3 slice 2 — eval-through-IR for the **pure expression subset**.
+//!
+//! Evaluates a lowered [`Program`] directly — no rowan re-walk on the eval
+//! path. The semantic oracle is the tree-walker (`sui-eval`, `--no-vm`): the
+//! companion differential (`tests/eval_differential.rs`) byte-compares the
+//! rendered result of both engines over the parity corpus, the render-harness
+//! supplement, a closed-value seed, and property-generated expressions.
+//!
+//! # Why mirror types instead of `sui_eval::Value`
+//!
+//! No Cargo cycle blocks depending on `sui-eval` (nothing depends on
+//! `sui-ir`) — the test harness DOES depend on it (dev-dependency). What
+//! blocks *reusing* `sui_eval::Value` inside the IR engine is representational
+//! coupling, stated plainly: `ThunkRepr::Suspended` holds an
+//! `rnix::ast::Expr` and `Closure` holds `rnix::ast::Param` +
+//! `rnix::ast::Expr` — a rowan AST node is the suspension/closure body, which
+//! is exactly the representation this slice exists to avoid re-walking. So
+//! this module defines the minimal mirror types ([`IrValue`], [`IrEnv`],
+//! [`IrThunk`]) whose suspensions are `(Rc<Program>, ExprId, IrEnv)`.
+//! Byte-parity is enforced at the *rendered result* level by the
+//! differential, not at the value-representation level.
+//!
+//! # Scope (the honest subset)
+//!
+//! Handled: Int / Float / Bool / Null / Str (interpolation over pure parts) /
+//! Uri / Ident / LetIn / Lambda / Apply / BinOp (all) / UnaryOp / IfElse /
+//! List / AttrSet (non-rec + rec) / Select (+ `or`) / HasAttr / With /
+//! Assert / Paren / Inherit (+ `inherit (from)`), plus a tiny pure builtin
+//! set: `toString`, `map`.
+//!
+//! Not handled — each returns a typed [`IrEvalError::Unsupported`], never a
+//! silent wrong value: `Path` (all kinds), `SearchPath`, `LegacyLet`,
+//! `CurPos`. Everything else the full evaluator provides (builtins,
+//! `derivation`, `import`, …) is simply an unbound identifier here, which the
+//! differential classifies as a typed known gap.
+//!
+//! # Semantics mirrored from the tree-walker (not from nix)
+//!
+//! Where sui's tree-walker deliberately (or historically) diverges from
+//! CppNix, this engine mirrors the TREE-WALKER, because parity-with-the-
+//! oracle is the gate. Notable mirrored behaviors:
+//!
+//! * `&&` / `||` / `->` type-check only the LHS; the RHS is returned as-is
+//!   (`false || 1` evaluates to `1`).
+//! * String interpolation coerces like the walker's copy-to-store coercion:
+//!   ints/floats/bools/null/lists all coerce (`"${1}"` → `"1"`).
+//! * Self/mutually-recursive `let`/`rec` bindings force through a Promise
+//!   cell seeded with `{ }` (the walker's M2.6 bridge) — deeper fixpoint
+//!   re-entrance sees the partial. The DIRECT self-alias (`let x = x; in x`)
+//!   still errors on both engines: the thunk memoizes to itself and the
+//!   force chain's depth-100 cycle guard (mirrored from `force_value`)
+//!   reports `InfiniteRecursion`.
+//! * Equality forces lazily and treats a failed inner force as `null`;
+//!   lambdas compare by closure identity; builtins compare `false`.
+//! * Integer overflow is a typed `Abort`; division by zero (int or float) is
+//!   a typed error.
+
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use rustc_hash::FxHashMap;
+use sui_intern::{intern, resolve, Symbol};
+
+use crate::ir::{AttrName, BinOp, Binding, ExprId, Ir, Param, Program, StrPart, UnaryOp};
+
+// ── errors ────────────────────────────────────────────────────────────────
+
+/// Typed evaluation error for the IR engine. Variants mirror the CLASSES of
+/// `sui_eval::EvalError` the pure subset can produce; messages are not
+/// byte-mirrored (the differential compares rendered VALUES byte-for-byte
+/// and errors by class only).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IrEvalError {
+    #[error("undefined variable '{0}'")]
+    UndefinedVar(String),
+    #[error("type error: {0}")]
+    TypeError(String),
+    #[error("expected {expected}, got {got}")]
+    TypeMismatch {
+        expected: &'static str,
+        got: &'static str,
+    },
+    #[error("attribute '{0}' not found")]
+    AttrNotFound(String),
+    #[error("assertion failed")]
+    AssertionFailed,
+    #[error("division by zero")]
+    DivisionByZero,
+    #[error("infinite recursion encountered")]
+    InfiniteRecursion,
+    #[error("evaluation aborted: {0}")]
+    Abort(String),
+    #[error("construct not supported by the pure-subset IR evaluator: {0}")]
+    Unsupported(&'static str),
+}
+
+// ── values ────────────────────────────────────────────────────────────────
+
+/// Attribute set payload — a sorted map so iteration order is the walker's
+/// `sorted_entries()` order (lexicographic by key string) by construction.
+pub type IrAttrs = std::collections::BTreeMap<String, IrValue>;
+
+/// The tiny pure builtin set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrBuiltin {
+    /// `toString` — the walker's PLAIN string coercion.
+    ToString,
+    /// `map` (no args yet).
+    Map,
+    /// `map f` — partial application awaiting the list.
+    MapPartial,
+}
+
+impl IrBuiltin {
+    /// The walker's display name for this builtin (byte-mirrored — partial
+    /// `map` renders as `map<partial>` there).
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            IrBuiltin::ToString => "toString",
+            IrBuiltin::Map => "map",
+            IrBuiltin::MapPartial => "map<partial>",
+        }
+    }
+}
+
+/// A lambda closure over the flat IR: the body is an [`ExprId`] into the
+/// owned [`Program`], never an AST node.
+#[derive(Debug)]
+pub struct IrClosure {
+    pub prog: Rc<Program>,
+    pub param: Param,
+    pub body: ExprId,
+    pub env: IrEnv,
+}
+
+/// A Nix value produced by the IR engine — the minimal mirror of
+/// `sui_eval::Value` for the pure subset (see module docs for why a mirror).
+#[derive(Debug, Clone, Default)]
+pub enum IrValue {
+    #[default]
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(Rc<String>),
+    List(Rc<Vec<IrValue>>),
+    Attrs(Rc<IrAttrs>),
+    Lambda(Rc<IrClosure>),
+    /// Partial applications of the tiny pure builtin set. `MapPartial`
+    /// carries the captured function.
+    Builtin(IrBuiltin, Option<Rc<IrValue>>),
+    Thunk(IrThunk),
+}
+
+impl IrValue {
+    #[must_use]
+    pub fn string(s: impl Into<String>) -> Self {
+        IrValue::Str(Rc::new(s.into()))
+    }
+
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            IrValue::Null => "null",
+            IrValue::Bool(_) => "bool",
+            IrValue::Int(_) => "int",
+            IrValue::Float(_) => "float",
+            IrValue::Str(_) => "string",
+            IrValue::List(_) => "list",
+            IrValue::Attrs(_) => "set",
+            IrValue::Lambda(_) | IrValue::Builtin(..) => "lambda",
+            IrValue::Thunk(_) => "thunk",
+        }
+    }
+
+    /// Force to weak head normal form: chase the thunk chain until the
+    /// outermost value is not a thunk. List elements / attr values stay lazy.
+    ///
+    /// Mirrors the walker's `force_value` chain guard: a thunk chain deeper
+    /// than 100 steps (a cycle like `let x = x; in x`, whose thunk memoizes
+    /// to itself, or a runaway lazy wrap) is a typed `InfiniteRecursion` —
+    /// each `force_step` memoizes its possibly-still-lazy result WITHOUT
+    /// deep-forcing, exactly like `ThunkRepr::Evaluated`.
+    pub fn force(&self) -> Result<IrValue, IrEvalError> {
+        let mut v = self.clone();
+        for _ in 0..100 {
+            match v {
+                IrValue::Thunk(t) => v = t.force_step()?,
+                other => return Ok(other),
+            }
+        }
+        Err(IrEvalError::InfiniteRecursion)
+    }
+
+    /// Strict boolean accessor on a forced value.
+    pub fn as_bool(&self) -> Result<bool, IrEvalError> {
+        match self {
+            IrValue::Bool(b) => Ok(*b),
+            other => Err(IrEvalError::TypeMismatch {
+                expected: "bool",
+                got: other.type_name(),
+            }),
+        }
+    }
+}
+
+// ── thunks ────────────────────────────────────────────────────────────────
+
+/// Thunk lifecycle state — the mirror of the walker's `ThunkRepr` restricted
+/// to what the pure subset needs.
+enum IrThunkState {
+    /// Not yet evaluated: an expression id + captured environment.
+    Suspended {
+        prog: Rc<Program>,
+        expr: ExprId,
+        env: IrEnv,
+        /// Self/mutually-recursive binding — force through a Promise cell
+        /// (re-entrance sees the partial value) instead of a Blackhole.
+        recursive: bool,
+    },
+    /// `inherit (source) name` — force the shared source, select `name`.
+    InheritSelect { source: IrThunk, name: String },
+    /// Deferred bare `inherit name;` under a `with` scope: resolve at force
+    /// time against the captured env (the walker's `WithIdent`).
+    WithIdent { name: String, env: IrEnv },
+    /// Deferred dynamic-tail attrpath (`{ head.${e} = v; }`): on force,
+    /// build the nested attrset from the tail in the captured env (the
+    /// walker's `build_deferred_tail_attr`).
+    DeferredTail {
+        prog: Rc<Program>,
+        tail: Vec<AttrName>,
+        value: ExprId,
+        env: IrEnv,
+    },
+    /// `map f` element — apply `func` to `arg` on force (the walker's
+    /// `Thunk::new_native` in the `map` builtin).
+    NativeApply { func: IrValue, arg: IrValue },
+    /// Being forced (non-recursive) — re-entrance is infinite recursion.
+    Blackhole,
+    /// Being forced (recursive) — re-entrance yields the partial cell.
+    Promise(Rc<RefCell<IrValue>>),
+    /// Memoized success.
+    Evaluated(IrValue),
+    /// Memoized failure — re-raised on every subsequent force.
+    Failed(IrEvalError),
+}
+
+/// A lazy IR value with memoization + blackhole detection.
+#[derive(Clone)]
+pub struct IrThunk(Rc<RefCell<IrThunkState>>);
+
+impl std::fmt::Debug for IrThunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self.0.borrow() {
+            IrThunkState::Suspended { expr, .. } => write!(f, "<thunk {expr:?}>"),
+            IrThunkState::InheritSelect { name, .. } => write!(f, "<inherit {name}>"),
+            IrThunkState::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
+            IrThunkState::DeferredTail { .. } => write!(f, "<deferred-tail>"),
+            IrThunkState::NativeApply { .. } => write!(f, "<native-apply>"),
+            IrThunkState::Blackhole => write!(f, "<blackhole>"),
+            IrThunkState::Promise(_) => write!(f, "<promise>"),
+            IrThunkState::Evaluated(v) => write!(f, "<evaluated {v:?}>"),
+            IrThunkState::Failed(e) => write!(f, "<failed {e}>"),
+        }
+    }
+}
+
+impl IrThunk {
+    #[must_use]
+    pub fn suspended(prog: Rc<Program>, expr: ExprId, env: IrEnv) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::Suspended {
+            prog,
+            expr,
+            env,
+            recursive: false,
+        })))
+    }
+
+    #[must_use]
+    pub fn suspended_recursive(prog: Rc<Program>, expr: ExprId, env: IrEnv) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::Suspended {
+            prog,
+            expr,
+            env,
+            recursive: true,
+        })))
+    }
+
+    fn inherit_select(source: IrThunk, name: String) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::InheritSelect {
+            source,
+            name,
+        })))
+    }
+
+    fn with_ident(name: String, env: IrEnv) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::WithIdent { name, env })))
+    }
+
+    fn deferred_tail(prog: Rc<Program>, tail: Vec<AttrName>, value: ExprId, env: IrEnv) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::DeferredTail {
+            prog,
+            tail,
+            value,
+            env,
+        })))
+    }
+
+    fn native_apply(func: IrValue, arg: IrValue) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::NativeApply {
+            func,
+            arg,
+        })))
+    }
+
+    /// Two-phase binding: replace the captured env of a still-suspended
+    /// thunk (and of an `InheritSelect`'s source chain head) so recursive
+    /// `let`/`rec` scopes see every sibling. Mirrors `Thunk::update_env`.
+    pub fn update_env(&self, new_env: &IrEnv) {
+        let mut state = self.0.borrow_mut();
+        match &mut *state {
+            IrThunkState::Suspended { env, .. } => *env = new_env.clone(),
+            IrThunkState::InheritSelect { source, .. } => {
+                let source = source.clone();
+                drop(state);
+                source.update_env(new_env);
+            }
+            _ => {}
+        }
+    }
+
+    /// One force step: run this thunk's suspension and memoize the result
+    /// (success or failure) WITHOUT deep-forcing it — the result may itself
+    /// be a thunk (`Evaluated(Thunk …)`), which [`IrValue::force`]'s
+    /// depth-guarded chain chases. This mirrors the walker split between
+    /// `force_thunk` (one step, memoized) and `force_value` (the chain).
+    pub fn force_step(&self) -> Result<IrValue, IrEvalError> {
+        // Fast path + state transition.
+        enum Todo {
+            Eval {
+                prog: Rc<Program>,
+                expr: ExprId,
+                env: IrEnv,
+                promise: Option<Rc<RefCell<IrValue>>>,
+            },
+            Inherit {
+                source: IrThunk,
+                name: String,
+            },
+            WithIdent {
+                name: String,
+                env: IrEnv,
+            },
+            DeferredTail {
+                prog: Rc<Program>,
+                tail: Vec<AttrName>,
+                value: ExprId,
+                env: IrEnv,
+            },
+            NativeApply {
+                func: IrValue,
+                arg: IrValue,
+            },
+        }
+        let todo = {
+            let mut state = self.0.borrow_mut();
+            let todo = match &*state {
+                IrThunkState::Evaluated(v) => return Ok(v.clone()),
+                IrThunkState::Failed(e) => return Err(e.clone()),
+                IrThunkState::Blackhole => return Err(IrEvalError::InfiniteRecursion),
+                IrThunkState::Promise(cell) => return Ok(cell.borrow().clone()),
+                IrThunkState::Suspended {
+                    prog,
+                    expr,
+                    env,
+                    recursive,
+                } => Todo::Eval {
+                    prog: prog.clone(),
+                    expr: *expr,
+                    env: env.clone(),
+                    promise: if *recursive {
+                        // Walker seeds the Promise cell with an empty
+                        // attrset — the cheapest partial that propagates.
+                        Some(Rc::new(RefCell::new(IrValue::Attrs(Rc::new(
+                            IrAttrs::new(),
+                        )))))
+                    } else {
+                        None
+                    },
+                },
+                IrThunkState::InheritSelect { source, name } => Todo::Inherit {
+                    source: source.clone(),
+                    name: name.clone(),
+                },
+                IrThunkState::WithIdent { name, env } => Todo::WithIdent {
+                    name: name.clone(),
+                    env: env.clone(),
+                },
+                IrThunkState::DeferredTail {
+                    prog,
+                    tail,
+                    value,
+                    env,
+                } => Todo::DeferredTail {
+                    prog: prog.clone(),
+                    tail: tail.clone(),
+                    value: *value,
+                    env: env.clone(),
+                },
+                IrThunkState::NativeApply { func, arg } => Todo::NativeApply {
+                    func: func.clone(),
+                    arg: arg.clone(),
+                },
+            };
+            *state = match &todo {
+                Todo::Eval {
+                    promise: Some(cell),
+                    ..
+                } => IrThunkState::Promise(cell.clone()),
+                _ => IrThunkState::Blackhole,
+            };
+            todo
+        };
+        let result = match todo {
+            Todo::Eval {
+                prog,
+                expr,
+                env,
+                promise,
+            } => {
+                // NO deep force here — the (possibly lazy) result is
+                // memoized as-is and the caller's force chain chases it.
+                let r = eval_ir(&prog, expr, &env);
+                if let (Some(cell), Ok(v)) = (&promise, &r) {
+                    *cell.borrow_mut() = v.clone();
+                }
+                r
+            }
+            Todo::Inherit { source, name } => {
+                // The SOURCE is chain-forced to an attrset; the selected
+                // value is returned unforced.
+                match IrValue::Thunk(source).force()? {
+                    IrValue::Attrs(attrs) => attrs
+                        .get(&name)
+                        .cloned()
+                        .ok_or(IrEvalError::AttrNotFound(name)),
+                    other => Err(IrEvalError::TypeMismatch {
+                        expected: "set",
+                        got: other.type_name(),
+                    }),
+                }
+            }
+            Todo::WithIdent { name, env } => {
+                env.lookup(&name).ok_or(IrEvalError::UndefinedVar(name))
+            }
+            Todo::DeferredTail {
+                prog,
+                tail,
+                value,
+                env,
+            } => build_tail_attrs(&prog, &tail, value, &env),
+            Todo::NativeApply { func, arg } => apply(func, arg),
+        };
+        let mut state = self.0.borrow_mut();
+        match &result {
+            Ok(v) => *state = IrThunkState::Evaluated(v.clone()),
+            Err(e) => *state = IrThunkState::Failed(e.clone()),
+        }
+        result
+    }
+}
+
+// ── environment ───────────────────────────────────────────────────────────
+
+/// One `with` scope: the (lazy) namespace value + a shared cache of its
+/// forced attrset, mirroring the walker's `WithScope`.
+#[derive(Clone)]
+struct IrWithScope {
+    value: IrValue,
+    cached: Rc<RefCell<Option<Rc<IrAttrs>>>>,
+}
+
+#[derive(Default)]
+struct IrEnvInner {
+    bindings: FxHashMap<Symbol, IrValue>,
+    /// Innermost LAST (lookup iterates in reverse).
+    with_scopes: Vec<IrWithScope>,
+}
+
+/// Evaluation environment — the mirror of `sui_eval::value::Env`: a flat
+/// binding map + a `with`-scope stack behind an `Rc` (clone = refcount bump;
+/// `bind` is copy-on-write via `Rc::make_mut`-style cloning).
+#[derive(Clone, Default)]
+pub struct IrEnv(Rc<IrEnvInner>);
+
+impl std::fmt::Debug for IrEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IrEnv({} bindings, {} with-scopes)",
+            self.0.bindings.len(),
+            self.0.with_scopes.len()
+        )
+    }
+}
+
+impl IrEnv {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The base environment for the pure subset: just the tiny builtin set.
+    /// (`true`/`false`/`null` are handled at `Ident` eval, like the walker.)
+    #[must_use]
+    pub fn with_pure_builtins() -> Self {
+        let mut env = Self::new();
+        env.bind_sym(intern("toString"), IrValue::Builtin(IrBuiltin::ToString, None));
+        env.bind_sym(intern("map"), IrValue::Builtin(IrBuiltin::Map, None));
+        env
+    }
+
+    /// Child environment (inherits bindings + with-scopes).
+    #[must_use]
+    pub fn child(&self) -> Self {
+        Self(Rc::new(IrEnvInner {
+            bindings: self.0.bindings.clone(),
+            with_scopes: self.0.with_scopes.clone(),
+        }))
+    }
+
+    /// Attach a `with` scope (innermost position).
+    #[must_use]
+    pub fn with_scope(&self, value: IrValue) -> Self {
+        let mut inner = IrEnvInner {
+            bindings: self.0.bindings.clone(),
+            with_scopes: self.0.with_scopes.clone(),
+        };
+        inner.with_scopes.push(IrWithScope {
+            value,
+            cached: Rc::new(RefCell::new(None)),
+        });
+        Self(Rc::new(inner))
+    }
+
+    pub fn bind_sym(&mut self, sym: Symbol, value: IrValue) {
+        match Rc::get_mut(&mut self.0) {
+            Some(inner) => {
+                inner.bindings.insert(sym, value);
+            }
+            None => {
+                let mut inner = IrEnvInner {
+                    bindings: self.0.bindings.clone(),
+                    with_scopes: self.0.with_scopes.clone(),
+                };
+                inner.bindings.insert(sym, value);
+                self.0 = Rc::new(inner);
+            }
+        }
+    }
+
+    pub fn bind(&mut self, name: &str, value: IrValue) {
+        self.bind_sym(intern(name), value);
+    }
+
+    /// Lexical-only lookup.
+    #[must_use]
+    pub fn lookup_lexical(&self, sym: Symbol) -> Option<IrValue> {
+        self.0.bindings.get(&sym).cloned()
+    }
+
+    /// Whether any `with` scope is attached (the walker's
+    /// `innermost_with_scope().is_some()` probe used by bare `inherit`).
+    #[must_use]
+    pub fn has_with_scope(&self) -> bool {
+        !self.0.with_scopes.is_empty()
+    }
+
+    /// Full lookup: lexical first, then `with` scopes innermost-first.
+    /// A scope that fails to force, or forces to a non-attrset, is skipped —
+    /// exactly the walker's `lookup_fast` error-swallowing.
+    #[must_use]
+    pub fn lookup(&self, name: &str) -> Option<IrValue> {
+        let sym = intern(name);
+        if let Some(v) = self.0.bindings.get(&sym) {
+            return Some(v.clone());
+        }
+        for scope in self.0.with_scopes.iter().rev() {
+            let cached = scope.cached.borrow().clone();
+            let attrs = if let Some(attrs) = cached {
+                attrs
+            } else {
+                match scope.value.force() {
+                    Ok(IrValue::Attrs(attrs)) => {
+                        *scope.cached.borrow_mut() = Some(attrs.clone());
+                        attrs
+                    }
+                    // Non-attrset or failed force: skip this scope.
+                    _ => continue,
+                }
+            };
+            if let Some(v) = attrs.get(name) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+}
+
+// ── the evaluator ─────────────────────────────────────────────────────────
+
+/// Evaluate expression `id` of `prog` in `env`. Returns a possibly-lazy
+/// [`IrValue`] (WHNF discipline mirrors the tree-walker: containers hold
+/// thunks; callers force what they inspect).
+pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, IrEvalError> {
+    match prog.expr(id) {
+        Ir::Int(n) => Ok(IrValue::Int(*n)),
+        Ir::Float(f) => Ok(IrValue::Float(*f)),
+        Ir::Uri(u) => Ok(IrValue::string(u.clone())),
+        Ir::Ident(sym) => {
+            let name = resolve(*sym);
+            match name.as_str() {
+                "true" => Ok(IrValue::Bool(true)),
+                "false" => Ok(IrValue::Bool(false)),
+                "null" => Ok(IrValue::Null),
+                _ => env
+                    .lookup(&name)
+                    .ok_or(IrEvalError::UndefinedVar(name)),
+            }
+        }
+        Ir::Str(parts) => eval_str_parts(prog, parts, env).map(IrValue::string),
+        Ir::Path { .. } => Err(IrEvalError::Unsupported("path")),
+        Ir::SearchPath(_) => Err(IrEvalError::Unsupported("search-path")),
+        Ir::CurPos => Err(IrEvalError::Unsupported("__curPos")),
+        Ir::LegacyLet { .. } => Err(IrEvalError::Unsupported("legacy-let")),
+        Ir::Paren(inner) => eval_ir(prog, *inner, env),
+        Ir::List(items) => Ok(IrValue::List(Rc::new(
+            items
+                .iter()
+                .map(|item| IrValue::Thunk(IrThunk::suspended(prog.clone(), *item, env.clone())))
+                .collect(),
+        ))),
+        Ir::Lambda { param, body } => Ok(IrValue::Lambda(Rc::new(IrClosure {
+            prog: prog.clone(),
+            param: param.clone(),
+            body: *body,
+            env: env.clone(),
+        }))),
+        Ir::Apply { func, arg } => {
+            let f = eval_ir(prog, *func, env)?.force()?;
+            let arg_value = match &f {
+                IrValue::Lambda(_) => {
+                    // Call-by-need: always thunk the argument.
+                    IrValue::Thunk(IrThunk::suspended(prog.clone(), *arg, env.clone()))
+                }
+                // Builtin args are evaluated eagerly (the walker does the
+                // same — builtins force their args anyway).
+                _ => eval_ir(prog, *arg, env)?,
+            };
+            apply(f, arg_value)
+        }
+        Ir::IfElse {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            if eval_ir(prog, *condition, env)?.force()?.as_bool()? {
+                eval_ir(prog, *then_body, env)
+            } else {
+                eval_ir(prog, *else_body, env)
+            }
+        }
+        Ir::Assert { condition, body } => {
+            if eval_ir(prog, *condition, env)?.force()?.as_bool()? {
+                eval_ir(prog, *body, env)
+            } else {
+                Err(IrEvalError::AssertionFailed)
+            }
+        }
+        Ir::With { namespace, body } => {
+            // Namespace stays lazy — forced only when an ident lookup falls
+            // through lexical scope (the walker's M2.6 ROOT #4a fix).
+            let scope = IrValue::Thunk(IrThunk::suspended(prog.clone(), *namespace, env.clone()));
+            let new_env = env.child().with_scope(scope);
+            eval_ir(prog, *body, &new_env)
+        }
+        Ir::UnaryOp { op, expr } => {
+            let v = eval_ir(prog, *expr, env)?.force()?;
+            match op {
+                UnaryOp::Negate => match v {
+                    IrValue::Int(n) => Ok(IrValue::Int(-n)),
+                    IrValue::Float(f) => Ok(IrValue::Float(-f)),
+                    other => Err(IrEvalError::TypeError(format!(
+                        "cannot negate {}",
+                        other.type_name()
+                    ))),
+                },
+                UnaryOp::Invert => Ok(IrValue::Bool(!v.as_bool()?)),
+            }
+        }
+        Ir::BinOp { op, lhs, rhs } => eval_binop(prog, *op, *lhs, *rhs, env),
+        Ir::Select {
+            subject,
+            path,
+            or_default,
+        } => eval_select(prog, *subject, path, *or_default, env),
+        Ir::HasAttr { subject, path } => {
+            let base = eval_ir(prog, *subject, env)?.force()?;
+            match traverse_attrpath(prog, base, path, env)? {
+                Traverse::Found(_) => Ok(IrValue::Bool(true)),
+                Traverse::Missing(_) | Traverse::NotAttrs => Ok(IrValue::Bool(false)),
+            }
+        }
+        Ir::LetIn { bindings, body } => {
+            let new_env = eval_let_bindings(prog, bindings, env)?;
+            eval_ir(prog, *body, &new_env)
+        }
+        Ir::AttrSet { rec, bindings } => eval_attrset(prog, *rec, bindings, env),
+    }
+}
+
+// ── strings + attr names ──────────────────────────────────────────────────
+
+/// Evaluate normalized string parts to the concatenated content. Mirrors the
+/// walker's `eval_str` (interpolations force + copy-to-store coerce; without
+/// paths in the subset, copy-to-store and plain coercion coincide).
+fn eval_str_parts(
+    prog: &Rc<Program>,
+    parts: &[StrPart],
+    env: &IrEnv,
+) -> Result<String, IrEvalError> {
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            StrPart::Literal(text) => out.push_str(text),
+            StrPart::Interp(e) => {
+                let v = eval_ir(prog, *e, env)?.force()?;
+                out.push_str(&coerce_to_string(&v)?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The walker's `coerce_to_string_impl` restricted to the pure subset —
+/// used by interpolation and `toString`. (Paths can't occur: a path literal
+/// already failed with a typed Unsupported.)
+fn coerce_to_string(v: &IrValue) -> Result<String, IrEvalError> {
+    match v {
+        IrValue::Str(s) => Ok((**s).clone()),
+        IrValue::Int(n) => Ok(n.to_string()),
+        IrValue::Float(f) => Ok(format!("{f:.6}")),
+        IrValue::Bool(true) => Ok("1".to_string()),
+        IrValue::Bool(false) | IrValue::Null => Ok(String::new()),
+        IrValue::Attrs(attrs) => {
+            if let Some(to_str) = attrs.get("__toString") {
+                let r = apply(to_str.force()?, IrValue::Attrs(attrs.clone()))?.force()?;
+                coerce_to_string(&r)
+            } else if let Some(out_path) = attrs.get("outPath") {
+                coerce_to_string(&out_path.force()?)
+            } else {
+                Err(IrEvalError::TypeError(
+                    "cannot coerce set to string (no __toString or outPath)".into(),
+                ))
+            }
+        }
+        IrValue::List(items) => {
+            let mut parts = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                parts.push(coerce_to_string(&item.force()?)?);
+            }
+            Ok(parts.join(" "))
+        }
+        IrValue::Thunk(_) => coerce_to_string(&v.force()?),
+        other => Err(IrEvalError::TypeError(format!(
+            "cannot coerce {} to string",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Evaluate an attr name to a key string; `None` = null dynamic key (CppNix
+/// skips the binding). Mirrors `eval_attr_maybe_null`: dynamic keys are
+/// STRICT strings (no coercion), string keys go through interpolation.
+fn eval_attr_maybe_null(
+    prog: &Rc<Program>,
+    attr: &AttrName,
+    env: &IrEnv,
+) -> Result<Option<String>, IrEvalError> {
+    match attr {
+        AttrName::Ident(sym) => Ok(Some(resolve(*sym))),
+        AttrName::Str(parts) => Ok(Some(eval_str_parts(prog, parts, env)?)),
+        AttrName::Dynamic(e) => {
+            let v = eval_ir(prog, *e, env)?.force()?;
+            match v {
+                IrValue::Null => Ok(None),
+                IrValue::Str(s) => Ok(Some((*s).clone())),
+                other => Err(IrEvalError::TypeMismatch {
+                    expected: "string",
+                    got: other.type_name(),
+                }),
+            }
+        }
+    }
+}
+
+/// Strict attr-name evaluation (`let` paths, select/has-attr paths): a null
+/// dynamic key is a type error, mirroring the walker's `eval_attr`.
+fn eval_attr(prog: &Rc<Program>, attr: &AttrName, env: &IrEnv) -> Result<String, IrEvalError> {
+    eval_attr_maybe_null(prog, attr, env)?
+        .ok_or_else(|| IrEvalError::TypeError("null dynamic attribute name".into()))
+}
+
+// ── select / has-attr ─────────────────────────────────────────────────────
+
+enum Traverse {
+    Found(IrValue),
+    Missing(String),
+    NotAttrs,
+}
+
+fn traverse_attrpath(
+    prog: &Rc<Program>,
+    base: IrValue,
+    path: &[AttrName],
+    env: &IrEnv,
+) -> Result<Traverse, IrEvalError> {
+    let mut value = base;
+    for (i, attr) in path.iter().enumerate() {
+        let key = eval_attr(prog, attr, env)?;
+        let forced = value.force()?;
+        match forced {
+            IrValue::Attrs(attrs) => match attrs.get(&key) {
+                Some(v) => {
+                    value = if i < path.len() - 1 {
+                        v.force()?
+                    } else {
+                        v.clone()
+                    };
+                }
+                None => return Ok(Traverse::Missing(key)),
+            },
+            _ => return Ok(Traverse::NotAttrs),
+        }
+    }
+    Ok(Traverse::Found(value))
+}
+
+fn eval_select(
+    prog: &Rc<Program>,
+    subject: ExprId,
+    path: &[AttrName],
+    or_default: Option<ExprId>,
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    // Walker bridge: InfiniteRecursion while forcing the base falls back to
+    // the default when one is present.
+    let base = match eval_ir(prog, subject, env).and_then(|v| v.force()) {
+        Ok(v) => v,
+        Err(IrEvalError::InfiniteRecursion) if or_default.is_some() => {
+            return eval_ir(prog, or_default.expect("checked"), env);
+        }
+        Err(e) => return Err(e),
+    };
+    let base_type = base.type_name();
+    match traverse_attrpath(prog, base, path, env) {
+        Ok(Traverse::Found(v)) => Ok(v),
+        Ok(Traverse::Missing(key)) => match or_default {
+            Some(def) => eval_ir(prog, def, env),
+            None => Err(IrEvalError::AttrNotFound(key)),
+        },
+        Ok(Traverse::NotAttrs) => match or_default {
+            Some(def) => eval_ir(prog, def, env),
+            None => Err(IrEvalError::TypeError(format!(
+                "cannot select from {base_type}"
+            ))),
+        },
+        Err(IrEvalError::InfiniteRecursion) if or_default.is_some() => {
+            eval_ir(prog, or_default.expect("checked"), env)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+// ── application ───────────────────────────────────────────────────────────
+
+/// Apply a function value to an argument. Mirrors the walker's
+/// `apply_inner`: lambdas bind call-by-need, pattern params force the arg,
+/// `__functor` attrsets are supported, everything else is a type error.
+pub fn apply(func: IrValue, arg: IrValue) -> Result<IrValue, IrEvalError> {
+    let func = func.force()?;
+    match func {
+        IrValue::Lambda(closure) => {
+            let mut call_env = closure.env.child();
+            match &closure.param {
+                Param::Ident(sym) => {
+                    // Simple param: bind WITHOUT forcing (fixpoints).
+                    call_env.bind_sym(*sym, arg);
+                }
+                Param::Pattern {
+                    entries,
+                    ellipsis,
+                    bind,
+                } => {
+                    let forced = arg.force()?;
+                    let IrValue::Attrs(attrs) = &forced else {
+                        return Err(IrEvalError::TypeMismatch {
+                            expected: "set",
+                            got: forced.type_name(),
+                        });
+                    };
+                    if let Some(bind_sym) = bind {
+                        call_env.bind_sym(*bind_sym, forced.clone());
+                    }
+                    // Two-phase defaults: bind all formals first, then
+                    // update default thunks to see the final env.
+                    let mut default_thunks: Vec<IrThunk> = Vec::new();
+                    for entry in entries {
+                        let name = resolve(entry.name);
+                        let value = if let Some(v) = attrs.get(&name) {
+                            v.clone()
+                        } else if let Some(default_expr) = entry.default {
+                            let t = IrThunk::suspended(
+                                closure.prog.clone(),
+                                default_expr,
+                                call_env.clone(),
+                            );
+                            default_thunks.push(t.clone());
+                            IrValue::Thunk(t)
+                        } else {
+                            return Err(IrEvalError::TypeError(format!(
+                                "missing argument '{name}'"
+                            )));
+                        };
+                        call_env.bind_sym(entry.name, value);
+                    }
+                    for t in &default_thunks {
+                        t.update_env(&call_env);
+                    }
+                    if !ellipsis {
+                        let entry_names: HashSet<String> =
+                            entries.iter().map(|e| resolve(e.name)).collect();
+                        for key in attrs.keys() {
+                            if !entry_names.contains(key) {
+                                return Err(IrEvalError::TypeError(format!(
+                                    "unexpected argument '{key}'"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            eval_ir(&closure.prog, closure.body, &call_env)
+        }
+        IrValue::Builtin(kind, captured) => apply_builtin(&kind, captured.as_deref(), arg),
+        IrValue::Attrs(attrs) => {
+            if let Some(functor) = attrs.get("__functor") {
+                let f = apply(functor.force()?, IrValue::Attrs(attrs.clone()))?;
+                apply(f, arg)
+            } else {
+                Err(IrEvalError::TypeError(
+                    "attempt to call something which is not a function but a set".into(),
+                ))
+            }
+        }
+        other => Err(IrEvalError::TypeError(format!(
+            "attempt to call something which is not a function but a {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn apply_builtin(
+    kind: &IrBuiltin,
+    captured: Option<&IrValue>,
+    arg: IrValue,
+) -> Result<IrValue, IrEvalError> {
+    match kind {
+        IrBuiltin::ToString => Ok(IrValue::string(coerce_to_string(&arg.force()?)?)),
+        IrBuiltin::Map => Ok(IrValue::Builtin(
+            IrBuiltin::MapPartial,
+            Some(Rc::new(arg)),
+        )),
+        IrBuiltin::MapPartial => {
+            let func = captured.expect("map<partial> carries its function").clone();
+            let list = arg.force()?;
+            let IrValue::List(items) = list else {
+                return Err(IrEvalError::TypeMismatch {
+                    expected: "list",
+                    got: list.type_name(),
+                });
+            };
+            // Lazy list of `f elem` applications — mirrors the walker's map.
+            Ok(IrValue::List(Rc::new(
+                items
+                    .iter()
+                    .map(|v| IrValue::Thunk(IrThunk::native_apply(func.clone(), v.clone())))
+                    .collect(),
+            )))
+        }
+    }
+}
+
+// ── binary operators ──────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_lines)]
+fn eval_binop(
+    prog: &Rc<Program>,
+    op: BinOp,
+    lhs: ExprId,
+    rhs: ExprId,
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    // Short-circuit forms mirror the walker exactly: LHS is forced +
+    // bool-checked, the RHS is returned UNCHECKED (`false || 1` → `1`).
+    match op {
+        BinOp::And => {
+            let l = eval_ir(prog, lhs, env)?.force()?.as_bool()?;
+            return if l {
+                eval_ir(prog, rhs, env)
+            } else {
+                Ok(IrValue::Bool(false))
+            };
+        }
+        BinOp::Or => {
+            let l = eval_ir(prog, lhs, env)?.force()?.as_bool()?;
+            return if l {
+                Ok(IrValue::Bool(true))
+            } else {
+                eval_ir(prog, rhs, env)
+            };
+        }
+        BinOp::Implication => {
+            let l = eval_ir(prog, lhs, env)?.force()?.as_bool()?;
+            return if l {
+                eval_ir(prog, rhs, env)
+            } else {
+                Ok(IrValue::Bool(true))
+            };
+        }
+        _ => {}
+    }
+
+    let l = eval_ir(prog, lhs, env)?.force()?;
+    let r = eval_ir(prog, rhs, env)?.force()?;
+
+    match op {
+        BinOp::Add => match (&l, &r) {
+            (IrValue::Int(a), IrValue::Int(b)) => a
+                .checked_add(*b)
+                .map(IrValue::Int)
+                .ok_or_else(|| int_overflow("adding", *a, '+', *b)),
+            (IrValue::Float(a), IrValue::Float(b)) => Ok(IrValue::Float(a + b)),
+            (IrValue::Int(a), IrValue::Float(b)) => Ok(IrValue::Float(*a as f64 + b)),
+            (IrValue::Float(a), IrValue::Int(b)) => Ok(IrValue::Float(a + *b as f64)),
+            (IrValue::Str(a), IrValue::Str(b)) => {
+                let mut s = String::with_capacity(a.len() + b.len());
+                s.push_str(a);
+                s.push_str(b);
+                Ok(IrValue::string(s))
+            }
+            // Walker: attrsets coerce (outPath / __toString) on either side.
+            (IrValue::Attrs(_), _) | (_, IrValue::Attrs(_)) => {
+                let ls = coerce_to_string(&l)?;
+                let rs = coerce_to_string(&r)?;
+                Ok(IrValue::string(format_concat(&ls, &rs)))
+            }
+            _ => Err(op_type_error("add", &l, &r)),
+        },
+        BinOp::Sub => num_op(&l, &r, i64::checked_sub, |a, b| a - b, "subtracting", '-'),
+        BinOp::Mul => num_op(&l, &r, i64::checked_mul, |a, b| a * b, "multiplying", '*'),
+        BinOp::Div => {
+            let rhs_is_zero = match &r {
+                IrValue::Int(0) => true,
+                IrValue::Float(f) => *f == 0.0,
+                _ => false,
+            };
+            if rhs_is_zero {
+                return Err(IrEvalError::DivisionByZero);
+            }
+            num_op(&l, &r, i64::checked_div, |a, b| a / b, "dividing", '/')
+        }
+        BinOp::Equal => Ok(IrValue::Bool(ir_eq(&l, &r))),
+        BinOp::NotEqual => Ok(IrValue::Bool(!ir_eq(&l, &r))),
+        BinOp::Less => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
+        BinOp::LessOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Greater),
+        BinOp::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
+        BinOp::MoreOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Less),
+        BinOp::Update => {
+            let IrValue::Attrs(la) = &l else {
+                return Err(IrEvalError::TypeMismatch {
+                    expected: "set",
+                    got: l.type_name(),
+                });
+            };
+            let IrValue::Attrs(ra) = &r else {
+                return Err(IrEvalError::TypeMismatch {
+                    expected: "set",
+                    got: r.type_name(),
+                });
+            };
+            let mut merged = (**la).clone();
+            for (k, v) in ra.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+            Ok(IrValue::Attrs(Rc::new(merged)))
+        }
+        BinOp::Concat => {
+            let IrValue::List(la) = &l else {
+                return Err(IrEvalError::TypeMismatch {
+                    expected: "list",
+                    got: l.type_name(),
+                });
+            };
+            let IrValue::List(ra) = &r else {
+                return Err(IrEvalError::TypeMismatch {
+                    expected: "list",
+                    got: r.type_name(),
+                });
+            };
+            let mut out = Vec::with_capacity(la.len() + ra.len());
+            out.extend(la.iter().cloned());
+            out.extend(ra.iter().cloned());
+            Ok(IrValue::List(Rc::new(out)))
+        }
+        BinOp::And | BinOp::Or | BinOp::Implication => unreachable!("handled above"),
+        BinOp::PipeRight | BinOp::PipeLeft => Err(IrEvalError::Unsupported("pipe-operators")),
+    }
+}
+
+/// Byte-identical to `format!("{ls}{rs}")` without the format machinery.
+fn format_concat(ls: &str, rs: &str) -> String {
+    let mut s = String::with_capacity(ls.len() + rs.len());
+    s.push_str(ls);
+    s.push_str(rs);
+    s
+}
+
+fn int_overflow(verb: &str, a: i64, sym: char, b: i64) -> IrEvalError {
+    IrEvalError::Abort(format!("integer overflow in {verb} {a} {sym} {b}"))
+}
+
+fn op_type_error(op: &str, l: &IrValue, r: &IrValue) -> IrEvalError {
+    IrEvalError::TypeError(format!(
+        "cannot {op} {} and {}",
+        l.type_name(),
+        r.type_name()
+    ))
+}
+
+fn num_op(
+    l: &IrValue,
+    r: &IrValue,
+    int_op: impl Fn(i64, i64) -> Option<i64>,
+    float_op: impl Fn(f64, f64) -> f64,
+    verb: &'static str,
+    sym: char,
+) -> Result<IrValue, IrEvalError> {
+    match (l, r) {
+        (IrValue::Int(a), IrValue::Int(b)) => int_op(*a, *b)
+            .map(IrValue::Int)
+            .ok_or_else(|| int_overflow(verb, *a, sym, *b)),
+        (IrValue::Float(a), IrValue::Float(b)) => Ok(IrValue::Float(float_op(*a, *b))),
+        (IrValue::Int(a), IrValue::Float(b)) => Ok(IrValue::Float(float_op(*a as f64, *b))),
+        (IrValue::Float(a), IrValue::Int(b)) => Ok(IrValue::Float(float_op(*a, *b as f64))),
+        _ => Err(op_type_error("perform arithmetic on", l, r)),
+    }
+}
+
+fn compare(
+    l: &IrValue,
+    r: &IrValue,
+    pred: impl Fn(std::cmp::Ordering) -> bool,
+) -> Result<IrValue, IrEvalError> {
+    let ord = match (l, r) {
+        (IrValue::Int(a), IrValue::Int(b)) => a.cmp(b),
+        (IrValue::Float(a), IrValue::Float(b)) => {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (IrValue::Int(a), IrValue::Float(b)) => (*a as f64)
+            .partial_cmp(b)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (IrValue::Float(a), IrValue::Int(b)) => a
+            .partial_cmp(&(*b as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (IrValue::Str(a), IrValue::Str(b)) => a.cmp(b),
+        _ => return Err(op_type_error("compare", l, r)),
+    };
+    Ok(IrValue::Bool(pred(ord)))
+}
+
+// ── equality (mirrors `Concrete::PartialEq` + `Value::PartialEq`) ─────────
+
+/// Deep equality with the walker's exact semantics: operands are demanded
+/// (a failed inner force compares as `null`), int/float cross-compare,
+/// strings by content, lists elementwise, attrsets by key/value with the
+/// derivation `outPath` short-circuit, lambdas by closure identity,
+/// builtins never equal.
+#[must_use]
+pub fn ir_eq(l: &IrValue, r: &IrValue) -> bool {
+    let l = l.force().unwrap_or(IrValue::Null);
+    let r = r.force().unwrap_or(IrValue::Null);
+    match (&l, &r) {
+        (IrValue::Null, IrValue::Null) => true,
+        (IrValue::Bool(a), IrValue::Bool(b)) => a == b,
+        (IrValue::Int(a), IrValue::Int(b)) => a == b,
+        (IrValue::Float(a), IrValue::Float(b)) => a == b,
+        (IrValue::Int(a), IrValue::Float(b)) | (IrValue::Float(b), IrValue::Int(a)) => {
+            (*a as f64) == *b
+        }
+        (IrValue::Str(a), IrValue::Str(b)) => a == b,
+        (IrValue::List(a), IrValue::List(b)) => {
+            Rc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| ir_eq(x, y)))
+        }
+        (IrValue::Attrs(a), IrValue::Attrs(b)) => {
+            if Rc::ptr_eq(a, b) {
+                return true;
+            }
+            // Derivation short-circuit: both `type == "derivation"` with an
+            // `outPath` compare by outPath string only.
+            if let (Some(pa), Some(pb)) = (derivation_out_path(a), derivation_out_path(b)) {
+                return pa == pb;
+            }
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, v)| b.get(k).is_some_and(|w| ir_eq(v, w)))
+        }
+        (IrValue::Lambda(a), IrValue::Lambda(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn derivation_out_path(attrs: &IrAttrs) -> Option<String> {
+    let ty = attrs.get("type")?.force().ok()?;
+    let IrValue::Str(s) = ty else { return None };
+    if &**s != "derivation" {
+        return None;
+    }
+    let out = attrs.get("outPath")?.force().ok()?;
+    match out {
+        IrValue::Str(p) => Some((*p).clone()),
+        _ => None,
+    }
+}
+
+// ── let / attrset construction ────────────────────────────────────────────
+
+/// Every identifier SYMBOL referenced anywhere in the subtree of `id` —
+/// the IR mirror of the walker's `referenced_idents` over-approximation.
+/// Attrpath keys are naturally excluded (they are `AttrName`, not `Ident`
+/// nodes). Used only to decide Promise-vs-Blackhole force mode.
+fn referenced_idents(prog: &Program, id: ExprId, out: &mut HashSet<Symbol>) {
+    if let Ir::Ident(sym) = prog.expr(id) {
+        out.insert(*sym);
+    }
+    for child in prog.children(id) {
+        referenced_idents(prog, child, out);
+    }
+}
+
+/// Build the recursive `let` scope env. Mirrors the walker's LetIn arm:
+/// two-phase thunk binding, dotted-path accumulation, eager bare inherit,
+/// lazy `inherit (from)`.
+fn eval_let_bindings(
+    prog: &Rc<Program>,
+    bindings: &[Binding],
+    env: &IrEnv,
+) -> Result<IrEnv, IrEvalError> {
+    let mut new_env = env.child();
+    let mut thunks: Vec<IrThunk> = Vec::new();
+    let mut dotted_attrs = IrAttrs::new();
+
+    // Pre-pass: every binding name in this let scope (head keys + inherit
+    // names), errors ignored — used by the mutual-recursion detector.
+    let mut let_scope_names: HashSet<String> = HashSet::new();
+    for binding in bindings {
+        match binding {
+            Binding::Path { path, .. } => {
+                if let Some(first) = path.first() {
+                    if let Ok(Some(name)) = eval_attr_maybe_null(prog, first, env) {
+                        let_scope_names.insert(name);
+                    }
+                }
+            }
+            Binding::Inherit { attrs, .. } => {
+                for attr in attrs {
+                    if let Ok(Some(name)) = eval_attr_maybe_null(prog, attr, env) {
+                        let_scope_names.insert(name);
+                    }
+                }
+            }
+        }
+    }
+
+    for binding in bindings {
+        match binding {
+            Binding::Path { path, value } => {
+                let mut path_keys = Vec::with_capacity(path.len());
+                for attr in path {
+                    path_keys.push(eval_attr(prog, attr, env)?);
+                }
+                if path_keys.len() == 1 {
+                    let key = path_keys.pop().expect("len checked");
+                    let mut referenced = HashSet::new();
+                    referenced_idents(prog, *value, &mut referenced);
+                    let in_mutual_cycle = std::iter::once(&key)
+                        .chain(let_scope_names.iter())
+                        .any(|n| referenced.contains(&intern(n)));
+                    let thunk = if in_mutual_cycle {
+                        IrThunk::suspended_recursive(prog.clone(), *value, env.clone())
+                    } else {
+                        IrThunk::suspended(prog.clone(), *value, env.clone())
+                    };
+                    thunks.push(thunk.clone());
+                    new_env.bind(&key, IrValue::Thunk(thunk));
+                } else {
+                    let key = path_keys[0].clone();
+                    let inner =
+                        build_nested_attr_thunk(prog, &path_keys[1..], *value, env, &mut thunks);
+                    merge_nested_insert(&mut dotted_attrs, key, inner)?;
+                }
+            }
+            Binding::Inherit { from, attrs } => {
+                if let Some(source_expr) = from {
+                    let source_thunk =
+                        IrThunk::suspended(prog.clone(), *source_expr, env.clone());
+                    for attr in attrs {
+                        let name = eval_attr(prog, attr, env)?;
+                        let t = IrThunk::inherit_select(source_thunk.clone(), name.clone());
+                        thunks.push(t.clone());
+                        new_env.bind(&name, IrValue::Thunk(t));
+                    }
+                } else {
+                    // Bare inherit in `let` is EAGER (walker: lookup or
+                    // UndefinedVar at construction).
+                    for attr in attrs {
+                        let name = eval_attr(prog, attr, env)?;
+                        let value = env
+                            .lookup(&name)
+                            .ok_or_else(|| IrEvalError::UndefinedVar(name.clone()))?;
+                        new_env.bind(&name, value);
+                    }
+                }
+            }
+        }
+    }
+
+    for (key, value) in &dotted_attrs {
+        new_env.bind(key, value.clone());
+    }
+    for thunk in &thunks {
+        thunk.update_env(&new_env);
+    }
+    Ok(new_env)
+}
+
+/// Nested attrset with a (collected) thunk at the leaf — the walker's
+/// `build_nested_attr_thunk` (leaf participates in the recursive fixpoint).
+fn build_nested_attr_thunk(
+    prog: &Rc<Program>,
+    path: &[String],
+    value: ExprId,
+    env: &IrEnv,
+    thunks: &mut Vec<IrThunk>,
+) -> IrValue {
+    if path.is_empty() {
+        let t = IrThunk::suspended(prog.clone(), value, env.clone());
+        thunks.push(t.clone());
+        return IrValue::Thunk(t);
+    }
+    let inner = build_nested_attr_thunk(prog, &path[1..], value, env, thunks);
+    let mut attrs = IrAttrs::new();
+    attrs.insert(path[0].clone(), inner);
+    IrValue::Attrs(Rc::new(attrs))
+}
+
+/// Nested attrset with a lazy (uncollected) leaf — the walker's
+/// `build_nested_attr` used by non-rec attrsets.
+fn build_nested_attr(prog: &Rc<Program>, path: &[String], value: ExprId, env: &IrEnv) -> IrValue {
+    if path.is_empty() {
+        return IrValue::Thunk(IrThunk::suspended(prog.clone(), value, env.clone()));
+    }
+    let inner = build_nested_attr(prog, &path[1..], value, env);
+    let mut attrs = IrAttrs::new();
+    attrs.insert(path[0].clone(), inner);
+    IrValue::Attrs(Rc::new(attrs))
+}
+
+/// The walker's `merge_nested_insert`: deep-merge on collision when both
+/// sides are attrset-shaped (forcing a colliding thunk to WHNF only), plain
+/// last-write-wins otherwise.
+fn merge_nested_insert(
+    target: &mut IrAttrs,
+    key: String,
+    value: IrValue,
+) -> Result<(), IrEvalError> {
+    let Some(existing) = target.get(&key).cloned() else {
+        target.insert(key, value);
+        return Ok(());
+    };
+    // Normalize the NEW side: force a thunk to WHNF; keep as-is if the force
+    // fails or yields a non-attrset (mirror: overwrite path).
+    let value = match &value {
+        IrValue::Thunk(_) => match value.force() {
+            Ok(v @ IrValue::Attrs(_)) => v,
+            _ => value,
+        },
+        _ => value,
+    };
+    if !matches!(value, IrValue::Attrs(_)) {
+        target.insert(key, value);
+        return Ok(());
+    }
+    let existing_concrete = match &existing {
+        IrValue::Attrs(_) => existing.clone(),
+        IrValue::Thunk(_) => match existing.force() {
+            Ok(v @ IrValue::Attrs(_)) => v,
+            _ => {
+                target.insert(key, value);
+                return Ok(());
+            }
+        },
+        _ => {
+            target.insert(key, value);
+            return Ok(());
+        }
+    };
+    let IrValue::Attrs(existing_rc) = existing_concrete else {
+        unreachable!()
+    };
+    let IrValue::Attrs(new_rc) = value else {
+        unreachable!()
+    };
+    let mut merged = (*existing_rc).clone();
+    for (k, v) in new_rc.iter() {
+        merge_nested_insert(&mut merged, k.clone(), v.clone())?;
+    }
+    target.insert(key, IrValue::Attrs(Rc::new(merged)));
+    Ok(())
+}
+
+/// Force the deferred dynamic-tail attrpath: build `{ tail… = value }` in
+/// the captured env (null dynamic keys skip, yielding `{ }` at that level).
+fn build_tail_attrs(
+    prog: &Rc<Program>,
+    tail: &[AttrName],
+    value: ExprId,
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    let Some((head, rest)) = tail.split_first() else {
+        return eval_ir(prog, value, env).and_then(|v| v.force());
+    };
+    let mut attrs = IrAttrs::new();
+    if let Some(key) = eval_attr_maybe_null(prog, head, env)? {
+        let inner = if rest.is_empty() {
+            IrValue::Thunk(IrThunk::suspended(prog.clone(), value, env.clone()))
+        } else {
+            IrValue::Thunk(IrThunk::deferred_tail(
+                prog.clone(),
+                rest.to_vec(),
+                value,
+                env.clone(),
+            ))
+        };
+        attrs.insert(key, inner);
+    }
+    Ok(IrValue::Attrs(Rc::new(attrs)))
+}
+
+fn attrname_is_dynamic(attr: &AttrName) -> bool {
+    match attr {
+        AttrName::Ident(_) => false,
+        AttrName::Dynamic(_) => true,
+        AttrName::Str(parts) => parts.iter().any(|p| matches!(p, StrPart::Interp(_))),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn eval_attrset(
+    prog: &Rc<Program>,
+    rec: bool,
+    bindings: &[Binding],
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    let mut attrs = IrAttrs::new();
+
+    if rec {
+        let mut rec_env = env.child();
+        let mut thunks: Vec<IrThunk> = Vec::new();
+        let mut defined_so_far: HashSet<String> = HashSet::new();
+        let mut dotted_attrs = IrAttrs::new();
+
+        for binding in bindings {
+            match binding {
+                Binding::Path { path, value } => {
+                    let mut path_keys = Vec::with_capacity(path.len());
+                    let mut skip = false;
+                    for attr in path {
+                        match eval_attr_maybe_null(prog, attr, env)? {
+                            Some(k) => path_keys.push(k),
+                            None => {
+                                skip = true;
+                                break;
+                            }
+                        }
+                    }
+                    if skip || path_keys.is_empty() {
+                        continue;
+                    }
+                    if path_keys.len() == 1 {
+                        let key = path_keys.pop().expect("len checked");
+                        let mut referenced = HashSet::new();
+                        referenced_idents(prog, *value, &mut referenced);
+                        let is_recursive = referenced.contains(&intern(&key))
+                            || defined_so_far.iter().any(|n| referenced.contains(&intern(n)));
+                        let thunk = if is_recursive {
+                            IrThunk::suspended_recursive(prog.clone(), *value, env.clone())
+                        } else {
+                            IrThunk::suspended(prog.clone(), *value, env.clone())
+                        };
+                        thunks.push(thunk.clone());
+                        let v = IrValue::Thunk(thunk);
+                        rec_env.bind(&key, v.clone());
+                        attrs.insert(key.clone(), v);
+                        defined_so_far.insert(key);
+                    } else {
+                        let key = path_keys[0].clone();
+                        let inner = build_nested_attr_thunk(
+                            prog,
+                            &path_keys[1..],
+                            *value,
+                            env,
+                            &mut thunks,
+                        );
+                        merge_nested_insert(&mut dotted_attrs, key, inner)?;
+                    }
+                }
+                Binding::Inherit { from, attrs: names } => {
+                    eval_inherit(
+                        prog,
+                        from.as_ref(),
+                        names,
+                        env,
+                        &mut attrs,
+                        Some(&mut rec_env),
+                        Some(&mut thunks),
+                    )?;
+                }
+            }
+        }
+
+        for (key, value) in &dotted_attrs {
+            attrs.insert(key.clone(), value.clone());
+            rec_env.bind(key, value.clone());
+        }
+        for thunk in &thunks {
+            thunk.update_env(&rec_env);
+        }
+    } else {
+        for binding in bindings {
+            match binding {
+                Binding::Path { path, value } => {
+                    let tail_is_dynamic = path.len() > 1 && path[1..].iter().any(attrname_is_dynamic);
+                    let Some(head_key) = eval_attr_maybe_null(prog, &path[0], env)? else {
+                        continue;
+                    };
+                    if tail_is_dynamic && !attrs.contains_key(&head_key) {
+                        // Deferred dynamic tail (walker's build_deferred_tail_attr).
+                        let t = IrThunk::deferred_tail(
+                            prog.clone(),
+                            path[1..].to_vec(),
+                            *value,
+                            env.clone(),
+                        );
+                        attrs.insert(head_key, IrValue::Thunk(t));
+                        continue;
+                    }
+                    if tail_is_dynamic {
+                        // Collision under an existing head with a dynamic
+                        // tail: force the deferred sub-attrs now and merge
+                        // (outcome-equivalent to the walker's
+                        // merge_deferred_dynamic_tail for the pure subset —
+                        // the differential gates this).
+                        let sub = build_tail_attrs(prog, &path[1..], *value, env)?;
+                        merge_nested_insert(&mut attrs, head_key, sub)?;
+                        continue;
+                    }
+                    // Static tail: evaluate remaining keys now (null skips).
+                    let mut path_keys = vec![head_key];
+                    let mut skip = false;
+                    for attr in &path[1..] {
+                        match eval_attr_maybe_null(prog, attr, env)? {
+                            Some(k) => path_keys.push(k),
+                            None => {
+                                skip = true;
+                                break;
+                            }
+                        }
+                    }
+                    if skip {
+                        continue;
+                    }
+                    if path_keys.len() == 1 {
+                        let key = path_keys.pop().expect("len checked");
+                        let value =
+                            IrValue::Thunk(IrThunk::suspended(prog.clone(), *value, env.clone()));
+                        // Collision with an existing attrs → deep merge
+                        // (force RHS to WHNF first), mirroring the walker.
+                        if matches!(attrs.get(&key), Some(IrValue::Attrs(_))) {
+                            let forced = value.force()?;
+                            merge_nested_insert(&mut attrs, key, forced)?;
+                        } else {
+                            attrs.insert(key, value);
+                        }
+                    } else {
+                        let key = path_keys[0].clone();
+                        let value = build_nested_attr(prog, &path_keys[1..], *value, env);
+                        // Existing full-set thunk at the head: force to WHNF
+                        // so the merge sees concrete attrs.
+                        if matches!(attrs.get(&key), Some(IrValue::Thunk(_))) {
+                            let existing = attrs.get(&key).cloned().expect("just matched");
+                            let forced = existing.force()?;
+                            attrs.insert(key.clone(), forced);
+                        }
+                        merge_nested_insert(&mut attrs, key, value)?;
+                    }
+                }
+                Binding::Inherit { from, attrs: names } => {
+                    eval_inherit(prog, from.as_ref(), names, env, &mut attrs, None, None)?;
+                }
+            }
+        }
+    }
+
+    Ok(IrValue::Attrs(Rc::new(attrs)))
+}
+
+/// The walker's `eval_inherit`: `inherit (from) …` builds one shared source
+/// thunk + per-name `InheritSelect` thunks; bare `inherit …` resolves
+/// lexically, deferring to a `WithIdent` thunk when a `with` scope exists.
+fn eval_inherit(
+    prog: &Rc<Program>,
+    from: Option<&ExprId>,
+    names: &[AttrName],
+    env: &IrEnv,
+    attrs: &mut IrAttrs,
+    mut bind_env: Option<&mut IrEnv>,
+    mut thunks: Option<&mut Vec<IrThunk>>,
+) -> Result<(), IrEvalError> {
+    if let Some(source_expr) = from {
+        let source_thunk = IrThunk::suspended(prog.clone(), *source_expr, env.clone());
+        for attr in names {
+            let name = eval_attr(prog, attr, env)?;
+            let t = IrThunk::inherit_select(source_thunk.clone(), name.clone());
+            let value = IrValue::Thunk(t.clone());
+            attrs.insert(name.clone(), value.clone());
+            if let Some(e) = bind_env.as_deref_mut() {
+                e.bind(&name, value);
+            }
+            if let Some(ts) = thunks.as_deref_mut() {
+                ts.push(t);
+            }
+        }
+    } else {
+        for attr in names {
+            let name = eval_attr(prog, attr, env)?;
+            // Walker order: full lookup (lexical + with-scopes) first; only
+            // a MISS with a `with` scope present defers to a WithIdent thunk.
+            let value = if let Some(v) = env.lookup(&name) {
+                v
+            } else if env.has_with_scope() {
+                IrValue::Thunk(IrThunk::with_ident(name.clone(), env.clone()))
+            } else {
+                return Err(IrEvalError::UndefinedVar(name));
+            };
+            attrs.insert(name.clone(), value.clone());
+            if let Some(e) = bind_env.as_deref_mut() {
+                e.bind(&name, value);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── unit tests (IR-side only; the cross-engine differential lives in
+//    tests/eval_differential.rs) ──────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lower_file;
+
+    fn ev(src: &str) -> Result<IrValue, IrEvalError> {
+        let prog = Rc::new(lower_file(src).expect("lowers"));
+        let env = IrEnv::with_pure_builtins();
+        eval_ir(&prog, prog.root, &env).and_then(|v| v.force())
+    }
+
+    fn ev_int(src: &str) -> i64 {
+        match ev(src) {
+            Ok(IrValue::Int(n)) => n,
+            other => panic!("expected int for {src:?}, got {other:?}"),
+        }
+    }
+
+    fn ev_str(src: &str) -> String {
+        match ev(src) {
+            Ok(IrValue::Str(s)) => (*s).clone(),
+            other => panic!("expected string for {src:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn literals() {
+        assert_eq!(ev_int("42"), 42);
+        assert!(matches!(ev("1.5"), Ok(IrValue::Float(f)) if (f - 1.5).abs() < f64::EPSILON));
+        assert!(matches!(ev("true"), Ok(IrValue::Bool(true))));
+        assert!(matches!(ev("null"), Ok(IrValue::Null)));
+        assert_eq!(ev_str("\"hi\""), "hi");
+    }
+
+    #[test]
+    fn arithmetic_and_precedence() {
+        assert_eq!(ev_int("1 + 2 * 3"), 7);
+        assert_eq!(ev_int("(1 + 2) * 3"), 9);
+        assert!(matches!(ev("1 / 0"), Err(IrEvalError::DivisionByZero)));
+        assert!(matches!(
+            ev("9223372036854775807 + 1"),
+            Err(IrEvalError::Abort(_))
+        ));
+    }
+
+    #[test]
+    fn short_circuit_mirrors_walker() {
+        // The walker returns the RHS unchecked: `false || 1` is Int(1).
+        assert_eq!(ev_int("false || 1"), 1);
+        assert_eq!(ev_int("true && 1"), 1);
+        assert_eq!(ev_int("true -> 1"), 1);
+        assert!(matches!(ev("1 && true"), Err(IrEvalError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn let_lambda_apply() {
+        assert_eq!(ev_int("let f = x: x + 1; in f 41"), 42);
+        assert_eq!(ev_int("let f = { a ? 3 }: a; in f { }"), 3);
+        assert_eq!(ev_int("(args @ { a, ... }: args.a) { a = 5; b = 6; }"), 5);
+        // Unused broken binding never forces.
+        assert_eq!(ev_int("let boom = 1 / 0; in 7"), 7);
+    }
+
+    #[test]
+    fn attrsets_select_hasattr() {
+        assert_eq!(ev_int("{ a = { b = 2; }; }.a.b"), 2);
+        assert_eq!(ev_int("{ a = 1; }.b or 9"), 9);
+        assert_eq!(ev_int("rec { a = b; b = 3; }.a"), 3);
+        assert!(matches!(ev("{ a = 1; } ? a"), Ok(IrValue::Bool(true))));
+        assert!(matches!(ev("1 ? a"), Ok(IrValue::Bool(false))));
+        assert_eq!(ev_int("let s = { a.b = 1; a = { c = 2; }; }; in s.a.b + s.a.c"), 3);
+    }
+
+    #[test]
+    fn with_and_inherit() {
+        assert_eq!(ev_int("with { a = 1; }; a"), 1);
+        assert_eq!(ev_int("let a = 2; in with { a = 1; }; a"), 2); // lexical wins
+        assert_eq!(ev_int("let a = 4; s = { inherit a; }; in s.a"), 4);
+        assert_eq!(ev_int("let k = { x = 8; }; in (rec { inherit (k) x; y = x; }).y"), 8);
+    }
+
+    #[test]
+    fn string_interp_and_tostring() {
+        assert_eq!(ev_str(r#"let x = "b"; in "a${x}c""#), "abc");
+        assert_eq!(ev_str(r#""n=${toString 1}""#), "n=1");
+        // Walker coercion quirks mirrored.
+        assert_eq!(ev_str(r#""${1}""#), "1");
+        assert_eq!(ev_str(r#""${1.5}""#), "1.500000");
+    }
+
+    #[test]
+    fn self_alias_is_infinite_recursion_like_walker() {
+        // The walker's force chain hits its depth guard on the direct
+        // self-alias (the thunk memoizes to itself); mirror the class.
+        assert!(matches!(
+            ev("let x = x; in x"),
+            Err(IrEvalError::InfiniteRecursion)
+        ));
+        // Mutual aliasing is the same cycle one step longer.
+        assert!(matches!(
+            ev("let a = b; b = a; in a"),
+            Err(IrEvalError::InfiniteRecursion)
+        ));
+    }
+
+    #[test]
+    fn typed_gaps() {
+        assert!(matches!(ev("./x"), Err(IrEvalError::Unsupported("path"))));
+        assert!(matches!(
+            ev("<nixpkgs>"),
+            Err(IrEvalError::Unsupported("search-path"))
+        ));
+        assert!(matches!(
+            ev("let { body = 1; }"),
+            Err(IrEvalError::Unsupported("legacy-let"))
+        ));
+        assert!(matches!(
+            ev("__curPos"),
+            Err(IrEvalError::Unsupported("__curPos"))
+        ));
+        assert!(matches!(ev("builtins.length [ ]"), Err(IrEvalError::UndefinedVar(n)) if n == "builtins"));
+    }
+
+    #[test]
+    fn map_is_lazy_and_correct() {
+        let v = ev("map (x: x + 1) [ 1 2 3 ]").expect("maps");
+        let IrValue::List(items) = v else { panic!("expected list") };
+        let forced: Vec<i64> = items
+            .iter()
+            .map(|v| match v.force().expect("forces") {
+                IrValue::Int(n) => n,
+                other => panic!("expected int, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(forced, vec![2, 3, 4]);
+    }
+}

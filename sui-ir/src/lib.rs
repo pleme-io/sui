@@ -20,10 +20,14 @@
 //!   parity corpus + property-generated expressions proves lowering loses
 //!   nothing (see `tests/differential.rs`).
 //!
-//! **No eval-through-IR yet.** That is the next, separately-gated slice —
-//! dual-engine (`--ir` behind a flag), full parity corpus byte-diffed on
-//! both engines, before any flip. Nothing in this crate is wired into
-//! sui-eval; the live engines are untouched.
+//! **Eval-through-IR (slice 2)** lives in [`eval_ir`]: a pure-expression-
+//! subset evaluator over the flat `Program` with its own minimal mirror
+//! value/env/thunk types (see that module's docs for why mirrors), gated by
+//! `tests/eval_differential.rs` — every corpus/supplement/seed/generated
+//! expression is evaluated on BOTH engines (tree-walker as the semantic
+//! oracle) and the rendered results byte-compared, with a typed shrink-only
+//! known-gap allowlist. Nothing here is wired into sui-eval; the live
+//! engines are untouched.
 //!
 //! # Id discipline
 //!
@@ -33,6 +37,7 @@
 //! parents, which the later precompute passes (needed-bindings, free-var
 //! sets, attrset shapes) rely on.
 
+pub mod eval_ir;
 pub mod ir;
 pub mod lower;
 pub mod render;

@@ -488,7 +488,11 @@ mod tests {
         // +1 (2026-07-21): dead-binding-elim — killed by census pre-implementation
         // (soundness proven, magnitude ~0.02% of thunk sites; the cheapest
         // Discard on record).
-        assert_eq!(levers.len(), 18, "authored levers");
+        // +1 (2026-07-21): ir-eval-subset — L3 slice 2, eval-through-IR for
+        // the pure expression subset (Proposed; differential-gated; micro
+        // A/B ~2.5x vs the tree-walker on the synthetic harness — honest
+        // scope: not a sacred-path measurement).
+        assert_eq!(levers.len(), 19, "authored levers");
     }
 
     #[test]

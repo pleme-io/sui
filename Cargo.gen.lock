@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "11ee4d1a349126598b202fc116fe1abc969e3aa11f82f3098cee5a9611b35379",
+  "cargo_lock_sha256": "59f79038d186f6897bf3da01e92f2ff5a8ac8e26a769c324ae4dc2b0c65e0a3c",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25610,6 +25610,16 @@
           {
             "name": "rowan",
             "package_key": "rowan-0.16.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustc_hash",
+            "package_key": "rustc-hash-2.1.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

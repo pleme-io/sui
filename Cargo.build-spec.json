@@ -1,7 +1,7 @@
 {
   "version": 10,
   "workspace": {
-    "root": "/Users/drzzln/code/github/pleme-io/sui",
+    "root": "/Users/drzzln/code/github/pleme-io/sui/.claude/worktrees/ir-l3-slice2",
     "members": [
       {
         "name": "sui-intern",
@@ -16,20 +16,20 @@
         "relative_path": "sui-ir"
       },
       {
-        "name": "sui-bytecode",
-        "relative_path": "sui-bytecode"
-      },
-      {
         "name": "sui-compat",
         "relative_path": "sui-compat"
       },
       {
-        "name": "sui-spec",
-        "relative_path": "sui-spec"
-      },
-      {
         "name": "sui-eval",
         "relative_path": "sui-eval"
+      },
+      {
+        "name": "sui-bytecode",
+        "relative_path": "sui-bytecode"
+      },
+      {
+        "name": "sui-spec",
+        "relative_path": "sui-spec"
       },
       {
         "name": "sui-graph-store",
@@ -52472,6 +52472,16 @@
           "tree": "target"
         },
         {
+          "name": "rustc_hash",
+          "package_key": "rustc-hash-2.1.2",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
           "name": "sui_intern",
           "package_key": "sui-intern-0.1.136",
           "kind": "normal",
@@ -52494,6 +52504,12 @@
       ],
       "build_dependencies": [],
       "crate_renames": {
+        "rustc-hash": [
+          {
+            "version": "2.1.2",
+            "rename": "rustc_hash"
+          }
+        ],
         "sui-intern": [
           {
             "version": "0.1.136",
@@ -52506,6 +52522,12 @@
         "version": "0.1.136",
         "edition": "2024",
         "crateRenames": {
+          "rustc-hash": [
+            {
+              "version": "2.1.2",
+              "rename": "rustc_hash"
+            }
+          ],
           "sui-intern": [
             {
               "version": "0.1.136",
@@ -62318,10 +62340,10 @@
     "sui-intern-0.1.136",
     "sui-resolve-0.1.136",
     "sui-ir-0.1.136",
-    "sui-bytecode-0.1.136",
     "sui-compat-0.1.136",
-    "sui-spec-0.1.136",
     "sui-eval-0.1.136",
+    "sui-bytecode-0.1.136",
+    "sui-spec-0.1.136",
     "sui-graph-store-0.1.136",
     "sui-store-0.1.136",
     "sui-cache-0.1.136",
@@ -88075,6 +88097,16 @@
             "tree": "target"
           },
           {
+            "name": "rustc_hash",
+            "package_key": "rustc-hash-2.1.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "sui_intern",
             "package_key": "sui-intern-0.1.136",
             "kind": "normal",
@@ -100239,5 +100271,5 @@
       }
     }
   },
-  "cargo_lock_sha256": "11ee4d1a349126598b202fc116fe1abc969e3aa11f82f3098cee5a9611b35379"
+  "cargo_lock_sha256": "59f79038d186f6897bf3da01e92f2ff5a8ac8e26a769c324ae4dc2b0c65e0a3c"
 }

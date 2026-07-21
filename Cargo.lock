@@ -6707,6 +6707,9 @@ dependencies = [
  "proptest",
  "rnix",
  "rowan",
+ "rustc-hash 2.1.2",
+ "sui-compat",
+ "sui-eval",
  "sui-intern",
  "thiserror 2.0.18",
 ]

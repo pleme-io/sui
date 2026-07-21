@@ -418,3 +418,35 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── ir-eval-subset — L3 slice 2 (2026-07-21, branch ir/l3-eval-slice2) ─
+;; Eval-through-IR for the PURE EXPRESSION SUBSET: sui-ir::eval_ir walks
+;; the lower()ed flat Program (ExprId arena) instead of re-walking rowan
+;; per eval — the SPEED.md L3 lower-once thesis, first executable cut.
+;; Dual-engine, differential-gated: every parity-corpus row + the 94-row
+;; supplement + a 90-row closed-value seed + 256-case proptest generation
+;; evaluate on BOTH engines (tree-walker = semantic oracle) and the
+;; rendered results byte-compare; typed shrink-only known-gap allowlist
+;; (17 corpus + 12 supplement rows: derivation/builtins/paths/legacy-let).
+;; Technique authored ReprSwap with the caveat stated plainly: the
+;; program REPRESENTATION swaps (rowan AST → flat IR), but the walker is
+;; RE-IMPLEMENTED against it (mirror value/env/thunk types — Closure and
+;; ThunkRepr hold rowan nodes and cannot be reused), so the byte claim
+;; rests on the external differential over a PARTIAL corpus (C2 forever),
+;; not on structural neutrality.  Micro A/B (release, interleaved ×5,
+;; 2000 evals/round, synthetic let/apply/binop expression, byte-agreeing
+;; result): tree-walker 172-175ms vs eval_ir 68-70ms per round — ~2.5×
+;; (+150% → 15000 bp).  HONEST SCOPE: that is the dual-engine micro
+;; harness, NOT a sacred-path measurement — the subset engine is wired
+;; into nothing (Proposed, not Landed); the at-scale win (lower-once
+;; killing the 40.7%-bytes/51%-alloc rowan churn) stays the L3 thesis to
+;; be proven when the full engine flips behind --ir.
+(defperf-lever
+  :name       "ir-eval-subset"
+  :attacks    ("rowan-per-eval-rewalk" "rowan-nodedata-alloc-churn")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Proposed
+  :measured   Improved
+  :speedup-bp 15000
+  :ceiling    NotApplicable)
