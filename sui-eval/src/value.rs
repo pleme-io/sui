@@ -233,7 +233,15 @@ where
 
 thread_local! {
     /// Monotonically increasing counter — bumped on each `rnix::Root::parse`.
-    static SOURCE_GEN: Cell<u32> = const { Cell::new(0) };
+    // STARTS AT 1, NOT 0 — 0 is the reserved "untagged env" sentinel.
+    //
+    // `Env::new()` defaults `source_id: 0`. While the generator also started at
+    // 0, the FIRST file parsed shared key-space with every untagged env, so an
+    // identifier in that file could collide with one from an untagged context at
+    // the same byte offset. That is the same aliasing class as the
+    // CURRENT_SOURCE_ID bug fixed alongside this (see eval.rs's Ident arms) —
+    // reserving 0 costs nothing and removes the overlap by construction.
+    static SOURCE_GEN: Cell<u32> = const { Cell::new(1) };
 
     /// Maps `(source_id, text_offset)` → interned `Symbol`.
     static IDENT_CACHE: RefCell<rustc_hash::FxHashMap<u64, Symbol>> =

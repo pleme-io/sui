@@ -815,8 +815,13 @@ fn maybe_thunk(
             // zero-alloc steady-state path as the strict Ident arm in
             // `eval_expr`. The ident text is materialized only on the
             // once-per-offset cold miss and on the (rare) blackhole deferral.
+            // Same cross-file aliasing fix as the strict `eval_expr` Ident arm —
+            // key on the env's source id, not the unmaintained thread-local.
+            // This twin had NO stale-symbol guard at all (the one commit
+            // 2d93e77 added sits only on the strict arm's lookup-MISS path,
+            // after the keyword check), so it was the more exposed of the two.
             let sym = {
-                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let src_id = env.source_id();
                 let offset = u32::from(ident.syntax().text_range().start());
                 crate::value::intern_cached_with(src_id, offset, || {
                     crate::value::intern(&ident_text(ident))
@@ -1021,8 +1026,34 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // miss. The keyword check + the common `lookup_fast` HIT then run
             // fully allocation-free; `name` is materialized lazily only on the
             // miss/error branches, which need the string anyway.
+            // KEY ON `env.source_id()`, NOT the thread-local (fixed 2026-07-20).
+            //
+            // `CURRENT_SOURCE_ID` is pushed at exactly ONE site —
+            // `value.rs`'s `ThunkRepr::Suspended` force branch. Lambda
+            // application and the Native/WithIdent/InheritSelect/Promise force
+            // branches never push it, so while a callee's body was being
+            // evaluated the thread-local still named the CALLER's file. The
+            // `(source_id, offset)` cache key then aliased across files: an
+            // identifier at byte N in file A could resolve to the Symbol
+            // interned for a `null`/`true`/`false` token at byte N in file B —
+            // and the zero-copy keyword check below turned that into a literal
+            // `Value::Null` for a perfectly well-defined identifier, before any
+            // environment lookup.
+            //
+            // That is what stopped sui evaluating nixpkgs: `hostSuffix` in
+            // `make-derivation.nix` resolved to `null`, so `attrs.name +
+            // hostSuffix` raised "cannot add string and null" — observed
+            // directly as `STALE-KEYWORD ident="hostSuffix" resolvedAs="null"`.
+            // It is not darwin-specific and has nothing to do with the module
+            // system; `import <nixpkgs> {}` fails identically on x86_64-linux.
+            //
+            // `Env` already carries the correct value: `eval_with_file` sets it
+            // and `child()` inherits it, and a lambda's `call_env` is
+            // `closure.env.child()` — so a body's env names its DEFINING file.
+            // Keying on it fixes every cross-file path at the cause, rather than
+            // adding a fifth push/pop guard that a sixth path can forget.
             let sym = {
-                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let src_id = env.source_id();
                 let offset = u32::from(ident.syntax().text_range().start());
                 crate::value::intern_cached_with(src_id, offset, || {
                     crate::value::intern(&ident_text(ident))
