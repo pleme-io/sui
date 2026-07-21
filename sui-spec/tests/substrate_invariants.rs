@@ -12,7 +12,7 @@
 
 use sui_spec::{
     activation_script, catalog, coercion, derivation, dockerfile, eval_cache, fetcher, flake, gc,
-    hash, laziness, lock_file, module_system, nar, narinfo, profile, realisation,
+    hash, laziness, lock_file, module_system, nar, narinfo, perf, profile, realisation,
     registry, sandbox, store_layout, substituter, trust_model,
     worker_protocol, SpecError,
 };
@@ -194,6 +194,13 @@ fn every_catalog_entry_has_a_loadable_module() {
             "dockerfile" => dockerfile::load_canonical().map(drop),
             "laziness" => laziness::load_canonical_models().map(drop),
             "coercion" => coercion::load_canonical_rules().map(drop),
+            // perf — the lever claim ledger. Added 2026-07-21: the domain
+            // entered catalog.lisp at 9787d79 without this arm, leaving the
+            // catalog-reflection invariant RED for the whole perf era — the
+            // exact drift class this test exists to catch, caught instead by
+            // an adversarial review pass calling out a "tests green" claim
+            // that concealed it.
+            "perf" => perf::load_canonical_levers().map(drop),
             other => panic!(
                 "catalog references unknown domain `{other}` — \
                  add a match arm in tests/substrate_invariants.rs::\
