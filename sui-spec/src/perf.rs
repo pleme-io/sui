@@ -485,7 +485,10 @@ mod tests {
         // (interner cluster 27-39% -> <=6.7% measured; Landed/Pending).
         // +1 (2026-07-21): path-memo — L2 tried + honestly Discarded
         // (NoImprovement on two harnesses; residual noted for post-S6).
-        assert_eq!(levers.len(), 17, "authored levers");
+        // +1 (2026-07-21): dead-binding-elim — killed by census pre-implementation
+        // (soundness proven, magnitude ~0.02% of thunk sites; the cheapest
+        // Discard on record).
+        assert_eq!(levers.len(), 18, "authored levers");
     }
 
     #[test]

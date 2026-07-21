@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "e33aa59aa269c1d90bc79865aa48e19609e2fc2f99c31cf344e7f10060dcb24f",
+  "cargo_lock_sha256": "11ee4d1a349126598b202fc116fe1abc969e3aa11f82f3098cee5a9611b35379",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -25595,6 +25595,52 @@
         "build_dependencies": [],
         "features": []
       },
+      "sui-ir-0.1.136": {
+        "runtime_dependencies": [
+          {
+            "name": "rnix",
+            "package_key": "rnix-0.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rowan",
+            "package_key": "rowan-0.16.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_intern",
+            "package_key": "sui-intern-0.1.136",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sui-nix-wrap-0.1.136": {
         "runtime_dependencies": [
           {
@@ -39639,6 +39685,13 @@
       "edition": "2024",
       "lib_target": {
         "name": "sui_intern",
+        "path": "src/lib.rs"
+      }
+    },
+    "sui-ir-0.1.136": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_ir",
         "path": "src/lib.rs"
       }
     },

@@ -392,3 +392,29 @@
   :measured   NoImprovement
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── dead-binding-elim (2026-07-21, KILLED BY CENSUS pre-implementation) ─
+;; The S1 spike settled L1's motivating payload before a line was wired:
+;; textually-dead LET elimination is SOUND (14 probes x 2 engines: let-only,
+;; plain-inherit excluded, __findFile/__nixPath blanket-kept — the one
+;; dynamic channel, since <x> desugars to __findFile with NO Ident node) but
+;; THREE ORDERS OF MAGNITUDE too small: all-nixpkgs census (41,959 files,
+;; rnix 0.14.0, mirroring eval.rs's own analysis) = 40,271 lets, 444 dead,
+;; 417 thunk-allocating, vs 2.2M static thunk sites — ~0.02%.  The
+;; 51.8%-never-forced population is attrset VALUES: structurally required,
+;; enumerable (attrNames probe), unaddressable by elimination.  The 154MB/s
+;; retention wall is alive-but-unforced attrset-value thunks pinning HAMT
+;; env chains — the L7 env-capture-shrink track, a different lever.
+;; Killing a lever by census before building it is the cheapest Discard the
+;; ledger has recorded.  Bonus finding, recorded not fixed: `let x =
+;; undefinedVar; in 1` is a PRE-EXISTING divergence (nix: static error;
+;; sui: 1) — a KnownDiverge candidate for the corpus, independent of this.
+(defperf-lever
+  :name       "dead-binding-elim"
+  :attacks    ("never-forced-thunk-creation" "dead-let-env-pin")
+  :technique  ForceOrderChange
+  :proof-tier ForceOrderProof
+  :status     Discarded
+  :measured   NoImprovement
+  :speedup-bp 0
+  :ceiling    NotApplicable)
