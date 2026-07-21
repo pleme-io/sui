@@ -534,6 +534,41 @@ one run, and it converts this strategy's largest remaining unknown — *what
 the heap looks like today* — from an inherited stale document into
 measured ground.
 
+---
+
+## §VIII. The control pillar — steerability (afinar) over the whole campaign
+
+Every lever this strategy lands terminates in a **steerable surface**, not a
+compiled-in constant. The fleet mechanism is **afinar** (the live-tunable
+doctrine; see the `afinar` skill and `theory/AFINAR.md`): knobs declared as
+typed panels, driven over `afinar_knob_*` MCP tools, shadow-gated
+(`dry_run` + `write_enabled`), reject-at-border.
+
+Applied here (DESIGN — none of this is built; the rule-layer vocabulary
+`(defeager-class …)` / `(defshape …)` / `(defretention-policy …)` does not
+exist in-tree yet, verified by grep 2026-07-21):
+
+- **Optimization rules are declarative lisp layers**, carried on
+  `shikumi::TieredConfig` (already a sui dependency — `sui-daemon/Cargo.toml`);
+  the runtime tier IS the afinar patch surface. Rules compile at startup to
+  typed Rust tables — lisp never interprets in the hot path (the BUILD.md law).
+- **Steering is per use-case class**: the matrix rows (U01–U12) are the
+  addressable scopes — "repl class: eager-cheap ON; closure class: retention
+  aggressive." A knob flip is measured by the row it targets.
+- **THE PARITY-TYPED KNOB SPACE (the law this campaign adds to afinar):** a
+  knob is live-patchable **only if its technique class is `ByteSufficient`**
+  in the perf ledger's taxonomy; a force-order-shaped knob is refused at the
+  patch border until the parity corpus has gated that specific rule. Steering
+  may change *how fast*; it structurally may not change *the bytes*.
+- **Every tuning exchange lands in the ledger** as a `(defperf-lever …)`
+  claim with its measurement — steering (afinar), mechanism (rule layers),
+  and measurement (the matrix) are three lisp surfaces of one loop.
+
+This is the axis no cppnix can follow: their evaluation strategy is
+compiled-in C++; ours becomes a conversation — flip, shadow, measure,
+promote, attest — with honesty enforced by the same typed gates that run the
+rest of this document.
+
 [`benches/USE-CASE-MATRIX.md`]: ../benches/USE-CASE-MATRIX.md
 [`sui-spec/specs/perf.lisp`]: ../sui-spec/specs/perf.lisp
 [`EVAL-MEMORY.md`]: ./EVAL-MEMORY.md
