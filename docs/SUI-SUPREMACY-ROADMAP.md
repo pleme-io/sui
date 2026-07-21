@@ -37,6 +37,15 @@ Everything on the critical path is *already wired* except one surface: the
   `#[ignore]` and the assertion flips: success becomes mandatory."* Today it only
   navigates to `darwinConfigurations.cid…toplevel.drvPath` informationally.
 
+> **STALE-GATE CORRECTION (2026-07-21).** The paragraph below named M2.6 the
+> sole hard gate; **M2.6 is CLOSED** (see `M2.6-MODULE-SYSTEM-FIXPOINT.md`,
+> 2026-07-11) and was superseded twice over on 2026-07-20/21: the ident-cache
+> aliasing fix restored nixpkgs eval entirely (parity corpus 77/77 on
+> aarch64-darwin), and the live gate is now **completing the cid toplevel eval
+> within bounded memory/time** — nix does it in ~107s quiet; sui has never
+> finished it (best attempts killed at 71 and 21 min, at least one by an
+> external janitor, not sui). Current gate ledger: `SUI-EQUIVALENCE.md` §IV.
+
 This is the surface **being worked now in the `module-parity` worktree**
 (`.claude/worktrees/module-parity`, branch `sui-module-parity-a6e84c`). It is the
 sole hard gate. Skip it in this plan per the brief — but note: **it unblocks the
@@ -113,6 +122,10 @@ with status:
 wired. The proof is one surface away — module-system fixpoint parity (#3).** When
 M2.6 closes, #4's ignored assertion flips to mandatory and the whole path is
 provable end-to-end.
+
+> **(2026-07-21: M2.6 HAS closed — see the stale-gate correction above. The
+> remaining marquee gate is bounded-memory/time completion of the cid toplevel
+> eval, per `SUI-EQUIVALENCE.md` §IV.)**
 
 ---
 
