@@ -5670,6 +5670,38 @@ async fn main() -> Result<(), CliError> {
         Cli::parse()
     };
 
+    // `--show-trace` WAS A DEAD FLAG until 2026-07-20: declared as a global arg
+    // and read by nothing. Passing it produced byte-identical output to omitting
+    // it, so an operator debugging an eval failure got silence from the one
+    // switch whose entire purpose is to break that silence — and four parallel
+    // investigations into "cannot add string and null" each burned most of their
+    // budget on localisation before discovering the flag was inert and that
+    // `SUI_TRACE_EVAL=1` was the only mechanism that worked.
+    //
+    // Wire it to that mechanism. `set_var` (not a plumbed parameter) because
+    // `trace::init_trace()` already reads the env at eval time (eval.rs) and the
+    // trace layer is consulted from deep inside the evaluator; threading a flag
+    // down every call path would be a large change for the same effect. Only set
+    // when absent, so an explicitly-chosen `SUI_TRACE_EVAL=verbose` still wins.
+    //
+    // TIER, not rounded up: this makes the flag EQUIVALENT TO the documented
+    // env var — it is no longer read by nothing. It does NOT demonstrably make
+    // traces appear: measured after this change, `--show-trace`,
+    // `SUI_TRACE_EVAL=1` and `SUI_TRACE_EVAL=verbose` all produce byte-identical
+    // output to plain invocation on both a small failing eval and a large
+    // succeeding one. The 29k/521k-line dumps that finally localised the
+    // ident-cache bug came from the fatal ring-dump path, which those probes did
+    // not reach. So the remaining gap is in when the dump fires, not in the flag
+    // — and it is still open. The genuinely-demonstrated half of this pass is
+    // `EvalError::op_type` now carrying `eval_file_ctx()`, which does name the
+    // offending file (verified: "cannot add string and null, in
+    // '/tmp/ctx_test.nix'").
+    if cli.show_trace && std::env::var_os("SUI_TRACE_EVAL").is_none() {
+        // SAFETY: single-threaded here — this runs before any evaluator thread
+        // or async task is spawned, immediately after arg parsing.
+        unsafe { std::env::set_var("SUI_TRACE_EVAL", "1") };
+    }
+
     match cli.command {
         Commands::Serve { listen, grpc_listen } => {
             tracing::info!("starting sui API server on {listen} (REST/GraphQL) and {grpc_listen} (gRPC)");

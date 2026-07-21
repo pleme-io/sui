@@ -2996,9 +2996,31 @@ impl EvalError {
     }
 
     /// Create a type error for a binary operator type mismatch.
+    ///
+    /// CARRIES THE EVAL FILE (added 2026-07-20). Every arithmetic/comparison
+    /// raise site routes through here, and none of them appended
+    /// `eval_file_ctx()` — unlike the ~12 sibling raise sites in `eval.rs` that
+    /// do — so an operator type error named no file at all. Nor could the frame
+    /// stack help: `NixTraceGuard::drop` pops every frame during unwind, so by
+    /// the time the error surfaces `attach_trace` has nothing left to attach.
+    ///
+    /// The cost of that was concrete. "cannot add string and null" was the sole
+    /// symptom of the ident-cache aliasing bug that stopped sui evaluating
+    /// nixpkgs, and it pointed nowhere: four parallel investigations each spent
+    /// most of their budget just locating it, and the only tool that worked was
+    /// `SUI_TRACE_EVAL=1` dumping 521k lines to be read backwards. One
+    /// `format!` argument here would have named `make-derivation.nix`
+    /// immediately.
+    ///
+    /// Fixing it in `op_type` rather than at the `Add` arm means every operator
+    /// — add, sub, mul, div, comparison, update — gains the context at once,
+    /// instead of the next one to bite us needing its own patch.
     #[must_use]
     pub fn op_type(op: &str, lhs: &str, rhs: &str) -> Self {
-        EvalError::TypeError(format!("cannot {op} {lhs} and {rhs}"))
+        EvalError::TypeError(format!(
+            "cannot {op} {lhs} and {rhs}{}",
+            crate::eval::eval_file_ctx()
+        ))
     }
 
     /// Whether this error was caused by `throw` or `abort`.
