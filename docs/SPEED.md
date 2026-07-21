@@ -199,12 +199,31 @@ recorded one. **Nothing memory-side lands before this exists.**
 
 ### B. CPU axis
 
-**L1 — Fx/Symbol rec-scope analysis** (`eval.rs:418-444`). Convert
-`compute_needed_bindings` / `collect_referenced_names` from String-keyed
-SipHash maps + per-binding clones to Symbol-keyed FxHash. The one genuine
-SipHash kill on the books. Per-eval computation kept (the cross-eval memo
-stays byte-wrong until ExprIds exist). Near-zero risk; land on Improved A/B
-or Discard the row honestly.
+**L1 — ~~Fx/Symbol rec-scope analysis~~ CORRECTED (2026-07-21, I9 in
+action): the target is DEAD CODE.** `compute_needed_bindings` /
+`collect_referenced_names` (`eval.rs:395-451`) have **no caller** — `cargo
+check -p sui-eval` warns `never used` for both, and `git log -S` shows they
+were born unwired in `84da28c` (2026-04-12, "dead binding elimination
+*infrastructure*") and never connected in three months. Converting their
+SipHash maps to FxHash would optimize code that never executes; the
+"one genuine SipHash kill on the books" claim is void.
+
+The finding worth more than the defect: **the infrastructure that would
+attack the measured 51.8%-never-forced-thunk root already exists and was
+never turned on.** Wiring dead-binding elimination = creating fewer
+never-forced thunks = fewer pinned Envs — the retention wall's named
+driver, at its creation site. That is a *different, bigger, riskier* lever
+than L1-as-written: it changes which thunks are ever *created*, so it is
+gated on the **S1 rec-scope spike's** correctness verdict (dynamic
+reachability: `rec` attrsets are attr-enumerable via `builtins.attrNames`;
+plain `let` bindings are not — the elimination is plausibly `let`-only at
+first). L1 is hereby folded INTO the S1 spike as its motivating payload;
+the FxHash conversion happens, if at all, as a detail of wiring it.
+
+(How this survived three review passes: every check verified the code
+*exists* at the cited lines — none asked whether it *runs*. Liveness is now
+part of I9's checklist: a lever's target must be shown reachable, not just
+present.)
 
 **L2 — Path intern/memo** on the ~5% `std::path::Components` share.
 MemoizeIdempotentQuery, canonicalize-memo's sibling, frozen-inputs
