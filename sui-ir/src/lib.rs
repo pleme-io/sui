@@ -52,6 +52,7 @@
 //! sets, attrset shapes) rely on.
 
 pub mod builtins;
+pub mod derivation;
 pub mod eval_ir;
 pub mod file_eval;
 pub mod ir;

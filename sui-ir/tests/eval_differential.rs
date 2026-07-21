@@ -118,18 +118,14 @@ fn classify_gap(e: &IrEvalError) -> Option<String> {
 // the list can only shrink. Unlisted rows must match.
 
 /// Corpus rows (identified by `CorpusRow::name`). Enumerated by the
-/// `enumerate_gap_candidates` probe. Slice 4 SHRANK this list from 7 rows to
-/// 5: `builtins.concatMap` and `builtins.elem` are now implemented, so those
-/// two rows byte-match; what remains is exclusively `derivation` (×5 — impure
-/// by nature, deliberately still a typed missing-builtin gap in the pure
-/// subset).
-const CORPUS_KNOWN_GAPS: &[(&str, &str)] = &[
-    ("concatStringsSep multi-output context", "missing-builtin:derivation"),
-    ("concatStringsSep empty-sep single-element context", "missing-builtin:derivation"),
-    ("multi-output producer .dev drvPath", "missing-builtin:derivation"),
-    ("list-concat ++ into derivation args — drvPath", "missing-builtin:derivation"),
-    ("attrs-eq selects derivation arg — drvPath", "missing-builtin:derivation"),
-];
+/// `enumerate_gap_candidates` probe. Slice 4 shrank this from 7 → 5; **slice 6
+/// shrank it 5 → 0**: `derivation`/`derivationStrict` are now implemented on
+/// `eval_ir` (routing through the shared `sui_spec::derivation::apply` spec),
+/// so all five derivation-with-context rows — including the multi-output +
+/// `++`-into-args + attrs-eq-selects-arg cases — now evaluate AND byte-match
+/// the tree-walker's drvPath (which the walker's own suite proves == nix). The
+/// list is empty: the pure-subset corpus has no remaining derivation gap.
+const CORPUS_KNOWN_GAPS: &[(&str, &str)] = &[];
 
 /// Supplement rows (identified by source text). Slice 4 SHRANK this list from
 /// 4 rows to 2: the two `<nixpkgs>` search-path rows now RESOLVE through

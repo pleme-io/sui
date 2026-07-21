@@ -27,6 +27,21 @@ serde_json.workspace = true
 # builtins bridge shares them by construction. sui-compat has no pleme-io
 # deps, so no cycle; nothing depends on sui-ir.
 sui-compat.workspace = true
+# `derivation`/`derivationStrict` route their input-addressed drvPath +
+# output-path computation through the SAME Lisp-authored spec interpreter the
+# tree-walker uses (`sui_spec::derivation::apply` over `sui-spec/specs/
+# derivation.lisp`), so the ATerm serialization + store-path hashing cannot
+# drift from the oracle — the drvPath is byte-identical by construction, not by
+# a re-implemented "cleaner" scheme. sui-spec depends on sui-compat (already
+# ours) and NOT on sui-ir, so no cycle.
+sui-spec.workspace = true
+# `builtins.hashString` mirrors the walker's md5/sha1/sha256/sha512 digest →
+# lowercase-hex, using the SAME crates the tree-walker uses (sui-eval's
+# strings.rs). sha2 is a workspace dep; md-5 / sha1 match sui-eval's exact
+# versions so the digest bytes cannot drift.
+sha2.workspace = true
+md-5 = "0.10"
+sha1 = "0.10"
 
 [dev-dependencies]
 proptest.workspace = true

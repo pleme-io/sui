@@ -104,7 +104,7 @@ fn render_ir_value_at(v: &IrValue, depth: usize) -> Result<String, IrEvalError> 
         IrValue::Bool(b) => b.to_string(),
         IrValue::Int(n) => n.to_string(),
         IrValue::Float(x) => sui_compat::versions::cppnix_format_float(x),
-        IrValue::Str(s) => {
+        IrValue::Str(s, _) => {
             let mut out = String::from("\"");
             out.push_str(&escape_str(&s));
             out.push('"');

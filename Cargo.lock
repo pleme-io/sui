@@ -6704,15 +6704,19 @@ name = "sui-ir"
 version = "0.1.139"
 dependencies = [
  "gen-nix",
+ "md-5",
  "proptest",
  "regex",
  "rnix",
  "rowan",
  "rustc-hash 2.1.2",
  "serde_json",
+ "sha1",
+ "sha2",
  "sui-compat",
  "sui-eval",
  "sui-intern",
+ "sui-spec",
  "thiserror 2.0.18",
 ]
 
