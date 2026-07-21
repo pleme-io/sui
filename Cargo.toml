@@ -412,5 +412,19 @@ lto = true
 opt-level = 3
 strip = true
 
+# Perf-work profile: identical codegen to release, symbols kept.
+#
+# `strip = true` on release is why the 2026-07-21 live-sample of the cid
+# marquee eval came back as bare `??? (in sui) + 0x…` frames — atos had
+# nothing to resolve against, and the 61%-in-__getattrlist root had to be
+# pinned from the libc side (realpath) plus source archaeology instead of one
+# symbol name. Build with `cargo build --profile release-profiling --bin sui`
+# whenever a run will be sampled (`/usr/bin/sample`, Instruments, dhat);
+# codegen flags match release exactly, so the numbers transfer.
+[profile.release-profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+
 [lints.clippy]
 pedantic = "warn"
