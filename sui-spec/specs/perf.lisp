@@ -343,3 +343,27 @@
   :measured   Pending
   :speedup-bp 0
   :ceiling    NotApplicable)
+
+;; ── sym-keyed-attrs (2026-07-21, lever 1 of the 20s campaign) ──────
+;; The live-sampled #1 CPU sink: iter_unsorted materialized a String per
+;; key (resolve alloc + whole-map Vec collect per call) and intersectAttrs
+;; re-interned each back to the Symbol it started as, third intern inside
+;; insert — Sym→String→hash+memcmp→Sym per key per call; 63/70 intern
+;; leaves attributed to that one closure.  Fix: iter_syms()/insert_sym()
+;; (Symbol is Copy; as_flat() borrows) — intersectAttrs fully sym-keyed;
+;; filterAttrs/mapAttrs keep exactly ONE resolve (the lambda's key arg)
+;; and drop the collect + insert-intern.  MEASURED same-phase sample
+;; (t≈97s): interner cluster 27-39% -> <=6.7% upper bound, intern
+;; self-time 11.8-16.9% -> 0.5%.  Parity 77/77 exit 0.  Wall-clock delta
+;; honestly PENDING — the cid eval still cannot COMPLETE (the ~140MB/s
+;; retained-allocation memory wall, levers 3-5), so no end-to-end number
+;; exists yet; the profile share is the measured fact.
+(defperf-lever
+  :name       "sym-keyed-attrs"
+  :attacks    ("iter-unsorted-string-per-key" "contains-key-reintern" "insert-reintern")
+  :technique  ReprSwap
+  :proof-tier ByteSufficient
+  :status     Landed
+  :measured   Pending
+  :speedup-bp 0
+  :ceiling    NotApplicable)

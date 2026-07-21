@@ -481,7 +481,9 @@ mod tests {
         // overlay-merge-structural Discarded).
         // +1 (2026-07-21): canonicalize-memo — the first MemoizeIdempotentQuery
         // lever (the 61%-in-getattrlist live-sample root; Landed/Pending).
-        assert_eq!(levers.len(), 15, "authored levers");
+        // +1 (2026-07-21): sym-keyed-attrs — lever 1 of the 20s campaign
+        // (interner cluster 27-39% -> <=6.7% measured; Landed/Pending).
+        assert_eq!(levers.len(), 16, "authored levers");
     }
 
     #[test]

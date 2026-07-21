@@ -43,13 +43,18 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             func: Rc::new(move |args2| {
                 let b = args2[0].to_attrs()?;
                 let mut result = NixAttrs::new();
-                // Result is a fresh attrset (unordered FxHashMap storage);
-                // iteration order here is discarded on insert, so the sorted
-                // `iter()` was pure dead work. Byte-neutral: the observable
-                // order of `result` is re-derived at observation time.
-                for (k, v) in b.iter_unsorted() {
-                    if a.contains_key(&k) {
-                        result.insert(k.clone(), v.clone());
+                // SYM-KEYED end to end (lever 1 of the 20s campaign,
+                // 2026-07-21). The previous `iter_unsorted` + `contains_key`
+                // + `insert` loop was the single hottest code shape in the
+                // whole cid eval — live sampling attributed 63/70 interner
+                // leaves to THIS closure: String-per-key materialization,
+                // re-intern in contains_key, third intern in insert. The
+                // Symbols never needed to leave symbol space at all.
+                // Byte-neutral: result order is re-derived at observation
+                // time via sorted_entries, same as before.
+                for (sym, v) in b.iter_syms() {
+                    if a.contains_key_sym(&sym) {
+                        result.insert_sym(sym, v.clone());
                     }
                 }
                 Ok(Value::Attrs(Rc::new(result)))
@@ -87,10 +92,15 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 // error-deterministic. Byte-parity is unaffected (no drvPath on
                 // error); this stays NEEDS-VERIFICATION-with-argument, not
                 // PROVABLY-NEUTRAL.
-                for (k, v) in attrs.iter_unsorted() {
-                    let partial = crate::eval::apply(pred.clone(), Value::string(k.clone()))?;
+                // Sym-keyed (lever 1): the String is still materialized — the
+                // predicate lambda needs it — but exactly ONCE, moved into the
+                // lambda arg; the insert stays in symbol space and the per-call
+                // Vec collect is gone.
+                for (sym, v) in attrs.iter_syms() {
+                    let k = sui_intern::resolve(sym);
+                    let partial = crate::eval::apply(pred.clone(), Value::string(k))?;
                     if crate::eval::apply_and_force(partial, v.clone())?.as_bool()? {
-                        result.insert(k.clone(), v.clone());
+                        result.insert_sym(sym, v.clone());
                     }
                 }
                 Ok(Value::Attrs(Rc::new(result)))
@@ -109,15 +119,17 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 // Fresh result map; each value is an independent lazy thunk,
                 // so per-entry mapping is order-independent and the sorted
                 // iter was dead work. Byte-neutral.
-                for (k, v) in attrs.iter_unsorted() {
+                // Sym-keyed (lever 1): one resolve for the lambda's key arg,
+                // zero-intern insert, no per-call Vec collect.
+                for (sym, v) in attrs.iter_syms() {
                     let f = func.clone();
-                    let key = k.clone();
+                    let key = sui_intern::resolve(sym);
                     let val = v.clone();
                     let thunk = Thunk::new_native(move || {
                         let partial = crate::eval::apply(f, Value::string(key))?;
                         crate::eval::apply(partial, val)
                     });
-                    result.insert(k.clone(), Value::Thunk(thunk));
+                    result.insert_sym(sym, Value::Thunk(thunk));
                 }
                 Ok(Value::Attrs(Rc::new(result)))
             }),

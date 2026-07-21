@@ -2378,6 +2378,36 @@ impl NixAttrs {
         self.as_flat().iter().map(|(sym, v)| (resolve(*sym), v)).collect::<Vec<_>>().into_iter()
     }
 
+    /// Sym-keyed unsorted iteration — ZERO interner traffic, zero allocation.
+    ///
+    /// This exists because live-sampling the cid marquee eval (2026-07-21,
+    /// release-profiling binary) showed the **interner round-trip as the #1 CPU
+    /// sink — 27–39% of the eval thread, sustained**: `iter_unsorted` above
+    /// materializes a fresh heap `String` per key via `resolve` AND collects
+    /// the whole map into a `Vec` on every call, and callers like
+    /// `intersectAttrs` then re-intern each of those Strings straight back to
+    /// the `Symbol` they started as (`contains_key(&str)` → `intern`), with a
+    /// third intern inside `insert`. Sym→String→hash+memcmp→Sym, three times
+    /// per key per call, at nixpkgs scale.
+    ///
+    /// `Symbol` is `Copy(u32)` and `as_flat()` hands back a real borrow (the
+    /// Overlay case populates its cache), so this iterator borrows instead of
+    /// collecting. Byte-neutral by the same argument already sealed for the
+    /// unsorted-iteration change: the observable order of any *result* attrset
+    /// is re-derived at observation time via `sorted_entries`.
+    pub fn iter_syms(&self) -> impl Iterator<Item = (Symbol, &Value)> {
+        self.as_flat().iter().map(|(sym, v)| (*sym, v))
+    }
+
+    /// Sym-keyed insert — the zero-intern sibling of `insert`, for callers
+    /// that already hold the `Symbol` (every `iter_syms` consumer).
+    pub fn insert_sym(&mut self, sym: Symbol, value: Value) {
+        self.ensure_flat();
+        if let AttrsInner::Flat(ref mut m) = self.0 {
+            m.insert(sym, value);
+        }
+    }
+
     pub fn values(&self) -> impl Iterator<Item = &Value> {
         self.sorted_entries().into_iter().map(|(_, v)| v)
     }
