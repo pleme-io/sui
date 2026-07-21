@@ -58,6 +58,12 @@
       "diverged": 0,
       "skipped": 0,
       "exit": 0
+    },
+    "S2_amdahl_gate": {
+      "status": "INCONCLUSIVE \u2014 contaminated by concurrent build load, re-run clean when idle",
+      "contamination_proof": "etc.drvPath measured 760s > the 121.2s whole-toplevel oracle \u2014 impossible on a clean run; the machine was under slice-3 cargo builds",
+      "directional_signal": "networking.hostName = 3s (a full-fixpoint-touching leaf) vs toplevel 121s -> shared prefix appears SMALL -> sharding is NOT prefix-bound -> S2 survives the gate pending a clean number",
+      "clean_rerun_recipe": "idle machine, no concurrent builds: nix eval --no-eval-cache --raw .#...hostName (prefix lower bound) + a mid-size attr (e.g. an nvidia/systemd unit drvPath) + the toplevel, all same session"
     }
   },
   "struck_replaced": "the 64GB/7GB pair + 140MB/s now carry recorded provenance (this file); the 29.1% GC price carries the b86cxdo59 run"
