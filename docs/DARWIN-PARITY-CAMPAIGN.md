@@ -36,6 +36,33 @@ largest reuse fact of the whole campaign.
 
 **But "darwin = small delta over linux" is an OVERCLAIM.** It conflates the shared
 kernel with the darwin stdenv CORPUS. Honest picture:
+> **⚠ SUPERSEDED IN PART — 2026-07-20.** Two claims below were falsified by
+> measurement on cid the same day, and both had been *unfalsifiable* until the
+> parity gate was un-blinded:
+>
+> * **"The byte-verified basket is x86_64-linux ONLY"** — no longer true. The
+>   sealed corpus now stands at **77 match · 0 diverged · 0 tracked · 0
+>   regressions · 0 skipped, exit 0, ON aarch64-darwin**, and the darwin `hello
+>   drvPath` row graduated `KnownDiverge → Match`.
+> * **"the 9 darwin-native `currentSystem` rows (all match)"** — those 9 were
+>   *live regressions* on 2026-07-20 before the fix, together with every other
+>   nixpkgs-importing row (36 of 77), each failing with the identical
+>   `Eval(TypeError("cannot add string and null"))`. The doc could record them
+>   as matching because `.github/workflows/parity.yml` set
+>   `SUI_PARITY_PUREONLY=1` unconditionally, which reclassified a *total loss of
+>   nixpkgs evaluation* into "skipped" and shipped it green. Nothing here was
+>   authored dishonestly — the instrument could not report the failure.
+>
+> Root cause of all of it: the `(source_id, offset)` ident cache keyed on the
+> unmaintained `CURRENT_SOURCE_ID` thread-local, so an identifier could resolve
+> to another file's `null` token and the zero-copy keyword check returned
+> `Value::Null` for a defined ident. Fixed by keying on `env.source_id()`.
+>
+> **What this does NOT establish:** 77 rows is the corpus, not cid's
+> 20,827-drv closure. The cid toplevel `drvPath` comparison — the actual
+> marquee, and the eval-only flip's whole go/no-go — is still unmeasured. §1's
+> destination stands unchanged.
+
 1. The byte-verified basket is x86_64-linux ONLY. As of **2026-07-12** the sealed
    `sui parity` corpus stands at **58 match · 1 tracked · 0 regressions** (up from
    the 102/104 broad-basket snapshot): of the two formerly-open leaves, **ffmpeg is
