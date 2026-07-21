@@ -61,12 +61,28 @@
 //!   still errors on both engines: the thunk memoizes to itself and the
 //!   force chain's depth-100 cycle guard (mirrored from `force_value`)
 //!   reports `InfiniteRecursion`.
+//! * **Overlay-fixpoint promotion (slice 5).** A binding the syntactic
+//!   classifier marked NON-recursive (its RHS never names itself — the
+//!   `self:super:`/`callPackage`-across-files shape) forces through a hard
+//!   `Blackhole`; when that same thunk is re-entered WHILE still on the force
+//!   stack (a genuine self-fixpoint), it is retroactively PROMOTED to a
+//!   Promise cell and the in-progress `{ }` partial is returned — so the
+//!   fixpoint converges instead of erroring, mirroring `sui-eval`'s
+//!   `value.rs::force_inner` Blackhole arm. Bounded by a concurrent-promotion
+//!   nest cap (32) and a force-depth runaway backstop (500), both armed like
+//!   the walker's.
+//! * **Promise-body softening (slice 5).** While evaluating a Promise-state
+//!   thunk's body (`IN_PROMISE_EVAL > 0`), and ONLY then, three error classes
+//!   soften to `null` — an undefined identifier, calling a non-function, and a
+//!   `with`-scoped bare-inherit miss — mirroring the walker's `in_promise_eval`
+//!   softening. `eval_select` misses are deliberately NOT softened (the walker
+//!   removed that at ROOT #4).
 //! * Equality forces lazily and treats a failed inner force as `null`;
 //!   lambdas compare by closure identity; builtins compare `false`.
 //! * Integer overflow is a typed `Abort`; division by zero (int or float) is
 //!   a typed error.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -79,6 +95,95 @@ use crate::file_eval::{current_eval_dir, push_eval_file};
 use crate::ir::{
     AttrName, BinOp, Binding, ExprId, Ir, Param, PathKind, PathPart, Program, StrPart, UnaryOp,
 };
+
+// ── overlay-fixpoint promotion state (the M2.6 rec-semantics mirror) ────────
+//
+// Slice 5 mirrors the tree-walker's Blackhole↔Promise recursive-binding
+// machinery (`sui-eval/src/value.rs::force_inner` + the `IN_PROMISE_EVAL`
+// softening in `eval.rs`). Three thread-local pieces, one-for-one with the
+// walker, drive it:
+//
+//   * FORCE_STACK — the thunk identities currently mid-force (the walker's
+//     `trace::FORCE_STACK`, restricted to the `thunk_id` the promotion needs).
+//     A thunk is on the stack for the duration of its `force_step` body eval;
+//     a re-entrant Blackhole force whose thunk is STILL on the stack is a
+//     genuine self-fixpoint (`self:super:`/`callPackage` across files) that
+//     the syntactic classifier missed — so it is PROMOTED to a Promise cell.
+//   * IN_PROMISE_EVAL — "currently in a Promise-thunk body" depth. While > 0,
+//     and ONLY then, three error classes soften to `null` (undefined ident,
+//     non-function call, WithIdent miss) — the walker's `in_promise_eval`
+//     softening. NOTE (mirror of the code's CURRENT behaviour): `eval_select`
+//     misses are NOT softened here — the walker removed that (ROOT #4,
+//     2026-07-11); the two over-forces it masked are fixed at their cause.
+//   * PROMOTION_OCCURRED — latched true once any promotion fires, arming the
+//     force-depth runaway backstop for the rest of the eval. Like the walker,
+//     it is NEVER reset within the library (a fresh thread starts clean); the
+//     differential runs recursion fixtures on spawned workers for isolation.
+
+thread_local! {
+    /// Thunk identities (`Rc::as_ptr`) currently being forced, innermost last.
+    static FORCE_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// Depth of "currently evaluating a Promise-state thunk's body".
+    static IN_PROMISE_EVAL: Cell<u32> = const { Cell::new(0) };
+    /// Latched once an overlay-fixpoint promotion fires anywhere on this thread.
+    static PROMOTION_OCCURRED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Concurrent-promotion nesting cap (walker `FIXPOINT_PROMOTE_NEST_CAP`). A
+/// converging fixpoint (`libxcrypt`) bottoms out in ≤ ~18 concurrent
+/// promotions; above 2× that we STOP promoting and fall through to
+/// `InfiniteRecursion` (which `x.y or default` recovers, exactly like nix).
+const FIXPOINT_PROMOTE_NEST_CAP: u32 = 32;
+
+/// Force-stack-depth runaway backstop, armed only after a promotion has fired
+/// (walker `PROMOTION_RUNAWAY_FORCE_DEPTH`). A converging fixpoint bottoms out
+/// at a force depth of a few dozen; a non-converging promoted partial recurses
+/// without bound — this converts that runaway into a recoverable
+/// `InfiniteRecursion` before the native stack aborts.
+const PROMOTION_RUNAWAY_FORCE_DEPTH: usize = 500;
+
+/// Whether we are currently inside a Promise-thunk body (walker
+/// `in_promise_eval`): the three softening sites consult this.
+fn in_promise_eval() -> bool {
+    IN_PROMISE_EVAL.with(|c| c.get() > 0)
+}
+
+/// Whether an overlay-fixpoint promotion has fired on this thread (arms the
+/// runaway backstop).
+fn promotion_occurred() -> bool {
+    PROMOTION_OCCURRED.with(|c| c.get())
+}
+
+/// Is `thunk_id` currently on the force stack? (walker `force_stack_contains`)
+/// A live Blackhole re-entry whose thunk is still forcing is the promotion
+/// trigger.
+fn force_stack_contains(thunk_id: usize) -> bool {
+    FORCE_STACK.with(|s| s.borrow().iter().any(|&id| id == thunk_id))
+}
+
+/// Current force-stack depth (walker `trace::current_force_depth`).
+fn force_stack_depth() -> usize {
+    FORCE_STACK.with(|s| s.borrow().len())
+}
+
+/// RAII push of a thunk id onto the force stack; pops on drop (every exit
+/// path, error included) — the mirror of the walker's matched
+/// `push_force`/`pop_force`.
+struct ForceStackGuard;
+
+impl Drop for ForceStackGuard {
+    fn drop(&mut self) {
+        FORCE_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+fn push_force_frame(thunk_id: usize) -> ForceStackGuard {
+    FORCE_STACK.with(|s| s.borrow_mut().push(thunk_id));
+    ForceStackGuard
+}
+
 
 // ── errors ────────────────────────────────────────────────────────────────
 
@@ -388,12 +493,44 @@ impl IrThunk {
                 args: Vec<IrValue>,
             },
         }
+        // Stable identity of THIS thunk (mirror of the walker's
+        // `Rc::as_ptr(&self.0) as usize`): the force-stack membership key the
+        // overlay-fixpoint promotion tests, and the frame pushed while the
+        // body evaluates.
+        let thunk_id = Rc::as_ptr(&self.0) as usize;
         let todo = {
             let mut state = self.0.borrow_mut();
             let todo = match &*state {
                 IrThunkState::Evaluated(v) => return Ok(v.clone()),
                 IrThunkState::Failed(e) => return Err(e.clone()),
-                IrThunkState::Blackhole => return Err(IrEvalError::InfiniteRecursion),
+                IrThunkState::Blackhole => {
+                    // OVERLAY-FIXPOINT SEMANTIC PROMOTION (mirror of the walker's
+                    // `value.rs::force_inner` Blackhole arm, default-ON).
+                    //
+                    // A re-entered Blackhole whose SAME thunk is still mid-force
+                    // is a genuine self-fixpoint (`self:super:`/`callPackage`
+                    // threading across files) that the syntactic classifier
+                    // (`referenced_idents`) missed — so it installed a hard
+                    // Blackhole where nix exposes the not-yet-complete value.
+                    // Retroactively PROMOTE it to a real Promise cell and return
+                    // the in-progress empty-attrs partial: the outer body then
+                    // populates the cell on completion (`became_promise` below),
+                    // so inner Rc clones converge and the repr transitions to
+                    // Evaluated. Bounded by the concurrent-promotion nest cap;
+                    // a genuinely non-terminating cycle keeps re-entering the
+                    // empty partial and is stopped by the runaway backstop /
+                    // force-chain guard, exactly like the walker.
+                    if force_stack_contains(thunk_id)
+                        && IN_PROMISE_EVAL.with(|c| c.get()) < FIXPOINT_PROMOTE_NEST_CAP
+                    {
+                        let cell = Rc::new(RefCell::new(IrValue::Attrs(Rc::new(IrAttrs::new()))));
+                        *state = IrThunkState::Promise(cell.clone());
+                        IN_PROMISE_EVAL.with(|c| c.set(c.get() + 1));
+                        PROMOTION_OCCURRED.with(|c| c.set(true));
+                        return Ok(cell.borrow().clone());
+                    }
+                    return Err(IrEvalError::InfiniteRecursion);
+                }
                 IrThunkState::Promise(cell) => return Ok(cell.borrow().clone()),
                 IrThunkState::Suspended {
                     prog,
@@ -454,20 +591,70 @@ impl IrThunk {
                 env,
                 promise,
             } => {
-                // Mirror the walker's thunk force: re-enter the DEFINING
-                // file's context (the captured env's file) so relative path
-                // literals inside a late-forced thunk resolve against the
-                // file that wrote them, not whoever forced them.
-                let _file_guard = env
-                    .eval_file()
-                    .map(|f| push_eval_file((*f).clone()));
-                // NO deep force here — the (possibly lazy) result is
-                // memoized as-is and the caller's force chain chases it.
-                let r = eval_ir(&prog, expr, &env);
-                if let (Some(cell), Ok(v)) = (&promise, &r) {
-                    *cell.borrow_mut() = v.clone();
+                let is_promise = promise.is_some();
+                // Push this thunk's frame for the duration of its body eval —
+                // the promotion check in a re-entrant Blackhole force reads it.
+                // The guard pops on every exit (error included).
+                let _force_guard = push_force_frame(thunk_id);
+                // Runaway backstop (force-stack depth), armed only once a
+                // promotion has fired anywhere on this thread. A converging
+                // fixpoint bottoms out shallow; a non-converging promoted
+                // partial recurses without bound — this converts that into a
+                // recoverable `InfiniteRecursion` before the native stack
+                // aborts. (The eval-depth twin the walker also runs is a typed
+                // KnownGap here — see slice write-up; the nest cap + this
+                // force-depth backstop catch every fixture-reachable runaway.)
+                if promotion_occurred() && force_stack_depth() > PROMOTION_RUNAWAY_FORCE_DEPTH {
+                    Err(IrEvalError::InfiniteRecursion)
+                } else {
+                    // Mirror the walker's thunk force: re-enter the DEFINING
+                    // file's context (the captured env's file) so relative path
+                    // literals inside a late-forced thunk resolve against the
+                    // file that wrote them, not whoever forced them.
+                    let _file_guard = env.eval_file().map(|f| push_eval_file((*f).clone()));
+                    // M2.6 Promise scope: bump `IN_PROMISE_EVAL` for the body of
+                    // a construction-recursive (Promise) thunk so the three
+                    // softening sites (undefined ident / non-function call /
+                    // WithIdent miss) treat the sentinel partial's fallout as
+                    // `null` rather than erroring. Balanced right after.
+                    if is_promise {
+                        IN_PROMISE_EVAL.with(|c| c.set(c.get() + 1));
+                    }
+                    // NO deep force here — the (possibly lazy) result is
+                    // memoized as-is and the caller's force chain chases it.
+                    let r = eval_ir(&prog, expr, &env);
+                    if is_promise {
+                        IN_PROMISE_EVAL.with(|c| c.set(c.get().saturating_sub(1)));
+                    }
+                    // A Blackhole (non-recursive at construction) may have been
+                    // PROMOTED to Promise mid-body by a same-thunk fixpoint
+                    // re-entry (the Blackhole arm above). That promotion bumped
+                    // `IN_PROMISE_EVAL` once; balance it here, and populate its
+                    // cell exactly like a construction-time Promise.
+                    // Mutually exclusive with `is_promise` (a construction-time
+                    // Promise never re-enters the Blackhole arm).
+                    let became_promise =
+                        !is_promise && matches!(&*self.0.borrow(), IrThunkState::Promise(_));
+                    if became_promise {
+                        IN_PROMISE_EVAL.with(|c| c.set(c.get().saturating_sub(1)));
+                    }
+                    // M2.6 Promise update: populate the cell with the final
+                    // value BEFORE the outer store flips the repr to Evaluated,
+                    // so any inner Rc clones that already read the empty partial
+                    // converge on their next force.
+                    if let Ok(v) = &r {
+                        if is_promise {
+                            if let Some(cell) = &promise {
+                                *cell.borrow_mut() = v.clone();
+                            }
+                        } else if became_promise {
+                            if let IrThunkState::Promise(cell) = &*self.0.borrow() {
+                                *cell.borrow_mut() = v.clone();
+                            }
+                        }
+                    }
+                    r
                 }
-                r
             }
             Todo::Inherit { source, name } => {
                 // The SOURCE is chain-forced to an attrset; the selected
@@ -483,9 +670,15 @@ impl IrThunk {
                     }),
                 }
             }
-            Todo::WithIdent { name, env } => {
-                env.lookup(&name).ok_or(IrEvalError::UndefinedVar(name))
-            }
+            Todo::WithIdent { name, env } => match env.lookup(&name) {
+                Some(v) => Ok(v),
+                // M2.6 Promise softening (mirror of the walker's WithIdent arm,
+                // `value.rs:1944`): a bare-inherit name unresolved inside a
+                // Promise body — typically a `with` scope sourced from the
+                // empty-attrs sentinel that never populated — softens to `null`.
+                None if in_promise_eval() => Ok(IrValue::Null),
+                None => Err(IrEvalError::UndefinedVar(name)),
+            },
             Todo::DeferredTail {
                 prog,
                 tail,
@@ -688,9 +881,17 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
                 "true" => Ok(IrValue::Bool(true)),
                 "false" => Ok(IrValue::Bool(false)),
                 "null" => Ok(IrValue::Null),
-                _ => env
-                    .lookup(&name)
-                    .ok_or(IrEvalError::UndefinedVar(name)),
+                _ => match env.lookup(&name) {
+                    Some(v) => Ok(v),
+                    // M2.6 Promise softening (mirror of the walker's Ident arms,
+                    // `eval.rs:1117-1151`): an undefined identifier inside a
+                    // Promise body — the sentinel partial failed to populate a
+                    // `with`/lexical binding — softens to `null` so the fixpoint
+                    // proceeds. Scoped strictly to Promise-body evaluation; plain
+                    // code keeps the hard `UndefinedVar`.
+                    None if in_promise_eval() => Ok(IrValue::Null),
+                    None => Err(IrEvalError::UndefinedVar(name)),
+                },
             }
         }
         Ir::Str(parts) => eval_str_parts(prog, parts, env).map(IrValue::string),
@@ -1114,12 +1315,22 @@ pub fn apply(func: IrValue, arg: IrValue) -> Result<IrValue, IrEvalError> {
             if let Some(functor) = attrs.get("__functor") {
                 let f = apply(functor.force()?, IrValue::Attrs(attrs.clone()))?;
                 apply(f, arg)
+            } else if in_promise_eval() {
+                // M2.6 Promise softening (mirror of the walker's apply arm,
+                // `eval.rs:3280-3285`): a functor-less attrset called as a
+                // function inside a Promise body is the empty-attrs sentinel
+                // landing where it doesn't belong — soften to `null`.
+                Ok(IrValue::Null)
             } else {
                 Err(IrEvalError::TypeError(
                     "attempt to call something which is not a function but a set".into(),
                 ))
             }
         }
+        // M2.6 Promise softening (mirror of `eval.rs:3292-3298`): calling
+        // null/int/string/list/path as a function inside a Promise body is the
+        // sentinel cascade — soften to `null` so the fixpoint continues.
+        _ if in_promise_eval() => Ok(IrValue::Null),
         other => Err(IrEvalError::TypeError(format!(
             "attempt to call something which is not a function but a {}",
             other.type_name()

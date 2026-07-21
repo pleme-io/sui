@@ -835,6 +835,156 @@ fn self_alias_cycle_errors_on_both_engines() {
     }
 }
 
+// ── 3b′. slice 5: the M2.6 recursive-binding (Promise/Blackhole) semantics ─
+//
+// Mirrors the tree-walker's overlay-fixpoint PROMOTION + Promise-body
+// SOFTENING (`sui-eval/src/value.rs::force_inner` + `eval.rs` in_promise_eval).
+// Every fixture is evaluated on BOTH engines (walker = oracle) and the
+// outcomes must agree byte-for-byte (value) or by error-class (both-error).
+// The `Expect` disposition additionally PINS which shapes must converge to a
+// VALUE (the previously-divergent (Val, Err) rows this slice closes) vs which
+// remain genuine infinite-recursion errors on both.
+
+#[derive(Clone, Copy)]
+enum Expect {
+    /// Both engines must yield this exact rendered value (pins the promoted
+    /// result — the previously-divergent rows this slice fixes).
+    Value(&'static str),
+    /// Both engines must ERROR (a genuine non-terminating cycle — no promotion
+    /// can make it converge; caught by the force-chain guard / nest cap).
+    BothError,
+}
+
+/// One fixture per row. The comment on each says WHICH mechanism it exercises.
+const REC_SEMANTICS: &[(&str, Expect)] = &[
+    // ── the three contract shapes ──
+    // #1 laziness: WHNF stops at the outer constructor; the inner `inherit b`
+    // binds the thunk unforced, so no Blackhole/Promise machinery is exercised.
+    // Renders identically on both (the shared 128-deep render sentinel).
+    (
+        "rec { b = { inherit b; }; }",
+        Expect::Value(
+            // depth-128 nesting elided — both engines emit the SAME string, so
+            // exact-match still proves parity; the tail sentinel is what matters.
+            "",
+        ),
+    ),
+    // #2 the direct + mutual self-alias: classified RECURSIVE (Promise), yet the
+    // thunk memoizes to itself and the depth-100 force-chain guard fires. Errors
+    // on both — the edge where "evaluates to { }" would be a plausible-but-wrong
+    // mirror.
+    ("let x = x; in x", Expect::BothError),
+    ("let a = b; b = a; in a", Expect::BothError),
+    // #3 a reduced self:super overlay: the attribute binding's RHS never names
+    // itself (`x.a`-shaped) → classified NON-recursive → Blackhole; the fixpoint
+    // re-enters it mid-force → SEMANTIC PROMOTION. The `// { p = 1; }` supplies
+    // the real content the empty-partial self-reference doesn't (the exact shape
+    // of libxcrypt keeping its perl nativeBuildInput).
+    (
+        "let x = { a = x.a // { p = 1; }; }; in x.a",
+        Expect::Value("{ p = 1; }"),
+    ),
+    // ── promotion + softening together ──
+    // Promoted self-reference (`self.a` → { }) is then CALLED as a function; the
+    // non-function-call softening (active because IN_PROMISE_EVAL was bumped by
+    // the promotion) yields null. Exercises BOTH new mechanisms in one row.
+    ("let self = { a = (self.a) 1; }; in self.a", Expect::Value("null")),
+    // ── genuine cycles that promotion cannot rescue → error on both ──
+    // Pure self-cycle whose body is just the selection `x.a` (select does NOT
+    // force its result): the thunk memoizes to itself → force-chain guard.
+    ("let x = { a = x.a; }; in x.a", Expect::BothError),
+    // Mutual select cycle, same reason.
+    (
+        "let x = { a = x.b; b = x.a; }; in x.a",
+        Expect::BothError,
+    ),
+    // ── convergent fixpoints that need NO promotion (regression guard) ──
+    // a→b, b=5: laziness carries it; no Blackhole re-entry.
+    ("let x = { a = x.b; b = 5; }; in x.a", Expect::Value("5")),
+    ("let x = { a = 1; b = x.a; }; in x.b", Expect::Value("1")),
+    // ── softening must NOT over-fire (outside a Promise body) ──
+    // `nope` is undefined but evaluated AFTER self's Promise body completed
+    // (IN_PROMISE_EVAL back to 0) → hard UndefinedVar on both, NOT softened.
+    (
+        "let self = { a = with self; nope; }; in self.a",
+        Expect::BothError,
+    ),
+];
+
+/// Evaluate a fixture on BOTH engines on a fresh, large-stack worker thread —
+/// fresh thread-locals per fixture (so a promoting fixture's `PROMOTION_OCCURRED`
+/// latch cannot arm the runaway backstop for the next one) and enough stack for
+/// the 128-deep render walks.
+fn rec_eval_both(src: &str) -> (Outcome, Result<String, IrEvalError>) {
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || (tree_outcome(&src), ir_outcome(&src)))
+        .expect("spawn rec worker")
+        .join()
+        .expect("rec worker panicked")
+}
+
+#[test]
+fn rec_semantics_differential() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut promoted_value_rows = 0usize;
+    let mut both_error_rows = 0usize;
+
+    for (src, expect) in REC_SEMANTICS {
+        let (tree, ir) = rec_eval_both(src);
+        match (expect, &tree, &ir) {
+            // Both engines must agree on a value; if `expect` pins a non-empty
+            // exact string, both must equal it (the "" pin means "agree,
+            // whatever it is" — used for the depth-capped infinite render).
+            (Expect::Value(want), Outcome::Val(t), Ok(i)) => {
+                if t != i {
+                    failures.push(format!("row {src:?} DIVERGED\n  tree: {t}\n  ir:   {i}"));
+                } else if !want.is_empty() && t != want {
+                    failures.push(format!(
+                        "row {src:?} agreed but not on the pinned value\n  got:  {t}\n  want: {want}"
+                    ));
+                } else {
+                    promoted_value_rows += 1;
+                }
+            }
+            (Expect::Value(_), Outcome::Error(e), Ok(i)) => failures.push(format!(
+                "row {src:?}: expected a VALUE on both, tree ERRORED ({e}) but ir yielded {i}"
+            )),
+            (Expect::Value(_), Outcome::Val(t), Err(e)) => failures.push(format!(
+                "row {src:?}: expected a VALUE on both, tree={t} but IR ERRORED ({e}) — \
+                 the rec-semantics fix regressed"
+            )),
+            (Expect::Value(_), Outcome::Error(te), Err(ie)) => failures.push(format!(
+                "row {src:?}: expected a VALUE on both, but BOTH errored (tree={te} ir={ie})"
+            )),
+            // Both engines must error (any class — a genuine cycle).
+            (Expect::BothError, Outcome::Error(_), Err(_)) => both_error_rows += 1,
+            (Expect::BothError, t, i) => failures.push(format!(
+                "row {src:?}: expected BOTH to error, got tree={t:?} ir={i:?}"
+            )),
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} rec-semantics rows failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    // Coverage floor: the promotion/softening path really did converge on the
+    // (Val, Val) rows (not silently degrade into both-error), and the cycle
+    // rows really error.
+    assert!(
+        promoted_value_rows >= 5,
+        "rec-semantics value coverage collapsed: only {promoted_value_rows} value rows"
+    );
+    assert!(
+        both_error_rows >= 4,
+        "rec-semantics error coverage collapsed: only {both_error_rows} both-error rows"
+    );
+}
+
 // ── 3c. a REAL nixpkgs lib.* differential ─────────────────────────────────
 //
 // Import the ACTUAL nixpkgs `lib` and evaluate a handful of PURE lib.*
@@ -1312,27 +1462,27 @@ mod generated {
                 ),
                 // Both errored — a match (error classes are not byte-compared).
                 (Outcome::Error(_), Err(_)) => {}
-                // Walker yields a VALUE, IR errors. This is dominated by a
-                // KNOWN, PRE-EXISTING, BUILTIN-UNRELATED divergence (out of
-                // scope for the pure-builtins slice, flagged for a rec-
-                // semantics slice): the walker's M2.6 Promise bridge SOFTENS a
-                // SELF/MUTUALLY-RECURSIVE binding's evaluation error to a
-                // partial value (documented `in_promise_eval` softening;
-                // eval_ir module docs §"Semantics mirrored from the tree-
-                // walker"), which surfaces in many shapes — `{ a = null; … }`,
-                // `false` via `?`, etc. — whenever a recursive binding errors.
-                // The IR propagates the error instead. We ACCEPT this class
-                // here rather than chase its every shape, because a genuine
-                // builtin (Val, Err) bug — an IR builtin erroring on input the
-                // walker handles — is caught INDEPENDENTLY by the exhaustive
-                // per-builtin VALUE seed (`builtins_value_seed_differential`),
-                // so tolerating it in the generator does not weaken builtin
-                // coverage. The generator's unique job is the (Val, Val) kill
-                // path above. A typed GAP must never appear in the closed
-                // generator, so still HARD-FAIL on those.
+                // Walker yields a VALUE, IR errors. Slice 5 CLOSED the
+                // dominant historical class here — the walker's M2.6 Promise
+                // bridge softening a self/mutually-recursive binding's error to
+                // a partial value — by mirroring the overlay-fixpoint PROMOTION
+                // and the three `in_promise_eval` softening sites in `eval_ir`.
+                // So the tolerance is TIGHTENED: the ONLY remaining acceptable
+                // (Val, Err) is the depth-limit asymmetry between the engines —
+                // the IR's `force()` chases a thunk chain only 100 links deep
+                // (mirrored from `force_value`) and recurses on a fixed native
+                // stack, while the walker grows its stack via `stacker`; a
+                // generated value deep enough to trip the IR's 100-chain /
+                // native-stack limit where the walker still converges is a
+                // RESOURCE artefact, not a semantics divergence, and surfaces as
+                // `InfiniteRecursion`. Every OTHER (Val, Err) — including any
+                // typed GAP — is now a HARD failure: a genuine "IR errors where
+                // the walker has a value" bug the rec-semantics slice must not
+                // reintroduce.
                 (Outcome::Val(t), Err(e)) => prop_assert!(
-                    !matches!(e, IrEvalError::Unsupported(_) | IrEvalError::MissingBuiltin(_)),
-                    "closed generator produced a typed GAP (should be impossible): {}\n\
+                    matches!(e, IrEvalError::InfiniteRecursion),
+                    "IR errors where the walker yields a value (rec-semantics regression \
+                     or new divergence — NOT a tolerated depth artefact): {}\n\
                      tree yielded {}\nsource:\n{}",
                     e, t, src
                 ),

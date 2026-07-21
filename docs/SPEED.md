@@ -265,11 +265,29 @@ share's per-thunk term). Class: ReprSwap → ByteSufficient.
 >   shrank again (corpus 7->5, supplement 4->2). SCOPE CAVEAT (adversary-disclosed):
 >   version builtins reuse the SHARED `sui_compat` algorithm the walker also calls,
 >   so the differential proves IR==walker for those, not IR==CppNix-truth (the
->   parity corpus owns that). FLAGGED for slice 5: the walker's M2.6 Promise-bridge
->   softening of recursive-binding errors to partial values is a `(Val,Err)` class
->   IR does not yet mirror — the foundation the module-system fixpoint needs.
-> - **slice 5** (next): rec-semantics parity — mirror the M2.6 Promise/Blackhole
->   partial-value handling, the prerequisite for evaluating real `evalModules`.
+>   parity corpus owns that). FLAGGED for slice 5 (now CLOSED, below): the walker's
+>   M2.6 Promise-bridge softening of recursive-binding errors to partial values was
+>   a `(Val,Err)` class IR did not mirror — the module-system fixpoint foundation.
+> - **slice 5** (this branch): rec-semantics parity — mirrors the walker's M2.6
+>   Promise/Blackhole machinery in `eval_ir`'s force path: the overlay-fixpoint
+>   **semantic PROMOTION** (a Blackhole re-entered while its SAME thunk is on the
+>   force stack is promoted to a Promise cell — `self:super:`/`callPackage`
+>   fixpoints the syntactic classifier misses), bounded by the concurrent-promotion
+>   nest cap (32) + a force-depth runaway backstop (500), and the three
+>   `IN_PROMISE_EVAL` **softening** sites (undefined ident / non-function call /
+>   WithIdent miss → `null`; `eval_select` misses NOT softened, per the walker's
+>   ROOT #4 removal). New `rec_semantics_differential` (contract shapes + the
+>   perl-dep-retention `// { p = 1; }` promotion demo + promotion-then-softening
+>   converging to `null` + genuine cycles that still error on both), and the
+>   property test's `(Val, Err)` tolerance TIGHTENED from "any non-gap error" to
+>   "InfiniteRecursion only" (the depth/stack resource artefact). Whole sui-ir
+>   package green; sui-spec green. Typed KnownGap: the walker's eval-depth runaway
+>   backstop twin (`PROMOTION_RUNAWAY_EVAL_DEPTH`) is not mirrored — a runaway that
+>   climbs `eval_ir` without pushing force frames is caught by the nest cap +
+>   force-depth backstop for every fixture-reachable shape, but a nixpkgs-scale
+>   non-convergent promoted fixpoint that climbs only eval depth is not (needs the
+>   eval-depth guard, deferred to keep the eval hot path counter-free). This is
+>   the foundation `evalModules` (recursive fixpoints) needs.
 >
 > **KEYING BRIDGE — do not cement path-keying.** slice 3's `ProgramCache`
 > keys by **canonical path** as the pragmatic first cut. That is *interim*.
