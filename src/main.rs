@@ -3983,7 +3983,14 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 ))
             })
         }),
-        (ParityProbe { name: "eval hello drvPath", description: "nixpkgs hello through stdenv (ecosystem target)", expect: Expect::KnownDiverge }, {
+        // GRADUATED 2026-07-20 KnownDiverge -> Match. The ident-cache aliasing
+        // fix (env.source_id() instead of the unmaintained CURRENT_SOURCE_ID
+        // thread-local) closed it: this row now byte-matches nix on
+        // aarch64-darwin. It was the last open `hello` leaf — its x86_64-linux
+        // sibling below was already sealed. The gate caught the graduation
+        // itself, exiting 1 on an untracked advance, which is the behaviour that
+        // makes promoting it a deliberate act rather than a silent drift.
+        (ParityProbe { name: "eval hello drvPath", description: "nixpkgs hello through stdenv (ecosystem target)", expect: Expect::Match }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
                 let np = match run_capture(&nix, &["eval", "--extra-experimental-features", "nix-command", "--impure", "--raw", "--expr", "toString <nixpkgs>"]) {
@@ -4045,9 +4052,11 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
         // THE PRIZE (2026-07-10): x86_64-linux `hello.drvPath` — the mission
         // minimum bar. Byte-matches nix `j8q5j0x4…` now that the stdenv
         // perl↔libxcrypt/openssl bootstrap cycle resolves (lazy `derivation`).
-        // NOTE: the default-system (darwin) `hello` row above is still a
-        // KnownDiverge — a SEPARATE cross-system apple-sdk/python leaf, not this
-        // root.
+        // NOTE (updated 2026-07-20): the default-system (darwin) `hello` row
+        // above is NO LONGER a KnownDiverge — it graduated to Match when the
+        // ident-cache aliasing bug was fixed. What was described here as "a
+        // SEPARATE cross-system apple-sdk/python leaf" turned out to be the same
+        // root as everything else that could not evaluate nixpkgs.
         (ParityProbe { name: "eval hello drvPath (x86_64-linux)", description: "nixpkgs hello through the linux stdenv bootstrap — THE mission target, CLOSED via lazy derivation", expect: Expect::Match }, {
             let sui = sui_bin.clone(); let nix = nix.to_path_buf();
             Box::new(move || {
