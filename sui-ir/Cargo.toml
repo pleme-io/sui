@@ -15,19 +15,26 @@ rnix.workspace = true
 rowan.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
-# `builtins.split` mirrors the tree-walker's regex-backed implementation —
-# same crate, same semantics, differential-gated.
+# `builtins.{split,match}` mirror the tree-walker's regex-backed
+# implementation — same crate, same semantics, differential-gated.
 regex.workspace = true
+# `builtins.toJSON`/`fromJSON` build/parse the SAME serde_json::Value the
+# walker does, so JSON byte-format cannot drift from the oracle.
+serde_json.workspace = true
+# The version algorithms (`compareVersions`/`parseDrvName`/`splitVersion`)
+# and the CppNix float format are the SAME typed impls the tree-walker uses
+# (`sui_compat::versions`). Promoted from a dev-dep to a real dep so the
+# builtins bridge shares them by construction. sui-compat has no pleme-io
+# deps, so no cycle; nothing depends on sui-ir.
+sui-compat.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 # The eval differential (tests/eval_differential.rs) drives BOTH engines:
 # the tree-walker (sui-eval, the semantic oracle) and eval_ir, and
-# byte-compares their rendered results. sui-compat supplies the CppNix
-# float formatting both renders share. Dev-only — the sui-ir library
+# byte-compares their rendered results. Dev-only — the sui-ir library
 # itself never links the live engines.
 sui-eval.workspace = true
-sui-compat.workspace = true
 # The parity corpus generator (src/parity_corpus.rs, lifted verbatim via
 # #[path] in tests/differential.rs) builds its rows from the canonical typed
 # Nix AST — same crate the root workspace uses.

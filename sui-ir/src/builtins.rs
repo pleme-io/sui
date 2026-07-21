@@ -1,7 +1,21 @@
-//! L3 slice 3 — the builtins bridge: the most-used **pure** builtins
+//! L3 slice 4 — the builtins bridge: the **pure** builtin surface
 //! implemented natively on [`IrValue`], each one mirroring the tree-walker's
 //! implementation (the semantic oracle) and differential-gated by
 //! `tests/eval_differential.rs`.
+//!
+//! Slice 4 completed the pure surface (throw/abort/tryEval, sort/genericClosure/
+//! functionArgs, all/any/partition/groupBy/concatMap/elem/catAttrs/zipAttrsWith/
+//! filterAttrs, match/compareVersions/splitVersion/parseDrvName, toJSON/fromJSON/
+//! toXML, add/sub/mul/div/lessThan/bitAnd/bitOr/bitXor/ceil/floor, concatStrings/
+//! toLower/toUpper/hasPrefix/hasSuffix/hasContext/getContext/unsafeDiscard-
+//! StringContext, baseNameOf/dirOf, trace/traceVerbose, findFile, the `nixPath`
+//! constant). What stays a typed [`IrEvalError::MissingBuiltin`] gap is the
+//! store-/IO-/derivation-/flake-/crypto-bound set (impure by nature) plus a few
+//! deferred context/passthrough helpers — see [`MISSING_BUILTIN_NAMES`].
+//!
+//! The version algorithms and the CppNix float format come from the SAME typed
+//! `sui_compat::versions` the walker uses, and toJSON/fromJSON build/parse the
+//! SAME `serde_json::Value`, so those surfaces cannot drift from the oracle.
 //!
 //! # Shape
 //!
@@ -29,8 +43,17 @@
 
 use std::rc::Rc;
 
+// The version algorithms + CppNix float format are the SAME typed
+// implementations the tree-walker uses (`sui_compat::versions`), so
+// `compareVersions` / `parseDrvName` / `splitVersion` cannot drift from the
+// oracle by construction. `sui-compat` is a regular dependency (it has no
+// pleme-io deps, so no cycle).
+use sui_compat::versions::{
+    compare_versions, cppnix_format_float, parse_drv_name, split_version,
+};
+
 use crate::eval_ir::{
-    apply, coerce_to_string_plain, IrAttrs, IrEnv, IrEvalError, IrThunk, IrValue,
+    apply, coerce_to_string_plain, ir_eq, IrAttrs, IrEnv, IrEvalError, IrThunk, IrValue,
 };
 use crate::file_eval;
 
@@ -60,6 +83,27 @@ pub enum IrBuiltin {
     ListToAttrs,
     StringLength,
     Import,
+    // arity 1 — slice 4
+    Throw,
+    Abort,
+    TryEval,
+    Ceil,
+    Floor,
+    ToJson,
+    FromJson,
+    ToXml,
+    FunctionArgs,
+    GenericClosure,
+    SplitVersion,
+    ParseDrvName,
+    ConcatStrings,
+    HasContext,
+    GetContext,
+    UnsafeDiscardStringContext,
+    ToLower,
+    ToUpper,
+    BaseNameOf,
+    DirOf,
     // arity 2
     Map,
     Filter,
@@ -74,6 +118,32 @@ pub enum IrBuiltin {
     DeepSeq,
     ConcatStringsSep,
     Split,
+    // arity 2 — slice 4
+    Add,
+    Sub,
+    Mul,
+    Div,
+    LessThan,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Elem,
+    Sort,
+    All,
+    Any,
+    Partition,
+    GroupBy,
+    ConcatMap,
+    CatAttrs,
+    ZipAttrsWith,
+    FilterAttrs,
+    CompareVersions,
+    Match,
+    HasPrefix,
+    HasSuffix,
+    FindFile,
+    Trace,
+    TraceVerbose,
     // arity 3
     Foldl,
     Substring,
@@ -105,7 +175,27 @@ impl IrBuiltin {
             | B::ConcatLists
             | B::ListToAttrs
             | B::StringLength
-            | B::Import => 1,
+            | B::Import
+            | B::Throw
+            | B::Abort
+            | B::TryEval
+            | B::Ceil
+            | B::Floor
+            | B::ToJson
+            | B::FromJson
+            | B::ToXml
+            | B::FunctionArgs
+            | B::GenericClosure
+            | B::SplitVersion
+            | B::ParseDrvName
+            | B::ConcatStrings
+            | B::HasContext
+            | B::GetContext
+            | B::UnsafeDiscardStringContext
+            | B::ToLower
+            | B::ToUpper
+            | B::BaseNameOf
+            | B::DirOf => 1,
             B::Map
             | B::Filter
             | B::ElemAt
@@ -118,7 +208,32 @@ impl IrBuiltin {
             | B::Seq
             | B::DeepSeq
             | B::ConcatStringsSep
-            | B::Split => 2,
+            | B::Split
+            | B::Add
+            | B::Sub
+            | B::Mul
+            | B::Div
+            | B::LessThan
+            | B::BitAnd
+            | B::BitOr
+            | B::BitXor
+            | B::Elem
+            | B::Sort
+            | B::All
+            | B::Any
+            | B::Partition
+            | B::GroupBy
+            | B::ConcatMap
+            | B::CatAttrs
+            | B::ZipAttrsWith
+            | B::FilterAttrs
+            | B::CompareVersions
+            | B::Match
+            | B::HasPrefix
+            | B::HasSuffix
+            | B::FindFile
+            | B::Trace
+            | B::TraceVerbose => 2,
             B::Foldl | B::Substring | B::ReplaceStrings => 3,
         }
     }
@@ -148,6 +263,51 @@ impl IrBuiltin {
             B::ListToAttrs => "listToAttrs",
             B::StringLength => "stringLength",
             B::Import => "import",
+            B::Throw => "throw",
+            B::Abort => "abort",
+            B::TryEval => "tryEval",
+            B::Ceil => "ceil",
+            B::Floor => "floor",
+            B::ToJson => "toJSON",
+            B::FromJson => "fromJSON",
+            B::ToXml => "toXML",
+            B::FunctionArgs => "functionArgs",
+            B::GenericClosure => "genericClosure",
+            B::SplitVersion => "splitVersion",
+            B::ParseDrvName => "parseDrvName",
+            B::ConcatStrings => "concatStrings",
+            B::HasContext => "hasContext",
+            B::GetContext => "getContext",
+            B::UnsafeDiscardStringContext => "unsafeDiscardStringContext",
+            B::ToLower => "toLower",
+            B::ToUpper => "toUpper",
+            B::BaseNameOf => "baseNameOf",
+            B::DirOf => "dirOf",
+            B::Add => "add",
+            B::Sub => "sub",
+            B::Mul => "mul",
+            B::Div => "div",
+            B::LessThan => "lessThan",
+            B::BitAnd => "bitAnd",
+            B::BitOr => "bitOr",
+            B::BitXor => "bitXor",
+            B::Elem => "elem",
+            B::Sort => "sort",
+            B::All => "all",
+            B::Any => "any",
+            B::Partition => "partition",
+            B::GroupBy => "groupBy",
+            B::ConcatMap => "concatMap",
+            B::CatAttrs => "catAttrs",
+            B::ZipAttrsWith => "zipAttrsWith",
+            B::FilterAttrs => "filterAttrs",
+            B::CompareVersions => "compareVersions",
+            B::Match => "match",
+            B::HasPrefix => "hasPrefix",
+            B::HasSuffix => "hasSuffix",
+            B::FindFile => "findFile",
+            B::Trace => "trace",
+            B::TraceVerbose => "traceVerbose",
             B::Map => "map",
             B::Filter => "filter",
             B::ElemAt => "elemAt",
@@ -192,6 +352,37 @@ impl IrBuiltin {
             // The walker registers `split` via `register_curried`, whose
             // partial stage is anonymous.
             (B::Split, _) => "curried<partial>",
+            // The `register_curried` family — arithmetic, regex `match`,
+            // `findFile` — all share the anonymous `curried<partial>` stage.
+            (
+                B::Add
+                | B::Sub
+                | B::Mul
+                | B::Div
+                | B::LessThan
+                | B::BitAnd
+                | B::BitOr
+                | B::BitXor
+                | B::Match
+                | B::FindFile,
+                _,
+            ) => "curried<partial>",
+            // The `register_builtin` staged-closure family names its partial.
+            (B::Elem, _) => "elem<partial>",
+            (B::Sort, _) => "sort<partial>",
+            (B::All, _) => "all<partial>",
+            (B::Any, _) => "any<partial>",
+            (B::Partition, _) => "partition<partial>",
+            (B::GroupBy, _) => "groupBy<partial>",
+            (B::ConcatMap, _) => "concatMap<partial>",
+            (B::CatAttrs, _) => "catAttrs<partial>",
+            (B::ZipAttrsWith, _) => "zipAttrsWith<partial>",
+            (B::FilterAttrs, _) => "filterAttrs<partial>",
+            (B::CompareVersions, _) => "compareVersions<partial>",
+            (B::HasPrefix, _) => "hasPrefix<partial>",
+            (B::HasSuffix, _) => "hasSuffix<partial>",
+            (B::Trace, _) => "trace<partial>",
+            (B::TraceVerbose, _) => "traceVerbose<partial>",
             (B::Foldl, 1) => "foldl'<p1>",
             (B::Foldl, _) => "foldl'<p2>",
             (B::Substring, 1) => "substring<p1>",
@@ -202,11 +393,15 @@ impl IrBuiltin {
         }
     }
 
-    /// Whether the NEXT argument must be passed **unforced** (the walker's
-    /// `seq<partial>` / `deepSeq<partial>` special case in `apply_inner`).
+    /// Whether the NEXT argument must be passed **unforced**. Two cases
+    /// mirror the walker: the `seq<partial>` / `deepSeq<partial>` stage
+    /// returns its arg unforced (`apply_inner`), and `tryEval` MUST receive
+    /// its argument unforced so it can force-and-catch itself (a
+    /// pre-force in `apply` would raise the throw before `tryEval` runs).
     #[must_use]
     pub fn wants_unforced_arg(self, captured: usize) -> bool {
-        matches!(self, IrBuiltin::Seq | IrBuiltin::DeepSeq) && captured == 1
+        (matches!(self, IrBuiltin::Seq | IrBuiltin::DeepSeq) && captured == 1)
+            || (matches!(self, IrBuiltin::TryEval) && captured == 0)
     }
 }
 
@@ -232,6 +427,26 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::ListToAttrs,
     IrBuiltin::StringLength,
     IrBuiltin::Import,
+    IrBuiltin::Throw,
+    IrBuiltin::Abort,
+    IrBuiltin::TryEval,
+    IrBuiltin::Ceil,
+    IrBuiltin::Floor,
+    IrBuiltin::ToJson,
+    IrBuiltin::FromJson,
+    IrBuiltin::ToXml,
+    IrBuiltin::FunctionArgs,
+    IrBuiltin::GenericClosure,
+    IrBuiltin::SplitVersion,
+    IrBuiltin::ParseDrvName,
+    IrBuiltin::ConcatStrings,
+    IrBuiltin::HasContext,
+    IrBuiltin::GetContext,
+    IrBuiltin::UnsafeDiscardStringContext,
+    IrBuiltin::ToLower,
+    IrBuiltin::ToUpper,
+    IrBuiltin::BaseNameOf,
+    IrBuiltin::DirOf,
     IrBuiltin::Map,
     IrBuiltin::Filter,
     IrBuiltin::ElemAt,
@@ -245,6 +460,31 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::DeepSeq,
     IrBuiltin::ConcatStringsSep,
     IrBuiltin::Split,
+    IrBuiltin::Add,
+    IrBuiltin::Sub,
+    IrBuiltin::Mul,
+    IrBuiltin::Div,
+    IrBuiltin::LessThan,
+    IrBuiltin::BitAnd,
+    IrBuiltin::BitOr,
+    IrBuiltin::BitXor,
+    IrBuiltin::Elem,
+    IrBuiltin::Sort,
+    IrBuiltin::All,
+    IrBuiltin::Any,
+    IrBuiltin::Partition,
+    IrBuiltin::GroupBy,
+    IrBuiltin::ConcatMap,
+    IrBuiltin::CatAttrs,
+    IrBuiltin::ZipAttrsWith,
+    IrBuiltin::FilterAttrs,
+    IrBuiltin::CompareVersions,
+    IrBuiltin::Match,
+    IrBuiltin::HasPrefix,
+    IrBuiltin::HasSuffix,
+    IrBuiltin::FindFile,
+    IrBuiltin::Trace,
+    IrBuiltin::TraceVerbose,
     IrBuiltin::Foldl,
     IrBuiltin::Substring,
     IrBuiltin::ReplaceStrings,
@@ -256,60 +496,33 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
 /// (Set-parity with the walker's eval-visible registry is enforced by the
 /// `builtins_registry_parity` differential test.)
 const MISSING_BUILTIN_NAMES: &[&str] = &[
-    "abort",
-    "add",
+    // Slice 4 implemented the pure surface; what remains is
+    // store-/IO-/derivation-/flake-/crypto-bound (impure by nature) plus a
+    // few pure-but-deferred context/passthrough helpers
+    // (`addErrorContext`/`warn`/`break`/`appendContext`/…) left as typed
+    // gaps for a later slice. `nixPath` moved OUT of this list — it is now a
+    // real constant value (built from NIX_PATH), like the walker's.
     "addDrvOutputDependencies",
     "addErrorContext",
-    "all",
-    "any",
     "appendContext",
-    "baseNameOf",
-    "bitAnd",
-    "bitOr",
-    "bitXor",
     "break",
-    "catAttrs",
-    "ceil",
-    "compareVersions",
-    "concatMap",
-    "concatStrings",
     "convertHash",
     "currentTime",
     "derivation",
     "derivationStrict",
-    "dirOf",
-    "div",
-    "elem",
     "fetchGit",
     "fetchMercurial",
     "fetchTarball",
     "fetchTree",
     "fetchurl",
-    "filterAttrs",
     "filterSource",
-    "findFile",
     "flakeRefToString",
-    "floor",
-    "fromJSON",
     "fromTOML",
-    "functionArgs",
-    "genericClosure",
-    "getContext",
     "getEnv",
     "getFlake",
-    "groupBy",
-    "hasContext",
-    "hasPrefix",
-    "hasSuffix",
     "hashFile",
     "hashString",
-    "lessThan",
-    "match",
-    "mul",
-    "nixPath",
-    "parseDrvName",
     "parseFlakeRef",
-    "partition",
     "path",
     "pathExists",
     "placeholder",
@@ -318,26 +531,13 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     "readFileType",
     "resolveFlakeRef",
     "scopedImport",
-    "sort",
-    "splitVersion",
     "storePath",
-    "sub",
     "sui",
-    "throw",
     "toFile",
-    "toJSON",
-    "toLower",
     "toPath",
-    "toUpper",
-    "toXML",
-    "trace",
-    "traceVerbose",
-    "tryEval",
     "unsafeDiscardOutputDependency",
-    "unsafeDiscardStringContext",
     "unsafeGetAttrPos",
     "warn",
-    "zipAttrsWith",
 ];
 
 /// The walker's `DEFAULT_SCOPE` — builtins CppNix exposes bare at top
@@ -384,6 +584,23 @@ pub fn current_system() -> &'static str {
     }
 }
 
+/// `builtins.nixPath` — mirror of the walker's constant: `NIX_PATH` parsed
+/// into a list of `{ prefix; path; }` attrsets (empty when unset).
+#[must_use]
+fn nix_path_value() -> IrValue {
+    let raw = std::env::var("NIX_PATH").unwrap_or_default();
+    let list: Vec<IrValue> = crate::path::parse_nix_path(&raw)
+        .into_iter()
+        .map(|(prefix, path)| {
+            let mut a = IrAttrs::new();
+            a.insert("prefix".to_string(), IrValue::string(prefix));
+            a.insert("path".to_string(), IrValue::string(path));
+            IrValue::Attrs(Rc::new(a))
+        })
+        .collect();
+    IrValue::List(Rc::new(list))
+}
+
 /// Build the `builtins` attrset (see module docs). Mirrors the walker's
 /// `builtins::register`: implemented natives + constants + missing-seeded
 /// names, then the pre-self-insert snapshot as `builtins.builtins`.
@@ -407,6 +624,10 @@ pub fn builtins_attrs() -> Rc<IrAttrs> {
     set.insert("true".to_string(), IrValue::Bool(true));
     set.insert("false".to_string(), IrValue::Bool(false));
     set.insert("null".to_string(), IrValue::Null);
+    // `builtins.nixPath` — a list of `{ prefix; path; }` built from NIX_PATH,
+    // exactly like the walker's constant (both engines read the same env, so
+    // the list is identical within a run). Underpins `__findFile __nixPath`.
+    set.insert("nixPath".to_string(), nix_path_value());
     for name in MISSING_BUILTIN_NAMES {
         set.insert(
             (*name).to_string(),
@@ -536,8 +757,19 @@ fn capture_check(kind: IrBuiltin, stage: usize, arg: &IrValue) -> Result<(), IrE
     match (kind, stage) {
         // `elemAt list index`: the list is validated at stage 0.
         (B::ElemAt, 0) => as_list(arg).map(|_| ()),
-        // String-first curried builtins.
-        (B::HasAttr | B::GetAttr | B::ConcatStringsSep, 0) => as_str(arg).map(|_| ()),
+        // String-first curried builtins. `catAttrs`/`compareVersions`/
+        // `hasPrefix`/`hasSuffix` validate their first (string) argument AT
+        // CAPTURE (the walker's staged closures run `as_string()?` there).
+        (
+            B::HasAttr
+            | B::GetAttr
+            | B::ConcatStringsSep
+            | B::CatAttrs
+            | B::CompareVersions
+            | B::HasPrefix
+            | B::HasSuffix,
+            0,
+        ) => as_str(arg).map(|_| ()),
         // Attrs-first curried builtins.
         (B::IntersectAttrs | B::RemoveAttrs, 0) => as_attrs(arg).map(|_| ()),
         (B::Substring, 0 | 1) => as_int(arg).map(|_| ()),
@@ -795,6 +1027,260 @@ fn run_saturated(
             let subject = coerce_to_string_plain(&arg)?;
             Ok(IrValue::string(replace_strings_impl(&from, &to, &subject)))
         }
+
+        // ── slice 4: control ──────────────────────────────────────────────
+        B::Throw => {
+            let msg = as_str(&arg)?;
+            Err(IrEvalError::Throw(format!("throw: {msg}")))
+        }
+        B::Abort => {
+            let msg = as_str(&arg)?;
+            Err(IrEvalError::Abort(format!(
+                "evaluation aborted with the following error message: '{msg}'"
+            )))
+        }
+        B::TryEval => {
+            // The arg arrives UNFORCED (`wants_unforced_arg`); force it here
+            // and catch exactly the walker's two catchable classes (`throw`
+            // + `assert`), propagating everything else (abort included).
+            match arg.force() {
+                Ok(v) => Ok(try_eval_result(true, v)),
+                Err(IrEvalError::Throw(_) | IrEvalError::AssertionFailed) => {
+                    Ok(try_eval_result(false, IrValue::Bool(false)))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        // trace / traceVerbose: the message was forced at capture (WHNF via
+        // `apply`); the eprintln side effect is irrelevant to value parity,
+        // so this simply returns the second argument (the walker's
+        // `<partial>` closure returns `args2[0]`).
+        B::Trace | B::TraceVerbose => Ok(arg),
+
+        // ── slice 4: arithmetic ───────────────────────────────────────────
+        B::Add => numeric_binop(&captured[0], &arg, |a, b| a + b, |a, b| a + b, "add"),
+        B::Sub => numeric_binop(&captured[0], &arg, |a, b| a - b, |a, b| a - b, "sub"),
+        B::Mul => numeric_binop(&captured[0], &arg, |a, b| a * b, |a, b| a * b, "mul"),
+        B::Div => div_impl(&captured[0], &arg),
+        B::LessThan => less_than(&captured[0], &arg),
+        B::BitAnd => Ok(IrValue::Int(as_int(&captured[0])? & as_int(&arg)?)),
+        B::BitOr => Ok(IrValue::Int(as_int(&captured[0])? | as_int(&arg)?)),
+        B::BitXor => Ok(IrValue::Int(as_int(&captured[0])? ^ as_int(&arg)?)),
+        B::Ceil => Ok(IrValue::Int(to_float(&arg)?.ceil() as i64)),
+        B::Floor => Ok(IrValue::Int(to_float(&arg)?.floor() as i64)),
+
+        // ── slice 4: list HOFs ────────────────────────────────────────────
+        B::Elem => {
+            let needle = &captured[0];
+            let list = as_list(&arg)?;
+            Ok(IrValue::Bool(list.iter().any(|v| ir_eq(needle, v))))
+        }
+        B::Sort => sort_impl(&captured[0], &arg),
+        B::All => {
+            let pred = captured[0].clone();
+            for v in as_list(&arg)?.iter() {
+                if !apply(pred.clone(), v.clone())?.force()?.as_bool()? {
+                    return Ok(IrValue::Bool(false));
+                }
+            }
+            Ok(IrValue::Bool(true))
+        }
+        B::Any => {
+            let pred = captured[0].clone();
+            for v in as_list(&arg)?.iter() {
+                if apply(pred.clone(), v.clone())?.force()?.as_bool()? {
+                    return Ok(IrValue::Bool(true));
+                }
+            }
+            Ok(IrValue::Bool(false))
+        }
+        B::Partition => {
+            let pred = captured[0].clone();
+            let mut right = Vec::new();
+            let mut wrong = Vec::new();
+            for v in as_list(&arg)?.iter() {
+                if apply(pred.clone(), v.clone())?.force()?.as_bool()? {
+                    right.push(v.clone());
+                } else {
+                    wrong.push(v.clone());
+                }
+            }
+            let mut result = IrAttrs::new();
+            result.insert("right".to_string(), IrValue::List(Rc::new(right)));
+            result.insert("wrong".to_string(), IrValue::List(Rc::new(wrong)));
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+        B::GroupBy => {
+            let func = captured[0].clone();
+            let mut groups: std::collections::BTreeMap<String, Vec<IrValue>> =
+                std::collections::BTreeMap::new();
+            for v in as_list(&arg)?.iter() {
+                let key = apply(func.clone(), v.clone())?.force()?;
+                let key_str = as_str(&key)?.to_string();
+                groups.entry(key_str).or_default().push(v.clone());
+            }
+            let mut result = IrAttrs::new();
+            for (k, vs) in groups {
+                result.insert(k, IrValue::List(Rc::new(vs)));
+            }
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+        B::ConcatMap => {
+            let func = captured[0].clone();
+            let mut result = Vec::new();
+            for v in as_list(&arg)?.iter() {
+                let mapped = apply(func.clone(), v.clone())?.force()?;
+                result.extend(as_list(&mapped)?.iter().cloned());
+            }
+            Ok(IrValue::List(Rc::new(result)))
+        }
+
+        // ── slice 4: attr HOFs ────────────────────────────────────────────
+        B::CatAttrs => {
+            let name = as_str(&captured[0])?;
+            let mut result = Vec::new();
+            for item in as_list(&arg)?.iter() {
+                // Mirror the walker's `if let Ok(attrs) = item.to_attrs()`:
+                // a non-attrs (or force-failing) element is silently skipped.
+                if let Ok(forced) = item.force() {
+                    if let IrValue::Attrs(a) = &forced {
+                        if let Some(v) = a.get(name) {
+                            result.push(v.clone());
+                        }
+                    }
+                }
+            }
+            Ok(IrValue::List(Rc::new(result)))
+        }
+        B::ZipAttrsWith => {
+            let func = captured[0].clone();
+            let mut collected: std::collections::BTreeMap<String, Vec<IrValue>> =
+                std::collections::BTreeMap::new();
+            for item in as_list(&arg)?.iter() {
+                let forced = item.force()?;
+                for (k, v) in as_attrs(&forced)?.iter() {
+                    collected.entry(k.clone()).or_default().push(v.clone());
+                }
+            }
+            let mut result = IrAttrs::new();
+            for (k, vs) in collected {
+                // Lazy `f key values` thunk per key — mirrors the walker.
+                let thunk = IrThunk::native_apply(
+                    func.clone(),
+                    vec![IrValue::string(k.clone()), IrValue::List(Rc::new(vs))],
+                );
+                result.insert(k, IrValue::Thunk(thunk));
+            }
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+        B::FilterAttrs => {
+            let pred = captured[0].clone();
+            let attrs = as_attrs(&arg)?;
+            let mut result = IrAttrs::new();
+            for (k, v) in attrs.iter() {
+                let partial = apply(pred.clone(), IrValue::string(k.clone()))?;
+                if apply(partial, v.clone())?.force()?.as_bool()? {
+                    result.insert(k.clone(), v.clone());
+                }
+            }
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+        B::FunctionArgs => function_args(&arg),
+        B::GenericClosure => generic_closure(&arg),
+
+        // ── slice 4: strings + versions ───────────────────────────────────
+        B::ConcatStrings => {
+            let list = as_list(&arg)?;
+            let mut result = String::new();
+            for v in list.iter() {
+                result.push_str(&coerce_to_string_plain(v)?);
+            }
+            Ok(IrValue::string(result))
+        }
+        B::ToLower => Ok(IrValue::string(as_str(&arg)?.to_lowercase())),
+        B::ToUpper => Ok(IrValue::string(as_str(&arg)?.to_uppercase())),
+        B::HasPrefix => Ok(IrValue::Bool(as_str(&arg)?.starts_with(as_str(&captured[0])?))),
+        B::HasSuffix => Ok(IrValue::Bool(as_str(&arg)?.ends_with(as_str(&captured[0])?))),
+        B::Match => match_impl(as_str(&captured[0])?, as_str(&arg)?),
+        B::CompareVersions => {
+            let a = as_str(&captured[0])?;
+            let b = as_str(&arg)?;
+            Ok(IrValue::Int(compare_versions(a, b)))
+        }
+        B::SplitVersion => {
+            let s = as_str(&arg)?;
+            Ok(IrValue::List(Rc::new(
+                split_version(s).into_iter().map(IrValue::string).collect(),
+            )))
+        }
+        B::ParseDrvName => {
+            let s = as_str(&arg)?;
+            let (name, version) = parse_drv_name(s);
+            let mut result = IrAttrs::new();
+            result.insert("name".to_string(), IrValue::string(name));
+            result.insert("version".to_string(), IrValue::string(version));
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+
+        // ── slice 4: context (pure subset carries no context) ─────────────
+        B::HasContext => match &arg {
+            // A pure-subset string never carries context, so `hasContext` is
+            // always `false` (a store dep would need a derivation/store path,
+            // both absent here). Non-string is a type error, like the walker.
+            IrValue::Str(_) => Ok(IrValue::Bool(false)),
+            other => Err(IrEvalError::TypeError(format!(
+                "hasContext: expected string, got {}",
+                other.type_name()
+            ))),
+        },
+        B::GetContext => match &arg {
+            IrValue::Str(_) => Ok(IrValue::Attrs(Rc::new(IrAttrs::new()))),
+            other => Err(IrEvalError::TypeError(format!(
+                "getContext: expected string, got {}",
+                other.type_name()
+            ))),
+        },
+        B::UnsafeDiscardStringContext => match &arg {
+            // Context-free already — return the string unchanged (identity).
+            IrValue::Str(s) => Ok(IrValue::Str(s.clone())),
+            other => Err(IrEvalError::TypeError(format!(
+                "unsafeDiscardStringContext: expected string, got {}",
+                other.type_name()
+            ))),
+        },
+
+        // ── slice 4: paths (string ops) + search path ─────────────────────
+        B::BaseNameOf => match &arg {
+            IrValue::Str(s) => Ok(IrValue::string(base_name_of(s))),
+            IrValue::Path(p) => Ok(IrValue::string(base_name_of(p))),
+            other => Err(IrEvalError::TypeError(format!(
+                "baseNameOf: expected string or path, got {}",
+                other.type_name()
+            ))),
+        },
+        B::DirOf => match &arg {
+            IrValue::Str(s) => Ok(IrValue::string(dir_of(s))),
+            IrValue::Path(p) => Ok(IrValue::Path(Rc::new(dir_of(p)))),
+            other => Err(IrEvalError::TypeError(format!(
+                "dirOf: expected string or path, got {}",
+                other.type_name()
+            ))),
+        },
+        B::FindFile => find_file_impl(as_list(&captured[0])?, as_str(&arg)?),
+
+        // ── slice 4: convert ──────────────────────────────────────────────
+        B::ToJson => {
+            let json = ir_to_json(&arg)?;
+            let s = serde_json::to_string(&json).unwrap_or_else(|_| "null".to_string());
+            Ok(IrValue::string(s))
+        }
+        B::FromJson => {
+            let s = as_str(&arg)?;
+            let json: serde_json::Value = serde_json::from_str(s)
+                .map_err(|e| IrEvalError::TypeError(format!("fromJSON: {e}")))?;
+            Ok(json_to_ir(&json))
+        }
+        B::ToXml => Ok(IrValue::string(to_xml(&arg))),
     }
 }
 
@@ -911,4 +1397,434 @@ fn replace_strings_impl(from: &[String], to: &[String], subject: &str) -> String
         result.push_str(&to[empty_idx]);
     }
     result
+}
+
+// ── slice 4 helpers ───────────────────────────────────────────────────────
+
+/// The `{ success; value; }` attrset `tryEval` returns (BTreeMap key order
+/// is `success` < `value`, matching the walker's `NixAttrs` render order).
+fn try_eval_result(success: bool, value: IrValue) -> IrValue {
+    let mut result = IrAttrs::new();
+    result.insert("success".to_string(), IrValue::Bool(success));
+    result.insert("value".to_string(), value);
+    IrValue::Attrs(Rc::new(result))
+}
+
+/// Force to WHNF and require a number (the walker's `to_float`, used by
+/// `ceil`/`floor`). Args here arrive already WHNF-forced, so no thunk chase.
+fn to_float(v: &IrValue) -> Result<f64, IrEvalError> {
+    match v {
+        IrValue::Int(n) => Ok(*n as f64),
+        IrValue::Float(f) => Ok(*f),
+        other => Err(IrEvalError::TypeMismatch {
+            expected: "number",
+            got: other.type_name(),
+        }),
+    }
+}
+
+/// The walker's `register_numeric_binop!` shape for `add`/`sub`/`mul` —
+/// Int+Int / Float+Float / the two mixed Int↔Float cases; anything else is a
+/// type error. Uses plain arithmetic (no overflow trap), byte-mirroring the
+/// walker's `builtins.add` (distinct from the `+` OPERATOR, which DOES trap).
+fn numeric_binop(
+    a: &IrValue,
+    b: &IrValue,
+    int_op: fn(i64, i64) -> i64,
+    float_op: fn(f64, f64) -> f64,
+    name: &str,
+) -> Result<IrValue, IrEvalError> {
+    match (a, b) {
+        (IrValue::Int(x), IrValue::Int(y)) => Ok(IrValue::Int(int_op(*x, *y))),
+        (IrValue::Float(x), IrValue::Float(y)) => Ok(IrValue::Float(float_op(*x, *y))),
+        (IrValue::Int(x), IrValue::Float(y)) => Ok(IrValue::Float(float_op(*x as f64, *y))),
+        (IrValue::Float(x), IrValue::Int(y)) => Ok(IrValue::Float(float_op(*x, *y as f64))),
+        _ => Err(IrEvalError::TypeError(format!("{name}: expected numbers"))),
+    }
+}
+
+/// `builtins.div` — integer division traps on `/0`; float division is IEEE
+/// (inf/NaN), mirroring the walker.
+fn div_impl(a: &IrValue, b: &IrValue) -> Result<IrValue, IrEvalError> {
+    match (a, b) {
+        (IrValue::Int(x), IrValue::Int(y)) => {
+            if *y == 0 {
+                return Err(IrEvalError::DivisionByZero);
+            }
+            Ok(IrValue::Int(x / y))
+        }
+        (IrValue::Float(x), IrValue::Float(y)) => Ok(IrValue::Float(x / y)),
+        (IrValue::Int(x), IrValue::Float(y)) => Ok(IrValue::Float(*x as f64 / *y)),
+        (IrValue::Float(x), IrValue::Int(y)) => Ok(IrValue::Float(*x / *y as f64)),
+        _ => Err(IrEvalError::TypeError("div: expected numbers".to_string())),
+    }
+}
+
+/// `builtins.lessThan` — numeric (with Int↔Float cross-compare) + string
+/// (lexicographic), mirroring the walker.
+fn less_than(a: &IrValue, b: &IrValue) -> Result<IrValue, IrEvalError> {
+    let r = match (a, b) {
+        (IrValue::Int(x), IrValue::Int(y)) => x < y,
+        (IrValue::Float(x), IrValue::Float(y)) => x < y,
+        (IrValue::Int(x), IrValue::Float(y)) => (*x as f64) < *y,
+        (IrValue::Float(x), IrValue::Int(y)) => *x < (*y as f64),
+        (IrValue::Str(x), IrValue::Str(y)) => x < y,
+        _ => {
+            return Err(IrEvalError::TypeError(
+                "lessThan: expected comparable types".to_string(),
+            ))
+        }
+    };
+    Ok(IrValue::Bool(r))
+}
+
+/// `builtins.sort cmp list` — Rust's stable `sort_by` driven by the Nix
+/// comparator (`cmp a b` true ⇒ `a` before `b`), a captured comparator error
+/// propagated after the sort. Byte-mirrors the walker's `sort` exactly
+/// (same stable sort, same error-capture), so the oracle is the gate.
+fn sort_impl(cmp: &IrValue, arg: &IrValue) -> Result<IrValue, IrEvalError> {
+    let cmp = cmp.clone();
+    let mut list = as_list(arg)?.to_vec();
+    if list.len() <= 1 {
+        return Ok(IrValue::List(Rc::new(list)));
+    }
+    let mut err: Option<IrEvalError> = None;
+    list.sort_by(|a, b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        match apply(cmp.clone(), a.clone())
+            .and_then(|partial| apply(partial, b.clone()))
+            .and_then(|v| v.force())
+            .and_then(|v| {
+                v.as_bool().map_err(|_| {
+                    IrEvalError::TypeError("sort comparator must return bool".to_string())
+                })
+            }) {
+            Ok(true) => std::cmp::Ordering::Less,
+            Ok(false) => std::cmp::Ordering::Greater,
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    Ok(IrValue::List(Rc::new(list)))
+}
+
+/// `builtins.functionArgs` — for a lambda with a pattern param, `{ name =
+/// hasDefault; … }`; a simple `x:` param and any builtin yield `{ }`. Mirrors
+/// the walker's `misc::functionArgs`.
+fn function_args(v: &IrValue) -> Result<IrValue, IrEvalError> {
+    match v {
+        IrValue::Lambda(closure) => {
+            let mut result = IrAttrs::new();
+            if let crate::ir::Param::Pattern { entries, .. } = &closure.param {
+                for entry in entries {
+                    result.insert(
+                        sui_intern::resolve(entry.name),
+                        IrValue::Bool(entry.default.is_some()),
+                    );
+                }
+            }
+            Ok(IrValue::Attrs(Rc::new(result)))
+        }
+        IrValue::Builtin(..) => Ok(IrValue::Attrs(Rc::new(IrAttrs::new()))),
+        other => Err(IrEvalError::TypeError(format!(
+            "functionArgs: expected function, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `builtins.genericClosure { startSet; operator; }` — BFS from `startSet`,
+/// deduping by the `{ }`-Display of each item's `key`, applying `operator`
+/// to expand. Mirrors the walker's `misc::genericClosure` (same VecDeque
+/// work-list, same `format!("{}", key)` dedup via [`display_ir_value`]).
+fn generic_closure(arg: &IrValue) -> Result<IrValue, IrEvalError> {
+    use std::collections::{BTreeSet, VecDeque};
+    let input = as_attrs(arg)?;
+    let start = input
+        .get("startSet")
+        .ok_or_else(|| IrEvalError::AttrNotFound("startSet".to_string()))?
+        .force()?;
+    let start_set = as_list(&start)?.to_vec();
+    let operator = input
+        .get("operator")
+        .ok_or_else(|| IrEvalError::AttrNotFound("operator".to_string()))?
+        .clone();
+
+    let mut result: Vec<IrValue> = Vec::new();
+    let mut work_list: VecDeque<IrValue> = start_set.into();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+
+    while let Some(item) = work_list.pop_front() {
+        let item_forced = item.force()?;
+        let item_attrs = as_attrs(&item_forced)?;
+        let key_val = item_attrs
+            .get("key")
+            .ok_or_else(|| IrEvalError::AttrNotFound("key".to_string()))?
+            .clone();
+        let key_str = display_ir_value(&key_val.force()?);
+        if seen.contains(&key_str) {
+            continue;
+        }
+        seen.insert(key_str);
+        result.push(item.clone());
+        let new_items = apply(operator.clone(), item)?.force()?;
+        work_list.extend(as_list(&new_items)?.iter().cloned());
+    }
+    Ok(IrValue::List(Rc::new(result)))
+}
+
+/// The walker's `Value` `Display`, mirrored for the pure subset — the exact
+/// string form `genericClosure`'s dedup keys on (`format!("{}", value)`).
+fn display_ir_value(v: &IrValue) -> String {
+    match v {
+        IrValue::Null => "null".to_string(),
+        IrValue::Bool(b) => b.to_string(),
+        IrValue::Int(n) => n.to_string(),
+        IrValue::Float(f) => cppnix_format_float(*f),
+        IrValue::Str(s) => {
+            let mut out = String::from("\"");
+            out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
+            out.push('"');
+            out
+        }
+        IrValue::Path(p) => (**p).clone(),
+        IrValue::List(items) => {
+            let mut out = String::from("[ ");
+            for item in items.iter() {
+                out.push_str(&display_forced(item));
+                out.push(' ');
+            }
+            out.push(']');
+            out
+        }
+        IrValue::Attrs(attrs) => {
+            let mut out = String::from("{ ");
+            for (k, val) in attrs.iter() {
+                out.push_str(k);
+                out.push_str(" = ");
+                out.push_str(&display_forced(val));
+                out.push_str("; ");
+            }
+            out.push('}');
+            out
+        }
+        IrValue::Lambda(_) => "<<lambda>>".to_string(),
+        IrValue::Builtin(kind, captured) => {
+            let mut out = String::from("<<builtin ");
+            out.push_str(kind.display_name(captured.len()));
+            out.push_str(">>");
+            out
+        }
+        IrValue::Thunk(_) => display_forced(v),
+    }
+}
+
+/// Force `v` for `Display`, mirroring the walker's `Thunk` Display arm
+/// (`<<thunk:error>>` on a failed force).
+fn display_forced(v: &IrValue) -> String {
+    match v.force() {
+        Ok(f) => display_ir_value(&f),
+        Err(_) => "<<thunk:error>>".to_string(),
+    }
+}
+
+/// `builtins.match pattern s` — full-anchored (`^…$`) regex, returning the
+/// capture-group list on a full match or `null` otherwise. Mirrors the
+/// walker's `strings::match`.
+fn match_impl(pattern: &str, input: &str) -> Result<IrValue, IrEvalError> {
+    let anchored = format!("^{pattern}$");
+    let re = cached_regex(&anchored)?;
+    match re.captures(input) {
+        Some(caps) => {
+            let groups: Vec<IrValue> = (1..caps.len())
+                .map(|i| match caps.get(i) {
+                    Some(m) => IrValue::string(m.as_str().to_string()),
+                    None => IrValue::Null,
+                })
+                .collect();
+            Ok(IrValue::List(Rc::new(groups)))
+        }
+        None => Ok(IrValue::Null),
+    }
+}
+
+/// `builtins.findFile searchPath name` — walk `{ prefix; path; }` entries,
+/// return the first existing `path`+suffix as a `Path`, else a type error.
+/// Mirrors the walker's `misc::findFile`.
+fn find_file_impl(entries: &[IrValue], name: &str) -> Result<IrValue, IrEvalError> {
+    for entry in entries {
+        let forced = entry.force()?;
+        let attrs = as_attrs(&forced)?;
+        let prefix = force_str(
+            attrs
+                .get("prefix")
+                .ok_or_else(|| IrEvalError::AttrNotFound("prefix".to_string()))?,
+        )?;
+        let path = force_str(
+            attrs
+                .get("path")
+                .ok_or_else(|| IrEvalError::AttrNotFound("path".to_string()))?,
+        )?;
+        if name == prefix || name.starts_with(&format!("{prefix}/")) {
+            let suffix = if name == prefix {
+                String::new()
+            } else {
+                name[prefix.len()..].to_string()
+            };
+            let full_path = format!("{path}{suffix}");
+            if std::path::Path::new(&full_path).exists() {
+                return Ok(IrValue::Path(Rc::new(full_path)));
+            }
+        }
+    }
+    Err(IrEvalError::TypeError(format!(
+        "findFile: file '{name}' not found in search path"
+    )))
+}
+
+/// CppNix `baseNameOf`: strip trailing `/`, take the last component. Mirror
+/// of the walker's `paths::base_name_of`.
+fn base_name_of(s: &str) -> String {
+    let trimmed = s.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+}
+
+/// CppNix `dirOf`: everything up to the last `/` (root → `/`, no slash →
+/// `.`). Mirror of the walker's `dirOf` component logic.
+fn dir_of(s: &str) -> String {
+    match s.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => s[..i].to_string(),
+        None => ".".to_string(),
+    }
+}
+
+// ── toJSON / fromJSON (serde_json, mirroring the walker) ──────────────────
+
+/// Mirror of the walker's `Value::to_json_with_context` restricted to the
+/// pure subset: force each node, error on lambda/builtin, treat an attrset
+/// carrying `__toString`/`outPath` as its coerced string. A `Path` is a
+/// copy-to-store reach → a typed gap here.
+fn ir_to_json(v: &IrValue) -> Result<serde_json::Value, IrEvalError> {
+    let forced = v.force()?;
+    Ok(match &forced {
+        IrValue::Null => serde_json::Value::Null,
+        IrValue::Bool(b) => serde_json::Value::Bool(*b),
+        IrValue::Int(n) => serde_json::json!(*n),
+        IrValue::Float(f) => serde_json::json!(*f),
+        IrValue::Str(s) => serde_json::Value::String((**s).clone()),
+        IrValue::Path(_) => return Err(IrEvalError::Unsupported("path-copy-to-store")),
+        IrValue::List(items) => {
+            let mut arr = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                arr.push(ir_to_json(item)?);
+            }
+            serde_json::Value::Array(arr)
+        }
+        IrValue::Attrs(attrs) => {
+            if attrs.contains_key("__toString") || attrs.contains_key("outPath") {
+                return Ok(serde_json::Value::String(coerce_to_string_plain(&forced)?));
+            }
+            let mut map = serde_json::Map::new();
+            for (k, val) in attrs.iter() {
+                map.insert(k.clone(), ir_to_json(val)?);
+            }
+            serde_json::Value::Object(map)
+        }
+        IrValue::Lambda(_) | IrValue::Builtin(..) => {
+            return Err(IrEvalError::TypeError(format!(
+                "cannot serialize {} to JSON",
+                forced.type_name()
+            )));
+        }
+        IrValue::Thunk(_) => unreachable!("force() returned a thunk"),
+    })
+}
+
+/// Mirror of the walker's `From<&serde_json::Value> for Value`.
+fn json_to_ir(json: &serde_json::Value) -> IrValue {
+    match json {
+        serde_json::Value::Null => IrValue::Null,
+        serde_json::Value::Bool(b) => IrValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                IrValue::Int(i)
+            } else {
+                IrValue::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => IrValue::string(s.clone()),
+        serde_json::Value::Array(arr) => {
+            IrValue::List(Rc::new(arr.iter().map(json_to_ir).collect()))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut attrs = IrAttrs::new();
+            for (k, v) in obj {
+                attrs.insert(k.clone(), json_to_ir(v));
+            }
+            IrValue::Attrs(Rc::new(attrs))
+        }
+    }
+}
+
+// ── toXML (mirroring the walker's `convert::toXML` byte-for-byte) ─────────
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// One XML node — mirrors the walker's `value_to_xml`, which does NOT force
+/// nested values (a thunked list element renders `<thunk />`); the pure
+/// subset only ever calls this on a WHNF-forced scalar in practice.
+fn value_to_xml(v: &IrValue, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    match v {
+        IrValue::Null => format!("{pad}<null />"),
+        IrValue::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
+        IrValue::Int(n) => format!("{pad}<int value=\"{n}\" />"),
+        IrValue::Float(f) => format!("{pad}<float value=\"{f}\" />"),
+        IrValue::Str(s) => format!("{pad}<string value=\"{}\" />", xml_escape(s)),
+        IrValue::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
+        IrValue::List(items) => {
+            let mut out = format!("{pad}<list>\n");
+            for item in items.iter() {
+                out.push_str(&value_to_xml(item, indent + 2));
+                out.push('\n');
+            }
+            out.push_str(&format!("{pad}</list>"));
+            out
+        }
+        IrValue::Attrs(attrs) => {
+            let mut out = format!("{pad}<attrs>\n");
+            for (k, val) in attrs.iter() {
+                out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(k)));
+                out.push_str(&value_to_xml(val, indent + 4));
+                out.push('\n');
+                out.push_str(&format!("{pad}  </attr>\n"));
+            }
+            out.push_str(&format!("{pad}</attrs>"));
+            out
+        }
+        IrValue::Lambda(_) | IrValue::Builtin(..) => format!("{pad}<function />"),
+        IrValue::Thunk(_) => format!("{pad}<thunk />"),
+    }
+}
+
+/// `builtins.toXML` — the `<?xml …?>` prologue + the rendered tree, mirroring
+/// the walker's `toXML`.
+fn to_xml(v: &IrValue) -> String {
+    format!(
+        "<?xml version='1.0' encoding='utf-8'?>\n{}\n",
+        value_to_xml(v, 0)
+    )
 }
