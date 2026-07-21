@@ -171,6 +171,60 @@ SUI_EVAL_PERF=1 sui eval ...   # profiling (expression breakdown + thunk waste)
 SUI_VM_TRACE=1 sui eval ...    # VM diagnostics (fixpoint detection, condition errors)
 ```
 
+## ★★ THE INSTRUMENT RULE — before debugging sui, verify the instrument can say "no"
+
+**In this mission the blocker has repeatedly been the measuring instrument, not
+sui.** Counted from one 24-hour stretch (2026-07-20/21) alone:
+
+1. `parity.yml` set `SUI_PARITY_PUREONLY=1` unconditionally — a **total loss of
+   nixpkgs evaluation shipped as a green check** (35 regressions rewritten to
+   "skipped"). The year's darwin rows were recorded as matching while they were
+   live regressions.
+2. `coverage_at_100.rs` asserted `== 100%`, so grading a command honestly turned
+   CI red — `build --json` stayed "Working" while it discards every flag and
+   breaks `darwin-rebuild`. The only green moves were misgrade or delete.
+3. A catalog↔source invariant was **documented in two files and implemented in
+   neither** — no test read `main.rs` at all.
+4. `--show-trace` was declared and read by nothing; operator type errors carried
+   **no file** (every op routed through `op_type`, which never appended
+   `eval_file_ctx()`, and `NixTraceGuard::drop` empties the frame stack during
+   unwind). Four parallel investigations burned most of their budget on
+   localisation because the one flag whose job is localisation was inert.
+5. The stale-symbol guard for the ident-cache bug **existed** — on the wrong
+   side of the keyword check, and only on one of the two Ident arms. The
+   instrument-shaped fix was present and mis-plumbed.
+6. A 71-minute marquee eval died rc=137 with empty stdout/stderr — read exactly
+   like an OOM or evaluator crash; it was `teiki rust-cleanup` deleting
+   `target/` under a running binary (macOS SIGKILLs on text-file unlink).
+
+**The rule:** before attributing a failure to the evaluator — and before
+trusting a green — prove the instrument can represent the failure it exists to
+catch. Concretely:
+
+- **A gate must be shown to fire.** When adding/trusting any parity/coverage
+  gate, reintroduce a known-bad case and watch it go red *for the right
+  reason* (a syntax error in your probe also exits non-zero — read the output,
+  not the exit code).
+- **Reclassification is budgeted and attributed, never silent.** Any "skip"
+  path states whose fault it was and is capped (`PUREONLY_SUI_ERROR_BUDGET`).
+  An unexplained aggregate skip tally is how #1 hid.
+- **Honest grades must be legal moves.** A ratchet (raise the committed budget
+  in the same commit, reason in the diff) — never an `== 100%` equality.
+- **An advertised capability is tested or it does not exist.** A doc-comment
+  invariant with no test is #3; a CLI flag nothing reads is #4.
+- **rc=137 with no output is not evidence about sui.** Check the janitors
+  (`~/Library/Logs/rust-cleanup.log`) before profiling the evaluator; build
+  long-running binaries outside `target/` (`CARGO_TARGET_DIR`) — seibi's
+  `--min-age-hours` guard now defaults to 24h, but only on current builds.
+
+Same family as the fleet's false-green traps (`| tail` before an exit check,
+zsh `$pipestatus`, `grep -r` from the org root returning empty instead of
+erroring). **A tool whose failure mode is indistinguishable from success cannot
+verify anything** — and in a byte-parity project, the instruments ARE the
+product. Fixing the instruments first is what let a year-old eval blocker fall
+in hours: R1 un-blinded the gates, the gates localised the ident-cache bug, the
+fix took the corpus from 41/35-red to 77/77-green on darwin the same day.
+
 ## The sui rhythm — the empirical fix loop
 
 The cadence for any sui/nix divergence: **repro → oracle → instrument → pin →
