@@ -4460,6 +4460,7 @@ dependencies = [
  "sui-daemon",
  "sui-eval",
  "sui-intern",
+ "sui-ir",
  "sui-orchestrate",
  "sui-spec",
  "sui-store",

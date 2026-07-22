@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "d418e0e07104071b1e81b76b3efb618ea23e17f08605ef0f3fc3e6a947a6ddb7",
+  "cargo_lock_sha256": "732f16a5e138cceec4b97a6cd740f2d578b22ce617f82720373260159ded96f7",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -15604,6 +15604,16 @@
           {
             "name": "sui_intern",
             "package_key": "sui-intern-0.1.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_ir",
+            "package_key": "sui-ir-0.1.150",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

@@ -7,7 +7,11 @@
 
   outputs = { self, substrate, ... }:
     let
-      base = substrate.rust.workspace { src = ./.; member = "sui"; };
+      # The binary crate was renamed `sui` → `pleme-io-sui` (crates.io publish);
+      # its `[[bin]]` is still `sui`. mkRustToolFlake picks the spec member by
+      # CRATE name (`pleme-io-sui`) and derives the tool/overlay name from the
+      # crate's default_bin (`sui`), so the overlay stays `pkgs.sui`.
+      base = substrate.rust.workspace { src = ./.; member = "pleme-io-sui"; };
 
       # dockerImage-amd64 output for the fleet's `ghcr.io/pleme-io/sui` image
       # (image-release.yml + the super-cache-ci / camelot-builder / prewarmer /
@@ -28,7 +32,7 @@
         src = self;
         repo = "pleme-io/sui";
         genBuild = true;
-        packageName = "sui";
+        packageName = "pleme-io-sui";
         architectures = [ "amd64" ];
       };
 
