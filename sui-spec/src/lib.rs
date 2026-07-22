@@ -72,6 +72,7 @@ pub mod cli_coverage;
 pub mod coercion;
 pub mod derivation;
 pub mod dockerfile;
+pub mod eager_class;
 pub mod error;
 pub mod eval_cache;
 pub mod exec;

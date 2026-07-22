@@ -11,7 +11,7 @@
 //! the substrate composes.
 
 use sui_spec::{
-    activation_script, catalog, coercion, derivation, dockerfile, eval_cache, fetcher, flake, gc,
+    activation_script, catalog, coercion, derivation, dockerfile, eager_class, eval_cache, fetcher, flake, gc,
     hash, laziness, lock_file, module_system, nar, narinfo, perf, profile, realisation,
     registry, sandbox, store_layout, substituter, trust_model,
     worker_protocol, SpecError,
@@ -201,6 +201,7 @@ fn every_catalog_entry_has_a_loadable_module() {
             // an adversarial review pass calling out a "tests green" claim
             // that concealed it.
             "perf" => perf::load_canonical_levers().map(drop),
+            "eager_class" => eager_class::load_canonical().map(drop),
             other => panic!(
                 "catalog references unknown domain `{other}` — \
                  add a match arm in tests/substrate_invariants.rs::\

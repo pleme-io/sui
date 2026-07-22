@@ -45,6 +45,14 @@
   :cppnix-mirror      ""
   :depends-on         ("laziness"))
 
+(defsubstrate-domain
+  :name               "eager_class"
+  :authoring-keywords ("defeager-class")
+  :gate               Working
+  :purpose            "Parity-typed runtime-fluidity knob-space — a (defeager-class) declares a shape-class sui may force eagerly + the byte-safety technique of that reordering; the validate border REFUSES any knob whose technique isn't ByteSufficient in the perf ledger, so live eval-strategy steering can change how-fast but never the-bytes (the M7 fluidity beachhead)"
+  :cppnix-mirror      ""
+  :depends-on         ("perf" "laziness"))
+
 ;; ── M2: gated on module system implementation ────────────────────
 
 (defsubstrate-domain

@@ -151,13 +151,19 @@ fn every_lisp_spec_file_is_nonempty() {
 }
 
 #[test]
-fn cli_coverage_reports_one_hundred_percent() {
-    // Substrate-wide invariant — the gauge MUST be 100%.
-    // Pair with coverage_at_100.rs but expressed as a
-    // cross-domain check.
+fn cli_coverage_meets_the_honest_floor() {
+    // Cross-domain gauge check, paired with coverage_at_100.rs's ratchet. The old
+    // `== 100%` assertion here was the same inflation coverage_at_100.rs already
+    // retired: a hard 100% forces authors to label every command Working. After
+    // the 2026-07-22 M3b honesty demotion (10 NotImplemented stubs -> Stub, 2
+    // non-native commands -> Partial), truthful coverage is 65/77 = 84.4%. Assert
+    // the honest floor, not a false 100%; it ratchets back up as stubs get real.
     let pct = cli_coverage::replacement_percentage().unwrap();
-    assert!((pct - 1.0).abs() < f64::EPSILON,
-        "nix-replacement coverage regressed: {:.1}%", pct * 100.0);
+    assert!(
+        pct >= 0.84 - f64::EPSILON,
+        "nix-replacement coverage regressed below the honest floor (84%): {:.1}%",
+        pct * 100.0
+    );
 }
 
 #[test]
