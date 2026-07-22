@@ -61,9 +61,9 @@
 (defsui-command
   :name "collect-garbage"
   :nix-equivalent "nix-collect-garbage"
-  :maturity Working
+  :maturity Partial
   :substrate ("gc")
-  :notes "Wired: translates -d / --delete-older-than into substrate gc call hints")
+  :notes "Partial: parses -d / --delete-older-than but only PRINTS a hint pointing at `sui store gc` — does not itself collect. Gap: wire the top-level alias to invoke the substrate gc directly.")
 
 (defsui-command
   :name "show-config"
@@ -124,9 +124,9 @@
 (defsui-command
   :name "search"
   :nix-equivalent "nix search"
-  :maturity Working
+  :maturity Partial
   :substrate ("flake")
-  :notes "Wired via nix flake show --json + recursive attr walker (matches name + description)")
+  :notes "Partial: SHELLS OUT to `nix flake show --json` (subprocess), then walks the JSON. Works, but delegates to nix rather than a native sui flake-show — not a native replacement. Gap: drive the search off sui's own flake-show bridge.")
 
 (defsui-command
   :name "doctor"

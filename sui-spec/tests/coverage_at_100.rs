@@ -45,14 +45,17 @@ use sui_spec::cli_coverage::{self, SuiCommandMaturity};
 // src/main.rs). They are now `Stub` (their honest maturity), so the catalog stops
 // over-reporting. Recording a real gap is the ratchet working as intended; LOWER
 // this again as each stub becomes a real handler.
-const MAX_NON_WORKING: usize = 10;
+// 10 -> 12: also demoted collect-garbage + search to `Partial` — collect-garbage
+// only prints a `sui store gc` hint (doesn't collect), and search shells out to
+// `nix flake show` (not a native replacement). Both verified against src/main.rs.
+const MAX_NON_WORKING: usize = 12;
 
 /// The committed floor on replacement coverage.
 // Lowered 1.0 -> 0.87 (2026-07-22, same honest demotion): true coverage is now
 // 67 Working / 77 non-SuiNative = 87.0%, not 100%. This is not a regression in
 // sui's behavior — it is the coverage NUMBER becoming truthful. Raise it back
 // toward 1.0 as the ten demoted stubs get real implementations.
-const MIN_REPLACEMENT_PCT: f64 = 0.87;
+const MIN_REPLACEMENT_PCT: f64 = 0.84;
 
 /// The GAP maturities — the three that mean "sui does not do this yet".
 ///
@@ -121,7 +124,7 @@ fn working_command_count_is_stable_or_growing() {
     // becoming honest, not sui regressing; the floor RATCHETS BACK UP as each
     // demoted stub gets a real handler.
     assert!(
-        working >= 67,
-        "working command count regressed: now {working} (floor 67)",
+        working >= 65,
+        "working command count regressed: now {working} (floor 65)",
     );
 }
