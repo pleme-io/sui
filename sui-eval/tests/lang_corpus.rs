@@ -100,6 +100,17 @@ fn sui_matches_expected_output() {
         fixtures.len() - failures.len(),
         fixtures.len()
     );
+    // Diagnostic (env-gated, harmless): dump every failing fixture's stem to a
+    // file so corpus-expansion work can bucket sui-pass vs sui-gap in one run
+    // (the panic below only shows the first 5). Set SUI_LANG_DUMP=<path>.
+    if let Some(dump) = std::env::var_os("SUI_LANG_DUMP") {
+        let list: String = failures
+            .iter()
+            .map(|(p, _)| p.file_stem().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(std::path::Path::new(&dump), list).ok();
+    }
     if !failures.is_empty() {
         let summary: String = failures
             .iter()

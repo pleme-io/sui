@@ -48,7 +48,7 @@ pub mod flake {
 }
 
 /// Evaluate a Nix expression string (convenience re-export).
-pub use eval::eval;
+pub use eval::{eval, eval_with_file};
 /// Re-exported for ergonomic access from dependent crates.
 pub use value::{EvalError, Value};
 

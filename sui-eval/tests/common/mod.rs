@@ -231,12 +231,19 @@ pub fn sui_eval_json(expr: &str) -> serde_json::Value {
 }
 
 /// Evaluate a `.nix` file with sui's tree-walking evaluator and return JSON.
+///
+/// Evaluates WITH the file path (`eval_with_file`), not the bare source, so a
+/// fixture's relative `import ./lib.nix` resolves against the fixture's own
+/// directory — exactly as `nix-instantiate <file>` does. The vendored CppNix
+/// corpus shares support files (`lib.nix`, `imported.nix`, `imported2.nix`) that
+/// many `eval-okay-*` fixtures import; without the path, every one of those
+/// failed with "No such file" regardless of sui's actual language coverage.
 pub fn sui_eval_json_file(path: &Path) -> serde_json::Value {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return error_json(format!("read {}: {e}", path.display())),
     };
-    match sui_eval::eval(&source) {
+    match sui_eval::eval_with_file(&source, Some(path.to_path_buf())) {
         Ok(v) => v.to_json(),
         Err(e) => error_json(format!("{e}")),
     }
