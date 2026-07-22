@@ -423,3 +423,78 @@ is the mission's foundation. The safe LOW-risk correctness headroom was fully wo
 session (R3–R6 + the re-bucket); what remains is the deep climb, and it now rests on a
 2.58×-proven lever, an 85%-tested surface, and three no-regression ratchets — real ground,
 not hope.
+
+---
+
+## §8 — The correctness boundary + the honest dark-side lane
+
+*The frame that unblocks aggressive perf work (2026-07-22, operator direction: "be
+very clear about what is in and outside this correctness boundary so we can maximize
+our experimentation within it… we can go to the dark side, we just need to be honest
+about it").*
+
+Perf work was stalling on a false binary — "either prove a change byte-safe across all
+of nixpkgs, or don't touch the evaluator." That paralysis is wrong. The right model is
+a **boundary** with two lanes, and honesty is the price of the fast lane.
+
+### THE BOUNDARY = byte-parity with cppnix
+
+A change is **inside** the boundary iff it keeps the byte-parity gates green:
+`sui parity` (the 77-row corpus) + the lang corpus (116 eval-okay fixtures) + the
+`build-parity` NAR check. The *complete* boundary is the **whole-closure differential**
+(every drv in a real closure byte-diffed) — which does not exist yet (M2) and cannot
+run at cid scale (U10 memory wall). So today the boundary is **partially observable**:
+the gates prove no regression on ~1% of the surface, not the whole. State that tier
+honestly on every change.
+
+### INSIDE — experiment freely (the default engine)
+
+The tree-walker (`sui_eval::eval`, `--no-vm`) is the sanctioned default. Any change to
+it — a builtin, a lowering, an allocation strategy — is **free to make** as long as the
+gates stay green; the byte-parity ratchet catches a regression the moment it appears.
+This session's R3–R6 + the deepSeq/import fixes are all inside-the-boundary work: real
+evaluator changes, gate-verified. **Maximize experimentation here** — it is safe by
+construction (the gate is the seatbelt).
+
+### THE DARK SIDE — honest experimental lane (opt-in, non-default, tier-labeled)
+
+Aggressive perf ideas whose byte-safety is NOT yet proven across the surface live here.
+The rules that make the dark side legitimate rather than reckless:
+
+1. **Never the default.** The byte-verified tree-walker stays the shipping engine; the
+   default path's byte-parity is never at risk.
+2. **Opt-in + labeled.** Reachable only via an explicit experimental flag / env, named
+   and documented as "experimental — NOT byte-proven; may diverge on the unsupported
+   surface." A user opts in knowingly.
+3. **Honest tier, never rounded up.** The `perf.rs`/`nix_surface` never-round-up
+   discipline applies: an experimental engine is `Enumerated`/`Design`, never
+   `ParityWired`, until its byte-parity is *proven* (not sampled).
+4. **A safety valve exists.** Where feasible, an experimental fast path offers a
+   `verify` mode (run both engines, compare, use the fast result only on match) — so a
+   correctness-sensitive caller can trade the speedup for a guarantee.
+5. **Promotion is earned.** A dark-side lever graduates to the default (crosses INTO the
+   boundary) ONLY when its byte-parity is proven across the surface — i.e., M1 (full
+   eval_ir byte-parity) + the M2 whole-closure differential. Until then it stays opt-in.
+
+**Current dark-side residents:** `eval_ir` (measured **2.58× faster**, byte-proven only
+through `bootstrap-stage-xgcc-stdenv`, diverges beyond — the M5 flip is its promotion,
+gated on M1); and **arena allocation** (the perf frontier below).
+
+### The perf frontier: arena allocation (the honest next dark-side experiment)
+
+The dhat profile fingered the cost: the top churn is `im_rc HAMT make_mut`
+(env COW-per-bind) + `RcInner<ThunkInner>` (per-thunk `Rc` allocation) — **per-binding
+allocation churn**, not compute. That is exactly what a **bump/arena allocator** kills:
+allocate env frames / thunks / values into an arena, eliminating the per-alloc `Rc`
+overhead and the HAMT copy-on-write. It is a "dark side" experiment because arena
+lifetimes change the value/env representation (byte-risky until proven), so it runs
+opt-in + measured + honestly-labeled per the rules above — then promotes when the gates
+prove it byte-neutral. This is the lever to chase for the shipping-evaluator speedup the
+7×-vs-nix gap needs, alongside the eval_ir/M5 path (they compose: the IR removes the
+rowan re-walk, the arena removes the alloc churn).
+
+**The payoff of the boundary:** perf experimentation stops being paralyzed. Inside, we
+iterate freely under the gate. On the dark side, we chase arena + eval_ir hard, honestly
+labeled, measured — and promote only what proves byte-neutral. Both lanes advance; the
+default never regresses. That is how "shoot into the stratosphere" happens without ever
+betraying byte-parity.
