@@ -51,6 +51,63 @@ Both levers are **byte-RISKY**: they change *how* values are produced, and Nix's
 - Promotion to default is gated on **byte-parity** — a whole-corpus differential vs the tree-walker oracle (`sui parity` + the lang corpus + build-parity), never on a spot check.
 - Never a silent wrong answer: on any divergence the experiment stays non-default and the divergence is a red gate to root-cause.
 
+## Prior-art reconciliation — what's already ruled out (do NOT re-tread)
+
+`docs/ENV-RESOLVE-DESIGN.md` (2026-07-18, measured) already attacked this exact
+env cost and settled the space. The profile above AGREES with it; combined, they
+sharpen the honest lever set:
+
+- **`sui-resolve` M0 (parse-time `Resolution{Lexical{sym}|Dynamic}` side-table)** —
+  SHIPPED behind `SUI_RESOLVE=1`, byte-parity-proven both flag states. But
+  re-intern elision alone = **NULL** on fib. It's the *foundation*, not a win.
+- **Positional-frame overlay M1** — coupling proven airtight (the #1 risk RETIRED),
+  but **NET-NEGATIVE** (+7% fib, +32–39% call-heavy `list_map`/`foldl`) because
+  per-call frame *allocation* (`Rc<[RefCell]>` alloc + fill) costs more than the
+  interned-`Symbol(u32)` HAMT probe it removes. **NOT committed.** ⇒ the lever is
+  **allocation, not lookup**.
+- **M2 space collapsed:** cppnix frames are cheap only via *tracing GC* (bump-alloc +
+  wholesale collect + transparent capture); sui's Rc can't copy it. A whole-eval
+  bumpalo arena **memory-regresses** nixpkgs (no GC to reclaim) — trading a time
+  regression for a memory one, which never-regress forbids. Inline/SmallVec frames
+  heap-promote on the ~100% capture escape on fib. Redundant-store-skip already
+  landed (57da0d79). **The ~9× deep-recursion gap is substantially the PRICE of
+  sui's persistent-lazy, GC-free design** — a correct trade (sui wins 1.7–22× on
+  alloc-bound shapes).
+
+### The one open, sound, measure-first survivor
+
+**A slab/pool allocator for the hot Rc-allocated types** (`Rc<ThunkInner>` per
+non-constant arg is the most-allocated; then `Rc<EnvInner>`, then `im_rc` HAMT
+branch nodes): allocate `RcInner<T>` from a freelist instead of `malloc`, but keep
+Rc's refcount driving reclamation (freed back to the pool on drop, **not** leaked
+like a bump-arena). This is the one path `ENV-RESOLVE-DESIGN.md §6c` left open:
+*"slab/pool frames (the only sound representation swap) — measure-first."*
+
+Crucially, this is a **`ReprSwap`-class** change (storage representation, no
+observable change) ⇒ `ProofTier::ByteSufficient` ⇒ **byte-safe by construction**,
+NOT byte-risky. Its only risk is *perf* (could regress like the bump-arena's memory
+did), so it is measure-first per never-ship-a-regression — never default until a
+proven net-positive with NO memory regression on both alloc-bound AND
+deep-recursion shapes. It attacks the **23.8% allocator + 5.8% Rc-`drop_slow`**
+buckets directly, at their root, without touching semantics.
+
+### The clean split the dark-side vocabulary must encode
+
+The operator's "dark side / arena work" intuition splits into two typed axes:
+
+1. **byte-SAFE, perf-risky (`ReprSwap`/`ByteSufficient`)** — the pooled/slab
+   allocator (Track 1). Correctness is free; the gate is a measured no-regression
+   win. This is the untried survivor.
+2. **byte-RISKY (the true dark side — `ForceOrderChange`/`ResolutionChange`, or a
+   whole alternate engine)** — `eval_ir` promoted from "wired into nothing" to an
+   opt-in engine (Track 2): attacks the **18.6% rowan re-walk**, measured **2.58×**
+   byte-identical on pure workloads, needs a **whole-corpus byte-parity differential**
+   before it can ever be default. This is where "full throttle" has the most headroom.
+
+Both tracks are honestly captured by making **byte-risk tier a first-class typed
+field** on each optimization row (the `/vocabularify` deliverable), so an unproven
+lever cannot claim "promoted" and a byte-risky lever cannot claim `ByteSufficient`.
+
 ## Raw artifact
 
 `scratchpad/sui-envchurn.sample` (643 KB, full call graph + leaf leaderboard).
