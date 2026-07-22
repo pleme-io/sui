@@ -3,6 +3,16 @@ name: auto-release
 on:
   push:
     branches: [main]
+  schedule:
+    # Drip tick. rust-auto-release.yml routes a scheduled run to its publish-only
+    # `drip` job (no bump, no tag, idempotent — skips already-published members).
+    # It drains crates.io's new-crate throttle (burst of 5, then 1 per ~10 min)
+    # one member per tick until every workspace crate is on the registry, then
+    # no-ops. WITHOUT this, a bootstrap of >5 new crate names orphans the
+    # throttled remainder: the push run rides refills for 30 min, defers the rest
+    # "to the next cron tick" (a GREEN state), and — with no cron wired — nothing
+    # ever finishes them (sui-eval/sui-ir/sui-bytecode stalled this way 2026-07-21).
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       bump-type:
