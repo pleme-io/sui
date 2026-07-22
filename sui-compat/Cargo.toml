@@ -30,3 +30,6 @@ harness = false
 [[bench]]
 name = "nar"
 harness = false
+
+[lints]
+workspace = true

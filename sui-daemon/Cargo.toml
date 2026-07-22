@@ -45,3 +45,6 @@ sui-daemon-client.workspace = true
 pretty_assertions.workspace = true
 # store-add-path wire test recomputes the sealed store-path fingerprint.
 sha2.workspace = true
+
+[lints]
+workspace = true

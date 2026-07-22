@@ -119,6 +119,15 @@ rust-version = "1.89.0"
 license = "MIT"
 repository = "https://github.com/pleme-io/sui"
 
+# Fleet-standard lint posture, hoisted to the workspace so every member inherits
+# one uniform clippy stance via `[lints] workspace = true`. warn-level (never a
+# hard build break) matching the sui convention already in ~20 members; this
+# closes the 7 previously-unlinted crates (sui-eval 34.5k LoC the largest). The
+# per-crate `[lints.clippy] pedantic = "warn"` blocks can consolidate onto this
+# in a follow-up (solve-once).
+[workspace.lints.clippy]
+pedantic = "warn"
+
 [workspace.dependencies]
 # pleme-io gen — the canonical typed Nix-expression AST (theory/NIX-AST.md).
 # Used by the parity corpus to build eval-surface shapes typed + render them to

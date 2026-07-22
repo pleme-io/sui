@@ -78,3 +78,6 @@ harness = false
 [[test]]
 name = "oracle"
 path = "tests/oracle.rs"
+
+[lints]
+workspace = true
