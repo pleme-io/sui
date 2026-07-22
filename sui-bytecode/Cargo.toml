@@ -20,7 +20,17 @@ sui-spec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-sui-eval.workspace = true
+# PATH-ONLY (no version) on purpose: this breaks a PUBLISH-TIME CYCLE. sui-eval
+# depends on sui-bytecode (normal), and sui-bytecode's tests use sui-eval as the
+# semantic oracle. A *versioned* dev-dep here (`sui-eval.workspace = true`) makes
+# `cargo publish` of sui-bytecode demand sui-eval already be on crates.io — which
+# it can't be, because sui-eval needs sui-bytecode first. Deadlock: the whole
+# sui-bytecode→sui-eval→sui-daemon→… subgraph never publishes (the drip aborts
+# "no progress; circular dep", 2026-07-22). cargo STRIPS a path-only (versionless)
+# dev-dep on publish, so sui-bytecode publishes without referencing sui-eval,
+# then sui-eval publishes, then the rest. Local builds/tests still resolve it by
+# path. Do NOT restore `.workspace = true` here.
+sui-eval = { path = "../sui-eval" }
 pretty_assertions.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
