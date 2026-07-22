@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 85beee08332088169060507d38e80dbb443f7b1d819441483db3c3f93a64f02d # shrinks to gen_expr = Inherited { from: Some(Int(0)), names: ["b"], body_key: "b" }

@@ -1381,7 +1381,22 @@ mod generated {
                     for name in names {
                         write!(f, " {name}")?;
                     }
-                    write!(f, "; {body_key} = 1; }}")
+                    // Emit the direct `body_key = 1;` binding ONLY when it does not
+                    // collide with an inherited name. `{ inherit (x) b; b = 1; }` is
+                    // a DUPLICATE-attribute error in real nix ("attribute 'b' already
+                    // defined") — malformed source a VALID-nix parity differential
+                    // must not generate. When body_key is inherited the body reads the
+                    // inherited value; otherwise the direct binding provides it. (Known
+                    // gap, documented not hidden: on that malformed duplicate input
+                    // eval_ir is LENIENT — it drops the unforced `InheritSelect` thunk
+                    // and yields a value where nix AND the tree-walker error — an
+                    // eval_ir gap on malformed-only input, distinct from valid-surface
+                    // parity and out of scope for this gate.)
+                    if names.contains(body_key) {
+                        write!(f, "; }}")
+                    } else {
+                        write!(f, "; {body_key} = 1; }}")
+                    }
                 }
                 G::Builtin1(name, arg) => write!(f, "(builtins.{name} ({arg}))"),
                 G::Builtin2(name, a, b) => write!(f, "(builtins.{name} ({a}) ({b}))"),
