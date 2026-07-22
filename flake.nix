@@ -13,6 +13,22 @@
       # crate's default_bin (`sui`), so the overlay stays `pkgs.sui`.
       base = substrate.rust.workspace { src = ./.; member = "pleme-io-sui"; };
 
+      # sui-dockerfile-wrapper's flake_metadata.default_bin is `gha-entrypoint`
+      # (its one [[bin]], src/bin/gha-entrypoint.rs) — pass `toolName`
+      # explicitly so the exposed package attribute reads as the crate name,
+      # not the binary name (consumers run
+      # `nix profile install github:pleme-io/sui#sui-dockerfile-wrapper`,
+      # never `#gha-entrypoint`). Same `rust.workspace` shape as `base` above,
+      # just a different `member`. First consumer:
+      # pleme-io/actions/sui-dockerfile-node-cache (replaces its
+      # `cargo install --locked sui-dockerfile-wrapper` runtime-install step —
+      # fleet rule: no CI action installs a binary imperatively at job time).
+      dockerfileWrapper = substrate.rust.workspace {
+        src = ./.;
+        member = "sui-dockerfile-wrapper";
+        toolName = "sui-dockerfile-wrapper";
+      };
+
       # dockerImage-amd64 output for the fleet's `ghcr.io/pleme-io/sui` image
       # (image-release.yml + the super-cache-ci / camelot-builder / prewarmer /
       # node-cache charts consume it). The substrate `rust` dispatcher exposes
@@ -46,9 +62,22 @@
         })
         (base.packages or { })
         (builtins.attrNames imageFlake.packages);
+
+      # Same fold technique, second pass: fold in sui-dockerfile-wrapper's
+      # packages (all 4 default systems — it's a plain `rust.workspace` tool,
+      # not an image build restricted to amd64) without clobbering what's
+      # already in mergedPackages.
+      mergedPackagesWithWrapper = builtins.foldl'
+        (acc: sys: acc // {
+          ${sys} = (acc.${sys} or { }) // {
+            inherit (dockerfileWrapper.packages.${sys}) sui-dockerfile-wrapper;
+          };
+        })
+        mergedPackages
+        (builtins.attrNames dockerfileWrapper.packages);
     in
     base // {
-      packages = mergedPackages;
+      packages = mergedPackagesWithWrapper;
 
       # Re-attached after the bare substrate.rust.workspace migration (b1b9e09)
       # dropped the module trio. `overlays.default` + `packages` are still auto-emitted
