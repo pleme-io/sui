@@ -381,3 +381,45 @@ A new `Surface` variant with no arm does not COMPILE; a dropped row fails the as
 7. **The numbers, un-rounded.** S1 is 64% corpus (88/137) and ~74% builtins implemented (~89/120), with per-builtin parity FAR thinner (~100 builtins zero dedicated evidence). At M0 most `BuiltinCase` rows will honestly be `SmokeProbe`/`NoEvidence`, NOT `LiveParity`. **Do not round any of this up to "the language is covered."**
 
 The matrix makes the gap visible, tier-labelled, and un-round-up-able. It does not close it. Closing it is the M0..M6 path — and each closed row is real ground.
+---
+
+## §7 — Session progress ledger + risk-tiered backlog (2026-07-22)
+
+**Done this session (all byte-parity-gated, verified, committed — real ground):**
+
+- **S1 language corpus 25 → 116 passing** (85% of the JSON-evaluable CppNix eval-okay
+  surface), 21 honest known_broken gaps. Via: the deepSeq cyclic-hang seen-set fix; the
+  import-resolution cascade (vendored support files + eval-with-file-path, +15); a
+  fan-out diagnosis that caught a **bucketing-tool `#`-split bug falsely parking 17
+  fixtures** (re-bucketed against the real gate); and four root-cause evaluator fixes —
+  **R4** (the `eval_apply`↔`apply_inner` lazy-arg inconsistency, a whole class:
+  seq/deepSeq/addErrorContext/foldl' now correctly lazy), **R5** (baseNameOf one-slash),
+  **R6** (lessThan lexicographic list comparison), **R3** (static-duplicate attrset-merge).
+- **Perf: the M5 lever is measured, not assumed** — `perf_ir_vs_tree.rs` shows eval_ir
+  **geomean 2.58× faster than the tree-walker, byte-identical**; the honest sui-vs-nix gap
+  is **~7× user-CPU** (a false "1.4× faster" wall claim corrected); the perf ratchet's
+  **load-robust measurement protocol** (user-CPU, not wall) is established.
+- **Clarity/fluidity/vocabulary:** `[workspace.lints]` hoisted; CLI coverage made honest
+  (100%→84.4%); `eager_class` (parity-typed knob + border) + `nix_surface` (the typed
+  use-case board) shipped as TYPED-SPEC domains 38 + 39.
+
+**Remaining backlog, risk-tiered (why each is sequenced, not rushed):**
+
+| Item | What | Risk / why sequenced |
+|---|---|---|
+| **R2 `__overrides`** | rec-attrset override feature (attrs6, overrides) | **byte-critical** — lives in the Promise/Blackhole rec-fixpoint (self-refs must see overrides); regressions surface only in the full nixpkgs parity corpus, not the lang gate. Fresh focus + full-corpus gate. |
+| **path-literal-relative-to-file** | `./x` resolves vs CWD, not the eval-file (readDir/readFileType/hashfile/symlink) | **byte-adjacent** (path→store-path→drv-hash). Harness or eval fix; §known_broken README has the two options. |
+| **readFileType / hashfile / convertHash** | pure-logic builtin fixes | gated on the path-literal fix (readFileType/hashfile) or a test-data re-vendor (convertHash). LOW risk once unblocked. |
+| **real-FS / newer-nix** (readDir-symlinked, path, context-introspection) | need real FS trees / derivation-parity | out-of-scope for an evaluator fix; test-data or gated on derivation parity. |
+| **M1 — materialized-attrset partial** | the deep-fixpoint edge-preservation keystone | **byte-critical, "larger architectural change"** — one fix, three axes (eval-surface + eval_ir + overlay-fixpoint). The precondition for M5. |
+| **M5 — flip eval_ir to default** | apply the proven 2.58× lever | **byte-critical multi-session** — cannot be applied safely until M1 (full byte-parity through eval_ir); a partial flip silently diverges on the unsupported surface, which the "no silent wrong answers" discipline forbids. |
+| **M2 / M6 / M4** | whole-closure differential · config parser · U-perf typed matrix | real builds, sequenced; §5 has the plan. |
+| **live tatara-fluidity wiring** | `eager_class` knob → sui-daemon ConfigStore hot-reload → live eval | byte-adjacent hot-path; the border ships, the wiring is sequenced. |
+
+**The discipline that governs the backlog:** every remaining item is either byte-critical
+(rec-fixpoint, IR flip, path resolution) or a real multi-step build — none is safely
+closeable in a single fatigued session-tail without risking the byte-parity ratchet that
+is the mission's foundation. The safe LOW-risk correctness headroom was fully worked this
+session (R3–R6 + the re-bucket); what remains is the deep climb, and it now rests on a
+2.58×-proven lever, an 85%-tested surface, and three no-regression ratchets — real ground,
+not hope.
