@@ -2672,6 +2672,22 @@ impl Env {
         Rc::make_mut(&mut self.0).bindings.insert(intern(&name), value);
     }
 
+    /// Bind many names in ONE copy-on-write step: a single `Rc::make_mut` on the
+    /// inner env, then N inserts on the owned map — instead of N successive
+    /// `bind()` calls each re-borrowing + re-`make_mut`-ing `self.0`.
+    ///
+    /// Byte-identical to calling [`bind`](Self::bind) once per pair in the same
+    /// order (same `intern`, same insert sequence, same final HAMT) — a byte-SAFE
+    /// `RedundantWrite`-class optimization: it removes intermediate re-borrows,
+    /// not any observable value. Consumed by pattern-lambda binding (`bind_param`),
+    /// where an N-formal pattern otherwise pays N `make_mut` refcount checks.
+    pub fn bind_many(&mut self, pairs: impl IntoIterator<Item = (String, Value)>) {
+        let inner = Rc::make_mut(&mut self.0);
+        for (name, value) in pairs {
+            inner.bindings.insert(intern(&name), value);
+        }
+    }
+
     /// Get the eval_file for this environment.
     #[must_use]
     pub fn eval_file(&self) -> Option<&std::path::PathBuf> {

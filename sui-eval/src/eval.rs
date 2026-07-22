@@ -3340,6 +3340,18 @@ fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
     }
 }
 
+/// Dark-side lever `batch-bind` (byte-SAFE, `RedundantWrite`) — OFF by default.
+/// When `SUI_BATCH_BIND=1`, an N-formal pattern binds in ONE copy-on-write step
+/// (`Env::bind_many`) instead of N successive `env.bind()` calls. Byte-identical
+/// either way (same intern, same insert order, same final HAMT — Phase 2's
+/// `update_env` makes each default thunk's initial env capture unobservable).
+/// Gated because the extra `Vec` allocation could regress the common small-pattern
+/// case, and the win is unmeasured under load — never change the default path on a
+/// hunch (never-ship-a-regression). Cached so the default path pays zero per call.
+/// Ledger: `sui-spec/specs/darkside.lisp` (`batch-bind`, DarkGated).
+static SUI_BATCH_BIND: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("SUI_BATCH_BIND").is_some());
+
 fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), EvalError> {
     match param {
         ast::Param::IdentParam(ip) => {
@@ -3370,6 +3382,18 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
             //   (which now has ALL formals bound). This allows defaults
             //   to reference any other formal — including forward refs.
             let mut default_thunks: Vec<Thunk> = Vec::new();
+            // batch-bind (byte-SAFE `RedundantWrite`, OFF unless `SUI_BATCH_BIND=1`):
+            // the flag path collects every formal's (name, value) pair and binds
+            // them in ONE copy-on-write step (`bind_many`) instead of N successive
+            // `env.bind()` calls. Byte-identical either way — the default thunks
+            // capture `env.clone()` (pre-batch) and Phase 2's `update_env` re-points
+            // every one to the final all-formals-bound env, so a thunk's *initial*
+            // capture is unobservable (overwritten before any force); same intern,
+            // same insert order, same final HAMT. The default path (flag unset) is
+            // the original per-formal loop, byte- AND perf-identical (no Vec alloc).
+            let use_batch = *SUI_BATCH_BIND;
+            let mut pairs: Vec<(String, Value)> =
+                if use_batch { Vec::with_capacity(entries.len()) } else { Vec::new() };
 
             for entry in &entries {
                 let ident = entry.ident().ok_or_else(|| {
@@ -3395,7 +3419,14 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                         format!("missing argument '{name}'{}", eval_file_ctx()),
                     ));
                 };
-                env.bind(name, value);
+                if use_batch {
+                    pairs.push((name, value));
+                } else {
+                    env.bind(name, value);
+                }
+            }
+            if use_batch {
+                env.bind_many(pairs);
             }
 
             // Phase 2: Update default thunks to see ALL formals.

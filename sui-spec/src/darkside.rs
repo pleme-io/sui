@@ -192,14 +192,17 @@ impl DarkSideLever {
         if self.byte_risk == ByteRisk::ByteRisky && self.gate == GatingMethod::SingleByteCheck {
             return Some(DarkHonesty::RiskyGatedBySingleCheck);
         }
-        if self.status == PromotionStatus::Promoted {
-            if self.byte_risk == ByteRisk::ByteRisky
-                && self.gate != GatingMethod::DifferentialOracle
-            {
-                return Some(DarkHonesty::RiskyPromotedWithoutDifferential);
-            }
+        // The Promoted (default-on) evidence — a Verified-grade differential gate,
+        // a named runaway backstop, a named residual ceiling — is required ONLY of a
+        // byte-RISKY lever. A byte-SAFE promotion is observable-equivalent BY
+        // CONSTRUCTION (proven once by a byte-check), so it carries no residual risk
+        // and needs no backstop/ceiling.
+        if self.status == PromotionStatus::Promoted && self.byte_risk == ByteRisk::ByteRisky {
             if self.gate == GatingMethod::Metamorphic {
                 return Some(DarkHonesty::PromotedOnWeakGate);
+            }
+            if self.gate != GatingMethod::DifferentialOracle {
+                return Some(DarkHonesty::RiskyPromotedWithoutDifferential);
             }
             if self.backstop.trim().is_empty() {
                 return Some(DarkHonesty::PromotedWithoutBackstop);
@@ -339,6 +342,18 @@ mod tests {
         l.backstop = "ir-fallback-to-walker".into();
         l.ceiling = Ceiling::PartialCorpus;
         assert!(l.is_honest(), "{:?}", l.honesty_violation());
+    }
+
+    #[test]
+    fn a_bytesafe_promotion_needs_no_backstop_or_ceiling() {
+        // A byte-SAFE change shipped as default is observable-equivalent by
+        // construction — it carries no residual risk, so no backstop/ceiling.
+        let mut l = lever(PerturbationAxis::RedundantWrite, ByteRisk::ByteSafe, Technique::SkipRedundantStore);
+        l.status = PromotionStatus::Promoted;
+        l.gate = GatingMethod::SingleByteCheck;
+        l.backstop = String::new();
+        l.ceiling = Ceiling::NotApplicable;
+        assert!(l.is_honest(), "byte-safe promotion should be honest: {:?}", l.honesty_violation());
     }
 
     #[test]
