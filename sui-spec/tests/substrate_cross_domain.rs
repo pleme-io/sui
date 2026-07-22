@@ -91,13 +91,30 @@ fn topological_order_includes_every_catalog_domain() {
     }
 }
 
+/// META domains describe sui's OWN quality/coverage/knobs, not a nix RUNTIME
+/// behavior a CLI command consumes — so they have no `(defsui-command)` consumer
+/// BY DESIGN and must be excluded from the "every runtime-substrate domain reaches
+/// operators via a Working command" check below. They are the domains with an
+/// empty `:cppnix-mirror` whose purpose is self-description: `perf` (the perf-lever
+/// ledger), `eager_class` (the parity-typed runtime-fluidity knob-space), and
+/// `nix_surface` (the STRATOSPHERE use-case coverage board). Their operator
+/// surface is `sui-spec-inventory`, not the nix CLI. Excluding them keeps the 70%
+/// floor measuring what it means to — real runtime substrate reaching operators —
+/// rather than being diluted by internal tooling domains.
+const META_DOMAINS: &[&str] = &["perf", "eager_class", "nix_surface"];
+
 #[test]
 fn working_commands_cover_at_least_70_percent_of_substrate() {
-    // Every substrate domain should have at least one Working
-    // CLI command consuming it — otherwise the substrate work
-    // isn't reaching operators.  Floor: 70%.
+    // Every RUNTIME-substrate domain should have at least one Working CLI command
+    // consuming it — otherwise the substrate work isn't reaching operators. Floor:
+    // 70%. META_DOMAINS (sui-internal coverage/perf/knob tooling, no nix-CLI
+    // consumer by design) are excluded — see the const's doc.
     let coverage = cli_coverage::load_canonical().unwrap();
-    let domains = catalog::load_canonical().unwrap();
+    let domains: Vec<_> = catalog::load_canonical()
+        .unwrap()
+        .into_iter()
+        .filter(|d| !META_DOMAINS.contains(&d.name.as_str()))
+        .collect();
 
     let working_substrate_refs: std::collections::HashSet<String> = coverage.iter()
         .filter(|c| c.maturity == cli_coverage::SuiCommandMaturity::Working)
@@ -110,7 +127,7 @@ fn working_commands_cover_at_least_70_percent_of_substrate() {
         .count();
     let pct = covered as f64 / total as f64;
     assert!(pct >= 0.70,
-        "substrate utilization regressed: {covered} of {total} domains ({:.1}%) have a Working consumer",
+        "substrate utilization regressed: {covered} of {total} runtime-substrate domains ({:.1}%) have a Working consumer",
         pct * 100.0);
 }
 

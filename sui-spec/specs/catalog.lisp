@@ -53,6 +53,14 @@
   :cppnix-mirror      ""
   :depends-on         ("perf" "laziness"))
 
+(defsubstrate-domain
+  :name               "nix_surface"
+  :authoring-keywords ("defnix-surface")
+  :gate               Working
+  :purpose            "The typed board of 'every possible nix use case' — one (defnix-surface) row per surface (S1 language / S2 closure / S4 CLI / S5-7 config+daemon+PATH / U-perf). The Surface enum is compile-exhaustive (a missing surface fails the build) and each row's tier is honesty-gated against what its reflection+oracle earn, so 'covered' is a structural property of the row, never rounded up (STRATOSPHERE use-case vocabulary, surface axis)"
+  :cppnix-mirror      ""
+  :depends-on         ("perf"))
+
 ;; ── M2: gated on module system implementation ────────────────────
 
 (defsubstrate-domain
