@@ -2420,6 +2420,23 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                         // single-key bindings keep the plain fast insert.
                         // (This is the pkg-config-wrapper `env.addFlags` drop:
                         // `env.addFlags = …` then `env = { wrapperName = …; … }`.)
+                        // If the earlier binding for this key is still a lazy
+                        // Thunk (an attrset literal inserted via maybe_thunk), force
+                        // it to WHNF FIRST so a `key = {..}; key = {..}` collision is
+                        // seen as attrs-vs-attrs and MERGES, matching nix
+                        // (`{ s = {a=1;}; s = {b=2;}; }` → `{ s = {a=1; b=2;}; }`).
+                        // Without this the `Some(Value::Attrs(_))` test below is false
+                        // on a Thunk and the second binding overwrites, dropping the
+                        // first's keys. The dotted branch below already does this; R3
+                        // (eval-okay-merge-dynamic-attrs set1/set2) needs it here too.
+                        // WHNF force does not force fields → leaf laziness preserved.
+                        // (A non-attrs dup like `s = 1; s = 2` still overwrites here,
+                        // unchanged — nix errors there, an eval-FAIL case out of scope.)
+                        if matches!(attrs.get(&key), Some(Value::Thunk(_))) {
+                            let existing = attrs.get(&key).cloned().unwrap();
+                            let forced_existing = force_value(&existing)?;
+                            attrs.insert(key.clone(), forced_existing);
+                        }
                         if matches!(attrs.get(&key), Some(Value::Attrs(_))) {
                             let forced = force_value(&value)?;
                             merge_nested_insert(&mut attrs, key, forced);
