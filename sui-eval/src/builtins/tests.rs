@@ -2616,6 +2616,37 @@ fn builtins_deep_seq_with_attrs() {
     assert_eq!(ev(r#"builtins.deepSeq { a = 1; b = 2; } "ok""#), Value::string("ok"));
 }
 
+#[test]
+fn builtins_deep_seq_cyclic_attrset_terminates() {
+    // A self-referential attrset (`y = as`) must NOT hang deepSeq — the
+    // deep-force keeps an Rc-identity seen-set to break the cycle (cppnix's
+    // forceValueDeep). Before the 2026-07-22 fix this looped forever
+    // (stacker::maybe_grow → unbounded stack-grow → >60s wedge). nix returns 456.
+    assert_eq!(
+        ev("builtins.deepSeq (let as = { x = 123; y = as; }; in as) 456"),
+        Value::Int(456)
+    );
+}
+
+#[test]
+fn builtins_deep_seq_cyclic_list_terminates() {
+    // Same cycle guard for a self-referential list.
+    assert_eq!(
+        ev("builtins.deepSeq (let xs = [ 1 xs ]; in xs) 7"),
+        Value::Int(7)
+    );
+}
+
+#[test]
+fn builtins_deep_seq_still_forces_a_nested_throw() {
+    // The seen-set must only skip RE-visits, never a first force: deepSeq still
+    // forces a throw buried in an attrset (guards against the cycle fix silently
+    // turning deepSeq lazy). cppnix propagates the throw here.
+    let result = eval(r#"builtins.deepSeq { a = throw "boom"; } 1"#);
+    assert!(result.is_err(), "deepSeq must force the nested throw, got {result:?}");
+    assert!(format!("{}", result.unwrap_err()).contains("boom"));
+}
+
 // ── getEnv ────────────────────────────────────────────
 
 #[test]

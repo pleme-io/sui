@@ -4,18 +4,45 @@
 use super::*;
 
 /// Recursively force a value and all nested values (attrset values, list elements).
+///
+/// **Cycle-safe.** A self-referential structure — e.g. `let as = { x = 123; y = as; };
+/// in builtins.deepSeq as 456` — is finite here because every attrset/list is
+/// recorded by its `Rc` identity in `seen` and never descended into twice. This
+/// mirrors cppnix's `forceValueDeep` `std::set<const Value*> seen`. Without it,
+/// `deepSeq` on a cyclic value recurses forever; `stacker::maybe_grow` turns that
+/// infinite recursion into an unbounded stack-grow HANG rather than a prompt
+/// overflow (so it presents as a >60s wedge, not a crash).
+///
+/// Never-remove-from-`seen` is correct AND an optimization: a value shared across
+/// two branches (a DAG, not a cycle) is deep-forced once — forcing the shared `Rc`
+/// once forces it everywhere. cppnix does the same.
+///
+/// (2026-07-22: surfaced by the vendored CppNix `eval-okay-deepseq` corpus fixture
+/// — nix returns 456, sui hung. STRATOSPHERE M3 test-expansion caught it.)
 fn deep_force(val: &Value) -> Result<(), EvalError> {
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    deep_force_seen(val, &mut seen)
+}
+
+fn deep_force_seen(val: &Value, seen: &mut std::collections::HashSet<usize>) -> Result<(), EvalError> {
     stacker::maybe_grow(64 * 1024, 2 * 1024 * 1024, || {
         let forced = crate::eval::force_value(val)?;
         match &forced {
             Value::Attrs(attrs) => {
+                // Break cycles: an attrset already being descended into is skipped.
+                if !seen.insert(Rc::as_ptr(attrs) as usize) {
+                    return Ok(());
+                }
                 for (_k, v) in attrs.iter() {
-                    deep_force(v)?;
+                    deep_force_seen(v, seen)?;
                 }
             }
             Value::List(list) => {
+                if !seen.insert(Rc::as_ptr(list) as usize) {
+                    return Ok(());
+                }
                 for v in list.iter() {
-                    deep_force(v)?;
+                    deep_force_seen(v, seen)?;
                 }
             }
             _ => {}

@@ -41,17 +41,22 @@ regenerated from the *local* oracle (`--eval --json --strict`) so they are exact
 for this machine, not the upstream `.exp` (which can drift).
 
 Of 144 upstream eval-okay tests: 13 need `.flags` args, 19 the local oracle can't
-JSON-eval — 112 candidates. **sui passes 72** (now active in `../`); the **65**
+JSON-eval — 112 candidates. **sui passes 73** (now active in `../`); the **64**
 gaps parked here are the language frontier — expand the active corpus by closing
 them. This turned the language test surface from 25 curated fixtures into a
-measured 72/(72+65) coverage number against Nix's own tests.
+measured 73/(73+64) coverage number against Nix's own tests.
 
-**The one HANG (a real bug, not just a value divergence): `eval-okay-deepseq`.**
-sui's library eval path (`sui_eval::eval` + `to_json`) effectively hangs (>60s) on
-it while the `sui` binary's `eval --json` path returns fast — a genuine divergence
-between the two eval entries around `builtins.deepseq` / the deep-force in
-`to_json`. Parked here so it can't wedge the corpus gate; fixing it is a tracked
-task (the two paths must converge).
+### `eval-okay-deepseq` — FIXED + graduated (2026-07-22)
+
+The one HANG surfaced by the M3 expansion. sui's library deep-force
+(`builtins/control.rs::deep_force`) recursed into a self-referential attrset
+(`let as = { x = 123; y = as; }; in as`) forever — `stacker::maybe_grow` turned
+the infinite recursion into an unbounded stack-grow HANG (>60s), not a prompt
+overflow. Fixed by adding an `Rc`-identity seen-set (`deep_force_seen`), mirroring
+cppnix's `forceValueDeep` `std::set<const Value*> seen`; the cyclic value is now
+finite and deepSeq returns 456 as nix does. Graduated back to `../`; locked by
+`builtins_deep_seq_cyclic_{attrset,list}_terminates` +
+`builtins_deep_seq_still_forces_a_nested_throw`.
 
 ## Promotion back to the main corpus
 
