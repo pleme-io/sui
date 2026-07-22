@@ -41,10 +41,10 @@ regenerated from the *local* oracle (`--eval --json --strict`) so they are exact
 for this machine, not the upstream `.exp` (which can drift).
 
 Of 144 upstream eval-okay tests: 13 need `.flags` args, 19 the local oracle can't
-JSON-eval — 112 candidates. **sui passes 112** (now active in `../`); the **25**
+JSON-eval — 112 candidates. **sui passes 114** (now active in `../`); the **23**
 gaps parked here are the language frontier — expand the active corpus by closing
 them. This turned the language test surface from 25 curated fixtures into a
-measured 112/(112+25) coverage number against Nix's own tests.
+measured 114/(114+23) coverage number against Nix's own tests.
 
 ### `eval-okay-deepseq` — FIXED + graduated (2026-07-22)
 

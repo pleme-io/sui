@@ -1898,6 +1898,24 @@ fn eval_unary_op(op: &ast::UnaryOp, env: &Env) -> Result<Value, EvalError> {
     }
 }
 
+/// Builtins that must receive their argument UNFORCED (call-by-need). This is the
+/// SINGLE source of truth consumed by BOTH `eval_apply` (which must THUNK the arg
+/// instead of eager-evaluating it) AND the builtin apply arm (which must SKIP the
+/// arg force). The two sites MUST agree: if `eval_apply` eager-evaluates the arg,
+/// the apply-arm's force-skip is dead (the arg is already forced — or already
+/// threw) upstream. They were previously inconsistent (only `tryEval` was thunked
+/// in `eval_apply`), so `seq`/`deepSeq`/`addErrorContext`/`foldl'` silently got
+/// eager args despite their apply-time exemption — the bug behind
+/// `builtins.foldl' (_: x: x) (throw "…") […]` throwing instead of returning the
+/// last element (nix's foldl' is NOT strict in the nul accumulator).
+#[inline]
+pub(crate) fn builtin_takes_lazy_arg(name: &str) -> bool {
+    matches!(
+        name,
+        "tryEval" | "addErrorContext<partial>" | "seq<partial>" | "deepSeq<partial>" | "foldl'<p1>"
+    )
+}
+
 fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
     let func_expr = app
         .lambda()
@@ -1930,7 +1948,11 @@ fn eval_apply(app: &ast::Apply, env: &Env) -> Result<Value, EvalError> {
                 Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
             }
         }
-        Value::Builtin(b) if b.name == "tryEval" => {
+        Value::Builtin(b) if builtin_takes_lazy_arg(&b.name) => {
+            // Call-by-need for the laziness-exempt builtins (tryEval / seq /
+            // deepSeq / addErrorContext / foldl'<p1>): the arg MUST be thunked,
+            // not eager-evaluated, so it forces only if/when the builtin demands
+            // it. Kept in lockstep with the apply-arm skip via `builtin_takes_lazy_arg`.
             crate::perf::inc(crate::perf::Counter::ThunkSiteApplyArg);
             Value::Thunk(Thunk::new_suspended(arg_expr.clone(), env.clone()))
         }
@@ -3260,11 +3282,10 @@ fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
             //   without forcing (the value is the fixpoint `config` which
             //   causes infinite recursion if forced during collectModules)
             // - seq<partial>: forces first arg but returns second UNFORCED
-            if b.name == "tryEval"
-                || b.name == "addErrorContext<partial>"
-                || b.name == "seq<partial>"
-                || b.name == "deepSeq<partial>"
-            {
+            // Same lazy-arg set as `eval_apply` (single source of truth) — these
+            // builtins receive the arg UNFORCED. foldl'<p1> is the nul accumulator
+            // (nix's foldl' is strict in each op RESULT, NOT in the nul).
+            if builtin_takes_lazy_arg(&b.name) {
                 (b.func)(&[arg])
             } else {
                 let forced_arg = force_value(&arg)?;

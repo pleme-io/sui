@@ -4,11 +4,14 @@
 use super::*;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
-    // baseNameOf — extract filename from path
-    // CppNix strips TRAILING slashes first, then takes the last component:
-    // `baseNameOf "/a/b/"` → "b" (not ""). Verified vs `nix eval`.
+    // baseNameOf — extract filename from path.
+    // CppNix strips EXACTLY ONE trailing slash, then takes the last component
+    // (everything after the last remaining `/`). Verified vs `nix eval`:
+    //   "/a/b/" → "b"   "a/" → "a"   "a//" → ""   "a/b//" → ""   "" → ""
+    // (The prior `trim_end_matches('/')` stripped ALL trailing slashes, so it
+    // wrongly returned "a" for "a//" where nix returns "".)
     fn base_name_of(s: &str) -> String {
-        let trimmed = s.trim_end_matches('/');
+        let trimmed = s.strip_suffix('/').unwrap_or(s);
         trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
     }
     register_builtin(builtins, "baseNameOf", |args| {
