@@ -38,10 +38,21 @@ use sui_spec::cli_coverage::{self, SuiCommandMaturity};
 /// RAISE THIS in the same commit that honestly downgrades an entry, and say why
 /// in the commit message. LOWER IT whenever a gap genuinely closes — that is the
 /// ratchet tightening, and it is the only direction that should ever be silent.
-const MAX_NON_WORKING: usize = 0;
+// Raised 0 -> 10 (2026-07-22, STRATOSPHERE M3b honesty demotion): ten commands
+// catalogued `Working` had handlers that are an unconditional
+// `CliError::NotImplemented` (repl, why, path-from-hash-part, edit, log,
+// store-diff-closures, upgrade-nix, fmt, print-dev-env, bundle — verified against
+// src/main.rs). They are now `Stub` (their honest maturity), so the catalog stops
+// over-reporting. Recording a real gap is the ratchet working as intended; LOWER
+// this again as each stub becomes a real handler.
+const MAX_NON_WORKING: usize = 10;
 
 /// The committed floor on replacement coverage.
-const MIN_REPLACEMENT_PCT: f64 = 1.0;
+// Lowered 1.0 -> 0.87 (2026-07-22, same honest demotion): true coverage is now
+// 67 Working / 77 non-SuiNative = 87.0%, not 100%. This is not a regression in
+// sui's behavior — it is the coverage NUMBER becoming truthful. Raise it back
+// toward 1.0 as the ten demoted stubs get real implementations.
+const MIN_REPLACEMENT_PCT: f64 = 0.87;
 
 /// The GAP maturities — the three that mean "sui does not do this yet".
 ///
@@ -104,8 +115,13 @@ fn working_command_count_is_stable_or_growing() {
         .iter()
         .filter(|c| c.maturity == SuiCommandMaturity::Working)
         .count();
+    // Floor lowered 75 -> 67 (2026-07-22, STRATOSPHERE M3b honest demotion): ten
+    // `Working` rows whose handlers are unconditional `NotImplemented` were
+    // demoted to `Stub`, so the truthful Working count is 67. This is the number
+    // becoming honest, not sui regressing; the floor RATCHETS BACK UP as each
+    // demoted stub gets a real handler.
     assert!(
-        working >= 75,
-        "working command count regressed: now {working} (floor 75)",
+        working >= 67,
+        "working command count regressed: now {working} (floor 67)",
     );
 }

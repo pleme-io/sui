@@ -40,7 +40,7 @@
 (defsui-command
   :name "repl"
   :nix-equivalent "nix repl"
-  :maturity Working
+  :maturity Stub
   :substrate ()
   :notes "Interactive evaluator")
 
@@ -75,49 +75,49 @@
 (defsui-command
   :name "why"
   :nix-equivalent "nix why-depends"
-  :maturity Working
+  :maturity Stub
   :substrate ("derivation")
   :notes "Reverse-closure dependency explanation")
 
 (defsui-command
   :name "path-from-hash-part"
   :nix-equivalent "nix store path-from-hash-part"
-  :maturity Working
+  :maturity Stub
   :substrate ("store_layout")
   :notes "Lookup full store path by hash prefix")
 
 (defsui-command
   :name "edit"
   :nix-equivalent "nix edit"
-  :maturity Working
+  :maturity Stub
   :substrate ()
   :notes "Open derivation source in $EDITOR")
 
 (defsui-command
   :name "log"
   :nix-equivalent "nix log"
-  :maturity Working
+  :maturity Stub
   :substrate ("derivation")
   :notes "Print build log for a derivation")
 
 (defsui-command
   :name "store-diff-closures"
   :nix-equivalent "nix store diff-closures"
-  :maturity Working
+  :maturity Stub
   :substrate ("store_layout" "derivation")
   :notes "Diff two closure reference sets")
 
 (defsui-command
   :name "upgrade-nix"
   :nix-equivalent "nix upgrade-nix"
-  :maturity Working
+  :maturity Stub
   :substrate ()
   :notes "Self-upgrade hook — sui-native cutover")
 
 (defsui-command
   :name "fmt"
   :nix-equivalent "nix fmt"
-  :maturity Working
+  :maturity Stub
   :substrate ()
   :notes "Format Nix files via flake formatter attr")
 
@@ -138,14 +138,14 @@
 (defsui-command
   :name "print-dev-env"
   :nix-equivalent "nix print-dev-env"
-  :maturity Working
+  :maturity Stub
   :substrate ("flake")
   :notes "Print devShell env vars + functions as a shell script")
 
 (defsui-command
   :name "bundle"
   :nix-equivalent "nix bundle"
-  :maturity Working
+  :maturity Stub
   :substrate ("derivation")
   :notes "Bundle a derivation via a bundler installable")
 
