@@ -31,6 +31,28 @@ Promoted back to `../` (the main `lang/` corpus). The bug was that
 sui's `with` pushed new scopes below existing ones. Fixed by
 correct scope stacking in the `With` handler.
 
+## 2026-07-22 — vendored CppNix corpus gaps (STRATOSPHERE M3)
+
+Beyond the hand-written cases above, this dir now also holds `eval-okay-*` pairs
+vendored from CppNix's own functional corpus (`nix/tests/functional/lang/`,
+NixOS/nix default branch, sparse-checkout) that the **local `nix-instantiate`
+oracle (Nix 2.34.7) JSON-evaluates but sui does not yet match**. The `.exp` were
+regenerated from the *local* oracle (`--eval --json --strict`) so they are exact
+for this machine, not the upstream `.exp` (which can drift).
+
+Of 144 upstream eval-okay tests: 13 need `.flags` args, 19 the local oracle can't
+JSON-eval — 112 candidates. **sui passes 72** (now active in `../`); the **65**
+gaps parked here are the language frontier — expand the active corpus by closing
+them. This turned the language test surface from 25 curated fixtures into a
+measured 72/(72+65) coverage number against Nix's own tests.
+
+**The one HANG (a real bug, not just a value divergence): `eval-okay-deepseq`.**
+sui's library eval path (`sui_eval::eval` + `to_json`) effectively hangs (>60s) on
+it while the `sui` binary's `eval --json` path returns fast — a genuine divergence
+between the two eval entries around `builtins.deepseq` / the deep-force in
+`to_json`. Parked here so it can't wedge the corpus gate; fixing it is a tracked
+task (the two paths must converge).
+
 ## Promotion back to the main corpus
 
 When a bug is fixed, move the `.nix` + `.exp` files back out of
