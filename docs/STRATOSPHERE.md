@@ -66,9 +66,8 @@ undo a prior one.
 
 Not plan, not claim — shipped and proven against reality:
 
-- **S1 language corpus 25 → 112 passing real Nix tests** (vendored from CppNix's own
-  `tests/functional/lang`, `.exp` regenerated from the local nix oracle) + 49 honest
-  `known_broken/` gaps. Two root fixes drove it: the **deepSeq cyclic-hang**
+- **S1 language corpus 25 → 112 passing real Nix tests** (25 honest known_broken gaps; vendored from CppNix's own
+  `tests/functional/lang`, `.exp` regenerated from the local nix oracle). Two root fixes drove it: the **deepSeq cyclic-hang**
   (`deep_force` gained a cppnix-style `Rc`-identity seen-set — a hang→terminate is
   correctness *and* perf) and the **import-resolution cascade** (vendored shared
   support files + eval-with-file-path graduated 15 fixtures from one fix).
