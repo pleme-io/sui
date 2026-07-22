@@ -4429,6 +4429,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "pleme-io-sui"
+version = "0.1.141"
+dependencies = [
+ "assert_cmd",
+ "async-graphql",
+ "async-graphql-axum",
+ "async-nats",
+ "async-trait",
+ "axum 0.8.9",
+ "base64",
+ "clap",
+ "dhat",
+ "ed25519-dalek",
+ "futures-core",
+ "gen-nix",
+ "http-body-util",
+ "mimalloc",
+ "predicates",
+ "prost",
+ "rand 0.8.6",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sui-build",
+ "sui-bytecode",
+ "sui-cache",
+ "sui-compat",
+ "sui-daemon",
+ "sui-eval",
+ "sui-intern",
+ "sui-orchestrate",
+ "sui-spec",
+ "sui-store",
+ "sui-supercacheci",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tonic",
+ "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "plotters"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6310,56 +6360,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "sui"
-version = "0.1.141"
-dependencies = [
- "assert_cmd",
- "async-graphql",
- "async-graphql-axum",
- "async-nats",
- "async-trait",
- "axum 0.8.9",
- "base64",
- "clap",
- "dhat",
- "ed25519-dalek",
- "futures-core",
- "gen-nix",
- "http-body-util",
- "mimalloc",
- "predicates",
- "prost",
- "rand 0.8.6",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "sui-build",
- "sui-bytecode",
- "sui-cache",
- "sui-compat",
- "sui-daemon",
- "sui-eval",
- "sui-intern",
- "sui-orchestrate",
- "sui-spec",
- "sui-store",
- "sui-supercacheci",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "toml",
- "tonic",
- "tower 0.5.3",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "ureq",
- "url",
-]
 
 [[package]]
 name = "sui-bigorna"

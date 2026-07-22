@@ -305,7 +305,13 @@ predicates = "3"
 criterion = "0.5"
 
 [package]
-name = "sui"
+# crates.io publish name is `pleme-io-sui`: the bare `sui` name is held on crates.io
+# by an unrelated crate (owner `huitseeker` / the Sui blockchain), so it is
+# permanently unavailable to us. The org AUTO-RELEASE name-conflict convention
+# ("rename to pleme-io-<original>"). The LIB and BIN names both stay `sui` (see
+# [lib] + [[bin]] below), so `use sui::` (src/main.rs) and the installed binary
+# name are unchanged — only the crates.io package identity is pleme-io-sui.
+name = "pleme-io-sui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -315,6 +321,12 @@ description = "Rust-native Nix replacement (粋 sui) — drop-in nix CLI with la
 keywords = ["nix", "package-manager", "build-system", "evaluator"]
 categories = ["command-line-utilities", "development-tools::build-utils"]
 readme = "README.md"
+
+# Keep the import name `sui` (src/main.rs does `use sui::…`) regardless of the
+# crates.io package name.
+[lib]
+name = "sui"
+path = "src/lib.rs"
 
 [[bin]]
 name = "sui"

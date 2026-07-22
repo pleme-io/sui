@@ -112,7 +112,7 @@
         "relative_path": "sui-registry"
       },
       {
-        "name": "sui",
+        "name": "pleme-io-sui",
         "relative_path": "."
       }
     ]
@@ -33737,6 +33737,695 @@
         "preBuild": "export CARGO_CRATE_NAME=kazari;"
       }
     },
+    "pleme-io-sui-0.1.141": {
+      "name": "pleme-io-sui",
+      "version": "0.1.141",
+      "edition": "2024",
+      "source": {
+        "kind": "path",
+        "relative_path": "."
+      },
+      "features": [
+        "default",
+        "postgres",
+        "redis-client",
+        "tiered"
+      ],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [
+        {
+          "name": "sui",
+          "path": "src/main.rs"
+        }
+      ],
+      "lib_target": {
+        "name": "sui",
+        "path": "src/lib.rs"
+      },
+      "runtime_dependencies": [
+        {
+          "name": "async_graphql",
+          "package_key": "async-graphql-7.2.1",
+          "kind": "normal",
+          "features": [
+            "chrono"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "async_graphql_axum",
+          "package_key": "async-graphql-axum-7.2.1",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "async_nats",
+          "package_key": "async-nats-0.50.0",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "axum",
+          "package_key": "axum-0.8.9",
+          "kind": "normal",
+          "features": [
+            "macros"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "base64",
+          "package_key": "base64-0.22.1",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "clap",
+          "package_key": "clap-4.6.1",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "ed25519_dalek",
+          "package_key": "ed25519-dalek-2.2.0",
+          "kind": "normal",
+          "features": [
+            "rand_core",
+            "std"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "futures_core",
+          "package_key": "futures-core-0.3.32",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "gen_nix",
+          "package_key": "gen-nix-0.1.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "mimalloc",
+          "package_key": "mimalloc-0.1.52",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": false,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "prost",
+          "package_key": "prost-0.13.5",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "rand",
+          "package_key": "rand-0.8.6",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "regex",
+          "package_key": "regex-1.12.4",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "serde",
+          "package_key": "serde-1.0.228",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "serde_json",
+          "package_key": "serde_json-1.0.150",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sha2",
+          "package_key": "sha2-0.10.9",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_build",
+          "package_key": "sui-build-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_bytecode",
+          "package_key": "sui-bytecode-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_cache",
+          "package_key": "sui-cache-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_compat",
+          "package_key": "sui-compat-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_daemon",
+          "package_key": "sui-daemon-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_eval",
+          "package_key": "sui-eval-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_intern",
+          "package_key": "sui-intern-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_orchestrate",
+          "package_key": "sui-orchestrate-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_spec",
+          "package_key": "sui-spec-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_store",
+          "package_key": "sui-store-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "sui_supercacheci",
+          "package_key": "sui-supercacheci-0.1.141",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "thiserror",
+          "package_key": "thiserror-2.0.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tokio",
+          "package_key": "tokio-1.52.3",
+          "kind": "normal",
+          "features": [
+            "full"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tokio_stream",
+          "package_key": "tokio-stream-0.1.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "toml",
+          "package_key": "toml-0.8.23",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tonic",
+          "package_key": "tonic-0.12.3",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tower",
+          "package_key": "tower-0.5.3",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tower_http",
+          "package_key": "tower-http-0.6.11",
+          "kind": "normal",
+          "features": [
+            "cors",
+            "trace"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tracing",
+          "package_key": "tracing-0.1.44",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "tracing_subscriber",
+          "package_key": "tracing-subscriber-0.3.23",
+          "kind": "normal",
+          "features": [
+            "env-filter",
+            "json"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "ureq",
+          "package_key": "ureq-3.3.0",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "url",
+          "package_key": "url-2.5.8",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        }
+      ],
+      "build_dependencies": [],
+      "crate_renames": {
+        "async-graphql": [
+          {
+            "version": "7.2.1",
+            "rename": "async_graphql"
+          }
+        ],
+        "async-graphql-axum": [
+          {
+            "version": "7.2.1",
+            "rename": "async_graphql_axum"
+          }
+        ],
+        "async-nats": [
+          {
+            "version": "0.50.0",
+            "rename": "async_nats"
+          }
+        ],
+        "ed25519-dalek": [
+          {
+            "version": "2.2.0",
+            "rename": "ed25519_dalek"
+          }
+        ],
+        "futures-core": [
+          {
+            "version": "0.3.32",
+            "rename": "futures_core"
+          }
+        ],
+        "gen-nix": [
+          {
+            "version": "0.1.18",
+            "rename": "gen_nix"
+          }
+        ],
+        "sui-build": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_build"
+          }
+        ],
+        "sui-bytecode": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_bytecode"
+          }
+        ],
+        "sui-cache": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_cache"
+          }
+        ],
+        "sui-compat": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_compat"
+          }
+        ],
+        "sui-daemon": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_daemon"
+          }
+        ],
+        "sui-eval": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_eval"
+          }
+        ],
+        "sui-intern": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_intern"
+          }
+        ],
+        "sui-orchestrate": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_orchestrate"
+          }
+        ],
+        "sui-spec": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_spec"
+          }
+        ],
+        "sui-store": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_store"
+          }
+        ],
+        "sui-supercacheci": [
+          {
+            "version": "0.1.141",
+            "rename": "sui_supercacheci"
+          }
+        ],
+        "tokio-stream": [
+          {
+            "version": "0.1.18",
+            "rename": "tokio_stream"
+          }
+        ],
+        "tower-http": [
+          {
+            "version": "0.6.11",
+            "rename": "tower_http"
+          }
+        ],
+        "tracing-subscriber": [
+          {
+            "version": "0.3.23",
+            "rename": "tracing_subscriber"
+          }
+        ]
+      },
+      "build_rust_crate_args": {
+        "crateName": "pleme-io-sui",
+        "version": "0.1.141",
+        "edition": "2024",
+        "features": [
+          "default",
+          "postgres",
+          "redis-client",
+          "tiered"
+        ],
+        "crateRenames": {
+          "async-graphql": [
+            {
+              "version": "7.2.1",
+              "rename": "async_graphql"
+            }
+          ],
+          "async-graphql-axum": [
+            {
+              "version": "7.2.1",
+              "rename": "async_graphql_axum"
+            }
+          ],
+          "async-nats": [
+            {
+              "version": "0.50.0",
+              "rename": "async_nats"
+            }
+          ],
+          "ed25519-dalek": [
+            {
+              "version": "2.2.0",
+              "rename": "ed25519_dalek"
+            }
+          ],
+          "futures-core": [
+            {
+              "version": "0.3.32",
+              "rename": "futures_core"
+            }
+          ],
+          "gen-nix": [
+            {
+              "version": "0.1.18",
+              "rename": "gen_nix"
+            }
+          ],
+          "sui-build": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_build"
+            }
+          ],
+          "sui-bytecode": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_bytecode"
+            }
+          ],
+          "sui-cache": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_cache"
+            }
+          ],
+          "sui-compat": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_compat"
+            }
+          ],
+          "sui-daemon": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_daemon"
+            }
+          ],
+          "sui-eval": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_eval"
+            }
+          ],
+          "sui-intern": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_intern"
+            }
+          ],
+          "sui-orchestrate": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_orchestrate"
+            }
+          ],
+          "sui-spec": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_spec"
+            }
+          ],
+          "sui-store": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_store"
+            }
+          ],
+          "sui-supercacheci": [
+            {
+              "version": "0.1.141",
+              "rename": "sui_supercacheci"
+            }
+          ],
+          "tokio-stream": [
+            {
+              "version": "0.1.18",
+              "rename": "tokio_stream"
+            }
+          ],
+          "tower-http": [
+            {
+              "version": "0.6.11",
+              "rename": "tower_http"
+            }
+          ],
+          "tracing-subscriber": [
+            {
+              "version": "0.3.23",
+              "rename": "tracing_subscriber"
+            }
+          ]
+        },
+        "release": true,
+        "libName": "sui",
+        "libPath": "src/lib.rs",
+        "preBuild": "export CARGO_CRATE_NAME=sui;"
+      }
+    },
     "plotters-0.3.7": {
       "name": "plotters",
       "version": "0.3.7",
@@ -48301,695 +48990,6 @@
         "preBuild": "export CARGO_CRATE_NAME=subtle;"
       }
     },
-    "sui-0.1.141": {
-      "name": "sui",
-      "version": "0.1.141",
-      "edition": "2024",
-      "source": {
-        "kind": "path",
-        "relative_path": "."
-      },
-      "features": [
-        "default",
-        "postgres",
-        "redis-client",
-        "tiered"
-      ],
-      "proc_macro": false,
-      "build_script": null,
-      "links": null,
-      "binaries": [
-        {
-          "name": "sui",
-          "path": "src/main.rs"
-        }
-      ],
-      "lib_target": {
-        "name": "sui",
-        "path": "src/lib.rs"
-      },
-      "runtime_dependencies": [
-        {
-          "name": "async_graphql",
-          "package_key": "async-graphql-7.2.1",
-          "kind": "normal",
-          "features": [
-            "chrono"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "async_graphql_axum",
-          "package_key": "async-graphql-axum-7.2.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "async_nats",
-          "package_key": "async-nats-0.50.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "axum",
-          "package_key": "axum-0.8.9",
-          "kind": "normal",
-          "features": [
-            "macros"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "base64",
-          "package_key": "base64-0.22.1",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "clap",
-          "package_key": "clap-4.6.1",
-          "kind": "normal",
-          "features": [
-            "derive"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "ed25519_dalek",
-          "package_key": "ed25519-dalek-2.2.0",
-          "kind": "normal",
-          "features": [
-            "rand_core",
-            "std"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "futures_core",
-          "package_key": "futures-core-0.3.32",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "gen_nix",
-          "package_key": "gen-nix-0.1.18",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "mimalloc",
-          "package_key": "mimalloc-0.1.52",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": false,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "prost",
-          "package_key": "prost-0.13.5",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "rand",
-          "package_key": "rand-0.8.6",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "regex",
-          "package_key": "regex-1.12.4",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "serde",
-          "package_key": "serde-1.0.228",
-          "kind": "normal",
-          "features": [
-            "derive"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "serde_json",
-          "package_key": "serde_json-1.0.150",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sha2",
-          "package_key": "sha2-0.10.9",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_build",
-          "package_key": "sui-build-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_bytecode",
-          "package_key": "sui-bytecode-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_cache",
-          "package_key": "sui-cache-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_compat",
-          "package_key": "sui-compat-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_daemon",
-          "package_key": "sui-daemon-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_eval",
-          "package_key": "sui-eval-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_intern",
-          "package_key": "sui-intern-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_orchestrate",
-          "package_key": "sui-orchestrate-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_spec",
-          "package_key": "sui-spec-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_store",
-          "package_key": "sui-store-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "sui_supercacheci",
-          "package_key": "sui-supercacheci-0.1.141",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "thiserror",
-          "package_key": "thiserror-2.0.18",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tokio",
-          "package_key": "tokio-1.52.3",
-          "kind": "normal",
-          "features": [
-            "full"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tokio_stream",
-          "package_key": "tokio-stream-0.1.18",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "toml",
-          "package_key": "toml-0.8.23",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tonic",
-          "package_key": "tonic-0.12.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tower",
-          "package_key": "tower-0.5.3",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tower_http",
-          "package_key": "tower-http-0.6.11",
-          "kind": "normal",
-          "features": [
-            "cors",
-            "trace"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tracing",
-          "package_key": "tracing-0.1.44",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "tracing_subscriber",
-          "package_key": "tracing-subscriber-0.3.23",
-          "kind": "normal",
-          "features": [
-            "env-filter",
-            "json"
-          ],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "ureq",
-          "package_key": "ureq-3.3.0",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        },
-        {
-          "name": "url",
-          "package_key": "url-2.5.8",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "target"
-        }
-      ],
-      "build_dependencies": [],
-      "crate_renames": {
-        "async-graphql": [
-          {
-            "version": "7.2.1",
-            "rename": "async_graphql"
-          }
-        ],
-        "async-graphql-axum": [
-          {
-            "version": "7.2.1",
-            "rename": "async_graphql_axum"
-          }
-        ],
-        "async-nats": [
-          {
-            "version": "0.50.0",
-            "rename": "async_nats"
-          }
-        ],
-        "ed25519-dalek": [
-          {
-            "version": "2.2.0",
-            "rename": "ed25519_dalek"
-          }
-        ],
-        "futures-core": [
-          {
-            "version": "0.3.32",
-            "rename": "futures_core"
-          }
-        ],
-        "gen-nix": [
-          {
-            "version": "0.1.18",
-            "rename": "gen_nix"
-          }
-        ],
-        "sui-build": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_build"
-          }
-        ],
-        "sui-bytecode": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_bytecode"
-          }
-        ],
-        "sui-cache": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_cache"
-          }
-        ],
-        "sui-compat": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_compat"
-          }
-        ],
-        "sui-daemon": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_daemon"
-          }
-        ],
-        "sui-eval": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_eval"
-          }
-        ],
-        "sui-intern": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_intern"
-          }
-        ],
-        "sui-orchestrate": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_orchestrate"
-          }
-        ],
-        "sui-spec": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_spec"
-          }
-        ],
-        "sui-store": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_store"
-          }
-        ],
-        "sui-supercacheci": [
-          {
-            "version": "0.1.141",
-            "rename": "sui_supercacheci"
-          }
-        ],
-        "tokio-stream": [
-          {
-            "version": "0.1.18",
-            "rename": "tokio_stream"
-          }
-        ],
-        "tower-http": [
-          {
-            "version": "0.6.11",
-            "rename": "tower_http"
-          }
-        ],
-        "tracing-subscriber": [
-          {
-            "version": "0.3.23",
-            "rename": "tracing_subscriber"
-          }
-        ]
-      },
-      "build_rust_crate_args": {
-        "crateName": "sui",
-        "version": "0.1.141",
-        "edition": "2024",
-        "features": [
-          "default",
-          "postgres",
-          "redis-client",
-          "tiered"
-        ],
-        "crateRenames": {
-          "async-graphql": [
-            {
-              "version": "7.2.1",
-              "rename": "async_graphql"
-            }
-          ],
-          "async-graphql-axum": [
-            {
-              "version": "7.2.1",
-              "rename": "async_graphql_axum"
-            }
-          ],
-          "async-nats": [
-            {
-              "version": "0.50.0",
-              "rename": "async_nats"
-            }
-          ],
-          "ed25519-dalek": [
-            {
-              "version": "2.2.0",
-              "rename": "ed25519_dalek"
-            }
-          ],
-          "futures-core": [
-            {
-              "version": "0.3.32",
-              "rename": "futures_core"
-            }
-          ],
-          "gen-nix": [
-            {
-              "version": "0.1.18",
-              "rename": "gen_nix"
-            }
-          ],
-          "sui-build": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_build"
-            }
-          ],
-          "sui-bytecode": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_bytecode"
-            }
-          ],
-          "sui-cache": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_cache"
-            }
-          ],
-          "sui-compat": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_compat"
-            }
-          ],
-          "sui-daemon": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_daemon"
-            }
-          ],
-          "sui-eval": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_eval"
-            }
-          ],
-          "sui-intern": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_intern"
-            }
-          ],
-          "sui-orchestrate": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_orchestrate"
-            }
-          ],
-          "sui-spec": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_spec"
-            }
-          ],
-          "sui-store": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_store"
-            }
-          ],
-          "sui-supercacheci": [
-            {
-              "version": "0.1.141",
-              "rename": "sui_supercacheci"
-            }
-          ],
-          "tokio-stream": [
-            {
-              "version": "0.1.18",
-              "rename": "tokio_stream"
-            }
-          ],
-          "tower-http": [
-            {
-              "version": "0.6.11",
-              "rename": "tower_http"
-            }
-          ],
-          "tracing-subscriber": [
-            {
-              "version": "0.3.23",
-              "rename": "tracing_subscriber"
-            }
-          ]
-        },
-        "release": true,
-        "libName": "sui",
-        "libPath": "src/lib.rs",
-        "preBuild": "export CARGO_CRATE_NAME=sui;"
-      }
-    },
     "sui-bigorna-0.1.141": {
       "name": "sui-bigorna",
       "version": "0.1.141",
@@ -62458,7 +62458,7 @@
       }
     }
   },
-  "root_crate": "sui-0.1.141",
+  "root_crate": "pleme-io-sui-0.1.141",
   "workspace_members": [
     "sui-intern-0.1.141",
     "sui-resolve-0.1.141",
@@ -62487,10 +62487,10 @@
     "sui-dockerfile-verify-0.1.141",
     "sui-bigorna-0.1.141",
     "sui-registry-0.1.141",
-    "sui-0.1.141"
+    "pleme-io-sui-0.1.141"
   ],
   "flake_metadata": {
-    "sui": {
+    "pleme-io-sui": {
       "default_bin": "sui",
       "repo": "pleme-io/sui"
     },
@@ -77970,6 +77970,416 @@
         "build_dependencies": [],
         "features": []
       },
+      "pleme-io-sui-0.1.141": {
+        "runtime_dependencies": [
+          {
+            "name": "async_graphql",
+            "package_key": "async-graphql-7.2.1",
+            "kind": "normal",
+            "features": [
+              "chrono"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "async_graphql_axum",
+            "package_key": "async-graphql-axum-7.2.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "async_nats",
+            "package_key": "async-nats-0.50.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "axum",
+            "package_key": "axum-0.8.9",
+            "kind": "normal",
+            "features": [
+              "macros"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "base64",
+            "package_key": "base64-0.22.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "clap",
+            "package_key": "clap-4.6.1",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ed25519_dalek",
+            "package_key": "ed25519-dalek-2.2.0",
+            "kind": "normal",
+            "features": [
+              "rand_core",
+              "std"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "gen_nix",
+            "package_key": "gen-nix-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "mimalloc",
+            "package_key": "mimalloc-0.1.52",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "prost",
+            "package_key": "prost-0.13.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand",
+            "package_key": "rand-0.8.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex",
+            "package_key": "regex-1.12.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha2",
+            "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_build",
+            "package_key": "sui-build-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_bytecode",
+            "package_key": "sui-bytecode-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_cache",
+            "package_key": "sui-cache-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_compat",
+            "package_key": "sui-compat-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_daemon",
+            "package_key": "sui-daemon-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_eval",
+            "package_key": "sui-eval-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_intern",
+            "package_key": "sui-intern-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_orchestrate",
+            "package_key": "sui-orchestrate-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_spec",
+            "package_key": "sui-spec-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_store",
+            "package_key": "sui-store-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_supercacheci",
+            "package_key": "sui-supercacheci-0.1.141",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_stream",
+            "package_key": "tokio-stream-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "toml",
+            "package_key": "toml-0.8.23",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tonic",
+            "package_key": "tonic-0.12.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower",
+            "package_key": "tower-0.5.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_http",
+            "package_key": "tower-http-0.6.11",
+            "kind": "normal",
+            "features": [
+              "cors",
+              "trace"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing_subscriber",
+            "package_key": "tracing-subscriber-0.3.23",
+            "kind": "normal",
+            "features": [
+              "env-filter",
+              "json"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ureq",
+            "package_key": "ureq-3.3.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "url",
+            "package_key": "url-2.5.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "postgres",
+          "redis-client",
+          "tiered"
+        ]
+      },
       "plotters-0.3.7": {
         "runtime_dependencies": [
           {
@@ -85640,416 +86050,6 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
-      },
-      "sui-0.1.141": {
-        "runtime_dependencies": [
-          {
-            "name": "async_graphql",
-            "package_key": "async-graphql-7.2.1",
-            "kind": "normal",
-            "features": [
-              "chrono"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "async_graphql_axum",
-            "package_key": "async-graphql-axum-7.2.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "async_nats",
-            "package_key": "async-nats-0.50.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "axum",
-            "package_key": "axum-0.8.9",
-            "kind": "normal",
-            "features": [
-              "macros"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "base64",
-            "package_key": "base64-0.22.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "clap",
-            "package_key": "clap-4.6.1",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ed25519_dalek",
-            "package_key": "ed25519-dalek-2.2.0",
-            "kind": "normal",
-            "features": [
-              "rand_core",
-              "std"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "futures_core",
-            "package_key": "futures-core-0.3.32",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "gen_nix",
-            "package_key": "gen-nix-0.1.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "mimalloc",
-            "package_key": "mimalloc-0.1.52",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "prost",
-            "package_key": "prost-0.13.5",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "rand",
-            "package_key": "rand-0.8.6",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "regex",
-            "package_key": "regex-1.12.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.228",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_json",
-            "package_key": "serde_json-1.0.150",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sha2",
-            "package_key": "sha2-0.10.9",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_build",
-            "package_key": "sui-build-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_bytecode",
-            "package_key": "sui-bytecode-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_cache",
-            "package_key": "sui-cache-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_compat",
-            "package_key": "sui-compat-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_daemon",
-            "package_key": "sui-daemon-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_eval",
-            "package_key": "sui-eval-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_intern",
-            "package_key": "sui-intern-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_orchestrate",
-            "package_key": "sui-orchestrate-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_spec",
-            "package_key": "sui-spec-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_store",
-            "package_key": "sui-store-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "sui_supercacheci",
-            "package_key": "sui-supercacheci-0.1.141",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "thiserror",
-            "package_key": "thiserror-2.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio",
-            "package_key": "tokio-1.52.3",
-            "kind": "normal",
-            "features": [
-              "full"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio_stream",
-            "package_key": "tokio-stream-0.1.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "toml",
-            "package_key": "toml-0.8.23",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tonic",
-            "package_key": "tonic-0.12.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tower",
-            "package_key": "tower-0.5.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tower_http",
-            "package_key": "tower-http-0.6.11",
-            "kind": "normal",
-            "features": [
-              "cors",
-              "trace"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tracing",
-            "package_key": "tracing-0.1.44",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tracing_subscriber",
-            "package_key": "tracing-subscriber-0.3.23",
-            "kind": "normal",
-            "features": [
-              "env-filter",
-              "json"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "ureq",
-            "package_key": "ureq-3.3.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "url",
-            "package_key": "url-2.5.8",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "default",
-          "postgres",
-          "redis-client",
-          "tiered"
-        ]
       },
       "sui-bigorna-0.1.141": {
         "runtime_dependencies": [
@@ -100464,5 +100464,5 @@
       }
     }
   },
-  "cargo_lock_sha256": "5c72e7eddd95a053c89384e2d500090fe5d048be14324075d3edb6ef39f5f881"
+  "cargo_lock_sha256": "a40922d48e56757a393e38db73d73dcc501f7ca0c9fa5d36d4c4c4f2be6b3ebb"
 }
