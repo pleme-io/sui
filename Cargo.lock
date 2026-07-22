@@ -3382,8 +3382,9 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "irodori"
-version = "0.1.1"
-source = "git+https://github.com/pleme-io/irodori?rev=1c40add39ed45c9cfed5eda1840824015f35393c#1c40add39ed45c9cfed5eda1840824015f35393c"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "640574130cdc97c1022d27d84fea0f668c1983d9a733380e48a7511c48a4d795"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -3558,17 +3559,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kazari"
-version = "0.1.0"
-source = "git+https://github.com/pleme-io/kazari?rev=e3811a22a9de376820d0a482fa71578b64a38497#e3811a22a9de376820d0a482fa71578b64a38497"
-dependencies = [
- "anstyle",
- "irodori",
- "terminal_size",
- "unicode-width",
 ]
 
 [[package]]
@@ -4425,6 +4415,18 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "pleme-io-kazari"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8e4e0cbb52e276f5f63d2926ce938c9c177c5e07e3f1177e7f9fb72f4ae4e8f"
+dependencies = [
+ "anstyle",
+ "irodori",
+ "terminal_size",
+ "unicode-width",
+]
 
 [[package]]
 name = "plotters"
@@ -6810,8 +6812,8 @@ dependencies = [
  "blake3",
  "bytecheck 0.8.2",
  "flate2",
- "kazari",
  "libc",
+ "pleme-io-kazari",
  "pretty_assertions",
  "proptest",
  "regex",

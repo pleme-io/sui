@@ -10,11 +10,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# kazari (飾り) — the fleet line-output typescape. sui's style.rs now routes
-# every styled byte through kazari's typed, capability-honest (truecolor →
-# 256 → 16 → plain), format!()-free emission instead of hand-rolled ANSI.
-# M0: path dep for the local proof; flips to a published git dep on release.
-kazari = { git = "https://github.com/pleme-io/kazari", rev = "e3811a22a9de376820d0a482fa71578b64a38497" }
+# kazari (飾り) — the fleet line-output typescape. sui's style.rs routes every
+# styled byte through kazari's typed, capability-honest (truecolor → 256 → 16 →
+# plain), format!()-free emission instead of hand-rolled ANSI. Published on
+# crates.io as `pleme-io-kazari` (the bare `kazari` name is squatted upstream by
+# an unrelated 2021 crate); the `package` rename keeps every `use kazari::`
+# unchanged. A crates.io version dep (not git) so sui-spec itself is publishable
+# — a git dep here is exactly what froze sui-spec at 0.1.118 and auto-deferred
+# every crate downstream of it.
+kazari = { package = "pleme-io-kazari", version = "0.1" }
 tatara-lisp.workspace = true
 tatara-lisp-derive.workspace = true
 serde.workspace = true

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "d9f696c90539eebc3f7ff483dee0a8c5e5679d1f29f0d88945c99e41b7054c15",
+  "cargo_lock_sha256": "4ff38a069b7215edd0dc977df43d5ffb33ce0fe92f51e452bd5ad7fb0c5cde5b",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -13010,7 +13010,7 @@
           "std"
         ]
       },
-      "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": {
+      "irodori-0.2.0": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -13206,52 +13206,6 @@
             "uses_default_features": true,
             "optional": false,
             "target": "cfg(unix)",
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
-      "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": {
-        "runtime_dependencies": [
-          {
-            "name": "anstyle",
-            "package_key": "anstyle-1.0.14",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "irodori",
-            "package_key": "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "terminal_size",
-            "package_key": "terminal_size-0.4.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "unicode_width",
-            "package_key": "unicode-width-0.2.2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
             "tree": "target"
           }
         ],
@@ -15365,6 +15319,52 @@
       },
       "pkg-config-0.3.33": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "pleme-io-kazari-0.1.3": {
+        "runtime_dependencies": [
+          {
+            "name": "anstyle",
+            "package_key": "anstyle-1.0.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "irodori",
+            "package_key": "irodori-0.2.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "terminal_size",
+            "package_key": "terminal_size-0.4.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "unicode_width",
+            "package_key": "unicode-width-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -26264,16 +26264,6 @@
             "tree": "target"
           },
           {
-            "name": "kazari",
-            "package_key": "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
             "name": "libc",
             "package_key": "libc-0.2.186",
             "kind": "normal",
@@ -26281,6 +26271,16 @@
             "uses_default_features": true,
             "optional": false,
             "target": "cfg(unix)",
+            "tree": "target"
+          },
+          {
+            "name": "kazari",
+            "package_key": "pleme-io-kazari-0.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
             "tree": "target"
           },
           {
@@ -38785,7 +38785,7 @@
     "ipnet-2.12.0": {
       "edition": "2018"
     },
-    "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": {
+    "irodori-0.2.0": {
       "edition": "2024"
     },
     "is-terminal-0.4.17": {
@@ -38818,9 +38818,6 @@
     },
     "jobserver-0.1.34": {
       "edition": "2021"
-    },
-    "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": {
-      "edition": "2024"
     },
     "keccak-0.1.6": {
       "edition": "2018"
@@ -39106,6 +39103,13 @@
     },
     "pkg-config-0.3.33": {
       "edition": "2018"
+    },
+    "pleme-io-kazari-0.1.3": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "kazari",
+        "path": "src/lib.rs"
+      }
     },
     "plotters-0.3.7": {
       "edition": "2018"
@@ -40228,9 +40232,6 @@
       "links": "zstd"
     }
   },
-  "git_nar_sha256": {
-    "irodori-0.1.1-1c40add39ed45c9cfed5eda1840824015f35393c": "sha256-L5f5NWFug3pZduBK+HLJwt6+lQptNIXLank+Mh8326c=",
-    "kazari-0.1.0-e3811a22a9de376820d0a482fa71578b64a38497": "sha256-RkJPEHUzVEf4L9kiJvRQ9Zdjru4Q7DjNOZsbOUN+Ipg="
-  },
+  "git_nar_sha256": {},
   "flake_metadata": {}
 }
