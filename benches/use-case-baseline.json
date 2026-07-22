@@ -30,7 +30,21 @@
         "top_churn": "im_rc HAMT make_mut (env COW-per-bind) + rowan::cursor::NodeData (AST re-walk)"
       },
       "sui_plain_wall_s": 1.54,
-      "headline": "sui 1.54s vs nix warm 2.2s \u2014 sui ~1.4x FASTER on the classic leaf, byte-identical, 3 runs"
+      "headline": "CORRECTED 2026-07-22: byte-identical, YES. But sui is ~7x SLOWER than nix in load-robust user-CPU (2.15s vs 0.30s) \u2014 the prior '1.4x FASTER' was a wall-time artifact. See user_cpu_load_robust. The wall win was not real; the CPU gap is the honest stratosphere target.",
+      "user_cpu_load_robust": {
+        "minted": "2026-07-22",
+        "metric": "user-CPU seconds (/usr/bin/time -p), the LOAD-ROBUST metric \u2014 wall is contaminated by machine load (measured: this expr read 10-26s wall under a 16-agent workflow while user-CPU held ~2.1s)",
+        "sui_treewalker_s": 2.15,
+        "sui_vm_s": 2.17,
+        "nix_cold_s": 0.29,
+        "nix_warm_s": 0.31,
+        "note": "Apples-to-apples in real CPU. nix's eval of hello.drvPath is ~0.30s CPU cold OR warm (the eval-cache barely helps \u2014 it is just cheap). BOTH sui engines are ~2.15s (the VM accelerator is NOT faster here \u2014 the cost is the SHARED substrate: rowan AST re-walk + im_rc HAMT env COW-per-bind, per the dhat top_churn).",
+        "honest_finding": "sui is ~7x SLOWER than nix in real CPU on the classic leaf. The `sui_plain_wall_s: 1.54 / ~1.4x FASTER` headline below was MISLEADING \u2014 it compared WALL time, where nix's 2.2s wall is mostly non-CPU overhead (its real eval work is 0.30s CPU) and sui's 1.54s wall is multithreaded compute doing 2.15s of CPU work. Never round up: in computational efficiency sui trails nix ~7x here.",
+        "ratchet_floor_s": 2.22,
+        "stratosphere_target_s": 0.3,
+        "target_lever": "L3 IR (eval_ir / STRATOSPHERE M5) \u2014 lower-once flat IR eliminates the rowan re-walk (40.7% heap / 21% wall self-time per the profile), the shared cost both engines pay. That, plus the im_rc env-COW work, is the quantified path from 2.15s toward nix's 0.30s."
+      },
+      "sui_plain_wall_s_note": "1.54s WALL (quiet). NOT a fair speed claim vs nix \u2014 see user_cpu_load_robust: in real CPU sui is ~7x SLOWER. Wall flattered sui (nix warm wall is mostly cache-read wait, ~0.3s CPU)."
     },
     "U10_cid_toplevel": {
       "nix": {
@@ -66,5 +80,10 @@
       "clean_rerun_recipe": "idle machine, no concurrent builds: nix eval --no-eval-cache --raw .#...hostName (prefix lower bound) + a mid-size attr (e.g. an nvidia/systemd unit drvPath) + the toplevel, all same session"
     }
   },
-  "struck_replaced": "the 64GB/7GB pair + 140MB/s now carry recorded provenance (this file); the 29.1% GC price carries the b86cxdo59 run"
+  "struck_replaced": "the 64GB/7GB pair + 140MB/s now carry recorded provenance (this file); the 29.1% GC price carries the b86cxdo59 run",
+  "perf_ratchet_protocol": {
+    "minted": "2026-07-22",
+    "rule": "The perf ratchet keys on LOAD-ROBUST user-CPU (/usr/bin/time user), never wall-time. Wall-time under uncontrolled machine load produces FALSE regressions (measured: hello.drvPath 10-26s wall under a 16-agent workflow vs a stable ~2.1s user-CPU) AND can flatter sui vs nix's warm-cache wall. A cell regresses only if its user-CPU crosses its committed floor; an improvement ratchets the floor down. Wall numbers are advisory context, not the gate.",
+    "why": "You cannot 'ensure clear performance' on a metric that lies under load. This is the STRATOSPHERE \u00a70 perf-ratchet's measurement foundation."
+  }
 }
