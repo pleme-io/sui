@@ -56,6 +56,8 @@ tatara-lisp knobs without ever regressing. Every move in §5's path rides all th
    leans on erodes. This is a first-class design requirement of §5/M4's U-perf
    typed catalog.
 
+**Measured 2026-07-22 — the M5 lever is real (data, not claim).** `sui-ir/tests/perf_ir_vs_tree.rs` (an `--ignored` perf report) times eval_ir vs the tree-walker on pure compute workloads, byte-identical, reporting the load-robust RATIO: **geomean 2.58× (2.38–2.76×) — eval_ir is measurably faster** because it walks a flat `Vec<Ir>` while the tree-walker re-walks the rowan CST every eval. This is the first measured perf result of the mission: it confirms M5 (flipping eval_ir to the default engine) is the lever that attacks the ~7× user-CPU gap vs nix on U04 (both engines equally slow there because the cost is the shared rowan-re-walk the IR removes). The flip itself stays byte-critical multi-session (needs M1 + content-hash ProgramCache keying); but the lever is now proven to deliver.
+
 **The compounding shape:** each closed use-case row is real ground the next stands
 on, and the three ratchets guarantee the ground never crumbles under it — you can
 only ever move forward. That is what makes an eternal-optimization mission joyful
