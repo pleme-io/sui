@@ -64,3 +64,25 @@ When a bug is fixed, move the `.nix` + `.exp` files back out of
 `known_broken/` into `../` (the parent `lang/` directory) — the
 runner in `tests/lang_corpus.rs` will automatically pick them up
 on the next test run.
+
+## 2026-07-22 — corrected root for readDir/readFileType/hashfile/symlink-resolution
+
+The fan-out diagnosis classified these as "just needs the vendored FS tree" (a
+test-data fix). VERIFIED that is INCOMPLETE: after vendoring the CppNix `readDir/`
+tree (foo/ + bar + relative symlinks ldir->foo, linked->foo/git-hates-directories),
+the `readDir` BUILTIN is byte-correct — `sui eval "import <abspath>/eval-okay-readDir.nix"`
+returns exactly `{"bar":"regular","foo":"directory","ldir":"symlink","linked":"symlink"}`.
+But the `lang_corpus` gate (which evals via `eval_with_file(source, path)`) fails with
+`readDir: No such file or directory`, because the path literal `./readDir` resolves
+against the process CWD (the crate dir under `cargo test`), NOT the containing fixture
+file. nix resolves a path literal relative to the file it appears in.
+
+So the real root is a **path-literal-relative-to-eval-file resolution gap** (bigger
+than these fixtures — it affects ANY `./x` path literal in an eval'd file), byte-adjacent
+(path literals become store paths → drv hashes), NOT missing test-data. Two honest fix
+options for a future session: (a) harness — eval fixtures via `import <abspath>` (which
+already resolves correctly, as the binary proves) instead of `eval_with_file(source)`;
+or (b) eval — make `eval_with_file` establish the path-literal base from its `path` arg
+the way `import` does. Left for focused work; not rushed at session-end (byte-adjacent).
+The FS tree is NOT vendored (removed with the revert) — re-vendor it when the resolution
+fix lands.
