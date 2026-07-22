@@ -464,6 +464,15 @@ const CLOSED_SEED: &[&str] = &[
     // DEFAULT_SCOPE bare globals.
     "isNull null",
     "removeAttrs { a = 1; b = 2; } [ \"a\" ]",
+    // Slice 7 — the new pure builtins the hello.drvPath probe added. Each
+    // byte-matches the walker (a value row here proves it); the store-/IO-bound
+    // ones (pathExists/readFile/readDir/getEnv-of-real-file) are exercised by
+    // the real-nixpkgs probe, not the pure corpus.
+    "builtins.placeholder \"out\"",
+    "builtins.placeholder \"dev\"",
+    "builtins.addErrorContext \"ctx\" 42",
+    "builtins.addErrorContext \"ctx\" [ 1 2 ]",
+    "builtins.getEnv \"SUI_IR_SURELY_UNSET_VAR_XYZ\"",
 ];
 
 #[test]
@@ -1058,6 +1067,107 @@ fn nixpkgs_lib_differential() {
         failures.join("\n")
     );
     eprintln!("nixpkgs_lib_differential: {matched}/{} lib.* rows byte-matched", rows.len());
+}
+
+// ── 3d. the REAL nixpkgs hello.drvPath frontier (slice 7) ─────────────────
+//
+// The whole point of the L3 hello arc: evaluate a REAL nixpkgs package's
+// `drvPath` through `eval_ir` and byte-compare against the tree-walker (which
+// the walker's own suite proves == `nix eval …drvPath`). Two things are pinned:
+//
+//   1. THREE-WAY MATCH (asserted): `bootstrap-stage-xgcc-stdenv-linux.drvPath`
+//      — a real, complete nixpkgs stdenv derivation reached through the full
+//      `import <nixpkgs>` top-level — byte-matches the walker on `eval_ir`.
+//      This is the FURTHEST real derivation on hello's `x86_64-linux` bootstrap
+//      chain that currently three-way matches; divergence first enters one step
+//      up, at `bootstrap-stage2-stdenv-linux`.
+//   2. THE FRONTIER (documented, not asserted-equal): `hello.drvPath` on
+//      `x86_64-linux` — `eval_ir` reaches a REAL `hello-2.12.2.drv` (asserted:
+//      the path ends `-hello-2.12.2.drv`), but does NOT yet byte-match, because
+//      the slice-5 overlay-fixpoint promotion drops string-context dependency
+//      EDGES the walker preserves through the deep stdenv fixpoint (libxcrypt→
+//      perl, openssl→coreutils, xgcc→zlib.out). Whether it matches is PRINTED,
+//      never asserted either way — a later slice that lands the walker's
+//      "materialized-attrset-with-keys partial" flips it to a match without
+//      breaking this test.
+//
+// Gated on `SUI_IR_NIXPKGS` (a path to a nixpkgs source tree) so the committed
+// suite stays hermetic. Run with e.g.
+//   SUI_IR_NIXPKGS=$(nix eval --impure --raw --expr 'toString <nixpkgs>') \
+//     cargo test -p sui-ir nixpkgs_hello_frontier -- --nocapture
+
+#[test]
+fn nixpkgs_hello_frontier() {
+    let Ok(nixpkgs) = std::env::var("SUI_IR_NIXPKGS") else {
+        eprintln!(
+            "nixpkgs_hello_frontier: SUI_IR_NIXPKGS unset — skipping the real hello.drvPath \
+             frontier (set it to a nixpkgs source dir to run)"
+        );
+        return;
+    };
+    // `.stdenv(.__bootPackages.stdenv)^5` = bootstrap-stage-xgcc-stdenv-linux —
+    // the furthest real derivation on hello's x86_64-linux bootstrap chain that
+    // three-way matches (depth 4 = bootstrap-stage2-stdenv-linux diverges).
+    let boot = "__bootPackages.stdenv.".repeat(5);
+    let fixture = format!(
+        "(import {nixpkgs} {{ system = \"x86_64-linux\"; }}).stdenv.{boot}drvPath"
+    );
+    let hello = format!(
+        "(import {nixpkgs} {{ system = \"x86_64-linux\"; }}).hello.drvPath"
+    );
+
+    // The full nixpkgs top-level is a deep fixpoint; evaluate on a large-stack
+    // worker like nixpkgs_lib_differential.
+    let eval_both = |src: String| -> (Outcome, Result<String, IrEvalError>) {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(move || (tree_outcome(&src), ir_outcome(&src)))
+            .expect("spawn")
+            .join()
+            .expect("hello eval worker panicked")
+    };
+
+    // 1. The three-way match (asserted).
+    let (ftree, fir) = eval_both(fixture.clone());
+    let Outcome::Val(ft) = &ftree else {
+        panic!("walker (oracle) failed on the stage-xgcc-stdenv fixture: {ftree:?}");
+    };
+    let fi = fir.unwrap_or_else(|e| panic!("eval_ir gapped on the stage-xgcc-stdenv fixture: {e}"));
+    assert_eq!(
+        *ft, fi,
+        "bootstrap-stage-xgcc-stdenv-linux.drvPath must THREE-WAY match \
+         (eval_ir == walker == nix)\n  walker: {ft}\n  eval_ir: {fi}"
+    );
+    // (`tree_outcome`/`ir_outcome` render a string value WITH surrounding
+    // quotes, so match on `contains`, not `ends_with`.)
+    assert!(
+        ft.contains("-bootstrap-stage-xgcc-stdenv-linux.drv"),
+        "fixture drvPath shape unexpected: {ft}"
+    );
+    eprintln!("nixpkgs_hello_frontier: THREE-WAY MATCH at bootstrap-stage-xgcc-stdenv-linux\n  {ft}");
+
+    // 2. The frontier (hello reaches a real drv; match is printed, not asserted).
+    let (htree, hir) = eval_both(hello.clone());
+    let Outcome::Val(ht) = &htree else {
+        panic!("walker (oracle) failed on hello.drvPath: {htree:?}");
+    };
+    match hir {
+        Ok(hi) => {
+            assert!(
+                hi.contains("-hello-2.12.2.drv"),
+                "eval_ir must reach a REAL hello-2.12.2.drv (not a placeholder): {hi}"
+            );
+            if hi == *ht {
+                eprintln!("nixpkgs_hello_frontier: hello.drvPath NOW THREE-WAY MATCHES: {hi}");
+            } else {
+                eprintln!(
+                    "nixpkgs_hello_frontier: hello.drvPath reaches a REAL drv but diverges \
+                     (the slice-5 promotion edge-drop frontier)\n  walker: {ht}\n  eval_ir: {hi}"
+                );
+            }
+        }
+        Err(e) => panic!("eval_ir failed to reach a real hello.drvPath on x86_64-linux: {e}"),
+    }
 }
 
 // ── 4. determinism ────────────────────────────────────────────────────────

@@ -109,6 +109,19 @@ pub enum IrBuiltin {
     Derivation,
     DerivationStrict,
     ConvertHash,
+    // probe: pure-fs readers (mirror the walker's paths.rs)
+    PathExists,
+    ReadFile,
+    ReadDir,
+    ReadFileType,
+    GetEnv,
+    Placeholder,
+    AddErrorContext,
+    // PROBE STUB — returns Null, NOT the walker's real {file,line,column}. The
+    // IR value model carries no attr position table, so this is a KNOWN
+    // POTENTIAL DIVERGENCE (only byte-faithful if the position never flows into
+    // hello.drvPath; the final byte-match arbitrates).
+    UnsafeGetAttrPos,
     // arity 2
     Map,
     Filter,
@@ -205,7 +218,13 @@ impl IrBuiltin {
             | B::DirOf
             | B::Derivation
             | B::DerivationStrict
-            | B::ConvertHash => 1,
+            | B::ConvertHash
+            | B::PathExists
+            | B::ReadFile
+            | B::ReadDir
+            | B::ReadFileType
+            | B::GetEnv
+            | B::Placeholder => 1,
             B::Map
             | B::Filter
             | B::ElemAt
@@ -244,6 +263,8 @@ impl IrBuiltin {
             | B::FindFile
             | B::Trace
             | B::TraceVerbose
+            | B::AddErrorContext
+            | B::UnsafeGetAttrPos
             | B::HashString => 2,
             B::Foldl | B::Substring | B::ReplaceStrings => 3,
         }
@@ -298,6 +319,14 @@ impl IrBuiltin {
             B::DerivationStrict => "derivationStrict",
             B::ConvertHash => "convertHash",
             B::HashString => "hashString",
+            B::PathExists => "pathExists",
+            B::ReadFile => "readFile",
+            B::ReadDir => "readDir",
+            B::ReadFileType => "readFileType",
+            B::GetEnv => "getEnv",
+            B::Placeholder => "placeholder",
+            B::AddErrorContext => "addErrorContext",
+            B::UnsafeGetAttrPos => "unsafeGetAttrPos",
             B::Add => "add",
             B::Sub => "sub",
             B::Mul => "mul",
@@ -467,6 +496,14 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::DerivationStrict,
     IrBuiltin::ConvertHash,
     IrBuiltin::HashString,
+    IrBuiltin::PathExists,
+    IrBuiltin::ReadFile,
+    IrBuiltin::ReadDir,
+    IrBuiltin::ReadFileType,
+    IrBuiltin::GetEnv,
+    IrBuiltin::Placeholder,
+    IrBuiltin::AddErrorContext,
+    IrBuiltin::UnsafeGetAttrPos,
     IrBuiltin::Map,
     IrBuiltin::Filter,
     IrBuiltin::ElemAt,
@@ -525,7 +562,6 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     // Slice 6 implemented `derivation`/`derivationStrict`/`hashString`/
     // `convertHash`, so they moved OUT of this list into `ALL_IMPLEMENTED`.
     "addDrvOutputDependencies",
-    "addErrorContext",
     "appendContext",
     "break",
     "currentTime",
@@ -537,16 +573,10 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     "filterSource",
     "flakeRefToString",
     "fromTOML",
-    "getEnv",
     "getFlake",
     "hashFile",
     "parseFlakeRef",
     "path",
-    "pathExists",
-    "placeholder",
-    "readDir",
-    "readFile",
-    "readFileType",
     "resolveFlakeRef",
     "scopedImport",
     "storePath",
@@ -554,7 +584,6 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     "toFile",
     "toPath",
     "unsafeDiscardOutputDependency",
-    "unsafeGetAttrPos",
     "warn",
 ];
 
@@ -704,6 +733,22 @@ fn as_str(v: &IrValue) -> Result<&str, IrEvalError> {
         IrValue::Str(s, _) => Ok(s),
         other => Err(IrEvalError::TypeMismatch {
             expected: "string",
+            got: other.type_name(),
+        }),
+    }
+}
+
+/// Coerce a value to a path string for the fs-reader builtins. Accepts a
+/// `Path` (the common case) or a plain `Str` (the walker's `as_string`/
+/// `coerce_to_realized_path` accept both; the flake `-source` redirect +
+/// derivation IFD arms of the walker are NOT mirrored here — a probe gap
+/// that only matters if a fetched flake input or an IFD path flows in).
+fn as_path_string(v: &IrValue) -> Result<String, IrEvalError> {
+    match v {
+        IrValue::Path(p) => Ok((**p).clone()),
+        IrValue::Str(s, _) => Ok((**s).clone()),
+        other => Err(IrEvalError::TypeMismatch {
+            expected: "path",
             got: other.type_name(),
         }),
     }
@@ -1355,6 +1400,103 @@ fn run_saturated(
             ))),
         },
         B::FindFile => find_file_impl(as_list(&captured[0])?, as_str(&arg)?),
+
+        // ── probe: pure-fs readers (mirror the walker's paths.rs) ─────────
+        B::PathExists => {
+            let p = as_path_string(&arg)?;
+            Ok(IrValue::Bool(std::path::Path::new(&p).exists()))
+        }
+        B::ReadFile => {
+            let p = as_path_string(&arg)?;
+            let contents = std::fs::read_to_string(&p).map_err(|e| IrEvalError::Io {
+                context: "readFile".to_string(),
+                message: e.to_string(),
+            })?;
+            Ok(IrValue::string(contents))
+        }
+        B::ReadFileType => {
+            let p = as_path_string(&arg)?;
+            match std::fs::symlink_metadata(&p) {
+                Ok(meta) => {
+                    let kind = if meta.is_symlink() {
+                        "symlink"
+                    } else if meta.is_dir() {
+                        "directory"
+                    } else if meta.is_file() {
+                        "regular"
+                    } else {
+                        "unknown"
+                    };
+                    Ok(IrValue::string(kind))
+                }
+                Err(e) => Err(IrEvalError::Io {
+                    context: "readFileType".to_string(),
+                    message: e.to_string(),
+                }),
+            }
+        }
+        B::ReadDir => {
+            let p = as_path_string(&arg)?;
+            let mut attrs = IrAttrs::new();
+            for entry in std::fs::read_dir(&p).map_err(|e| IrEvalError::Io {
+                context: "readDir".to_string(),
+                message: e.to_string(),
+            })? {
+                let entry = entry.map_err(|e| IrEvalError::Io {
+                    context: "readDir".to_string(),
+                    message: e.to_string(),
+                })?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let ft = entry.file_type().map_err(|e| IrEvalError::Io {
+                    context: "readDir".to_string(),
+                    message: e.to_string(),
+                })?;
+                let type_str = if ft.is_dir() {
+                    "directory"
+                } else if ft.is_symlink() {
+                    "symlink"
+                } else {
+                    "regular"
+                };
+                attrs.insert(name, IrValue::string(type_str));
+            }
+            Ok(IrValue::Attrs(Rc::new(attrs)))
+        }
+
+        B::GetEnv => {
+            // mirror of the walker: `std::env::var(name).unwrap_or_default()`
+            let name = as_str(&arg)?;
+            Ok(IrValue::string(std::env::var(name).unwrap_or_default()))
+        }
+        // `placeholder name` = "/" + nix_base32(sha256("nix-output:"+name)) —
+        // pure, byte-exact (embedded verbatim in self-referencing drv env/args).
+        B::Placeholder => {
+            let output = as_str(&arg)?;
+            use sha2::{Digest, Sha256};
+            let hash = Sha256::digest(format!("nix-output:{output}").as_bytes());
+            Ok(IrValue::string(format!(
+                "/{}",
+                sui_compat::store_path::nix_base32_encode(hash.as_slice())
+            )))
+        }
+        // `addErrorContext ctx value` → value (identity on the 2nd arg; the
+        // context only decorates errors thrown while forcing — value-parity
+        // is identity). Mirror of the walker's curried passthrough.
+        B::AddErrorContext => Ok(arg),
+        // TYPED KNOWN GAP (the position-less IR value model). CppNix (and the
+        // walker) return the attr's real `{file,line,column}` for a
+        // SOURCE-LITERAL attr, and `null` for a POSITIONLESS attr (one
+        // synthesized by `//` / `listToAttrs` / `mapAttrs` — the common case in
+        // generic stdenv/builder logic). The IR's `IrAttrs` (a `BTreeMap`)
+        // carries no source positions at all, so the honest floor is `null` for
+        // EVERY attr: byte-correct for the positionless case (which is what the
+        // deep nixpkgs fixpoint actually exercises), a NAMED divergence for the
+        // source-literal case. It never affects a drvPath (a position byte never
+        // enters derivation hashing), so a real hello.drvPath is reachable
+        // through this gap; the source-literal divergence is asserted (not
+        // silent) in `eval_ir::tests::typed_gaps`. Closing it truly-unrep needs
+        // IR attr-position tracking through lower+eval (a later slice).
+        B::UnsafeGetAttrPos => Ok(IrValue::Null),
 
         // ── slice 4: convert ──────────────────────────────────────────────
         B::ToJson => {

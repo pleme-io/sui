@@ -116,6 +116,33 @@ pub fn resolve_import(base_dir: Option<&Path>, raw: &str) -> Result<PathBuf, Str
 
 // ── NIX_PATH search-path resolution (mirror of `sui_eval::builtins::nav`) ──
 
+/// Resolve a `<nix/sub>` path to an embedded corepkg file — mirror of the
+/// walker's `resolve_corepkg` (`sui_eval::builtins::nav`), same embedded
+/// `fetchurl.nix` content, same `sui-corepkgs` temp dir.
+fn resolve_corepkg(sub: &str) -> Option<String> {
+    use std::sync::OnceLock;
+    static COREPKGS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+    let dir = COREPKGS_DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join("sui-corepkgs");
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(
+            dir.join("fetchurl.nix"),
+            include_str!("../../sui-eval/src/corepkgs/fetchurl.nix"),
+        )
+        .ok()?;
+        Some(dir)
+    });
+
+    let dir = dir.as_ref()?;
+    let path = dir.join(sub);
+    if path.exists() {
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
 /// Parse a `NIX_PATH` env-var value into `(prefix, path)` pairs. Mirror of
 /// `sui_eval::builtins::parse_nix_path`: `prefix1=path1:prefix2=path2:…`; an
 /// entry with no `=` has an empty prefix; empty entries are skipped.
@@ -142,12 +169,12 @@ pub fn parse_nix_path(s: &str) -> Vec<(String, String)> {
 /// NIX_PATH-driven cases is gated in `tests/path_parity.rs`.
 #[must_use]
 pub fn resolve_search_path(name: &str) -> Option<String> {
-    // Embedded corepkgs (`<nix/fetchurl.nix>`) are a sui-eval-side impurity
-    // with no counterpart here; mirror the walker's structure but leave the
-    // corepkg materialization out (documented divergence — never exercised
-    // by the pure subset, which has no fetchers).
-    if name.strip_prefix("nix/").is_some() {
-        return None;
+    // Embedded corepkgs (`<nix/fetchurl.nix>`): mirror the walker's
+    // `resolve_corepkg` (nav.rs) — the darwin stdenv's `fetchurlBoot` imports
+    // `<nix/fetchurl.nix>` for the bootstrap-tools FOD, so real nixpkgs eval
+    // needs this. Same embedded content + same temp dir as the walker.
+    if let Some(sub) = name.strip_prefix("nix/") {
+        return resolve_corepkg(sub);
     }
 
     let nix_path = std::env::var("NIX_PATH").unwrap_or_default();

@@ -1248,11 +1248,53 @@ pub(crate) fn coerce_to_string_ctx(
         }
         IrValue::Path(p) => {
             if copy_to_store {
-                return Err(IrEvalError::Unsupported("path-copy-to-store"));
+                // CppNix copy-to-store coercion (mirror of the walker's
+                // `value.rs` Path arm): resolve to canonical-absolute, require
+                // it exists, NAR-hash the tree, reference the store path. The
+                // walker's flake `-source` redirect (`materialize` /
+                // `source_name_for_read_dir`) is omitted — a NIX_PATH nixpkgs
+                // is not a fetched flake input, so `materialize` is identity
+                // and the name is the real basename; the store path is
+                // NAR-content-addressed, so byte-identical given the same tree.
+                let raw: &str = p;
+                let pb = std::path::Path::new(raw);
+                let abs = if pb.is_absolute() {
+                    pb.to_path_buf()
+                } else if let Some(dir) = current_eval_dir() {
+                    dir.join(pb)
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| IrEvalError::Io {
+                            context: {
+                                let mut s = String::from("copy-to-store coercion of ");
+                                s.push_str(raw);
+                                s
+                            },
+                            message: e.to_string(),
+                        })?
+                        .join(pb)
+                };
+                let canon = abs.canonicalize().map_err(|_| {
+                    IrEvalError::TypeError(format!("path '{}' does not exist", abs.display()))
+                })?;
+                let name = canon
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "source".to_string());
+                let src = sui_compat::source::nar_hash_source_tree(&canon, &name)
+                    .map_err(|e| {
+                        IrEvalError::TypeError(format!(
+                            "copy-to-store coercion of '{}': {e}",
+                            canon.display()
+                        ))
+                    })?;
+                ctx.add_plain(src.store_path.clone());
+                src.store_path
+            } else {
+                // Walker plain-mode: the raw path IS its own context element.
+                ctx.add_plain((**p).clone());
+                (**p).clone()
             }
-            // Walker plain-mode: the raw path IS its own context element.
-            ctx.add_plain((**p).clone());
-            (**p).clone()
         }
         IrValue::Int(n) => n.to_string(),
         IrValue::Float(f) => format!("{f:.6}"),
@@ -2369,16 +2411,30 @@ mod tests {
             ev("(derivation { name = \"x\"; system = \"aarch64-darwin\"; builder = \"/bin/sh\"; }).type"),
             Ok(IrValue::Str(s, _)) if *s == "derivation"
         ));
-        // The remaining store-/IO-bound builtins stay TYPED gaps.
+        // Slice 7: `getEnv` is IMPLEMENTED (reads the process env like the
+        // walker) — an unset var is the empty string on both engines.
         assert!(matches!(
-            ev("builtins.getEnv \"PATH\""),
-            Err(IrEvalError::MissingBuiltin(n)) if n == "getEnv"
+            ev("builtins.getEnv \"SUI_IR_SURELY_UNSET_VAR_XYZ\""),
+            Ok(IrValue::Str(s, _)) if s.is_empty()
         ));
-        // Copy-to-store path coercion (string interpolation of a path) is
-        // a typed gap; plain coercion (toString) is not.
-        assert!(matches!(
+        // Slice 7: copy-to-store path coercion (`"${./f}"`) is IMPLEMENTED
+        // (NAR-hashes the source tree via `sui_compat::source`), so it is no
+        // longer the `Unsupported("path-copy-to-store")` gap — it now attempts
+        // the real store copy and, for a nonexistent path, errors byte-for-byte
+        // like the walker (`tests/probe_hello`-verified against the walker).
+        assert!(!matches!(
             ev(r#""${./x}""#),
             Err(IrEvalError::Unsupported("path-copy-to-store"))
+        ));
+        // TYPED KNOWN GAP (position-less IR value model): `unsafeGetAttrPos` on a
+        // SOURCE-LITERAL attr returns `null` here, where the walker/CppNix return
+        // the attr's `{file,line,column}`. Named + asserted, never silent; it
+        // never enters a drvPath (a position byte is not part of derivation
+        // hashing), so a real hello.drvPath is reachable through it. See the
+        // `builtins::UnsafeGetAttrPos` arm.
+        assert!(matches!(
+            ev("builtins.unsafeGetAttrPos \"a\" { a = 1; }"),
+            Ok(IrValue::Null)
         ));
     }
 
