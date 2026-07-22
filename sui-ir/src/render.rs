@@ -805,3 +805,88 @@ fn render_ast_path(
     out.push(')');
     Ok(())
 }
+
+// ── evaluated-value render (the normalized differential form) ──────────────
+//
+// Renders an evaluated `IrValue` to the ONE normalized textual form the
+// sui↔sui differential (`tests/eval_differential.rs`) byte-compares against the
+// tree-walker's `sui_eval::render::render_tree`: CppNix float format, sorted
+// attrs, the walker's string escaping, raw (unquoted) paths, a shared depth cap
+// so an infinitely-deep value renders byte-identically on both engines (a match,
+// never a stack overflow). Promoted from the test's `common/render.rs` into
+// shippable code so the `SUI_IR` shadow-eval latch (`sui eval`, walker
+// authoritative) can render an `eval_ir` result for the live differential.
+
+use crate::eval_ir::{IrEvalError, IrValue};
+
+/// Render-recursion depth cap: far above any finite value's depth, far below a
+/// stack-overflow depth. Must equal `sui_eval::render`'s cap so an
+/// infinitely-deep value renders byte-identically on both engines.
+pub const MAX_RENDER_DEPTH: usize = 128;
+
+/// The identical marker both engines emit past [`MAX_RENDER_DEPTH`].
+pub const DEEP_SENTINEL: &str = "<...>";
+
+/// The walker's `Display` string escaping (byte-identical on both engines).
+#[must_use]
+pub fn escape_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Render an evaluated `IrValue` to the normalized differential form.
+///
+/// # Errors
+///
+/// Propagates any `force()` error (the differential must see errors as errors,
+/// not swallow them into a placeholder).
+pub fn render_ir_value(v: &IrValue) -> Result<String, IrEvalError> {
+    render_ir_value_at(v, 0)
+}
+
+fn render_ir_value_at(v: &IrValue, depth: usize) -> Result<String, IrEvalError> {
+    if depth >= MAX_RENDER_DEPTH {
+        return Ok(DEEP_SENTINEL.to_string());
+    }
+    let f = v.force()?;
+    Ok(match f {
+        IrValue::Null => "null".to_string(),
+        IrValue::Bool(b) => b.to_string(),
+        IrValue::Int(n) => n.to_string(),
+        IrValue::Float(x) => sui_compat::versions::cppnix_format_float(x),
+        IrValue::Str(s, _) => {
+            let mut out = String::from("\"");
+            out.push_str(&escape_str(&s));
+            out.push('"');
+            out
+        }
+        IrValue::Path(p) => (*p).to_string(),
+        IrValue::List(items) => {
+            let mut out = String::from("[ ");
+            for item in items.iter() {
+                out.push_str(&render_ir_value_at(item, depth + 1)?);
+                out.push(' ');
+            }
+            out.push(']');
+            out
+        }
+        IrValue::Attrs(attrs) => {
+            let mut out = String::from("{ ");
+            for (k, v) in attrs.iter() {
+                out.push_str(k);
+                out.push_str(" = ");
+                out.push_str(&render_ir_value_at(v, depth + 1)?);
+                out.push_str("; ");
+            }
+            out.push('}');
+            out
+        }
+        IrValue::Lambda(_) => "<<lambda>>".to_string(),
+        IrValue::Builtin(kind, captured) => {
+            let mut out = String::from("<<builtin ");
+            out.push_str(kind.display_name(captured.len()));
+            out.push_str(">>");
+            out
+        }
+        IrValue::Thunk(_) => unreachable!("force() returned a thunk"),
+    })
+}

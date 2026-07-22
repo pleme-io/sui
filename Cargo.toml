@@ -142,6 +142,7 @@ sui-cache = { path = "sui-cache", version = "0.1.10" }
 sui-compat = { path = "sui-compat", version = "0.1.10" }
 sui-store = { path = "sui-store", version = "0.1.10" }
 sui-eval = { path = "sui-eval", version = "0.1.10" }
+sui-ir = { path = "sui-ir" }
 sui-build = { path = "sui-build", version = "0.1.10" }
 sui-daemon = { path = "sui-daemon", version = "0.1.10" }
 sui-orchestrate = { path = "sui-orchestrate", version = "0.1.10" }
@@ -348,6 +349,7 @@ sui-cache.workspace = true
 sui-compat.workspace = true
 sui-store.workspace = true
 sui-eval.workspace = true
+sui-ir.workspace = true
 sui-build.workspace = true
 sui-daemon.workspace = true
 sui-intern.workspace = true

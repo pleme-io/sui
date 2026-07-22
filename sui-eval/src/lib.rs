@@ -42,6 +42,11 @@ pub mod lazy;
 /// binary-installed hook (the pure evaluator owns no build pipeline).
 pub mod realize;
 
+/// The normalized differential render (deep-forcing, error-propagating) the
+/// sui↔sui differential + the `SUI_IR` shadow-eval latch byte-compare against
+/// `eval_ir`. Must stay format-locked with `sui_ir::render`.
+pub mod render;
+
 /// Re-export flake lock types from sui-compat where they canonically live.
 pub mod flake {
     pub use sui_compat::flake::*;

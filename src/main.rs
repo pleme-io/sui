@@ -5928,6 +5928,46 @@ async fn main() -> Result<(), CliError> {
                 (None, None) =>
                     return Err(CliError::MissingArgument("no expression provided".into())),
             };
+            // ── Dark-side lever `eval-ir` (byte-RISKY) — SHADOW mode ──────────
+            // OFF unless `SUI_IR` is set. Runs the flat-IR engine ALONGSIDE the
+            // tree-walker (the semantic oracle) and reports agreement on stderr;
+            // the tree-walker stays AUTHORITATIVE — its bytes are what ship — so
+            // the shadow can NEVER emit a wrong answer. It only turns every real
+            // `sui eval` into a live differential row driving `eval_ir` toward
+            // promotion (dark-side ladder rungs 2+4; ledger: sui-spec
+            // specs/darkside.lisp `eval-ir-subset`, DarkGated). Best-effort: an
+            // expr that needs file/flake context the pure subset lacks reports a
+            // typed gap, never blocks. Speed is NOT realized here (both engines
+            // run) — that awaits promotion to eval_ir-authoritative on proof.
+            if std::env::var_os("SUI_IR").is_some() {
+                use std::rc::Rc;
+                let ir = match sui_ir::lower_file(&expr) {
+                    Ok(prog) => {
+                        let prog = Rc::new(prog);
+                        let env = sui_ir::eval_ir::IrEnv::with_pure_builtins();
+                        sui_ir::eval_ir::eval_ir(&prog, prog.root, &env)
+                            .map_err(|e| format!("{e:?}"))
+                            .and_then(|v| {
+                                sui_ir::render::render_ir_value(&v).map_err(|e| format!("{e:?}"))
+                            })
+                    }
+                    Err(e) => Err(format!("lower: {e}")),
+                };
+                let tree = match sui_eval::eval(&expr) {
+                    Ok(v) => sui_eval::render::render_tree(&v),
+                    Err(e) => Err(e.to_string()),
+                };
+                let report = match (&tree, &ir) {
+                    (Ok(t), Ok(i)) if t == i => format!("MATCH (eval_ir == tree-walker)  {t}"),
+                    (Ok(t), Ok(i)) => format!(
+                        "DIVERGE — walker authoritative, eval_ir NOT promoted\n    tree: {t}\n    ir:   {i}"
+                    ),
+                    (Ok(t), Err(e)) => format!("eval_ir GAP ({e}) — walker: {t}"),
+                    (Err(t), Ok(i)) => format!("walker ERR ({t}) but eval_ir produced {i}"),
+                    (Err(t), Err(i)) => format!("both ERR (tree={t} ir={i})"),
+                };
+                eprintln!("[SUI_IR shadow] {report}");
+            }
             // Render mode determines the output bytes, so it is part of the
             // cache identity (json / raw / display never share an entry).
             let render_mode = if json { "json" } else if raw { "raw" } else { "display" };

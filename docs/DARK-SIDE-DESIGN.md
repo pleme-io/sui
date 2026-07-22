@@ -192,6 +192,20 @@ the byte claim rests on the differential. Extend `eval_differential.rs` to run
 shrink-only `KnownDiverge` allowlist, any diff → stays dark. **Claim WARM only;
 cold ≈ neutral — recorded, not rounded.** Promotion is NOT this session.
 
+**M0-headline — LANDED (shadow, 2026-07-22).** `SUI_IR` now wires `eval_ir` as a
+**live shadow engine** in `sui eval` (`src/main.rs`): with the flag set, `eval_ir`
+runs alongside the tree-walker and reports agreement on stderr
+(`[SUI_IR shadow] MATCH | DIVERGE | eval_ir GAP (…)`), while the **tree-walker stays
+authoritative — its bytes are what ship**, so the shadow can never emit a wrong
+answer (proven: stdout byte-identical with/without the flag; an uncovered node
+reports a typed `Unsupported(…)` gap and the walker's answer ships). The
+prerequisite renderer was promoted from test-only into shippable code —
+`sui_ir::render::render_ir_value` + `sui_eval::render::render_tree` — with the
+existing `eval_differential` (13/13) proving the lift byte-neutral. This realizes
+`DarkGated` (rungs 2+4): `eval_ir` is exercised on every real `sui eval` toward
+promotion; **speed is NOT yet realized** (both engines run) — that awaits promotion
+to `eval_ir`-authoritative on a whole-corpus parity proof (NOT this session).
+
 **M1 (named, not this session):** `env-capture-shrink` behind `SUI_CAPTURE_SHRINK`
 — reuse `referenced_idents`, over-approximate, gate on full parity **AND** peak-RSS
 on the cid marquee. The lever that actually attacks the DNF; inherits the M0 harness.
