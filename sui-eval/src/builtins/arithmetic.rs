@@ -61,20 +61,53 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         register_builtin(builtins, spec.name, spec.func);
     }
 
-    // lessThan (curried)
+    // lessThan (curried) — Int/Float (numeric), String (char order), and List
+    // (lexicographic, element-by-element, recursing). See `nix_value_less_than`.
     register_curried(builtins, "lessThan", |a, b| {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x < y)),
-            (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
-            (Value::Int(x), Value::Float(y)) => Ok(Value::Bool((*x as f64) < *y)),
-            (Value::Float(x), Value::Int(y)) => Ok(Value::Bool(*x < (*y as f64))),
-            (Value::String(x), Value::String(y)) => Ok(Value::Bool(x.chars < y.chars)),
-            _ => Err(EvalError::TypeError("lessThan: expected comparable types".into())),
-        }
+        Ok(Value::Bool(nix_value_less_than(a, b)?))
     });
 
     // bitAnd, bitOr, bitXor (curried)
     register_bitwise!(builtins, "bitAnd", |a: i64, b: i64| a & b);
     register_bitwise!(builtins, "bitOr",  |a: i64, b: i64| a | b);
     register_bitwise!(builtins, "bitXor", |a: i64, b: i64| a ^ b);
+}
+
+/// Nix's `builtins.lessThan` ordering (also the `<` operator's semantics):
+/// numeric for Int/Float (incl. mixed), char-order for String, and
+/// **lexicographic** for List — element-by-element, recursing (nested lists
+/// compare by the same rule), with a proper prefix ordered before the longer
+/// list (`[1] < [1 2]`, `[] < [1]`). Equality at a position is detected the way
+/// nix does — neither `a<b` nor `b<a` — so no separate `==` is needed. Forces
+/// list elements pairwise as it descends, matching nix's demand order. Other /
+/// mixed types are a type error, as in nix.
+///
+/// Scoped to `lessThan` today (the `<` binop still errors on lists — a separate,
+/// un-exercised gap); kept as a free fn so the binop can adopt it when a fixture
+/// demands it, without duplicating the rule.
+pub(crate) fn nix_value_less_than(a: &Value, b: &Value) -> Result<bool, EvalError> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(x < y),
+        (Value::Float(x), Value::Float(y)) => Ok(x < y),
+        (Value::Int(x), Value::Float(y)) => Ok((*x as f64) < *y),
+        (Value::Float(x), Value::Int(y)) => Ok(*x < (*y as f64)),
+        (Value::String(x), Value::String(y)) => Ok(x.chars < y.chars),
+        (Value::List(xs), Value::List(ys)) => {
+            let (xs, ys) = (&xs.0, &ys.0);
+            let n = xs.len().min(ys.len());
+            for i in 0..n {
+                let xf = crate::eval::force_value(&xs[i])?;
+                let yf = crate::eval::force_value(&ys[i])?;
+                if nix_value_less_than(&xf, &yf)? {
+                    return Ok(true);
+                }
+                if nix_value_less_than(&yf, &xf)? {
+                    return Ok(false);
+                }
+            }
+            // All shared positions equal → the shorter list is less.
+            Ok(xs.len() < ys.len())
+        }
+        _ => Err(EvalError::TypeError("lessThan: expected comparable types".into())),
+    }
 }
