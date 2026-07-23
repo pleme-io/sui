@@ -5627,6 +5627,50 @@ impl Drop for CensusExitGuard {
     }
 }
 
+/// Resolve the REAL cppnix `nix` for the `alias nix=sui` passthrough — never
+/// this binary (under the alias sui IS `nix`, so a naive `Command::new("nix")`
+/// would recurse). Order: `$SUI_REAL_NIX` (set by the nix-darwin module that
+/// installs the alias) → the first `nix` on `PATH` whose canonical path is not
+/// this executable.
+fn resolve_real_nix() -> Result<std::path::PathBuf, CliError> {
+    if let Some(p) = std::env::var_os("SUI_REAL_NIX") {
+        return Ok(std::path::PathBuf::from(p));
+    }
+    let me = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(&p).ok());
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join("nix");
+            if cand.is_file() {
+                let canon = std::fs::canonicalize(&cand).unwrap_or_else(|_| cand.clone());
+                if me.as_deref() != Some(canon.as_path()) {
+                    return Ok(cand);
+                }
+            }
+        }
+    }
+    Err(CliError::NotImplemented(
+        "cppnix passthrough: no real `nix` on PATH (set SUI_REAL_NIX, or ensure \
+         cppnix is on PATH and not shadowed by the sui alias)"
+            .to_string(),
+    ))
+}
+
+/// Forward an invocation sui doesn't handle natively to real cppnix, replacing
+/// this process image (inherits stdio + exit code) — the `alias nix=sui`
+/// superset fallthrough. On success `exec` never returns; a returned `Err` means
+/// the `exec` itself failed.
+fn exec_cppnix_passthrough(argv: Vec<std::ffi::OsString>) -> Result<(), CliError> {
+    use std::os::unix::process::CommandExt;
+    let nix = resolve_real_nix()?;
+    let err = std::process::Command::new(&nix).args(&argv).exec();
+    Err(CliError::NotImplemented(format!(
+        "cppnix passthrough: exec {} failed: {err}",
+        nix.display()
+    )))
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), CliError> {
@@ -5667,7 +5711,27 @@ async fn main() -> Result<(), CliError> {
             std::iter::once("sui".to_string()).chain(translated).collect();
         Cli::parse_from(&synthetic)
     } else {
-        Cli::parse()
+        // `alias nix=sui` SUPERSET contract: sui must ACCEPT every `nix …`
+        // invocation. An unrecognized subcommand OR an unknown flag on a known
+        // command is FORWARDED verbatim to real cppnix instead of erroring
+        // (exit 2), so the alias never breaks — covered commands run sui-native,
+        // everything else delegates. Genuine usage errors (a missing flag value,
+        // a bad enum choice) still surface; `--help`/`--version` still print
+        // sui's. This is the sui→cppnix fallthrough that sui-nix-wrap stripped
+        // (cb36f7c), revived in the binary itself for the alias contract.
+        match Cli::try_parse() {
+            Ok(c) => c,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    clap::error::ErrorKind::InvalidSubcommand
+                        | clap::error::ErrorKind::UnknownArgument
+                ) =>
+            {
+                return exec_cppnix_passthrough(std::env::args_os().skip(1).collect());
+            }
+            Err(e) => e.exit(),
+        }
     };
 
     // `--show-trace` WAS A DEAD FLAG until 2026-07-20: declared as a global arg
