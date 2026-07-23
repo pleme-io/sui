@@ -4430,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "pleme-io-sui"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "assert_cmd",
  "async-graphql",
@@ -6364,7 +6364,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sui-bigorna"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "clap",
  "serde",
@@ -6378,7 +6378,7 @@ dependencies = [
 
 [[package]]
 name = "sui-build"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -6395,7 +6395,7 @@ dependencies = [
 
 [[package]]
 name = "sui-bytecode"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "criterion",
  "pretty_assertions",
@@ -6413,7 +6413,7 @@ dependencies = [
 
 [[package]]
 name = "sui-cache"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -6438,7 +6438,7 @@ dependencies = [
 
 [[package]]
 name = "sui-cache-eval"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "blake3",
  "dirs-next",
@@ -6450,7 +6450,7 @@ dependencies = [
 
 [[package]]
 name = "sui-castore"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6470,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "sui-compat"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "base64",
  "criterion",
@@ -6486,7 +6486,7 @@ dependencies = [
 
 [[package]]
 name = "sui-daemon"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6516,7 +6516,7 @@ dependencies = [
 
 [[package]]
 name = "sui-daemon-client"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "pretty_assertions",
  "sui-daemon-frame",
@@ -6530,7 +6530,7 @@ dependencies = [
 
 [[package]]
 name = "sui-daemon-frame"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "pretty_assertions",
  "rkyv 0.8.16",
@@ -6542,7 +6542,7 @@ dependencies = [
 
 [[package]]
 name = "sui-daemon-graph"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "anyhow",
  "clap",
@@ -6557,7 +6557,7 @@ dependencies = [
 
 [[package]]
 name = "sui-dockerfile-node-cache-daemon"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "serde",
@@ -6572,7 +6572,7 @@ dependencies = [
 
 [[package]]
 name = "sui-dockerfile-prewarmer"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6598,7 +6598,7 @@ dependencies = [
 
 [[package]]
 name = "sui-dockerfile-verify"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "blake3",
  "serde",
@@ -6611,7 +6611,7 @@ dependencies = [
 
 [[package]]
 name = "sui-dockerfile-wrapper"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "proptest",
@@ -6629,7 +6629,7 @@ dependencies = [
 
 [[package]]
 name = "sui-eval"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "base64",
  "blake3",
@@ -6679,7 +6679,7 @@ dependencies = [
 
 [[package]]
 name = "sui-graph-store"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "blake3",
  "bytecheck 0.8.2",
@@ -6696,7 +6696,7 @@ dependencies = [
 
 [[package]]
 name = "sui-intern"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "blake3",
  "rustc-hash 2.1.2",
@@ -6704,7 +6704,7 @@ dependencies = [
 
 [[package]]
 name = "sui-ir"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "gen-nix",
  "md-5",
@@ -6725,7 +6725,7 @@ dependencies = [
 
 [[package]]
 name = "sui-nix-wrap"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "sui-spec",
  "tempfile",
@@ -6733,7 +6733,7 @@ dependencies = [
 
 [[package]]
 name = "sui-orchestrate"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6761,7 +6761,7 @@ dependencies = [
 
 [[package]]
 name = "sui-protocol"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "blake3",
  "bytecheck 0.8.2",
@@ -6774,7 +6774,7 @@ dependencies = [
 
 [[package]]
 name = "sui-registry"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -6797,7 +6797,7 @@ dependencies = [
 
 [[package]]
 name = "sui-resolve"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "rnix",
  "rowan",
@@ -6807,7 +6807,7 @@ dependencies = [
 
 [[package]]
 name = "sui-spec"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "base64",
  "blake3",
@@ -6836,7 +6836,7 @@ dependencies = [
 
 [[package]]
 name = "sui-store"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
@@ -6859,7 +6859,7 @@ dependencies = [
 
 [[package]]
 name = "sui-supercacheci"
-version = "0.1.151"
+version = "0.1.152"
 dependencies = [
  "async-trait",
  "serde",
