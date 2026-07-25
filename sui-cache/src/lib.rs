@@ -37,6 +37,11 @@ pub use config::CacheConfig;
 // `sui_cache::BackendConfig` still resolves.
 pub use sui_castore::BackendConfig;
 
+// `${VAR}` config-text expansion also lives in sui-castore; re-export here so
+// `sui cache serve`'s config loader (`sui_cache::expand_env_vars`) can inject a
+// secret-sourced DSN password without the value ever entering the ConfigMap.
+pub use sui_castore::{expand_env_vars, ExpandEnvError};
+
 pub use gc::GcResult;
 pub use push::PushResult;
 pub use server::{build_router, serve, AppState};

@@ -837,6 +837,16 @@ fn parse_config_file<T: serde::de::DeserializeOwned>(
         operation: "cache serve",
         message: format!("read --{flag} {path}: {e}"),
     })?;
+    // Expand `${VAR}` tokens against the process env BEFORE parsing, so a
+    // secret-sourced DSN (a CNPG/Redis password injected as a `secretKeyRef`
+    // env var) can live in a ConfigMap-rendered file as a `${SUI_CACHE_PG_PASSWORD}`
+    // token — the secret value never lands in the ConfigMap. A file with no
+    // `${VAR}` token is unchanged (existing trust-auth DSNs still load); a
+    // referenced-but-unset var fails loudly, never silently becoming a no-auth DSN.
+    let text = sui_cache::expand_env_vars(&text).map_err(|e| CliError::Orchestrate {
+        operation: "cache serve",
+        message: format!("expand env in --{flag} {path}: {e}"),
+    })?;
     // TOML is the operator-authored default; fall through to JSON on a TOML
     // parse error so a generator-emitted JSON file also loads.
     match toml::from_str::<T>(&text) {

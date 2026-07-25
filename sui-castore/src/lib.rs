@@ -15,9 +15,11 @@
 //!   Without it the Postgres arm returns [`StoreError::NotImplemented`].
 
 pub mod config;
+pub mod env_expand;
 pub mod storage;
 
 pub use config::BackendConfig;
+pub use env_expand::{expand_env_vars, ExpandEnvError};
 pub use storage::{
     build_backend, LocalStorage, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn,
     S3Storage, StorageBackend, StorageIndex, TieredBackend, TieredTier, WritePolicy,
