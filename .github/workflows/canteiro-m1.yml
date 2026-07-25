@@ -1,0 +1,56 @@
+# canteiro-m1 — the LIVE proof of canteiro M1 on a real camelot ARC worker.
+#
+# It builds + runs the `canteiro-run` binary (sui-supercacheci) on the isolated
+# 100%-spot scale-to-zero ARC pool `camelot-builder-pleme-eks` — the exact,
+# proven runner label the camelot image-push jobs use
+# (camelot-bootstrap/.github/workflows/image-push.yml). `canteiro-run`
+# decomposes a 2-node `build → test` CiRun (both env=None, trivial `true`
+# actions), drives it through `run_in_process` (decompose → in-process shigoto
+# wave execution), and exits 0 iff BOTH nodes reach the green terminal.
+#
+# HONEST SCOPE: this proves the canteiro MACHINERY runs green on a live worker
+# (decompose → wave execution → both Succeeded), NOT "a real build+test with
+# real compilation work" — the node actions are deliberately trivial for this
+# first proof (CANTEIRO §7).
+#
+# TRIGGER: workflow_dispatch ONLY. There is deliberately NO `on: push` — the
+# live ARC run must be a DELIBERATE operator trigger, never an automatic one.
+#
+# BUILD INVOCATION: the camelot ARC runner does not ship a Rust toolchain; the
+# proven pattern on this exact pool (image-push.yml) is to install Nix
+# (DeterminateSystems) and pull tools from nixpkgs via `nix shell`. We reuse
+# that pattern — `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc` — because
+# nixpkgs' cargo/rustc is well past the workspace's rust-version 1.89.0 /
+# edition 2024 requirement and `gcc` supplies the C linker rustc needs. This is
+# grounded in what actually works on camelot-builder-pleme-eks, not sui's other
+# workflows which run on GitHub-hosted ubuntu-latest with dtolnay/rust-toolchain.
+
+name: canteiro-m1
+
+on:
+  workflow_dispatch:
+
+jobs:
+  canteiro-run:
+    name: canteiro M1 — in-process wave execution on a live ARC worker
+    runs-on: camelot-builder-pleme-eks
+    steps:
+      - uses: actions/checkout@v4
+
+      # The ARC runner has no nix; install it the same way the camelot
+      # image-push jobs do, so `nix shell` can supply the toolchain.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      # Build + run in one step: `cargo run` compiles the bin then runs it and
+      # propagates its exit code, so a non-zero verdict (any node not green)
+      # fails the job. cargo/rustc/gcc come from nixpkgs (edition-2024-capable,
+      # past rust-version 1.89.0) — the proven camelot toolchain source.
+      - name: Build + run canteiro-run (fails the job on any non-green node)
+        run: |
+          nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc \
+            --command cargo run -p sui-supercacheci --bin canteiro-run

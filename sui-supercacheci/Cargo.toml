@@ -9,6 +9,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# canteiro M1 live-proof entrypoint (theory/CANTEIRO.md §5). The in-pod binary
+# that constructs a 2-node CiRun and drives it through `run_in_process` on a
+# real camelot ARC worker. The library stays a plain `async fn`; only this bin
+# needs a runtime, hence the real (non-dev) tokio dep below.
+[[bin]]
+name = "canteiro-run"
+path = "src/bin/canteiro-run.rs"
+
 [dependencies]
 # Fleet-standard tiered config surface (default <- discovered <- override,
 # hot-reload). SuperCacheCiConfig impls shikumi::TieredConfig so /super-cache-ci
@@ -52,6 +60,13 @@ tatara-lisp.workspace = true
 tatara-lisp-derive.workspace = true
 # DeriveTataraDomain's generated impl references serde_json directly.
 serde_json.workspace = true
+
+# canteiro M1: the `canteiro-run` bin blocks on the plain `async fn`
+# `run_in_process`, so it needs a tokio runtime. Minimal features: `macros` for
+# `#[tokio::main]`, `rt` + `rt-multi-thread` because the shipped
+# `InProcessScheduler` fans nodes out over a `tokio::task::JoinSet`. The library
+# target does not use tokio; only the bin does.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 # Async freshness-pass tests + the in-memory sui_cache::StorageBackend double
