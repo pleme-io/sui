@@ -16,6 +16,15 @@ repository.workspace = true
 shikumi = "0.1"
 serde.workspace = true
 
+# canteiro M0 (theory/CANTEIRO.md §5): a CI run decomposes into ONE typed
+# content-addressed DAG. The shipped, pure shigoto primitives are the decompose
+# target -- `Dag` (monomorphic over `JobId`) + the `Job` trait a `CiNode`
+# implements. Same workspace deps sui-orchestrate / sui-dockerfile-prewarmer
+# already use; the scheduler (in-process wave execution) is the M1 deployment
+# half and is deliberately NOT pulled here.
+shigoto-dag.workspace = true
+shigoto-types.workspace = true
+
 # The freshness maintenance pass COMPOSES the real sui crates (never forks):
 # sui-cache's shipped root-set GC (gc::collect_garbage) over its StorageBackend
 # trait, and sui-store's durable Store GC contract (GcOptions/GcResult). The

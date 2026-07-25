@@ -129,6 +129,11 @@ pub mod backend;
 /// second controller.
 pub mod preheat;
 
+/// canteiro M0 — a CI run decomposed into one typed content-addressed DAG
+/// (`theory/CANTEIRO.md` §5). The decompose morphism + `CiNode` as a shigoto
+/// `Job`; in-process wave execution + the in-pod runner entrypoint are M1.
+pub mod canteiro;
+
 pub use preheat::PreheatCfg;
 
 /// Which durable-store backend realizes the Nix store.
