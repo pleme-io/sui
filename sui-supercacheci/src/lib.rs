@@ -140,6 +140,14 @@ pub mod canteiro;
 /// across separate ARC workers.
 pub mod canteiro_gha;
 
+/// canteiro `(defci)` authoring surface (`theory/CANTEIRO.md` §4, leg 2) — the
+/// TYPED-SPEC + INTERPRETER TRIPLET for declaring a `CiRun` as typed Lisp data:
+/// the `CiSpec` `#[tatara(keyword = "defci")]` border + the `to_ci_run`
+/// interpreter. The authoring half of "pleme-io/actions built out of reusable
+/// Rust and caixa"; the first-class caixa `:kind Acao` promotion (needs a
+/// shareable `CiRun` across repos) is the NAMED DESTINATION, not done here.
+pub mod canteiro_spec;
+
 pub use preheat::PreheatCfg;
 
 /// Which durable-store backend realizes the Nix store.
