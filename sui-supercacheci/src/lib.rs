@@ -134,6 +134,12 @@ pub mod preheat;
 /// `Job`; in-process wave execution + the in-pod runner entrypoint are M1.
 pub mod canteiro;
 
+/// canteiro plane (a) — the multi-worker dispatch crux (`theory/CANTEIRO.md`
+/// §5). `emit_gha` projects a decomposed `CiRun` onto a GitHub Actions job
+/// graph (one job per node, `needs:` = the DAG edges) that GitHub schedules
+/// across separate ARC workers.
+pub mod canteiro_gha;
+
 pub use preheat::PreheatCfg;
 
 /// Which durable-store backend realizes the Nix store.

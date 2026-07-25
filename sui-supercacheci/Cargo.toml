@@ -17,6 +17,14 @@ repository.workspace = true
 name = "canteiro-run"
 path = "src/bin/canteiro-run.rs"
 
+# canteiro plane-(a) emitter (theory/CANTEIRO.md §5 crux). Builds the real
+# 2-node sui CiRun (cargo build -> cargo test) and writes its DAG-derived GitHub
+# Actions job graph to .github/workflows/canteiro-crux.yml (persisted-spec
+# discipline: the committed workflow IS this binary's output).
+[[bin]]
+name = "canteiro-emit-gha"
+path = "src/bin/canteiro-emit-gha.rs"
+
 [dependencies]
 # Fleet-standard tiered config surface (default <- discovered <- override,
 # hot-reload). SuperCacheCiConfig impls shikumi::TieredConfig so /super-cache-ci
@@ -39,6 +47,14 @@ shigoto-types.workspace = true
 # provides its own tokio runtime dependency transitively; the driver is a plain
 # `async fn`, so no tokio non-dev dep is needed here.
 shigoto-scheduler.workspace = true
+
+# canteiro plane (a) — the multi-worker dispatch crux (CANTEIRO.md §5). `emit_gha`
+# projects a decomposed CiRun onto a GitHub Actions job graph (one job per CiNode,
+# `needs:` = the DAG edges); serde_yaml_ng is the TYPED YAML renderer (★★ TYPED
+# EMISSION — no `format!()` of YAML). GitHub then schedules those jobs onto
+# separate ARC workers; canteiro is the DAG source + emitter, NOT the cross-worker
+# runtime scheduler.
+serde_yaml_ng.workspace = true
 
 # The freshness maintenance pass COMPOSES the real sui crates (never forks):
 # sui-cache's shipped root-set GC (gc::collect_garbage) over its StorageBackend

@@ -6928,6 +6928,7 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "shigoto-dag",
  "shigoto-scheduler",
  "shigoto-types",
