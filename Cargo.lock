@@ -5890,6 +5890,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
+name = "shigoto-budget"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "982a1a8e8918e4c627e21c524d310118c7365d110f11467bcd15e656c3a33f0a"
+dependencies = [
+ "serde",
+ "shigoto-types",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "shigoto-dag"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5899,6 +5910,59 @@ dependencies = [
  "serde",
  "shigoto-types",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "shigoto-emit"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77c90dd5ca9cdee38343a6cc901c54091c5c9876503ab90606170fd85ab3472c"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "shigoto-types",
+ "tracing",
+]
+
+[[package]]
+name = "shigoto-gate"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7b5529278fcf7a9ae872a0c84ba72d8e0c86af16bd3c67e1a8362fa1c77881"
+dependencies = [
+ "shigoto-dag",
+ "shigoto-types",
+]
+
+[[package]]
+name = "shigoto-retry"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2166b192712dd120b60bbfa1fdf456c7fc5180297816d5d2fa790cfb8557ddf4"
+dependencies = [
+ "serde",
+ "shigoto-types",
+]
+
+[[package]]
+name = "shigoto-scheduler"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17b416502fc15d5bbb51b82d864281bcc6e81a8135700a8bef21aefe6d36beef"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "shigoto-budget",
+ "shigoto-dag",
+ "shigoto-emit",
+ "shigoto-gate",
+ "shigoto-retry",
+ "shigoto-types",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6865,6 +6929,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shigoto-dag",
+ "shigoto-scheduler",
  "shigoto-types",
  "shikumi",
  "sui-cache",

@@ -25,6 +25,13 @@ serde.workspace = true
 shigoto-dag.workspace = true
 shigoto-types.workspace = true
 
+# canteiro M1 (CANTEIRO.md §5): in-process wave execution. A CiNode is a shigoto
+# `RecordingJob`; `run_in_process` registers each node into an
+# `InProcessScheduler` and ticks the decomposed `Dag` to terminal. The scheduler
+# provides its own tokio runtime dependency transitively; the driver is a plain
+# `async fn`, so no tokio non-dev dep is needed here.
+shigoto-scheduler.workspace = true
+
 # The freshness maintenance pass COMPOSES the real sui crates (never forks):
 # sui-cache's shipped root-set GC (gc::collect_garbage) over its StorageBackend
 # trait, and sui-store's durable Store GC contract (GcOptions/GcResult). The

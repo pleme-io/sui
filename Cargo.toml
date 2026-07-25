@@ -218,6 +218,11 @@ blake3 = "1"
 # on crates.io; pulled by digest via the workspace lock.
 shigoto-dag = "0.1.10"
 shigoto-types = "0.1.10"
+# The in-process runtime — `InProcessScheduler` drives a `Dag` of typed Jobs to
+# terminal, one wave per tick. canteiro M1 (CANTEIRO.md §5) registers each
+# `CiNode` as a Job and ticks its decomposed DAG in-process; this is the
+# node→worker execution half M0 deliberately deferred.
+shigoto-scheduler = "0.1.10"
 
 # Directories
 dirs-next = "2"
