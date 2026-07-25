@@ -37,14 +37,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The ARC runner has no nix; install it the same way the camelot
-      # image-push jobs do, so `nix shell` can supply the toolchain.
+      # Install Nix the way the PROVEN camelot pattern does (substrate's
+      # image-push.yml, which runs on this exact pool). Load-bearing:
+      # `determinate: false` installs UPSTREAM nix, not Determinate nix —
+      # Determinate's systemd-daemon setup ("Create build users") HANGS on a
+      # containerized ARC runner with no systemd (the first live attempt,
+      # run 30163911162, was canceled there). `github-token` rate-limits the
+      # installer download; `access-tokens` covers any token-gated fetch.
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
         with:
+          github-token: ${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
+          determinate: false
           extra-conf: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            sandbox = relaxed
+            access-tokens = github.com=${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
       # Build + run in one step: `cargo run` compiles the bin then runs it and
       # propagates its exit code, so a non-zero verdict (any node not green)
