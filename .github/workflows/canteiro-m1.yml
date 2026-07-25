@@ -61,5 +61,14 @@ jobs:
       # past rust-version 1.89.0) — the proven camelot toolchain source.
       - name: Build + run canteiro-run (fails the job on any non-green node)
         run: |
-          nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc \
-            --command cargo run -p sui-supercacheci --bin canteiro-run
+          # A transitive dep (openssl-sys) needs pkg-config + the openssl .pc
+          # file — a bare `nix shell` with just cargo/rustc/gcc lacks both.
+          # Add pkg-config + openssl, point PKG_CONFIG_PATH at nix's openssl.dev,
+          # and OPENSSL_NO_VENDOR=1 so openssl-sys uses it instead of
+          # vendor-compiling its own copy.
+          OPENSSL_DEV=$(nix build --no-link --print-out-paths 'nixpkgs#openssl.dev')
+          nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc nixpkgs#pkg-config nixpkgs#openssl \
+            --command env \
+              PKG_CONFIG_PATH="$OPENSSL_DEV/lib/pkgconfig" \
+              OPENSSL_NO_VENDOR=1 \
+              cargo run -p sui-supercacheci --bin canteiro-run
