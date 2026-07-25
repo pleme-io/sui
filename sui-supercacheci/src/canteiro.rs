@@ -87,10 +87,24 @@ pub struct CiNode {
     /// Names of the nodes this one depends on. Each becomes a DAG edge
     /// `dep → this`; every entry must be declared in the same [`CiRun`].
     pub deps: Vec<String>,
+    /// The repo-relative path prefixes this node consumes — its build inputs
+    /// (e.g. `"sui-supercacheci/src/"`, `"Cargo.toml"`). Used by
+    /// [`affected_set`] to decide whether a diff touches this node. The
+    /// **CONSERVATIVE default is empty** (`CiNode::new`), and an empty-inputs
+    /// node is treated as ALWAYS affected (an unknown-input node is never
+    /// silently skipped — CANTEIRO §6). Declare the real prefixes with
+    /// [`CiNode::with_inputs`] to opt into diff-scoped skipping.
+    pub inputs: Vec<String>,
 }
 
 impl CiNode {
     /// Construct a node, deriving its M0 content address from the action.
+    ///
+    /// Inputs default to empty — i.e. the CONSERVATIVE always-affected class
+    /// (see [`CiNode::inputs`]); declare real input prefixes with
+    /// [`CiNode::with_inputs`] to opt into affected-set skipping. This keeps
+    /// the M0/M1 callers (`canteiro-run`, `canteiro-emit-gha`, the existing
+    /// tests) compiling unchanged.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -106,7 +120,19 @@ impl CiNode {
             env_class,
             action,
             deps,
+            inputs: Vec::new(),
         }
+    }
+
+    /// Declare the repo-relative path prefixes this node consumes (its build
+    /// [`inputs`](CiNode::inputs)), returning `self` for a builder-style chain
+    /// over [`CiNode::new`]. Declaring inputs opts the node OUT of the
+    /// conservative always-affected default: it is then affected only when a
+    /// changed file falls under one of these prefixes (or a DAG ancestor is).
+    #[must_use]
+    pub fn with_inputs(mut self, inputs: Vec<String>) -> Self {
+        self.inputs = inputs;
+        self
     }
 }
 
@@ -224,6 +250,97 @@ pub fn decompose(run: &CiRun) -> Result<CanteiroDag, DecomposeError> {
     dag.toposort().map_err(|_| DecomposeError::Cycle)?;
 
     Ok(CanteiroDag { dag, nodes })
+}
+
+/// Whether a diff touches this node's declared inputs — the **directly-affected**
+/// predicate (CANTEIRO §6). CONSERVATIVE by construction: a node with NO
+/// declared inputs is ALWAYS directly affected, so an unknown-input node is
+/// never silently skipped. Otherwise a node is directly affected iff one of its
+/// input prefixes is a prefix of some changed file.
+fn node_directly_affected(node: &CiNode, changed_files: &[String]) -> bool {
+    node.inputs.is_empty()
+        || node
+            .inputs
+            .iter()
+            .any(|prefix| changed_files.iter().any(|f| f.starts_with(prefix.as_str())))
+}
+
+/// The affected set over an already-decomposed DAG (the shared engine behind
+/// [`affected_set`] + [`affected_waves`], so a run is decomposed once per call).
+///
+/// Reuses the shipped [`Dag`] surface only — [`Dag::toposort`] for a
+/// parents-before-children order and [`Dag::predecessors`] for each node's
+/// direct upstreams — and forward-propagates affectedness in that order: a node
+/// is affected iff it is directly affected OR any direct predecessor is already
+/// marked affected. Because topological order decides every predecessor before
+/// its children, this single pass yields exactly the directly-affected nodes
+/// UNION all their DAG descendants (transitive), with no bespoke graph walk.
+fn affected_set_on(
+    cd: &CanteiroDag,
+    changed_files: &[String],
+) -> Result<HashSet<JobId>, DecomposeError> {
+    // decompose already proved acyclicity; map defensively rather than assume.
+    let order = cd.dag.toposort().map_err(|_| DecomposeError::Cycle)?;
+    let mut affected: HashSet<JobId> = HashSet::new();
+    for id in &order {
+        // Every DAG node has a map entry (decompose builds them in lockstep);
+        // skip defensively rather than panic if that invariant ever breaks.
+        let Some(node) = cd.nodes.get(id) else {
+            continue;
+        };
+        let directly = node_directly_affected(node, changed_files);
+        let via_ancestor = cd
+            .dag
+            .predecessors(id)
+            .iter()
+            .any(|p| affected.contains(p));
+        if directly || via_ancestor {
+            affected.insert(id.clone());
+        }
+    }
+    Ok(affected)
+}
+
+/// **The affected-set intelligence** (CANTEIRO §6 M2, "build only what the diff
+/// touched"). Decompose `run`, then return the [`JobId`]s that a diff of
+/// `changed_files` forces to re-run: the DIRECTLY-affected nodes (those whose
+/// declared input prefixes cover a changed file — plus, CONSERVATIVELY, every
+/// node with NO declared inputs, which is always affected) UNION all their DAG
+/// DESCENDANTS (a rebuilt node forces every downstream consumer to re-run).
+///
+/// Descendants are computed by reusing the shipped [`Dag`] surface
+/// ([`Dag::toposort`] + [`Dag::predecessors`]) via a topological forward-
+/// propagation — no re-implemented graph traversal (see [`affected_set_on`]).
+///
+/// # Errors
+/// - [`DecomposeError`] — the run's shape is illegal (cycle / bad dep / dup),
+///   surfaced by the initial [`decompose`].
+pub fn affected_set(
+    run: &CiRun,
+    changed_files: &[String],
+) -> Result<HashSet<JobId>, DecomposeError> {
+    let cd = decompose(run)?;
+    affected_set_on(&cd, changed_files)
+}
+
+/// The only-affected execution ORDER: decompose `run`, compute its
+/// [`affected_set`] for `changed_files`, and feed that subset to the SHIPPED
+/// [`Dag::waves`] restriction — the topological waves containing ONLY the
+/// affected nodes, in dependency order. Wave partitioning is not re-implemented;
+/// this composes the shipped `waves(Some(&affected))` (see CANTEIRO §6 — this is
+/// what feeds the multi-worker dispatch so unaffected nodes never schedule).
+///
+/// # Errors
+/// - [`DecomposeError`] — the run's shape is illegal (cycle / bad dep / dup).
+pub fn affected_waves(
+    run: &CiRun,
+    changed_files: &[String],
+) -> Result<Vec<Vec<JobId>>, DecomposeError> {
+    let cd = decompose(run)?;
+    let affected = affected_set_on(&cd, changed_files)?;
+    cd.dag
+        .waves(Some(&affected))
+        .map_err(|_| DecomposeError::Cycle)
 }
 
 /// A [`CiNode`] made runnable as a real shigoto [`RecordingJob`] — the
@@ -699,5 +816,139 @@ mod tests {
         // Default-runtime behavior: the deadlettered ancestor releases `test`,
         // which then runs green. Fail-fast skip is the follow-up gate.
         assert_eq!(report.verdict("test"), Some(&NodeVerdict::Succeeded));
+    }
+
+    /// A 2-node `build → test` run where BOTH nodes declare real input prefixes
+    /// (so neither falls into the conservative always-affected class) — the
+    /// fixture for the diff-scoped affected-set tests.
+    fn scoped_build_test_run() -> CiRun {
+        let build = CiNode::new("build", EnvClass::None, action("build", "true"), vec![])
+            .with_inputs(vec!["src/build/".to_string()]);
+        let test = CiNode::new(
+            "test",
+            EnvClass::None,
+            action("test", "true"),
+            vec!["build".to_string()],
+        )
+        .with_inputs(vec!["tests/".to_string()]);
+        CiRun {
+            workspace: "pleme-io".into(),
+            repo: "example".into(),
+            nodes: vec![build, test],
+        }
+    }
+
+    /// (a) A change touching ONLY `test`'s inputs affects `{test}` — `build` is
+    /// `test`'s ANCESTOR (edge `build → test`), not its descendant, so it must
+    /// NOT be re-run.
+    #[test]
+    fn change_to_test_inputs_affects_only_test_not_its_ancestor_build() {
+        let run = scoped_build_test_run();
+        let affected = affected_set(&run, &["tests/foo.rs".to_string()]).expect("affected");
+        assert!(affected.contains(&run.job_id("test")));
+        assert!(
+            !affected.contains(&run.job_id("build")),
+            "build is test's ANCESTOR, not descendant — a test-input change must not re-run build"
+        );
+        assert_eq!(affected.len(), 1);
+    }
+
+    /// (b) A change touching `build`'s inputs affects `{build, test}` — `test`
+    /// is `build`'s DESCENDANT (edge `build → test`), so a rebuilt `build`
+    /// forces `test` to re-run.
+    #[test]
+    fn change_to_build_inputs_affects_build_and_its_descendant_test() {
+        let run = scoped_build_test_run();
+        let affected = affected_set(&run, &["src/build/main.rs".to_string()]).expect("affected");
+        assert!(affected.contains(&run.job_id("build")));
+        assert!(
+            affected.contains(&run.job_id("test")),
+            "test is build's DESCENDANT — a build change must re-run test"
+        );
+        assert_eq!(affected.len(), 2);
+    }
+
+    /// (c) A change touching NOTHING declared affects only the conservative
+    /// always-affected (empty-inputs) nodes: here `lint` (no inputs) is
+    /// affected, while the input-declaring `build`/`test` are not.
+    #[test]
+    fn change_touching_nothing_affects_only_conservative_always_affected_nodes() {
+        let build = CiNode::new("build", EnvClass::None, action("build", "true"), vec![])
+            .with_inputs(vec!["src/build/".to_string()]);
+        let test = CiNode::new(
+            "test",
+            EnvClass::None,
+            action("test", "true"),
+            vec!["build".to_string()],
+        )
+        .with_inputs(vec!["tests/".to_string()]);
+        // NO declared inputs → conservative always-affected class.
+        let lint = CiNode::new("lint", EnvClass::None, action("lint", "true"), vec![]);
+        let run = CiRun {
+            workspace: "w".into(),
+            repo: "r".into(),
+            nodes: vec![build, test, lint],
+        };
+        let affected = affected_set(&run, &["docs/README.md".to_string()]).expect("affected");
+        assert!(
+            affected.contains(&run.job_id("lint")),
+            "an empty-inputs node is ALWAYS affected"
+        );
+        assert!(!affected.contains(&run.job_id("build")));
+        assert!(!affected.contains(&run.job_id("test")));
+        assert_eq!(affected.len(), 1);
+    }
+
+    /// (d) A node with empty inputs is ALWAYS in the affected set, regardless of
+    /// `changed_files` — including an empty diff and a wholly-unrelated one.
+    #[test]
+    fn empty_inputs_node_is_always_affected_regardless_of_changed_files() {
+        // `build_test_run` nodes carry the default empty inputs.
+        let run = build_test_run();
+        for changed in [Vec::<String>::new(), vec!["totally/unrelated.txt".to_string()]] {
+            let affected = affected_set(&run, &changed).expect("affected");
+            assert!(
+                affected.contains(&run.job_id("build")),
+                "empty-inputs `build` always affected for changed={changed:?}"
+            );
+            assert!(
+                affected.contains(&run.job_id("test")),
+                "empty-inputs `test` always affected for changed={changed:?}"
+            );
+            assert_eq!(affected.len(), 2);
+        }
+    }
+
+    /// (e) `affected_waves` yields waves containing ONLY the affected nodes, in
+    /// dependency order — reusing the shipped `Dag::waves(Some(&affected))`.
+    #[test]
+    fn affected_waves_contains_only_affected_nodes_in_dependency_order() {
+        let run = scoped_build_test_run();
+
+        // A build-input change affects both; the waves order build before test.
+        let waves = affected_waves(&run, &["src/build/main.rs".to_string()]).expect("waves");
+        let flat: Vec<JobId> = waves.iter().flatten().cloned().collect();
+        assert!(flat.contains(&run.job_id("build")));
+        assert!(flat.contains(&run.job_id("test")));
+        let wave_index = |name: &str| {
+            waves
+                .iter()
+                .position(|w| w.contains(&run.job_id(name)))
+                .expect("node present in some wave")
+        };
+        assert!(
+            wave_index("build") < wave_index("test"),
+            "build's wave must precede test's wave"
+        );
+
+        // A test-only change prunes `build` entirely: only `{test}` schedules.
+        let waves2 = affected_waves(&run, &["tests/foo.rs".to_string()]).expect("waves");
+        let flat2: Vec<JobId> = waves2.iter().flatten().cloned().collect();
+        assert_eq!(
+            flat2,
+            vec![run.job_id("test")],
+            "only the affected node is scheduled; the unaffected ancestor is pruned"
+        );
+        assert!(!flat2.contains(&run.job_id("build")));
     }
 }
