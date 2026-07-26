@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use shigoto_dag::Dag;
 use shigoto_scheduler::{InProcessScheduler, Scheduler};
 use shigoto_types::{
@@ -49,12 +50,12 @@ const NODE_KIND: &str = "canteiro.node";
 /// real build inputs, the dedup key = cache key = incremental boundary) when
 /// the L1/L2/L8 legs wire in (CANTEIRO §1, §7 — the M2 leg). Kept a newtype so
 /// that promotion is a type change at one site, not a fleet-wide edit.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContentAddr(pub String);
 
 /// The environment a CI node needs. M0 exercises only [`EnvClass::None`];
 /// the other arms are typed so the demand axis exists from M0 but are not wired.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnvClass {
     /// No environment — pure build/lint/test that needs nothing live.
     None,
@@ -68,7 +69,7 @@ pub enum EnvClass {
 
 /// The runnable step a node executes. M0 = a command + args; the caixa
 /// `:kind Acao` authoring vocabulary (CANTEIRO §4) is M1.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionRef {
     pub name: String,
     pub command: String,
@@ -77,7 +78,7 @@ pub struct ActionRef {
 
 /// One typed CI node — the SOLE unifying type (CANTEIRO §1). A CI run is a set
 /// of these; [`decompose`] turns them into a shigoto DAG.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CiNode {
     /// Unique node name within its [`CiRun`] (the DAG subject).
     pub name: String,
@@ -153,7 +154,7 @@ fn content_addr_for(action: &ActionRef) -> ContentAddr {
 }
 
 /// The input to [`decompose`]: a repo's CI run as a set of declared nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CiRun {
     pub workspace: String,
     pub repo: String,

@@ -140,6 +140,15 @@ pub mod canteiro;
 /// across separate ARC workers.
 pub mod canteiro_gha;
 
+/// canteiro plane (b) — CANTEIRO itself as the cross-worker RUNTIME scheduler
+/// (`theory/CANTEIRO.md` §7.1-A, the named crux). `run_distributed` owns the DAG
+/// ordering and dispatches each node as a serializable `WorkItem` to a
+/// `WorkQueue` that N independent workers claim/run/report — ordering is
+/// canteiro's, not GitHub's. M0 proves the protocol in-process; the Postgres
+/// queue + a live 2-pod ARC run are the named destination (transport is a trait
+/// swap).
+pub mod canteiro_dist;
+
 /// canteiro `(defci)` authoring surface (`theory/CANTEIRO.md` §4, leg 2) — the
 /// TYPED-SPEC + INTERPRETER TRIPLET for declaring a `CiRun` as typed Lisp data:
 /// the `CiSpec` `#[tatara(keyword = "defci")]` border + the `to_ci_run`
