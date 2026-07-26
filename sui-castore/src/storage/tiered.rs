@@ -12,13 +12,23 @@
 //!
 //! ```text
 //! L1 (Redis, hot)  ── hit ─▶ return
-//!   │ miss
+//!   │ miss OR ERROR
 //! L2 (Postgres)    ── hit ─▶ warm L1, return
-//!   │ miss
+//!   │ miss OR ERROR
 //! L3 (object)      ── hit ─▶ warm L2, warm L1, return
-//!   │ miss
-//! Ok(None)   (re-derive is the caller's job)
+//!   │ miss OR ERROR
+//! Ok(None) if every tier cleanly missed / Err if any tier was broken
 //! ```
+//!
+//! **A broken tier is stepped over, not fatal.** A tier that errors is logged at
+//! `ERROR` and the resolver continues down — so Postgres being unreachable can
+//! never stop an object-store hit from being served. An error only surfaces when
+//! *no* tier produced the content AND at least one tier failed, because then the
+//! key genuinely cannot be ruled out (the broken tier might have held it). That
+//! is deliberately conservative: the caller is told "I could not answer", not
+//! "it is absent". Callers for whom a read is optional — the cache HTTP server —
+//! turn that into a miss; callers for whom it is not (GC, which deletes) keep
+//! treating it as an error.
 //!
 //! Promotion is **best-effort**: the read already succeeded, so a failed warm of
 //! an upper tier is logged (`tracing::warn!`) and swallowed — it never turns a
@@ -28,10 +38,11 @@
 //!
 //! # Write path (typed [`WritePolicy`])
 //!
-//! Every policy writes **both durable tiers (L2 and L3) before returning** — so a
-//! pod roll that loses the ephemeral L1 loses nothing, and each tier alone can
-//! satisfy a later read identically. The policies differ only in how they treat
-//! the hot L1 tier:
+//! Every policy **attempts both durable tiers (L2 and L3) before returning** and
+//! succeeds if **at least one** accepted the write — so a pod roll that loses the
+//! ephemeral L1 loses nothing, and a later read (which falls through tiers) is
+//! satisfied by whichever durable tier holds it. The policies differ only in how
+//! they treat the hot L1 tier:
 //!
 //! - [`WritePolicy::WriteThrough`] (default) — durable tiers first, then warm L1.
 //! - [`WritePolicy::WriteBack`] — warm L1 first (immediate hot availability for a
@@ -41,8 +52,11 @@
 //! - [`WritePolicy::WriteAround`] — durable tiers only, skip L1 (avoids polluting
 //!   the hot tier with write-once-read-never blobs; L1 fills lazily on read).
 //!
-//! A durable-tier write failure propagates (`?`); an L1 warm failure is
-//! best-effort (logged), for the same reason promotion is.
+//! A write fails only when **every** durable tier rejected it (nothing was
+//! stored anywhere). One durable tier failing is logged at `WARN` as lost
+//! redundancy, not an error — one broken durable tier must not zero out a
+//! healthy one. An L1 warm failure is best-effort (logged), for the same reason
+//! promotion is.
 //!
 //! # `delete` / `list_narinfos`
 //!
@@ -148,81 +162,172 @@ impl TieredBackend {
             warn!(path = %path, error = %e, "tiered: best-effort NAR warm failed");
         }
     }
+
+    // ── read/write failure accounting ──────────────────────────────────────
+
+    /// Log a tier's read failure loudly and hand the error back for the caller
+    /// to hold as "we could not rule this key out".
+    ///
+    /// Degrading is NOT the same as going quiet: a broken tier is an operational
+    /// fault that must be visible even though the request survives it. This is
+    /// the one place that guarantee lives, so it cannot be forgotten at a call
+    /// site.
+    fn note_tier_read_failure(tier: &'static str, key: &str, e: StoreError) -> StoreError {
+        tracing::error!(
+            tier = tier,
+            key = %key,
+            error = %e,
+            "tiered: READ FAILED on a tier — falling through to the next tier; \
+             this tier is degraded and needs attention",
+        );
+        e
+    }
+
+    /// Collapse the two durable tiers' write results into one outcome.
+    ///
+    /// **Succeeds if at least one durable tier accepted the write.** A single
+    /// broken durable tier must not zero out the other: with L2 (Postgres) down
+    /// and L3 (object/disk) healthy, the old first-`?` behavior meant the L3
+    /// write was never even attempted, so a push that could have half-landed
+    /// landed nowhere. Since reads now fall through across tiers, content held
+    /// by either durable tier is fully serveable.
+    ///
+    /// This deliberately weakens the old "both durable tiers always hold it"
+    /// invariant to "at least one durable tier holds it". What operators
+    /// actually depend on — *a read after a pod roll returns the bytes* — is
+    /// preserved; what is lost is per-tier redundancy, which is logged as a
+    /// partial write rather than hidden.
+    fn durable_write_outcome(
+        kind: &'static str,
+        key: &str,
+        l2: Result<(), StoreError>,
+        l3: Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        match (l2, l3) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) => {
+                warn!(
+                    kind = kind, key = %key, tier = "l2", error = %e,
+                    "tiered: durable write failed on ONE tier; the other durable tier \
+                     accepted it, so the content is still serveable — redundancy lost",
+                );
+                Ok(())
+            }
+            (Ok(()), Err(e)) => {
+                warn!(
+                    kind = kind, key = %key, tier = "l3", error = %e,
+                    "tiered: durable write failed on ONE tier; the other durable tier \
+                     accepted it, so the content is still serveable — redundancy lost",
+                );
+                Ok(())
+            }
+            (Err(e2), Err(e3)) => {
+                tracing::error!(
+                    kind = kind, key = %key, l2_error = %e2, l3_error = %e3,
+                    "tiered: durable write failed on EVERY durable tier — nothing was stored",
+                );
+                // Surface the L2 error; both are logged above.
+                Err(e2)
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl StorageBackend for TieredBackend {
     async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
+        let mut broken: Option<StoreError> = None;
+
         // L1
-        if let Some(v) = self.l1.get_narinfo(hash).await? {
-            return Ok(Some(v));
+        match self.l1.get_narinfo(hash).await {
+            Ok(Some(v)) => return Ok(Some(v)),
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l1", hash, e)),
         }
         // L2 → promote to L1
-        if let Some(v) = self.l2.get_narinfo(hash).await? {
-            Self::warm_narinfo(&self.l1, hash, &v).await;
-            return Ok(Some(v));
+        match self.l2.get_narinfo(hash).await {
+            Ok(Some(v)) => {
+                Self::warm_narinfo(&self.l1, hash, &v).await;
+                return Ok(Some(v));
+            }
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l2", hash, e)),
         }
         // L3 → promote to L2 then L1
-        if let Some(v) = self.l3.get_narinfo(hash).await? {
-            Self::warm_narinfo(&self.l2, hash, &v).await;
-            Self::warm_narinfo(&self.l1, hash, &v).await;
-            return Ok(Some(v));
+        match self.l3.get_narinfo(hash).await {
+            Ok(Some(v)) => {
+                Self::warm_narinfo(&self.l2, hash, &v).await;
+                Self::warm_narinfo(&self.l1, hash, &v).await;
+                return Ok(Some(v));
+            }
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l3", hash, e)),
         }
-        Ok(None)
+
+        match broken {
+            Some(e) => Err(e),
+            None => Ok(None),
+        }
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        if let Some(v) = self.l1.get_nar(path).await? {
-            return Ok(Some(v));
+        let mut broken: Option<StoreError> = None;
+
+        match self.l1.get_nar(path).await {
+            Ok(Some(v)) => return Ok(Some(v)),
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l1", path, e)),
         }
-        if let Some(v) = self.l2.get_nar(path).await? {
-            Self::warm_nar(&self.l1, path, &v).await;
-            return Ok(Some(v));
+        match self.l2.get_nar(path).await {
+            Ok(Some(v)) => {
+                Self::warm_nar(&self.l1, path, &v).await;
+                return Ok(Some(v));
+            }
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l2", path, e)),
         }
-        if let Some(v) = self.l3.get_nar(path).await? {
-            Self::warm_nar(&self.l2, path, &v).await;
-            Self::warm_nar(&self.l1, path, &v).await;
-            return Ok(Some(v));
+        match self.l3.get_nar(path).await {
+            Ok(Some(v)) => {
+                Self::warm_nar(&self.l2, path, &v).await;
+                Self::warm_nar(&self.l1, path, &v).await;
+                return Ok(Some(v));
+            }
+            Ok(None) => {}
+            Err(e) => broken = Some(Self::note_tier_read_failure("l3", path, e)),
         }
-        Ok(None)
+
+        match broken {
+            Some(e) => Err(e),
+            None => Ok(None),
+        }
     }
 
     async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
-        match self.write_policy {
-            WritePolicy::WriteThrough => {
-                self.l2.put_narinfo(hash, content).await?;
-                self.l3.put_narinfo(hash, content).await?;
-                Self::warm_narinfo(&self.l1, hash, content).await;
-            }
-            WritePolicy::WriteBack => {
-                Self::warm_narinfo(&self.l1, hash, content).await;
-                self.l2.put_narinfo(hash, content).await?;
-                self.l3.put_narinfo(hash, content).await?;
-            }
-            WritePolicy::WriteAround => {
-                self.l2.put_narinfo(hash, content).await?;
-                self.l3.put_narinfo(hash, content).await?;
-            }
+        if self.write_policy == WritePolicy::WriteBack {
+            Self::warm_narinfo(&self.l1, hash, content).await;
+        }
+
+        let l2 = self.l2.put_narinfo(hash, content).await;
+        let l3 = self.l3.put_narinfo(hash, content).await;
+        Self::durable_write_outcome("narinfo", hash, l2, l3)?;
+
+        if self.write_policy == WritePolicy::WriteThrough {
+            Self::warm_narinfo(&self.l1, hash, content).await;
         }
         Ok(())
     }
 
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
-        match self.write_policy {
-            WritePolicy::WriteThrough => {
-                self.l2.put_nar(path, data).await?;
-                self.l3.put_nar(path, data).await?;
-                Self::warm_nar(&self.l1, path, data).await;
-            }
-            WritePolicy::WriteBack => {
-                Self::warm_nar(&self.l1, path, data).await;
-                self.l2.put_nar(path, data).await?;
-                self.l3.put_nar(path, data).await?;
-            }
-            WritePolicy::WriteAround => {
-                self.l2.put_nar(path, data).await?;
-                self.l3.put_nar(path, data).await?;
-            }
+        if self.write_policy == WritePolicy::WriteBack {
+            Self::warm_nar(&self.l1, path, data).await;
+        }
+
+        let l2 = self.l2.put_nar(path, data).await;
+        let l3 = self.l3.put_nar(path, data).await;
+        Self::durable_write_outcome("nar", path, l2, l3)?;
+
+        if self.write_policy == WritePolicy::WriteThrough {
+            Self::warm_nar(&self.l1, path, data).await;
         }
         Ok(())
     }
@@ -286,6 +391,7 @@ mod tests {
         narinfo: Mutex<HashMap<String, String>>,
         nar: Mutex<HashMap<String, Vec<u8>>>,
         writes_fail: Mutex<bool>,
+        reads_fail: Mutex<bool>,
     }
 
     impl MemBackend {
@@ -302,9 +408,22 @@ mod tests {
         fn set_writes_fail(&self, v: bool) {
             *self.writes_fail.lock().unwrap() = v;
         }
+        /// Simulate a tier that is up but broken — the shape of a Postgres whose
+        /// tables vanished, which errors on every query rather than returning
+        /// "not found".
+        fn set_reads_fail(&self, v: bool) {
+            *self.reads_fail.lock().unwrap() = v;
+        }
         fn fail_if_configured(&self) -> Result<(), StoreError> {
             if *self.writes_fail.lock().unwrap() {
                 Err(StoreError::NotImplemented("mock writes disabled"))
+            } else {
+                Ok(())
+            }
+        }
+        fn fail_reads_if_configured(&self) -> Result<(), StoreError> {
+            if *self.reads_fail.lock().unwrap() {
+                Err(StoreError::SchemaMissing("mock: relation does not exist".to_string()))
             } else {
                 Ok(())
             }
@@ -314,6 +433,7 @@ mod tests {
     #[async_trait]
     impl StorageBackend for MemBackend {
         async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
+            self.fail_reads_if_configured()?;
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
         async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
@@ -322,6 +442,7 @@ mod tests {
             Ok(())
         }
         async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.fail_reads_if_configured()?;
             Ok(self.nar.lock().unwrap().get(path).cloned())
         }
         async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
@@ -403,6 +524,67 @@ mod tests {
         assert!(tiered.get_nar("nar/ghost.nar.xz").await.unwrap().is_none());
     }
 
+    // ── a BROKEN tier is stepped over, never fatal (the incident) ──────────
+
+    #[tokio::test]
+    async fn l2_read_failure_falls_through_to_l3() {
+        // THE regression under test. Postgres (L2) came back on a wiped
+        // emptyDir, so every L2 query errored with `relation … does not exist`.
+        // The old code `?`d that error straight out, so L3 — which was healthy
+        // and held the content — was never even consulted.
+        let (l1, l2, l3, tiered) = mocks();
+        l3.put_narinfo("h", NARINFO).await.unwrap();
+        l3.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
+        l2.set_reads_fail(true);
+
+        assert_eq!(
+            tiered.get_narinfo("h").await.unwrap().unwrap(),
+            NARINFO,
+            "a broken L2 must not hide a healthy L3",
+        );
+        assert_eq!(tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(), b"blob");
+        // The hit still promotes into the tiers that can take it.
+        assert!(l1.has_narinfo("h"), "the L3 hit still warms the working hot tier");
+    }
+
+    #[tokio::test]
+    async fn broken_l1_and_l2_still_serve_from_l3() {
+        let (l1, l2, l3, tiered) = mocks();
+        l3.put_narinfo("h", NARINFO).await.unwrap();
+        // Both upper tiers up-but-broken.
+        l1.set_reads_fail(true);
+        l2.set_reads_fail(true);
+        assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
+    }
+
+    #[tokio::test]
+    async fn every_tier_broken_and_no_hit_surfaces_an_error_not_a_false_absence() {
+        // Conservative + honest: when a tier that might have held the key is
+        // broken and nothing was found, the resolver must NOT claim the key is
+        // absent. It says "I could not answer"; the HTTP layer is what decides
+        // to serve that as a miss.
+        let (l1, l2, l3, tiered) = mocks();
+        for t in [&l1, &l2, &l3] {
+            t.set_reads_fail(true);
+        }
+        assert!(matches!(
+            tiered.get_narinfo("h").await.unwrap_err(),
+            StoreError::SchemaMissing(_),
+        ));
+        assert!(matches!(
+            tiered.get_nar("nar/h.nar.xz").await.unwrap_err(),
+            StoreError::SchemaMissing(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn all_tiers_healthy_and_empty_is_a_clean_miss_not_an_error() {
+        // The other side of the same coin: no tier failed, so `Ok(None)` is the
+        // truthful answer and must not be polluted into an error.
+        let (_l1, _l2, _l3, tiered) = mocks();
+        assert!(tiered.get_narinfo("ghost").await.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn promotion_failure_does_not_break_a_read() {
         // A best-effort warm that fails must NOT turn a successful read into an
@@ -460,14 +642,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_write_failure_propagates() {
-        // If a durable tier rejects the write, the put must fail (not silently
-        // succeed L1-only).
+    async fn one_broken_durable_tier_still_lands_the_write_on_the_other() {
+        // Regression: the old code `?`d on the FIRST durable tier, so an L2
+        // failure meant L3 was never even attempted and the push landed
+        // NOWHERE. With Postgres (L2) OOM-killed and a healthy L3, every push
+        // failed and the cache stopped filling entirely.
         let l1 = Arc::new(MemBackend::default());
         let l2 = Arc::new(MemBackend::default());
         let l3 = Arc::new(MemBackend::default());
         l2.set_writes_fail(true);
-        let tiered = TieredBackend::new(l1.clone(), l2, l3);
+        let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3.clone());
+
+        tiered.put_narinfo("h", NARINFO).await.expect("one healthy durable tier must accept");
+        tiered.put_nar("nar/h.nar.xz", b"blob").await.expect("one healthy durable tier must accept");
+
+        assert!(!l2.has_narinfo("h"), "the broken tier holds nothing");
+        assert!(l3.has_narinfo("h"), "the healthy durable tier MUST have taken the write");
+        assert!(l3.has_nar("nar/h.nar.xz"));
+        // …and the content is fully serveable through the resolver.
+        assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
+    }
+
+    #[tokio::test]
+    async fn write_fails_only_when_every_durable_tier_rejects() {
+        // The honest floor: nothing was stored anywhere, so the caller must be
+        // told. A 200 here would falsely acknowledge an upload that never landed.
+        let l1 = Arc::new(MemBackend::default());
+        let l2 = Arc::new(MemBackend::default());
+        let l3 = Arc::new(MemBackend::default());
+        l2.set_writes_fail(true);
+        l3.set_writes_fail(true);
+        let tiered = TieredBackend::new(l1, l2, l3);
         let err = tiered.put_narinfo("h", NARINFO).await.unwrap_err();
         assert!(matches!(err, StoreError::NotImplemented(_)));
     }

@@ -54,6 +54,19 @@ pub enum StoreError {
     /// A narinfo could not be parsed or was invalid UTF-8.
     #[error("narinfo error: {0}")]
     NarInfo(String),
+
+    /// The backend's schema is **absent** — its tables do not exist (e.g. a
+    /// durable tier came back up on a fresh volume, or its database was
+    /// dropped/recreated under a live connection pool).
+    ///
+    /// Kept as its own variant, distinct from [`Io`](StoreError::Io), precisely
+    /// because it is **self-healable**: the owning backend's DDL is idempotent
+    /// (`CREATE TABLE IF NOT EXISTS`), so a consumer that sees this can re-run
+    /// it and retry rather than failing the request. A backend that cannot
+    /// re-create its own schema must return `Io` instead — never round a
+    /// permanent failure up into a healable one.
+    #[error("schema missing: {0}")]
+    SchemaMissing(String),
 }
 
 #[cfg(test)]

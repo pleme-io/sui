@@ -164,9 +164,23 @@ async fn get_narinfo(
         )
             .into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // A cache read is DEFINITIONALLY optional: if the storage cannot answer,
+        // the honest answer to the client is "I don't have it" (404), never
+        // "something is broken" (500). Nix treats a 404 as a cache miss and
+        // builds; it treats a 500 as fatal, retries, and aborts the build. So a
+        // 500 here converts a cold accelerator into a hard dependency and takes
+        // down every consuming pipeline — which is exactly what it did.
+        //
+        // Loud at ERROR so the degradation is never silent: the request
+        // survives, the fault stays visible.
         Err(e) => {
-            tracing::error!("get_narinfo error: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            tracing::error!(
+                hash = %hash,
+                error = %e,
+                "get_narinfo: storage backend failed — DEGRADING TO CACHE MISS (404) so the \
+                 client rebuilds instead of aborting; the backend needs attention",
+            );
+            StatusCode::NOT_FOUND.into_response()
         }
     }
 }
@@ -199,10 +213,30 @@ async fn put_narinfo(
         None => content,
     };
 
+    // WRITE-PATH POLICY — deliberately NOT symmetric with the read path.
+    //
+    // A read has a well-defined "I don't have it" answer in the Nix binary-cache
+    // protocol (404), and the client's correct response to it is to build. A
+    // write has NO "I did not store it" success answer: returning 200 on a
+    // failed write tells the client the path is cached when it is not, so the
+    // push pipeline silently does nothing forever and no operator ever learns
+    // the cache stopped filling. That is the silent-degradation bug this whole
+    // change is against, just pointed the other way.
+    //
+    // So a failed write stays a 5xx — but the failure it reports is now much
+    // rarer and much more honest: `TieredBackend` attempts EVERY durable tier
+    // and succeeds if any one accepted the write, so this fires only when
+    // nothing was stored anywhere. One broken durable tier (the Postgres-OOM
+    // case) no longer fails the push.
     match state.storage.put_narinfo(hash, &to_store).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
-            tracing::error!("put_narinfo error: {e}");
+            tracing::error!(
+                hash = %hash,
+                error = %e,
+                "put_narinfo: EVERY durable tier rejected the write — nothing stored; \
+                 reporting failure rather than falsely acknowledging the upload",
+            );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -228,9 +262,16 @@ async fn get_nar(
             (StatusCode::OK, headers, data).into_response()
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // Same rule as `get_narinfo`: an unanswerable read is a miss, not a
+        // server error. See that handler for why 500 here is load-bearing-fatal.
         Err(e) => {
-            tracing::error!("get_nar error: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            tracing::error!(
+                nar_path = %nar_path,
+                error = %e,
+                "get_nar: storage backend failed — DEGRADING TO CACHE MISS (404) so the \
+                 client rebuilds instead of aborting; the backend needs attention",
+            );
+            StatusCode::NOT_FOUND.into_response()
         }
     }
 }
@@ -242,10 +283,17 @@ async fn put_nar(
     body: Bytes,
 ) -> impl IntoResponse {
     let nar_path = format!("nar/{path}");
+    // See `put_narinfo` for the write-path policy and why it is deliberately
+    // asymmetric with the read path.
     match state.storage.put_nar(&nar_path, &body).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
-            tracing::error!("put_nar error: {e}");
+            tracing::error!(
+                nar_path = %nar_path,
+                error = %e,
+                "put_nar: EVERY durable tier rejected the write — nothing stored; \
+                 reporting failure rather than falsely acknowledging the upload",
+            );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -569,6 +617,118 @@ mod tests {
         let final_text = body_string(app.oneshot(req).await.unwrap()).await;
         let parsed = NarInfo::parse(&final_text).unwrap();
         assert_eq!(parsed.signatures.len(), 1, "must not double-sign on re-PUT");
+    }
+
+    // ── a broken backend degrades to a MISS, never a 500 (the incident) ────
+
+    /// A backend that is reachable but cannot answer — the exact shape of the
+    /// Postgres L2 whose tables were destroyed with its `emptyDir`.
+    struct BrokenStorage;
+
+    #[async_trait::async_trait]
+    impl StorageBackend for BrokenStorage {
+        async fn get_narinfo(&self, _hash: &str) -> Result<Option<String>, crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: error returned from database: relation \"sui_cache_narinfo\" does not exist",
+            )))
+        }
+        async fn put_narinfo(&self, _hash: &str, _content: &str) -> Result<(), crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: error returned from database: relation \"sui_cache_nar\" does not exist",
+            )))
+        }
+        async fn put_nar(&self, _path: &str, _data: &[u8]) -> Result<(), crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        async fn delete(&self, _hash: &str) -> Result<(), crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        async fn list_narinfos(&self) -> Result<Vec<String>, crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+    }
+
+    fn broken_app() -> Router {
+        let storage: Arc<dyn StorageBackend> = Arc::new(BrokenStorage);
+        build_router(AppState {
+            storage,
+            config: CacheConfig::default(),
+            signer: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn broken_backend_narinfo_read_is_a_miss_not_a_server_error() {
+        // THE defect. nix treats 404 as a cache miss and builds; it treats 500
+        // as fatal, retries 5x, and aborts the build ~35s in before compiling
+        // anything. An optional accelerator must never be able to do that.
+        let resp = broken_app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/abc.narinfo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "a backend that cannot answer must report a MISS, never a 500",
+        );
+        assert_ne!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn broken_backend_nar_read_is_a_miss_not_a_server_error() {
+        let resp = broken_app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/nar/abc.nar.xz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cache_info_still_answers_while_the_backend_is_broken() {
+        // The cache must still advertise itself, so nix's substituter probe
+        // succeeds and the miss path is exercised normally.
+        let resp = broken_app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/nix-cache-info")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_totally_failed_write_still_reports_failure() {
+        // The deliberate asymmetry: there is no "I did not store it" success
+        // answer in the protocol, so acknowledging a write that landed nowhere
+        // would silently stop the cache from ever filling. Writes stay honest.
+        let narinfo = "StorePath: /nix/store/abc-hello\nURL: nar/abc.nar.xz\nCompression: xz\nFileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n";
+        let resp = broken_app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/abc.narinfo")
+                    .body(Body::from(narinfo))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

@@ -292,22 +292,26 @@ async fn l1_unreachable_falls_through_to_l2_it_degrades_not_errors() {
 }
 
 #[tokio::test]
-async fn l1_down_surfaces_the_typed_error_on_the_read_path() {
-    // Pin the shipped contract precisely: the read path is `l1.get(..)?`, so an
-    // L1 that ERRORS (not merely misses) surfaces that typed error rather than
-    // silently degrading. This documents the real, current behavior so a future
-    // change to "degrade on L1 error" is a conscious, test-visible decision.
+async fn l1_down_is_stepped_over_and_l2_still_answers() {
+    // CONTRACT CHANGE, made deliberately and test-visibly (this test previously
+    // pinned the opposite, `l1.get(..)?`, and its own comment named this as the
+    // conscious decision to make).
+    //
+    // A tier that ERRORS is now stepped over exactly like a tier that misses:
+    // the resolver continues down and serves the hit. A broken hot tier must
+    // never be able to hide a healthy durable one — the whole point of having
+    // tiers is that any one of them can be down.
     let l1 = MemBackend::arc();
     let l2 = MemBackend::arc();
     let l3 = MemBackend::arc();
-    // Seed L2 so a fall-through WOULD succeed if the resolver degraded.
+    // Seed L2 so the fall-through has something to find.
     l2.put_narinfo("k", NARINFO).await.unwrap();
     l1.set_down(true);
     let tiered = TieredBackend::new(l1, l2, l3);
-    let err = tiered.get_narinfo("k").await.unwrap_err();
-    assert!(
-        matches!(err, CacheError::NotImplemented(_)),
-        "an L1 error on the read path surfaces (shipped `?` contract), got {err:?}"
+    assert_eq!(
+        tiered.get_narinfo("k").await.unwrap().unwrap(),
+        NARINFO,
+        "a broken L1 must be stepped over, not fatal — L2 holds the content",
     );
 }
 
