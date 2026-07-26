@@ -1,0 +1,30 @@
+# runtime-install-lint — CI-gate per-job Nix installation in sui's OWN workflows
+# (theory/NIX-HARDENING.md §VI, §VI.1). The `pleme-io/actions/runtime-install-lint`
+# tool scans `.github/workflows/*.yml` for a per-job nix-installer
+# (DeterminateSystems/nix-installer-action or `nix shell nixpkgs#…`) — the CI
+# build env belongs BAKED into the runner image, not installed on every job.
+#
+# The 4 workflows that install Nix per-job today (canteiro-m1, canteiro-crux,
+# parity, nixpkgs-parity-track) are grandfathered as tracked debt in
+# .github/workflows/runtime-install-baseline.txt; they graduate to zero as they
+# migrate onto the baked hardened-actions-runner image (pleme-io/hardened-images
+# `actionsRunner`, commit 6564f47). A NEW workflow adding a per-job nix-installer
+# is NOT baselined → this check FAILS. Read-only scan; ubuntu-latest, matching
+# sui's other light jobs (parity / perf-seal).
+name: runtime-install-lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  runtime-install-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pleme-io/actions/runtime-install-lint@main
+        with:
+          baseline-path: .github/workflows/runtime-install-baseline.txt

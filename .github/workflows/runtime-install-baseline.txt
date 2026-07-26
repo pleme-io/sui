@@ -1,0 +1,15 @@
+# Tracked per-job-nix-install debt (theory/NIX-HARDENING.md §VI.1), consumed by
+# .github/workflows/runtime-install-lint.yml via the runtime-install-lint action's
+# `baseline-path` input. These workflows install Nix per-job (nix-installer-action
+# / `nix shell nixpkgs#…`) because their runners carry no baked Nix toolchain.
+#
+# They GRADUATE TO ZERO as each migrates onto the baked hardened-actions-runner
+# image (pleme-io/hardened-images `actionsRunner`, commit 6564f47): point the
+# workflow's runner at that image + drop its nix-installer step, then delete its
+# line here. A NEW workflow that adds a per-job nix-installer is NOT in this
+# baseline → it FAILS the gate (the forcing function that keeps the count falling,
+# never rising). Entry format is the lint's own offending-file path (./-prefixed).
+./.github/workflows/canteiro-m1.yml
+./.github/workflows/canteiro-crux.yml
+./.github/workflows/parity.yml
+./.github/workflows/nixpkgs-parity-track.yml
