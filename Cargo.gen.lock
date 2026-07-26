@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "7ffa4b0d531c815a3ab5ca2f8c23f0299eff22ec982c2fcd720ecb5b9ff7f3f2",
+  "cargo_lock_sha256": "c5ec8efc170630bbb0ead7abe1265e56849a78f3c45dc001f3e7551f604f1cc9",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -2988,6 +2988,54 @@
       },
       "camino-1.2.4": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "canteiro-types-0.1.152": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_dag",
+            "package_key": "shigoto-dag-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_types",
+            "package_key": "shigoto-types-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -26926,6 +26974,16 @@
             "tree": "host"
           },
           {
+            "name": "canteiro_types",
+            "package_key": "canteiro-types-0.1.152",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -38429,6 +38487,13 @@
     "camino-1.2.4": {
       "edition": "2021",
       "build_script": "build.rs"
+    },
+    "canteiro-types-0.1.152": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "canteiro_types",
+        "path": "src/lib.rs"
+      }
     },
     "cast-0.3.0": {
       "edition": "2018"

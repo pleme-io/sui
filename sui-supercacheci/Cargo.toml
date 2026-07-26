@@ -31,6 +31,11 @@ path = "src/bin/canteiro-emit-gha.rs"
 # is configured exactly like every other operator-facing pleme-io tool.
 shikumi = "0.1"
 serde.workspace = true
+# canteiro's shared CI-run types + DAG algebra (CANTEIRO §7.1-C), extracted so a
+# caixa `:kind Acao` renderer can consume a typed CiRun. sui-supercacheci owns
+# the EXECUTION half (CiNodeJob/run_in_process/run_distributed/emitters) and
+# re-exports this crate from `canteiro` so every existing consumer is unchanged.
+canteiro-types.workspace = true
 
 # canteiro M0 (theory/CANTEIRO.md §5): a CI run decomposes into ONE typed
 # content-addressed DAG. The shipped, pure shigoto primitives are the decompose

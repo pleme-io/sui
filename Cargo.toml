@@ -66,6 +66,10 @@ members = [
     # for service-level sui (Postgres store + Redis cache + RAM/tmpfs sandbox,
     # never-touch-durable-disk). Schema + tier model only; backend + daemon
     # wiring are named LiveTODOs in the crate docs.
+    # canteiro's shared, wire-serializable CI-run types + DAG algebra, extracted
+    # from sui-supercacheci so a caixa `:kind Acao` renderer consumes a typed
+    # CiRun without the execution tree (CANTEIRO §7.1-C).
+    "canteiro-types",
     "sui-supercacheci",
     # supa-charge-akeyless-ci Phase 2 — the intercept/resolve/fall-through
     # wrapper around plain `docker build`.  Computes a sui-spec
@@ -152,6 +156,7 @@ sui-graph-store = { path = "sui-graph-store", version = "0.1.10" }
 sui-protocol = { path = "sui-protocol", version = "0.1.10" }
 sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.10" }
 sui-daemon-client = { path = "sui-daemon-client", version = "0.1.10" }
+canteiro-types = { path = "canteiro-types", version = "0.1.10" }
 sui-supercacheci = { path = "sui-supercacheci", version = "0.1.10" }
 sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.10" }
 sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.10" }

@@ -1,0 +1,16 @@
+[package]
+name = "canteiro-types"
+description = "canteiro's shared, wire-serializable CI-run types + the DAG decompose/affected-set algebra (CANTEIRO §7.1-C). Lean deps (serde + shigoto-dag/-types) so a consumer — e.g. a caixa `:kind Acao` renderer — gets a typed CiRun WITHOUT pulling sui-supercacheci's execution tree (tokio/axum/sea-orm)."
+keywords = ["nix", "sui", "ci", "canteiro", "dag"]
+categories = ["development-tools::build-utils"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+shigoto-dag.workspace = true
+shigoto-types.workspace = true

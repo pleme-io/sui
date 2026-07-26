@@ -76,6 +76,10 @@
         "relative_path": "sui-supercacheci"
       },
       {
+        "name": "canteiro-types",
+        "relative_path": "canteiro-types"
+      },
+      {
         "name": "sui-cache-eval",
         "relative_path": "sui-cache-eval"
       },
@@ -5909,6 +5913,106 @@
         "release": true,
         "build": "build.rs",
         "preBuild": "export CARGO_CRATE_NAME=camino;"
+      }
+    },
+    "canteiro-types-0.1.152": {
+      "name": "canteiro-types",
+      "version": "0.1.152",
+      "edition": "2024",
+      "source": {
+        "kind": "path",
+        "relative_path": "canteiro-types"
+      },
+      "features": [],
+      "proc_macro": false,
+      "build_script": null,
+      "links": null,
+      "binaries": [],
+      "lib_target": {
+        "name": "canteiro_types",
+        "path": "src/lib.rs"
+      },
+      "runtime_dependencies": [
+        {
+          "name": "serde",
+          "package_key": "serde-1.0.228",
+          "kind": "normal",
+          "features": [
+            "derive"
+          ],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "shigoto_dag",
+          "package_key": "shigoto-dag-0.1.10",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "shigoto_types",
+          "package_key": "shigoto-types-0.1.10",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
+          "name": "thiserror",
+          "package_key": "thiserror-2.0.18",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        }
+      ],
+      "build_dependencies": [],
+      "crate_renames": {
+        "shigoto-dag": [
+          {
+            "version": "0.1.10",
+            "rename": "shigoto_dag"
+          }
+        ],
+        "shigoto-types": [
+          {
+            "version": "0.1.10",
+            "rename": "shigoto_types"
+          }
+        ]
+      },
+      "build_rust_crate_args": {
+        "crateName": "canteiro-types",
+        "version": "0.1.152",
+        "edition": "2024",
+        "crateRenames": {
+          "shigoto-dag": [
+            {
+              "version": "0.1.10",
+              "rename": "shigoto_dag"
+            }
+          ],
+          "shigoto-types": [
+            {
+              "version": "0.1.10",
+              "rename": "shigoto_types"
+            }
+          ]
+        },
+        "release": true,
+        "libName": "canteiro_types",
+        "libPath": "src/lib.rs",
+        "preBuild": "export CARGO_CRATE_NAME=canteiro_types;"
       }
     },
     "cast-0.3.0": {
@@ -54725,6 +54829,16 @@
           "tree": "host"
         },
         {
+          "name": "canteiro_types",
+          "package_key": "canteiro-types-0.1.152",
+          "kind": "normal",
+          "features": [],
+          "uses_default_features": true,
+          "optional": false,
+          "target": null,
+          "tree": "target"
+        },
+        {
           "name": "serde",
           "package_key": "serde-1.0.228",
           "kind": "normal",
@@ -54870,6 +54984,12 @@
             "rename": "async_trait"
           }
         ],
+        "canteiro-types": [
+          {
+            "version": "0.1.152",
+            "rename": "canteiro_types"
+          }
+        ],
         "shigoto-dag": [
           {
             "version": "0.1.10",
@@ -54922,6 +55042,12 @@
             {
               "version": "0.1.89",
               "rename": "async_trait"
+            }
+          ],
+          "canteiro-types": [
+            {
+              "version": "0.1.152",
+              "rename": "canteiro_types"
             }
           ],
           "shigoto-dag": [
@@ -63164,6 +63290,7 @@
     "sui-daemon-client-0.1.152",
     "sui-orchestrate-0.1.152",
     "sui-supercacheci-0.1.152",
+    "canteiro-types-0.1.152",
     "sui-cache-eval-0.1.152",
     "sui-nix-wrap-0.1.152",
     "sui-daemon-graph-0.1.152",
@@ -63176,6 +63303,10 @@
     "pleme-io-sui-0.1.152"
   ],
   "flake_metadata": {
+    "canteiro-types": {
+      "default_bin": null,
+      "repo": "pleme-io/sui"
+    },
     "pleme-io-sui": {
       "default_bin": "sui",
       "repo": "pleme-io/sui"
@@ -66276,6 +66407,54 @@
       },
       "camino-1.2.4": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "canteiro-types-0.1.152": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_dag",
+            "package_key": "shigoto-dag-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shigoto_types",
+            "package_key": "shigoto-types-0.1.10",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -90214,6 +90393,16 @@
             "tree": "host"
           },
           {
+            "name": "canteiro_types",
+            "package_key": "canteiro-types-0.1.152",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -101498,5 +101687,5 @@
       }
     }
   },
-  "cargo_lock_sha256": "7ffa4b0d531c815a3ab5ca2f8c23f0299eff22ec982c2fcd720ecb5b9ff7f3f2"
+  "cargo_lock_sha256": "c5ec8efc170630bbb0ead7abe1265e56849a78f3c45dc001f3e7551f604f1cc9"
 }
