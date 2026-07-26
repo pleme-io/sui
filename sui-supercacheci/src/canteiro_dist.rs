@@ -37,7 +37,8 @@ use serde::{Deserialize, Serialize};
 use shigoto_types::JobId;
 use tokio::sync::{mpsc, Mutex, Notify};
 
-use crate::canteiro::{CiNode, CiRun};
+use crate::canteiro::{CiNode, CiRun, DecomposeError};
+use crate::canteiro_skip::{partition, CacheProbe};
 
 /// A unit of work dispatched to a worker: one CI node keyed by its [`JobId`].
 /// Serializable — the destination transport ships this across the process
@@ -139,6 +140,43 @@ pub trait NodeRunner: Send + Sync {
     async fn run(&self, worker_id: &str, node: &CiNode) -> NodeOutcome;
 }
 
+/// The real [`NodeRunner`]: runs a node's action as a subprocess — what a live
+/// canteiro-worker pod runs. Mirrors
+/// [`CiNodeJob::execute`](crate::canteiro::CiNodeJob::execute)'s spawn+status
+/// logic, adapted to the [`NodeOutcome`] contract (no `format!` — messages are
+/// built with `push_str`, ★★ TYPED EMISSION).
+pub struct SubprocessRunner;
+
+#[async_trait]
+impl NodeRunner for SubprocessRunner {
+    async fn run(&self, _worker_id: &str, node: &CiNode) -> NodeOutcome {
+        let a = &node.action;
+        match std::process::Command::new(&a.command).args(&a.args).status() {
+            Ok(s) if s.success() => NodeOutcome::Succeeded,
+            Ok(s) => {
+                let mut message = String::from("node exited non-zero (status ");
+                message.push_str(&s.code().unwrap_or(-1).to_string());
+                message.push(')');
+                NodeOutcome::Failed { message }
+            }
+            Err(e) => {
+                let mut message = String::from("spawn failed: ");
+                message.push_str(&e.to_string());
+                NodeOutcome::Failed { message }
+            }
+        }
+    }
+}
+
+/// The result of an affected-aware distributed run: which nodes actually ran
+/// (with their [`NodeResult`]s), which were soundly skipped (served from cache).
+#[derive(Debug, Clone)]
+pub struct AffectedRun {
+    pub results: Vec<NodeResult>,
+    pub ran: Vec<String>,
+    pub skipped: Vec<String>,
+}
+
 /// Run `run`'s DAG across `num_workers` workers, canteiro owning the ordering.
 ///
 /// The scheduler publishes a node only once every dep is terminal, so the DAG
@@ -151,6 +189,56 @@ pub async fn run_distributed<Q, R>(
     num_workers: usize,
     queue: Arc<Q>,
     runner: Arc<R>,
+) -> Vec<NodeResult>
+where
+    Q: WorkQueue + 'static,
+    R: NodeRunner + 'static,
+{
+    run_dispatch(run, num_workers, queue, runner, HashSet::new()).await
+}
+
+/// Sound affected-aware distributed run (CANTEIRO ROOT-4): [`partition`] the run
+/// by the diff + a [`CacheProbe`], then dispatch ONLY the run-set — skipped
+/// nodes are pre-marked terminal so their descendants still proceed (their
+/// output is served from cache). SOUND BY CONSTRUCTION: with the shipped
+/// `UnrealizedProbe` the skip-set is empty, so this is identical to
+/// [`run_distributed`] (nothing skips until B-Root2's realize + a real probe).
+///
+/// # Errors
+/// [`DecomposeError`] if the run is not a valid DAG (propagated from
+/// [`partition`]/`affected_set`, never swallowed).
+pub async fn run_distributed_affected<Q, R, P>(
+    run: &CiRun,
+    changed_files: &[String],
+    num_workers: usize,
+    queue: Arc<Q>,
+    runner: Arc<R>,
+    probe: &P,
+) -> Result<AffectedRun, DecomposeError>
+where
+    Q: WorkQueue + 'static,
+    R: NodeRunner + 'static,
+    P: CacheProbe,
+{
+    let part = partition(run, changed_files, probe).await?;
+    let skip: HashSet<String> = part.skip.iter().cloned().collect();
+    let results = run_dispatch(run, num_workers, queue, runner, skip).await;
+    Ok(AffectedRun {
+        results,
+        ran: part.run,
+        skipped: part.skip,
+    })
+}
+
+/// The shared dispatch loop. `pre_done` nodes are treated as already-terminal
+/// (never published, their descendants proceed) — empty for a full run, the
+/// skip-set for an affected run.
+async fn run_dispatch<Q, R>(
+    run: &CiRun,
+    num_workers: usize,
+    queue: Arc<Q>,
+    runner: Arc<R>,
+    pre_done: HashSet<String>,
 ) -> Vec<NodeResult>
 where
     Q: WorkQueue + 'static,
@@ -191,8 +279,10 @@ where
     }
     drop(res_tx); // only the workers hold senders now → res_rx closes when they exit
 
-    let mut done: HashSet<String> = HashSet::new();
-    let mut published: HashSet<String> = HashSet::new();
+    // Skipped nodes (pre_done) start terminal + already-"published": never
+    // dispatched, but their descendants see them satisfied and proceed.
+    let mut done: HashSet<String> = pre_done.clone();
+    let mut published: HashSet<String> = pre_done;
     let mut results: Vec<NodeResult> = Vec::with_capacity(total);
 
     // Publish every node whose deps are all terminal and which isn't yet out.
@@ -369,5 +459,95 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         let back: WorkItem = serde_json::from_str(&json).unwrap();
         assert_eq!(back.node.name, "build");
+    }
+
+    fn node_in(name: &str, deps: &[&str], inputs: &[&str]) -> CiNode {
+        node(name, deps).with_inputs(inputs.iter().map(|i| (*i).to_string()).collect())
+    }
+
+    #[tokio::test]
+    async fn subprocess_runner_maps_exit_status_to_outcome() {
+        // `true` → Succeeded; `false` → Failed (the real per-pod runner logic).
+        assert_eq!(
+            SubprocessRunner.run("w0", &node("ok", &[])).await,
+            NodeOutcome::Succeeded
+        );
+        let mut bad = node("bad", &[]);
+        bad.action.command = "false".to_string();
+        assert!(matches!(
+            SubprocessRunner.run("w0", &bad).await,
+            NodeOutcome::Failed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn affected_run_with_unrealized_probe_runs_everything() {
+        // Executor-level safety property: UnrealizedProbe skips nothing, so an
+        // affected run is identical to a full run — no unsound skip ever ships.
+        use crate::canteiro_skip::UnrealizedProbe;
+        let run = CiRun {
+            workspace: "pleme-io".into(),
+            repo: "sui".into(),
+            nodes: vec![node_in("build", &[], &["src/"]), node_in("test", &["build"], &["tests/"])],
+        };
+        let rec = Arc::new(OrderRecorder {
+            order: StdMutex::new(Vec::new()),
+        });
+        let out = run_distributed_affected(
+            &run,
+            &["docs/README.md".into()],
+            2,
+            Arc::new(InMemoryQueue::default()),
+            rec.clone(),
+            &UnrealizedProbe,
+        )
+        .await
+        .unwrap();
+        assert!(out.skipped.is_empty(), "UnrealizedProbe skips nothing");
+        assert_eq!(out.results.len(), 2);
+        assert_eq!(rec.order.lock().unwrap().len(), 2, "both nodes actually ran");
+    }
+
+    /// A probe reporting a fixed set of node names as cached.
+    struct CachedNames(HashSet<String>);
+    #[async_trait]
+    impl CacheProbe for CachedNames {
+        async fn is_output_cached(&self, node: &CiNode) -> bool {
+            self.0.contains(&node.name)
+        }
+    }
+
+    #[tokio::test]
+    async fn affected_run_skips_the_unaffected_cached_ancestor() {
+        // Diff touches only tests/ → `build` unaffected; mark build cached. build
+        // is soundly skipped (its output serves test from cache); test runs. The
+        // skipped node is NEVER dispatched (no result, not in the run order).
+        let run = CiRun {
+            workspace: "pleme-io".into(),
+            repo: "sui".into(),
+            nodes: vec![node_in("build", &[], &["src/"]), node_in("test", &["build"], &["tests/"])],
+        };
+        let rec = Arc::new(OrderRecorder {
+            order: StdMutex::new(Vec::new()),
+        });
+        let cached: HashSet<String> = ["build".to_string()].into_iter().collect();
+        let out = run_distributed_affected(
+            &run,
+            &["tests/it.rs".into()],
+            2,
+            Arc::new(InMemoryQueue::default()),
+            rec.clone(),
+            &CachedNames(cached),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.skipped, vec!["build".to_string()]);
+        assert_eq!(out.ran, vec!["test".to_string()]);
+        assert_eq!(out.results.len(), 1, "only test was dispatched");
+        assert_eq!(
+            *rec.order.lock().unwrap(),
+            vec!["test".to_string()],
+            "the skipped ancestor never ran; its dependent still did"
+        );
     }
 }
