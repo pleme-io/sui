@@ -55,7 +55,14 @@ pub struct ActionRef {
 
 /// One typed CI node — the SOLE unifying type (CANTEIRO §1). A CI run is a set
 /// of these; [`decompose`] turns them into a shigoto DAG.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq`/`Eq` derive because every field here already does (`String`,
+/// [`ContentAddr`], [`EnvClass`], [`ActionRef`], `Vec<String>`) — a consumer
+/// that embeds a [`CiRun`] in its own `PartialEq`-deriving type (e.g. caixa's
+/// `Caixa { ci: Option<CiRun>, .. }`, whose top-level manifest derives
+/// `PartialEq` for its round-trip tests) needs the whole value graph to
+/// implement it, not just the leaves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiNode {
     /// Unique node name within its [`CiRun`] (the DAG subject).
     pub name: String,
@@ -131,7 +138,11 @@ pub fn content_addr_for(action: &ActionRef) -> ContentAddr {
 }
 
 /// The input to [`decompose`]: a repo's CI run as a set of declared nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq`/`Eq` derive for the same reason as [`CiNode`] — every field
+/// (`String`, `Vec<CiNode>`) already implements it, and a consumer embedding
+/// this in its own `PartialEq`-deriving type needs the whole graph to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiRun {
     pub workspace: String,
     pub repo: String,
