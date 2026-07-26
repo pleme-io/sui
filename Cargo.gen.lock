@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "c5ec8efc170630bbb0ead7abe1265e56849a78f3c45dc001f3e7551f604f1cc9",
+  "cargo_lock_sha256": "d654c5e4b56539d70e1df5eb87ed2bc7d7415227d6b412d2bad17097273665c3",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -27113,8 +27113,19 @@
               "full",
               "macros",
               "rt",
-              "rt-multi-thread"
+              "rt-multi-thread",
+              "time"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -27122,7 +27133,9 @@
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "default"
+        ]
       },
       "symlink-0.1.0": {
         "runtime_dependencies": [],
@@ -40288,6 +40301,10 @@
         {
           "name": "canteiro-run",
           "path": "src/bin/canteiro-run.rs"
+        },
+        {
+          "name": "canteiro-worker",
+          "path": "src/bin/canteiro-worker.rs"
         }
       ]
     },

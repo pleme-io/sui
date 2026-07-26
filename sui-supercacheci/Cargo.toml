@@ -25,6 +25,16 @@ path = "src/bin/canteiro-run.rs"
 name = "canteiro-emit-gha"
 path = "src/bin/canteiro-emit-gha.rs"
 
+# canteiro plane-(b) CROSS-PROCESS worker (theory/CANTEIRO.md §7.1-A). The in-pod
+# binary one camelot-eks ARC pod runs: claim a WorkItem from the Postgres
+# `PgWorkQueue` -> run it via SubprocessRunner -> report the NodeResult back
+# through PG -> repeat until close. Needs the `postgres` feature for the real
+# SqlxPgQueueConn (a `postgres`-less build compiles a stub main); build with
+# `cargo build -p sui-supercacheci --features postgres --bin canteiro-worker`.
+[[bin]]
+name = "canteiro-worker"
+path = "src/bin/canteiro-worker.rs"
+
 [dependencies]
 # Fleet-standard tiered config surface (default <- discovered <- override,
 # hot-reload). SuperCacheCiConfig impls shikumi::TieredConfig so /super-cache-ci
@@ -70,6 +80,10 @@ sui-cache.workspace = true
 sui-store.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+# canteiro plane-(b) cross-process transport (canteiro_pg): the WorkQueue /
+# ResultTransport trait impls log-and-degrade on a PG error (the trait methods
+# return no Result), via the fleet-standard typed logging surface.
+tracing.workspace = true
 
 # `(defsupercacheci ...)` authoring surface (Rust + Lisp primary pattern).
 # The workspace root already exact-pins tatara-lisp-derive to "=0.2.2" (the
@@ -83,11 +97,29 @@ tatara-lisp-derive.workspace = true
 serde_json.workspace = true
 
 # canteiro M1: the `canteiro-run` bin blocks on the plain `async fn`
-# `run_in_process`, so it needs a tokio runtime. Minimal features: `macros` for
+# `run_in_process`, so it needs a tokio runtime. Features: `macros` for
 # `#[tokio::main]`, `rt` + `rt-multi-thread` because the shipped
-# `InProcessScheduler` fans nodes out over a `tokio::task::JoinSet`. The library
-# target does not use tokio; only the bin does.
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# `InProcessScheduler` fans nodes out over a `tokio::task::JoinSet`, and `time`
+# because the canteiro_pg cross-process claim/scheduler poll loops sleep between
+# empty polls (`tokio::time::sleep` — there is no cross-process `Notify`).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+# canteiro plane-(b) cross-process transport (canteiro_pg, `postgres` feature):
+# the real SqlxPgQueueConn over a sqlx Postgres pool. Feature-gating convention
+# mirrors sui-castore exactly (default off; the mock-tested state machine needs
+# zero driver surface). Uses the runtime `sqlx::query()` API (no compile-time
+# DATABASE_URL / offline metadata required).
+[dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["runtime-tokio-rustls", "postgres"]
+optional = true
+
+[features]
+default = []
+# Pulls the real sqlx Postgres transport for canteiro_pg's PgWorkQueue +
+# the canteiro-worker bin's SqlxPgQueueConn::connect path.
+postgres = ["dep:sqlx"]
 
 [dev-dependencies]
 # Async freshness-pass tests + the in-memory sui_cache::StorageBackend double

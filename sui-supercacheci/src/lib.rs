@@ -149,6 +149,15 @@ pub mod canteiro_gha;
 /// swap).
 pub mod canteiro_dist;
 
+/// canteiro plane (b) CROSS-PROCESS transport (`theory/CANTEIRO.md` §7.1-A: "a
+/// PgStore FOR UPDATE SKIP LOCKED queue, one worker per ARC pod"). A
+/// Postgres-backed `WorkQueue` (`canteiro_work_items`, atomic SKIP-LOCKED claim)
+/// + `ResultTransport` (`canteiro_results`, the result path the in-process
+/// `mpsc` cannot cross) behind the `PgQueueConn` seam — mock-proven here, real
+/// sqlx impl behind the `postgres` feature. The `canteiro-worker` `[[bin]]` runs
+/// one worker per pod; the live ≥2-pod run against a real PG is the named gate.
+pub mod canteiro_pg;
+
 /// canteiro sound affected-skip (`theory/CANTEIRO.md` §7.1-B, the cascade root).
 /// The SOUND skip predicate (skip iff unaffected AND output-cached) + the
 /// `CacheProbe` seam. Sound by construction: the M0 `UnrealizedProbe` skips

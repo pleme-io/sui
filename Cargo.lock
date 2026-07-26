@@ -6944,12 +6944,14 @@ dependencies = [
  "shigoto-scheduler",
  "shigoto-types",
  "shikumi",
+ "sqlx",
  "sui-cache",
  "sui-store",
  "tatara-lisp",
  "tatara-lisp-derive",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
