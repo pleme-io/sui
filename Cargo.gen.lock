@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "d654c5e4b56539d70e1df5eb87ed2bc7d7415227d6b412d2bad17097273665c3",
+  "cargo_lock_sha256": "84b0e36902a01a45a2c09fadc809a57a1abcd0faf1e7fb588a5b7c1a2de45991",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -27058,6 +27058,16 @@
           {
             "name": "sui_cache",
             "package_key": "sui-cache-0.1.152",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_castore",
+            "package_key": "sui-castore-0.1.152",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

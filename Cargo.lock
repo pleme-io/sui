@@ -6946,6 +6946,7 @@ dependencies = [
  "shikumi",
  "sqlx",
  "sui-cache",
+ "sui-castore",
  "sui-store",
  "tatara-lisp",
  "tatara-lisp-derive",

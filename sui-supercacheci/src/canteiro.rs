@@ -45,7 +45,7 @@ use shigoto_types::{
 // shigoto-scheduler + tokio and so stays out of the lean shared crate.
 pub use canteiro_types::{
     affected_set, affected_waves, content_addr_for, decompose, ActionRef, CanteiroDag, CiNode,
-    CiRun, ContentAddr, DecomposeError, EnvClass, NODE_KIND,
+    CiRun, ContentAddr, DecomposeError, EnvClass, OutputAddr, NODE_KIND,
 };
 
 /// A [`CiNode`] made runnable as a real shigoto [`RecordingJob`] — the

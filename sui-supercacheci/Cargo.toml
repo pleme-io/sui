@@ -78,6 +78,13 @@ serde_yaml_ng.workspace = true
 # thiserror.
 sui-cache.workspace = true
 sui-store.workspace = true
+# canteiro B-Root2 (theory/CANTEIRO.md §7.1-B): the sound affected-skip's CACHE
+# axis. `StoreBackedProbe` queries a sui_castore `StorageBackend` (get_narinfo +
+# the NAR its `URL:` line references) to answer whether a node's realized OUTPUT
+# is genuinely SERVABLE to its descendants -- the soundness gate for a skip.
+# default-features is off in the workspace pin, so only the `StorageBackend`
+# trait + `StoreError` come along, not the redis/postgres backend impls.
+sui-castore.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 # canteiro plane-(b) cross-process transport (canteiro_pg): the WorkQueue /

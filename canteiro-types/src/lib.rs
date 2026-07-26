@@ -30,6 +30,22 @@ pub const NODE_KIND: &str = "canteiro.node";
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContentAddr(pub String);
 
+/// The content-address of a node's realized OUTPUT store-path — the hash the NAR
+/// cache keys by, DISTINCT from a node's input [`ContentAddr`]. It is what a
+/// cache probe maps `node → hash → StorageBackend::get_narinfo` against, and it
+/// is populated by the derivation-realize morphism (CANTEIRO B-Root2's deep
+/// gate: turning a node's arbitrary-shell action into a Nix derivation with a
+/// content-addressed store-path output).
+///
+/// Carried as an `Option` on [`CiNode`] with the CONSERVATIVE default `None`
+/// (see [`CiNode::output_addr`]): today NO production path sets it, because that
+/// realize morphism is unbuilt — so a real `sui_castore`-backed cache probe can
+/// never locate a node's output and returns `false` for every node, and NO skip
+/// fires (sound by construction). It becomes `Some` only when realize lands — a
+/// type change at one site (the realize step), never a fleet-wide edit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OutputAddr(pub String);
+
 /// The environment a CI node needs. M0 exercises only [`EnvClass::None`];
 /// the other arms are typed so the demand axis exists from M0 but are not wired.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +96,16 @@ pub struct CiNode {
     /// silently skipped — CANTEIRO §6). Declare the real prefixes with
     /// [`CiNode::with_inputs`] to opt into diff-scoped skipping.
     pub inputs: Vec<String>,
+    /// The content-address of this node's realized OUTPUT store-path — the key
+    /// the NAR cache serves it to descendants by, and the soundness gate a
+    /// cache probe checks (CANTEIRO B-Root2, [`OutputAddr`]). `None` until the
+    /// derivation-realize morphism populates it; a node with no output address
+    /// can NEVER be soundly skipped (a cache probe cannot locate what it cannot
+    /// name), so `None` is the conservative default. NOTHING in the shipped
+    /// pipeline sets this yet — realize is the named remaining deep gate — so in
+    /// practice every real node carries `None` and a store-backed probe reports
+    /// it uncached, exactly like the M0 unrealized probe.
+    pub output_addr: Option<OutputAddr>,
 }
 
 impl CiNode {
@@ -106,6 +132,7 @@ impl CiNode {
             action,
             deps,
             inputs: Vec::new(),
+            output_addr: None,
         }
     }
 
@@ -117,6 +144,18 @@ impl CiNode {
     #[must_use]
     pub fn with_inputs(mut self, inputs: Vec<String>) -> Self {
         self.inputs = inputs;
+        self
+    }
+
+    /// Declare this node's realized OUTPUT content-address (its store-path hash)
+    /// — the key a cache probe serves it by, and the soundness gate a skip
+    /// requires (see [`CiNode::output_addr`]/[`OutputAddr`]). This is what the
+    /// derivation-realize morphism (CANTEIRO B-Root2) calls once it produces a
+    /// store-path output; until that morphism exists it is never called on a
+    /// real node, so no node is skippable. Builder over [`CiNode::new`].
+    #[must_use]
+    pub fn with_output_addr(mut self, addr: OutputAddr) -> Self {
+        self.output_addr = Some(addr);
         self
     }
 }
