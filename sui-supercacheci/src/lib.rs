@@ -149,6 +149,13 @@ pub mod canteiro_gha;
 /// swap).
 pub mod canteiro_dist;
 
+/// canteiro sound affected-skip (`theory/CANTEIRO.md` §7.1-B, the cascade root).
+/// The SOUND skip predicate (skip iff unaffected AND output-cached) + the
+/// `CacheProbe` seam. Sound by construction: the M0 `UnrealizedProbe` skips
+/// NOTHING (no `CiNode` is a realized derivation yet), so an unsound skip is
+/// unrepresentable until B-Root2's derivation-realize + a real cache probe land.
+pub mod canteiro_skip;
+
 /// canteiro `(defci)` authoring surface (`theory/CANTEIRO.md` §4, leg 2) — the
 /// TYPED-SPEC + INTERPRETER TRIPLET for declaring a `CiRun` as typed Lisp data:
 /// the `CiSpec` `#[tatara(keyword = "defci")]` border + the `to_ci_run`
