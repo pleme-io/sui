@@ -819,4 +819,187 @@ mod tests {
         let err = backend.get_narinfo("bad").await.unwrap_err();
         assert!(matches!(err, StoreError::NarInfo(_)));
     }
+
+    // ── Fault injection ────────────────────────────────────────────────
+    //
+    // Every mock above is INFALLIBLE: `MockPg` returns `Ok` from all five
+    // trait methods, so no test in this file could observe what the backend
+    // does when Postgres refuses. That is not a small gap — it is why the
+    // 2026-07-26 camelot outage class was invisible to a green suite.
+    //
+    // What happened: the `sui-cache-pg` pod was rescheduled at 19:00:06Z with
+    // `pgdata: emptyDir`, so its database came up EMPTY. sui had connected
+    // ~24h earlier (pod start 2026-07-25T18:23:55Z) and `ensure_schema` is
+    // called from exactly ONE place — inside `connect` — and never again. So
+    // the process held a live pool to a blank database and every read hit
+    // `relation "sui_cache_narinfo" does not exist`. `get_narinfo` propagated
+    // that with `?`, the HTTP layer mapped `Err` to 500, and Nix treats a 500
+    // from a substituter as a HARD FAILURE rather than a cache miss — so every
+    // Nix build on the cluster failed.
+    //
+    // Two separable defects, and these tests pin the boundary between them:
+    //   1. STORAGE CONTRACT (here): a backend fault must surface truthfully as
+    //      `Err`, and must remain DISTINGUISHABLE from `Ok(None)`. Collapsing
+    //      them here would make the storage layer lie, and a genuinely broken
+    //      cache would then look permanently empty with no signal anywhere.
+    //   2. PROTOCOL SEMANTICS (sui-cache/src/server.rs): for a *substituter*,
+    //      "I cannot answer" and "I do not have it" are the same answer to the
+    //      client — both mean "build it yourself". That collapse belongs at the
+    //      HTTP boundary, where it is a deliberate protocol decision, NOT in
+    //      the storage layer where it would be data loss dressed as resilience.
+    //
+    // So these tests deliberately assert that the storage layer KEEPS erroring.
+    // The degradation is tested on the server side.
+
+    /// A [`PgCacheConn`] that fails after `ok_calls` successful selects,
+    /// reproducing the incident's timeline (works, then the schema vanishes
+    /// underneath a live pool) rather than a backend that was never healthy.
+    struct FaultyPg {
+        inner:     MockPg,
+        ok_calls:  Mutex<usize>,
+        fail_with: String,
+    }
+
+    impl FaultyPg {
+        /// Fails every call — a backend that is broken from the start.
+        fn always(msg: &str) -> Self {
+            Self {
+                inner:     MockPg::default(),
+                ok_calls:  Mutex::new(0),
+                fail_with: msg.to_string(),
+            }
+        }
+
+        /// Serves `n` calls normally, then fails every call after — the
+        /// schema-vanished-under-a-live-pool shape.
+        fn after(n: usize, msg: &str) -> Self {
+            Self {
+                inner:     MockPg::default(),
+                ok_calls:  Mutex::new(n),
+                fail_with: msg.to_string(),
+            }
+        }
+
+        /// Consume one budgeted success, or fail. Returns `Err` once spent.
+        fn tick(&self) -> Result<(), StoreError> {
+            let mut left = self.ok_calls.lock().unwrap();
+            if *left == 0 {
+                return Err(StoreError::Io(std::io::Error::other(format!(
+                    "postgres: {}",
+                    self.fail_with
+                ))));
+            }
+            *left -= 1;
+            Ok(())
+        }
+    }
+
+    /// The exact string Postgres returns for the missing relation, so the
+    /// fixture cannot drift from the incident it encodes.
+    const RELATION_MISSING: &str = "error returned from database: \
+                                    relation \"sui_cache_narinfo\" does not exist";
+
+    #[async_trait]
+    impl PgCacheConn for FaultyPg {
+        async fn select(&self, table: PgTable, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.tick()?;
+            self.inner.select(table, key).await
+        }
+        async fn upsert(&self, table: PgTable, key: &str, value: &[u8]) -> Result<(), StoreError> {
+            self.tick()?;
+            self.inner.upsert(table, key, value).await
+        }
+        async fn delete(&self, table: PgTable, key: &str) -> Result<(), StoreError> {
+            self.tick()?;
+            self.inner.delete(table, key).await
+        }
+        async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
+            self.tick()?;
+            self.inner.keys(table).await
+        }
+        async fn clear(&self, table: PgTable) -> Result<u64, StoreError> {
+            self.tick()?;
+            self.inner.clear(table).await
+        }
+    }
+
+    /// THE INCIDENT, as a test. A backend fault must NOT be reported as a miss
+    /// by the storage layer — the two must stay distinguishable, because the
+    /// caller's correct response differs (a miss means "not cached"; a fault
+    /// means "this cache is broken, page someone").
+    #[tokio::test]
+    async fn backend_fault_is_an_error_never_a_silent_miss() {
+        let backend = PgStorageBackend::new(FaultyPg::always(RELATION_MISSING));
+        let err = backend.get_narinfo("abc").await.unwrap_err();
+        assert!(
+            err.to_string().contains("does not exist"),
+            "the underlying cause must survive to the caller, got: {err}"
+        );
+
+        // The discriminating assertion: a HEALTHY backend with no such key
+        // returns Ok(None). If a fault also returned Ok(None), these two would
+        // be indistinguishable and a broken cache would masquerade as an empty
+        // one — invisible, permanently.
+        let healthy = PgStorageBackend::new(MockPg::default());
+        assert!(healthy.get_narinfo("abc").await.unwrap().is_none());
+    }
+
+    /// Writes must not silently succeed against a broken backend — a swallowed
+    /// `put` would report a populated cache that holds nothing.
+    #[tokio::test]
+    async fn backend_fault_on_write_is_an_error() {
+        let backend = PgStorageBackend::new(FaultyPg::always(RELATION_MISSING));
+        assert!(backend.put_narinfo("h", NARINFO).await.is_err());
+        assert!(backend.put_nar("nar/h.nar.xz", b"bytes").await.is_err());
+    }
+
+    /// Every read path, not just narinfo — parity matters because `get_nar`
+    /// serves the actual build artifacts and has its own code path.
+    #[tokio::test]
+    async fn every_read_path_propagates_a_backend_fault() {
+        let backend = PgStorageBackend::new(FaultyPg::always(RELATION_MISSING));
+        assert!(backend.get_narinfo("h").await.is_err(), "get_narinfo");
+        assert!(backend.get_nar("nar/h.nar.xz").await.is_err(), "get_nar");
+        assert!(backend.list_narinfos().await.is_err(), "list_narinfos");
+        assert!(backend.delete("h").await.is_err(), "delete");
+    }
+
+    /// Concurrency: parallel writers must not lose writes. The mock is
+    /// `Mutex`-guarded per table, so this pins the backend's own key handling
+    /// rather than the DB's — a regression that mangled keys (e.g. a shared
+    /// buffer) would show up as a count mismatch.
+    #[tokio::test]
+    async fn concurrent_puts_do_not_lose_writes() {
+        use std::sync::Arc;
+        let backend = Arc::new(PgStorageBackend::new(MockPg::default()));
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..64 {
+            let b = Arc::clone(&backend);
+            set.spawn(async move { b.put_narinfo(&format!("k{i}"), &format!("v{i}")).await });
+        }
+        while let Some(r) = set.join_next().await {
+            r.expect("task panicked").expect("put failed");
+        }
+        assert_eq!(backend.list_narinfos().await.unwrap().len(), 64);
+        for i in 0..64 {
+            assert_eq!(
+                backend.get_narinfo(&format!("k{i}")).await.unwrap().unwrap(),
+                format!("v{i}"),
+                "key k{i} round-tripped wrong under concurrency"
+            );
+        }
+    }
+
+    /// Idempotence under repeat: a content-addressed cache re-`put`s the same
+    /// key with identical bytes constantly, and that must be a no-op, not a
+    /// duplicate or an error.
+    #[tokio::test]
+    async fn repeated_identical_put_is_idempotent() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        for _ in 0..10 {
+            backend.put_narinfo("same", NARINFO).await.unwrap();
+        }
+        assert_eq!(backend.list_narinfos().await.unwrap().len(), 1);
+        assert_eq!(backend.get_narinfo("same").await.unwrap().unwrap(), NARINFO);
+    }
 }
