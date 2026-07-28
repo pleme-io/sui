@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sui_spec::parity::{ShadowReport, Verdict};
+use sui_spec::parity::{ShadowReport, SweepVerdict, Verdict};
 use sui_spec::sweep::{self, Corpus, SweepConfig};
 
 /// Build a minimal fixture flake at `dir/flake.nix`.  Content doesn't
@@ -219,6 +219,13 @@ fn empty_tally_is_well_formed() {
         records: Vec::new(),
         tally: BTreeMap::new(),
     };
-    assert!(report.all_pass());  // vacuously true
+    // This assertion used to read `assert!(report.all_pass()); // vacuously
+    // true` — the defect stated as intent, in the crate whose product is a
+    // byte-parity proof.  A sweep that examined zero records now reports
+    // `Vacuous`, a distinct arm that is not a pass (UNREPRESENTABILITY §II.4).
+    assert_eq!(report.verdict(), SweepVerdict::Vacuous);
+    assert!(!report.all_pass());
+    assert!(report.verdict().examined().is_none());
+    // The raw count is still honestly 0; only the verdict changed.
     assert_eq!(report.divergence_count(), 0);
 }

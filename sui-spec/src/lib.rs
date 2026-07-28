@@ -120,5 +120,7 @@ pub mod worker_protocol;
 pub use spec_trait::{HasName, Spec};
 
 pub use error::SpecError;
-pub use parity::{ParityCheck, ProbeContext, ProbeKind, ShadowReport, Verdict};
+pub use parity::{
+    Examined, ParityCheck, ProbeContext, ProbeKind, ShadowReport, SweepVerdict, Verdict,
+};
 pub use sweep::{Corpus, SweepConfig};

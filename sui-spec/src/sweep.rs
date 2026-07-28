@@ -187,13 +187,29 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
         eprintln!("\nreport: {}", path.display());
     }
 
+    // The operator-facing summary is driven by the derived verdict, not
+    // by `diverged == 0`.  That comparison was the sibling of the
+    // `all_pass` defect and strictly worse: over zero records it printed
+    // a green ✓ beside "0 runs  0 passed  0 diverged" — a sweep that
+    // compared nothing, certified.  `Vacuous` now says so out loud.
     let runs = report.records.len();
     let diverged = report.divergence_count();
     let passed = runs - diverged;
-    let summary_glyph = if diverged == 0 {
-        crate::style::glyph_ok()
-    } else {
-        crate::style::glyph_fail()
+    let verdict = report.verdict();
+    let summary_glyph = match verdict {
+        crate::parity::SweepVerdict::AllPassed { .. } => crate::style::glyph_ok(),
+        crate::parity::SweepVerdict::Diverged { .. } => crate::style::glyph_fail(),
+        crate::parity::SweepVerdict::Vacuous => crate::style::glyph_warn(),
+    };
+    let tail = match verdict {
+        crate::parity::SweepVerdict::Vacuous => {
+            crate::style::warn("VACUOUS — 0 probes ran; this sweep proves nothing")
+        }
+        crate::parity::SweepVerdict::AllPassed { .. } => crate::style::muted("0 diverged"),
+        crate::parity::SweepVerdict::Diverged { examined, .. } => crate::style::error(&format!(
+            "{diverged} diverged (worst: {})",
+            examined.worst().name(),
+        )),
     };
     println!(
         "\n{}  {}  {}  {}  {}",
@@ -201,11 +217,7 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
         crate::style::header("sui-sweep complete"),
         crate::style::ident(&format!("{runs} runs")),
         crate::style::success(&format!("{passed} passed")),
-        if diverged == 0 {
-            crate::style::muted("0 diverged")
-        } else {
-            crate::style::error(&format!("{diverged} diverged"))
-        },
+        tail,
     );
 
     Ok(report)

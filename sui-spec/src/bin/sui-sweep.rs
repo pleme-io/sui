@@ -35,6 +35,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use sui_spec::parity::SweepVerdict;
 use sui_spec::sweep::{self, Corpus, SweepConfig};
 
 struct Args {
@@ -128,9 +129,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Non-zero exit on any divergence so the operator's CI / wrapper
     // can react to drift.  Drift is drift whether or not we wrote the
     // JSON report.
-    if report.all_pass() {
-        Ok(())
-    } else {
-        std::process::exit(1);
+    //
+    // `Vacuous` also exits non-zero, and says why: a sweep that ran zero
+    // probes has proven nothing, and shipping that as a green check is
+    // the exact failure this repo's INSTRUMENT RULE was written about.
+    //
+    // `SweepVerdict` is `#[non_exhaustive]`, so this match needs a
+    // catch-all.  It is deliberately FAIL-CLOSED: a future arm is not a
+    // pass until someone decides it is.  A `_ => Ok(())` here would
+    // re-open the exact hole this change closes, one arm later.
+    match report.verdict() {
+        SweepVerdict::AllPassed { .. } => Ok(()),
+        SweepVerdict::Diverged { .. } => std::process::exit(1),
+        SweepVerdict::Vacuous => {
+            eprintln!(
+                "sui-sweep: VACUOUS — 0 probes ran, so nothing was proven. \
+                 Check the corpus, the --tag filters, and that --flakes-root \
+                 exists and contains a flake.nix."
+            );
+            std::process::exit(2);
+        }
+        other => {
+            eprintln!("sui-sweep: unhandled verdict {other:?} — refusing to report a pass");
+            std::process::exit(2);
+        }
     }
 }

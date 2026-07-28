@@ -6994,8 +6994,29 @@ async fn main() -> Result<(), CliError> {
                 operation: "rebuild-shadow",
                 message: e.to_string(),
             })?;
-            if !report.all_pass() {
-                std::process::exit(1);
+            // Gate on the derived verdict, not on a bool that cannot
+            // tell "23 probes all matched" from "0 probes ran".  A
+            // vacuous sweep exits 2 and says so; silently exiting 0 was
+            // the defect (sui-spec parity.rs, UNREPRESENTABILITY §II.4).
+            // The catch-all is FAIL-CLOSED — a future `SweepVerdict` arm
+            // must never become a silent pass in a gate.
+            match report.verdict() {
+                sui_spec::parity::SweepVerdict::AllPassed { .. } => {}
+                sui_spec::parity::SweepVerdict::Diverged { .. } => std::process::exit(1),
+                sui_spec::parity::SweepVerdict::Vacuous => {
+                    eprintln!(
+                        "rebuild-shadow: VACUOUS — 0 probes ran, so nothing was \
+                         proven. Check the corpus, the --tag filters, and that \
+                         --flakes-root exists and contains a flake.nix."
+                    );
+                    std::process::exit(2);
+                }
+                other => {
+                    eprintln!(
+                        "rebuild-shadow: unhandled verdict {other:?} — refusing to report a pass"
+                    );
+                    std::process::exit(2);
+                }
             }
         }
     }

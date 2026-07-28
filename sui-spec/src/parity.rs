@@ -19,6 +19,7 @@
 //! participate plugs in by implementing the trait once.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -354,14 +355,159 @@ pub struct ShadowReport {
     pub tally: BTreeMap<String, usize>,
 }
 
+/// The value-witness of a [`SweepVerdict`] — the record set the verdict
+/// was derived from, plus the worst [`Verdict`] in it.
+///
+/// UNREPRESENTABILITY §II.4 clause 2: the pass arm must be
+/// non-constructible without a non-empty subject-set witness.  That is
+/// structural here — [`Examined::from_records`] is **private** and
+/// returns `Option`, so the only way to obtain an `Examined` is to hand
+/// it a non-empty `&[ProbeRecord]`, and the only code that can do so
+/// lives in this module.  No public constructor exists, so no caller
+/// can name a pass over subjects it never examined.
+///
+/// `worst` is where the 8-way [`Verdict`] ordering earns its keep: the
+/// enum's `Ord` derive documents "a `Differ` is worse than a
+/// `BothFail`", and until now nothing in sui consumed it.  `max()` over
+/// the records is that ranking, and because `Iterator::max` yields
+/// `None` on an empty iterator, **the emptiness check and the severity
+/// ranking are the same operation** — there is no separate `is_empty()`
+/// branch to forget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Examined {
+    count: NonZeroUsize,
+    worst: Verdict,
+}
+
+impl Examined {
+    /// The sole ingress.  Private by design (see the type doc).
+    fn from_records(records: &[ProbeRecord]) -> Option<Self> {
+        // `max()` returns None exactly when `records` is empty, so this
+        // single call is both the non-emptiness proof and the severity
+        // ranking over the 8-way `Verdict` `Ord`.
+        let worst = records.iter().map(|r| r.verdict).max()?;
+        let count = NonZeroUsize::new(records.len())?;
+        Some(Self { count, worst })
+    }
+
+    /// How many records the verdict was derived from.  A projection of
+    /// the value — never a field a caller sets.
+    #[must_use]
+    pub fn count(&self) -> NonZeroUsize {
+        self.count
+    }
+
+    /// The worst verdict among the examined records, by the 8-way
+    /// [`Verdict`] ordering.
+    #[must_use]
+    pub fn worst(&self) -> Verdict {
+        self.worst
+    }
+}
+
+/// The verdict of one shadow sweep — derived from the sweep's records,
+/// never asserted.
+///
+/// UNREPRESENTABILITY §II.4.  `AllPassed` cannot be named without an
+/// [`Examined`] witness, and "we compared nothing" is [`Self::Vacuous`]
+/// — a **distinct arm**, not a pass.
+///
+/// **What emptiness means here, decided once and visibly** (§II.4 does
+/// not say "empty fails"; it says emptiness must be *sayable*, and the
+/// domain decides).  sui's entire product is a byte-parity proof against
+/// nix, and this repo's own INSTRUMENT RULE records the cost of getting
+/// this wrong: a `SUI_PARITY_PUREONLY=1` default once shipped "a total
+/// loss of nixpkgs evaluation as a green check".  A sweep that compared
+/// nothing has proven nothing, so `Vacuous` is **not** a pass and the
+/// CLI exits non-zero on it.  (This is skill-lint's decision — "a linter
+/// that validated nothing validated nothing" — not magma's
+/// `Coverage::Vacuous`, which supports an in-sync claim because an empty
+/// world cannot drift.  Both are correct in their own domain; the point
+/// of the arm is that the choice is stated rather than defaulted.)
+///
+/// Note there is deliberately **no stored verdict field on
+/// [`ShadowReport`]**, and therefore no serde border to forge across:
+/// the verdict is re-derived from the serialized `records` on every
+/// call, so a hand-edited report cannot claim a pass its records do not
+/// support.  Adding a persisted `verdict` field would *create* the
+/// forgery surface §II.4's fourth property then has to defend against.
+///
+/// `#[non_exhaustive]` is free here — the enum is new, so it has no
+/// existing downstream matches to break — and it converts every future
+/// arm from a downstream migration into a non-event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SweepVerdict {
+    /// Every examined record passed.  Carries the witness.
+    AllPassed { examined: Examined },
+    /// At least one examined record diverged.
+    Diverged {
+        examined: Examined,
+        diverged: NonZeroUsize,
+    },
+    /// The sweep ran but examined zero records — no claim is made.
+    ///
+    /// Reachable in normal operation: a `--tag` filter that matches no
+    /// probe, or a `flakes_root` that does not exist or holds no
+    /// `flake.nix` (`sweep::resolve_flakes` returns an empty `Vec`
+    /// rather than erroring).  Before this arm existed, every one of
+    /// those paths printed a green ✓ and exited 0.
+    Vacuous,
+}
+
+impl SweepVerdict {
+    /// `true` only for [`Self::AllPassed`].  Total over the closed sum —
+    /// there is no `_ =>` arm that could round `Vacuous` up.
+    #[must_use]
+    pub const fn is_pass(&self) -> bool {
+        matches!(self, Self::AllPassed { .. })
+    }
+
+    /// The witness, when the verdict has one.
+    #[must_use]
+    pub const fn examined(&self) -> Option<Examined> {
+        match self {
+            Self::AllPassed { examined } | Self::Diverged { examined, .. } => Some(*examined),
+            Self::Vacuous => None,
+        }
+    }
+}
+
 impl ShadowReport {
-    /// `true` iff every record has a passing verdict.
+    /// The ONE classifier — a total function of `self.records`.
+    ///
+    /// No constructor anywhere accepts a [`SweepVerdict`]; this is the
+    /// only way to obtain one (§II.4 clause 1).
+    #[must_use]
+    pub fn verdict(&self) -> SweepVerdict {
+        let Some(examined) = Examined::from_records(&self.records) else {
+            return SweepVerdict::Vacuous;
+        };
+        match NonZeroUsize::new(self.divergence_count()) {
+            Some(diverged) => SweepVerdict::Diverged { examined, diverged },
+            None => SweepVerdict::AllPassed { examined },
+        }
+    }
+
+    /// `true` iff the sweep examined at least one record and every one
+    /// of them passed.
+    ///
+    /// Derived from [`Self::verdict`], so the vacuous case can no longer
+    /// reach this `true`.  Prefer matching on [`Self::verdict`] directly
+    /// where the operator needs to know *why* a sweep is not a pass —
+    /// this bool cannot distinguish `Vacuous` from `Diverged`.
     #[must_use]
     pub fn all_pass(&self) -> bool {
-        self.records.iter().all(|r| r.verdict.is_pass())
+        self.verdict().is_pass()
     }
 
     /// Count of non-passing records.
+    ///
+    /// A raw count, not a verdict: `0` here means "no divergence among
+    /// the records present", which over an empty record set says nothing
+    /// at all.  Gate on [`Self::verdict`], never on `divergence_count()
+    /// == 0` — that comparison is the same vacuous-pass defect wearing
+    /// an integer.
     #[must_use]
     pub fn divergence_count(&self) -> usize {
         self.records.iter().filter(|r| !r.verdict.is_pass()).count()
@@ -465,6 +611,125 @@ mod tests {
             stderr: String::new(),
             duration: std::time::Duration::from_millis(1),
             timed_out,
+        }
+    }
+
+    /// The inverted red-run.  Against unfixed code (85ddfec) this
+    /// assertion's opposite held: `all_pass()` returned `true` over zero
+    /// records, so a parity sweep that compared nothing certified
+    /// parity.  UNREPRESENTABILITY §II.4.
+    #[test]
+    fn vacuous_sweep_is_not_a_pass() {
+        let report = empty_report();
+        assert_eq!(report.verdict(), SweepVerdict::Vacuous);
+        assert!(
+            !report.all_pass(),
+            "a sweep that ran ZERO probes must not report all-pass",
+        );
+        // The count is still honestly 0 — it is the *verdict* that must
+        // not round that up.
+        assert_eq!(report.divergence_count(), 0);
+    }
+
+    /// Clause 2, mechanically: the pass arm carries its witness, and the
+    /// witness is a projection of the records, not a settable field.
+    #[test]
+    fn pass_arm_carries_a_non_empty_witness() {
+        let report = report_with(&[Verdict::Match, Verdict::NotApplicable]);
+        match report.verdict() {
+            SweepVerdict::AllPassed { examined } => {
+                assert_eq!(examined.count().get(), 2);
+                // NotApplicable > Match in the 8-way ordering.
+                assert_eq!(examined.worst(), Verdict::NotApplicable);
+            }
+            other => panic!("expected AllPassed, got {other:?}"),
+        }
+    }
+
+    /// The 8-way `Verdict` ordering survives — and is now load-bearing.
+    /// `Examined::worst` is `max()` over that `Ord`, so the deliberate
+    /// "a `Differ` is worse than a `BothFail`" ranking is consumed
+    /// rather than merely derived.
+    #[test]
+    fn witness_worst_uses_the_eight_way_ordering() {
+        // Ordering as declared on the enum.
+        assert!(Verdict::Differ < Verdict::BothFail);
+        assert!(Verdict::Match < Verdict::Differ);
+
+        let report = report_with(&[Verdict::Match, Verdict::BothFail, Verdict::Differ]);
+        match report.verdict() {
+            SweepVerdict::Diverged { examined, diverged } => {
+                assert_eq!(diverged.get(), 2);
+                assert_eq!(examined.count().get(), 3);
+                assert_eq!(examined.worst(), Verdict::BothFail);
+            }
+            other => panic!("expected Diverged, got {other:?}"),
+        }
+    }
+
+    /// A `Vacuous` verdict has no witness to hand out, and cannot be
+    /// coaxed into reporting a pass.
+    #[test]
+    fn vacuous_has_no_witness() {
+        assert!(SweepVerdict::Vacuous.examined().is_none());
+        assert!(!SweepVerdict::Vacuous.is_pass());
+    }
+
+    /// The verdict is re-derived from the serialized records, so a
+    /// round-tripped report cannot carry a forged pass — there is no
+    /// stored verdict field to forge.
+    #[test]
+    fn verdict_is_rederived_across_the_serde_border() {
+        let report = report_with(&[Verdict::Match, Verdict::Differ]);
+        let json = serde_json::to_string(&report).expect("serialize");
+        let back: ShadowReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.verdict(), report.verdict());
+        assert!(!back.all_pass());
+
+        let empty_json = serde_json::to_string(&empty_report()).expect("serialize");
+        let back_empty: ShadowReport = serde_json::from_str(&empty_json).expect("deserialize");
+        assert_eq!(back_empty.verdict(), SweepVerdict::Vacuous);
+    }
+
+    fn report_with(verdicts: &[Verdict]) -> ShadowReport {
+        let mut report = empty_report();
+        report.records = verdicts
+            .iter()
+            .map(|v| ProbeRecord {
+                name: "p".into(),
+                kind: ProbeKind::Eval,
+                tags: vec![],
+                flake: "f".into(),
+                sui_argv: vec![],
+                nix_argv: vec![],
+                sui_exit: Some(0),
+                nix_exit: Some(0),
+                sui_stdout_excerpt: String::new(),
+                nix_stdout_excerpt: String::new(),
+                sui_stderr_excerpt: String::new(),
+                nix_stderr_excerpt: String::new(),
+                sui_duration_ms: 0,
+                nix_duration_ms: 0,
+                sui_timed_out: false,
+                nix_timed_out: false,
+                verdict: *v,
+            })
+            .collect();
+        report
+    }
+
+    fn empty_report() -> ShadowReport {
+        ShadowReport {
+            generated_at: "2026-07-28T00:00:00Z".into(),
+            generator: "sui-sweep test".into(),
+            host: "cid".into(),
+            system: "aarch64-darwin".into(),
+            os: "darwin".into(),
+            user: "drzzln".into(),
+            sui_version: None,
+            nix_version: None,
+            records: Vec::new(),
+            tally: BTreeMap::new(),
         }
     }
 
