@@ -62,12 +62,12 @@ test-case.workspace = true
 proptest.workspace = true
 criterion.workspace = true
 # tatara-lisp for Lisp-authored Nix test corpus + oracle testing.
-# Version dep against crates.io — keeps `cargo metadata` clean
-# in environments (CI, fresh checkout) where pleme-io/tatara isn't
-# laid out next to sui on disk.  Operators with the sibling repo
-# get the same version pinned here.
+# Version dep against crates.io — keeps `cargo metadata` clean in
+# environments (CI, fresh checkout) where the sibling repo isn't laid out
+# next to sui on disk. The derive macros come in through this one crate as
+# `tatara_lisp::DeriveTataraDomain`; naming `tatara-lisp-derive` here would
+# reintroduce the lib/derive skew (see the workspace root's note).
 tatara-lisp.workspace = true
-tatara-lisp-derive.workspace = true
 rand = "0.8"
 rand_chacha = "0.3"
 

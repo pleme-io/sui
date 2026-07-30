@@ -93,13 +93,10 @@ thiserror.workspace = true
 tracing.workspace = true
 
 # `(defsupercacheci ...)` authoring surface (Rust + Lisp primary pattern).
-# The workspace root already exact-pins tatara-lisp-derive to "=0.2.2" (the
-# last release matching what tatara-lisp 0.2.4 actually exports) -- the
-# lib/derive skew this crate's LiveTODO(lisp) note described as blocking
-# was already fixed at the workspace level; this crate had just never been
-# repointed at the fix.
+# One crate only: the derive macros arrive as `tatara_lisp::DeriveTataraDomain`,
+# so the lib/derive version skew that once blocked this crate's LiveTODO(lisp)
+# note has no way to reappear (see the workspace root's note).
 tatara-lisp.workspace = true
-tatara-lisp-derive.workspace = true
 # DeriveTataraDomain's generated impl references serde_json directly.
 serde_json.workspace = true
 

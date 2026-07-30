@@ -19,8 +19,10 @@ repository.workspace = true
 # — a git dep here is exactly what froze sui-spec at 0.1.118 and auto-deferred
 # every crate downstream of it.
 kazari = { package = "pleme-io-kazari", version = "0.1" }
+# The derive macros come in through this one crate as
+# `tatara_lisp::DeriveTataraDomain` — never a second `tatara-lisp-derive`
+# dependency, which is what the lib/derive version skew fed on.
 tatara-lisp.workspace = true
-tatara-lisp-derive.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

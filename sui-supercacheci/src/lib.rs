@@ -51,9 +51,10 @@
 //!   discovery is unbuilt.
 //! - ~~LiveTODO(lisp)~~ **shipped** — [`SuperCacheCiConfig`] carries
 //!   `#[derive(DeriveTataraDomain)]` + `#[tatara(keyword = "defsupercacheci")]`;
-//!   the workspace's tatara-lisp lib/derive pin skew was already fixed at the
-//!   root (`tatara-lisp-derive = "=0.2.2"`), this crate just hadn't been
-//!   repointed at it. Parsing an authored `(defsupercacheci …)` form and
+//!   the workspace's old lib/derive version skew is gone at the cause — the
+//!   manifest names `tatara-lisp` alone and takes the macros through its
+//!   renamed re-export, so the two can no longer drift out of step. Parsing
+//!   an authored `(defsupercacheci …)` form and
 //!   feeding it to a runtime `ConfigStore` is still unwired — the derive
 //!   makes the struct *authorable*, not yet *authored from*.
 //!
