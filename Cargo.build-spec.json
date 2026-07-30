@@ -1,7 +1,6 @@
 {
-  "version": 10,
+  "version": 12,
   "workspace": {
-    "root": "/Users/luis.d/code/github/pleme-io/sui",
     "members": [
       {
         "name": "sui-intern",
@@ -54388,23 +54387,13 @@
         },
         {
           "name": "tatara_lisp",
-          "package_key": "tatara-lisp-0.2.4",
+          "package_key": "tatara-lisp-0.3.4",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null,
           "tree": "target"
-        },
-        {
-          "name": "tatara_lisp_derive",
-          "package_key": "tatara-lisp-derive-0.2.2",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "host"
         },
         {
           "name": "thiserror",
@@ -54453,14 +54442,8 @@
         ],
         "tatara-lisp": [
           {
-            "version": "0.2.4",
+            "version": "0.3.4",
             "rename": "tatara_lisp"
-          }
-        ],
-        "tatara-lisp-derive": [
-          {
-            "version": "0.2.2",
-            "rename": "tatara_lisp_derive"
           }
         ]
       },
@@ -54483,14 +54466,8 @@
           ],
           "tatara-lisp": [
             {
-              "version": "0.2.4",
+              "version": "0.3.4",
               "rename": "tatara_lisp"
-            }
-          ],
-          "tatara-lisp-derive": [
-            {
-              "version": "0.2.2",
-              "rename": "tatara_lisp_derive"
             }
           ]
         },
@@ -54948,23 +54925,13 @@
         },
         {
           "name": "tatara_lisp",
-          "package_key": "tatara-lisp-0.2.4",
+          "package_key": "tatara-lisp-0.3.4",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
           "optional": false,
           "target": null,
           "tree": "target"
-        },
-        {
-          "name": "tatara_lisp_derive",
-          "package_key": "tatara-lisp-derive-0.2.2",
-          "kind": "normal",
-          "features": [],
-          "uses_default_features": true,
-          "optional": false,
-          "target": null,
-          "tree": "host"
         },
         {
           "name": "thiserror",
@@ -55055,14 +55022,8 @@
         ],
         "tatara-lisp": [
           {
-            "version": "0.2.4",
+            "version": "0.3.4",
             "rename": "tatara_lisp"
-          }
-        ],
-        "tatara-lisp-derive": [
-          {
-            "version": "0.2.2",
-            "rename": "tatara_lisp_derive"
           }
         ]
       },
@@ -55124,14 +55085,8 @@
           ],
           "tatara-lisp": [
             {
-              "version": "0.2.4",
+              "version": "0.3.4",
               "rename": "tatara_lisp"
-            }
-          ],
-          "tatara-lisp-derive": [
-            {
-              "version": "0.2.2",
-              "rename": "tatara_lisp_derive"
             }
           ]
         },
@@ -55771,15 +55726,15 @@
         "preBuild": "export CARGO_CRATE_NAME=tar;"
       }
     },
-    "tatara-lisp-0.2.4": {
+    "tatara-lisp-0.3.4": {
       "name": "tatara-lisp",
-      "version": "0.2.4",
+      "version": "0.3.4",
       "edition": "2021",
       "source": {
         "kind": "registry",
-        "url": "https://static.crates.io/crates/tatara-lisp/tatara-lisp-0.2.4.crate",
-        "sha256": "8e5f8a9c5a4835544490d7276eaa5fa71bbc6b480e526232d0f63c1af667669d",
-        "name_with_ext": "tatara-lisp-0.2.4.tar.gz"
+        "url": "https://static.crates.io/crates/tatara-lisp/tatara-lisp-0.3.4.crate",
+        "sha256": "00a94c0c1d40aae6109b2450b8b2a15ccc79a01461836753351b4bfd3a50cec9",
+        "name_with_ext": "tatara-lisp-0.3.4.tar.gz"
       },
       "features": [
         "default"
@@ -55824,7 +55779,7 @@
         },
         {
           "name": "tatara_lisp_derive",
-          "package_key": "tatara-lisp-derive-0.2.2",
+          "package_key": "tatara-lisp-derive-0.3.4",
           "kind": "normal",
           "features": [],
           "uses_default_features": true,
@@ -55847,14 +55802,14 @@
       "crate_renames": {
         "tatara-lisp-derive": [
           {
-            "version": "0.2.2",
+            "version": "0.3.4",
             "rename": "tatara_lisp_derive"
           }
         ]
       },
       "build_rust_crate_args": {
         "crateName": "tatara-lisp",
-        "version": "0.2.4",
+        "version": "0.3.4",
         "edition": "2021",
         "features": [
           "default"
@@ -55862,7 +55817,7 @@
         "crateRenames": {
           "tatara-lisp-derive": [
             {
-              "version": "0.2.2",
+              "version": "0.3.4",
               "rename": "tatara_lisp_derive"
             }
           ]
@@ -55871,15 +55826,15 @@
         "preBuild": "export CARGO_CRATE_NAME=tatara_lisp;"
       }
     },
-    "tatara-lisp-derive-0.2.2": {
+    "tatara-lisp-derive-0.3.4": {
       "name": "tatara-lisp-derive",
-      "version": "0.2.2",
+      "version": "0.3.4",
       "edition": "2021",
       "source": {
         "kind": "registry",
-        "url": "https://static.crates.io/crates/tatara-lisp-derive/tatara-lisp-derive-0.2.2.crate",
-        "sha256": "aca2ea9795bfcae07e78500cd16f50b84ced1d14a666be71619e545fbd3c47e3",
-        "name_with_ext": "tatara-lisp-derive-0.2.2.tar.gz"
+        "url": "https://static.crates.io/crates/tatara-lisp-derive/tatara-lisp-derive-0.3.4.crate",
+        "sha256": "bdb05368da33f122fde05fd3f67a827022ef65ac4efbca6e27e0ea6e4f8036a9",
+        "name_with_ext": "tatara-lisp-derive-0.3.4.tar.gz"
       },
       "features": [],
       "proc_macro": true,
@@ -55932,7 +55887,7 @@
       },
       "build_rust_crate_args": {
         "crateName": "tatara-lisp-derive",
-        "version": "0.2.2",
+        "version": "0.3.4",
         "edition": "2021",
         "crateRenames": {
           "proc-macro2": [
@@ -90183,23 +90138,13 @@
           },
           {
             "name": "tatara_lisp",
-            "package_key": "tatara-lisp-0.2.4",
+            "package_key": "tatara-lisp-0.3.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"
-          },
-          {
-            "name": "tatara_lisp_derive",
-            "package_key": "tatara-lisp-derive-0.2.2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "host"
           },
           {
             "name": "thiserror",
@@ -90548,23 +90493,13 @@
           },
           {
             "name": "tatara_lisp",
-            "package_key": "tatara-lisp-0.2.4",
+            "package_key": "tatara-lisp-0.3.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
             "tree": "target"
-          },
-          {
-            "name": "tatara_lisp_derive",
-            "package_key": "tatara-lisp-derive-0.2.2",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "host"
           },
           {
             "name": "thiserror",
@@ -90815,7 +90750,7 @@
           "xattr"
         ]
       },
-      "tatara-lisp-0.2.4": {
+      "tatara-lisp-0.3.4": {
         "runtime_dependencies": [
           {
             "name": "blake3",
@@ -90851,7 +90786,7 @@
           },
           {
             "name": "tatara_lisp_derive",
-            "package_key": "tatara-lisp-derive-0.2.2",
+            "package_key": "tatara-lisp-derive-0.3.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -90875,7 +90810,7 @@
           "default"
         ]
       },
-      "tatara-lisp-derive-0.2.2": {
+      "tatara-lisp-derive-0.3.4": {
         "runtime_dependencies": [
           {
             "name": "proc_macro2",
@@ -101752,5 +101687,36 @@
       }
     }
   },
-  "cargo_lock_sha256": "84b0e36902a01a45a2c09fadc809a57a1abcd0faf1e7fb588a5b7c1a2de45991"
+  "cargo_lock_sha256": "c7bd0d877f4e101227c33e11c07d1b0b05ed7a83f8945fd556668ecdbce80aa8",
+  "manifest_sha256": {
+    "Cargo.toml": "dfafe7b81b37bc3080a85dd5276d6474f0bc2b2b12b9848a98e7353bb82085df",
+    "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
+    "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
+    "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
+    "sui-bytecode/Cargo.toml": "86a46b9836e27c8eb0576a01f7f6e8f1bb2b1945298bd7f2688cb5a1a2faaa52",
+    "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
+    "sui-cache/Cargo.toml": "8a830385e085eb623c1351f52235c7de624b49bdd2bfa03f9b3cf371b1f5c0cc",
+    "sui-castore/Cargo.toml": "90b813aabfa836dc85922ee214df654550ca19218d35864baacd821839b7193d",
+    "sui-compat/Cargo.toml": "081c9306750e72df272c438c1206eec2eb79583acfcbdb37d4d2ced88864d5ef",
+    "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
+    "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
+    "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
+    "sui-daemon/Cargo.toml": "07df4ddf10275f3729f8db682224bd13e4f7d12f72166a80560775bbe93d30b1",
+    "sui-dockerfile-node-cache-daemon/Cargo.toml": "af3d1334ac9f95c46844e8a30a0e3d4013d2acffb15831a46307e7cf1d4084ae",
+    "sui-dockerfile-prewarmer/Cargo.toml": "7788c66f49a023b0af5fbae36fdcf3b5f2117034088029f49d679171cee780d6",
+    "sui-dockerfile-verify/Cargo.toml": "8633feb20ff44887444d830413b8d3eec601e78db2667a21aa92e35ce80f8684",
+    "sui-dockerfile-wrapper/Cargo.toml": "42004479393d8f9dcf29dd17b674af0dc6e24b47bff5df795a9589255b33d8b9",
+    "sui-eval/Cargo.toml": "f04dbcfd2168a0dd7bd857bb4540f1626b756e76ee0f0b77a0b9895e9d3cde0c",
+    "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
+    "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
+    "sui-ir/Cargo.toml": "8f8f1ae5c85cbd47531e003690af936a9302a649257030bed5963d39e9b77467",
+    "sui-nix-wrap/Cargo.toml": "49b662142a60fdcde71413be49d2aa38b3eb705e3567e2fa2cded887873d26df",
+    "sui-orchestrate/Cargo.toml": "b474092b7e9b5723ad3dc466ad43708524fa6ad7da71bfa8bb6d239c4bd4213f",
+    "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
+    "sui-registry/Cargo.toml": "20bc7698f123bb590dec8dbd527f55e85a99d2f7bf41ffc16c4080685bdc79cf",
+    "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
+    "sui-spec/Cargo.toml": "5c34d132e44db0248697a462132623ff139818f0b7e0115729e3fb6295998ac0",
+    "sui-store/Cargo.toml": "bfa3b32c514f2c21174ae90a9bb62a32e374434e9ec08fdd382e72f3e236b983",
+    "sui-supercacheci/Cargo.toml": "9191709df80f9b1c1333da288d4b8579422da4a2304c66fbd9e0cb9abcdcfbb1"
+  }
 }
