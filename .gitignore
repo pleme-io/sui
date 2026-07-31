@@ -12,3 +12,4 @@ generated/
 # Cargo.gen.lock delta reconstruction mis-assigns the workspace root crate for a
 # root-`[package]` binary (drops `sui`, points root_crate at the first member),
 # so sui pins the full, correct build-spec until that delta bug is fixed upstream.
+Cargo.build-spec.json

@@ -219,13 +219,13 @@ blake3 = "1"
 # as a shigoto::Dag of typed re-warm Jobs rather than a bare loop, so the
 # ordering/topology is a typed value, not ad-hoc control flow. Published
 # on crates.io; pulled by digest via the workspace lock.
-shigoto-dag = "0.1.10"
-shigoto-types = "0.1.10"
+shigoto-dag = "0.1.12"
+shigoto-types = "0.1.12"
 # The in-process runtime — `InProcessScheduler` drives a `Dag` of typed Jobs to
 # terminal, one wave per tick. canteiro M1 (CANTEIRO.md §5) registers each
 # `CiNode` as a Job and ticks its decomposed DAG in-process; this is the
 # node→worker execution half M0 deliberately deferred.
-shigoto-scheduler = "0.1.10"
+shigoto-scheduler = "0.1.12"
 
 # Directories
 dirs-next = "2"

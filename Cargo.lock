@@ -5901,9 +5901,9 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shigoto-budget"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "982a1a8e8918e4c627e21c524d310118c7365d110f11467bcd15e656c3a33f0a"
+checksum = "5583807d37e833dd40f787a752697d23b9582dbbc908bdcd3fdac2f9a5fd1a0b"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -5912,9 +5912,9 @@ dependencies = [
 
 [[package]]
 name = "shigoto-dag"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbbe43dd5995d8e725ccae03a49fb65e273802598625f909c5605c5b9c8d3fef"
+checksum = "5cb362990519e7b8d021e5fd76eaaebb950fdcee8d345299996b76bb8544bfe4"
 dependencies = [
  "petgraph",
  "serde",
@@ -5924,9 +5924,9 @@ dependencies = [
 
 [[package]]
 name = "shigoto-emit"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90dd5ca9cdee38343a6cc901c54091c5c9876503ab90606170fd85ab3472c"
+checksum = "87c57938510795dd952ec2e9d447308cdfc84db6d1a4b8cc371d1f3d0683a40c"
 dependencies = [
  "async-trait",
  "serde",
@@ -5937,9 +5937,9 @@ dependencies = [
 
 [[package]]
 name = "shigoto-gate"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc7b5529278fcf7a9ae872a0c84ba72d8e0c86af16bd3c67e1a8362fa1c77881"
+checksum = "e6fd8226348a6b051be3c2a32cce101b423c28d530a91d5837969033580214a2"
 dependencies = [
  "shigoto-dag",
  "shigoto-types",
@@ -5947,9 +5947,9 @@ dependencies = [
 
 [[package]]
 name = "shigoto-retry"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2166b192712dd120b60bbfa1fdf456c7fc5180297816d5d2fa790cfb8557ddf4"
+checksum = "d2f8ae163f4e0179228215106e13932f7b0dd9ed7eb23a530b4331bbd54d6e94"
 dependencies = [
  "serde",
  "shigoto-types",
@@ -5957,13 +5957,15 @@ dependencies = [
 
 [[package]]
 name = "shigoto-scheduler"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17b416502fc15d5bbb51b82d864281bcc6e81a8135700a8bef21aefe6d36beef"
+checksum = "5e8a29a60fe461813d8999f73c47bc43d04df2873325f6f019fdf3e395702a63"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "serde",
+ "serde_json",
  "shigoto-budget",
  "shigoto-dag",
  "shigoto-emit",
@@ -5977,9 +5979,9 @@ dependencies = [
 
 [[package]]
 name = "shigoto-types"
-version = "0.1.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa6ae794f6d1a61085d54b49c37135ab7dd89fb60a69a1097aaefb50cd4f07fd"
+checksum = "196e256bfcbc81364a058deac6121acfd9a2beed9f158b62c0d7f49140b9fb3f"
 dependencies = [
  "async-trait",
  "blake3",

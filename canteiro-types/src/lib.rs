@@ -207,6 +207,15 @@ impl CiRun {
 /// The decompose target: the shipped shigoto [`Dag`] (monomorphic over
 /// [`JobId`]) PLUS the consumer-owned `JobId → CiNode` map. CANTEIRO §1:
 /// "`Dag<CiNode>` is shorthand for exactly this pair."
+/// `Debug` is derived deliberately. Without it a consumer cannot call
+/// `unwrap_err()`/`expect_err()` on any `Result` carrying one — the `T: Debug`
+/// bound is what makes a *test* compile — and the failure lands two repos
+/// away as a test target that silently stops building. Measured 2026-07-31:
+/// that is exactly what happened to `caixa-core` and `caixa-actions`, whose
+/// suites could not run at all while the repo still looked green. The root
+/// was upstream in `shigoto-dag`'s `Dag` (fixed in 0.1.12); this derive is
+/// the half that lets it reach a consumer.
+#[derive(Debug)]
 pub struct CanteiroDag {
     pub dag: Dag,
     pub nodes: HashMap<JobId, CiNode>,
