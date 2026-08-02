@@ -6225,6 +6225,13 @@ async fn main() -> Result<(), CliError> {
                         } else {
                             format!("{sk}")
                         };
+                        // SUI_PERF_TRACE / IFD diagnostics were wired only into
+                        // the tree-walker's eval_render_threaded, so on the
+                        // DEFAULT engine they silently produced nothing --
+                        // the same wiring gap as the eval cache, and it made a
+                        // trace of this path read as "no tree was hashed".
+                        sui_compat::source::nar_hash_dump();
+                        ifd_realize_dump();
                         Ok(output)
                     })
                     .expect("failed to spawn VM eval thread");

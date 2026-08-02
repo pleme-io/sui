@@ -203,23 +203,127 @@ mod nar_memo {
         !DISABLED.load(Ordering::Relaxed)
     }
 
+    /// A fetched flake input lives at `~/.cache/sui/inputs/<narhash>/…`: the
+    /// directory name IS the content hash, so the tree is immutable by
+    /// construction and its NAR hash is a pure function of a path that can
+    /// never denote different bytes. Those, and only those, are safe to memoize
+    /// ACROSS runs with no fingerprint, no mtime heuristic and no staleness
+    /// class. A working tree gets no disk tier: it mutates under us.
+    fn content_addressed(dir: &str) -> bool {
+        let mut parts = dir.split('/').peekable();
+        while let Some(p) = parts.next() {
+            if p == "inputs" {
+                if let Some(next) = parts.peek() {
+                    return next.starts_with("sha256-") || next.starts_with("sha512-");
+                }
+            }
+        }
+        false
+    }
+
+    fn disk_entry(dir: &str, name: &str) -> Option<std::path::PathBuf> {
+        use sha2::Digest;
+        let home = std::env::var_os("HOME")?;
+        let mut h = sha2::Sha256::new();
+        h.update(dir.as_bytes());
+        h.update(b"\0");
+        h.update(name.as_bytes());
+        let key = format!("{:x}", h.finalize());
+        Some(
+            std::path::Path::new(&home)
+                .join(".cache/sui/nar-memo")
+                .join(key),
+        )
+    }
+
+    fn disk_get(dir: &str, name: &str) -> Option<(String, String)> {
+        let path = disk_entry(dir, name)?;
+        let body = std::fs::read_to_string(path).ok()?;
+        let (store_path, nar_hash_sri) = body.split_once('\n')?;
+        if store_path.is_empty() || nar_hash_sri.is_empty() {
+            return None;
+        }
+        Some((store_path.to_string(), nar_hash_sri.trim_end().to_string()))
+    }
+
+    /// Best effort: a failed write costs hit rate, never correctness. One file
+    /// per entry written via tmp+rename, so concurrent evals cannot interleave
+    /// a torn record.
+    fn disk_put(dir: &str, name: &str, store_path: &str, nar_hash_sri: &str) {
+        let Some(path) = disk_entry(dir, name) else {
+            return;
+        };
+        let Some(parent) = path.parent() else { return };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, format!("{store_path}\n{nar_hash_sri}\n")).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
     pub fn get(dir: &str, name: &str) -> Option<(String, String)> {
         if !active() {
             return None;
         }
-        let g = MEMO.lock().ok()?;
-        g.as_ref()?
-            .get(&(dir.to_string(), name.to_string()))
-            .cloned()
+        {
+            let g = MEMO.lock().ok()?;
+            if let Some(hit) = g
+                .as_ref()
+                .and_then(|m| m.get(&(dir.to_string(), name.to_string())))
+                .cloned()
+            {
+                return Some(hit);
+            }
+        }
+        if !content_addressed(dir) {
+            return None;
+        }
+        let hit = disk_get(dir, name)?;
+        if let Ok(mut g) = MEMO.lock() {
+            g.get_or_insert_with(HashMap::new)
+                .insert((dir.to_string(), name.to_string()), hit.clone());
+        }
+        Some(hit)
     }
 
     pub fn put(dir: &str, name: &str, store_path: String, nar_hash_sri: String) {
         if !active() {
             return;
         }
+        if content_addressed(dir) {
+            disk_put(dir, name, &store_path, &nar_hash_sri);
+        }
         if let Ok(mut g) = MEMO.lock() {
             g.get_or_insert_with(HashMap::new)
                 .insert((dir.to_string(), name.to_string()), (store_path, nar_hash_sri));
+        }
+    }
+
+    #[cfg(test)]
+    mod content_addressed_tests {
+        use super::content_addressed;
+
+        #[test]
+        fn a_fetched_input_is_content_addressed() {
+            assert!(content_addressed(
+                "/Users/x/.cache/sui/inputs/sha256-KoTsyMQqnXQ/nixpkgs-148bab9"
+            ));
+        }
+
+        #[test]
+        fn a_working_tree_is_not() {
+            assert!(
+                !content_addressed("/Users/x/code/github/akeylesslabs/akeyless-main-repo"),
+                "a working tree mutates, so memoizing it across runs would serve bytes that no \
+                 longer exist -- exactly the stale-source class the disk tier must never enter"
+            );
+        }
+
+        #[test]
+        fn an_inputs_dir_without_a_hash_segment_is_not() {
+            assert!(!content_addressed("/Users/x/.cache/sui/inputs/scratch"));
         }
     }
 }
