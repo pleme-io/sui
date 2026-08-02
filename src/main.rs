@@ -6044,7 +6044,14 @@ async fn main() -> Result<(), CliError> {
             }
             // Render mode determines the output bytes, so it is part of the
             // cache identity (json / raw / display never share an entry).
-            let render_mode = if json { "json" } else if raw { "raw" } else { "display" };
+            let render_mode_base = if json { "json" } else if raw { "raw" } else { "display" };
+            // The two engines render the SAME value differently (the VM path
+            // does not honour --raw), so an entry written by one must never be
+            // served to the other. Folding the engine into the mode keeps them
+            // in disjoint namespaces without touching the key function.
+            let engine_tag = if cli.no_vm { "tw" } else { "vm" };
+            let render_mode_owned = format!("{engine_tag}:{render_mode_base}");
+            let render_mode = render_mode_owned.as_str();
             // Cross-run eval-cache key: installable-only, byte-safe, disabled by
             // `--no-eval-cache`. `None` ⇒ this eval is never cached/served.
             let cache_key = if no_eval_cache {
@@ -6107,16 +6114,33 @@ async fn main() -> Result<(), CliError> {
                 }
             } else {
                 // Bytecode VM evaluation path (default).
+                //
+                // The cross-run eval cache used to be wired ONLY into the
+                // tree-walker above, so the DEFAULT engine re-evaluated from
+                // scratch on every invocation and had no warm path at all.
+                // Measured on a real flake: repeated `sui eval` never got
+                // faster, because nothing was ever served. It is wired here
+                // too, in its own engine namespace.
+                let mut served_from_cache = false;
+                if let Some(key) = cache_key.as_ref() {
+                    let mut cache = sui_eval::eval_cache::EvalCache::default_persistent();
+                    if let Some(hit) = cache.get(key) {
+                        println!("{}", hit.value_json);
+                        served_from_cache = true;
+                    }
+                }
+                if !served_from_cache {
                 // Run VM on a large-stack thread: the tree-walker bridge
                 // (__import) can recurse deeply on nixpkgs evaluation.
                 // Bridge guards (flake resolver, builtin bridge) must be
                 // installed inside the thread since they use thread-local storage.
                 let expr_clone = expr.clone();
                 let json_flag = json;
+                let raw_flag = raw;
                 let vm_handle = std::thread::Builder::new()
                     .name("sui-vm-eval".into())
                     .stack_size(256 * 1024 * 1024) // 256MB
-                    .spawn(move || -> Result<(), CliError> {
+                    .spawn(move || -> Result<String, CliError> {
                 // IFD: reads of a derivation output mid-eval realize it. Installed
                 // on the VM thread too — VM builtin reads bridge to the tree-walker,
                 // which shares this thread-local hook.
@@ -6184,16 +6208,41 @@ async fn main() -> Result<(), CliError> {
                                 sui_eval::eval_to_string_keyed(&tw_result)
                             }
                         };
-                        if json_flag {
+                        let output = if json_flag {
                             let json_val = string_keyed_to_json(&sk);
-                            println!("{}", serde_json::to_string(&json_val)?);
+                            serde_json::to_string(&json_val)?
+                        } else if raw_flag {
+                            // nix parity: `--raw` prints a string's bytes
+                            // verbatim, no surrounding quotes. The tree-walker
+                            // has honoured this since the marquee drvPath
+                            // comparison depended on it; the VM path silently
+                            // ignored the flag and printed the quoted Display
+                            // form, so the DEFAULT engine did not match nix.
+                            match &sk {
+                                sui_bytecode::StringKeyedValue::String(v) => v.clone(),
+                                other => format!("{other}"),
+                            }
                         } else {
-                            println!("{sk}");
-                        }
-                        Ok(())
+                            format!("{sk}")
+                        };
+                        Ok(output)
                     })
                     .expect("failed to spawn VM eval thread");
-                vm_handle.join().expect("VM eval thread panicked")?;
+                let output = vm_handle.join().expect("VM eval thread panicked")?;
+                println!("{output}");
+                // Populate after a successful eval (best-effort: a failed write
+                // costs hit rate, never correctness).
+                if let Some(key) = cache_key {
+                    let mut cache = sui_eval::eval_cache::EvalCache::default_persistent();
+                    cache.put(
+                        key,
+                        sui_eval::eval_cache::CachedValue {
+                            value_json: output,
+                            timestamp: sui_eval::eval_cache::now_timestamp(),
+                        },
+                    );
+                }
+                }
             }
         }
 
@@ -7377,6 +7426,13 @@ fn normalize_flake_ref(s: &str) -> String {
 /// caching it would risk a stale byte.  `--expr` / bare-expression evals are
 /// likewise never cached (they can name `currentTime`/`getEnv`/mutable
 /// `readFile` — the impure frontier the eval-memo purity gate forbids).
+/// Bumped whenever ANY engine's rendering changes. The key folds this in, so a
+/// rendering change invalidates every prior entry instead of serving bytes the
+/// current binary would no longer produce. Observed before this existed: after
+/// teaching the VM path to honour `--raw`, a pre-fix entry kept serving the
+/// quoted form, so the fix looked inert.
+const EVAL_RENDER_VERSION: &str = "2";
+
 fn eval_cache_key_for_installable(
     desugared_expr: &str,
     flake_ref: &str,
@@ -7409,6 +7465,8 @@ fn eval_cache_key_for_installable(
     h.update(render_mode.as_bytes());
     h.update(b"\0rev=");
     h.update(git_rev.as_bytes());
+    h.update(b"\0renderv=");
+    h.update(EVAL_RENDER_VERSION.as_bytes());
     let source_hash = format!("{:x}", h.finalize());
     Some(sui_eval::eval_cache::CacheKey { source_hash, lock_hash: Some(lock_hash) })
 }

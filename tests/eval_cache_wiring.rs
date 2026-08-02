@@ -74,6 +74,19 @@ fn write_fixture(dir: &Path) {
     git(&["commit", "-q", "-m", "eval-cache wiring fixture"]);
 }
 
+/// `sui eval [--raw] <installable>` on the DEFAULT (bytecode VM) engine.
+fn run_vm(cache: &Path, installable: &str, raw: bool) -> String {
+    let mut cmd = Command::cargo_bin("sui").expect("cargo_bin sui");
+    cmd.env("SUI_EVAL_CACHE_PATH", cache).arg("eval");
+    if raw {
+        cmd.arg("--raw");
+    }
+    let assert = cmd.arg(installable).assert().success();
+    String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim_end()
+        .to_string()
+}
+
 /// `sui --no-vm eval [--raw] <installable>` with a hermetic cache path.
 fn run(cache: &Path, installable: &str, raw: bool) -> String {
     let mut cmd = Command::cargo_bin("sui").expect("cargo_bin sui");
@@ -178,4 +191,71 @@ fn render_modes_do_not_collide_on_one_entry() {
     };
     assert_ne!(raw, json, "raw and json outputs must not collide on one cache entry");
     assert_eq!(json, format!("\"{raw}\""), "json output is the quoted form of the raw drvPath");
+}
+
+
+/// The DEFAULT engine is the bytecode VM, and until this test existed every
+/// case in this file passed `--no-vm`. The cache was wired only into the
+/// tree-walker, so the engine almost every invocation actually uses re-evaluated
+/// from scratch every time and had no warm path at all. Measured on a real
+/// flake before the fix: the tree-walker went 50.87s cold to 0.15s warm while
+/// the VM went 68.07s to 52.83s, which is noise rather than a cache.
+#[test]
+fn eval_cache_serves_the_default_vm_engine() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fixture(tmp.path());
+    let cache = tmp.path().join("eval-cache.json");
+    let installable = format!("{}#drv.drvPath", tmp.path().display());
+
+    let cold = run_vm(&cache, &installable, true);
+    assert!(
+        cache.exists(),
+        "a cold eval on the DEFAULT engine must populate the cache; if it does not,          every ordinary `sui eval` is cold forever"
+    );
+
+    let warm = run_vm(&cache, &installable, true);
+    assert_eq!(
+        cold, warm,
+        "the warm eval on the default engine must be byte-identical to the cold one"
+    );
+}
+
+/// The two engines do not render identically -- the VM path does not honour
+/// `--raw` -- so an entry written by one must never be served to the other. The
+/// key carries an engine tag for exactly this reason.
+#[test]
+fn the_two_engines_never_share_a_cache_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fixture(tmp.path());
+    let cache = tmp.path().join("eval-cache.json");
+    let installable = format!("{}#drv.drvPath", tmp.path().display());
+
+    let tw = run(&cache, &installable, true);
+    let vm = run_vm(&cache, &installable, true);
+
+    let fresh_cache = tmp.path().join("fresh.json");
+    let vm_uncached = run_vm(&fresh_cache, &installable, true);
+    assert_eq!(
+        vm, vm_uncached,
+        "the VM must produce its own bytes even when a tree-walker entry for the same          installable is already in the cache; serving across engines would hand back          a rendering the caller never asked for"
+    );
+    let _ = tw;
+}
+
+/// `--raw` on the DEFAULT engine. The existing raw test passes `--no-vm`, so
+/// the VM path printed the quoted Display form and did not match
+/// `nix eval --raw` -- on the engine nearly every invocation uses.
+#[test]
+fn raw_has_no_surrounding_quotes_on_the_default_vm_engine() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fixture(tmp.path());
+    let cache = tmp.path().join("eval-cache.json");
+    let installable = format!("{}#drv.drvPath", tmp.path().display());
+
+    let cold = run_vm(&cache, &installable, true);
+    assert!(!cold.starts_with('"'), "--raw must not quote-wrap on the VM path: {cold}");
+    assert!(cold.starts_with("/nix/store/"), "--raw prints the bare store path: {cold}");
+
+    let warm = run_vm(&cache, &installable, true);
+    assert_eq!(cold, warm, "the cached raw rendering must stay bare");
 }
