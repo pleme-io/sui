@@ -5,8 +5,17 @@
 //! <root>/
 //!   <hash>.narinfo          -- text narinfo metadata
 //!   nar/
-//!     <hash>.nar.xz         -- compressed NAR blobs
+//!     <narhash>.nar.xz      -- compressed NAR blobs
+//!   nar-refs/
+//!     nar/<narhash>.nar.xz/
+//!       <hash>              -- empty file: "this store hash advertises that NAR"
 //! ```
+//!
+//! `nar-refs/` mirrors the NAR key space one level down, one empty file per
+//! reverse edge (see [`nar_refs`](super::nar_refs)). A directory listing *is*
+//! the referrer set, so a lookup is one `read_dir` of a directory holding as
+//! many entries as there are referrers — normally exactly one. Recording an edge
+//! is a blind `create`, so two writers cannot lose each other's edge.
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +24,7 @@ use futures::StreamExt;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
+use super::nar_refs::{NarRefIndex, NarRefScan};
 use super::nar_stream::{self, NarSource, NarStream};
 use super::{NarResidency, StorageBackend};
 use crate::StoreError;
@@ -59,6 +69,11 @@ impl LocalStorage {
         self.root.join(nar_path)
     }
 
+    /// Directory holding one empty file per narinfo advertising `nar_path`.
+    fn nar_ref_dir(&self, nar_path: &str) -> PathBuf {
+        self.root.join(NarRefScan { nar_path }.to_string())
+    }
+
     /// A unique scratch path beside `final_path`, for the write-then-rename in
     /// [`put_nar_stream`](StorageBackend::put_nar_stream).
     ///
@@ -90,10 +105,30 @@ impl StorageBackend for LocalStorage {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         self.ensure_dir(&self.root).await?;
         let path = self.narinfo_path(hash);
         fs::write(&path, content).await.map_err(StoreError::Io)
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+        match fs::remove_file(self.narinfo_path(hash)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StoreError::Io(e)),
+        }
+    }
+
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+        match fs::remove_file(self.nar_blob_path(nar_path)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StoreError::Io(e)),
+        }
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        self
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
@@ -161,24 +196,6 @@ impl StorageBackend for LocalStorage {
         write
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-        // Read narinfo to find the NAR blob path, then delete both.
-        let narinfo_path = self.narinfo_path(hash);
-        if narinfo_path.exists() {
-            // Try to parse the narinfo to find the NAR URL.
-            if let Ok(content) = fs::read_to_string(&narinfo_path).await {
-                if let Ok(info) = sui_compat::narinfo::NarInfo::parse(&content) {
-                    let nar_path = self.nar_blob_path(&info.url);
-                    let _ = fs::remove_file(&nar_path).await;
-                }
-            }
-            fs::remove_file(&narinfo_path)
-                .await
-                .map_err(StoreError::Io)?;
-        }
-        Ok(())
-    }
-
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         let mut hashes = Vec::new();
         if !self.root.exists() {
@@ -205,6 +222,50 @@ impl StorageBackend for LocalStorage {
             fs::remove_dir_all(&self.root).await.map_err(StoreError::Io)?;
         }
         Ok(n)
+    }
+}
+
+/// The reverse index as a directory tree: one empty file per edge.
+///
+/// `record` is a blind `create` of a path that names its own content, so it is
+/// idempotent and two writers racing on the same edge simply write the same
+/// empty file. Nothing here reads a set to write it back, which is why
+/// concurrent narinfo pushes cannot lose an edge.
+#[async_trait]
+impl NarRefIndex for LocalStorage {
+    async fn record(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let dir = self.nar_ref_dir(nar_path);
+        self.ensure_dir(&dir).await?;
+        fs::write(dir.join(hash), b"").await.map_err(StoreError::Io)
+    }
+
+    async fn forget(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let dir = self.nar_ref_dir(nar_path);
+        match fs::remove_file(dir.join(hash)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::Io(e)),
+        }
+        // Tidy the now-possibly-empty directory. `remove_dir` fails on a
+        // non-empty directory, which is exactly the "another referrer is still
+        // here" case, so the error is the answer and is discarded.
+        let _ = fs::remove_dir(&dir).await;
+        Ok(())
+    }
+
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError> {
+        let dir = self.nar_ref_dir(nar_path);
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        let mut hashes = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(StoreError::Io)? {
+            hashes.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        hashes.sort();
+        Ok(hashes)
     }
 }
 
@@ -310,6 +371,109 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
         storage.delete("nonexistent").await.unwrap();
+    }
+
+    // ── the on-disk reverse index ──────────────────────────────────────────
+
+    /// A narinfo for a store path advertising `url`.
+    fn narinfo_for(url: &str) -> String {
+        format!(
+            "StorePath: /nix/store/pkg\nURL: {url}\nCompression: xz\nFileHash: sha256:aaa\n\
+             FileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n"
+        )
+    }
+
+    /// The edge is a file whose path names the pair, so writing it twice is
+    /// writing the same file twice and a listing is the referrer set.
+    #[tokio::test]
+    async fn the_index_is_a_directory_of_edge_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo("pathB", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+
+        assert!(dir.path().join("nar-refs/nar/shared.nar.xz/pathA").exists());
+        assert!(dir.path().join("nar-refs/nar/shared.nar.xz/pathB").exists());
+        assert_eq!(
+            storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap(),
+            vec!["pathA".to_string(), "pathB".to_string()],
+        );
+
+        // A re-push of the same narinfo is the same file, not a second edge.
+        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        assert_eq!(
+            storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap().len(),
+            2,
+        );
+    }
+
+    /// `nar-refs/` sits beside `nar/`, so it is neither a narinfo nor a NAR.
+    #[tokio::test]
+    async fn edge_files_do_not_pollute_the_narinfo_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        storage.put_narinfo("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        assert_eq!(storage.list_narinfos().await.unwrap(), vec!["pathA".to_string()]);
+    }
+
+    /// Forgetting the last edge removes the directory too, so the index does
+    /// not accumulate one empty directory per NAR ever cached.
+    #[tokio::test]
+    async fn the_last_edge_takes_its_directory_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        storage.put_narinfo("pathA", &narinfo_for("nar/x.nar.xz")).await.unwrap();
+        assert!(dir.path().join("nar-refs/nar/x.nar.xz").exists());
+        storage.delete("pathA").await.unwrap();
+        assert!(!dir.path().join("nar-refs/nar/x.nar.xz").exists());
+    }
+
+    /// A `URL:` that would escape the cache root is refused at the write
+    /// boundary, not sanitized at each of the several places it is used (a
+    /// filesystem join here, a key elsewhere).
+    #[tokio::test]
+    async fn a_traversal_url_is_refused_rather_than_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        let evil = narinfo_for("../../escape.nar");
+        let err = storage.put_narinfo("evil", &evil).await.unwrap_err();
+        assert!(
+            matches!(err, StoreError::NarInfo(ref m) if m.contains("unaddressable")),
+            "expected a typed refusal, got {err:?}",
+        );
+        assert!(
+            storage.get_narinfo("evil").await.unwrap().is_none(),
+            "a refused narinfo must not be stored either",
+        );
+    }
+
+    /// A store filled **before** the index existed has no edges. `reindex_nar_refs`
+    /// rebuilds them from the narinfos already on disk, and it is idempotent.
+    #[tokio::test]
+    async fn reindex_rebuilds_edges_for_a_pre_index_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        // Write narinfos through the RECORD verb — exactly what a pre-index
+        // binary did, since it had no index to maintain.
+        storage.put_narinfo_record("pathA", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        storage.put_narinfo_record("pathB", &narinfo_for("nar/shared.nar.xz")).await.unwrap();
+        assert!(
+            storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap().is_empty(),
+            "the fixture must actually start unindexed",
+        );
+
+        assert_eq!(storage.reindex_nar_refs().await.unwrap(), 2);
+        assert_eq!(
+            storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap(),
+            vec!["pathA".to_string(), "pathB".to_string()],
+        );
+
+        // Idempotent: a second run records the same edges, not duplicates.
+        assert_eq!(storage.reindex_nar_refs().await.unwrap(), 2);
+        assert_eq!(
+            storage.nar_ref_index().referrers("nar/shared.nar.xz").await.unwrap().len(),
+            2,
+        );
     }
 
     #[tokio::test]

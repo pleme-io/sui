@@ -72,6 +72,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::warn;
 
+use super::nar_refs::NarRefIndex;
 use super::nar_stream::{self, NarSource, NarStream};
 use super::{NarResidency, StorageBackend};
 use crate::StoreError;
@@ -198,6 +199,11 @@ impl TieredBackend {
     #[must_use]
     pub fn write_policy(&self) -> WritePolicy {
         self.write_policy
+    }
+
+    /// The three tiers, named, in resolution order.
+    fn tiers(&self) -> [(&'static str, &Arc<dyn StorageBackend>); 3] {
+        [("l1", &self.l1), ("l2", &self.l2), ("l3", &self.l3)]
     }
 
     // ── best-effort warmers (promotion + hot write) ────────────────────────
@@ -398,19 +404,73 @@ impl StorageBackend for TieredBackend {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         if self.write_policy == WritePolicy::WriteBack {
             Self::warm_narinfo(&self.l1, hash, content).await;
         }
 
-        let l2 = self.l2.put_narinfo(hash, content).await;
-        let l3 = self.l3.put_narinfo(hash, content).await;
+        let l2 = self.l2.put_narinfo_record(hash, content).await;
+        let l3 = self.l3.put_narinfo_record(hash, content).await;
         Self::durable_write_outcome("narinfo", hash, l2, l3)?;
 
         if self.write_policy == WritePolicy::WriteThrough {
             Self::warm_narinfo(&self.l1, hash, content).await;
         }
         Ok(())
+    }
+
+    /// Fan the narinfo removal out to **every** tier, then report whether every
+    /// tier actually removed it.
+    ///
+    /// # Why this is not best-effort, unlike the old `delete`
+    ///
+    /// Reads fall through, so a narinfo that ANY tier still holds is still
+    /// served. If this swallowed a per-tier failure and returned `Ok(())`, the
+    /// composed [`delete`](StorageBackend::delete) would go on to drop the edge
+    /// and remove the NAR — leaving a narinfo that is still served, advertising
+    /// a NAR that is gone. That is the strand, arrived at from the other side.
+    ///
+    /// Every tier is still *attempted* (one dead tier does not stop the others),
+    /// but a failure surfaces, so `delete` stops before touching the NAR. The
+    /// cost is that a GC pass against a degraded tier aborts instead of
+    /// half-completing — the right trade: a retained NAR is a leak, a stranded
+    /// narinfo is an outage.
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+        let mut failed: Option<StoreError> = None;
+        for (name, tier) in self.tiers() {
+            if let Err(e) = tier.delete_narinfo_record(hash).await {
+                tracing::error!(
+                    hash = %hash, tier = name, error = %e,
+                    "tiered: narinfo delete FAILED on a tier — reads fall through, so this \
+                     narinfo is still servable; refusing to report the delete as complete",
+                );
+                failed = Some(e);
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Fan the NAR removal out to every tier and report any failure.
+    ///
+    /// A surviving copy on one tier is a leak, not an outage — but it is still
+    /// not a completed delete, and a caller that believes the bytes are gone
+    /// (a byte-accounting sweep) would drift.
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+        let mut failed: Option<StoreError> = None;
+        for (name, tier) in self.tiers() {
+            if let Err(e) = tier.delete_nar_record(nar_path).await {
+                warn!(
+                    path = %nar_path, tier = name, error = %e,
+                    "tiered: NAR delete failed on a tier — a copy survives there",
+                );
+                failed = Some(e);
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        self
     }
 
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
@@ -448,18 +508,6 @@ impl StorageBackend for TieredBackend {
         Ok(())
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-        // Best-effort across all tiers: content-addressed delete is a GC op, not a
-        // correctness one (a key resolves to its content or to nothing). Mirror
-        // `S3Storage::delete` — warn, never hard-fail on one tier.
-        for (name, tier) in [("l1", &self.l1), ("l2", &self.l2), ("l3", &self.l3)] {
-            if let Err(e) = tier.delete(hash).await {
-                warn!(hash = %hash, tier = name, error = %e, "tiered: best-effort delete failed");
-            }
-        }
-        Ok(())
-    }
-
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         // Authoritative tiers only (L2 ∪ L3); L1 is a partial hot subset. A
         // durable-tier list failure surfaces (`?`).
@@ -476,13 +524,80 @@ impl StorageBackend for TieredBackend {
     /// removed (the authoritative tiers' full set).
     async fn wipe_all(&self) -> Result<usize, StoreError> {
         let mut cleared = 0usize;
-        for (name, tier) in [("l1", &self.l1), ("l2", &self.l2), ("l3", &self.l3)] {
+        for (name, tier) in self.tiers() {
             match tier.wipe_all().await {
                 Ok(n) => cleared = cleared.max(n),
                 Err(e) => warn!(tier = name, error = %e, "tiered: best-effort wipe failed"),
             }
         }
         Ok(cleared)
+    }
+}
+
+/// The composite reverse index: each tier keeps its own edges, and the answer is
+/// their **union**.
+///
+/// # Why the union, and why it includes L1
+///
+/// [`list_narinfos`](StorageBackend::list_narinfos) reads only the authoritative
+/// tiers because a hot tier's partial view would *under*-report a listing. Here
+/// the asymmetry runs the other way: an extra referrer keeps a NAR that could
+/// have been reclaimed (a leak), a missing one deletes a NAR another narinfo
+/// still advertises (an outage). So every tier that answers is believed —
+/// including a stale L1 edge that outlived its narinfo.
+///
+/// A tier whose read *fails* is not silently treated as empty: the failure is
+/// logged and propagated, because "this tier is down" must never resolve to
+/// "nobody advertises this NAR" for something about to delete.
+#[async_trait]
+impl NarRefIndex for TieredBackend {
+    /// Record on both durable tiers (gated by
+    /// [`durable_write_outcome`](TieredBackend::durable_write_outcome)) and
+    /// best-effort on L1 — the same shape as a narinfo write, so an edge lands
+    /// wherever its narinfo does.
+    async fn record(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let l2 = self.l2.nar_ref_index().record(nar_path, hash).await;
+        let l3 = self.l3.nar_ref_index().record(nar_path, hash).await;
+        Self::durable_write_outcome("nar-ref", nar_path, l2, l3)?;
+        if let Err(e) = self.l1.nar_ref_index().record(nar_path, hash).await {
+            warn!(path = %nar_path, error = %e, "tiered: best-effort nar-ref warm failed");
+        }
+        Ok(())
+    }
+
+    /// Forget on every tier, best-effort.
+    ///
+    /// A tier that keeps an edge it should have dropped over-reports, which
+    /// retains a NAR — the safe direction, and the reason this does not abort
+    /// the fan-out on the first failure.
+    async fn forget(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        for (name, tier) in self.tiers() {
+            if let Err(e) = tier.nar_ref_index().forget(nar_path, hash).await {
+                warn!(
+                    path = %nar_path, tier = name, error = %e,
+                    "tiered: best-effort nar-ref forget failed — the edge survives, so the \
+                     NAR is retained rather than stranded",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError> {
+        let mut set = BTreeSet::new();
+        let mut broken: Option<StoreError> = None;
+        for (name, tier) in self.tiers() {
+            match tier.nar_ref_index().referrers(nar_path).await {
+                Ok(hashes) => set.extend(hashes),
+                Err(e) => {
+                    broken = Some(Self::note_tier_read_failure(name, nar_path, e));
+                }
+            }
+        }
+        match broken {
+            Some(e) => Err(e),
+            None => Ok(set.into_iter().collect()),
+        }
     }
 }
 
@@ -495,6 +610,7 @@ impl StorageBackend for TieredBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::nar_refs::MemNarRefIndex;
     use crate::storage::LocalStorage;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -506,8 +622,15 @@ mod tests {
     struct MemBackend {
         narinfo: Mutex<HashMap<String, String>>,
         nar: Mutex<HashMap<String, Vec<u8>>>,
+        /// The tier's own reverse index. Shared semantics with production via
+        /// [`MemNarRefIndex`] rather than a hand-rolled map, so a double whose
+        /// index disagreed with a real backend's cannot exist.
+        refs: MemNarRefIndex,
         writes_fail: Mutex<bool>,
         reads_fail: Mutex<bool>,
+        /// A tier that accepts reads and writes but cannot remove — a read-only
+        /// object store, a revoked delete permission, a full transaction log.
+        deletes_fail: Mutex<bool>,
     }
 
     impl MemBackend {
@@ -544,6 +667,16 @@ mod tests {
                 Ok(())
             }
         }
+        fn set_deletes_fail(&self, v: bool) {
+            *self.deletes_fail.lock().unwrap() = v;
+        }
+        fn fail_deletes_if_configured(&self) -> Result<(), StoreError> {
+            if *self.deletes_fail.lock().unwrap() {
+                Err(StoreError::NotImplemented("mock deletes disabled"))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     #[async_trait]
@@ -552,10 +685,23 @@ mod tests {
             self.fail_reads_if_configured()?;
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
             self.fail_if_configured()?;
             self.narinfo.lock().unwrap().insert(hash.to_string(), content.to_string());
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+            self.fail_deletes_if_configured()?;
+            self.narinfo.lock().unwrap().remove(hash);
+            Ok(())
+        }
+        async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+            self.fail_deletes_if_configured()?;
+            self.nar.lock().unwrap().remove(nar_path);
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn NarRefIndex {
+            &self.refs
         }
         async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
             self.fail_reads_if_configured()?;
@@ -571,19 +717,17 @@ mod tests {
         fn nar_residency(&self) -> NarResidency {
             NarResidency::WholeValue
         }
-        async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-            self.narinfo.lock().unwrap().remove(hash);
-            for ext in ["nar.xz", "nar.zst", "nar"] {
-                self.nar.lock().unwrap().remove(&format!("nar/{hash}.{ext}"));
-            }
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().keys().cloned().collect())
         }
     }
 
     const NARINFO: &str = "StorePath: /nix/store/abc-hello\nURL: nar/abc.nar.xz\nCompression: xz\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
+
+    /// The NAR key [`NARINFO`] actually advertises. Deliberately unrelated to
+    /// the store hashes the tests use, because that is the real relationship: a
+    /// NAR is keyed by *narhash*.
+    const ADVERTISED_NAR: &str = "nar/abc.nar.xz";
 
     /// Build a tiered backend over three fresh mocks, returning the concrete
     /// handles for inspection alongside the composed resolver.
@@ -818,11 +962,89 @@ mod tests {
     async fn delete_fans_out_to_all_tiers() {
         let (l1, l2, l3, tiered) = mocks();
         tiered.put_narinfo("h", NARINFO).await.unwrap();
-        tiered.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
+        tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
         tiered.delete("h").await.unwrap();
         for t in [&l1, &l2, &l3] {
             assert!(!t.has_narinfo("h"));
-            assert!(!t.has_nar("nar/h.nar.xz"));
+            assert!(!t.has_nar(ADVERTISED_NAR));
+        }
+    }
+
+    /// The composite resolves the NAR from the narinfo, on every tier — so a
+    /// key merely *shaped* like the old store-hash guess survives.
+    #[tokio::test]
+    async fn delete_resolves_across_tiers_instead_of_guessing() {
+        let (l1, l2, l3, tiered) = mocks();
+        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
+        tiered.put_nar("nar/h.nar.zst", b"someone else's nar").await.unwrap();
+
+        tiered.delete("h").await.unwrap();
+
+        for t in [&l1, &l2, &l3] {
+            assert!(!t.has_nar(ADVERTISED_NAR), "the advertised NAR must go");
+        }
+        assert_eq!(
+            tiered.get_nar("nar/h.nar.zst").await.unwrap().unwrap(),
+            b"someone else's nar",
+        );
+    }
+
+    /// Two store paths sharing one narhash: the first delete must leave the NAR
+    /// the second still advertises, on every tier.
+    #[tokio::test]
+    async fn a_co_referenced_nar_survives_the_first_delete_on_every_tier() {
+        let (l1, l2, l3, tiered) = mocks();
+        tiered.put_narinfo("pathA", NARINFO).await.unwrap();
+        tiered.put_narinfo("pathB", NARINFO).await.unwrap();
+        tiered.put_nar(ADVERTISED_NAR, b"shared").await.unwrap();
+
+        tiered.delete("pathA").await.unwrap();
+        for t in [&l1, &l2, &l3] {
+            assert!(t.has_nar(ADVERTISED_NAR), "pathB still advertises it");
+        }
+
+        tiered.delete("pathB").await.unwrap();
+        for t in [&l1, &l2, &l3] {
+            assert!(!t.has_nar(ADVERTISED_NAR), "the last referrer is gone");
+        }
+    }
+
+    /// The strand approached from the *other* side: the narinfo removal fails
+    /// on one tier, so the narinfo is still served (reads fall through) — and
+    /// the NAR must therefore NOT be removed.
+    ///
+    /// This is why the tiered record-deletes report failure instead of being
+    /// best-effort. A `delete` that swallowed the per-tier failure would carry
+    /// on, drop the edge, and take the NAR out from under a narinfo that is
+    /// still being served.
+    #[tokio::test]
+    async fn a_failed_narinfo_delete_must_not_take_the_nar_with_it() {
+        let (l1, l2, l3, tiered) = mocks();
+        tiered.put_narinfo("h", NARINFO).await.unwrap();
+        tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
+
+        // L2 goes read-only-ish: its narinfo record delete will fail. Its copy
+        // of the narinfo therefore survives, and a read still finds it.
+        l2.set_deletes_fail(true);
+
+        let err = tiered.delete("h").await.expect_err("a partial delete must surface");
+        assert!(
+            matches!(err, StoreError::NotImplemented(_)),
+            "expected the tier's own error, got {err:?}",
+        );
+
+        assert!(l2.has_narinfo("h"), "L2 kept the narinfo — that is the premise");
+        assert_eq!(
+            tiered.get_narinfo("h").await.unwrap().unwrap(),
+            NARINFO,
+            "and a read still serves it, because reads fall through",
+        );
+        for t in [&l1, &l2, &l3] {
+            assert!(
+                t.has_nar(ADVERTISED_NAR),
+                "the NAR must be untouched: its narinfo is still servable",
+            );
         }
     }
 
@@ -831,7 +1053,7 @@ mod tests {
         let (l1, l2, l3, tiered) = mocks();
         // write-through seeds all three tiers.
         tiered.put_narinfo("h", NARINFO).await.unwrap();
-        tiered.put_nar("nar/h.nar.xz", b"blob").await.unwrap();
+        tiered.put_nar(ADVERTISED_NAR, b"blob").await.unwrap();
         // a durable-only key proves the list-driven clear, not just the hot one.
         l2.put_narinfo("only2", "x").await.unwrap();
 
@@ -841,7 +1063,7 @@ mod tests {
         for t in [&l1, &l2, &l3] {
             assert!(t.list_narinfos().await.unwrap().is_empty(), "a tier survived the wipe");
             assert!(!t.has_narinfo("h"));
-            assert!(!t.has_nar("nar/h.nar.xz"));
+            assert!(!t.has_nar(ADVERTISED_NAR));
         }
         assert!(tiered.list_narinfos().await.unwrap().is_empty(), "cache not cold after wipe");
         // and the cache is genuinely cold — a fresh get misses.
@@ -892,6 +1114,7 @@ mod tests {
         log: Arc<Mutex<Vec<&'static str>>>,
         /// When set, every NAR write is refused — the capped-hot-tier shape.
         refuse: bool,
+        refs: MemNarRefIndex,
     }
 
     #[async_trait]
@@ -899,8 +1122,17 @@ mod tests {
         async fn get_narinfo(&self, _h: &str) -> Result<Option<String>, StoreError> {
             Ok(None)
         }
-        async fn put_narinfo(&self, _h: &str, _c: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, _h: &str, _c: &str) -> Result<(), StoreError> {
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, _h: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn delete_nar_record(&self, _p: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn NarRefIndex {
+            &self.refs
         }
         async fn get_nar(&self, _p: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(None)
@@ -915,9 +1147,6 @@ mod tests {
         fn nar_residency(&self) -> NarResidency {
             NarResidency::WholeValue
         }
-        async fn delete(&self, _h: &str) -> Result<(), StoreError> {
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
             Ok(vec![])
         }
@@ -928,8 +1157,12 @@ mod tests {
     ) -> (Arc<Mutex<Vec<&'static str>>>, TieredBackend) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mk = |name, refuse| {
-            Arc::new(RecordingTier { name, log: Arc::clone(&log), refuse })
-                as Arc<dyn StorageBackend>
+            Arc::new(RecordingTier {
+                name,
+                log: Arc::clone(&log),
+                refuse,
+                refs: MemNarRefIndex::new(),
+            }) as Arc<dyn StorageBackend>
         };
         let tiered = TieredBackend::new(mk("l1", refuse_l1), mk("l2", false), mk("l3", false));
         (log, tiered)
@@ -964,8 +1197,12 @@ mod tests {
     async fn write_back_warms_l1_before_the_durable_gate() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mk = |name| {
-            Arc::new(RecordingTier { name, log: Arc::clone(&log), refuse: false })
-                as Arc<dyn StorageBackend>
+            Arc::new(RecordingTier {
+                name,
+                log: Arc::clone(&log),
+                refuse: false,
+                refs: MemNarRefIndex::new(),
+            }) as Arc<dyn StorageBackend>
         };
         let tiered = TieredBackend::with_write_policy(
             mk("l1"), mk("l2"), mk("l3"), WritePolicy::WriteBack,

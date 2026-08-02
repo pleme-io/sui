@@ -49,11 +49,13 @@ pub use signing::{verify_narinfo_signature, CacheSigner};
 
 // Storage primitives — all moved to sui-castore, re-exported here.
 pub use sui_castore::{
-    build_backend, bytes_stream, collect_nar, empty_stream, file_stream, spool_or_buffer,
-    whole_value_stream, BytesNarSource, FileNarSource, LocalStorage, NarResidency, NarSource,
-    NarStream, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn, S3Storage,
-    SpooledNarSource, StorageBackend, StorageIndex, TieredBackend, TieredTier, WritePolicy,
-    DEFAULT_INGEST_MEMORY_CAP, NAR_CHUNK_BYTES, TIERED_BACKEND_TIER,
+    advertised_nar_url, advertised_url_line, build_backend, bytes_stream, collect_nar,
+    empty_stream, file_stream, is_addressable_nar_path, referrer_of, spool_or_buffer,
+    whole_value_stream, BytesNarSource, FileNarSource, LocalStorage, MemNarRefIndex, NarRefIndex,
+    NarRefKey, NarRefScan, NarResidency, NarSource, NarStream, PgCacheConn, PgStorageBackend,
+    PgTable, RedisBackend, RedisConn, S3Storage, SpooledNarSource, StorageBackend, StorageIndex,
+    TieredBackend, TieredTier, WritePolicy, DEFAULT_INGEST_MEMORY_CAP, NAR_CHUNK_BYTES,
+    NAR_REF_PREFIX, TIERED_BACKEND_TIER,
 };
 
 #[cfg(feature = "redis-client")]

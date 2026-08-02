@@ -549,6 +549,9 @@ mod tests {
     struct MemBackend {
         narinfos: Mutex<HashMap<String, String>>,
         nars: Mutex<HashMap<String, Vec<u8>>>,
+        /// The reverse index, with production's semantics rather than a
+        /// hand-rolled map.
+        nar_refs: sui_cache::MemNarRefIndex,
     }
 
     fn nar_path(hash: &str) -> String {
@@ -577,6 +580,7 @@ mod tests {
             let me = Self {
                 narinfos: Mutex::new(HashMap::new()),
                 nars: Mutex::new(HashMap::new()),
+                nar_refs: sui_cache::MemNarRefIndex::new(),
             };
             {
                 let mut ni = me.narinfos.lock().unwrap();
@@ -595,7 +599,7 @@ mod tests {
         async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, sui_cache::CacheError> {
             Ok(self.narinfos.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo(
+        async fn put_narinfo_record(
             &self,
             hash: &str,
             content: &str,
@@ -605,6 +609,17 @@ mod tests {
                 .unwrap()
                 .insert(hash.to_string(), content.to_string());
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, hash: &str) -> Result<(), sui_cache::CacheError> {
+            self.narinfos.lock().unwrap().remove(hash);
+            Ok(())
+        }
+        async fn delete_nar_record(&self, nar_path: &str) -> Result<(), sui_cache::CacheError> {
+            self.nars.lock().unwrap().remove(nar_path);
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+            &self.nar_refs
         }
         async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, sui_cache::CacheError> {
             Ok(self.nars.lock().unwrap().get(path).cloned())
@@ -623,11 +638,6 @@ mod tests {
             sui_cache::NarResidency::WholeValue
         }
 
-        async fn delete(&self, hash: &str) -> Result<(), sui_cache::CacheError> {
-            self.narinfos.lock().unwrap().remove(hash);
-            self.nars.lock().unwrap().remove(&nar_path(hash));
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, sui_cache::CacheError> {
             let mut v: Vec<String> = self.narinfos.lock().unwrap().keys().cloned().collect();
             v.sort();

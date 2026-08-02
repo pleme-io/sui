@@ -42,6 +42,8 @@ use sui_cache::{CacheError, LocalStorage, StorageBackend, TieredBackend, WritePo
 struct MemBackend {
     narinfo: Mutex<HashMap<String, String>>,
     nar: Mutex<HashMap<String, Vec<u8>>>,
+    /// This tier's reverse index, with production's semantics.
+    nar_refs: sui_cache::MemNarRefIndex,
     /// When true, EVERY op returns a typed error (tier is unreachable / down).
     down: AtomicBool,
     /// Count of get_narinfo calls that actually reached this tier (proves
@@ -84,10 +86,21 @@ impl StorageBackend for MemBackend {
         self.is_down()?;
         Ok(self.narinfo.lock().unwrap().get(hash).cloned())
     }
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
         self.is_down()?;
         self.narinfo.lock().unwrap().insert(hash.to_string(), content.to_string());
         Ok(())
+    }
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
+        self.narinfo.lock().unwrap().remove(hash);
+        Ok(())
+    }
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), CacheError> {
+        self.nar.lock().unwrap().remove(nar_path);
+        Ok(())
+    }
+    fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+        &self.nar_refs
     }
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, CacheError> {
         self.is_down()?;
@@ -105,13 +118,6 @@ impl StorageBackend for MemBackend {
         sui_cache::NarResidency::WholeValue
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
-        self.narinfo.lock().unwrap().remove(hash);
-        for ext in ["nar.xz", "nar.zst", "nar"] {
-            self.nar.lock().unwrap().remove(&format!("nar/{hash}.{ext}"));
-        }
-        Ok(())
-    }
     async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
         self.is_down()?;
         Ok(self.narinfo.lock().unwrap().keys().cloned().collect())

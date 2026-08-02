@@ -18,6 +18,7 @@
 
 pub mod index;
 pub mod local;
+pub mod nar_refs;
 pub mod nar_stream;
 pub mod pg;
 pub mod redis;
@@ -28,6 +29,10 @@ use std::sync::Arc;
 
 pub use index::StorageIndex;
 pub use local::LocalStorage;
+pub use nar_refs::{
+    advertised_nar_url, advertised_url_line, is_addressable_nar_path, referrer_of, MemNarRefIndex,
+    NarRefIndex, NarRefKey, NarRefScan, NAR_REF_PREFIX,
+};
 pub use nar_stream::{
     bytes_stream, collect_nar, empty_stream, file_stream, spool_or_buffer, whole_value_stream,
     BytesNarSource, FileNarSource, NarSource, NarStream, SpooledNarSource,
@@ -126,13 +131,55 @@ impl NarResidency {
 /// [`put_nar_stream`](StorageBackend::put_nar_stream) move the same content in
 /// [`NAR_CHUNK_BYTES`] chunks and are what the HTTP server and every tier-to-tier
 /// transfer use. `narinfo` is ~728 bytes and deliberately has no streaming pair.
+///
+/// # Record verbs vs. composed verbs
+///
+/// The `*_record` verbs ([`put_narinfo_record`](StorageBackend::put_narinfo_record),
+/// [`delete_narinfo_record`](StorageBackend::delete_narinfo_record),
+/// [`delete_nar_record`](StorageBackend::delete_nar_record)) each touch **exactly
+/// one key and maintain nothing**. They are what a backend implements.
+///
+/// [`put_narinfo`](StorageBackend::put_narinfo) and
+/// [`delete`](StorageBackend::delete) are *composed* on top: they keep the
+/// [`NarRefIndex`] in step and, in `delete`'s case, refuse to remove a NAR that
+/// another narinfo still advertises. They are provided, so a backend cannot
+/// forget to index — see [`nar_refs`] for what the two directions cost.
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
     /// Retrieve narinfo text by store path hash.
     async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError>;
 
-    /// Store narinfo text keyed by store path hash.
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError>;
+    /// Store narinfo text keyed by store path hash — **the record verb**: one
+    /// key, no index maintenance.
+    ///
+    /// Callers want [`put_narinfo`](Self::put_narinfo), which also records the
+    /// reverse edge.
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError>;
+
+    /// Remove a narinfo record by store path hash. Idempotent; removing an
+    /// absent narinfo is `Ok(())`.
+    ///
+    /// **The record verb**: it does not touch the NAR the narinfo advertises and
+    /// does not maintain the index. Callers want [`delete`](Self::delete).
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError>;
+
+    /// Remove one NAR blob by its relative path. Idempotent.
+    ///
+    /// **The record verb, and the one with teeth**: removing a NAR that a live
+    /// narinfo still advertises is the stranding hazard this module exists to
+    /// prevent, and *nothing here checks*. Callers want [`delete`](Self::delete);
+    /// reach for this directly only after consulting
+    /// [`nar_ref_index`](Self::nar_ref_index).
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError>;
+
+    /// This backend's **narhash → store-hash reverse index**.
+    ///
+    /// **Required — no default.** A default would be an empty index, and an
+    /// empty index does not read as "unknown", it reads as "nobody advertises
+    /// this NAR" — which is precisely the answer that authorizes deleting a NAR
+    /// out from under a live narinfo. Same mechanism, and the same reason, as
+    /// [`nar_residency`](Self::nar_residency): the decision cannot be omitted.
+    fn nar_ref_index(&self) -> &dyn NarRefIndex;
 
     /// Retrieve a NAR blob by its relative path.
     ///
@@ -178,8 +225,134 @@ pub trait StorageBackend: Send + Sync {
         self.put_nar(path, &data).await
     }
 
-    /// Delete a store path's narinfo and associated NAR blob.
-    async fn delete(&self, hash: &str) -> Result<(), StoreError>;
+    /// Store narinfo text **and record the reverse edge it creates**.
+    ///
+    /// # Ordering, and why it is this way round
+    ///
+    /// The edge is recorded **before** the narinfo record is written. A crash
+    /// between the two then leaves an edge with no narinfo — an over-report,
+    /// which costs a NAR that could have been reclaimed. The other order leaves
+    /// a narinfo with no edge, which is an under-report, and an under-report is
+    /// what lets a later `delete` take the NAR this narinfo advertises. Leak
+    /// over strand, every time.
+    ///
+    /// A narinfo whose `URL:` is not an addressable relative path is **refused**
+    /// (see [`is_addressable_nar_path`]): it arrives over the wire, it is used
+    /// as a key and joined onto a filesystem root, and there is no sanitizing it
+    /// safely at each of those uses. Text carrying no `URL:` at all is stored
+    /// as-is and indexes nothing — it advertises no NAR, so there is nothing to
+    /// strand.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the index write or the record write, and returns
+    /// [`StoreError::NarInfo`] for an unaddressable `URL:`.
+    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+        match nar_refs::advertised_url_line(content) {
+            Some(url) if nar_refs::is_addressable_nar_path(url) => {
+                self.nar_ref_index().record(url, hash).await?;
+            }
+            Some(url) => {
+                return Err(StoreError::NarInfo(format!(
+                    "narinfo {hash} advertises an unaddressable URL: {url:?}",
+                )));
+            }
+            None => {}
+        }
+        self.put_narinfo_record(hash, content).await
+    }
+
+    /// The NAR path this store path's narinfo advertises — **resolved, never
+    /// guessed**.
+    ///
+    /// `None` means the narinfo is absent, unparseable, or advertises a URL this
+    /// store will not address. All three mean the same thing to a caller: there
+    /// is no NAR here it is entitled to touch.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the narinfo read failure. A read failure is **not** flattened
+    /// into `None`: "the tier is down" must never be mistaken for "this path has
+    /// no NAR" by something about to delete.
+    async fn advertised_nar(&self, hash: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.get_narinfo(hash).await?.as_deref().and_then(nar_refs::advertised_nar_url))
+    }
+
+    /// Delete a store path's narinfo, and its NAR **only if nothing else
+    /// advertises that NAR**.
+    ///
+    /// # What changed, and why it is not cosmetic
+    ///
+    /// This used to guess: every backend best-effort-deleted
+    /// `nar/{store-hash}.{xz,zst,nar}`. The NAR is keyed by *narhash*, not by
+    /// store hash, so the guess normally deleted three keys that were never this
+    /// path's NAR and left the real one behind. It now **resolves** the key from
+    /// the narinfo's own `URL:`.
+    ///
+    /// Resolving alone would be a regression: two store paths with identical
+    /// contents share one narhash and therefore one `URL:`, so deleting either
+    /// would take the NAR the other still advertises — and a narinfo whose
+    /// advertised NAR 404s is a hard Nix failure, not a cache miss. So the NAR
+    /// goes only when [`nar_ref_index`](Self::nar_ref_index) reports no other
+    /// referrer.
+    ///
+    /// # Ordering
+    ///
+    /// The narinfo record is removed **first**, then its edge. A crash between
+    /// the two leaves a stale edge — an over-report that costs a retained NAR.
+    /// The other order would leave a live narinfo with no edge, and the next
+    /// `delete` of a co-referrer would strand it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the narinfo read, the record delete, or the index update.
+    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
+        let advertised = self.advertised_nar(hash).await?;
+
+        self.delete_narinfo_record(hash).await?;
+
+        let Some(nar_path) = advertised else { return Ok(()) };
+        self.nar_ref_index().forget(&nar_path, hash).await?;
+
+        let others = self.nar_ref_index().referrers(&nar_path).await?;
+        if others.is_empty() {
+            self.delete_nar_record(&nar_path).await?;
+        } else {
+            tracing::debug!(
+                hash = %hash,
+                nar_path = %nar_path,
+                referrers = others.len(),
+                "delete: NAR retained — another narinfo still advertises it; removing it \
+                 would 404 an advertised URL, which Nix treats as a hard failure",
+            );
+        }
+        Ok(())
+    }
+
+    /// Rebuild every reverse edge from the narinfos this backend holds, and
+    /// return the number of edges recorded.
+    ///
+    /// The index is maintained forward from [`put_narinfo`](Self::put_narinfo),
+    /// so a store filled **before** the index existed has none — and an absent
+    /// edge reads as "nobody advertises this NAR". Running this once after an
+    /// upgrade closes that gap; it is idempotent, so running it again is free.
+    ///
+    /// O(narinfos), one narinfo read each: a maintenance verb, not something on
+    /// a request path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the listing, a narinfo read, or an index write.
+    async fn reindex_nar_refs(&self) -> Result<usize, StoreError> {
+        let mut recorded = 0usize;
+        for hash in self.list_narinfos().await? {
+            if let Some(nar_path) = self.advertised_nar(&hash).await? {
+                self.nar_ref_index().record(&nar_path, &hash).await?;
+                recorded += 1;
+            }
+        }
+        Ok(recorded)
+    }
 
     /// List all stored narinfo hashes.
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError>;
@@ -342,5 +515,148 @@ mod residency_gate {
         assert!(NarResidency::Streaming.is_bounded());
         assert!(NarResidency::Capped(1).is_bounded());
         assert!(!NarResidency::WholeValue.is_bounded());
+    }
+}
+
+/// **The stranding gate.** Every backend a production [`BackendConfig`] can name
+/// must never leave a narinfo advertising a NAR it has deleted.
+///
+/// A narinfo is served 200 OK with `URL: nar/…`; a client then fetches that NAR.
+/// Nix treats a **missing advertised NAR** as a hard failure, not a cache miss —
+/// the same outage class as 2026-07-26, where 500s from a substituter failed
+/// every build on the cluster. So the property is not "delete frees bytes", it
+/// is "**every narinfo that survives a delete is still servable end to end**",
+/// and that is what these assert.
+///
+/// The per-backend equivalents for the feature-gated tiers live beside their
+/// mock seams (`pg::tests`, `redis::tests`); `s3::tests` runs the same scenario
+/// against an in-process object store. This module covers what a default build
+/// can construct through [`build_backend`], which is the factory a deployment
+/// actually goes through.
+#[cfg(test)]
+mod nar_ref_gate {
+    use super::*;
+
+    /// Two narinfos advertising ONE NAR — the case that makes the index
+    /// necessary. A NAR serializes a store path's *contents*, not its name, so
+    /// two paths with identical contents produce one narhash and one `URL:`.
+    const SHARED_NAR: &str = "nar/sharednarhash.nar.xz";
+
+    fn narinfo_for(url: &str) -> String {
+        format!(
+            "StorePath: /nix/store/pkg\nURL: {url}\nCompression: xz\nFileHash: sha256:aaa\n\
+             FileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n"
+        )
+    }
+
+    /// Run the whole scenario against one backend, naming it in every failure.
+    async fn assert_never_strands(name: &str, backend: &dyn StorageBackend) {
+        backend.put_narinfo("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
+        backend.put_narinfo("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        backend.put_nar(SHARED_NAR, b"shared contents").await.unwrap();
+        // A decoy shaped like the old extension guess, which the store hash
+        // would have produced. Nothing advertises it.
+        backend.put_nar("nar/pathA.nar.zst", b"unrelated").await.unwrap();
+
+        backend.delete("pathA").await.unwrap();
+
+        // The surviving narinfo is still servable END TO END: the narinfo is
+        // there AND the NAR it names is there. Checking only one of the two is
+        // how a strand hides.
+        let surviving = backend
+            .get_narinfo("pathB")
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{name}: pathB's narinfo vanished"));
+        let advertised = nar_refs::advertised_nar_url(&surviving)
+            .unwrap_or_else(|| panic!("{name}: pathB advertises nothing"));
+        assert!(
+            backend.get_nar(&advertised).await.unwrap().is_some(),
+            "{name}: STRANDED — pathB's narinfo advertises {advertised}, which is gone. \
+             A client would get 200 on the narinfo and 404 on the NAR, which nix treats \
+             as a hard build failure.",
+        );
+        assert_eq!(
+            backend.nar_ref_index().referrers(SHARED_NAR).await.unwrap(),
+            vec!["pathB".to_string()],
+            "{name}: the index must have dropped exactly pathA's edge",
+        );
+        let decoy = backend.get_nar("nar/pathA.nar.zst").await.unwrap().unwrap_or_else(|| {
+            panic!(
+                "{name}: GUESSED — delete removed nar/pathA.nar.zst, a key built from the \
+                 STORE hash that no narinfo ever advertised. A NAR is keyed by narhash; \
+                 delete must resolve the advertised URL, never guess an extension.",
+            )
+        });
+        assert_eq!(decoy, b"unrelated", "{name}: the decoy's bytes were altered");
+
+        // With the last referrer gone the NAR is reclaimable — otherwise the
+        // gate above would pass trivially by never deleting anything.
+        backend.delete("pathB").await.unwrap();
+        assert!(
+            backend.get_nar(SHARED_NAR).await.unwrap().is_none(),
+            "{name}: nothing advertises the NAR any more; it must be reclaimed",
+        );
+    }
+
+    #[tokio::test]
+    async fn every_production_backend_pairs_its_nar_with_its_narinfo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let local = build_backend(&BackendConfig::Local { path: dir.path().join("solo") })
+            .await
+            .unwrap();
+        assert_never_strands("LocalStorage", local.as_ref()).await;
+
+        let tiered = build_backend(&BackendConfig::Tiered {
+            l1: Box::new(BackendConfig::Local { path: dir.path().join("l1") }),
+            l2: Box::new(BackendConfig::Local { path: dir.path().join("l2") }),
+            l3: Box::new(BackendConfig::Local { path: dir.path().join("l3") }),
+            write_policy: WritePolicy::WriteThrough,
+        })
+        .await
+        .unwrap();
+        assert_never_strands("TieredBackend", tiered.as_ref()).await;
+    }
+
+    /// The **migration gap**, stated as a test rather than a doc line.
+    ///
+    /// A store written by a pre-index binary has narinfos and no edges, and an
+    /// absent edge reads as "nobody advertises this NAR". Deleting one of two
+    /// co-referring paths therefore strands the other — until
+    /// [`reindex_nar_refs`](StorageBackend::reindex_nar_refs) has run once. Both
+    /// halves are asserted, so the gap cannot be quietly forgotten *or* quietly
+    /// claimed to be closed.
+    #[tokio::test]
+    async fn an_unindexed_store_can_strand_until_reindexed() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // The gap: narinfos written the pre-index way, via the record verb.
+        let stale = LocalStorage::new(dir.path().join("stale"));
+        stale.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
+        stale.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        stale.put_nar(SHARED_NAR, b"shared").await.unwrap();
+        stale.delete("pathA").await.unwrap();
+        assert!(
+            stale.get_narinfo("pathB").await.unwrap().is_some(),
+            "pathB's narinfo is still there…",
+        );
+        assert!(
+            stale.get_nar(SHARED_NAR).await.unwrap().is_none(),
+            "…and its NAR is gone: this IS the strand, and it is what an un-reindexed \
+             upgrade looks like",
+        );
+
+        // The close: same fixture, reindexed before the delete.
+        let healed = LocalStorage::new(dir.path().join("healed"));
+        healed.put_narinfo_record("pathA", &narinfo_for(SHARED_NAR)).await.unwrap();
+        healed.put_narinfo_record("pathB", &narinfo_for(SHARED_NAR)).await.unwrap();
+        healed.put_nar(SHARED_NAR, b"shared").await.unwrap();
+        assert_eq!(healed.reindex_nar_refs().await.unwrap(), 2);
+        healed.delete("pathA").await.unwrap();
+        assert!(
+            healed.get_nar(SHARED_NAR).await.unwrap().is_some(),
+            "after a reindex the co-referrer is visible and the NAR is retained",
+        );
     }
 }

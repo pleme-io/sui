@@ -85,6 +85,10 @@ fn assert_fell_through_to_a_real_full_build(receipt: &WrapperReceipt, runner: &M
 /// wrapper must degrade to a plain build rather than propagate this.
 struct ErroringCacheBackend {
     kind: ErrorKind,
+    /// Unreachable — every verb above it errors first — but the trait requires
+    /// a decision, and an empty index is the honest one for a backend that
+    /// stores nothing.
+    nar_refs: sui_cache::MemNarRefIndex,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,16 +117,22 @@ impl StorageBackend for ErroringCacheBackend {
     async fn get_narinfo(&self, _hash: &str) -> Result<Option<String>, CacheError> {
         Err(self.err())
     }
-    async fn put_narinfo(&self, _hash: &str, _content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, _hash: &str, _content: &str) -> Result<(), CacheError> {
         Err(self.err())
+    }
+    async fn delete_narinfo_record(&self, _hash: &str) -> Result<(), CacheError> {
+        Err(self.err())
+    }
+    async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), CacheError> {
+        Err(self.err())
+    }
+    fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+        &self.nar_refs
     }
     async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, CacheError> {
         Err(self.err())
     }
     async fn put_nar(&self, _path: &str, _data: &[u8]) -> Result<(), CacheError> {
-        Err(self.err())
-    }
-    async fn delete(&self, _hash: &str) -> Result<(), CacheError> {
         Err(self.err())
     }
     async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
@@ -263,7 +273,10 @@ proptest! {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let env = env_for(&text);
-            let cache: Arc<dyn StorageBackend> = Arc::new(ErroringCacheBackend { kind });
+            let cache: Arc<dyn StorageBackend> = Arc::new(ErroringCacheBackend {
+                kind,
+                nar_refs: sui_cache::MemNarRefIndex::new(),
+            });
             let runner = MockCommandRunner::new();
 
             // A backend outage must NEVER be a `WrapperError` — the whole

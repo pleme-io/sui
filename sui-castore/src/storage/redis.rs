@@ -33,6 +33,7 @@
 
 use async_trait::async_trait;
 
+use super::nar_refs::{referrer_of, NarRefIndex, NarRefKey, NarRefScan};
 use super::nar_stream::{self, NarSource};
 use super::{NarResidency, StorageBackend};
 use crate::StoreError;
@@ -42,6 +43,14 @@ use crate::StoreError;
 const NARINFO_PREFIX: &str = "sui:narinfo:";
 /// Key namespace for NAR blobs.
 const NAR_PREFIX: &str = "sui:nar:";
+/// Key namespace this backend puts in front of the canonical reverse-edge key
+/// ([`NarRefKey`]), so an edge lands at `sui:nar-refs/<nar path>/<store hash>`.
+///
+/// The canonical form is reused verbatim rather than re-encoded into Redis's
+/// `a:b:c` house style, so the four key-value tiers agree on one edge encoding.
+/// `sui:nar-refs/` is disjoint from `sui:nar:` — an edge is never swept by a NAR
+/// scan, or vice versa.
+const NAR_REF_NAMESPACE: &str = "sui:";
 
 /// Default per-value byte cap for the hot tier.
 ///
@@ -146,6 +155,21 @@ impl<C: RedisConn> RedisBackend<C> {
     fn nar_key(path: &str) -> String {
         format!("{NAR_PREFIX}{path}")
     }
+
+    /// Redis key of one reverse edge.
+    fn nar_ref_key(nar_path: &str, hash: &str) -> String {
+        format!("{NAR_REF_NAMESPACE}{}", NarRefKey { nar_path, hash })
+    }
+
+    /// Redis `SCAN` prefix enumerating every edge into `nar_path`.
+    fn nar_ref_scan(nar_path: &str) -> String {
+        format!("{NAR_REF_NAMESPACE}{}", NarRefScan { nar_path })
+    }
+
+    /// Redis `SCAN` prefix covering every edge this backend holds.
+    fn nar_ref_namespace() -> String {
+        format!("{NAR_REF_NAMESPACE}{}", super::nar_refs::NAR_REF_PREFIX)
+    }
 }
 
 #[async_trait]
@@ -162,9 +186,21 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         let key = Self::narinfo_key(hash);
         self.conn.set_bytes(&key, content.as_bytes(), self.ttl_secs).await
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+        self.conn.del(&Self::narinfo_key(hash)).await
+    }
+
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+        self.conn.del(&Self::nar_key(nar_path)).await
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        self
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
@@ -219,18 +255,6 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         self.conn.set_bytes(&key, &data, self.ttl_secs).await
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-        // Narinfo is keyed directly by hash.
-        self.conn.del(&Self::narinfo_key(hash)).await?;
-        // NAR blobs are keyed by relative URL; we only have the hash here, so —
-        // mirroring `S3Storage::delete` — best-effort delete the common NAR path
-        // patterns. `del` is idempotent, so absent keys are harmless.
-        for ext in ["nar.xz", "nar.zst", "nar"] {
-            self.conn.del(&Self::nar_key(&format!("nar/{hash}.{ext}"))).await?;
-        }
-        Ok(())
-    }
-
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         let keys = self.conn.keys_with_prefix(NARINFO_PREFIX).await?;
         Ok(keys
@@ -251,7 +275,50 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         for key in self.conn.keys_with_prefix(NAR_PREFIX).await? {
             self.conn.del(&key).await?;
         }
+        // `sui:nar-refs/…` is NOT under `sui:nar:`, so the reverse index needs
+        // its own sweep or a wipe would leave every edge pointing at nothing.
+        for key in self.conn.keys_with_prefix(&Self::nar_ref_namespace()).await? {
+            self.conn.del(&key).await?;
+        }
         Ok(n)
+    }
+}
+
+/// The reverse index as one Redis key per edge.
+///
+/// **Edges carry no TTL, deliberately**, even when narinfo/NAR writes do. An
+/// edge that expired while the narinfo it describes is still live would be an
+/// under-report, and an under-report authorizes deleting a NAR out from under
+/// that narinfo. An edge that outlives its narinfo is an over-report, which
+/// costs a retained NAR. The whole tier is still best-effort — Redis
+/// `maxmemory` LRU can drop an edge regardless — which is why a
+/// [`TieredBackend`](super::TieredBackend) unions this tier's answer with the
+/// durable tiers' rather than trusting it alone.
+#[async_trait]
+impl<C: RedisConn> NarRefIndex for RedisBackend<C> {
+    async fn record(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        self.conn.set_bytes(&Self::nar_ref_key(nar_path, hash), b"", None).await
+    }
+
+    async fn forget(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        self.conn.del(&Self::nar_ref_key(nar_path, hash)).await
+    }
+
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError> {
+        let scan = NarRefScan { nar_path };
+        let prefix = Self::nar_ref_scan(nar_path);
+        let mut hashes: Vec<String> = self
+            .conn
+            .keys_with_prefix(&prefix)
+            .await?
+            .iter()
+            .filter_map(|k| k.strip_prefix(NAR_REF_NAMESPACE))
+            .filter_map(|k| referrer_of(&scan, k))
+            .map(str::to_string)
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        Ok(hashes)
     }
 }
 
@@ -528,20 +595,44 @@ mod tests {
         assert!(backend.get_nar("nar/a.nar.xz").await.unwrap().is_none());
     }
 
+    /// `delete` removes the NAR the narinfo names, not three store-hash-shaped
+    /// guesses. `NARINFO` advertises `nar/abc.nar.xz` while the store hash is
+    /// `xyz` — the ordinary case, since a NAR is keyed by narhash.
     #[tokio::test]
-    async fn delete_removes_narinfo_and_common_nar_patterns() {
+    async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
         let backend = RedisBackend::new(MockRedis::default());
         backend.put_narinfo("xyz", NARINFO).await.unwrap();
-        backend.put_nar("nar/xyz.nar.xz", b"nar-xz").await.unwrap();
-        backend.put_nar("nar/xyz.nar.zst", b"nar-zst").await.unwrap();
-        backend.put_nar("nar/xyz.nar", b"nar-plain").await.unwrap();
+        backend.put_nar("nar/abc.nar.xz", b"the real nar").await.unwrap();
+        backend.put_nar("nar/xyz.nar.zst", b"someone else's nar").await.unwrap();
 
         backend.delete("xyz").await.unwrap();
 
         assert!(backend.get_narinfo("xyz").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar.xz").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar.zst").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar").await.unwrap().is_none());
+        assert!(backend.get_nar("nar/abc.nar.xz").await.unwrap().is_none());
+        assert_eq!(
+            backend.get_nar("nar/xyz.nar.zst").await.unwrap().unwrap(),
+            b"someone else's nar",
+            "a key this narinfo never named must be untouched",
+        );
+    }
+
+    /// The hot tier's own reverse index, round-tripped through the mock's
+    /// `SCAN` — proving the edge encoding and the prefix scan agree.
+    #[tokio::test]
+    async fn the_hot_tier_indexes_and_forgets_its_edges() {
+        let backend = RedisBackend::new(MockRedis::default());
+        backend.put_narinfo("xyz", NARINFO).await.unwrap();
+        backend.put_narinfo("second", NARINFO).await.unwrap();
+        assert_eq!(
+            backend.nar_ref_index().referrers("nar/abc.nar.xz").await.unwrap(),
+            vec!["second".to_string(), "xyz".to_string()],
+        );
+
+        backend.delete("xyz").await.unwrap();
+        assert_eq!(
+            backend.nar_ref_index().referrers("nar/abc.nar.xz").await.unwrap(),
+            vec!["second".to_string()],
+        );
     }
 
     #[tokio::test]

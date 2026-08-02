@@ -102,6 +102,29 @@ impl StorageBackend for DaemonAwareCacheClient {
         }
     }
 
+    /// Every record verb is a straight delegation, so the remote's own composed
+    /// `put_narinfo` / `delete` — and therefore its reverse index — stay in
+    /// charge. This wrapper owns no storage and must own no index.
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+        self.remote.put_narinfo_record(hash, content).await
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
+        self.remote.delete_narinfo_record(hash).await
+    }
+
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), CacheError> {
+        self.remote.delete_nar_record(nar_path).await
+    }
+
+    fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+        self.remote.nar_ref_index()
+    }
+
+    /// Overridden rather than inherited, because the daemon warm-up has to
+    /// happen after the remote write. The **composed** `put_narinfo` is what is
+    /// delegated to, so the remote still records the reverse edge; this is a
+    /// proxy adding a side effect, not a backend re-implementing the write.
     async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
         // The remote write is the one that must succeed for
         // correctness — every other node's future local misses (and
@@ -154,6 +177,8 @@ impl StorageBackend for DaemonAwareCacheClient {
         self.remote.put_nar_stream(path, src).await
     }
 
+    /// Delegate the whole composed delete, so the remote's index consultation
+    /// happens once, on the side that owns the data.
     async fn delete(&self, hash: &str) -> Result<(), CacheError> {
         self.remote.delete(hash).await
     }

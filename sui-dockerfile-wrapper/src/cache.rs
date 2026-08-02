@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use sui_cache::StorageBackend;
 use sui_cache::CacheError;
+use sui_cache::{MemNarRefIndex, NarRefIndex, StorageBackend};
 
 /// An in-memory [`StorageBackend`] for unit tests. Never touches a
 /// filesystem, Redis, or Postgres — narinfo entries live in a
@@ -26,6 +26,10 @@ use sui_cache::CacheError;
 #[derive(Default)]
 pub struct MockCacheBackend {
     narinfos: Mutex<BTreeMap<String, String>>,
+    /// The reverse index. Shared semantics with production via
+    /// [`MemNarRefIndex`] rather than a hand-rolled map — a double whose index
+    /// disagreed with a real backend's would prove nothing.
+    nar_refs: MemNarRefIndex,
 }
 
 impl MockCacheBackend {
@@ -57,12 +61,26 @@ impl StorageBackend for MockCacheBackend {
         Ok(self.narinfos.lock().expect("mock mutex poisoned").get(hash).cloned())
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
         self.narinfos
             .lock()
             .expect("mock mutex poisoned")
             .insert(hash.to_string(), content.to_string());
         Ok(())
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
+        self.narinfos.lock().expect("mock mutex poisoned").remove(hash);
+        Ok(())
+    }
+
+    /// This double stores no NAR bytes, so there is nothing to remove.
+    async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), CacheError> {
+        Ok(())
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        &self.nar_refs
     }
 
     async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, CacheError> {
@@ -78,11 +96,6 @@ impl StorageBackend for MockCacheBackend {
     /// the claim honest rather than borrowing a bound it never exercises.
     fn nar_residency(&self) -> sui_cache::NarResidency {
         sui_cache::NarResidency::WholeValue
-    }
-
-    async fn delete(&self, hash: &str) -> Result<(), CacheError> {
-        self.narinfos.lock().expect("mock mutex poisoned").remove(hash);
-        Ok(())
     }
 
     async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {

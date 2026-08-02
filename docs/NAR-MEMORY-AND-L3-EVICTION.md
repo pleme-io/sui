@@ -1,9 +1,12 @@
-# NAR memory bounding, and why L3 eviction is not in this change
+# NAR memory bounding, the narhash reverse index, and why L3 eviction is still not in
 
-Status as of 2026-08-01.
+Status as of 2026-08-02.
 
 - **Part 1 — the streaming NAR path — is SHIPPED and measured.**
-- **Part 2 — L3 eviction — is DESIGN ONLY. No code. Do not cite it as existing.**
+- **Part 2 — the narhash → store-hash reverse index — is SHIPPED.** It was named
+  here as eviction's blocking prerequisite; it landed on its own, and `delete`
+  now resolves the NAR from the narinfo instead of guessing extensions.
+- **Part 3 — L3 eviction — is DESIGN ONLY. No code. Do not cite it as existing.**
 
 ---
 
@@ -201,39 +204,165 @@ this is the honest instrument that runs everywhere the suite runs.
 
 ---
 
-## Part 2 — DESIGN ONLY: L3 eviction
+## Part 2 — SHIPPED: the narhash → store-hash reverse index
+
+This is the piece Part 3 named as its blocking prerequisite. It landed on its
+own, because `delete`'s extension-guessing was already a latent bug independent
+of eviction.
+
+### The problem it closes
+
+The two halves of a binary cache are keyed differently:
+
+| Artifact | Key |
+|---|---|
+| narinfo | the 32-char **store-path** hash |
+| NAR blob | the **narhash** — `nar/<filehash>.nar.xz`, from the narinfo's `URL:` |
+
+Forward is easy (read the narinfo, take `URL:`). Backward — from a NAR to the
+narinfo(s) advertising it — was not expressible, and `delete` worked around it
+by best-effort-deleting `nar/{store-hash}.{xz,zst,nar}`. That guess is wrong on
+both sides: those three keys are normally *other paths' NARs or nothing*, and
+the real NAR survived.
+
+Two narinfos genuinely can advertise one NAR: a NAR serializes a store path's
+*contents*, not its name, so two paths with byte-identical contents produce one
+narhash and one `URL:`. So the index is a **set** of referrers, not one.
+
+### The shape
+
+One persisted edge per `(nar_path, store_hash)` pair — never a set-valued
+record. Recording is then a blind write of a key that names its own content, so
+two concurrent narinfo pushes cannot lose each other's edge the way a
+read-modify-write of a shared set would (and S3 offers no compare-and-swap to
+fix that with).
+
+```rust
+#[async_trait]
+pub trait NarRefIndex: Send + Sync {
+    async fn record(&self, nar_path: &str, hash: &str)   -> Result<(), StoreError>;
+    async fn forget(&self, nar_path: &str, hash: &str)   -> Result<(), StoreError>;
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError>;
+}
+
+// on StorageBackend — REQUIRED, no default:
+fn nar_ref_index(&self) -> &dyn NarRefIndex;
+```
+
+The key is one typed `Display` surface (`NarRefKey` / `NarRefScan`), so the four
+key-value tiers cannot drift into four encodings of the same edge.
+
+| Tier | Where the edge lives | Lookup |
+|---|---|---|
+| `LocalStorage` (L3) | empty file at `<root>/nar-refs/<nar path>/<hash>` | one `read_dir` |
+| `PgStorageBackend` (L2) | zero-value row in `sui_cache_nar_ref`, keyed by `NarRefKey` | primary-key range scan via `starts_with` |
+| `RedisBackend` (L1) | `sui:nar-refs/<nar path>/<hash>`, **no TTL** | `SCAN MATCH` |
+| `S3Storage` | zero-byte object at `nar-refs/<nar path>/<hash>` | `LIST` under the prefix |
+| `TieredBackend` | fan-out; durable-gated on L2/L3, best-effort L1 | **union** of all three |
+
+### Which way each choice rounds
+
+Over-reporting a referrer keeps a NAR that could have been reclaimed — a leak.
+Under-reporting deletes a NAR another narinfo still advertises — an outage.
+**Every decision rounds toward over-reporting**, and the ordering is chosen for
+it:
+
+- `put_narinfo` records the edge **before** writing the narinfo record. A crash
+  between the two leaves an edge with no narinfo (leak). The other order leaves
+  a narinfo with no edge (strand).
+- `delete` removes the narinfo record **first**, then forgets the edge. A crash
+  between leaves a stale edge (leak), not a live narinfo with no edge (strand).
+- `TieredBackend::referrers` unions **all three** tiers, including the partial
+  hot one — the opposite of `list_narinfos`, which reads only the authoritative
+  tiers because there a hot tier's partial view would *under*-report.
+- A tier whose referrer read *fails* propagates the error. "This tier is down"
+  must never resolve to "nobody advertises this NAR" for something about to
+  delete.
+- Redis edges carry **no TTL** even when its narinfo/NAR writes do, so an edge
+  cannot expire out from under a live narinfo.
+
+### What `delete` does now
+
+1. Resolve the advertised NAR from the narinfo's own `URL:` — never guess.
+2. Remove the narinfo record.
+3. Forget this path's edge.
+4. Remove the NAR **only if** no other referrer remains.
+
+Step 4 is the whole point: resolving without it would be a regression, because
+the first of two co-referring paths to be deleted would take the shared NAR with
+it.
+
+### Two smaller things that fell out, and are load-bearing
+
+- **`URL:` is read directly, not through `NarInfo::parse`.** The strict parser
+  requires `FileHash`/`FileSize` and rejects the whole document without them — but
+  such a narinfo *still advertises a NAR*, and a client still hard-fails on a 404.
+  Indexing through the strict parse would have left exactly those narinfos out of
+  the index, and an unindexed narinfo sharing a narhash with an indexed one gets
+  stranded when the indexed one is deleted.
+- **An unaddressable `URL:` is refused at the boundary.** A narinfo arrives over
+  `PUT /<hash>.narinfo`, and its `URL:` is used as a key *and* joined onto the
+  cache root. `URL: ../../etc/passwd` is now a 400 at the HTTP handler and a typed
+  `StoreError::NarInfo` at the backend. That hole predates this change —
+  `LocalStorage::delete` already joined the raw `URL:` onto the root.
+
+### Tier honesty
+
+- **Parse-time-rejected** — `nar_ref_index()` is required with no default, on the
+  `nar_residency()` precedent. An empty default index does not read as "unknown";
+  it reads as "nobody advertises this NAR", which is exactly the answer that
+  authorizes deleting a NAR out from under a live narinfo.
+- **Only-mitigated** — `put_narinfo` and `delete` are *provided* methods, so a
+  backend implements only the raw record verbs and cannot forget to index. A
+  backend that overrides them can still get it wrong; that is caught by
+  `every_production_backend_pairs_its_nar_with_its_narinfo` in CI, not by the
+  type system.
+- **A stated migration gap** — a store written by a pre-index binary has no
+  edges, so deleting one of two co-referring paths strands the other until
+  `reindex_nar_refs()` has run once. Both halves are asserted in
+  `an_unindexed_store_can_strand_until_reindexed`, so the gap can be neither
+  quietly forgotten nor quietly claimed closed.
+
+---
+
+## Part 3 — DESIGN ONLY: L3 eviction
 
 **Nothing here is implemented.** The local tier still has no eviction: the tmpfs
 fills once and then rejects every write forever, which is why its size barely
 mattered. `atatame` names `sui cache watch` as the GC and it is not shipped.
 
-### Why it is not in this change
+### What is left, now that the index exists
 
-The instruction was to implement it only if it were small, and to write the
-design rather than half-build a GC. It is not small, for four reasons — the
-first of which is a **build-breaking correctness hazard**, not a size problem:
+The four reasons this was not small were, in order:
 
-1. **Evicting a NAR can strand its narinfo, and a stranded narinfo is worse
-   than a miss.** A client fetches `…​.narinfo` (200 OK, advertising
-   `URL: nar/…`), then fetches that NAR and gets 404. Nix treats a *missing
-   advertised NAR* as a hard failure, not a cache miss — the same class of
-   outage as the 2026-07-26 incident, where 500s from a substituter failed every
-   build on the cluster. So eviction must remove the narinfo **and** its NAR
-   together.
-2. **The reverse index does not exist.** narinfo is keyed by the 32-char
-   store-path hash; the NAR is keyed by its **narhash**. There is no
-   narhash → store-hash map anywhere in `sui-castore` — three backends carry a
-   comment saying exactly this, and `delete` works around it by best-effort
-   guessing `nar/{hash}.{xz,zst,nar}`. Pairwise eviction needs that index built
-   and maintained, which is the actual body of work.
-3. **LRU needs an access time the filesystem may not keep.** tmpfs and most
-   production mounts run `relatime` or `noatime`. For content-addressed files
-   mtime is effectively creation time, so an mtime-ordered policy is **FIFO, not
-   LRU** — and calling it LRU would be exactly the rounding-up this repo forbids.
-   Real recency needs an in-process hit counter, which is lost on every pod roll.
-4. **Concurrency.** Byte accounting must survive concurrent writers, and
-   eviction needs single-flight so N simultaneous over-watermark writes do not
-   each scan and delete.
+1. ~~**Evicting a NAR can strand its narinfo.**~~ **Closed by Part 2** for the
+   `delete(store_hash)` direction: `delete` will not remove a NAR another
+   narinfo advertises. What eviction adds is the *other* direction — starting
+   from a NAR and removing it — and that now has a legal way to run:
+   `nar_ref_index().referrers(nar_path)` gives the narinfos to remove first (or
+   the reason to skip this candidate). **The mechanism exists; nothing calls it
+   from a NAR-first sweep yet.**
+2. ~~**The reverse index does not exist.**~~ **Closed by Part 2.**
+3. **LRU needs an access time the filesystem may not keep.** Unchanged. tmpfs and
+   most production mounts run `relatime` or `noatime`. For content-addressed
+   files mtime is effectively creation time, so an mtime-ordered policy is
+   **FIFO, not LRU** — and calling it LRU would be exactly the rounding-up this
+   repo forbids. Real recency needs an in-process hit counter, which is lost on
+   every pod roll.
+4. **Concurrency.** Unchanged. Byte accounting must survive concurrent writers,
+   and eviction needs single-flight so N simultaneous over-watermark writes do
+   not each scan and delete.
+
+Two more that Part 2 surfaced rather than closed:
+
+5. **A NAR-first enumeration.** A sweep needs "every NAR in this tier, with its
+   size and mtime". `LocalStorage` can walk `nar/`; the trait has no verb for it,
+   and the other tiers have no equivalent. Eviction is currently only sensible
+   for L3, so an inherent `LocalStorage` method is the honest scope — a trait
+   verb would be inventing a contract for tiers that will not implement it.
+6. **`reindex_nar_refs()` must have run.** A sweep on an unindexed store reads
+   every NAR as unreferenced and deletes the lot. Eviction must refuse to start
+   until the index is known-seeded — a persisted marker, not a comment.
 
 ### The shape it should take
 
@@ -244,14 +373,19 @@ first of which is a **build-breaking correctness hazard**, not a size problem:
   maintained by write/delete. No per-write directory scan.
 - A `tokio::sync::Mutex` single-flight around the sweep; crossing `high_water`
   triggers one sweep down to `low_water`.
-- **Pairwise eviction over a persisted `narhash → store-hash` index.** This is
-  the real prerequisite and should land first, on its own, because `delete`'s
-  extension-guessing is already a latent bug independent of eviction.
+- Per candidate NAR: `referrers(nar_path)` → `delete_narinfo_record` for each,
+  then `delete_nar_record` — narinfo first, so a crash mid-eviction leaves an
+  orphan NAR (reclaimable next sweep) and never a stranded narinfo.
 - A typed `EvictionPolicy` (`Fifo` by mtime is honest and cheap;
   `Lru` only once a hit counter exists) rather than a bool.
 - Gates: a capacity test that writes past the high-water mark and asserts the
-  directory settles at/below it; and a test that eviction **never** leaves a
-  narinfo whose advertised NAR is gone.
+  directory settles at/below it; and a NAR-first sibling of
+  `every_production_backend_pairs_its_nar_with_its_narinfo` proving a sweep
+  never leaves a narinfo whose advertised NAR is gone.
+
+**Not obviously trivial even with the index.** Points 3–6 are each real work, and
+5 is a new enumeration surface. The index removed the *correctness blocker*, not
+the body of the job.
 
 ### What Part 1 already improved for a full tmpfs
 
@@ -279,6 +413,15 @@ right reason, then restored.
 | `a_write_killed_before_the_marker_reads_as_a_miss…` | read ignores the marker; chunk gap ends the stream quietly | RED |
 | `a_write_that_dies_mid_stream_publishes_nothing_at_all` | scratch file + failure cleanup both removed | RED |
 | `an_over_cap_stream_of_unknown_length_stops_at_the_cap` | cap dropped from `collect_nar` | RED |
+| `every_production_backend_pairs_its_nar_with_its_narinfo` | `delete` stops consulting the index before removing the NAR | RED — `STRANDED — pathB's narinfo advertises …, which is gone` |
+| `every_production_backend_pairs_its_nar_with_its_narinfo` | extension-guessing fan-out restored alongside the resolve | RED — `GUESSED — delete removed nar/pathA.nar.zst …` |
+| `delete_resolves_the_nar_from_the_narinfo_instead_of_guessing` (pg / redis / s3 / tiered) | same guessing break | RED, all four |
+| `an_unindexed_store_can_strand_until_reindexed` | `delete` stops consulting the index | RED on the *healed* half |
+| `a_traversal_url_is_refused_rather_than_stored` | `is_addressable_nar_path` short-circuited to `true` | RED |
+| `a_narinfo_the_strict_parser_rejects_still_advertises_its_nar` | `advertised_url_line` routed back through `NarInfo::parse` | RED |
+| `a_scan_prefix_does_not_reach_a_longer_neighbour` | trailing `/` dropped from `NarRefScan`'s `Display` | RED |
+| `the_index_is_a_directory_of_edge_files` + 5 others | `put_narinfo` stops recording the edge | RED |
+| `a_failed_narinfo_delete_must_not_take_the_nar_with_it` | tiered `delete_narinfo_record` goes back to swallowing per-tier failures | RED — `the NAR must be untouched: its narinfo is still servable` |
 
 Two of these were **green on the first attempt**, and the cause was the break,
 not the gate — recorded because it is the INSTRUMENT RULE working:

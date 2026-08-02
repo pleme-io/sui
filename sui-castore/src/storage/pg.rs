@@ -36,6 +36,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 
+use super::nar_refs::{referrer_of, NarRefIndex, NarRefKey, NarRefScan};
 use super::nar_stream::{self, NarSource, NarStream, NAR_CHUNK_BYTES};
 use super::{NarResidency, StorageBackend};
 use crate::StoreError;
@@ -70,7 +71,8 @@ fn decode_marker(raw: &[u8]) -> Result<u64, StoreError> {
         .map_err(|_| StoreError::NarInfo(format!("corrupt NAR chunk marker: {} bytes", raw.len())))
 }
 
-/// The two logical tables the cache tier keeps: narinfo text and NAR blobs.
+/// The three logical tables the cache tier keeps: narinfo text, NAR blobs, and
+/// the reverse edges between them.
 ///
 /// A typed discriminant (never a stringly-typed table name at a call site) so the
 /// SQL for each table is chosen by an exhaustive `match` — a new table is a
@@ -81,6 +83,11 @@ pub enum PgTable {
     Narinfo,
     /// compressed NAR blobs, keyed by relative URL path (`nar/<hash>.nar.xz`).
     Nar,
+    /// Reverse index edges, keyed by [`NarRefKey`] — one zero-value row per
+    /// `(NAR path, store hash)` pair, so recording an edge is a blind upsert of
+    /// a key that names its own content and two concurrent pushes cannot lose
+    /// each other's edge.
+    NarRef,
 }
 
 impl PgTable {
@@ -90,6 +97,7 @@ impl PgTable {
         match self {
             PgTable::Narinfo => "sui_cache_narinfo",
             PgTable::Nar => "sui_cache_nar",
+            PgTable::NarRef => "sui_cache_nar_ref",
         }
     }
 }
@@ -118,6 +126,19 @@ pub trait PgCacheConn: Send + Sync {
     /// `SELECT key FROM <table>` — the **authoritative** full key set (this is a
     /// durable tier, not a partial hot cache).
     async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError>;
+
+    /// `SELECT key FROM <table> WHERE starts_with(key, $1)` — the key set under
+    /// one prefix.
+    ///
+    /// REQUIRED, not defaulted, and not "fetch [`keys`](Self::keys) and filter
+    /// in Rust": the reverse-index lookup runs once per delete, and filtering
+    /// client-side would make it O(every edge in the cache) per call while the
+    /// primary-key btree can answer it as a range scan.
+    async fn keys_with_prefix(
+        &self,
+        table: PgTable,
+        prefix: &str,
+    ) -> Result<Vec<String>, StoreError>;
 
     /// `DELETE FROM <table>` — clear the whole table, returning the row count
     /// removed. The typed whole-store wipe primitive (the inverse of a warm
@@ -316,8 +337,27 @@ impl<C: PgCacheConn + 'static> StorageBackend for PgStorageBackend<C> {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         self.healing(|| self.conn.upsert(PgTable::Narinfo, hash, content.as_bytes())).await
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+        self.healing(|| self.conn.delete(PgTable::Narinfo, hash)).await
+    }
+
+    /// Remove a NAR by key, clearing **both generations**.
+    ///
+    /// A key may exist as a legacy whole-value row (written before the streaming
+    /// path) or as chunk rows, and a NAR that was re-pushed across the change can
+    /// be both. Dropping only one leaves the other still readable, so a
+    /// "deleted" NAR would keep serving.
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+        self.healing(|| self.conn.delete(PgTable::Nar, nar_path)).await?;
+        self.healing(|| self.conn.delete_nar_chunks(nar_path)).await
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        self
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
@@ -392,34 +432,52 @@ impl<C: PgCacheConn + 'static> StorageBackend for PgStorageBackend<C> {
         self.healing(|| self.conn.upsert_nar_chunk(path, CHUNK_MARKER_SEQ, &marker)).await
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-        // narinfo keyed directly by hash.
-        self.healing(|| self.conn.delete(PgTable::Narinfo, hash)).await?;
-        // NAR blobs are keyed by relative URL; only the hash is in hand here, so —
-        // mirroring `RedisBackend`/`S3Storage::delete` — best-effort-delete the
-        // common NAR path patterns. `delete` is idempotent, so absent keys are
-        // harmless. BOTH generations are cleared: a legacy whole row and any
-        // chunk rows, or a delete would leave the other still readable.
-        for ext in ["nar.xz", "nar.zst", "nar"] {
-            let key = format!("nar/{hash}.{ext}");
-            self.healing(|| self.conn.delete(PgTable::Nar, &key)).await?;
-            self.healing(|| self.conn.delete_nar_chunks(&key)).await?;
-        }
-        Ok(())
-    }
-
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         self.healing(|| self.conn.keys(PgTable::Narinfo)).await
     }
 
-    /// Complete L2 wipe: truncate the narinfo, legacy NAR and NAR-chunk tables.
-    /// Unlike the per-hash `delete`, this reclaims NAR rows (keyed by narhash,
-    /// unreachable from a store-path hash). Returns the narinfo row count.
+    /// Complete L2 wipe: truncate the narinfo, legacy NAR, NAR-chunk and
+    /// reverse-edge tables. Unlike the per-hash `delete`, this reclaims NAR rows
+    /// wholesale. Returns the narinfo row count.
     async fn wipe_all(&self) -> Result<usize, StoreError> {
         let narinfos = self.healing(|| self.conn.clear(PgTable::Narinfo)).await? as usize;
         self.healing(|| self.conn.clear(PgTable::Nar)).await?;
         self.healing(|| self.conn.clear_nar_chunks()).await?;
+        self.healing(|| self.conn.clear(PgTable::NarRef)).await?;
         Ok(narinfos)
+    }
+}
+
+/// The reverse index as one zero-value row per edge in `sui_cache_nar_ref`.
+///
+/// The key is the canonical [`NarRefKey`], so the referrer lookup is a
+/// primary-key range scan under [`NarRefScan`] rather than a table sweep.
+#[async_trait]
+impl<C: PgCacheConn + 'static> NarRefIndex for PgStorageBackend<C> {
+    async fn record(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let key = NarRefKey { nar_path, hash }.to_string();
+        self.healing(|| self.conn.upsert(PgTable::NarRef, &key, b"")).await
+    }
+
+    async fn forget(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let key = NarRefKey { nar_path, hash }.to_string();
+        self.healing(|| self.conn.delete(PgTable::NarRef, &key)).await
+    }
+
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError> {
+        let scan = NarRefScan { nar_path };
+        let prefix = scan.to_string();
+        let keys = self
+            .healing(|| self.conn.keys_with_prefix(PgTable::NarRef, &prefix))
+            .await?;
+        let mut hashes: Vec<String> = keys
+            .iter()
+            .filter_map(|k| referrer_of(&scan, k))
+            .map(str::to_string)
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        Ok(hashes)
     }
 }
 
@@ -494,6 +552,9 @@ mod sqlx_conn {
                 PgTable::Nar => {
                     "CREATE TABLE IF NOT EXISTS sui_cache_nar (key TEXT PRIMARY KEY, value BYTEA NOT NULL)"
                 }
+                PgTable::NarRef => {
+                    "CREATE TABLE IF NOT EXISTS sui_cache_nar_ref (key TEXT PRIMARY KEY, value BYTEA NOT NULL)"
+                }
             }
         }
 
@@ -501,6 +562,7 @@ mod sqlx_conn {
             match self {
                 PgTable::Narinfo => "SELECT value FROM sui_cache_narinfo WHERE key = $1",
                 PgTable::Nar => "SELECT value FROM sui_cache_nar WHERE key = $1",
+                PgTable::NarRef => "SELECT value FROM sui_cache_nar_ref WHERE key = $1",
             }
         }
 
@@ -514,6 +576,10 @@ mod sqlx_conn {
                     "INSERT INTO sui_cache_nar (key, value) VALUES ($1, $2) \
                      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
                 }
+                PgTable::NarRef => {
+                    "INSERT INTO sui_cache_nar_ref (key, value) VALUES ($1, $2) \
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                }
             }
         }
 
@@ -521,6 +587,7 @@ mod sqlx_conn {
             match self {
                 PgTable::Narinfo => "DELETE FROM sui_cache_narinfo WHERE key = $1",
                 PgTable::Nar => "DELETE FROM sui_cache_nar WHERE key = $1",
+                PgTable::NarRef => "DELETE FROM sui_cache_nar_ref WHERE key = $1",
             }
         }
 
@@ -528,6 +595,7 @@ mod sqlx_conn {
             match self {
                 PgTable::Narinfo => "DELETE FROM sui_cache_narinfo",
                 PgTable::Nar => "DELETE FROM sui_cache_nar",
+                PgTable::NarRef => "DELETE FROM sui_cache_nar_ref",
             }
         }
 
@@ -535,6 +603,23 @@ mod sqlx_conn {
             match self {
                 PgTable::Narinfo => "SELECT key FROM sui_cache_narinfo",
                 PgTable::Nar => "SELECT key FROM sui_cache_nar",
+                PgTable::NarRef => "SELECT key FROM sui_cache_nar_ref",
+            }
+        }
+
+        /// `starts_with(key, $1)` rather than `key LIKE $1 || '%'`: a prefix that
+        /// happens to contain `%` or `_` is a wildcard to `LIKE` and would match
+        /// keys that are not under it — an over-report onto the wrong NAR.
+        /// `starts_with` has no metacharacters and is still index-sargable.
+        const fn keys_with_prefix_sql(self) -> &'static str {
+            match self {
+                PgTable::Narinfo => {
+                    "SELECT key FROM sui_cache_narinfo WHERE starts_with(key, $1)"
+                }
+                PgTable::Nar => "SELECT key FROM sui_cache_nar WHERE starts_with(key, $1)",
+                PgTable::NarRef => {
+                    "SELECT key FROM sui_cache_nar_ref WHERE starts_with(key, $1)"
+                }
             }
         }
     }
@@ -577,7 +662,7 @@ mod sqlx_conn {
                 // pool reconnect to a rebuilt/wiped database repairs itself.
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
-                        for t in [PgTable::Narinfo, PgTable::Nar] {
+                        for t in [PgTable::Narinfo, PgTable::Nar, PgTable::NarRef] {
                             sqlx::query(t.ddl()).execute(&mut *conn).await?;
                         }
                         sqlx::query(NAR_CHUNK_DDL).execute(&mut *conn).await?;
@@ -600,7 +685,7 @@ mod sqlx_conn {
         /// that delegates to it — an inherent method of the same name would make
         /// that delegation resolve to itself and recurse forever.
         async fn create_tables(&self) -> Result<(), StoreError> {
-            for t in [PgTable::Narinfo, PgTable::Nar] {
+            for t in [PgTable::Narinfo, PgTable::Nar, PgTable::NarRef] {
                 sqlx::query(t.ddl()).execute(&self.pool).await.map_err(to_store_err)?;
             }
             // The chunk table is additive: `sui_cache_nar` keeps every row a
@@ -650,6 +735,21 @@ mod sqlx_conn {
 
         async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
             let rows = sqlx::query(table.keys_sql())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            rows.into_iter()
+                .map(|r| r.try_get::<String, _>("key").map_err(to_store_err))
+                .collect()
+        }
+
+        async fn keys_with_prefix(
+            &self,
+            table: PgTable,
+            prefix: &str,
+        ) -> Result<Vec<String>, StoreError> {
+            let rows = sqlx::query(table.keys_with_prefix_sql())
+                .bind(prefix)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(to_store_err)?;
@@ -778,6 +878,8 @@ mod tests {
     struct MockPg {
         narinfo: Mutex<HashMap<String, Vec<u8>>>,
         nar: Mutex<HashMap<String, Vec<u8>>>,
+        /// The reverse-edge table: one zero-value row per `NarRefKey`.
+        nar_ref: Mutex<HashMap<String, Vec<u8>>>,
         /// The chunked-NAR table: `(key, seq) -> bytes`, including the
         /// `CHUNK_MARKER_SEQ` completeness marker.
         nar_chunk: Mutex<HashMap<(String, i32), Vec<u8>>>,
@@ -795,6 +897,7 @@ mod tests {
             match t {
                 PgTable::Narinfo => &self.narinfo,
                 PgTable::Nar => &self.nar,
+                PgTable::NarRef => &self.nar_ref,
             }
         }
         /// Drop the schema out from under a live connection.
@@ -807,6 +910,7 @@ mod tests {
             *self.schema_missing.lock().unwrap() = true;
             self.narinfo.lock().unwrap().clear();
             self.nar.lock().unwrap().clear();
+            self.nar_ref.lock().unwrap().clear();
             self.nar_chunk.lock().unwrap().clear();
         }
         /// Rows currently in the chunk table — proves a write really chunked
@@ -856,6 +960,24 @@ mod tests {
         async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
             self.guard()?;
             Ok(self.table(table).lock().unwrap().keys().cloned().collect())
+        }
+
+        /// Mirrors Postgres `starts_with(key, $1)` — a literal prefix, never a
+        /// `LIKE` pattern, so `%`/`_` in the prefix match themselves.
+        async fn keys_with_prefix(
+            &self,
+            table: PgTable,
+            prefix: &str,
+        ) -> Result<Vec<String>, StoreError> {
+            self.guard()?;
+            Ok(self
+                .table(table)
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
         }
 
         async fn clear(&self, table: PgTable) -> Result<u64, StoreError> {
@@ -943,6 +1065,13 @@ mod tests {
         async fn keys(&self, _t: PgTable) -> Result<Vec<String>, StoreError> {
             Err(StoreError::SchemaMissing("still gone".to_string()))
         }
+        async fn keys_with_prefix(
+            &self,
+            _t: PgTable,
+            _p: &str,
+        ) -> Result<Vec<String>, StoreError> {
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
         async fn clear(&self, _t: PgTable) -> Result<u64, StoreError> {
             Err(StoreError::SchemaMissing("still gone".to_string()))
         }
@@ -1010,20 +1139,67 @@ mod tests {
         assert_eq!(backend.get_nar("dead").await.unwrap().unwrap(), b"the-nar");
     }
 
+    /// A narinfo for store hash `_hash` advertising exactly `url`.
+    fn narinfo_for(url: &str) -> String {
+        format!(
+            "StorePath: /nix/store/pkg\nURL: {url}\nCompression: xz\nFileHash: sha256:aaa\n\
+             FileSize: 100\nNarHash: sha256:bbb\nNarSize: 200\nReferences: \n"
+        )
+    }
+
+    /// `delete` removes **the NAR the narinfo names** — not three guesses built
+    /// from the store hash.
+    ///
+    /// The old fan-out deleted `nar/{store-hash}.{xz,zst,nar}`. A NAR is keyed
+    /// by *narhash*, so all three of those are normally other paths' keys or
+    /// nothing at all, and the real NAR survived. Here `narhash != storehash`,
+    /// which is the ordinary case, and the old code would have deleted the
+    /// store-hash-shaped decoys and left the real blob.
     #[tokio::test]
-    async fn delete_removes_narinfo_and_common_nar_patterns() {
+    async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
         let backend = PgStorageBackend::new(MockPg::default());
-        backend.put_narinfo("xyz", NARINFO).await.unwrap();
-        backend.put_nar("nar/xyz.nar.xz", b"nar-xz").await.unwrap();
-        backend.put_nar("nar/xyz.nar.zst", b"nar-zst").await.unwrap();
-        backend.put_nar("nar/xyz.nar", b"nar-plain").await.unwrap();
+        backend.put_narinfo("storehash", &narinfo_for("nar/narhash.nar.xz")).await.unwrap();
+        backend.put_nar("nar/narhash.nar.xz", b"the real nar").await.unwrap();
+        // Decoys the extension-guessing fan-out would have taken instead.
+        backend.put_nar("nar/storehash.nar.zst", b"someone else's nar").await.unwrap();
 
-        backend.delete("xyz").await.unwrap();
+        backend.delete("storehash").await.unwrap();
 
-        assert!(backend.get_narinfo("xyz").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar.xz").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar.zst").await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar").await.unwrap().is_none());
+        assert!(backend.get_narinfo("storehash").await.unwrap().is_none());
+        assert!(
+            backend.get_nar("nar/narhash.nar.xz").await.unwrap().is_none(),
+            "the advertised NAR must be the one that goes",
+        );
+        assert_eq!(
+            backend.get_nar("nar/storehash.nar.zst").await.unwrap().unwrap(),
+            b"someone else's nar",
+            "a store-hash-shaped key this narinfo never named must be untouched",
+        );
+    }
+
+    /// Two store paths with identical contents share one narhash and therefore
+    /// one `URL:`. Deleting one must not take the NAR the other advertises — a
+    /// narinfo whose advertised NAR 404s is a hard Nix failure.
+    #[tokio::test]
+    async fn deleting_one_of_two_paths_sharing_a_nar_leaves_the_nar() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        let shared = "nar/sharednarhash.nar.xz";
+        backend.put_narinfo("pathA", &narinfo_for(shared)).await.unwrap();
+        backend.put_narinfo("pathB", &narinfo_for(shared)).await.unwrap();
+        backend.put_nar(shared, b"shared contents").await.unwrap();
+
+        backend.delete("pathA").await.unwrap();
+        assert!(backend.get_narinfo("pathA").await.unwrap().is_none());
+        assert!(
+            backend.get_nar(shared).await.unwrap().is_some(),
+            "pathB still advertises this NAR",
+        );
+
+        backend.delete("pathB").await.unwrap();
+        assert!(
+            backend.get_nar(shared).await.unwrap().is_none(),
+            "the last referrer gone means the NAR is reclaimable",
+        );
     }
 
     #[tokio::test]
@@ -1195,6 +1371,13 @@ mod tests {
             async fn keys(&self, _t: PgTable) -> Result<Vec<String>, StoreError> {
                 unreachable!()
             }
+            async fn keys_with_prefix(
+                &self,
+                _t: PgTable,
+                _p: &str,
+            ) -> Result<Vec<String>, StoreError> {
+                unreachable!()
+            }
             async fn clear(&self, _t: PgTable) -> Result<u64, StoreError> {
                 unreachable!()
             }
@@ -1331,6 +1514,14 @@ mod tests {
         async fn keys(&self, table: PgTable) -> Result<Vec<String>, StoreError> {
             self.tick()?;
             self.inner.keys(table).await
+        }
+        async fn keys_with_prefix(
+            &self,
+            table: PgTable,
+            prefix: &str,
+        ) -> Result<Vec<String>, StoreError> {
+            self.tick()?;
+            self.inner.keys_with_prefix(table, prefix).await
         }
         async fn clear(&self, table: PgTable) -> Result<u64, StoreError> {
             self.tick()?;
@@ -1572,15 +1763,21 @@ mod tests {
         );
     }
 
+    /// One key can exist as a legacy whole-value row *and* as chunk rows.
+    /// Dropping only one leaves the other readable, so a "deleted" NAR would
+    /// keep serving.
     #[tokio::test]
     async fn delete_clears_both_storage_generations() {
         let backend = PgStorageBackend::new(MockPg::default());
         let key = "nar/xyz.nar.xz";
+        backend.put_narinfo("storehash", &narinfo_for(key)).await.unwrap();
         backend.put_nar(key, b"chunked").await.unwrap();
-        backend.conn().seed_legacy_nar("nar/xyz.nar.zst", b"legacy");
-        backend.delete("xyz").await.unwrap();
+        backend.conn().seed_legacy_nar(key, b"legacy");
+
+        backend.delete("storehash").await.unwrap();
+
         assert!(backend.get_nar(key).await.unwrap().is_none());
-        assert!(backend.get_nar("nar/xyz.nar.zst").await.unwrap().is_none());
+        assert!(backend.conn().nar.lock().unwrap().is_empty(), "the legacy row must go too");
         assert_eq!(backend.conn().chunk_rows(), 0);
     }
 

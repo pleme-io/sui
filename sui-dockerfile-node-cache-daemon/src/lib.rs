@@ -154,14 +154,26 @@ mod tests {
     use sui_cache::CacheError;
     use tokio::net::UnixStream as ClientStream;
 
-    struct EmptyRemote;
+    #[derive(Default)]
+    struct EmptyRemote {
+        nar_refs: sui_cache::MemNarRefIndex,
+    }
     #[async_trait]
     impl StorageBackend for EmptyRemote {
         async fn get_narinfo(&self, _hash: &str) -> Result<Option<String>, CacheError> {
             Ok(None)
         }
-        async fn put_narinfo(&self, _hash: &str, _content: &str) -> Result<(), CacheError> {
+        async fn put_narinfo_record(&self, _hash: &str, _content: &str) -> Result<(), CacheError> {
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, _hash: &str) -> Result<(), CacheError> {
+            Ok(())
+        }
+        async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), CacheError> {
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+            &self.nar_refs
         }
         async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, CacheError> {
             Ok(None)
@@ -176,9 +188,6 @@ mod tests {
             sui_cache::NarResidency::WholeValue
         }
 
-        async fn delete(&self, _hash: &str) -> Result<(), CacheError> {
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
             Ok(Vec::new())
         }
@@ -192,7 +201,7 @@ mod tests {
         let local = Arc::new(
             MockLocalCacheStore::new().with_entry("hit", CachedArtifact { image_ref: "img:e2e".to_string() }),
         );
-        let remote: Arc<dyn StorageBackend> = Arc::new(EmptyRemote);
+        let remote: Arc<dyn StorageBackend> = Arc::new(EmptyRemote::default());
         let daemon = Arc::new(NodeCacheDaemon::new(local, remote));
 
         let listener = bind_unix_listener(&socket_path).unwrap();

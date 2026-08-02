@@ -200,6 +200,21 @@ async fn put_narinfo(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
+    // A narinfo's `URL:` becomes a storage key, and on the local tier a path
+    // joined onto the cache root — so `URL: ../../etc/passwd` has to be refused
+    // rather than sanitized at each of those uses. The backend refuses it too,
+    // but a refusal there arrives as a 500 (a server fault); a malformed upload
+    // is the client's, so it is classified here.
+    if let Some(url) = crate::advertised_url_line(&content) {
+        if !crate::is_addressable_nar_path(url) {
+            tracing::warn!(
+                hash = %hash, url = %url,
+                "put_narinfo: refusing a narinfo whose URL is not an addressable relative path",
+            );
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    }
+
     // Sign at ingest when a signer is configured, so the durable tier stores
     // the signed narinfo and every serving tier inherits the `Sig:`.
     let to_store = match &state.signer {
@@ -668,7 +683,13 @@ mod tests {
 
     /// A backend that is reachable but cannot answer — the exact shape of the
     /// Postgres L2 whose tables were destroyed with its `emptyDir`.
-    struct BrokenStorage;
+    #[derive(Default)]
+    struct BrokenStorage {
+        /// Unreachable in practice — every verb above it errors first — but the
+        /// trait requires a decision, and "an empty index" is the honest one for
+        /// a backend that stores nothing.
+        nar_refs: crate::MemNarRefIndex,
+    }
 
     #[async_trait::async_trait]
     impl StorageBackend for BrokenStorage {
@@ -677,8 +698,21 @@ mod tests {
                 "postgres: error returned from database: relation \"sui_cache_narinfo\" does not exist",
             )))
         }
-        async fn put_narinfo(&self, _hash: &str, _content: &str) -> Result<(), crate::CacheError> {
+        async fn put_narinfo_record(
+            &self,
+            _hash: &str,
+            _content: &str,
+        ) -> Result<(), crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        async fn delete_narinfo_record(&self, _hash: &str) -> Result<(), crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), crate::CacheError> {
+            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+        }
+        fn nar_ref_index(&self) -> &dyn crate::NarRefIndex {
+            &self.nar_refs
         }
         async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other(
@@ -695,16 +729,13 @@ mod tests {
             crate::NarResidency::WholeValue
         }
 
-        async fn delete(&self, _hash: &str) -> Result<(), crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
         }
     }
 
     fn broken_app() -> Router {
-        let storage: Arc<dyn StorageBackend> = Arc::new(BrokenStorage);
+        let storage: Arc<dyn StorageBackend> = Arc::new(BrokenStorage::default());
         build_router(AppState {
             storage,
             config: CacheConfig::default(),
@@ -781,6 +812,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// A `URL:` that escapes the cache root is a **client** error (400), not a
+    /// server fault (500), and nothing is stored.
+    ///
+    /// The `URL:` becomes a storage key and, on the local tier, a path joined
+    /// onto the cache root — the one narinfo field that is used as a filesystem
+    /// path, so it is validated at the request boundary.
+    #[tokio::test]
+    async fn put_narinfo_with_a_traversal_url_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let evil = "StorePath: /nix/store/abc-hello\nURL: ../../escape.nar\nCompression: xz\n\
+                    FileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n";
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/abc.narinfo")
+            .body(Body::from(evil))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let get = axum::http::Request::builder()
+            .uri("/abc.narinfo")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(get).await.unwrap().status(),
+            StatusCode::NOT_FOUND,
+            "a rejected narinfo must not have been stored",
+        );
     }
 
     #[tokio::test]

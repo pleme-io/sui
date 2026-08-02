@@ -321,6 +321,7 @@ mod tests {
     struct MemBackend {
         narinfo: Mutex<HashMap<String, String>>,
         nar: Mutex<HashMap<String, Vec<u8>>>,
+        nar_refs: sui_cache::MemNarRefIndex,
     }
 
     #[async_trait]
@@ -328,12 +329,23 @@ mod tests {
         async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
             self.narinfo
                 .lock()
                 .unwrap()
                 .insert(hash.to_string(), content.to_string());
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+            self.narinfo.lock().unwrap().remove(hash);
+            Ok(())
+        }
+        async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+            self.nar.lock().unwrap().remove(nar_path);
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+            &self.nar_refs
         }
         async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(self.nar.lock().unwrap().get(path).cloned())
@@ -352,10 +364,6 @@ mod tests {
             sui_cache::NarResidency::WholeValue
         }
 
-        async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-            self.narinfo.lock().unwrap().remove(hash);
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
             Ok(self.narinfo.lock().unwrap().keys().cloned().collect())
         }

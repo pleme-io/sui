@@ -114,6 +114,7 @@ mod tests {
     struct CountingRemote {
         entries: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
         get_calls: AtomicUsize,
+        nar_refs: sui_cache::MemNarRefIndex,
     }
 
     impl CountingRemote {
@@ -129,9 +130,19 @@ mod tests {
             self.get_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.entries.lock().unwrap().get(hash).cloned())
         }
-        async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), CacheError> {
+        async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
             self.entries.lock().unwrap().insert(hash.to_string(), content.to_string());
             Ok(())
+        }
+        async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
+            self.entries.lock().unwrap().remove(hash);
+            Ok(())
+        }
+        async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), CacheError> {
+            Ok(())
+        }
+        fn nar_ref_index(&self) -> &dyn sui_cache::NarRefIndex {
+            &self.nar_refs
         }
         async fn get_nar(&self, _path: &str) -> Result<Option<Vec<u8>>, CacheError> {
             Ok(None)
@@ -146,10 +157,6 @@ mod tests {
             sui_cache::NarResidency::WholeValue
         }
 
-        async fn delete(&self, hash: &str) -> Result<(), CacheError> {
-            self.entries.lock().unwrap().remove(hash);
-            Ok(())
-        }
         async fn list_narinfos(&self) -> Result<Vec<String>, CacheError> {
             Ok(self.entries.lock().unwrap().keys().cloned().collect())
         }

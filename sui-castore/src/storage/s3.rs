@@ -14,6 +14,7 @@ use object_store::path::Path;
 use object_store::{ObjectStore, WriteMultipart};
 use tracing::{debug, warn};
 
+use super::nar_refs::{referrer_of, NarRefIndex, NarRefKey, NarRefScan};
 use super::nar_stream::{self, NarSource, NarStream};
 use super::{NarResidency, StorageBackend};
 use crate::StoreError;
@@ -65,6 +66,25 @@ impl S3Storage {
         })
     }
 
+    /// Back this backend by an in-process object store.
+    ///
+    /// `object_store`'s `InMemory` implements the same [`ObjectStore`] trait a
+    /// live S3 does, so the key layout, the `LIST`-driven reverse index and the
+    /// delete semantics are exercised for real rather than asserted about. What
+    /// it does **not** prove is anything S3-specific — multipart minimums,
+    /// eventual consistency, IAM — so it is a unit seam, not an S3 integration
+    /// test.
+    #[cfg(test)]
+    #[must_use]
+    fn in_memory() -> Self {
+        Self {
+            store: Box::new(object_store::memory::InMemory::new()),
+            bucket: "in-memory".to_string(),
+            region: "none".to_string(),
+            endpoint: None,
+        }
+    }
+
     /// Return the bucket name.
     #[must_use]
     pub fn bucket(&self) -> &str {
@@ -81,6 +101,17 @@ impl S3Storage {
     #[must_use]
     pub fn endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
+    }
+
+    /// Delete one object, treating "already gone" as success.
+    ///
+    /// Every delete on this backend is idempotent by contract: a GC that
+    /// re-reaps a key it already reaped must not fail the run.
+    async fn delete_object(&self, path: &Path) -> Result<(), StoreError> {
+        match self.store.delete(path).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(StoreError::Io(std::io::Error::other(format!("S3 delete: {e}")))),
+        }
     }
 }
 
@@ -104,7 +135,7 @@ impl StorageBackend for S3Storage {
         }
     }
 
-    async fn put_narinfo(&self, hash: &str, content: &str) -> Result<(), StoreError> {
+    async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), StoreError> {
         let path = Path::from(format!("{hash}.narinfo"));
         self.store
             .put(&path, Bytes::from(content.to_string()).into())
@@ -112,6 +143,18 @@ impl StorageBackend for S3Storage {
             .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
         debug!(hash = %hash, "Stored narinfo in S3");
         Ok(())
+    }
+
+    async fn delete_narinfo_record(&self, hash: &str) -> Result<(), StoreError> {
+        self.delete_object(&Path::from(format!("{hash}.narinfo"))).await
+    }
+
+    async fn delete_nar_record(&self, nar_path: &str) -> Result<(), StoreError> {
+        self.delete_object(&Path::from(nar_path)).await
+    }
+
+    fn nar_ref_index(&self) -> &dyn NarRefIndex {
+        self
     }
 
     async fn get_nar(&self, nar_path: &str) -> Result<Option<Vec<u8>>, StoreError> {
@@ -205,23 +248,6 @@ impl StorageBackend for S3Storage {
         }
     }
 
-    async fn delete(&self, hash: &str) -> Result<(), StoreError> {
-        // Delete narinfo
-        let narinfo_path = Path::from(format!("{hash}.narinfo"));
-        if let Err(e) = self.store.delete(&narinfo_path).await {
-            warn!(hash = %hash, error = %e, "Failed to delete narinfo from S3");
-        }
-
-        // Try to delete NAR blob (common path patterns)
-        for ext in &["nar.xz", "nar.zst", "nar"] {
-            let nar_path = Path::from(format!("nar/{hash}.{ext}"));
-            let _ = self.store.delete(&nar_path).await;
-        }
-
-        debug!(hash = %hash, "Deleted from S3");
-        Ok(())
-    }
-
     async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
         use futures::TryStreamExt;
 
@@ -242,6 +268,48 @@ impl StorageBackend for S3Storage {
         }
 
         debug!(count = hashes.len(), "Listed narinfos from S3");
+        Ok(hashes)
+    }
+}
+
+/// The reverse index as one zero-byte object per edge, under `nar-refs/`.
+///
+/// A `LIST` bounded by the edge prefix *is* the referrer set. Recording is a
+/// blind `PUT` of a key that names its own content, so it is idempotent and two
+/// concurrent pushes cannot lose an edge — which a read-modify-write of a
+/// set-valued object could, and S3 gives no compare-and-swap to prevent it with.
+#[async_trait]
+impl NarRefIndex for S3Storage {
+    async fn record(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        let path = Path::from(NarRefKey { nar_path, hash }.to_string());
+        self.store
+            .put(&path, Bytes::new().into())
+            .await
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 put nar-ref: {e}"))))?;
+        Ok(())
+    }
+
+    async fn forget(&self, nar_path: &str, hash: &str) -> Result<(), StoreError> {
+        self.delete_object(&Path::from(NarRefKey { nar_path, hash }.to_string())).await
+    }
+
+    async fn referrers(&self, nar_path: &str) -> Result<Vec<String>, StoreError> {
+        use futures::TryStreamExt;
+
+        let scan = NarRefScan { nar_path };
+        let prefix = Path::from(scan.to_string());
+        let mut list = self.store.list(Some(&prefix));
+        let mut hashes = Vec::new();
+        while let Some(meta) = list.try_next().await.map_err(|e| {
+            StoreError::Io(std::io::Error::other(format!("S3 list nar-refs: {e}")))
+        })? {
+            let key = meta.location.to_string();
+            if let Some(hash) = referrer_of(&scan, &key) {
+                hashes.push(hash.to_string());
+            }
+        }
+        hashes.sort();
+        hashes.dedup();
         Ok(hashes)
     }
 }
@@ -269,5 +337,63 @@ mod tests {
         let result = S3Storage::new("bucket".to_string(), "eu-west-1".to_string(), None);
         // Just verify construction doesn't panic
         assert!(result.is_ok());
+    }
+
+    const NARINFO: &str = "StorePath: /nix/store/abc-hello\nURL: nar/narhash.nar.xz\n\
+                           Compression: xz\nFileHash: sha256:aaa\nFileSize: 100\n\
+                           NarHash: sha256:bbb\nNarSize: 200\nReferences: \n";
+    const ADVERTISED: &str = "nar/narhash.nar.xz";
+
+    /// `delete` takes the object the narinfo names, and leaves a
+    /// store-hash-shaped key it never named.
+    #[tokio::test]
+    async fn delete_resolves_the_nar_from_the_narinfo_instead_of_guessing() {
+        let s3 = S3Storage::in_memory();
+        s3.put_narinfo("storehash", NARINFO).await.unwrap();
+        s3.put_nar(ADVERTISED, b"the real nar").await.unwrap();
+        s3.put_nar("nar/storehash.nar.zst", b"someone else's nar").await.unwrap();
+
+        s3.delete("storehash").await.unwrap();
+
+        assert!(s3.get_narinfo("storehash").await.unwrap().is_none());
+        assert!(s3.get_nar(ADVERTISED).await.unwrap().is_none());
+        assert_eq!(
+            s3.get_nar("nar/storehash.nar.zst").await.unwrap().unwrap(),
+            b"someone else's nar",
+        );
+    }
+
+    /// The `LIST`-driven reverse index round-trips, and a co-referenced NAR
+    /// survives the first delete.
+    #[tokio::test]
+    async fn the_object_index_holds_every_referrer() {
+        let s3 = S3Storage::in_memory();
+        s3.put_narinfo("pathA", NARINFO).await.unwrap();
+        s3.put_narinfo("pathB", NARINFO).await.unwrap();
+        s3.put_nar(ADVERTISED, b"shared").await.unwrap();
+        assert_eq!(
+            s3.nar_ref_index().referrers(ADVERTISED).await.unwrap(),
+            vec!["pathA".to_string(), "pathB".to_string()],
+        );
+
+        s3.delete("pathA").await.unwrap();
+        assert_eq!(
+            s3.nar_ref_index().referrers(ADVERTISED).await.unwrap(),
+            vec!["pathB".to_string()],
+        );
+        assert!(s3.get_nar(ADVERTISED).await.unwrap().is_some(), "pathB still advertises it");
+
+        s3.delete("pathB").await.unwrap();
+        assert!(s3.nar_ref_index().referrers(ADVERTISED).await.unwrap().is_empty());
+        assert!(s3.get_nar(ADVERTISED).await.unwrap().is_none());
+    }
+
+    /// Edge objects live under `nar-refs/`, which must not be mistaken for a
+    /// narinfo by the bucket-wide listing.
+    #[tokio::test]
+    async fn edge_objects_do_not_pollute_the_narinfo_listing() {
+        let s3 = S3Storage::in_memory();
+        s3.put_narinfo("storehash", NARINFO).await.unwrap();
+        assert_eq!(s3.list_narinfos().await.unwrap(), vec!["storehash".to_string()]);
     }
 }
