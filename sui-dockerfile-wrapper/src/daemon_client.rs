@@ -130,6 +130,30 @@ impl StorageBackend for DaemonAwareCacheClient {
         self.remote.put_nar(path, data).await
     }
 
+    /// Every NAR verb is a straight delegation to `remote`, so the honest
+    /// residency is whatever `remote` reports — this wrapper adds no buffer of
+    /// its own and must not claim a bound the remote does not have.
+    fn nar_residency(&self) -> sui_cache::NarResidency {
+        self.remote.nar_residency()
+    }
+
+    /// Delegate the streaming verbs too, so a streaming remote is not silently
+    /// downgraded to the trait's buffering default by passing through here.
+    async fn get_nar_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<sui_cache::NarStream>, CacheError> {
+        self.remote.get_nar_stream(path).await
+    }
+
+    async fn put_nar_stream(
+        &self,
+        path: &str,
+        src: &dyn sui_cache::NarSource,
+    ) -> Result<(), CacheError> {
+        self.remote.put_nar_stream(path, src).await
+    }
+
     async fn delete(&self, hash: &str) -> Result<(), CacheError> {
         self.remote.delete(hash).await
     }

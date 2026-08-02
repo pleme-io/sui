@@ -73,6 +73,13 @@ impl StorageBackend for MockCacheBackend {
         Ok(())
     }
 
+    /// This double stores no NAR bytes at all (`get_nar` is always a miss,
+    /// `put_nar` a no-op), so it cannot stream — declaring `WholeValue` keeps
+    /// the claim honest rather than borrowing a bound it never exercises.
+    fn nar_residency(&self) -> sui_cache::NarResidency {
+        sui_cache::NarResidency::WholeValue
+    }
+
     async fn delete(&self, hash: &str) -> Result<(), CacheError> {
         self.narinfos.lock().expect("mock mutex poisoned").remove(hash);
         Ok(())

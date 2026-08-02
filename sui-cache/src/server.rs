@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -242,24 +242,38 @@ async fn put_narinfo(
     }
 }
 
-/// `GET /nar/{path}` — returns a compressed NAR blob.
+/// The NAR media type implied by a URL suffix.
+fn nar_content_type(path: &str) -> &'static str {
+    if path.ends_with(".xz") {
+        "application/x-xz"
+    } else if path.ends_with(".zstd") || path.ends_with(".zst") {
+        "application/zstd"
+    } else {
+        "application/x-nix-nar"
+    }
+}
+
+/// `GET /nar/{path}` — **streams** a compressed NAR blob.
+///
+/// The body is wired straight from the backend's chunk stream to the socket, so
+/// serving a 2 GiB NAR costs this process one chunk, not 2 GiB. It used to
+/// collect the blob into a `Vec<u8>` and hand axum the whole thing.
+///
+/// The cost of streaming: the status line is committed before the bytes are
+/// known-good, so a fault *mid-body* can no longer become a 404. It shows up as
+/// a truncated response, which Nix rejects on the NarHash it already has from
+/// the narinfo — a loud client-side failure, not a silent bad substitution. A
+/// fault *before* the first byte still degrades to a miss exactly as before.
 async fn get_nar(
     State(state): State<AppState>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
     let nar_path = format!("nar/{path}");
-    match state.storage.get_nar(&nar_path).await {
-        Ok(Some(data)) => {
-            let content_type = if path.ends_with(".xz") {
-                "application/x-xz"
-            } else if path.ends_with(".zstd") || path.ends_with(".zst") {
-                "application/zstd"
-            } else {
-                "application/x-nix-nar"
-            };
+    match state.storage.get_nar_stream(&nar_path).await {
+        Ok(Some(stream)) => {
             let mut headers = HeaderMap::new();
-            headers.insert("content-type", content_type.parse().unwrap());
-            (StatusCode::OK, headers, data).into_response()
+            headers.insert("content-type", nar_content_type(&path).parse().unwrap());
+            (StatusCode::OK, headers, Body::from_stream(stream)).into_response()
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         // Same rule as `get_narinfo`: an unanswerable read is a miss, not a
@@ -276,16 +290,47 @@ async fn get_nar(
     }
 }
 
-/// `PUT /nar/{path}` — uploads a compressed NAR blob.
+/// `PUT /nar/{path}` — **streams** a compressed NAR blob into storage.
+///
+/// The request body is spooled in bounded chunks (see
+/// [`spool_or_buffer`](sui_castore::spool_or_buffer)) and handed to the backend
+/// as a re-openable source. It used to arrive as `body: Bytes` — axum collecting
+/// every frame and concatenating them — which put the whole NAR in the heap
+/// *before* storage even saw it, on top of whatever each tier then copied.
+///
+/// The spool directory is `TMPDIR` (via `std::env::temp_dir()`), so an operator
+/// points it at a real volume without a code change. If no spool file can be
+/// created the ingest falls back to a **capped** in-memory buffer and NARs above
+/// the cap are refused — bounded either way, never unbounded.
 async fn put_nar(
     State(state): State<AppState>,
     Path(path): Path<String>,
-    body: Bytes,
+    body: Body,
 ) -> impl IntoResponse {
     let nar_path = format!("nar/{path}");
+
+    let src = match sui_castore::spool_or_buffer(
+        body.into_data_stream(),
+        &std::env::temp_dir(),
+        sui_castore::DEFAULT_INGEST_MEMORY_CAP,
+    )
+    .await
+    {
+        Ok(src) => src,
+        Err(e) => {
+            tracing::error!(
+                nar_path = %nar_path,
+                error = %e,
+                "put_nar: could not stage the upload (spool write failed, or it exceeded \
+                 the in-memory fallback cap) — nothing stored",
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
     // See `put_narinfo` for the write-path policy and why it is deliberately
     // asymmetric with the read path.
-    match state.storage.put_nar(&nar_path, &body).await {
+    match state.storage.put_nar_stream(&nar_path, src.as_ref()).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(
@@ -643,6 +688,13 @@ mod tests {
         async fn put_nar(&self, _path: &str, _data: &[u8]) -> Result<(), crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
         }
+        /// An in-memory test double holds whole values by construction. The
+        /// declaration is required precisely so a *production* backend cannot
+        /// inherit this path by omission.
+        fn nar_residency(&self) -> crate::NarResidency {
+            crate::NarResidency::WholeValue
+        }
+
         async fn delete(&self, _hash: &str) -> Result<(), crate::CacheError> {
             Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
         }

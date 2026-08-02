@@ -345,6 +345,13 @@ mod tests {
                 .insert(path.to_string(), data.to_vec());
             Ok(())
         }
+        /// An in-memory test double holds whole values by construction. The
+        /// declaration is required precisely so a *production* backend cannot
+        /// inherit this path by omission.
+        fn nar_residency(&self) -> sui_cache::NarResidency {
+            sui_cache::NarResidency::WholeValue
+        }
+
         async fn delete(&self, hash: &str) -> Result<(), StoreError> {
             self.narinfo.lock().unwrap().remove(hash);
             Ok(())

@@ -72,8 +72,59 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::warn;
 
-use super::StorageBackend;
+use super::nar_stream::{self, NarSource, NarStream};
+use super::{NarResidency, StorageBackend};
 use crate::StoreError;
+
+/// A [`NarSource`] that re-reads one tier.
+///
+/// This is what makes a streamed promotion possible without a buffer: warming an
+/// upper tier is `upper.put_nar_stream(path, &TierNarSource::new(lower, path))`,
+/// and each `open()` is a fresh bounded read of the tier that already has the
+/// bytes.
+///
+/// # The cost, stated plainly
+///
+/// Each warm is an **extra full pass over the lower tier**. An L2 hit reads L2
+/// twice (once to warm L1, once to serve); an L3 hit reads L3 three times (warm
+/// L2, warm L1, serve). The old code got those passes "free" because it was
+/// already holding the whole NAR — which is precisely the thing that killed the
+/// pod. Read amplification on the *promotion* path is the honest price of a
+/// bounded peak, and promotion is the cold path by construction: it happens once
+/// per key, after which L1 answers.
+///
+/// Two alternatives were considered and rejected. Sourcing the L1 warm from the
+/// freshly-warmed L2 (2 passes instead of 3) makes the L1 warm silently depend
+/// on L2's health, and a broken L2 must not stop L1 from being warmed from a
+/// healthy L3 — the resolver's whole degrade-don't-fail posture. Backgrounding
+/// the warm removes the pass from the request entirely but breaks the contract
+/// that promotion has happened by the time `get` returns, which the resolver's
+/// tests assert and callers rely on.
+struct TierNarSource {
+    tier: Arc<dyn StorageBackend>,
+    path: String,
+}
+
+impl TierNarSource {
+    fn new(tier: &Arc<dyn StorageBackend>, path: &str) -> Self {
+        Self { tier: Arc::clone(tier), path: path.to_string() }
+    }
+}
+
+#[async_trait]
+impl NarSource for TierNarSource {
+    async fn open(&self) -> Result<NarStream, StoreError> {
+        self.tier.get_nar_stream(&self.path).await?.ok_or_else(|| {
+            // The content was there when the read resolved and is gone now —
+            // an eviction or a concurrent delete racing the promotion. The warm
+            // is best-effort, so the caller logs and moves on.
+            StoreError::PathNotFound(format!(
+                "{}: vanished from the source tier mid-promotion",
+                self.path
+            ))
+        })
+    }
+}
 
 /// How a `put` propagates across the tiers. See the module docs for the full
 /// contract; every policy persists **both durable tiers before returning**.
@@ -157,10 +208,26 @@ impl TieredBackend {
         }
     }
 
-    async fn warm_nar(tier: &Arc<dyn StorageBackend>, path: &str, data: &[u8]) {
-        if let Err(e) = tier.put_nar(path, data).await {
+    /// Best-effort warm of `tier` from a re-openable source. **O(chunk).**
+    ///
+    /// The result is logged and discarded — including the
+    /// [`TooLarge`](StoreError::TooLarge) a capped hot tier returns for an
+    /// oversized NAR. That is the contract, not laxity: a refused L1 warm must
+    /// never fail a build.
+    async fn warm_nar_from(tier: &Arc<dyn StorageBackend>, path: &str, src: &dyn NarSource) {
+        if let Err(e) = tier.put_nar_stream(path, src).await {
             warn!(path = %path, error = %e, "tiered: best-effort NAR warm failed");
         }
+    }
+
+    /// Best-effort warm of `tier` by re-reading `from`. Used on the read path,
+    /// where the bytes live in a lower tier rather than in a caller's buffer.
+    async fn warm_nar_from_tier(
+        tier: &Arc<dyn StorageBackend>,
+        from: &Arc<dyn StorageBackend>,
+        path: &str,
+    ) {
+        Self::warm_nar_from(tier, path, &TierNarSource::new(from, path)).await;
     }
 
     // ── read/write failure accounting ──────────────────────────────────────
@@ -271,26 +338,55 @@ impl StorageBackend for TieredBackend {
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        // ONE code path: the whole-value verb is the streaming verb drained, so
+        // fall-through, promotion and error accounting cannot diverge between
+        // the two shapes.
+        match self.get_nar_stream(path).await? {
+            Some(s) => Ok(Some(nar_stream::collect_nar(s, None).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The composite's residency is its **weakest tier's** — a streaming
+    /// resolver in front of a whole-value tier still materializes NARs.
+    /// Reporting `Streaming` here because the resolver itself streams would be
+    /// exactly the rounding-up this type exists to prevent.
+    fn nar_residency(&self) -> NarResidency {
+        self.l1
+            .nar_residency()
+            .weaker(self.l2.nar_residency())
+            .weaker(self.l3.nar_residency())
+    }
+
+    /// Fall through the tiers and promote, **without ever holding the NAR**.
+    ///
+    /// Identical resolution order and identical promotion targets to
+    /// `get_narinfo`; the only difference is that a promotion re-reads the tier
+    /// that answered (see [`TierNarSource`]) instead of copying a buffer the
+    /// caller is holding. The stream handed back is opened against the tier that
+    /// actually had the content, so the caller's bytes never depend on whether a
+    /// warm succeeded.
+    async fn get_nar_stream(&self, path: &str) -> Result<Option<NarStream>, StoreError> {
         let mut broken: Option<StoreError> = None;
 
-        match self.l1.get_nar(path).await {
-            Ok(Some(v)) => return Ok(Some(v)),
+        match self.l1.get_nar_stream(path).await {
+            Ok(Some(s)) => return Ok(Some(s)),
             Ok(None) => {}
             Err(e) => broken = Some(Self::note_tier_read_failure("l1", path, e)),
         }
-        match self.l2.get_nar(path).await {
-            Ok(Some(v)) => {
-                Self::warm_nar(&self.l1, path, &v).await;
-                return Ok(Some(v));
+        match self.l2.get_nar_stream(path).await {
+            Ok(Some(s)) => {
+                Self::warm_nar_from_tier(&self.l1, &self.l2, path).await;
+                return Ok(Some(s));
             }
             Ok(None) => {}
             Err(e) => broken = Some(Self::note_tier_read_failure("l2", path, e)),
         }
-        match self.l3.get_nar(path).await {
-            Ok(Some(v)) => {
-                Self::warm_nar(&self.l2, path, &v).await;
-                Self::warm_nar(&self.l1, path, &v).await;
-                return Ok(Some(v));
+        match self.l3.get_nar_stream(path).await {
+            Ok(Some(s)) => {
+                Self::warm_nar_from_tier(&self.l2, &self.l3, path).await;
+                Self::warm_nar_from_tier(&self.l1, &self.l3, path).await;
+                return Ok(Some(s));
             }
             Ok(None) => {}
             Err(e) => broken = Some(Self::note_tier_read_failure("l3", path, e)),
@@ -318,16 +414,36 @@ impl StorageBackend for TieredBackend {
     }
 
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
+        self.put_nar_stream(path, &nar_stream::BytesNarSource::from(data)).await
+    }
+
+    /// Fan a NAR out to the tiers **in the same order as before, from a
+    /// re-openable source**.
+    ///
+    /// Line for line the previous `put_nar`, with `data: &[u8]` replaced by
+    /// `src: &dyn NarSource` and each tier opening its own bounded stream. That
+    /// equivalence is the reason [`NarSource`] is re-openable rather than a
+    /// one-shot `Stream`: a one-shot stream can be consumed once, so it would
+    /// force either buffering the NAR to fan it out (the bug) or interleaving
+    /// chunks across tiers (a different order). The load-bearing properties are
+    /// unchanged:
+    ///
+    /// - L2 and L3 are **both attempted**, then gated by
+    ///   [`durable_write_outcome`](Self::durable_write_outcome);
+    /// - the L1 warm happens strictly **after** that gate under `WriteThrough`
+    ///   (strictly before it under `WriteBack`), and its result is discarded, so
+    ///   a refused L1 warm can never fail a build.
+    async fn put_nar_stream(&self, path: &str, src: &dyn NarSource) -> Result<(), StoreError> {
         if self.write_policy == WritePolicy::WriteBack {
-            Self::warm_nar(&self.l1, path, data).await;
+            Self::warm_nar_from(&self.l1, path, src).await;
         }
 
-        let l2 = self.l2.put_nar(path, data).await;
-        let l3 = self.l3.put_nar(path, data).await;
+        let l2 = self.l2.put_nar_stream(path, src).await;
+        let l3 = self.l3.put_nar_stream(path, src).await;
         Self::durable_write_outcome("nar", path, l2, l3)?;
 
         if self.write_policy == WritePolicy::WriteThrough {
-            Self::warm_nar(&self.l1, path, data).await;
+            Self::warm_nar_from(&self.l1, path, src).await;
         }
         Ok(())
     }
@@ -449,6 +565,11 @@ mod tests {
             self.fail_if_configured()?;
             self.nar.lock().unwrap().insert(path.to_string(), data.to_vec());
             Ok(())
+        }
+        /// An in-memory double holds whole values by construction; declaring it
+        /// is what keeps a *production* backend from inheriting this path.
+        fn nar_residency(&self) -> NarResidency {
+            NarResidency::WholeValue
         }
         async fn delete(&self, hash: &str) -> Result<(), StoreError> {
             self.narinfo.lock().unwrap().remove(hash);
@@ -759,6 +880,130 @@ mod tests {
         assert_eq!(tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(), b"disk-blob");
         assert!(l1.has_narinfo("h"));
         assert!(l2.has_narinfo("h"));
+    }
+
+    // ── streamed NAR fan-out: the ordering is the contract ─────────────────
+
+    /// A tier that records the order in which it was written, into a log shared
+    /// with its siblings. This is what turns "L2, then L3, then L1" from a
+    /// comment into an assertion.
+    struct RecordingTier {
+        name: &'static str,
+        log: Arc<Mutex<Vec<&'static str>>>,
+        /// When set, every NAR write is refused — the capped-hot-tier shape.
+        refuse: bool,
+    }
+
+    #[async_trait]
+    impl StorageBackend for RecordingTier {
+        async fn get_narinfo(&self, _h: &str) -> Result<Option<String>, StoreError> {
+            Ok(None)
+        }
+        async fn put_narinfo(&self, _h: &str, _c: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn get_nar(&self, _p: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            Ok(None)
+        }
+        async fn put_nar(&self, _p: &str, _d: &[u8]) -> Result<(), StoreError> {
+            self.log.lock().unwrap().push(self.name);
+            if self.refuse {
+                return Err(StoreError::TooLarge { limit: 1, at_least: 2 });
+            }
+            Ok(())
+        }
+        fn nar_residency(&self) -> NarResidency {
+            NarResidency::WholeValue
+        }
+        async fn delete(&self, _h: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn list_narinfos(&self) -> Result<Vec<String>, StoreError> {
+            Ok(vec![])
+        }
+    }
+
+    fn recording_tiers(
+        refuse_l1: bool,
+    ) -> (Arc<Mutex<Vec<&'static str>>>, TieredBackend) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mk = |name, refuse| {
+            Arc::new(RecordingTier { name, log: Arc::clone(&log), refuse })
+                as Arc<dyn StorageBackend>
+        };
+        let tiered = TieredBackend::new(mk("l1", refuse_l1), mk("l2", false), mk("l3", false));
+        (log, tiered)
+    }
+
+    #[tokio::test]
+    async fn streamed_put_writes_l2_then_l3_then_warms_l1() {
+        // The ordering the operator called load-bearing, asserted rather than
+        // described. Moving to a streamed fan-out was only safe because a
+        // `NarSource` re-opens: a one-shot stream would have forced chunk
+        // interleaving and this order would have become l1/l2/l3 all at once.
+        let (log, tiered) = recording_tiers(false);
+        tiered.put_nar("nar/x.nar.xz", b"blob").await.unwrap();
+        assert_eq!(*log.lock().unwrap(), vec!["l2", "l3", "l1"]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_l1_warm_never_fails_the_write() {
+        // The capped hot tier returns TooLarge for an oversized NAR. That is a
+        // bound working as designed, and it must be swallowed: L1 is
+        // best-effort, and a failed warm that 500s the push would fail a build
+        // over a cache optimisation.
+        let (log, tiered) = recording_tiers(true);
+        tiered
+            .put_nar("nar/x.nar.xz", b"blob")
+            .await
+            .expect("a refused L1 warm must not fail the write");
+        assert_eq!(*log.lock().unwrap(), vec!["l2", "l3", "l1"], "L1 is still attempted, last");
+    }
+
+    #[tokio::test]
+    async fn write_back_warms_l1_before_the_durable_gate() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mk = |name| {
+            Arc::new(RecordingTier { name, log: Arc::clone(&log), refuse: false })
+                as Arc<dyn StorageBackend>
+        };
+        let tiered = TieredBackend::with_write_policy(
+            mk("l1"), mk("l2"), mk("l3"), WritePolicy::WriteBack,
+        );
+        tiered.put_nar("nar/x.nar.xz", b"blob").await.unwrap();
+        assert_eq!(*log.lock().unwrap(), vec!["l1", "l2", "l3"]);
+    }
+
+    #[tokio::test]
+    async fn a_multi_chunk_nar_round_trips_through_a_real_disk_tier() {
+        // Over a chunk boundary, on real files, through the resolver — the
+        // shape a NAR big enough to matter actually takes.
+        let dir = tempfile::tempdir().unwrap();
+        let l1 = Arc::new(MemBackend::default());
+        let l2: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().join("l2")));
+        let l3: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().join("l3")));
+        let tiered = TieredBackend::new(l1.clone(), l2, l3);
+
+        let nar: Vec<u8> = (0..crate::storage::NAR_CHUNK_BYTES + 777).map(|i| (i % 251) as u8).collect();
+        tiered.put_nar("nar/big.nar.xz", &nar).await.unwrap();
+        assert_eq!(tiered.get_nar("nar/big.nar.xz").await.unwrap().unwrap(), nar);
+    }
+
+    #[tokio::test]
+    async fn residency_reports_the_weakest_tier_not_the_resolver() {
+        // Two real streaming tiers behind one in-memory double: the composite
+        // is NOT streaming, and saying otherwise would be exactly the round-up
+        // NarResidency exists to prevent.
+        let dir = tempfile::tempdir().unwrap();
+        let disk1: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().join("a")));
+        let disk2: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().join("b")));
+        let disk3: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path().join("c")));
+        let all_disk = TieredBackend::new(disk1.clone(), disk2.clone(), disk3);
+        assert_eq!(all_disk.nar_residency(), NarResidency::Streaming);
+
+        let with_double =
+            TieredBackend::new(Arc::new(MemBackend::default()), disk1, disk2);
+        assert_eq!(with_double.nar_residency(), NarResidency::WholeValue);
     }
 
     // ── the honest gate ────────────────────────────────────────────────────

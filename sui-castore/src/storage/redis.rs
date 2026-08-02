@@ -33,7 +33,8 @@
 
 use async_trait::async_trait;
 
-use super::StorageBackend;
+use super::nar_stream::{self, NarSource};
+use super::{NarResidency, StorageBackend};
 use crate::StoreError;
 
 /// Key namespace for narinfo strings, so they never collide with NAR blobs in a
@@ -41,6 +42,19 @@ use crate::StoreError;
 const NARINFO_PREFIX: &str = "sui:narinfo:";
 /// Key namespace for NAR blobs.
 const NAR_PREFIX: &str = "sui:nar:";
+
+/// Default per-value byte cap for the hot tier.
+///
+/// Redis has no streaming `SET`: a value is one contiguous buffer on both sides
+/// of the wire, so this tier cannot be made O(chunk) — it can only be made
+/// **bounded**. 64 MiB is comfortably above a typical NAR and far below the
+/// point where a handful of concurrent warms matters against a 6 GiB pod.
+///
+/// Refusing is correct, not a degradation: L1 is best-effort by contract, the
+/// durable tiers below it stream the same content without a cap, and a
+/// [`TieredBackend`](super::TieredBackend) discards this tier's write result
+/// entirely. A refused warm cannot fail a build.
+pub const DEFAULT_REDIS_MAX_VALUE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The minimal async redis verb surface [`RedisBackend`] depends on.
 ///
@@ -76,18 +90,42 @@ pub struct RedisBackend<C: RedisConn> {
     /// Optional TTL (seconds) applied to every write; `None` => rely on the
     /// `maxmemory` LRU policy.
     ttl_secs: Option<u64>,
+    /// Per-value byte cap. A NAR larger than this is refused, never buffered.
+    max_value_bytes: usize,
 }
 
 impl<C: RedisConn> RedisBackend<C> {
     /// Wrap a [`RedisConn`] with no per-write TTL (entries are LRU-evicted by
     /// the `maxmemory` band).
     pub fn new(conn: C) -> Self {
-        Self { conn, ttl_secs: None }
+        Self {
+            conn,
+            ttl_secs: None,
+            max_value_bytes: DEFAULT_REDIS_MAX_VALUE_BYTES,
+        }
     }
 
     /// Wrap a [`RedisConn`], stamping every write with a `ttl_secs` expiry.
     pub fn with_ttl(conn: C, ttl_secs: u64) -> Self {
-        Self { conn, ttl_secs: Some(ttl_secs) }
+        Self {
+            conn,
+            ttl_secs: Some(ttl_secs),
+            max_value_bytes: DEFAULT_REDIS_MAX_VALUE_BYTES,
+        }
+    }
+
+    /// Override the per-value byte cap (default
+    /// [`DEFAULT_REDIS_MAX_VALUE_BYTES`]).
+    #[must_use]
+    pub fn with_max_value_bytes(mut self, max: usize) -> Self {
+        self.max_value_bytes = max;
+        self
+    }
+
+    /// The per-value byte cap this tier refuses beyond.
+    #[must_use]
+    pub fn max_value_bytes(&self) -> usize {
+        self.max_value_bytes
     }
 
     /// The per-write TTL, if any.
@@ -134,9 +172,51 @@ impl<C: RedisConn> StorageBackend for RedisBackend<C> {
         self.conn.get_bytes(&key).await
     }
 
+    /// Store a NAR in the hot tier, **refusing anything over the cap**.
+    ///
+    /// The cap is checked against the slice's length before the value ever
+    /// reaches the wire, so an oversized NAR costs this tier nothing.
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
+        if data.len() > self.max_value_bytes {
+            return Err(StoreError::TooLarge {
+                limit: self.max_value_bytes as u64,
+                at_least: data.len() as u64,
+            });
+        }
         let key = Self::nar_key(path);
         self.conn.set_bytes(&key, data, self.ttl_secs).await
+    }
+
+    /// **O(min(nar, cap)).** Redis has no streaming `SET` — a value is one
+    /// contiguous buffer by protocol — so this tier is bounded by a cap rather
+    /// than by a chunk. That is a real bound: see
+    /// [`DEFAULT_REDIS_MAX_VALUE_BYTES`] for why refusing is the correct
+    /// behavior for a best-effort hot tier.
+    fn nar_residency(&self) -> NarResidency {
+        NarResidency::Capped(self.max_value_bytes)
+    }
+
+    /// Drain the source **only up to the cap**, refusing the moment it is
+    /// crossed.
+    ///
+    /// The refusal is the load-bearing part: collection stops at the cap and the
+    /// remainder of the NAR is never read, so a 2 GiB NAR costs this tier
+    /// `cap + one chunk` and not 2 GiB. Without it, "L1 refuses oversized
+    /// values" would be a claim the code does not make.
+    async fn put_nar_stream(&self, path: &str, src: &dyn NarSource) -> Result<(), StoreError> {
+        // A known size lets the refusal happen before a single byte is read.
+        if let Some(n) = src.size_hint() {
+            if n > self.max_value_bytes as u64 {
+                return Err(StoreError::TooLarge {
+                    limit: self.max_value_bytes as u64,
+                    at_least: n,
+                });
+            }
+        }
+        let data =
+            nar_stream::collect_nar(src.open().await?, Some(self.max_value_bytes)).await?;
+        let key = Self::nar_key(path);
+        self.conn.set_bytes(&key, &data, self.ttl_secs).await
     }
 
     async fn delete(&self, hash: &str) -> Result<(), StoreError> {
@@ -496,6 +576,120 @@ mod tests {
         backend.put_narinfo("h", "v1").await.unwrap();
         backend.put_narinfo("h", "v2").await.unwrap();
         assert_eq!(backend.get_narinfo("h").await.unwrap().unwrap(), "v2");
+    }
+
+    // ── the cap: a bound, enforced by refusing rather than buffering ───────
+
+    #[tokio::test]
+    async fn residency_reports_the_configured_cap() {
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(1024);
+        assert_eq!(backend.max_value_bytes(), 1024);
+        assert_eq!(backend.nar_residency(), NarResidency::Capped(1024));
+        assert!(backend.nar_residency().is_bounded(), "a cap IS a bound");
+    }
+
+    #[tokio::test]
+    async fn an_over_cap_nar_is_refused_and_stores_nothing() {
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(16);
+        let err = backend.put_nar("nar/big.nar.xz", &[0u8; 64]).await.unwrap_err();
+        assert!(matches!(err, StoreError::TooLarge { limit: 16, at_least: 64 }));
+        assert!(
+            backend.get_nar("nar/big.nar.xz").await.unwrap().is_none(),
+            "a refused write must leave the tier untouched",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_value_exactly_at_the_cap_is_accepted() {
+        // The boundary is inclusive; an off-by-one here would silently shrink
+        // the hot tier's usable range.
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(16);
+        backend.put_nar("nar/edge.nar.xz", &[7u8; 16]).await.unwrap();
+        assert_eq!(backend.get_nar("nar/edge.nar.xz").await.unwrap().unwrap(), vec![7u8; 16]);
+    }
+
+    /// A source that counts how many bytes were actually pulled out of it, so a
+    /// test can prove the refusal happened *early* rather than after reading
+    /// the whole NAR and then throwing it away.
+    struct CountingSource {
+        total: usize,
+        chunk: usize,
+        read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// Whether the source advertises its length up front, as a spooled
+        /// upload does and a tier-to-tier promotion may not.
+        advertise_len: bool,
+    }
+
+    #[async_trait]
+    impl super::nar_stream::NarSource for CountingSource {
+        fn size_hint(&self) -> Option<u64> {
+            self.advertise_len.then_some(self.total as u64)
+        }
+        async fn open(&self) -> Result<super::nar_stream::NarStream, StoreError> {
+            use futures::StreamExt as _;
+            let (total, chunk, read) = (self.total, self.chunk, self.read.clone());
+            Ok(futures::stream::unfold(0usize, move |sent| {
+                let read = read.clone();
+                async move {
+                    if sent >= total {
+                        return None;
+                    }
+                    let n = (total - sent).min(chunk);
+                    read.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                    Some((Ok(bytes::Bytes::from(vec![3u8; n])), sent + n))
+                }
+            })
+            .boxed())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_cap_stream_is_refused_without_reading_a_single_byte() {
+        // The cheap path: a spooled upload knows its length, so the tier can
+        // decline before touching the source at all.
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(1024);
+        let src = CountingSource {
+            total: 1_000_000,
+            chunk: 4096,
+            read: read.clone(),
+            advertise_len: true,
+        };
+        let err = backend.put_nar_stream("nar/big.nar.xz", &src).await.unwrap_err();
+        assert!(matches!(err, StoreError::TooLarge { .. }));
+        assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 0, "nothing should be read");
+    }
+
+    #[tokio::test]
+    async fn an_over_cap_stream_of_unknown_length_stops_at_the_cap() {
+        // The important case, and the one the whole change turns on: with NO
+        // length advertised, collection must stop the instant the cap is
+        // crossed. Reading the whole 1 MB and then refusing would mean the cap
+        // bounds nothing at all.
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(1024);
+        let src = CountingSource {
+            total: 1_000_000,
+            chunk: 4096,
+            read: read.clone(),
+            advertise_len: false,
+        };
+        let err = backend.put_nar_stream("nar/big.nar.xz", &src).await.unwrap_err();
+        assert!(matches!(err, StoreError::TooLarge { .. }));
+        let bytes_read = read.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            bytes_read <= 1024 + 4096,
+            "refusal must happen at the cap (+ at most one chunk), but {bytes_read} bytes \
+             were pulled — the cap is not bounding anything",
+        );
+    }
+
+    #[tokio::test]
+    async fn an_under_cap_stream_round_trips() {
+        let backend = RedisBackend::new(MockRedis::default()).with_max_value_bytes(1 << 20);
+        let src = super::nar_stream::BytesNarSource::new(vec![9u8; 5000]);
+        backend.put_nar_stream("nar/ok.nar.xz", &src).await.unwrap();
+        assert_eq!(backend.get_nar("nar/ok.nar.xz").await.unwrap().unwrap(), vec![9u8; 5000]);
     }
 
     #[tokio::test]

@@ -33,9 +33,42 @@
 //! against the mock with **no live Postgres required**.
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::stream::{self, StreamExt};
 
-use super::StorageBackend;
+use super::nar_stream::{self, NarSource, NarStream, NAR_CHUNK_BYTES};
+use super::{NarResidency, StorageBackend};
 use crate::StoreError;
+
+/// Sequence number of the **completeness marker** row of a chunked NAR.
+///
+/// Real chunks are `0..n`. The marker is written **last** and read **first**,
+/// and its value is the chunk count as 8 little-endian bytes.
+///
+/// This is what makes a streamed Postgres write safe. A whole-value `INSERT` was
+/// atomic for free; N chunk inserts are not, so a process killed halfway (which
+/// is *precisely* the failure being engineered against — the pod was OOMKilled
+/// six times in a day) would leave chunks `0..k` readable as a complete NAR.
+/// Serving a truncated NAR is silent corruption, strictly worse than the OOM.
+/// With the marker, a partial write has no marker, so it reads as a clean
+/// **miss** and the client rebuilds. Bad state made unreachable by ordering
+/// rather than by a runtime check.
+const CHUNK_MARKER_SEQ: i32 = -1;
+
+/// Encode a chunk count into the marker row's value.
+fn encode_marker(chunks: u64) -> [u8; 8] {
+    chunks.to_le_bytes()
+}
+
+/// Decode a marker row's value, rejecting anything malformed.
+///
+/// A marker that is not exactly 8 bytes is a corrupt row, not a short NAR: it
+/// must surface rather than be coerced into a plausible chunk count.
+fn decode_marker(raw: &[u8]) -> Result<u64, StoreError> {
+    <[u8; 8]>::try_from(raw)
+        .map(u64::from_le_bytes)
+        .map_err(|_| StoreError::NarInfo(format!("corrupt NAR chunk marker: {} bytes", raw.len())))
+}
 
 /// The two logical tables the cache tier keeps: narinfo text and NAR blobs.
 ///
@@ -91,6 +124,46 @@ pub trait PgCacheConn: Send + Sync {
     /// push); reaches NAR rows a per-key `delete` cannot.
     async fn clear(&self, table: PgTable) -> Result<u64, StoreError>;
 
+    // ── chunked NAR verbs ──────────────────────────────────────────────────
+    //
+    // A NAR is stored as N bounded rows in `sui_cache_nar_chunk` rather than one
+    // BYTEA in `sui_cache_nar`, because a whole-value bind holds the entire NAR
+    // in this process's heap for the duration of the statement — measured at
+    // 12.712 s for one production INSERT. These five verbs are the smallest
+    // surface that makes both directions O(chunk).
+    //
+    // They are REQUIRED, not defaulted. A default would let a new connection
+    // silently keep the whole-value path and re-introduce exactly the resident
+    // buffer this change removes.
+
+    /// Upsert one bounded chunk of a NAR. `seq` is `0..n`, or
+    /// [`CHUNK_MARKER_SEQ`] for the completeness marker.
+    async fn upsert_nar_chunk(&self, key: &str, seq: i32, value: &[u8]) -> Result<(), StoreError>;
+
+    /// Read one chunk back. `Ok(None)` when that `(key, seq)` row is absent.
+    async fn select_nar_chunk(&self, key: &str, seq: i32) -> Result<Option<Vec<u8>>, StoreError>;
+
+    /// Delete every chunk (and the marker) of `key`. Idempotent.
+    async fn delete_nar_chunks(&self, key: &str) -> Result<(), StoreError>;
+
+    /// `DELETE FROM sui_cache_nar_chunk` — clear the chunk table, returning the
+    /// row count removed.
+    async fn clear_nar_chunks(&self) -> Result<u64, StoreError>;
+
+    /// Read a bounded window of a **legacy whole-value** NAR row, returning
+    /// `(window_bytes, total_byte_length)`; `Ok(None)` when the row is absent.
+    ///
+    /// `offset` is 1-based (Postgres `substr` semantics). This exists so rows
+    /// written by the pre-streaming build — every NAR already in the production
+    /// database — can be *served* without materializing them. Without it the
+    /// read path would stay unbounded until the cache happened to turn over.
+    async fn select_nar_window(
+        &self,
+        key: &str,
+        offset: i64,
+        len: i32,
+    ) -> Result<Option<(Vec<u8>, i64)>, StoreError>;
+
     /// Idempotently (re-)create every table this connection serves.
     ///
     /// This is the **self-heal** verb. [`PgStorageBackend`] calls it when a row
@@ -120,13 +193,18 @@ pub trait PgCacheConn: Send + Sync {
 ///
 /// Generic over the [`PgCacheConn`] seam so it is fully testable against a mock.
 pub struct PgStorageBackend<C: PgCacheConn> {
-    conn: C,
+    /// `Arc` rather than a bare `C` so a lazily-pulled chunk stream can own a
+    /// handle to the connection. A [`NarStream`] is `'static` — it outlives the
+    /// `&self` that produced it — so without a shared handle the read path could
+    /// not be lazy, and "streaming" would collapse back into "collect it all
+    /// first".
+    conn: std::sync::Arc<C>,
 }
 
 impl<C: PgCacheConn> PgStorageBackend<C> {
     /// Wrap a [`PgCacheConn`].
     pub fn new(conn: C) -> Self {
-        Self { conn }
+        Self { conn: std::sync::Arc::new(conn) }
     }
 
     /// Borrow the underlying connection (for composition / diagnostics).
@@ -164,8 +242,68 @@ impl<C: PgCacheConn> PgStorageBackend<C> {
     }
 }
 
+impl<C: PgCacheConn + 'static> PgStorageBackend<C> {
+    /// Lazily pull chunks `0..chunks` as a bounded stream.
+    ///
+    /// **No `healing` retry inside the stream, deliberately.** Re-running the
+    /// DDL mid-read would restart against an empty schema *after* bytes have
+    /// already been handed to the caller — the reader would splice two different
+    /// values together. A fault mid-stream is surfaced and the stream ends; the
+    /// next request heals at the top, where it is safe.
+    fn chunked_stream(&self, path: &str, chunks: u64) -> NarStream {
+        let conn = std::sync::Arc::clone(&self.conn);
+        let key = path.to_string();
+        stream::unfold((conn, key, 0u64), move |(conn, key, seq)| async move {
+            if seq >= chunks {
+                return None;
+            }
+            match conn.select_nar_chunk(&key, seq as i32).await {
+                Ok(Some(v)) => Some((Ok(Bytes::from(v)), (conn, key, seq + 1))),
+                // A gap under a published marker is corruption, never a short
+                // read: the marker is the promise that `chunks` rows exist.
+                Ok(None) => {
+                    let e = StoreError::NarInfo(format!(
+                        "NAR {key}: chunk {seq} of {chunks} is missing though the \
+                         completeness marker claims a whole value",
+                    ));
+                    Some((Err(e), (conn, key, chunks)))
+                }
+                Err(e) => Some((Err(e), (conn, key, chunks))),
+            }
+        })
+        .boxed()
+    }
+
+    /// Window a **legacy whole-value** row out in bounded `substr` slices.
+    ///
+    /// The first window is already in hand (it is what proved the row exists),
+    /// so it is emitted directly rather than re-queried.
+    fn legacy_window_stream(&self, path: &str, first: Vec<u8>, total: i64) -> NarStream {
+        let conn = std::sync::Arc::clone(&self.conn);
+        let key = path.to_string();
+        let next_offset = 1 + first.len() as i64;
+        let head = stream::once(async move { Ok(Bytes::from(first)) });
+        let tail = stream::unfold((conn, key, next_offset), move |(conn, key, off)| async move {
+            if off > total {
+                return None;
+            }
+            match conn.select_nar_window(&key, off, chunk_len()).await {
+                Ok(Some((v, _))) if !v.is_empty() => {
+                    let n = v.len() as i64;
+                    Some((Ok(Bytes::from(v)), (conn, key, off + n)))
+                }
+                // Row vanished or ran short mid-read (a concurrent delete): stop
+                // cleanly rather than spinning on an offset that never advances.
+                Ok(_) => None,
+                Err(e) => Some((Err(e), (conn, key, total + 1))),
+            }
+        });
+        head.chain(tail).boxed()
+    }
+}
+
 #[async_trait]
-impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
+impl<C: PgCacheConn + 'static> StorageBackend for PgStorageBackend<C> {
     async fn get_narinfo(&self, hash: &str) -> Result<Option<String>, StoreError> {
         match self.healing(|| self.conn.select(PgTable::Narinfo, hash)).await? {
             Some(bytes) => {
@@ -183,11 +321,75 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
     }
 
     async fn get_nar(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        self.healing(|| self.conn.select(PgTable::Nar, path)).await
+        // ONE code path: the whole-value verb is the streaming verb drained.
+        match self.get_nar_stream(path).await? {
+            Some(s) => Ok(Some(nar_stream::collect_nar(s, None).await?)),
+            None => Ok(None),
+        }
     }
 
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), StoreError> {
-        self.healing(|| self.conn.upsert(PgTable::Nar, path, data)).await
+        self.put_nar_stream(path, &nar_stream::BytesNarSource::from(data)).await
+    }
+
+    /// **O(chunk).** A NAR crosses the wire as [`NAR_CHUNK_BYTES`] rows in both
+    /// directions; no statement ever binds or returns the whole value.
+    fn nar_residency(&self) -> NarResidency {
+        NarResidency::Streaming
+    }
+
+    /// Read a NAR back as bounded chunks, from either storage generation.
+    ///
+    /// Chunked rows are checked first (via the marker); a key with no marker
+    /// falls back to windowing a **legacy whole-value row** with `substr`. Both
+    /// arms are O(chunk) — the fallback exists so the NARs already in the
+    /// production database are servable without materializing them, not as a
+    /// buffered escape hatch.
+    async fn get_nar_stream(&self, path: &str) -> Result<Option<NarStream>, StoreError> {
+        // The marker is the authority on "a complete chunked value exists".
+        if let Some(raw) = self
+            .healing(|| self.conn.select_nar_chunk(path, CHUNK_MARKER_SEQ))
+            .await?
+        {
+            let chunks = decode_marker(&raw)?;
+            return Ok(Some(self.chunked_stream(path, chunks)));
+        }
+        // No marker: either absent, or a legacy whole-value row.
+        match self.healing(|| self.conn.select_nar_window(path, 1, chunk_len())).await? {
+            Some((first, total)) => Ok(Some(self.legacy_window_stream(path, first, total))),
+            None => Ok(None),
+        }
+    }
+
+    /// Write a NAR as bounded chunk rows, publishing with a marker written last.
+    ///
+    /// Order is the invariant, not a convention:
+    /// 1. drop any prior chunks **and the legacy whole row** — a stale marker or
+    ///    a stale legacy row would otherwise shadow the new value;
+    /// 2. write chunks `0..n`, each a bounded bind;
+    /// 3. write the marker.
+    ///
+    /// A failure anywhere in (1)–(2) leaves no marker, so the key reads as a
+    /// clean miss. There is no window in which a reader can observe a truncated
+    /// NAR.
+    async fn put_nar_stream(&self, path: &str, src: &dyn NarSource) -> Result<(), StoreError> {
+        self.healing(|| self.conn.delete_nar_chunks(path)).await?;
+        self.healing(|| self.conn.delete(PgTable::Nar, path)).await?;
+
+        let mut stream = src.open().await?;
+        let mut seq: i32 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk: Bytes = chunk?;
+            self.healing(|| self.conn.upsert_nar_chunk(path, seq, &chunk)).await?;
+            seq = seq.checked_add(1).ok_or_else(|| {
+                // 2^31 chunks at 4 MiB is ~8 EiB. Unreachable in practice, but a
+                // silent wrap here would corrupt ordering, so it is typed.
+                StoreError::NarInfo(format!("NAR {path} exceeds the addressable chunk count"))
+            })?;
+        }
+
+        let marker = encode_marker(seq as u64);
+        self.healing(|| self.conn.upsert_nar_chunk(path, CHUNK_MARKER_SEQ, &marker)).await
     }
 
     async fn delete(&self, hash: &str) -> Result<(), StoreError> {
@@ -196,10 +398,12 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
         // NAR blobs are keyed by relative URL; only the hash is in hand here, so —
         // mirroring `RedisBackend`/`S3Storage::delete` — best-effort-delete the
         // common NAR path patterns. `delete` is idempotent, so absent keys are
-        // harmless.
+        // harmless. BOTH generations are cleared: a legacy whole row and any
+        // chunk rows, or a delete would leave the other still readable.
         for ext in ["nar.xz", "nar.zst", "nar"] {
             let key = format!("nar/{hash}.{ext}");
             self.healing(|| self.conn.delete(PgTable::Nar, &key)).await?;
+            self.healing(|| self.conn.delete_nar_chunks(&key)).await?;
         }
         Ok(())
     }
@@ -208,14 +412,24 @@ impl<C: PgCacheConn> StorageBackend for PgStorageBackend<C> {
         self.healing(|| self.conn.keys(PgTable::Narinfo)).await
     }
 
-    /// Complete L2 wipe: truncate BOTH the narinfo and NAR tables. Unlike the
-    /// per-hash `delete`, this reclaims NAR rows (keyed by narhash, unreachable
-    /// from a store-path hash). Returns the narinfo row count removed.
+    /// Complete L2 wipe: truncate the narinfo, legacy NAR and NAR-chunk tables.
+    /// Unlike the per-hash `delete`, this reclaims NAR rows (keyed by narhash,
+    /// unreachable from a store-path hash). Returns the narinfo row count.
     async fn wipe_all(&self) -> Result<usize, StoreError> {
         let narinfos = self.healing(|| self.conn.clear(PgTable::Narinfo)).await? as usize;
         self.healing(|| self.conn.clear(PgTable::Nar)).await?;
+        self.healing(|| self.conn.clear_nar_chunks()).await?;
         Ok(narinfos)
     }
+}
+
+/// The chunk window size as the `i32` Postgres `substr` takes.
+///
+/// [`NAR_CHUNK_BYTES`] is a `usize` and this conversion is infallible for any
+/// sane constant; the clamp is here so a future edit that makes it huge
+/// degrades to a smaller window rather than wrapping into a negative length.
+fn chunk_len() -> i32 {
+    i32::try_from(NAR_CHUNK_BYTES).unwrap_or(i32::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +461,27 @@ mod sqlx_conn {
         }
         StoreError::Io(std::io::Error::other(format!("postgres: {e}")))
     }
+
+    /// `CREATE TABLE IF NOT EXISTS` for the chunked-NAR table.
+    ///
+    /// Deliberately **not** a third [`PgTable`] arm: every other `PgTable` verb
+    /// is keyed by a single `key`, and this table's key is `(key, seq)`. Adding
+    /// an arm would force four `unreachable!()` branches into the SQL matches —
+    /// a worse trade than one clearly-named constant beside them.
+    const NAR_CHUNK_DDL: &str = "CREATE TABLE IF NOT EXISTS sui_cache_nar_chunk (\
+         key TEXT NOT NULL, seq INTEGER NOT NULL, value BYTEA NOT NULL, \
+         PRIMARY KEY (key, seq))";
+
+    const NAR_CHUNK_SELECT: &str =
+        "SELECT value FROM sui_cache_nar_chunk WHERE key = $1 AND seq = $2";
+    const NAR_CHUNK_UPSERT: &str = "INSERT INTO sui_cache_nar_chunk (key, seq, value) \
+         VALUES ($1, $2, $3) ON CONFLICT (key, seq) DO UPDATE SET value = EXCLUDED.value";
+    const NAR_CHUNK_DELETE_KEY: &str = "DELETE FROM sui_cache_nar_chunk WHERE key = $1";
+    const NAR_CHUNK_CLEAR: &str = "DELETE FROM sui_cache_nar_chunk";
+    /// One round trip for both the window and the total, so a legacy read costs
+    /// the same number of queries as a chunked one.
+    const NAR_LEGACY_WINDOW: &str = "SELECT substr(value, $2, $3) AS chunk, \
+         octet_length(value) AS total FROM sui_cache_nar WHERE key = $1";
 
     impl PgTable {
         /// `CREATE TABLE IF NOT EXISTS` DDL — a full static SQL string per arm
@@ -345,6 +580,7 @@ mod sqlx_conn {
                         for t in [PgTable::Narinfo, PgTable::Nar] {
                             sqlx::query(t.ddl()).execute(&mut *conn).await?;
                         }
+                        sqlx::query(NAR_CHUNK_DDL).execute(&mut *conn).await?;
                         Ok(())
                     })
                 })
@@ -367,6 +603,11 @@ mod sqlx_conn {
             for t in [PgTable::Narinfo, PgTable::Nar] {
                 sqlx::query(t.ddl()).execute(&self.pool).await.map_err(to_store_err)?;
             }
+            // The chunk table is additive: `sui_cache_nar` keeps every row a
+            // pre-streaming build wrote, and the read path still serves them
+            // (windowed). Nothing migrates, nothing is dropped — a rollback to
+            // the previous binary still finds its data.
+            sqlx::query(NAR_CHUNK_DDL).execute(&self.pool).await.map_err(to_store_err)?;
             Ok(())
         }
     }
@@ -425,6 +666,79 @@ mod sqlx_conn {
             Ok(res.rows_affected())
         }
 
+        async fn upsert_nar_chunk(
+            &self,
+            key: &str,
+            seq: i32,
+            value: &[u8],
+        ) -> Result<(), StoreError> {
+            sqlx::query(NAR_CHUNK_UPSERT)
+                .bind(key)
+                .bind(seq)
+                .bind(value)
+                .execute(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            Ok(())
+        }
+
+        async fn select_nar_chunk(
+            &self,
+            key: &str,
+            seq: i32,
+        ) -> Result<Option<Vec<u8>>, StoreError> {
+            let row = sqlx::query(NAR_CHUNK_SELECT)
+                .bind(key)
+                .bind(seq)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            match row {
+                Some(r) => Ok(Some(r.try_get::<Vec<u8>, _>("value").map_err(to_store_err)?)),
+                None => Ok(None),
+            }
+        }
+
+        async fn delete_nar_chunks(&self, key: &str) -> Result<(), StoreError> {
+            sqlx::query(NAR_CHUNK_DELETE_KEY)
+                .bind(key)
+                .execute(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            Ok(())
+        }
+
+        async fn clear_nar_chunks(&self) -> Result<u64, StoreError> {
+            let res = sqlx::query(NAR_CHUNK_CLEAR)
+                .execute(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            Ok(res.rows_affected())
+        }
+
+        async fn select_nar_window(
+            &self,
+            key: &str,
+            offset: i64,
+            len: i32,
+        ) -> Result<Option<(Vec<u8>, i64)>, StoreError> {
+            let row = sqlx::query(NAR_LEGACY_WINDOW)
+                .bind(key)
+                .bind(offset)
+                .bind(len)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(to_store_err)?;
+            match row {
+                Some(r) => {
+                    let chunk: Vec<u8> = r.try_get("chunk").map_err(to_store_err)?;
+                    let total: i32 = r.try_get("total").map_err(to_store_err)?;
+                    Ok(Some((chunk, i64::from(total))))
+                }
+                None => Ok(None),
+            }
+        }
+
         /// Net 3: the self-heal the `healing` retry drives.
         async fn ensure_schema(&self) -> Result<(), StoreError> {
             self.create_tables().await
@@ -464,6 +778,9 @@ mod tests {
     struct MockPg {
         narinfo: Mutex<HashMap<String, Vec<u8>>>,
         nar: Mutex<HashMap<String, Vec<u8>>>,
+        /// The chunked-NAR table: `(key, seq) -> bytes`, including the
+        /// `CHUNK_MARKER_SEQ` completeness marker.
+        nar_chunk: Mutex<HashMap<(String, i32), Vec<u8>>>,
         /// Whether the tables "exist". Models the real failure: a Postgres that
         /// is up and connectable but whose relations are gone (an `emptyDir`
         /// PGDATA destroyed by a pod roll).
@@ -490,6 +807,17 @@ mod tests {
             *self.schema_missing.lock().unwrap() = true;
             self.narinfo.lock().unwrap().clear();
             self.nar.lock().unwrap().clear();
+            self.nar_chunk.lock().unwrap().clear();
+        }
+        /// Rows currently in the chunk table — proves a write really chunked
+        /// (and that a re-put does not leave a stale tail behind).
+        fn chunk_rows(&self) -> usize {
+            self.nar_chunk.lock().unwrap().len()
+        }
+        /// Seed a **legacy whole-value** NAR row directly, bypassing the chunked
+        /// write path — the shape of every NAR already in production.
+        fn seed_legacy_nar(&self, key: &str, value: &[u8]) {
+            self.nar.lock().unwrap().insert(key.to_string(), value.to_vec());
         }
         fn ddl_runs(&self) -> usize {
             *self.ensure_schema_calls.lock().unwrap()
@@ -538,6 +866,52 @@ mod tests {
             Ok(n)
         }
 
+        async fn upsert_nar_chunk(&self, key: &str, seq: i32, value: &[u8]) -> Result<(), StoreError> {
+            self.guard()?;
+            self.nar_chunk
+                .lock()
+                .unwrap()
+                .insert((key.to_string(), seq), value.to_vec());
+            Ok(())
+        }
+
+        async fn select_nar_chunk(&self, key: &str, seq: i32) -> Result<Option<Vec<u8>>, StoreError> {
+            self.guard()?;
+            Ok(self.nar_chunk.lock().unwrap().get(&(key.to_string(), seq)).cloned())
+        }
+
+        async fn delete_nar_chunks(&self, key: &str) -> Result<(), StoreError> {
+            self.guard()?;
+            self.nar_chunk.lock().unwrap().retain(|(k, _), _| k != key);
+            Ok(())
+        }
+
+        async fn clear_nar_chunks(&self) -> Result<u64, StoreError> {
+            self.guard()?;
+            let mut m = self.nar_chunk.lock().unwrap();
+            let n = m.len() as u64;
+            m.clear();
+            Ok(n)
+        }
+
+        /// Mirrors Postgres `substr(value, offset, len)` — 1-based offset,
+        /// silently clamped at the end of the value (NOT an error), which is
+        /// exactly what the windowing read path relies on to terminate.
+        async fn select_nar_window(
+            &self,
+            key: &str,
+            offset: i64,
+            len: i32,
+        ) -> Result<Option<(Vec<u8>, i64)>, StoreError> {
+            self.guard()?;
+            let map = self.nar.lock().unwrap();
+            let Some(v) = map.get(key) else { return Ok(None) };
+            let total = v.len() as i64;
+            let start = (offset - 1).clamp(0, total) as usize;
+            let end = (start + len.max(0) as usize).min(v.len());
+            Ok(Some((v[start..end].to_vec(), total)))
+        }
+
         /// Idempotent, exactly like `CREATE TABLE IF NOT EXISTS`: running it
         /// when the schema already exists is a no-op, never an error.
         async fn ensure_schema(&self) -> Result<(), StoreError> {
@@ -570,6 +944,27 @@ mod tests {
             Err(StoreError::SchemaMissing("still gone".to_string()))
         }
         async fn clear(&self, _t: PgTable) -> Result<u64, StoreError> {
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
+        async fn upsert_nar_chunk(&self, _k: &str, _s: i32, _v: &[u8]) -> Result<(), StoreError> {
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
+        async fn select_nar_chunk(&self, _k: &str, _s: i32) -> Result<Option<Vec<u8>>, StoreError> {
+            *self.attempts.lock().unwrap() += 1;
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
+        async fn delete_nar_chunks(&self, _k: &str) -> Result<(), StoreError> {
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
+        async fn clear_nar_chunks(&self) -> Result<u64, StoreError> {
+            Err(StoreError::SchemaMissing("still gone".to_string()))
+        }
+        async fn select_nar_window(
+            &self,
+            _k: &str,
+            _o: i64,
+            _l: i32,
+        ) -> Result<Option<(Vec<u8>, i64)>, StoreError> {
             Err(StoreError::SchemaMissing("still gone".to_string()))
         }
         // `ensure_schema` keeps the no-op default: the DDL "runs" but the schema
@@ -803,6 +1198,26 @@ mod tests {
             async fn clear(&self, _t: PgTable) -> Result<u64, StoreError> {
                 unreachable!()
             }
+            async fn upsert_nar_chunk(&self, _k: &str, _s: i32, _v: &[u8]) -> Result<(), StoreError> {
+                unreachable!()
+            }
+            async fn select_nar_chunk(&self, _k: &str, _s: i32) -> Result<Option<Vec<u8>>, StoreError> {
+                unreachable!()
+            }
+            async fn delete_nar_chunks(&self, _k: &str) -> Result<(), StoreError> {
+                unreachable!()
+            }
+            async fn clear_nar_chunks(&self) -> Result<u64, StoreError> {
+                unreachable!()
+            }
+            async fn select_nar_window(
+                &self,
+                _k: &str,
+                _o: i64,
+                _l: i32,
+            ) -> Result<Option<(Vec<u8>, i64)>, StoreError> {
+                unreachable!()
+            }
             async fn ensure_schema(&self) -> Result<(), StoreError> {
                 panic!("a non-schema error must never trigger the DDL path");
             }
@@ -921,6 +1336,31 @@ mod tests {
             self.tick()?;
             self.inner.clear(table).await
         }
+        async fn upsert_nar_chunk(&self, key: &str, seq: i32, value: &[u8]) -> Result<(), StoreError> {
+            self.tick()?;
+            self.inner.upsert_nar_chunk(key, seq, value).await
+        }
+        async fn select_nar_chunk(&self, key: &str, seq: i32) -> Result<Option<Vec<u8>>, StoreError> {
+            self.tick()?;
+            self.inner.select_nar_chunk(key, seq).await
+        }
+        async fn delete_nar_chunks(&self, key: &str) -> Result<(), StoreError> {
+            self.tick()?;
+            self.inner.delete_nar_chunks(key).await
+        }
+        async fn clear_nar_chunks(&self) -> Result<u64, StoreError> {
+            self.tick()?;
+            self.inner.clear_nar_chunks().await
+        }
+        async fn select_nar_window(
+            &self,
+            key: &str,
+            offset: i64,
+            len: i32,
+        ) -> Result<Option<(Vec<u8>, i64)>, StoreError> {
+            self.tick()?;
+            self.inner.select_nar_window(key, offset, len).await
+        }
     }
 
     /// THE INCIDENT, as a test. A backend fault must NOT be reported as a miss
@@ -1001,5 +1441,188 @@ mod tests {
         }
         assert_eq!(backend.list_narinfos().await.unwrap().len(), 1);
         assert_eq!(backend.get_narinfo("same").await.unwrap().unwrap(), NARINFO);
+    }
+
+    // ── chunked NAR storage (the 12.712 s resident INSERT, removed) ────────
+    //
+    // The whole-value `bind` held the entire NAR in this process's heap for the
+    // duration of the statement. These pin the replacement: bounded rows, a
+    // completeness marker so a killed process cannot publish a truncated NAR,
+    // and a windowed read for the rows the previous build already wrote.
+
+    const NAR_KEY: &str = "nar/deadbeef.nar.xz";
+
+    /// A NAR spanning more than one chunk, with position-derived bytes so a
+    /// reordered or spliced reassembly fails on content, not just on length.
+    fn multi_chunk_nar() -> Vec<u8> {
+        (0..NAR_CHUNK_BYTES * 2 + 4096).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[tokio::test]
+    async fn a_nar_is_stored_as_bounded_chunks_never_one_whole_row() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        let nar = multi_chunk_nar();
+        backend.put_nar(NAR_KEY, &nar).await.unwrap();
+
+        // 3 data chunks + 1 marker. If this is ever 1, the whole-value bind is
+        // back and so is the OOM.
+        assert_eq!(backend.conn().chunk_rows(), 4, "expected 3 chunks + a marker");
+        // …and nothing landed in the legacy whole-value table.
+        assert!(
+            backend.conn().nar.lock().unwrap().is_empty(),
+            "a streamed write must not also write the legacy whole-value row",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunked_nar_round_trips_byte_identically() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        let nar = multi_chunk_nar();
+        backend.put_nar(NAR_KEY, &nar).await.unwrap();
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), nar);
+    }
+
+    #[tokio::test]
+    async fn an_empty_nar_round_trips_as_empty_not_as_a_miss() {
+        // Degenerate but reachable: zero chunks plus a marker of 0.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.put_nar(NAR_KEY, b"").await.unwrap();
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn a_write_killed_before_the_marker_reads_as_a_miss_not_a_truncated_nar() {
+        // THE reason the marker exists. A whole-value INSERT was atomic for
+        // free; N chunk inserts are not, and this process's defining failure
+        // mode is being killed mid-write. Chunks with no marker must be
+        // invisible: a client that gets a miss rebuilds, a client that gets
+        // half a NAR is silently corrupted.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.conn().upsert_nar_chunk(NAR_KEY, 0, b"first half").await.unwrap();
+        backend.conn().upsert_nar_chunk(NAR_KEY, 1, b"second half").await.unwrap();
+        // No marker written — the process died here.
+        assert!(
+            backend.get_nar(NAR_KEY).await.unwrap().is_none(),
+            "orphan chunks must not be servable",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gap_under_a_published_marker_is_an_error_never_a_short_read() {
+        // The marker is a promise that N chunks exist. If one is gone, the
+        // honest answer is a fault — returning the bytes that remain would hand
+        // the client a truncated NAR under a valid-looking response.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.conn().upsert_nar_chunk(NAR_KEY, 0, b"present").await.unwrap();
+        backend.conn().upsert_nar_chunk(NAR_KEY, CHUNK_MARKER_SEQ, &encode_marker(2)).await.unwrap();
+        let err = backend.get_nar(NAR_KEY).await.unwrap_err();
+        assert!(
+            err.to_string().contains("missing"),
+            "expected a typed corruption error, got: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_marker_surfaces_rather_than_being_coerced() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.conn().upsert_nar_chunk(NAR_KEY, CHUNK_MARKER_SEQ, b"nope").await.unwrap();
+        assert!(matches!(
+            backend.get_nar(NAR_KEY).await.unwrap_err(),
+            StoreError::NarInfo(_),
+        ));
+    }
+
+    #[tokio::test]
+    async fn re_putting_a_shorter_nar_leaves_no_stale_tail() {
+        // Chunks are keyed by (key, seq), so a shorter re-put would otherwise
+        // leave the old high-seq rows behind — and the new marker would not
+        // reach them, but a LATER longer re-put would splice them in.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.put_nar(NAR_KEY, &multi_chunk_nar()).await.unwrap();
+        backend.put_nar(NAR_KEY, b"short").await.unwrap();
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), b"short");
+        assert_eq!(backend.conn().chunk_rows(), 2, "1 chunk + a marker; the tail is gone");
+    }
+
+    #[tokio::test]
+    async fn a_legacy_whole_value_row_is_still_served_windowed() {
+        // Every NAR already in the production database is a whole-value row.
+        // They must keep serving — and must be read back in bounded windows
+        // rather than materialized, or the read path stays unbounded until the
+        // cache happens to turn over.
+        let backend = PgStorageBackend::new(MockPg::default());
+        let legacy = multi_chunk_nar();
+        backend.conn().seed_legacy_nar(NAR_KEY, &legacy);
+        assert_eq!(backend.conn().chunk_rows(), 0, "the fixture is pre-streaming by construction");
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), legacy);
+    }
+
+    #[tokio::test]
+    async fn a_chunked_write_shadows_a_legacy_row_for_the_same_key() {
+        // Both generations can exist for one key only transiently. A re-put
+        // must drop the legacy row, or a later rollback-era reader would find
+        // stale bytes under a live marker.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.conn().seed_legacy_nar(NAR_KEY, b"old whole-value bytes");
+        backend.put_nar(NAR_KEY, b"new chunked bytes").await.unwrap();
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), b"new chunked bytes");
+        assert!(
+            backend.conn().nar.lock().unwrap().is_empty(),
+            "the legacy row must be dropped, not shadowed",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_clears_both_storage_generations() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        let key = "nar/xyz.nar.xz";
+        backend.put_nar(key, b"chunked").await.unwrap();
+        backend.conn().seed_legacy_nar("nar/xyz.nar.zst", b"legacy");
+        backend.delete("xyz").await.unwrap();
+        assert!(backend.get_nar(key).await.unwrap().is_none());
+        assert!(backend.get_nar("nar/xyz.nar.zst").await.unwrap().is_none());
+        assert_eq!(backend.conn().chunk_rows(), 0);
+    }
+
+    #[tokio::test]
+    async fn wipe_all_reclaims_the_chunk_table_too() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.put_narinfo("h", NARINFO).await.unwrap();
+        backend.put_nar(NAR_KEY, &multi_chunk_nar()).await.unwrap();
+        assert!(backend.conn().chunk_rows() > 1);
+        assert_eq!(backend.wipe_all().await.unwrap(), 1);
+        assert_eq!(backend.conn().chunk_rows(), 0, "wipe must reach the chunk table");
+        assert!(backend.get_nar(NAR_KEY).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_chunked_write_path_self_heals_a_vanished_schema() {
+        // The 2026-07-26 outage shape, on the new verbs: the write must repair
+        // the schema and land, not error until someone restarts the process.
+        let backend = PgStorageBackend::new(MockPg::default());
+        backend.conn().drop_schema();
+        backend.put_nar(NAR_KEY, b"bytes").await.expect("put_nar self-heals");
+        assert_eq!(backend.get_nar(NAR_KEY).await.unwrap().unwrap(), b"bytes");
+    }
+
+    #[tokio::test]
+    async fn a_backend_fault_partway_through_a_chunked_read_surfaces() {
+        // `FaultyPg::after` serves n calls then fails — the shape of a pool that
+        // dies mid-transfer. The stream must end in an error, never quietly
+        // yield the prefix it managed to read.
+        let backend = PgStorageBackend::new(FaultyPg::after(6, RELATION_MISSING));
+        // 3 chunk upserts + 1 marker + 2 spare = the write consumes the budget.
+        let err = backend.put_nar(NAR_KEY, &multi_chunk_nar()).await;
+        // Either the write itself trips the budget or the following read does;
+        // what must never happen is a silent success with missing bytes.
+        if err.is_ok() {
+            assert!(backend.get_nar(NAR_KEY).await.is_err(), "a mid-read fault must surface");
+        }
+    }
+
+    #[tokio::test]
+    async fn residency_is_streaming() {
+        let backend = PgStorageBackend::new(MockPg::default());
+        assert_eq!(backend.nar_residency(), NarResidency::Streaming);
     }
 }

@@ -8,13 +8,28 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::StreamExt;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
-use object_store::ObjectStore;
+use object_store::{ObjectStore, WriteMultipart};
 use tracing::{debug, warn};
 
-use super::StorageBackend;
+use super::nar_stream::{self, NarSource, NarStream};
+use super::{NarResidency, StorageBackend};
 use crate::StoreError;
+
+/// How many multipart parts may be in flight at once.
+///
+/// The peak this backend can reach is
+/// `(1 + S3_MAX_INFLIGHT_PARTS) * S3_PART_BYTES` plus one source chunk — a
+/// constant, not a function of NAR size. Two is enough to keep the pipe full
+/// without turning "bounded" into "bounded by something large".
+const S3_MAX_INFLIGHT_PARTS: usize = 2;
+
+/// Multipart part size. **5 MiB is S3's minimum for a non-final part** — a
+/// smaller value makes real S3 reject the upload, so this is not a free knob and
+/// deliberately does not reuse [`NAR_CHUNK_BYTES`](super::NAR_CHUNK_BYTES) (4 MiB).
+const S3_PART_BYTES: usize = 5 * 1024 * 1024;
 
 /// S3-compatible object storage backend.
 pub struct S3Storage {
@@ -100,28 +115,94 @@ impl StorageBackend for S3Storage {
     }
 
     async fn get_nar(&self, nar_path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        // ONE code path: the whole-value verb is the streaming verb drained.
+        match self.get_nar_stream(nar_path).await? {
+            Some(s) => Ok(Some(nar_stream::collect_nar(s, None).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn put_nar(&self, nar_path: &str, data: &[u8]) -> Result<(), StoreError> {
+        self.put_nar_stream(nar_path, &nar_stream::BytesNarSource::from(data)).await
+    }
+
+    /// **O(constant).** Reads come off the object stream; writes go up as
+    /// bounded multipart parts with at most [`S3_MAX_INFLIGHT_PARTS`] in flight.
+    fn nar_residency(&self) -> NarResidency {
+        NarResidency::Streaming
+    }
+
+    async fn get_nar_stream(&self, nar_path: &str) -> Result<Option<NarStream>, StoreError> {
         let path = Path::from(nar_path);
         match self.store.get(&path).await {
-            Ok(result) => {
-                let bytes = result
-                    .bytes()
-                    .await
-                    .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 read: {e}"))))?;
-                Ok(Some(bytes.to_vec()))
-            }
+            Ok(result) => Ok(Some(
+                result
+                    .into_stream()
+                    .map(|r| {
+                        r.map_err(|e| {
+                            StoreError::Io(std::io::Error::other(format!("S3 read: {e}")))
+                        })
+                    })
+                    .boxed(),
+            )),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(StoreError::Io(std::io::Error::other(format!("S3 get: {e}")))),
         }
     }
 
-    async fn put_nar(&self, nar_path: &str, data: &[u8]) -> Result<(), StoreError> {
+    /// Upload as a bounded multipart, aborting on any fault.
+    ///
+    /// The abort matters for the same reason the local tier renames: a
+    /// half-finished multipart is not a truncated object (S3 only publishes on
+    /// `complete`), but it *is* billable storage that lingers until a lifecycle
+    /// rule reaps it. Aborting turns a failed push into nothing at all.
+    async fn put_nar_stream(&self, nar_path: &str, src: &dyn NarSource) -> Result<(), StoreError> {
         let path = Path::from(nar_path);
-        self.store
-            .put(&path, Bytes::from(data.to_vec()).into())
+        let upload = self
+            .store
+            .put_multipart(&path)
             .await
-            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 put: {e}"))))?;
-        debug!(path = %nar_path, size = data.len(), "Stored NAR in S3");
-        Ok(())
+            .map_err(|e| StoreError::Io(std::io::Error::other(format!("S3 multipart init: {e}"))))?;
+        let mut writer = WriteMultipart::new_with_chunk_size(upload, S3_PART_BYTES);
+
+        let mut written: u64 = 0;
+        let pump = async {
+            let mut stream = src.open().await?;
+            while let Some(chunk) = stream.next().await {
+                let chunk: Bytes = chunk?;
+                // Back-pressure BEFORE buffering the next part, so the number of
+                // parts resident is capped rather than "however fast the source
+                // produces". Without this, `write`/`put` spawn uploads eagerly
+                // and a fast local source would queue the whole NAR in flight.
+                writer.wait_for_capacity(S3_MAX_INFLIGHT_PARTS).await.map_err(|e| {
+                    StoreError::Io(std::io::Error::other(format!("S3 multipart backpressure: {e}")))
+                })?;
+                written += chunk.len() as u64;
+                writer.put(chunk);
+            }
+            Ok::<(), StoreError>(())
+        }
+        .await;
+
+        match pump {
+            Ok(()) => {
+                writer.finish().await.map_err(|e| {
+                    StoreError::Io(std::io::Error::other(format!("S3 multipart complete: {e}")))
+                })?;
+                debug!(path = %nar_path, size = written, "Stored NAR in S3 (multipart)");
+                Ok(())
+            }
+            Err(e) => {
+                if let Err(abort_err) = writer.abort().await {
+                    warn!(
+                        path = %nar_path, error = %abort_err,
+                        "S3 multipart abort failed — orphaned parts may linger until a \
+                         lifecycle rule reaps them",
+                    );
+                }
+                Err(e)
+            }
+        }
     }
 
     async fn delete(&self, hash: &str) -> Result<(), StoreError> {

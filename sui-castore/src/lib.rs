@@ -21,9 +21,11 @@ pub mod storage;
 pub use config::BackendConfig;
 pub use env_expand::{expand_env_vars, ExpandEnvError};
 pub use storage::{
-    build_backend, LocalStorage, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn,
-    S3Storage, StorageBackend, StorageIndex, TieredBackend, TieredTier, WritePolicy,
-    TIERED_BACKEND_TIER,
+    build_backend, bytes_stream, collect_nar, empty_stream, file_stream, spool_or_buffer,
+    whole_value_stream, BytesNarSource, FileNarSource, LocalStorage, NarResidency, NarSource,
+    NarStream, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn, S3Storage,
+    SpooledNarSource, StorageBackend, StorageIndex, TieredBackend, TieredTier, WritePolicy,
+    DEFAULT_INGEST_MEMORY_CAP, NAR_CHUNK_BYTES, TIERED_BACKEND_TIER,
 };
 
 #[cfg(feature = "redis-client")]
@@ -54,6 +56,25 @@ pub enum StoreError {
     /// A narinfo could not be parsed or was invalid UTF-8.
     #[error("narinfo error: {0}")]
     NarInfo(String),
+
+    /// A value exceeded a tier's configured byte cap and was **refused**
+    /// rather than buffered.
+    ///
+    /// This is a *bound*, not a failure of the cache: the refusing tier is
+    /// always a best-effort hot tier, and the durable tiers below it stream the
+    /// same content without a cap. Refusing is the whole point — a tier that
+    /// buffers whatever it is handed is exactly how a 6 GiB pod is killed by one
+    /// large NAR.
+    ///
+    /// `at_least` is a lower bound, not the true size: collection stops the
+    /// moment the cap is crossed, so the rest of the value is never read.
+    #[error("value too large: refused at {at_least}+ bytes against a {limit}-byte cap")]
+    TooLarge {
+        /// The tier's configured cap, in bytes.
+        limit: u64,
+        /// A lower bound on the value's size, in bytes.
+        at_least: u64,
+    },
 
     /// The backend's schema is **absent** — its tables do not exist (e.g. a
     /// durable tier came back up on a fresh volume, or its database was

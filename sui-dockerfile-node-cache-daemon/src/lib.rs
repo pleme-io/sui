@@ -169,6 +169,13 @@ mod tests {
         async fn put_nar(&self, _path: &str, _data: &[u8]) -> Result<(), CacheError> {
             Ok(())
         }
+        /// An in-memory test double holds whole values by construction. The
+        /// declaration is required precisely so a *production* backend cannot
+        /// inherit this path by omission.
+        fn nar_residency(&self) -> sui_cache::NarResidency {
+            sui_cache::NarResidency::WholeValue
+        }
+
         async fn delete(&self, _hash: &str) -> Result<(), CacheError> {
             Ok(())
         }

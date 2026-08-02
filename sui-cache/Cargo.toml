@@ -43,6 +43,11 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 reqwest = { workspace = true }
 tower = { workspace = true }
 http-body-util = "0.1"
+# Test-only: the NAR memory gate generates a 256 MiB NAR as a `Stream` rather
+# than a buffer (materializing it would swamp the very peak being measured).
+# The production code needs no `futures` — `spool_or_buffer` is generic over the
+# transport's own stream error, so the axum body goes straight through.
+futures = "0.3"
 
 [lints.clippy]
 pedantic = "warn"
