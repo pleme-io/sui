@@ -715,7 +715,20 @@ enum CacheCommands {
         /// unsigned (legacy fail-open).
         #[arg(long)] signing_key: Option<String>,
     },
-    Push { paths: Vec<String>, #[arg(long)] cache_url: Option<String>, #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] signing_key: Option<String> },
+    Push {
+        paths: Vec<String>,
+        #[arg(long)] cache_url: Option<String>,
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+        #[arg(long)] signing_key: Option<String>,
+        /// Push the transitive CLOSURE of each path, not just the path itself.
+        ///
+        /// Without this, `push /run/current-system` uploads exactly ONE
+        /// narinfo and the cache is useless as a substituter — nix needs
+        /// every path in the closure to be present before it can restore
+        /// anything. Measured on 2026-08-02: pushing `hello` (a 2-path
+        /// closure) wrote 1 narinfo.
+        #[arg(long, short = 'r')] recursive: bool,
+    },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
     Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
     /// Clear the ENTIRE cache — every narinfo + NAR across all tiers (Redis L1,
@@ -6700,7 +6713,7 @@ async fn main() -> Result<(), CliError> {
                     }
                 })?;
             }
-            CacheCommands::Push { paths, cache_url: _, store_path, signing_key } => {
+            CacheCommands::Push { paths, cache_url: _, store_path, signing_key, recursive } => {
                 let storage: Arc<dyn sui_cache::StorageBackend> =
                     Arc::new(sui_cache::LocalStorage::new(&store_path));
                 let signer = if let Some(key_path) = signing_key {
@@ -6720,20 +6733,104 @@ async fn main() -> Result<(), CliError> {
                     sui_cache::CacheSigner::generate("sui-cache".to_string())
                 };
 
-                for path in &paths {
+                // ── Real references, from the store, not `&[]` ──────────
+                //
+                // This used to pass an empty reference list to every
+                // narinfo, which is not merely incomplete — it is WRONG in
+                // the one direction a cache must never be wrong. nix reads
+                // `References:` to learn a path's closure; a narinfo
+                // claiming zero references makes nix substitute the path
+                // and stop, leaving a store path whose runtime deps are
+                // absent. Measured 2026-08-02 against the real store:
+                // sui wrote `References:` (empty) for hello-2.12.2 where
+                // nix reports `libiconv-109.100.2`. An unpopulated cache
+                // is useless; a cache populated like that is harmful.
+                //
+                // `LocalStore` is the same nix SQLite the daemon reads, so
+                // the references and deriver written here are the store's
+                // own truth rather than anything re-derived.
+                let local = LocalStore::open(NIX_DB_PATH).await.map_err(|e| {
+                    CliError::StoreOpen { path: NIX_DB_PATH, source: e }
+                })?;
+
+                let mut roots: Vec<sui_compat::store_path::StorePath> = Vec::new();
+                for p in &paths {
+                    match sui_compat::store_path::StorePath::from_absolute_path(p) {
+                        Ok(sp) => roots.push(sp),
+                        Err(e) => eprintln!("skipping {p}: not a store path ({e})"),
+                    }
+                }
+
+                // `--recursive` expands to the transitive closure. Without
+                // it the caller gets exactly the paths they named, which is
+                // the old behaviour and still the right default for pushing
+                // one specific artifact.
+                let targets = if recursive {
+                    local.compute_closure(&roots).await.map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "cache push",
+                            message: format!("compute closure: {e}"),
+                        }
+                    })?
+                } else {
+                    roots
+                };
+
+                if recursive {
+                    println!("pushing closure: {} path(s)", targets.len());
+                }
+
+                for sp in &targets {
+                    let path = sp.to_absolute_path();
                     let hash = path
                         .strip_prefix("/nix/store/")
-                        .unwrap_or(path)
+                        .unwrap_or(&path)
                         .split('-')
                         .next()
-                        .unwrap_or(path);
+                        .unwrap_or(&path)
+                        .to_string();
+
+                    // Missing path info is a SKIP with a reason, never a
+                    // silent push with empty references — the whole point
+                    // of this block.
+                    let info = match local.query_path_info(sp).await {
+                        Ok(Some(i)) => i,
+                        Ok(None) => {
+                            eprintln!("skipping {path}: not registered in the nix database");
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!("skipping {path}: query_path_info failed: {e}");
+                            continue;
+                        }
+                    };
+
+                    // narinfo `References:` and `Deriver:` are BASENAMES,
+                    // not absolute paths. nix parses both as store-path
+                    // hashes and rejects the whole narinfo on a `/`:
+                    //
+                    //   error: store path '/nix/store/a1fz…-hello.drv'
+                    //          contains illegal base-32 character '/'
+                    //
+                    // That is a real `nix path-info --store http://…`
+                    // failure observed against this cache — the narinfo
+                    // LOOKED right and nix still refused it, which is why
+                    // the gate for this fix is nix reading the cache back
+                    // rather than eyeballing the file.
+                    let basename = |p: &str| -> String {
+                        p.strip_prefix("/nix/store/").unwrap_or(p).to_string()
+                    };
+                    let references: Vec<String> =
+                        info.references.iter().map(|r| basename(r)).collect();
+                    let deriver = info.deriver.as_deref().map(basename);
+
                     match sui_cache::push::push_path(
                         storage.as_ref(),
                         &signer,
-                        path,
-                        hash,
-                        &[],
-                        None,
+                        &path,
+                        &hash,
+                        &references,
+                        deriver.as_deref(),
                     )
                     .await
                     {
