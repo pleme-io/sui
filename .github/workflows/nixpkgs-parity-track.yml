@@ -28,6 +28,13 @@
 #       (`sui ⟷ nixpkgs@<sha>: N eval ✓ · M build ✓ · 0 diverge`).
 # See docs/NIXPKGS-PARITY-MACHINE.md for the full design + tier-honest ledger.
 
+#
+# ── FIXED 2026-08-04: the package spec was stale and this job could not pass.
+# `-p sui` names no package; the crate was renamed to `pleme-io-sui` in 5f76b39
+# ("bare 'sui' is squatted upstream") and this workflow was never updated, so
+# every run failed with `package ID specification 'sui' did not match any
+# packages`. The [[bin]] is still `sui` — only the PACKAGE moved, which is why
+# `--bin sui` stayed correct and the line read fine at a glance.
 name: nixpkgs-parity-track
 
 on:
@@ -61,7 +68,7 @@ jobs:
             accept-flake-config = true
 
       - name: Build sui
-        run: cargo build -p sui --bin sui
+        run: cargo build -p pleme-io-sui --bin sui
 
       # `sui parity --track-nixpkgs <ref>` resolves the ref's CURRENT HEAD, pins
       # <nixpkgs> to it, runs the byte-corpus, and prints the exact rev — ALL in

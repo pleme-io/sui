@@ -17,6 +17,13 @@
 # A divergence is a red gate → root-cause + fix at the eval/build core (the neovim
 # loop) → the basket grows by one honest row. See docs/NIXPKGS-PARITY-MACHINE.md.
 
+#
+# ── FIXED 2026-08-04: the package spec was stale and this job could not pass.
+# `-p sui` names no package; the crate was renamed to `pleme-io-sui` in 5f76b39
+# ("bare 'sui' is squatted upstream") and this workflow was never updated, so
+# every run failed with `package ID specification 'sui' did not match any
+# packages`. The [[bin]] is still `sui` — only the PACKAGE moved, which is why
+# `--bin sui` stayed correct and the line read fine at a glance.
 name: build-parity
 
 on:
@@ -57,7 +64,7 @@ jobs:
       # read-write and errors out typed if it isn't writable — the precondition
       # is enforced in the binary, not a bash `touch` probe.)
       - name: Build sui
-        run: cargo build -p sui --bin sui
+        run: cargo build -p pleme-io-sui --bin sui
 
       # The build-parity basket (grows over time). Each entry: build with sui AND
       # nix, byte-compare the output NAR. The starter row is a self-contained
