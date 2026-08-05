@@ -50,7 +50,8 @@ pub use signing::{verify_narinfo_signature, CacheSigner};
 // Storage primitives — all moved to sui-castore, re-exported here.
 pub use sui_castore::{
     advertised_nar_url, advertised_url_line, build_backend, bytes_stream, collect_nar,
-    empty_stream, file_stream, is_addressable_nar_path, referrer_of, spool_or_buffer,
+    empty_stream, file_stream, is_addressable_nar_path, is_servable_narinfo, referrer_of,
+    spool_or_buffer,
     whole_value_stream, BytesNarSource, FileNarSource, LocalStorage, MemNarRefIndex, NarRefIndex,
     NarRefKey, NarRefScan, NarResidency, NarSource, NarStream, PgCacheConn, PgStorageBackend,
     PgTable, RedisBackend, RedisConn, S3Storage, SpooledNarSource, StorageBackend, StorageIndex,

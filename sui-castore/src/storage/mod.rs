@@ -30,7 +30,8 @@ use std::sync::Arc;
 pub use index::StorageIndex;
 pub use local::LocalStorage;
 pub use nar_refs::{
-    advertised_nar_url, advertised_url_line, is_addressable_nar_path, referrer_of, MemNarRefIndex,
+    advertised_nar_url, advertised_url_line, is_addressable_nar_path, is_servable_narinfo,
+    referrer_of, MemNarRefIndex,
     NarRefIndex, NarRefKey, NarRefScan, NAR_REF_PREFIX,
 };
 pub use nar_stream::{

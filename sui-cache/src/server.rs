@@ -157,6 +157,35 @@ async fn get_narinfo(
     };
 
     match state.storage.get_narinfo(hash).await {
+        // A STORED-BUT-UNUSABLE narinfo is served as a MISS, never as a hit.
+        //
+        // Measured on camelot-eks 2026-08-05: two rows in the durable tier held a
+        // zero-length value, and this arm happily returned them as
+        // `200 text/x-nix-narinfo` with an empty body. Nix parses that as a
+        // narinfo, finds no `StorePath:`, and fails the whole operation:
+        //
+        //     error: NAR info file 'kkknnnlv5xplv4ilsfskdvccmvi4ia7i.narinfo'
+        //            is corrupt: StorePath missing
+        //
+        // Two poisoned rows out of 6898 were enough to abort EVERY
+        // `nix copy --to` against this cache, because the client hits the bad
+        // entry while querying which paths the destination already has.
+        //
+        // That is strictly worse than not having the entry at all, and it is the
+        // same argument the `Err` arm below already makes: a 404 is a miss and
+        // the build proceeds; anything else converts a cold accelerator into a
+        // hard dependency. An unusable hit is a miss that lies, so it is
+        // classified with the misses.
+        Ok(Some(content)) if !crate::is_servable_narinfo(&content) => {
+            tracing::error!(
+                hash = %hash,
+                len = content.len(),
+                "get_narinfo: stored narinfo is empty or has no StorePath — SERVING 404 so the \
+                 client treats it as a miss instead of aborting; this entry is poison and should \
+                 be evicted",
+            );
+            StatusCode::NOT_FOUND.into_response()
+        }
         Ok(Some(content)) => (
             StatusCode::OK,
             [("content-type", "text/x-nix-narinfo")],
@@ -199,6 +228,26 @@ async fn put_narinfo(
         Ok(s) => s,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
+
+    // REFUSE AT INGEST what can never be served. `StorePath:` is what makes a
+    // narinfo a narinfo — nix's own reader fails with "corrupt: StorePath
+    // missing" without it — so a body lacking one is a malformed upload, which
+    // is the client's fault and belongs with the other 400s above.
+    //
+    // This is the CAUSE half of the pair; the read path also refuses to serve an
+    // unusable entry, because entries predating this check are already in the
+    // durable tier and a cache that can be poisoned once will be again. Fixing
+    // only the read would leave the tier accumulating garbage; fixing only the
+    // write would leave the existing garbage fatal.
+    if !crate::is_servable_narinfo(&content) {
+        tracing::warn!(
+            hash = %hash,
+            len = content.len(),
+            "put_narinfo: refusing a narinfo with no StorePath line — an entry that cannot be \
+             served is worse than an absent one, because nix aborts on it instead of missing",
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    }
 
     // A narinfo's `URL:` becomes a storage key, and on the local tier a path
     // joined onto the cache root — so `URL: ../../etc/passwd` has to be refused
@@ -500,6 +549,79 @@ mod tests {
 
         let body = body_bytes(resp).await;
         assert_eq!(body, nar_data);
+    }
+
+    /// A zero-length stored narinfo must read as a MISS, not as a 200.
+    ///
+    /// This is the exact camelot-eks poison: the durable tier held two
+    /// zero-length values and served them as `200` with an empty body, and nix
+    /// aborted every `nix copy --to` with "corrupt: StorePath missing". The
+    /// entry is written straight through the storage backend, bypassing
+    /// `put_narinfo`, precisely because the ingest guard now refuses it —
+    /// entries predating that guard still exist and must not be fatal.
+    #[tokio::test]
+    async fn get_narinfo_serves_a_poisoned_entry_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(dir.path());
+        storage.put_narinfo("poison", "").await.unwrap();
+
+        let app = test_app(dir.path());
+        let req = axum::http::Request::builder()
+            .uri("/poison.narinfo")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "an unusable hit must degrade to a miss; a 200 with an empty body makes the client \
+             ABORT rather than build, which is strictly worse than not having the entry"
+        );
+    }
+
+    /// The ingest half: a narinfo with no StorePath is refused at the door.
+    #[tokio::test]
+    async fn put_narinfo_refuses_a_body_with_no_store_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/empty.narinfo")
+            .body(Body::from(""))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "an empty body cannot become a servable narinfo, so it is the client's error"
+        );
+    }
+
+    /// Control: a well-formed narinfo still round-trips, so the two guards
+    /// above cannot be passing by rejecting everything.
+    #[tokio::test]
+    async fn put_then_get_a_well_formed_narinfo_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+        let good = "StorePath: /nix/store/ok-pkg\nURL: nar/ok.nar.xz\nCompression: xz\nFileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n";
+
+        let put = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/ok.narinfo")
+            .body(Body::from(good))
+            .unwrap();
+        let resp = app.clone().oneshot(put).await.unwrap();
+        assert!(resp.status().is_success(), "a valid narinfo must still be accepted");
+
+        let get = axum::http::Request::builder()
+            .uri("/ok.narinfo")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(get).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "and must still be served");
     }
 
     #[tokio::test]

@@ -183,6 +183,31 @@ pub fn advertised_url_line(narinfo: &str) -> Option<&str> {
     })
 }
 
+/// Is this narinfo text usable by a Nix client at all?
+///
+/// `StorePath:` is what makes a narinfo a narinfo — nix's own reader rejects
+/// text without one as `corrupt: StorePath missing` — so this is the minimum
+/// bar for both accepting an upload and serving a stored entry.
+///
+/// ── WHY THIS IS A SHARED PREDICATE, not an `is_empty()` at one call site ────
+/// Measured on camelot-eks 2026-08-05: two rows in the durable tier held a
+/// ZERO-LENGTH value, and the read path served them as `200` with an empty
+/// body. Nix aborted the whole operation on the first one it met while asking
+/// the destination which paths it already had, so two poisoned rows out of 6898
+/// broke EVERY `nix copy --to` against the cache.
+///
+/// An unusable hit is worse than a miss: a miss makes the client build, a
+/// malformed hit makes it fail — and the error names nix, not the cache. Both
+/// boundaries therefore ask the same question, because fixing only the write
+/// leaves existing poison fatal, and fixing only the read leaves the tier
+/// accumulating garbage.
+#[must_use]
+pub fn is_servable_narinfo(narinfo: &str) -> bool {
+    narinfo
+        .lines()
+        .any(|line| line.split_once(':').is_some_and(|(k, v)| k.trim() == "StorePath" && !v.trim().is_empty()))
+}
+
 /// The reverse index of a single [`StorageBackend`](super::StorageBackend).
 ///
 /// Three verbs, all idempotent. Every implementation persists edges in the
