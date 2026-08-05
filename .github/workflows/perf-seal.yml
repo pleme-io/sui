@@ -10,6 +10,27 @@
 # wall-clock, so this runs on a plain GitHub runner with no `nix` binary and
 # does not flake on runner noise (a tight ms budget on a shared runner would
 # false-positive and get muted — defeating the gate).
+#
+# ── THIS WORKFLOW HAD BEEN FAILING ON EVERY RUN ──────────────────────────
+#
+# It passed `-p sui`, and there is no package by that name. The crate was
+# renamed to `pleme-io-sui` in 5f76b39 ("bare 'sui' is squatted upstream") and
+# this workflow was never updated:
+#
+#     error: package ID specification `sui` did not match any packages
+#
+# So the perf seal described above — "eval got slower is now a red CI check" —
+# has been red for an unrelated reason since the rename, which is the state
+# where a real regression would have been indistinguishable from the noise.
+# Its three siblings (parity, build-parity, nixpkgs-parity-track) carry the
+# same broken spec.
+#
+# Note the shape of the mistake: the PACKAGE moved, the [[bin]] did not. So
+# `--bin sui` was right and `-p sui` was wrong — a half-rename that reads
+# correctly at a glance.
+#
+# Now a declared pipeline over `cargo-run-bin`, which is where that build+run
+# shape belongs; four workflows in this repo share it.
 name: perf-seal
 
 on:
@@ -21,21 +42,10 @@ on:
 
 jobs:
   perf-seal:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build sui
-        run: cargo build -p sui --bin sui
-
-      # The provable box: exits non-zero on any speed-regression / eval-error /
-      # unpinned shape. stdout carries the machine-readable summary; the process
-      # exit code is the gate. No `nix` needed — the speed half is in-process.
-      - name: Run perf-seal gate
-        run: ./target/debug/sui perf-seal
+    uses: pleme-io/substrate/.github/workflows/action-pipeline.yml@main
+    with:
+      pipeline: |
+        (defpipeline perf-seal
+          (step cargo-run-bin :package "pleme-io-sui" :bin "sui" :args "perf-seal")
+        )
+    secrets: inherit
