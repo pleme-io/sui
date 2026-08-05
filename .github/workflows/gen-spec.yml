@@ -1,0 +1,16 @@
+name: gen-spec
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+jobs:
+  gen-spec:
+    uses: pleme-io/substrate/.github/workflows/reusable-gen-spec.yml@main
+    secrets: inherit
