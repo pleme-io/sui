@@ -11,6 +11,21 @@
 # `actionsRunner`, commit 6564f47). A NEW workflow adding a per-job nix-installer
 # is NOT baselined → this check FAILS. Read-only scan; ubuntu-latest, matching
 # sui's other light jobs (parity / perf-seal).
+#
+# Expressed as a DECLARED PIPELINE of pleme-io actions rather than a
+# hand-authored step list — sui is the second consumer of substrate's
+# action-pipeline.yml, after escriba.
+#
+# This one converts cleanly because the work IS a pleme-io action. sui's other
+# six workflows do NOT and are deliberately left alone: they run sui's OWN
+# binary (`./target/debug/sui parity`, `sui perf-seal`, the canteiro checks),
+# and a pipeline names actions — there is no action to name. That is the real
+# boundary of this mechanism, worth stating rather than discovering later.
+#
+# The conversion also found a bug in the action it calls: the pipeline run
+# reproduced the direct run EXACTLY, including `files-scanned=0` against sui's
+# 9 workflow files, which is how the 0 was attributable to the action rather
+# than to this change. Fixed in pleme-io/actions@632fe32; sui now reports 9.
 name: runtime-install-lint
 
 on:
@@ -21,10 +36,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  runtime-install-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pleme-io/actions/runtime-install-lint@main
-        with:
-          baseline-path: .github/workflows/runtime-install-baseline.txt
+  lint:
+    uses: pleme-io/substrate/.github/workflows/action-pipeline.yml@main
+    with:
+      pipeline: |
+        (defpipeline runtime-install-lint
+          (step runtime-install-lint :baseline-path ".github/workflows/runtime-install-baseline.txt")
+        )
+    secrets: inherit
