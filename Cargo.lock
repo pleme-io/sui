@@ -6503,6 +6503,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shikumi",
  "sui-castore",
  "sui-compat",
  "tempfile",

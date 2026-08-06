@@ -43,15 +43,15 @@
 //! while the meter is running.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bytes::Bytes;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use sui_cache::config::{BackendConfig, CacheConfig};
-use sui_cache::{build_router, AppState, LocalStorage, StorageBackend, TieredBackend};
+use sui_cache::{AppState, LocalStorage, StorageBackend, TieredBackend, build_router};
 use tower::ServiceExt;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -158,9 +158,9 @@ fn synthetic_nar(total: usize) -> impl futures::Stream<Item = Result<Bytes, std:
 
 /// Order-sensitive checksum computed over a stream, holding one frame at a time.
 fn fold_checksum(acc: u64, chunk: &[u8]) -> u64 {
-    chunk
-        .iter()
-        .fold(acc, |a, b| a.wrapping_mul(1_000_003).wrapping_add(u64::from(*b)))
+    chunk.iter().fold(acc, |a, b| {
+        a.wrapping_mul(1_000_003).wrapping_add(u64::from(*b))
+    })
 }
 
 fn expected_checksum(total: usize) -> u64 {
@@ -185,14 +185,21 @@ fn tiered_router(root: &std::path::Path) -> axum::Router {
     let storage: Arc<dyn StorageBackend> = Arc::new(TieredBackend::new(l1, l2, l3));
     let config = CacheConfig {
         listen: "127.0.0.1:0".to_string(),
-        backend: BackendConfig::Local { path: root.to_path_buf() },
+        backend: BackendConfig::Local {
+            path: root.to_path_buf(),
+        },
         priority: 40,
         want_mass_query: true,
         store_dir: "/nix/store".to_string(),
         signing_key: None,
         require_sigs: false,
+        ..CacheConfig::default()
     };
-    build_router(AppState { storage, config, signer: None })
+    build_router(AppState {
+        storage,
+        config,
+        signer: None,
+    })
 }
 
 // ───────────────────────────────────────────────────────────────────────────

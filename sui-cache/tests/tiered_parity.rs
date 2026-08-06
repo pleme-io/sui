@@ -41,7 +41,15 @@ fn rig(policy: WritePolicy) -> Rig {
     let l3 = Arc::new(LocalStorage::new(d3.path()));
     let oracle = LocalStorage::new(do_.path());
     let tiered = TieredBackend::with_write_policy(l1.clone(), l2.clone(), l3.clone(), policy);
-    Rig { _dirs: vec![d1, d2, d3, do_], l1_root, l1, l2, l3, oracle, tiered }
+    Rig {
+        _dirs: vec![d1, d2, d3, do_],
+        l1_root,
+        l1,
+        l2,
+        l3,
+        oracle,
+        tiered,
+    }
 }
 
 /// Invariant 1 — write-through parity: a `put` populates every durable tier with
@@ -76,7 +84,10 @@ async fn read_through_parity_with_cold_l1() {
 
     // Simulate a cold/rolled hot tier by wiping L1's directory.
     std::fs::remove_dir_all(&r.l1_root).unwrap();
-    assert!(r.l1.get_narinfo("abc").await.unwrap().is_none(), "L1 is cold");
+    assert!(
+        r.l1.get_narinfo("abc").await.unwrap().is_none(),
+        "L1 is cold"
+    );
 
     assert_eq!(
         r.tiered.get_narinfo("abc").await.unwrap().unwrap(),
@@ -139,6 +150,9 @@ async fn write_around_parity_durable_tiers_match_then_read_warms_l1() {
     assert_eq!(r.l3.get_narinfo("abc").await.unwrap().unwrap(), oracle_ni);
 
     // A tiered read is byte-identical AND promotes into L1.
-    assert_eq!(r.tiered.get_narinfo("abc").await.unwrap().unwrap(), oracle_ni);
+    assert_eq!(
+        r.tiered.get_narinfo("abc").await.unwrap().unwrap(),
+        oracle_ni
+    );
     assert_eq!(r.l1.get_narinfo("abc").await.unwrap().unwrap(), oracle_ni);
 }

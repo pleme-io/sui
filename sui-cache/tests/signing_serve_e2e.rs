@@ -25,9 +25,9 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use sui_cache::server::{build_router, AppState};
-use sui_cache::signing::CacheSigner;
 use sui_cache::LocalStorage;
+use sui_cache::server::{AppState, build_router};
+use sui_cache::signing::CacheSigner;
 use sui_cache::{BackendConfig, CacheConfig, StorageBackend};
 use sui_compat::narinfo::NarInfo;
 
@@ -45,12 +45,16 @@ const UNSIGNED_NARINFO: &str = "StorePath: /nix/store/e2e-hello\n\
 fn config(dir: &std::path::Path) -> CacheConfig {
     CacheConfig {
         listen: "127.0.0.1:0".to_string(),
-        backend: BackendConfig::Local { path: dir.to_path_buf() },
+        backend: BackendConfig::Local {
+            path: dir.to_path_buf(),
+        },
         signing_key: None,
         priority: 40,
         want_mass_query: true,
         store_dir: "/nix/store".to_string(),
         require_sigs: false,
+        // Serving does not compress; take the prescribed push-side codec.
+        ..CacheConfig::default()
     }
 }
 
@@ -64,8 +68,7 @@ async fn body_string(resp: axum::http::Response<Body>) -> String {
 /// but lives here to keep the test in the sui-cache crate.
 fn consumer_accepts(info: &NarInfo, trusted_pubkey: &str) -> bool {
     info.signatures.iter().any(|sig| {
-        sui_cache::signing::verify_narinfo_signature(info, sig, trusted_pubkey)
-            .unwrap_or(false)
+        sui_cache::signing::verify_narinfo_signature(info, sig, trusted_pubkey).unwrap_or(false)
     })
 }
 
@@ -88,10 +91,16 @@ async fn signing_daemon_serves_verifiable_signature_and_consumer_accepts() {
         .uri("/e2e.narinfo")
         .body(Body::from(UNSIGNED_NARINFO))
         .unwrap();
-    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        app.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
 
     // GET it back — the daemon must have signed it at ingest.
-    let get = Request::builder().uri("/e2e.narinfo").body(Body::empty()).unwrap();
+    let get = Request::builder()
+        .uri("/e2e.narinfo")
+        .body(Body::empty())
+        .unwrap();
     let served = body_string(app.oneshot(get).await.unwrap()).await;
     let info = NarInfo::parse(&served).unwrap();
 
@@ -123,9 +132,15 @@ async fn unsigned_daemon_serves_unsigned_and_requiring_consumer_rejects() {
         .uri("/e2e.narinfo")
         .body(Body::from(UNSIGNED_NARINFO))
         .unwrap();
-    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        app.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
 
-    let get = Request::builder().uri("/e2e.narinfo").body(Body::empty()).unwrap();
+    let get = Request::builder()
+        .uri("/e2e.narinfo")
+        .body(Body::empty())
+        .unwrap();
     let served = body_string(app.oneshot(get).await.unwrap()).await;
     let info = NarInfo::parse(&served).unwrap();
 
@@ -159,14 +174,23 @@ async fn tampered_served_path_is_rejected_on_consume() {
         .uri("/e2e.narinfo")
         .body(Body::from(UNSIGNED_NARINFO))
         .unwrap();
-    assert_eq!(app.clone().oneshot(put).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        app.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
 
-    let get = Request::builder().uri("/e2e.narinfo").body(Body::empty()).unwrap();
+    let get = Request::builder()
+        .uri("/e2e.narinfo")
+        .body(Body::empty())
+        .unwrap();
     let served = body_string(app.oneshot(get).await.unwrap()).await;
     let mut info = NarInfo::parse(&served).unwrap();
 
     // Control: the honest served path verifies.
-    assert!(consumer_accepts(&info, &trusted_pubkey), "control: honest path verifies");
+    assert!(
+        consumer_accepts(&info, &trusted_pubkey),
+        "control: honest path verifies"
+    );
 
     // Simulate a poisoned durable-tier write: an attacker mutates the bytes
     // the store path points at (nar_size) but cannot forge a new signature,

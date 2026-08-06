@@ -31,7 +31,7 @@ pub mod signing;
 /// This type alias preserves every existing `sui_cache::CacheError` use site.
 pub use sui_castore::StoreError as CacheError;
 
-pub use config::CacheConfig;
+pub use config::{CACHE_TIER_ENV, CacheConfig};
 
 // BackendConfig lives in sui-castore; re-export at the sui-cache surface so
 // `sui_cache::BackendConfig` still resolves.
@@ -40,23 +40,22 @@ pub use sui_castore::BackendConfig;
 // `${VAR}` config-text expansion also lives in sui-castore; re-export here so
 // `sui cache serve`'s config loader (`sui_cache::expand_env_vars`) can inject a
 // secret-sourced DSN password without the value ever entering the ConfigMap.
-pub use sui_castore::{expand_env_vars, ExpandEnvError};
+pub use sui_castore::{ExpandEnvError, expand_env_vars};
 
 pub use gc::GcResult;
-pub use push::PushResult;
-pub use server::{build_router, serve, AppState};
-pub use signing::{verify_narinfo_signature, CacheSigner};
+pub use push::{LevelOutOfRange, NarCodec, PushResult, XzLevel, ZstdLevel};
+pub use server::{AppState, build_router, serve};
+pub use signing::{CacheSigner, verify_narinfo_signature};
 
 // Storage primitives — all moved to sui-castore, re-exported here.
 pub use sui_castore::{
-    advertised_nar_url, advertised_url_line, build_backend, bytes_stream, collect_nar,
+    BytesNarSource, DEFAULT_INGEST_MEMORY_CAP, FileNarSource, LocalStorage, MemNarRefIndex,
+    NAR_CHUNK_BYTES, NAR_REF_PREFIX, NarRefIndex, NarRefKey, NarRefScan, NarResidency, NarSource,
+    NarStream, PgCacheConn, PgStorageBackend, PgTable, RedisBackend, RedisConn, S3Storage,
+    SpooledNarSource, StorageBackend, StorageIndex, TIERED_BACKEND_TIER, TieredBackend, TieredTier,
+    WritePolicy, advertised_nar_url, advertised_url_line, build_backend, bytes_stream, collect_nar,
     empty_stream, file_stream, is_addressable_nar_path, is_servable_narinfo, referrer_of,
-    spool_or_buffer,
-    whole_value_stream, BytesNarSource, FileNarSource, LocalStorage, MemNarRefIndex, NarRefIndex,
-    NarRefKey, NarRefScan, NarResidency, NarSource, NarStream, PgCacheConn, PgStorageBackend,
-    PgTable, RedisBackend, RedisConn, S3Storage, SpooledNarSource, StorageBackend, StorageIndex,
-    TieredBackend, TieredTier, WritePolicy, DEFAULT_INGEST_MEMORY_CAP, NAR_CHUNK_BYTES,
-    NAR_REF_PREFIX, TIERED_BACKEND_TIER,
+    spool_or_buffer, whole_value_stream,
 };
 
 #[cfg(feature = "redis-client")]

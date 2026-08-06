@@ -5,8 +5,8 @@
 
 use std::collections::HashSet;
 
-use crate::StorageBackend;
 use crate::CacheError;
+use crate::StorageBackend;
 
 /// Result of a garbage collection run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -92,8 +92,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
 
-        storage.put_narinfo("aaa", &make_narinfo("aaa", 100)).await.unwrap();
-        storage.put_narinfo("bbb", &make_narinfo("bbb", 200)).await.unwrap();
+        storage
+            .put_narinfo("aaa", &make_narinfo("aaa", 100))
+            .await
+            .unwrap();
+        storage
+            .put_narinfo("bbb", &make_narinfo("bbb", 200))
+            .await
+            .unwrap();
 
         let roots = vec!["aaa".to_string(), "bbb".to_string()];
         let result = collect_garbage(&storage, &roots).await.unwrap();
@@ -109,9 +115,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
 
-        storage.put_narinfo("keep", &make_narinfo("keep", 100)).await.unwrap();
-        storage.put_narinfo("drop", &make_narinfo("drop", 500)).await.unwrap();
-        storage.put_nar("nar/drop.nar.xz", b"nar data").await.unwrap();
+        storage
+            .put_narinfo("keep", &make_narinfo("keep", 100))
+            .await
+            .unwrap();
+        storage
+            .put_narinfo("drop", &make_narinfo("drop", 500))
+            .await
+            .unwrap();
+        storage
+            .put_nar("nar/drop.nar.xz", b"nar data")
+            .await
+            .unwrap();
 
         let roots = vec!["keep".to_string()];
         let result = collect_garbage(&storage, &roots).await.unwrap();
@@ -129,9 +144,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
 
-        storage.put_narinfo("aaa", &make_narinfo("aaa", 100)).await.unwrap();
-        storage.put_narinfo("bbb", &make_narinfo("bbb", 200)).await.unwrap();
-        storage.put_narinfo("ccc", &make_narinfo("ccc", 300)).await.unwrap();
+        storage
+            .put_narinfo("aaa", &make_narinfo("aaa", 100))
+            .await
+            .unwrap();
+        storage
+            .put_narinfo("bbb", &make_narinfo("bbb", 200))
+            .await
+            .unwrap();
+        storage
+            .put_narinfo("ccc", &make_narinfo("ccc", 300))
+            .await
+            .unwrap();
 
         let result = collect_garbage(&storage, &[]).await.unwrap();
 

@@ -7,13 +7,33 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use shikumi::TieredConfig;
+
+use crate::push::{NarCodec, XzLevel, ZstdLevel};
 
 // BackendConfig is defined in sui-castore; import it for use in CacheConfig.
 pub use sui_castore::BackendConfig;
 pub use sui_castore::WritePolicy;
 
+/// The shikumi tier-selector environment variable for this cache.
+///
+/// Fleet convention (`<APP>_TIER`): unset or `default` → [`prescribed
+/// default`](CacheConfig::prescribed_default); `bare` → the honest floor;
+/// anything else is read as a path to a YAML overlay laid over the prescribed
+/// default. See [`CacheConfig::resolve`].
+pub const CACHE_TIER_ENV: &str = "SUI_CACHE_TIER";
+
 /// Top-level cache configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `#[serde(default)]` is what makes this an *overlay* rather than a
+/// replacement: shikumi's `Custom` tier deserializes the operator's YAML into
+/// this type whole, so without it a file that wants to change one field would
+/// have to restate every other one — and a file that failed to would be
+/// silently discarded (shikumi falls back to `prescribed_default` on a parse
+/// error). Absent fields now come from [`Default`], which *is*
+/// [`TieredConfig::prescribed_default`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CacheConfig {
     /// Network address to listen on.
     pub listen: String,
@@ -42,10 +62,57 @@ pub struct CacheConfig {
     /// legacy behavior for caches that have not yet been given a key.
     #[serde(default)]
     pub require_sigs: bool,
+
+    /// How a pushed NAR is packed — the codec **and** its level, as one
+    /// inseparable value (see [`NarCodec`]).
+    ///
+    /// This is the deployment knob the benchmark in [`NarCodec`]'s docs argues
+    /// about. rio is a *local* origin serving a handful of fleet nodes over
+    /// tailscale: CPU-bound, bandwidth-cheap, so zstd -12 is right and is the
+    /// prescribed default. A bandwidth-bound origin — one paying egress, or
+    /// seeding cold clients over the public internet — legitimately wants
+    /// `{ codec: xz, level: 6 }` and now gets it from a config file instead of
+    /// a recompile.
+    ///
+    /// A mixed cache needs no migration: every narinfo declares its own codec,
+    /// so flipping this changes only what *new* pushes look like.
+    #[serde(default)]
+    pub nar_codec: NarCodec,
 }
 
 impl Default for CacheConfig {
+    /// Delegates to [`TieredConfig::prescribed_default`] so the standard idiom
+    /// (`CacheConfig::default()`) and the tiered resolution can never describe
+    /// two different caches.
     fn default() -> Self {
+        <Self as TieredConfig>::prescribed_default()
+    }
+}
+
+impl CacheConfig {
+    /// Resolve this cache's configuration the fleet-standard way — the one
+    /// call site every entry point uses (★★ CONFIGURATION MANAGEMENT).
+    ///
+    /// Precedence is shikumi's: the [`CACHE_TIER_ENV`] environment variable
+    /// selects the tier, and when it names a path that YAML file is overlaid
+    /// on the prescribed default. Unset → the prescribed default, unchanged
+    /// from what this cache did before it had a config surface.
+    #[must_use]
+    pub fn resolve() -> Self {
+        <Self as TieredConfig>::resolve_from_env(CACHE_TIER_ENV)
+    }
+}
+
+impl TieredConfig for CacheConfig {
+    /// Tier 0 — the honest floor: **sui-cache exactly as it shipped before
+    /// 2026-08-05**. xz -6 packing, no signing key, no fail-closed
+    /// advertisement, the on-disk backend.
+    ///
+    /// This tier is not a worse default, it is the *documented past*: every
+    /// `.nar.xz` already in a fleet cache was written by it, and an origin that
+    /// wants the old ratio back asks for it by name (`SUI_CACHE_TIER=bare`)
+    /// rather than by editing a constant.
+    fn bare() -> Self {
         Self {
             listen: "0.0.0.0:5000".to_string(),
             backend: BackendConfig::default(),
@@ -54,6 +121,21 @@ impl Default for CacheConfig {
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
             require_sigs: false,
+            nar_codec: NarCodec::Xz {
+                level: XzLevel::default(),
+            },
+        }
+    }
+
+    /// Tier 2 — the prescribed posture: identical to [`bare`](Self::bare)
+    /// except that pushes pack with **zstd**, the measured fast path. The
+    /// whole point of the 2026-08-05 change is that you get it without asking.
+    fn prescribed_default() -> Self {
+        Self {
+            nar_codec: NarCodec::Zstd {
+                level: ZstdLevel::default(),
+            },
+            ..Self::bare()
         }
     }
 }
@@ -61,6 +143,7 @@ impl Default for CacheConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shikumi::ConfigTier;
     use std::path::PathBuf;
 
     #[test]
@@ -101,6 +184,7 @@ mod tests {
             want_mass_query: false,
             store_dir: "/nix/store".to_string(),
             require_sigs: true,
+            nar_codec: NarCodec::default(),
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: CacheConfig = serde_json::from_str(&json).unwrap();
@@ -151,7 +235,12 @@ mod tests {
         assert!(json.contains("write-through"));
         let parsed: BackendConfig = serde_json::from_str(&json).unwrap();
         match parsed {
-            BackendConfig::Tiered { l1, l2, l3, write_policy } => {
+            BackendConfig::Tiered {
+                l1,
+                l2,
+                l3,
+                write_policy,
+            } => {
                 assert!(matches!(*l1, BackendConfig::Redis { .. }));
                 assert!(matches!(*l2, BackendConfig::Pg { .. }));
                 assert!(matches!(*l3, BackendConfig::S3 { .. }));
@@ -180,10 +269,117 @@ mod tests {
         }
     }
 
+    // ── The shikumi tier surface (★★ CONFIGURATION MANAGEMENT) ──────────
+
+    #[test]
+    fn the_prescribed_tier_is_the_measured_fast_path() {
+        // An operator who configures nothing gets zstd at the measured knee.
+        // This is the guarantee the whole 2026-08-05 change exists for, stated
+        // at the CONFIG surface — the place a deployment can now move it.
+        assert_eq!(
+            CacheConfig::prescribed_default().nar_codec,
+            NarCodec::Zstd {
+                level: ZstdLevel::default()
+            }
+        );
+        assert_eq!(CacheConfig::default(), CacheConfig::prescribed_default());
+    }
+
+    #[test]
+    fn the_bare_tier_is_the_documented_past() {
+        // Tier 0 is not "a worse default", it is what every already-stored
+        // `.nar.xz` in the fleet was written by. Asking for it by name is how
+        // a bandwidth-bound origin opts out of the CPU-cheap posture.
+        assert_eq!(
+            CacheConfig::bare().nar_codec,
+            NarCodec::Xz {
+                level: XzLevel::default()
+            }
+        );
+        // …and the two tiers differ ONLY in the codec — the tier selector is
+        // not a back door for changing the listen address or the backend.
+        let promoted = CacheConfig {
+            nar_codec: CacheConfig::prescribed_default().nar_codec,
+            ..CacheConfig::bare()
+        };
+        assert_eq!(promoted, CacheConfig::prescribed_default());
+    }
+
+    #[test]
+    fn a_partial_yaml_overlay_changes_one_field_and_keeps_the_rest() {
+        // The overlay property, through shikumi's own loader. A file naming
+        // only the codec must not silently reset the listen address, and must
+        // not be discarded for being incomplete.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.yaml");
+        std::fs::write(&path, "nar_codec:\n  codec: xz\n  level: 9\n").unwrap();
+
+        let resolved = CacheConfig::resolve_tier(ConfigTier::Custom(path));
+        assert_eq!(
+            resolved.nar_codec,
+            NarCodec::Xz {
+                level: XzLevel::new(9).unwrap()
+            },
+            "the overlay must reach the codec"
+        );
+        assert_eq!(
+            resolved.listen,
+            CacheConfig::prescribed_default().listen,
+            "an unmentioned field must keep its prescribed value"
+        );
+        assert_eq!(
+            resolved.priority,
+            CacheConfig::prescribed_default().priority
+        );
+    }
+
+    #[test]
+    fn a_yaml_overlay_may_omit_the_codec_and_keep_the_fast_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.yaml");
+        std::fs::write(&path, "priority: 10\n").unwrap();
+
+        let resolved = CacheConfig::resolve_tier(ConfigTier::Custom(path));
+        assert_eq!(resolved.priority, 10);
+        assert_eq!(
+            resolved.nar_codec,
+            CacheConfig::prescribed_default().nar_codec,
+            "not naming a codec must leave the fast default in place"
+        );
+    }
+
+    #[test]
+    fn the_named_tiers_resolve_to_their_tier_methods() {
+        assert_eq!(
+            CacheConfig::resolve_tier(ConfigTier::Bare),
+            CacheConfig::bare()
+        );
+        assert_eq!(
+            CacheConfig::resolve_tier(ConfigTier::Default),
+            CacheConfig::prescribed_default()
+        );
+    }
+
+    #[test]
+    fn the_config_round_trips_the_codec_through_json() {
+        let cfg = CacheConfig {
+            nar_codec: NarCodec::Xz {
+                level: XzLevel::new(3).unwrap(),
+            },
+            ..CacheConfig::default()
+        };
+        let parsed: CacheConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(parsed, cfg);
+    }
+
     #[test]
     fn redis_ttl_defaults_to_none() {
         let json = r#"{ "type": "redis", "url": "redis://r:6379" }"#;
         let parsed: BackendConfig = serde_json::from_str(json).unwrap();
-        assert!(matches!(parsed, BackendConfig::Redis { ttl_secs: None, .. }));
+        assert!(matches!(
+            parsed,
+            BackendConfig::Redis { ttl_secs: None, .. }
+        ));
     }
 }

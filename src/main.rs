@@ -6692,13 +6692,17 @@ async fn main() -> Result<(), CliError> {
                 // A serving cache that has a signing key advertises the
                 // fail-closed posture to its consumers.
                 let config_require_sigs = signing_key.is_some();
+                // The non-flag fields come from the resolved shikumi tier
+                // (SUI_CACHE_TIER: unset → the prescribed default, i.e. exactly
+                // the previous behavior; a path → a YAML overlay). Explicit
+                // flags still win — they are named fields of this literal.
                 let config = sui_cache::CacheConfig {
                     listen,
                     backend,
                     priority,
                     signing_key: signing_key.map(std::path::PathBuf::from),
                     require_sigs: config_require_sigs,
-                    ..sui_cache::CacheConfig::default()
+                    ..sui_cache::CacheConfig::resolve()
                 };
                 let storage = sui_cache::build_backend(&config.backend)
                     .await
@@ -6716,6 +6720,12 @@ async fn main() -> Result<(), CliError> {
             CacheCommands::Push { paths, cache_url: _, store_path, signing_key, recursive } => {
                 let storage: Arc<dyn sui_cache::StorageBackend> =
                     Arc::new(sui_cache::LocalStorage::new(&store_path));
+                // How this origin packs NARs — typed configuration, resolved
+                // ONCE for the whole push so every path in a closure lands
+                // under the same codec. Unset SUI_CACHE_TIER → zstd -12, the
+                // measured fast path; a bandwidth-bound origin points the var
+                // at a YAML naming `{ codec: xz, level: 6 }`.
+                let nar_codec = sui_cache::CacheConfig::resolve().nar_codec;
                 let signer = if let Some(key_path) = signing_key {
                     let key_str = std::fs::read_to_string(&key_path).map_err(|e| {
                         CliError::Orchestrate {
@@ -6831,6 +6841,7 @@ async fn main() -> Result<(), CliError> {
                         &hash,
                         &references,
                         deriver.as_deref(),
+                        nar_codec,
                     )
                     .await
                     {

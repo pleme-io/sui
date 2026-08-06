@@ -1,12 +1,20 @@
 //! Push pipeline — build output to NAR to sign to upload.
 //!
-//! Takes a store path, dumps it as NAR, compresses with xz,
-//! builds narinfo metadata, signs it, and uploads both to the
+//! Takes a store path, dumps it as NAR, compresses it under the configured
+//! [`NarCodec`], builds narinfo metadata, signs it, and uploads both to the
 //! configured storage backend.
+//!
+//! The codec is **typed configuration**, not a compile-time constant: it is a
+//! field of [`CacheConfig`](crate::CacheConfig), which is a
+//! [`shikumi::TieredConfig`] (★★ CONFIGURATION MANAGEMENT). See [`NarCodec`]
+//! for why zstd is the prescribed default and why the level rides *inside* the
+//! codec rather than beside it.
 
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sui_compat::nar::NarWriter;
 use sui_compat::narinfo::NarInfo;
@@ -30,7 +38,7 @@ pub struct PushResult {
 ///
 /// 1. Dump the path as NAR
 /// 2. Hash the uncompressed NAR (sha256)
-/// 3. Compress with xz
+/// 3. Compress under `codec`
 /// 4. Hash the compressed NAR (sha256)
 /// 5. Build narinfo metadata
 /// 6. Sign the narinfo
@@ -40,6 +48,19 @@ pub struct PushResult {
 /// The `hash` is the 32-character store path hash (the `abc` part).
 ///
 /// `references` are the runtime dependency store path basenames.
+///
+/// `codec` is the packing posture — resolved from
+/// [`CacheConfig::nar_codec`](crate::CacheConfig::nar_codec), never chosen
+/// here. It is one value and it is *threaded*, not re-stated: the bytes, the
+/// URL suffix and the `Compression:` field below all read the same parameter,
+/// so a caller has no way to pick zstd bytes and an `xz` narinfo. See
+/// [`NarCodec`].
+///
+/// # Errors
+///
+/// [`CacheError::PathNotFound`] if `store_path` does not exist,
+/// [`CacheError::Io`] if the NAR dump or compression fails, or whatever the
+/// backend returns from the two uploads.
 pub async fn push_path(
     storage: &dyn StorageBackend,
     signer: &CacheSigner,
@@ -47,6 +68,7 @@ pub async fn push_path(
     hash: &str,
     references: &[String],
     deriver: Option<&str>,
+    codec: NarCodec,
 ) -> Result<PushResult, CacheError> {
     let path = Path::new(store_path);
     if !path.exists() {
@@ -62,7 +84,6 @@ pub async fn push_path(
 
     // 3. Compress. ONE codec value drives the bytes, the suffix and the
     //    narinfo field below — see `NarCodec`.
-    let codec = NarCodec::default();
     let compressed = codec.compress(&nar_data)?;
     let compressed_size = compressed.len() as u64;
 
@@ -106,12 +127,8 @@ pub async fn push_path(
 /// Dump a filesystem path to NAR format in memory.
 fn dump_path_to_nar(path: &Path) -> Result<Vec<u8>, CacheError> {
     let mut buf = Vec::new();
-    NarWriter::write_path(&mut buf, path).map_err(|e| {
-        CacheError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("NAR dump failed: {e}"),
-        ))
-    })?;
+    NarWriter::write_path(&mut buf, path)
+        .map_err(|e| CacheError::Io(std::io::Error::other(format!("NAR dump failed: {e}"))))?;
     Ok(buf)
 }
 
@@ -156,32 +173,222 @@ fn dump_path_to_nar(path: &Path) -> Result<Vec<u8>, CacheError> {
 /// A mixed cache is fine and needs no migration: each narinfo declares its own
 /// codec, so paths already stored as `.nar.xz` keep resolving while new pushes
 /// land as `.nar.zst`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// ── WHY THE LEVEL LIVES *INSIDE* THE VARIANT ────────────────────────────
+/// The level used to be a free-standing `const ZSTD_LEVEL`. Lifting it to a
+/// sibling config field (`{ codec, level }`) would have been the obvious move
+/// and is wrong: `level = 12` means nothing when `codec = Xz`, and `level = 9`
+/// means two completely different things across the two codecs (near-max for
+/// xz, mid-range for zstd). A pair whose second component is only meaningful
+/// for some values of the first is a variant payload, not a field — so the
+/// codec choice and its one tuning knob travel as one value that cannot be
+/// split, reordered, or half-applied.
+///
+/// The levels are [`ZstdLevel`] / [`XzLevel`], not bare integers: `xz2`'s
+/// encoder **panics** on a preset above 9, so an out-of-range level in a config
+/// file used to be a crash waiting on the first push. It is now rejected where
+/// the value is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "codec", rename_all = "lowercase")]
 pub enum NarCodec {
-    /// zstd at [`ZSTD_LEVEL`], multithreaded. The default.
-    #[default]
-    Zstd,
-    /// xz level 6 — what this cache used before 2026-08-05. Kept selectable
-    /// rather than deleted (★★ MODULARIZE, DON'T DELETE): it is still the
-    /// right choice for an origin that is bandwidth-bound rather than
-    /// CPU-bound, and it is what every already-stored path is packed with.
-    Xz,
+    /// zstd, multithreaded. The prescribed default at
+    /// [`ZstdLevel::PRESCRIBED`].
+    Zstd {
+        /// The compression level, bounded to zstd's accepted band.
+        #[serde(default)]
+        level: ZstdLevel,
+    },
+    /// xz — what this cache used before 2026-08-05. Kept selectable rather
+    /// than deleted (★★ MODULARIZE, DON'T DELETE): it is still the right
+    /// choice for an origin that is bandwidth-bound rather than CPU-bound, and
+    /// it is what every already-stored path is packed with.
+    Xz {
+        /// The preset, bounded to xz's accepted band.
+        #[serde(default)]
+        level: XzLevel,
+    },
 }
 
-/// The measured knee (see [`NarCodec`]): 19x faster than xz -6 for four
-/// percentage points of ratio. Not a round number chosen for looks.
-const ZSTD_LEVEL: i32 = 12;
+impl Default for NarCodec {
+    /// The fast path is what you get without asking — see the benchmark in the
+    /// [`NarCodec`] docs.
+    fn default() -> Self {
+        Self::Zstd {
+            level: ZstdLevel::default(),
+        }
+    }
+}
+
+/// A compression level that fell outside its codec's accepted band.
+///
+/// Returned by [`ZstdLevel::new`] / [`XzLevel::new`] and, through
+/// `#[serde(try_from)]`, by deserializing a config that names an impossible
+/// level — so a bad level is a **config-parse rejection**, not a panic on the
+/// first push. (Tier-honest: parse-time-rejected, one rung below
+/// truly-unrepresentable — the inner field is private, so the only way to build
+/// a level is through the checked constructor.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelOutOfRange {
+    /// Which codec's band was violated (`"zstd"` / `"xz"`).
+    pub codec: &'static str,
+    /// The rejected value.
+    pub got: i64,
+    /// The inclusive lower bound.
+    pub min: i64,
+    /// The inclusive upper bound.
+    pub max: i64,
+}
+
+impl fmt::Display for LevelOutOfRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} level {} is outside the accepted range {}..={}",
+            self.codec, self.got, self.min, self.max
+        )
+    }
+}
+
+impl std::error::Error for LevelOutOfRange {}
+
+/// A zstd compression level known to be inside the accepted band.
+///
+/// The band is `1..=22`, not zstd's full `ZSTD_minCLevel()..=22`. The negative
+/// "ultra-fast" levels are real but unmeasured here, and the benchmark that
+/// picked 12 only covers the positive range — admitting a level we have never
+/// timed would be a knob with no evidence behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "i32", into = "i32")]
+pub struct ZstdLevel(i32);
+
+impl ZstdLevel {
+    /// Lowest accepted level.
+    pub const MIN: i32 = 1;
+    /// Highest accepted level (zstd's maximum).
+    pub const MAX: i32 = 22;
+    /// The measured knee (see [`NarCodec`]): 19x faster than xz -6 for four
+    /// percentage points of ratio. Not a round number chosen for looks.
+    pub const PRESCRIBED: i32 = 12;
+
+    /// Build a level, rejecting anything outside `MIN..=MAX`.
+    ///
+    /// # Errors
+    ///
+    /// [`LevelOutOfRange`] if `level` is outside the accepted band.
+    pub const fn new(level: i32) -> Result<Self, LevelOutOfRange> {
+        if level < Self::MIN || level > Self::MAX {
+            return Err(LevelOutOfRange {
+                codec: "zstd",
+                got: level as i64,
+                min: Self::MIN as i64,
+                max: Self::MAX as i64,
+            });
+        }
+        Ok(Self(level))
+    }
+
+    /// The level as the integer zstd's encoder wants.
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl Default for ZstdLevel {
+    fn default() -> Self {
+        Self(Self::PRESCRIBED)
+    }
+}
+
+impl TryFrom<i32> for ZstdLevel {
+    type Error = LevelOutOfRange;
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        Self::new(v)
+    }
+}
+
+impl From<ZstdLevel> for i32 {
+    fn from(v: ZstdLevel) -> Self {
+        v.0
+    }
+}
+
+/// An xz preset known to be inside the accepted band (`0..=9`).
+///
+/// The bound is load-bearing rather than decorative: `xz2::write::XzEncoder`
+/// unwraps `Stream::new_easy_encoder`, so a preset of 10 **panics** the pushing
+/// process rather than returning an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct XzLevel(u32);
+
+impl XzLevel {
+    /// Lowest accepted preset.
+    pub const MIN: u32 = 0;
+    /// Highest accepted preset — above this `xz2` panics.
+    pub const MAX: u32 = 9;
+    /// What this cache used before 2026-08-05, and therefore what every
+    /// already-stored `.nar.xz` is packed with.
+    pub const PRESCRIBED: u32 = 6;
+
+    /// Build a preset, rejecting anything outside `MIN..=MAX`.
+    ///
+    /// # Errors
+    ///
+    /// [`LevelOutOfRange`] if `level` is outside the accepted band.
+    pub const fn new(level: u32) -> Result<Self, LevelOutOfRange> {
+        if level > Self::MAX {
+            return Err(LevelOutOfRange {
+                codec: "xz",
+                got: level as i64,
+                min: Self::MIN as i64,
+                max: Self::MAX as i64,
+            });
+        }
+        Ok(Self(level))
+    }
+
+    /// The preset as the integer `xz2`'s encoder wants.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for XzLevel {
+    fn default() -> Self {
+        Self(Self::PRESCRIBED)
+    }
+}
+
+impl TryFrom<u32> for XzLevel {
+    type Error = LevelOutOfRange;
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        Self::new(v)
+    }
+}
+
+impl From<XzLevel> for u32 {
+    fn from(v: XzLevel) -> Self {
+        v.0
+    }
+}
 
 impl NarCodec {
     /// The `Compression:` field value. **nix's wire vocabulary, not ours** —
     /// verified 2026-08-05 by having nix write a zstd cache itself
     /// (`nix copy --to 'file://…?compression=zstd'`) and reading back what it
     /// emitted.
+    ///
+    /// The level is deliberately absent from this value: it is an *encoder*
+    /// setting, and a decompressor reads it out of the frame header. A codec
+    /// reconfigured from level 12 to level 3 still publishes `zstd`, and every
+    /// client still reads it.
     #[must_use]
     pub fn narinfo_name(self) -> &'static str {
         match self {
-            Self::Zstd => "zstd",
-            Self::Xz => "xz",
+            Self::Zstd { .. } => "zstd",
+            Self::Xz { .. } => "xz",
         }
     }
 
@@ -193,8 +400,8 @@ impl NarCodec {
     #[must_use]
     pub fn url_suffix(self) -> &'static str {
         match self {
-            Self::Zstd => ".nar.zst",
-            Self::Xz => ".nar.xz",
+            Self::Zstd { .. } => ".nar.zst",
+            Self::Xz { .. } => ".nar.xz",
         }
     }
 
@@ -204,11 +411,16 @@ impl NarCodec {
     /// the library for one worker per core. A failure to enable threading is
     /// deliberately NOT fatal — it costs speed, never correctness, and a cache
     /// push that refuses to run is worse than a slow one.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::Io`] if the encoder cannot be built or the write fails.
+    /// The level cannot be the cause: it is bounded at construction.
     pub fn compress(self, data: &[u8]) -> Result<Vec<u8>, CacheError> {
         match self {
-            Self::Zstd => {
+            Self::Zstd { level } => {
                 let mut out = Vec::new();
-                let mut enc = zstd::Encoder::new(&mut out, ZSTD_LEVEL).map_err(CacheError::Io)?;
+                let mut enc = zstd::Encoder::new(&mut out, level.get()).map_err(CacheError::Io)?;
                 let _ = enc.multithread(
                     u32::try_from(std::thread::available_parallelism().map_or(1, usize::from))
                         .unwrap_or(1),
@@ -217,13 +429,64 @@ impl NarCodec {
                 enc.finish().map_err(CacheError::Io)?;
                 Ok(out)
             }
-            Self::Xz => {
+            Self::Xz { level } => {
                 let mut out = Vec::new();
-                let mut enc = xz2::write::XzEncoder::new(&mut out, 6);
+                // `level.get()` is bounded to 0..=9 by construction — the
+                // unwrap inside `XzEncoder::new` cannot be reached.
+                let mut enc = xz2::write::XzEncoder::new(&mut out, level.get());
                 enc.write_all(data).map_err(CacheError::Io)?;
                 enc.finish().map_err(CacheError::Io)?;
                 Ok(out)
             }
+        }
+    }
+
+    /// Decompress a NAR packed under this codec.
+    ///
+    /// The inverse of [`compress`](Self::compress), on the same value — so a
+    /// test (or a future serve-side verifier) can prove that what a narinfo
+    /// *declares* actually decodes the bytes it points at, rather than
+    /// asserting two strings match.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::Io`] if the data is not a valid frame for this codec.
+    pub fn decompress(self, data: &[u8]) -> Result<Vec<u8>, CacheError> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        match self {
+            Self::Zstd { .. } => {
+                zstd::Decoder::new(data)
+                    .map_err(CacheError::Io)?
+                    .read_to_end(&mut out)
+                    .map_err(CacheError::Io)?;
+            }
+            Self::Xz { .. } => {
+                xz2::read::XzDecoder::new(data)
+                    .read_to_end(&mut out)
+                    .map_err(CacheError::Io)?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Resolve a codec from the `Compression:` field of a narinfo — the
+    /// *reader's* half of the one-value invariant.
+    ///
+    /// Level is irrelevant on the decode side (it lives in the frame header),
+    /// so the returned value carries the prescribed level as a placeholder and
+    /// is only ever used for its [`decompress`](Self::decompress) /
+    /// [`url_suffix`](Self::url_suffix) projections.
+    #[must_use]
+    pub fn from_narinfo_name(name: &str) -> Option<Self> {
+        match name {
+            "zstd" => Some(Self::Zstd {
+                level: ZstdLevel::default(),
+            }),
+            "xz" => Some(Self::Xz {
+                level: XzLevel::default(),
+            }),
+            _ => None,
         }
     }
 }
@@ -264,6 +527,7 @@ mod tests {
             "abc",
             &[],
             None,
+            NarCodec::default(),
         )
         .await
         .unwrap();
@@ -301,6 +565,7 @@ mod tests {
             "nope",
             &[],
             None,
+            NarCodec::default(),
         )
         .await;
 
@@ -327,6 +592,7 @@ mod tests {
             "xyz",
             &refs,
             Some("builder.drv"),
+            NarCodec::default(),
         )
         .await
         .unwrap();
@@ -351,9 +617,17 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("data"), b"test content").unwrap();
 
-        push_path(&storage, &signer, path.to_str().unwrap(), "ttt", &[], None)
-            .await
-            .unwrap();
+        push_path(
+            &storage,
+            &signer,
+            path.to_str().unwrap(),
+            "ttt",
+            &[],
+            None,
+            NarCodec::default(),
+        )
+        .await
+        .unwrap();
 
         let narinfo_text = storage.get_narinfo("ttt").await.unwrap().unwrap();
         let parsed = NarInfo::parse(&narinfo_text).unwrap();
@@ -375,20 +649,122 @@ mod tests {
         );
     }
 
+    /// Every codec the config surface can name — the closed set the
+    /// invariant tests below sweep. A new variant that is not added here
+    /// leaves the exhaustive `match` in [`codecs`] failing to compile, so the
+    /// sweep cannot silently stop covering it.
+    fn codecs() -> Vec<NarCodec> {
+        // Exhaustive by construction: this match forces a compile error when a
+        // variant is added, which is the point of writing it as a match over a
+        // dummy rather than as a literal list.
+        let all = [
+            NarCodec::Zstd {
+                level: ZstdLevel::default(),
+            },
+            NarCodec::Xz {
+                level: XzLevel::default(),
+            },
+        ];
+        for c in all {
+            match c {
+                NarCodec::Zstd { .. } | NarCodec::Xz { .. } => {}
+            }
+        }
+        all.to_vec()
+    }
+
     #[test]
     fn every_codec_round_trips() {
         use std::io::Read;
         let data = b"hello world, this is test data for NAR compression";
 
-        let xz = NarCodec::Xz.compress(data).unwrap();
+        let xz = NarCodec::Xz {
+            level: XzLevel::default(),
+        }
+        .compress(data)
+        .unwrap();
         let mut d = xz2::read::XzDecoder::new(xz.as_slice());
         let mut out = Vec::new();
         d.read_to_end(&mut out).unwrap();
         assert_eq!(out, data, "xz must round-trip");
 
-        let z = NarCodec::Zstd.compress(data).unwrap();
+        let z = NarCodec::Zstd {
+            level: ZstdLevel::default(),
+        }
+        .compress(data)
+        .unwrap();
         let out = zstd::decode_all(z.as_slice()).unwrap();
         assert_eq!(out, data, "zstd must round-trip");
+    }
+
+    #[test]
+    fn every_configurable_level_round_trips_under_its_own_codec() {
+        // The level is now operator-supplied, so the round-trip has to hold
+        // across the band, not only at the prescribed knee.
+        let data = b"hello world, this is test data for NAR compression".repeat(64);
+        for level in [ZstdLevel::MIN, ZstdLevel::PRESCRIBED, 19, ZstdLevel::MAX] {
+            let codec = NarCodec::Zstd {
+                level: ZstdLevel::new(level).unwrap(),
+            };
+            assert_eq!(
+                codec.decompress(&codec.compress(&data).unwrap()).unwrap(),
+                data
+            );
+        }
+        for level in [XzLevel::MIN, XzLevel::PRESCRIBED, XzLevel::MAX] {
+            let codec = NarCodec::Xz {
+                level: XzLevel::new(level).unwrap(),
+            };
+            assert_eq!(
+                codec.decompress(&codec.compress(&data).unwrap()).unwrap(),
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_band_level_is_rejected_where_it_is_built() {
+        // xz2's encoder PANICS above preset 9 — the bound is what stops a
+        // config typo from taking the pushing process down mid-closure.
+        assert!(XzLevel::new(10).is_err(), "xz preset 10 panics xz2");
+        assert!(XzLevel::new(u32::MAX).is_err());
+        assert!(ZstdLevel::new(0).is_err());
+        assert!(ZstdLevel::new(23).is_err());
+        assert!(ZstdLevel::new(-5).is_err(), "unmeasured ultra-fast band");
+
+        // …and the rejection reaches config parsing, so a bad YAML/JSON level
+        // is a startup error rather than a first-push surprise.
+        let bad = r#"{ "codec": "xz", "level": 10 }"#;
+        assert!(
+            serde_json::from_str::<NarCodec>(bad).is_err(),
+            "a config naming an impossible level must fail to parse"
+        );
+        let good = r#"{ "codec": "xz", "level": 9 }"#;
+        assert_eq!(
+            serde_json::from_str::<NarCodec>(good).unwrap(),
+            NarCodec::Xz {
+                level: XzLevel::new(9).unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn a_codec_without_a_level_takes_its_own_prescribed_one() {
+        // The level rides inside the variant, so omitting it in config picks
+        // the level that belongs to THAT codec — 12 for zstd, 6 for xz. A
+        // shared `level` field could not have done this.
+        assert_eq!(
+            serde_json::from_str::<NarCodec>(r#"{ "codec": "zstd" }"#).unwrap(),
+            NarCodec::Zstd {
+                level: ZstdLevel::new(12).unwrap()
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<NarCodec>(r#"{ "codec": "xz" }"#).unwrap(),
+            NarCodec::Xz {
+                level: XzLevel::new(6).unwrap()
+            }
+        );
     }
 
     // ── ★ THE INVARIANT THIS TYPE EXISTS FOR ────────────────────────────
@@ -400,7 +776,7 @@ mod tests {
 
     #[test]
     fn the_suffix_and_the_narinfo_name_agree_for_every_codec() {
-        for codec in [NarCodec::Zstd, NarCodec::Xz] {
+        for codec in codecs() {
             let suffix = codec.url_suffix();
             let name = codec.narinfo_name();
             // `.nar.zst` carries `zstd`; `.nar.xz` carries `xz`. The suffix is
@@ -426,10 +802,24 @@ mod tests {
         // `URL: nar/….nar.zst`. These are nix's spellings, not ours, so they
         // are pinned rather than derived — `.nar.zstd` would have been the
         // natural guess and is WRONG.
-        assert_eq!(NarCodec::Zstd.narinfo_name(), "zstd");
-        assert_eq!(NarCodec::Zstd.url_suffix(), ".nar.zst");
-        assert_eq!(NarCodec::Xz.narinfo_name(), "xz");
-        assert_eq!(NarCodec::Xz.url_suffix(), ".nar.xz");
+        //
+        // The level is varied deliberately: the wire vocabulary is a property
+        // of the CODEC, never of its tuning, so a re-levelled codec must still
+        // publish the same two strings.
+        for level in [ZstdLevel::MIN, ZstdLevel::PRESCRIBED, ZstdLevel::MAX] {
+            let c = NarCodec::Zstd {
+                level: ZstdLevel::new(level).unwrap(),
+            };
+            assert_eq!(c.narinfo_name(), "zstd");
+            assert_eq!(c.url_suffix(), ".nar.zst");
+        }
+        for level in [XzLevel::MIN, XzLevel::PRESCRIBED, XzLevel::MAX] {
+            let c = NarCodec::Xz {
+                level: XzLevel::new(level).unwrap(),
+            };
+            assert_eq!(c.narinfo_name(), "xz");
+            assert_eq!(c.url_suffix(), ".nar.xz");
+        }
     }
 
     #[test]
@@ -437,6 +827,169 @@ mod tests {
         // The whole point of the change. If someone flips the default back to
         // xz, they should have to edit this test and say why — a 2483-path
         // closure cost FOUR HOURS under xz -6 on rio.
-        assert_eq!(NarCodec::default(), NarCodec::Zstd);
+        //
+        // Now that the codec is CONFIGURABLE the guarantee is bigger than the
+        // `Default` impl: the prescribed shikumi tier — what an operator who
+        // sets nothing actually gets — must be the fast one too. A default
+        // that is fast while the prescribed tier is slow would satisfy the old
+        // assertion and still hand every unconfigured origin xz.
+        assert_eq!(
+            NarCodec::default(),
+            NarCodec::Zstd {
+                level: ZstdLevel::new(ZstdLevel::PRESCRIBED).unwrap()
+            }
+        );
+        assert_eq!(
+            crate::CacheConfig::default().nar_codec,
+            NarCodec::default(),
+            "CacheConfig::default() must not describe a different cache"
+        );
+        assert_eq!(
+            <crate::CacheConfig as shikumi::TieredConfig>::prescribed_default().nar_codec,
+            NarCodec::default(),
+            "an operator who configures nothing must get the measured fast path"
+        );
+    }
+
+    // ── ★ THE DRIFT CLASS, UNDER CONFIGURATION ──────────────────────────
+    // Making the codec configurable introduces the risk the type was built to
+    // remove: a NON-default codec is now reachable in production, so it must
+    // agree with itself just as tightly as the default does.
+
+    #[tokio::test]
+    async fn a_configured_non_default_codec_still_agrees_end_to_end() {
+        // Not a string comparison: for EVERY codec the config can name, push a
+        // real path, then decode the stored blob using ONLY what the narinfo
+        // declares — the codec resolved from its `Compression:` field, at the
+        // URL its `URL:` field names — and check the bytes hash to the
+        // `NarHash:` it advertises. That is exactly what a nix client does, so
+        // a narinfo that disagrees with its bytes fails here the way it would
+        // fail in the field, rather than passing a lint.
+        for codec in codecs() {
+            assert_ne!(
+                codec.narinfo_name(),
+                "",
+                "every codec must name itself on the wire"
+            );
+            let cache_dir = tempfile::tempdir().unwrap();
+            let storage = LocalStorage::new(cache_dir.path());
+            let signer = CacheSigner::generate("cfg-key".to_string());
+
+            let store_dir = tempfile::tempdir().unwrap();
+            let path = store_dir.path().join("cfg-pkg");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("payload"),
+                b"configured-codec payload".repeat(512),
+            )
+            .unwrap();
+
+            push_path(
+                &storage,
+                &signer,
+                path.to_str().unwrap(),
+                "cfg",
+                &[],
+                None,
+                codec,
+            )
+            .await
+            .unwrap();
+
+            let parsed =
+                NarInfo::parse(&storage.get_narinfo("cfg").await.unwrap().unwrap()).unwrap();
+
+            // (a) The declared codec is a codec we can actually resolve.
+            let declared = NarCodec::from_narinfo_name(&parsed.compression)
+                .unwrap_or_else(|| panic!("unresolvable Compression: {}", parsed.compression));
+
+            // (b) The URL the narinfo publishes carries that codec's suffix.
+            assert!(
+                parsed.url.ends_with(declared.url_suffix()),
+                "narinfo for {codec:?} publishes URL {} under Compression {} — \
+                 the suffix and the field disagree",
+                parsed.url,
+                parsed.compression
+            );
+
+            // (c) The blob really is at that URL…
+            let blob = storage
+                .get_nar(&parsed.url)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("no NAR stored at the advertised URL {}", parsed.url));
+
+            // (d) …and it decodes under the DECLARED codec, to bytes matching
+            //     the declared NarHash. This is the assertion that would have
+            //     caught zstd bytes wearing an `xz` label.
+            let plain = declared.decompress(&blob).unwrap_or_else(|e| {
+                panic!(
+                    "narinfo declares {} but the bytes do not decode as it: {e}",
+                    parsed.compression
+                )
+            });
+            assert_eq!(
+                parsed.nar_hash,
+                format!("sha256:{}", sha256_hex(&plain)),
+                "decoded bytes do not match the NarHash the narinfo advertises"
+            );
+            assert_eq!(parsed.nar_size, plain.len() as u64);
+            assert_eq!(
+                parsed.file_hash,
+                format!("sha256:{}", sha256_hex(&blob)),
+                "FileHash does not describe the stored blob"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_codec_a_config_names_is_the_codec_a_push_uses() {
+        // The whole wire, from a YAML file on disk to the bytes in the cache,
+        // through shikumi's REAL loader (`ConfigTier::Custom`) rather than a
+        // hand-rolled parse — a knob that resolves but never reaches the
+        // compressor is decorative, and the operator's belief about their
+        // cache would be wrong.
+        use shikumi::{ConfigTier, TieredConfig};
+
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let cfg_path = cfg_dir.path().join("cache.yaml");
+        std::fs::write(&cfg_path, "nar_codec:\n  codec: xz\n  level: 1\n").unwrap();
+
+        let configured = crate::CacheConfig::resolve_tier(ConfigTier::Custom(cfg_path)).nar_codec;
+        assert_eq!(
+            configured,
+            NarCodec::Xz {
+                level: XzLevel::new(1).unwrap()
+            },
+            "the YAML overlay did not reach the codec field"
+        );
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::new(cache_dir.path());
+        let signer = CacheSigner::generate("cfg-key".to_string());
+        let store_dir = tempfile::tempdir().unwrap();
+        let path = store_dir.path().join("pkg");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("f"), b"data").unwrap();
+
+        push_path(
+            &storage,
+            &signer,
+            path.to_str().unwrap(),
+            "cfgd",
+            &[],
+            None,
+            configured,
+        )
+        .await
+        .unwrap();
+
+        let parsed = NarInfo::parse(&storage.get_narinfo("cfgd").await.unwrap().unwrap()).unwrap();
+        assert_eq!(parsed.compression, "xz");
+        assert_eq!(parsed.url, "nar/cfgd.nar.xz");
+        // And it is NOT the default — otherwise this test would pass while the
+        // configuration was being ignored entirely.
+        assert_ne!(configured, NarCodec::default());
+        assert_ne!(parsed.compression, NarCodec::default().narinfo_name());
     }
 }

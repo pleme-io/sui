@@ -88,7 +88,10 @@ impl StorageBackend for MemBackend {
     }
     async fn put_narinfo_record(&self, hash: &str, content: &str) -> Result<(), CacheError> {
         self.is_down()?;
-        self.narinfo.lock().unwrap().insert(hash.to_string(), content.to_string());
+        self.narinfo
+            .lock()
+            .unwrap()
+            .insert(hash.to_string(), content.to_string());
         Ok(())
     }
     async fn delete_narinfo_record(&self, hash: &str) -> Result<(), CacheError> {
@@ -108,7 +111,10 @@ impl StorageBackend for MemBackend {
     }
     async fn put_nar(&self, path: &str, data: &[u8]) -> Result<(), CacheError> {
         self.is_down()?;
-        self.nar.lock().unwrap().insert(path.to_string(), data.to_vec());
+        self.nar
+            .lock()
+            .unwrap()
+            .insert(path.to_string(), data.to_vec());
         Ok(())
     }
     /// An in-memory test double holds whole values by construction. The
@@ -150,18 +156,26 @@ async fn racing_puts_of_the_same_key_leave_one_value_per_tier_all_readers_agree(
         });
     }
     while let Some(res) = set.join_next().await {
-        res.expect("task panicked").expect("racing same-key put must succeed");
+        res.expect("task panicked")
+            .expect("racing same-key put must succeed");
     }
 
     // Every durable tier holds exactly ONE value for the key, and it is correct.
     for tier in [&l1, &l2, &l3] {
         assert!(tier.has_narinfo("h"), "each tier must hold the key");
         assert!(tier.has_nar("nar/h.nar.xz"));
-        assert_eq!(tier.narinfo_count(), 1, "same-key race must collapse to one narinfo per tier");
+        assert_eq!(
+            tier.narinfo_count(),
+            1,
+            "same-key race must collapse to one narinfo per tier"
+        );
     }
     // Read back through the tier — the one canonical value, all readers agree.
     assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
-    assert_eq!(tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(), b"blob");
+    assert_eq!(
+        tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(),
+        b"blob"
+    );
 
     // A pool of concurrent readers ALL see the same correct value.
     let mut reads = tokio::task::JoinSet::new();
@@ -170,8 +184,14 @@ async fn racing_puts_of_the_same_key_leave_one_value_per_tier_all_readers_agree(
         reads.spawn(async move { tiered.get_narinfo("h").await });
     }
     while let Some(res) = reads.join_next().await {
-        let got = res.expect("reader panicked").expect("read must succeed").expect("key present");
-        assert_eq!(got, NARINFO, "every concurrent reader must agree on the canonical value");
+        let got = res
+            .expect("reader panicked")
+            .expect("read must succeed")
+            .expect("key present");
+        assert_eq!(
+            got, NARINFO,
+            "every concurrent reader must agree on the canonical value"
+        );
     }
 }
 
@@ -193,7 +213,8 @@ async fn racing_puts_of_distinct_keys_all_land_without_cross_contamination() {
         set.spawn(async move { tiered.put_narinfo(&k, &v).await });
     }
     while let Some(res) = set.join_next().await {
-        res.expect("task panicked").expect("distinct-key put must succeed");
+        res.expect("task panicked")
+            .expect("distinct-key put must succeed");
     }
 
     // All keys present, each resolving to ITS OWN value (no cross-contamination).
@@ -236,7 +257,8 @@ async fn concurrent_readers_during_writes_never_see_a_torn_value() {
         });
     }
     while let Some(res) = set.join_next().await {
-        res.expect("task panicked").expect("no torn read/write under a same-key race");
+        res.expect("task panicked")
+            .expect("no torn read/write under a same-key race");
     }
     assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
 }
@@ -263,8 +285,16 @@ async fn lookup_order_is_l1_then_l2_then_l3_with_promotion() {
     let l2_before = l2.get_narinfo_calls();
     let l3_before = l3.get_narinfo_calls();
     let _ = tiered.get_narinfo("k").await.unwrap();
-    assert_eq!(l2.get_narinfo_calls(), l2_before, "an L1 hit must not touch L2");
-    assert_eq!(l3.get_narinfo_calls(), l3_before, "an L1 hit must not touch L3");
+    assert_eq!(
+        l2.get_narinfo_calls(),
+        l2_before,
+        "an L1 hit must not touch L2"
+    );
+    assert_eq!(
+        l3.get_narinfo_calls(),
+        l3_before,
+        "an L1 hit must not touch L3"
+    );
 }
 
 #[tokio::test]
@@ -275,7 +305,10 @@ async fn l3_only_key_is_promoted_into_both_l2_and_l1() {
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3.clone());
 
     l3.put_nar("nar/x.nar.xz", b"deep").await.unwrap();
-    assert_eq!(tiered.get_nar("nar/x.nar.xz").await.unwrap().unwrap(), b"deep");
+    assert_eq!(
+        tiered.get_nar("nar/x.nar.xz").await.unwrap().unwrap(),
+        b"deep"
+    );
     assert!(l2.has_nar("nar/x.nar.xz"), "an L3 hit must promote into L2");
     assert!(l1.has_nar("nar/x.nar.xz"), "an L3 hit must promote into L1");
 }
@@ -301,7 +334,10 @@ async fn l1_unreachable_falls_through_to_l2_it_degrades_not_errors() {
         NARINFO,
         "an L1 miss (Ok(None)) must fall through to L2"
     );
-    assert!(l1.has_narinfo("only2"), "and the L2 hit is promoted into L1");
+    assert!(
+        l1.has_narinfo("only2"),
+        "and the L2 hit is promoted into L1"
+    );
 }
 
 #[tokio::test]
@@ -348,7 +384,10 @@ async fn a_key_put_through_the_tier_is_readable_back_through_the_tier() {
     tiered.put_narinfo("rt", NARINFO).await.unwrap();
     tiered.put_nar("nar/rt.nar.xz", b"body").await.unwrap();
     assert_eq!(tiered.get_narinfo("rt").await.unwrap().unwrap(), NARINFO);
-    assert_eq!(tiered.get_nar("nar/rt.nar.xz").await.unwrap().unwrap(), b"body");
+    assert_eq!(
+        tiered.get_nar("nar/rt.nar.xz").await.unwrap().unwrap(),
+        b"body"
+    );
 }
 
 #[tokio::test]
@@ -363,8 +402,14 @@ async fn write_to_l2_read_via_l1_fronted_tier_hits_and_promotes() {
 
     l2.put_narinfo("shared", NARINFO).await.unwrap();
     assert!(!l1.has_narinfo("shared"));
-    assert_eq!(tiered.get_narinfo("shared").await.unwrap().unwrap(), NARINFO);
-    assert!(l1.has_narinfo("shared"), "read-through promoted the L2 value into L1");
+    assert_eq!(
+        tiered.get_narinfo("shared").await.unwrap().unwrap(),
+        NARINFO
+    );
+    assert!(
+        l1.has_narinfo("shared"),
+        "read-through promoted the L2 value into L1"
+    );
 }
 
 // ── real on-disk LocalStorage as the L3, not a mock ────────────────────────
@@ -382,7 +427,10 @@ async fn read_through_from_a_real_on_disk_local_storage_l3() {
     let tiered = TieredBackend::new(l1.clone(), l2.clone(), l3_disk);
     // Cold L1/L2 → served from real disk L3, promoted up both tiers.
     assert_eq!(tiered.get_narinfo("h").await.unwrap().unwrap(), NARINFO);
-    assert_eq!(tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(), b"disk-blob");
+    assert_eq!(
+        tiered.get_nar("nar/h.nar.xz").await.unwrap().unwrap(),
+        b"disk-blob"
+    );
     assert!(l1.has_narinfo("h"));
     assert!(l2.has_narinfo("h"));
 }
@@ -404,7 +452,10 @@ async fn write_around_racing_reads_lazily_fill_l1_without_losing_durability() {
     // Write-around: durable tiers only, skip L1.
     tiered.put_narinfo("wa", NARINFO).await.unwrap();
     assert!(!l1.has_narinfo("wa"), "write-around must not touch L1");
-    assert!(l2.has_narinfo("wa") && l3.has_narinfo("wa"), "durable tiers persisted");
+    assert!(
+        l2.has_narinfo("wa") && l3.has_narinfo("wa"),
+        "durable tiers persisted"
+    );
 
     // Concurrent reads all get the value; read-through eventually fills L1.
     let mut set = tokio::task::JoinSet::new();
@@ -416,7 +467,10 @@ async fn write_around_racing_reads_lazily_fill_l1_without_losing_durability() {
         let got = res.expect("panicked").expect("ok").expect("present");
         assert_eq!(got, NARINFO);
     }
-    assert!(l1.has_narinfo("wa"), "read-through filled L1 after a write-around");
+    assert!(
+        l1.has_narinfo("wa"),
+        "read-through filled L1 after a write-around"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -454,14 +508,21 @@ mod real_infra {
             .output()
             .ok()?;
         if !out.status.success() {
-            eprintln!("docker run failed: {}", String::from_utf8_lossy(&out.stderr));
+            eprintln!(
+                "docker run failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             return None;
         }
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
     fn docker_rm(id: &str) {
-        let _ = std::process::Command::new("docker").arg("rm").arg("-f").arg(id).output();
+        let _ = std::process::Command::new("docker")
+            .arg("rm")
+            .arg("-f")
+            .arg(id)
+            .output();
     }
 
     /// Poll until a TCP port accepts a connection, or time out.
@@ -487,12 +548,8 @@ mod real_infra {
         // Throwaway Redis (L1) + Postgres (L2). Random-ish host ports.
         let redis_port = 6390u16;
         let pg_port = 5440u16;
-        let redis_id = docker_run(&[
-            "-p",
-            &format!("{redis_port}:6379"),
-            "redis:7-alpine",
-        ])
-        .expect("start redis");
+        let redis_id = docker_run(&["-p", &format!("{redis_port}:6379"), "redis:7-alpine"])
+            .expect("start redis");
         let pg_id = docker_run(&[
             "-p",
             &format!("{pg_port}:5432"),
@@ -516,20 +573,24 @@ mod real_infra {
         }
         let _guard = Guard(redis_id.clone(), pg_id.clone());
 
-        assert!(wait_port(&format!("127.0.0.1:{redis_port}"), 30).await, "redis never came up");
-        assert!(wait_port(&format!("127.0.0.1:{pg_port}"), 30).await, "postgres never came up");
+        assert!(
+            wait_port(&format!("127.0.0.1:{redis_port}"), 30).await,
+            "redis never came up"
+        );
+        assert!(
+            wait_port(&format!("127.0.0.1:{pg_port}"), 30).await,
+            "postgres never came up"
+        );
         // Postgres accepts TCP slightly before it accepts auth; give it a beat.
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         let redis = RedisBackend::connect(&format!("redis://127.0.0.1:{redis_port}"))
             .await
             .expect("connect redis");
-        let pg = PgStorageBackend::connect(
-            &format!("postgres://sui:sui@127.0.0.1:{pg_port}/sui"),
-            8,
-        )
-        .await
-        .expect("connect postgres");
+        let pg =
+            PgStorageBackend::connect(&format!("postgres://sui:sui@127.0.0.1:{pg_port}/sui"), 8)
+                .await
+                .expect("connect postgres");
         // L3 = a real on-disk LocalStorage (object-tier stand-in for the test).
         let dir = tempfile::tempdir().unwrap();
         let l3 = Arc::new(LocalStorage::new(dir.path()));
@@ -546,19 +607,25 @@ mod real_infra {
             });
         }
         while let Some(r) = set.join_next().await {
-            r.expect("task panicked").expect("live same-key put must succeed");
+            r.expect("task panicked")
+                .expect("live same-key put must succeed");
         }
 
         // Read back through the live tier — one canonical value.
         assert_eq!(tiered.get_narinfo("live").await.unwrap().unwrap(), NARINFO);
-        assert_eq!(tiered.get_nar("nar/live.nar.xz").await.unwrap().unwrap(), b"live-blob");
+        assert_eq!(
+            tiered.get_nar("nar/live.nar.xz").await.unwrap().unwrap(),
+            b"live-blob"
+        );
 
         // Distinct keys concurrently, then read each back.
         let mut set = tokio::task::JoinSet::new();
         for i in 0..24 {
             let tiered = tiered.clone();
             set.spawn(async move {
-                tiered.put_narinfo(&format!("k{i}"), &format!("body-{i}")).await
+                tiered
+                    .put_narinfo(&format!("k{i}"), &format!("body-{i}"))
+                    .await
             });
         }
         while let Some(r) = set.join_next().await {
@@ -573,13 +640,14 @@ mod real_infra {
 
         // Consistency: write straight into L2 (Postgres) via a fresh handle,
         // read through the L1-fronted tier → hit + promotion into live Redis.
-        let pg2 = PgStorageBackend::connect(
-            &format!("postgres://sui:sui@127.0.0.1:{pg_port}/sui"),
-            4,
-        )
-        .await
-        .unwrap();
+        let pg2 =
+            PgStorageBackend::connect(&format!("postgres://sui:sui@127.0.0.1:{pg_port}/sui"), 4)
+                .await
+                .unwrap();
         pg2.put_narinfo("l2direct", NARINFO).await.unwrap();
-        assert_eq!(tiered.get_narinfo("l2direct").await.unwrap().unwrap(), NARINFO);
+        assert_eq!(
+            tiered.get_narinfo("l2direct").await.unwrap().unwrap(),
+            NARINFO
+        );
     }
 }

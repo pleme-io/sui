@@ -9,16 +9,16 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 
+use crate::StorageBackend;
 use crate::config::CacheConfig;
 use crate::signing::CacheSigner;
-use crate::StorageBackend;
 use sui_compat::narinfo::NarInfo;
 
 /// Shared application state for all handlers.
@@ -59,7 +59,10 @@ pub fn build_router(state: AppState) -> Router {
 /// # Errors
 ///
 /// Returns an error if binding or serving fails.
-pub async fn serve(config: CacheConfig, storage: Arc<dyn StorageBackend>) -> Result<(), crate::CacheError> {
+pub async fn serve(
+    config: CacheConfig,
+    storage: Arc<dyn StorageBackend>,
+) -> Result<(), crate::CacheError> {
     let listen = config.listen.clone();
 
     // Load the ed25519 signing key (if configured) at startup. The key is
@@ -118,8 +121,8 @@ pub async fn serve(config: CacheConfig, storage: Arc<dyn StorageBackend>) -> Res
 /// Returns [`CacheError::NarInfo`](crate::CacheError::NarInfo) if the text
 /// cannot be parsed as a narinfo.
 fn sign_narinfo_text(signer: &CacheSigner, content: &str) -> Result<String, crate::CacheError> {
-    let mut info = NarInfo::parse(content)
-        .map_err(|e| crate::CacheError::NarInfo(e.to_string()))?;
+    let mut info =
+        NarInfo::parse(content).map_err(|e| crate::CacheError::NarInfo(e.to_string()))?;
 
     let key_prefix = format!("{}:", signer.key_name());
     if info.signatures.iter().any(|s| s.starts_with(&key_prefix)) {
@@ -328,10 +331,7 @@ fn nar_content_type(path: &str) -> &'static str {
 /// a truncated response, which Nix rejects on the NarHash it already has from
 /// the narinfo — a loud client-side failure, not a silent bad substitution. A
 /// fault *before* the first byte still degrades to a miss exactly as before.
-async fn get_nar(
-    State(state): State<AppState>,
-    Path(path): Path<String>,
-) -> impl IntoResponse {
+async fn get_nar(State(state): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     let nar_path = format!("nar/{path}");
     match state.storage.get_nar_stream(&nar_path).await {
         Ok(Some(stream)) => {
@@ -411,8 +411,8 @@ async fn put_nar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BackendConfig;
     use crate::LocalStorage;
+    use crate::config::BackendConfig;
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -429,8 +429,15 @@ mod tests {
             store_dir: "/nix/store".to_string(),
             signing_key: None,
             require_sigs: false,
+            // Serving never compresses — the push-side codec is irrelevant
+            // here, so take whatever the prescribed tier names.
+            ..CacheConfig::default()
         };
-        build_router(AppState { storage, config, signer: None })
+        build_router(AppState {
+            storage,
+            config,
+            signer: None,
+        })
     }
 
     async fn body_string(response: axum::http::Response<Body>) -> String {
@@ -614,7 +621,10 @@ mod tests {
             .body(Body::from(good))
             .unwrap();
         let resp = app.clone().oneshot(put).await.unwrap();
-        assert!(resp.status().is_success(), "a valid narinfo must still be accepted");
+        assert!(
+            resp.status().is_success(),
+            "a valid narinfo must still be accepted"
+        );
 
         let get = axum::http::Request::builder()
             .uri("/ok.narinfo")
@@ -651,10 +661,7 @@ mod tests {
     async fn get_nar_xz_content_type() {
         let dir = tempfile::tempdir().unwrap();
         let storage = LocalStorage::new(dir.path());
-        storage
-            .put_nar("nar/test.nar.xz", b"data")
-            .await
-            .unwrap();
+        storage.put_nar("nar/test.nar.xz", b"data").await.unwrap();
 
         let app = test_app(dir.path());
         let req = axum::http::Request::builder()
@@ -702,7 +709,7 @@ mod tests {
     /// (`put_narinfo` → `sign_narinfo_text`), not just the library.
     #[tokio::test]
     async fn put_narinfo_signs_at_ingest_and_get_returns_verifiable_sig() {
-        use crate::signing::{verify_narinfo_signature, CacheSigner};
+        use crate::signing::{CacheSigner, verify_narinfo_signature};
 
         let dir = tempfile::tempdir().unwrap();
         let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
@@ -710,14 +717,21 @@ mod tests {
         let pk = signer.public_key_string();
         let config = CacheConfig {
             listen: "127.0.0.1:0".to_string(),
-            backend: BackendConfig::Local { path: dir.path().to_path_buf() },
+            backend: BackendConfig::Local {
+                path: dir.path().to_path_buf(),
+            },
             priority: 40,
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
             signing_key: None,
             require_sigs: false,
+            ..CacheConfig::default()
         };
-        let app = build_router(AppState { storage, config, signer: Some(signer.clone()) });
+        let app = build_router(AppState {
+            storage,
+            config,
+            signer: Some(signer.clone()),
+        });
 
         // Unsigned narinfo (references deliberately unsorted).
         let narinfo = "StorePath: /nix/store/abc-hello\n\
@@ -746,7 +760,11 @@ mod tests {
         let body = body_string(resp).await;
 
         let parsed = NarInfo::parse(&body).unwrap();
-        assert_eq!(parsed.signatures.len(), 1, "GET must return a signed narinfo");
+        assert_eq!(
+            parsed.signatures.len(),
+            1,
+            "GET must return a signed narinfo"
+        );
         assert!(parsed.signatures[0].starts_with("ingest-key:"));
         assert!(
             verify_narinfo_signature(&parsed, &parsed.signatures[0], &pk).unwrap(),
@@ -764,14 +782,21 @@ mod tests {
         let signer = Arc::new(CacheSigner::generate("dedupe-key".to_string()));
         let config = CacheConfig {
             listen: "127.0.0.1:0".to_string(),
-            backend: BackendConfig::Local { path: dir.path().to_path_buf() },
+            backend: BackendConfig::Local {
+                path: dir.path().to_path_buf(),
+            },
             priority: 40,
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
             signing_key: None,
             require_sigs: false,
+            ..CacheConfig::default()
         };
-        let app = build_router(AppState { storage, config, signer: Some(signer) });
+        let app = build_router(AppState {
+            storage,
+            config,
+            signer: Some(signer),
+        });
 
         let narinfo = "StorePath: /nix/store/def-x\n\
                        URL: nar/def.nar.xz\n\
@@ -785,17 +810,35 @@ mod tests {
         // First PUT (signs), GET the signed text, PUT it back.
         for uri in ["/def.narinfo"] {
             let req = axum::http::Request::builder()
-                .method("PUT").uri(uri).body(Body::from(narinfo)).unwrap();
-            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+                .method("PUT")
+                .uri(uri)
+                .body(Body::from(narinfo))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::OK
+            );
         }
-        let req = axum::http::Request::builder().uri("/def.narinfo").body(Body::empty()).unwrap();
+        let req = axum::http::Request::builder()
+            .uri("/def.narinfo")
+            .body(Body::empty())
+            .unwrap();
         let signed = body_string(app.clone().oneshot(req).await.unwrap()).await;
 
         let req = axum::http::Request::builder()
-            .method("PUT").uri("/def.narinfo").body(Body::from(signed.clone())).unwrap();
-        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+            .method("PUT")
+            .uri("/def.narinfo")
+            .body(Body::from(signed.clone()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::OK
+        );
 
-        let req = axum::http::Request::builder().uri("/def.narinfo").body(Body::empty()).unwrap();
+        let req = axum::http::Request::builder()
+            .uri("/def.narinfo")
+            .body(Body::empty())
+            .unwrap();
         let final_text = body_string(app.oneshot(req).await.unwrap()).await;
         let parsed = NarInfo::parse(&final_text).unwrap();
         assert_eq!(parsed.signatures.len(), 1, "must not double-sign on re-PUT");
@@ -825,13 +868,19 @@ mod tests {
             _hash: &str,
             _content: &str,
         ) -> Result<(), crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: down",
+            )))
         }
         async fn delete_narinfo_record(&self, _hash: &str) -> Result<(), crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: down",
+            )))
         }
         async fn delete_nar_record(&self, _nar_path: &str) -> Result<(), crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: down",
+            )))
         }
         fn nar_ref_index(&self) -> &dyn crate::NarRefIndex {
             &self.nar_refs
@@ -842,7 +891,9 @@ mod tests {
             )))
         }
         async fn put_nar(&self, _path: &str, _data: &[u8]) -> Result<(), crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: down",
+            )))
         }
         /// An in-memory test double holds whole values by construction. The
         /// declaration is required precisely so a *production* backend cannot
@@ -852,7 +903,9 @@ mod tests {
         }
 
         async fn list_narinfos(&self) -> Result<Vec<String>, crate::CacheError> {
-            Err(crate::CacheError::Io(std::io::Error::other("postgres: down")))
+            Err(crate::CacheError::Io(std::io::Error::other(
+                "postgres: down",
+            )))
         }
     }
 

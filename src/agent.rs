@@ -216,6 +216,10 @@ pub async fn run_agent(
             want_mass_query: true,
             store_dir: "/nix/store".to_string(),
             require_sigs,
+            // Serving does not compress — the codec is carried so the agent's
+            // config is a whole `CacheConfig` rather than a subset, and so a
+            // future in-agent push reads the same value the resolved tier names.
+            ..sui_cache::CacheConfig::resolve()
         };
         if let Err(e) = sui_cache::serve(config, cache_storage).await {
             error!(error = %e, "Cache server exited with error");
