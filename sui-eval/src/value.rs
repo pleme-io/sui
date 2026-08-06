@@ -3256,6 +3256,10 @@ impl Value {
             Value::Thunk(thunk) => {
                 thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_bool()
             }
+            // M2.6 Promise softening: coercion of a sentinel to bool
+            // inside a fix-point body returns false (the cheapest sentinel
+            // that lets `if x then … else …` take the else branch).
+            _ if in_promise_eval() => Ok(false),
             _ => Err(EvalError::TypeMismatch { expected: "bool", got: self.type_name() }),
         }
     }
@@ -3267,6 +3271,9 @@ impl Value {
             Value::Thunk(thunk) => {
                 thunk.force(&|e, env| crate::eval::eval_expr(e, env))?.as_int()
             }
+            // M2.6 Promise softening: coercion of a sentinel to int
+            // returns 0.
+            _ if in_promise_eval() => Ok(0),
             _ => Err(EvalError::TypeMismatch { expected: "int", got: self.type_name() }),
         }
     }
@@ -3278,6 +3285,7 @@ impl Value {
             Value::Thunk(_) => Err(EvalError::TypeError(
                 "thunk in as_string: force first via force_value()".into(),
             )),
+            _ if in_promise_eval() => Ok(""),
             _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
@@ -3303,6 +3311,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_str()
             }
+            _ if in_promise_eval() => Ok(String::new()),
             _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
@@ -3316,6 +3325,7 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_nix_string()
             }
+            _ if in_promise_eval() => Ok(NixString::plain("")),
             _ => Err(EvalError::TypeMismatch { expected: "string", got: self.type_name() }),
         }
     }
@@ -3359,6 +3369,12 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_attrs()
             }
+            // M2.6 Promise softening: a coercion of null (or any
+            // non-attrset sentinel) to an attrset inside a fix-point
+            // body returns an empty attrset, so downstream builtins
+            // (mapAttrs, attrNames, ...) see "no keys" rather than a
+            // type error.
+            _ if in_promise_eval() => Ok(NixAttrs::new()),
             _ => Err(EvalError::TypeMismatch { expected: "set", got: self.type_name() }),
         }
     }
@@ -3371,6 +3387,9 @@ impl Value {
                 let forced = thunk.force(&|e, env| crate::eval::eval_expr(e, env))?;
                 forced.to_list()
             }
+            // M2.6 Promise softening: coercion of a sentinel to a list
+            // inside a fix-point body returns an empty list.
+            _ if in_promise_eval() => Ok(Vec::new()),
             _ => Err(EvalError::TypeMismatch { expected: "list", got: self.type_name() }),
         }
     }
