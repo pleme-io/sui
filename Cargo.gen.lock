@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b9dedea4bc4f6f848b456ebad94a5faba2ae9c7f7f512d21329a1714e11d705d",
+  "cargo_lock_sha256": "0e41b390e1bbea7796ffdefed32463e6bb9d0da1c059ab59a37b2ce1ce83168e",
   "manifest_sha256": {
     "Cargo.toml": "18840b28eed0a2a6ff7ba84fc3df43dd4e18a0673d1f83a00d5bb3d62239e72b",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -8,7 +8,7 @@
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
     "sui-bytecode/Cargo.toml": "86a46b9836e27c8eb0576a01f7f6e8f1bb2b1945298bd7f2688cb5a1a2faaa52",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
-    "sui-cache/Cargo.toml": "44d239d88d306171d55a8a82480ade416ab6831fcc0c6ef706951c32ed680961",
+    "sui-cache/Cargo.toml": "9a83d35aacd7e417780f4c5510bb9f2ce6ac8c3cbd0f7fe46edbc8646416fcb0",
     "sui-castore/Cargo.toml": "90b813aabfa836dc85922ee214df654550ca19218d35864baacd821839b7193d",
     "sui-compat/Cargo.toml": "081c9306750e72df272c438c1206eec2eb79583acfcbdb37d4d2ced88864d5ef",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
@@ -24202,6 +24202,16 @@
           {
             "name": "sha2",
             "package_key": "sha2-0.10.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "shikumi",
+            "package_key": "shikumi-0.1.108",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
