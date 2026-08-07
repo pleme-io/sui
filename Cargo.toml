@@ -117,7 +117,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.159"
+version = "0.1.160"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -139,31 +139,31 @@ pedantic = "warn"
 # mirror. Published on crates.io.
 gen-nix = "0.1"
 # Internal crates
-sui-intern = { path = "sui-intern", version = "0.1.159" }
-sui-resolve = { path = "sui-resolve", version = "0.1.159" }
-sui-bytecode = { path = "sui-bytecode", version = "0.1.159" }
-sui-cache = { path = "sui-cache", version = "0.1.159" }
-sui-compat = { path = "sui-compat", version = "0.1.159" }
-sui-store = { path = "sui-store", version = "0.1.159" }
-sui-eval = { path = "sui-eval", version = "0.1.159" }
-sui-ir = { path = "sui-ir", version = "0.1.159" }
-sui-build = { path = "sui-build", version = "0.1.159" }
-sui-daemon = { path = "sui-daemon", version = "0.1.159" }
-sui-orchestrate = { path = "sui-orchestrate", version = "0.1.159" }
-sui-cache-eval = { path = "sui-cache-eval", version = "0.1.159" }
-sui-spec = { path = "sui-spec", version = "0.1.159" }
-sui-graph-store = { path = "sui-graph-store", version = "0.1.159" }
-sui-protocol = { path = "sui-protocol", version = "0.1.159" }
-sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.159" }
-sui-daemon-client = { path = "sui-daemon-client", version = "0.1.159" }
-canteiro-types = { path = "canteiro-types", version = "0.1.159" }
-sui-supercacheci = { path = "sui-supercacheci", version = "0.1.159" }
-sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.159" }
-sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.159" }
-sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.159" }
-sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.159" }
-sui-bigorna = { path = "sui-bigorna", version = "0.1.159" }
-sui-castore = { path = "sui-castore", version = "0.1.159" }
+sui-intern = { path = "sui-intern", version = "0.1.160" }
+sui-resolve = { path = "sui-resolve", version = "0.1.160" }
+sui-bytecode = { path = "sui-bytecode", version = "0.1.160" }
+sui-cache = { path = "sui-cache", version = "0.1.160" }
+sui-compat = { path = "sui-compat", version = "0.1.160" }
+sui-store = { path = "sui-store", version = "0.1.160" }
+sui-eval = { path = "sui-eval", version = "0.1.160" }
+sui-ir = { path = "sui-ir", version = "0.1.160" }
+sui-build = { path = "sui-build", version = "0.1.160" }
+sui-daemon = { path = "sui-daemon", version = "0.1.160" }
+sui-orchestrate = { path = "sui-orchestrate", version = "0.1.160" }
+sui-cache-eval = { path = "sui-cache-eval", version = "0.1.160" }
+sui-spec = { path = "sui-spec", version = "0.1.160" }
+sui-graph-store = { path = "sui-graph-store", version = "0.1.160" }
+sui-protocol = { path = "sui-protocol", version = "0.1.160" }
+sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.160" }
+sui-daemon-client = { path = "sui-daemon-client", version = "0.1.160" }
+canteiro-types = { path = "canteiro-types", version = "0.1.160" }
+sui-supercacheci = { path = "sui-supercacheci", version = "0.1.160" }
+sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.160" }
+sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.160" }
+sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.160" }
+sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.160" }
+sui-bigorna = { path = "sui-bigorna", version = "0.1.160" }
+sui-castore = { path = "sui-castore", version = "0.1.160" }
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader, published on crates.io. Version-pinned to keep
