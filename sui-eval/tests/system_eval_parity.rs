@@ -4,6 +4,31 @@
 //! These are discovery tests -- they report what works and what doesn't
 //! without hard-asserting on operations that depend on full flake evaluation
 //! infrastructure (network fetchTree, nixpkgs import, etc.).
+//!
+//! # READ THIS BEFORE CITING THIS FILE AS EVIDENCE (2026-08-07)
+//!
+//! **Every test here no-ops unless `SUI_TEST_ONLINE` is set and
+//! `nix-instantiate` is on PATH.** `common::skip_if_offline` returns early,
+//! the body never runs, and libtest prints `ok` — so a default
+//! `cargo test -p sui-eval` reports these as **passed while measuring
+//! nothing**. That is the single most dangerous shape an instrument can
+//! have: it manufactures coverage out of a missing precondition.
+//!
+//! To actually measure parity:
+//!
+//! ```sh
+//! SUI_TEST_ONLINE=1 cargo test -p sui-eval --test system_eval_parity -- --nocapture
+//! ```
+//!
+//! When they DO run, six of the seven assert. The seventh
+//! (`nix_repo_eval_no_crash`) asserted nothing at all until 2026-08-07 —
+//! it printed `EXPECTED FAILURE (for now)` and returned green on both
+//! outcomes, so it could not distinguish "sui still cannot evaluate the
+//! fleet's system configs" from "sui now can". It is a characterization
+//! tripwire now; see its own doc comment for why that direction is right.
+//!
+//! Context: `theory/BALIZA.md` phase 0a — truth the instruments before
+//! believing anything downstream of them.
 
 mod common;
 
@@ -13,7 +38,29 @@ fn nix_repo() -> PathBuf {
     common::pleme_io_root().join("nix")
 }
 
-/// Level 1: evaluate_flake on the nix repo doesn't crash
+/// Level 1: characterization tripwire on whether sui can evaluate the
+/// fleet's own nix repo.
+///
+/// **This test used to assert nothing.** Both arms of the match printed and
+/// returned green — `SUCCESS` on Ok, `EXPECTED FAILURE (for now)` with the
+/// literal comment `// Don't assert -- this is informational` on Err. So it
+/// reported the same verdict whether sui had just gained the single most
+/// load-bearing capability in `theory/BALIZA.md` or lost it.
+///
+/// It is a tripwire now, and it deliberately fires on **success**, which is
+/// worth explaining because it looks backwards. Per `BALIZA.md` §III,
+/// "sui has completed a system-toplevel eval" is **ABSENT — zero recorded
+/// instances, ever** (`sui/docs/SUI-EQUIVALENCE.md:325,626`: cid eval OOMs,
+/// killed at 4264 s against nix's 107 s). Asserting `Ok` would pin a
+/// permanent red that everyone learns to ignore; asserting the *known
+/// state* means the day sui can evaluate the nix repo, CI says so out loud
+/// instead of a `println!` scrolling past in a `--nocapture` run nobody
+/// reads.
+///
+/// The same shape as the nix repo's `fleet-rustc-witness`: a tripwire, not
+/// a pin. The measurement may move whenever it likes — it may not move
+/// *unacknowledged*. When it fires, delete the tripwire and land the
+/// positive assertion in the same commit.
 #[test]
 fn nix_repo_eval_no_crash() {
     if common::skip_if_offline("system_eval") {
@@ -28,16 +75,26 @@ fn nix_repo_eval_no_crash() {
     println!("evaluating {}", dir.display());
     match sui_eval::builtins::evaluate_flake(&dir) {
         Ok(v) => {
-            println!("SUCCESS: nix repo evaluated");
-            // Report what top-level keys exist
+            // Report what top-level keys exist, so the operator who trips
+            // this has the evidence in hand rather than having to re-run.
             if let sui_eval::value::Value::Attrs(ref attrs) = v {
                 let keys: Vec<String> = attrs.keys().collect();
-                println!("top-level keys: {:?}", keys);
+                println!("top-level keys: {keys:?}");
             }
+            panic!(
+                "TRIPWIRE: sui evaluated the pleme-io/nix flake. This is GOOD NEWS \
+                 and the test is red on purpose — theory/BALIZA.md §III records \
+                 system-toplevel eval as ABSENT (zero recorded instances, ever), \
+                 and phases 8/9/10 are written on that premise. Re-measure, update \
+                 BALIZA.md §III, then replace this tripwire with the positive \
+                 assertion in the same commit."
+            );
         }
         Err(e) => {
-            println!("EXPECTED FAILURE (for now): {e}");
-            // Don't assert -- this is informational
+            // The recorded state as of 2026-08-07. Not an assertion of
+            // desire — an assertion of fact, so the fact cannot change in
+            // silence.
+            println!("still absent (expected): {e}");
         }
     }
 }
