@@ -80,9 +80,25 @@ impl Route {
 ///
 /// Longest match first (so `nix store dump-path` hits the 2-token
 /// catalog entry, not the 1-token `store`). Returns `Sui` for
-/// Working/SuiNative entries; `Gap` for everything else (including
+/// Working/SuiNative entries **whose grade is a claim about the
+/// platform we are running on**; `Gap` for everything else (including
 /// commands absent from the catalog).
+///
+/// **The platform check is not a refinement, it is the point.** A row's
+/// `maturity` is only ever a claim about its `platforms`, and routing on
+/// the grade alone once sent NixOS operators into `system rebuild` —
+/// graded `Working`, but whose activation arm execs nix-darwin's
+/// `${system_path}/activate` and never NixOS's
+/// `${toplevel}/bin/switch-to-configuration`. Reading the grade without
+/// reading its scope is how a true claim becomes a false route.
 fn route_for(argv_subcommand: &[&str]) -> Route {
+    route_for_on(argv_subcommand, std::env::consts::OS)
+}
+
+/// [`route_for`], with the platform injected so the decision is testable
+/// without cross-compiling — the seam that lets a linux CI run assert the
+/// darwin behaviour and vice versa.
+fn route_for_on(argv_subcommand: &[&str], os: &str) -> Route {
     let Ok(catalog) = sui_spec::cli_coverage::load_canonical() else {
         return Route::Gap {
             matched_name: argv_subcommand.join(" "),
@@ -94,6 +110,12 @@ fn route_for(argv_subcommand: &[&str]) -> Route {
         for entry in &catalog {
             if entry.name == candidate {
                 use sui_spec::cli_coverage::SuiCommandMaturity::*;
+                if !entry.claims_platform(os) {
+                    return Route::Gap {
+                        matched_name: candidate,
+                        maturity: "not-claimed-on-this-platform",
+                    };
+                }
                 return match entry.maturity {
                     Working | SuiNative => Route::Sui,
                     Partial => Route::Gap {
@@ -259,8 +281,83 @@ mod tests {
         // `store dump-path` (2 tokens) is in catalog; `store`
         // alone is the prefix. The longest match should pick the
         // more-specific entry.
+        //
+        // This test used to read `let _ = route_for(&argv);` with the
+        // comment "just don't panic" — it asserted NOTHING and would have
+        // passed against any routing decision whatsoever, including the
+        // wrong one. Truthing the instruments (theory/BALIZA.md phase 0a)
+        // means a test that cannot fail is worse than no test, because it
+        // reports coverage it does not have.
         let argv = ["store", "dump-path", "/nix/store/x"];
-        let _ = route_for(&argv); // both Working → both → Sui; just don't panic
+        assert!(
+            matches!(route_for_on(&argv, "linux"), Route::Sui),
+            "`store dump-path` is Working and platform-independent, so it routes to sui"
+        );
+    }
+
+    /// The regression this whole field exists for.
+    ///
+    /// `system rebuild` is graded `Working` and that grade is TRUE — on
+    /// darwin. Routing it on linux sent the operator into an activation
+    /// arm that execs nix-darwin's `${system_path}/activate` and never
+    /// NixOS's `${toplevel}/bin/switch-to-configuration`.
+    ///
+    /// RED-RUN RECEIPT (2026-08-07): deleting the `:platforms ("macos")`
+    /// line from the `system rebuild` row in `cli_coverage.lisp` turns
+    /// this test red with `expected Gap, got Sui` — the assertion is not
+    /// vacuous, and it is anchored to the catalog row rather than to a
+    /// stub.
+    #[test]
+    fn system_rebuild_does_not_route_to_sui_on_linux() {
+        let argv = ["system", "rebuild"];
+        match route_for_on(&argv, "linux") {
+            Route::Gap { maturity, .. } => {
+                assert_eq!(maturity, "not-claimed-on-this-platform");
+            }
+            Route::Sui => panic!(
+                "`system rebuild` routed to sui on linux — sui's activation arm \
+                 cannot activate a NixOS system (see theory/BALIZA.md §III)"
+            ),
+        }
+    }
+
+    /// The other half, so the fix is a QUALIFICATION and not a round-down:
+    /// darwin keeps the capability it genuinely has. A round-down discards
+    /// true signal exactly as a round-up ships false.
+    #[test]
+    fn system_rebuild_still_routes_to_sui_on_darwin() {
+        let argv = ["system", "rebuild"];
+        assert!(
+            matches!(route_for_on(&argv, "macos"), Route::Sui),
+            "darwin activation is the path sui actually implements; \
+             qualifying the row must not cost darwin its capability"
+        );
+    }
+
+    /// `system rollback` shares the broken arm — both rollback paths end
+    /// in `activate_system(.., Switch)` — so it must be qualified too. A
+    /// rollback lifeline that cannot restore boot state is a slower path
+    /// to the same brick.
+    #[test]
+    fn system_rollback_does_not_route_to_sui_on_linux() {
+        assert!(
+            matches!(route_for_on(&["system", "rollback"], "linux"), Route::Gap { .. }),
+            "`system rollback` does not restore boot state on NixOS"
+        );
+    }
+
+    /// An unannotated row means "platform-independent", which is the
+    /// overwhelming majority of the catalog. If this ever fails, the
+    /// default flipped and every un-annotated row silently stopped
+    /// routing — a catastrophic round-down hiding as a safety fix.
+    #[test]
+    fn unannotated_rows_claim_every_platform() {
+        for os in ["linux", "macos"] {
+            assert!(
+                matches!(route_for_on(&["hash", "file"], os), Route::Sui),
+                "`hash file` carries no :platforms and must route everywhere (os={os})"
+            );
+        }
     }
 
     #[test]

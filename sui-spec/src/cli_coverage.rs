@@ -43,13 +43,64 @@ pub struct SuiCommand {
     #[serde(rename = "nixEquivalent")]
     pub nix_equivalent: String,
     /// Coverage maturity gate.
+    ///
+    /// **The grade is only a claim about [`Self::platforms`].**  See that
+    /// field for why the two are inseparable.
     pub maturity: SuiCommandMaturity,
+    /// The platforms this row's [`Self::maturity`] is a claim ABOUT.
+    ///
+    /// Empty means platform-independent — the overwhelming majority of
+    /// rows (`hash file`, `store sign`, `flake show`) behave identically
+    /// everywhere, and an empty list reads as "everywhere" so those rows
+    /// need no annotation.
+    ///
+    /// **Why this field exists (2026-08-07).** `maturity` alone cannot
+    /// express a command that is correct on one platform and broken on
+    /// another, and `system rebuild` is exactly that: it was graded
+    /// `Working` — defined above as "replace the nix invocation today
+    /// **without behavior loss**" — while `sui-orchestrate`'s activation
+    /// arm execs `${system_path}/activate`, which is nix-darwin's entry
+    /// point.  NixOS activation is `${toplevel}/bin/switch-to-configuration`,
+    /// which exports `INSTALL_BOOTLOADER` / `PRE_SWITCH_CHECK` / `SYSTEMD`
+    /// and then reconciles units; the string `switch-to-configuration`
+    /// appears nowhere in `sui-orchestrate`.  So the row was true on
+    /// darwin and false on NixOS, and one grade had to be both.
+    ///
+    /// That is not a documentation defect.  `sui-nix-wrap`'s `route_for`
+    /// **routes on this grade** — `Working | SuiNative` sends the real
+    /// invocation to sui — so the misgrade pointed NixOS operators at an
+    /// activation path that cannot activate.  Downgrading the row to
+    /// `Partial` would have fixed the routing by discarding a capability
+    /// that genuinely works on darwin; a round-DOWN discards true signal
+    /// exactly as a round-up ships false.  Qualifying the claim keeps both
+    /// halves honest.
+    ///
+    /// Values are `std::env::consts::OS` strings (`"macos"`, `"linux"`).
+    #[serde(default)]
+    pub platforms: Vec<String>,
     /// Substrate primitives the command consumes.
     /// Cross-references `catalog::SubstrateDomain`.
     #[serde(default)]
     pub substrate: Vec<String>,
     /// One-line operator-facing description.
     pub notes: String,
+}
+
+impl SuiCommand {
+    /// Does this row's [`Self::maturity`] claim cover `os`?
+    ///
+    /// `os` is an [`std::env::consts::OS`] string.  An empty
+    /// [`Self::platforms`] means the claim is platform-independent and
+    /// covers everything.
+    ///
+    /// This is the whole reason [`Self::platforms`] exists: a caller that
+    /// acts on `maturity` without asking this question is acting on a
+    /// claim that may not have been made about the machine it is running
+    /// on.
+    #[must_use]
+    pub fn claims_platform(&self, os: &str) -> bool {
+        self.platforms.is_empty() || self.platforms.iter().any(|p| p == os)
+    }
 }
 
 /// Maturity gate for a sui subcommand — where it stands on the
