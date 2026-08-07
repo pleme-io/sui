@@ -3148,6 +3148,34 @@ mod tests {
 
     // ── builtins.fetch* — fetchers ──
 
+    /// Serializes every test that redirects the fetcher's store root.
+    ///
+    /// **Why this exists (2026-08-07).** `SUI_TEST_STORE_DIR` is read by
+    /// `default_store_root`, and three tests point it at three *different*
+    /// `TempDir`s.  `std::env::set_var` is process-global while cargo runs
+    /// tests as THREADS IN ONE PROCESS, so the three raced: last writer
+    /// won, and a loser could then read a store root whose `TempDir` had
+    /// already been dropped and deleted.  That is exactly why Rust 2024
+    /// marks `set_var` unsafe.
+    ///
+    /// The symptom was a test that failed in the full-lib run and passed
+    /// 3/3 in isolation — the worst shape an instrument can have, because
+    /// it teaches the reader to distrust real failures.
+    ///
+    /// Holding this guard for the whole test body keeps the var and the
+    /// `TempDir` alive together and makes the interleaving impossible.
+    ///
+    /// TIER: only-mitigated (C1).  The var is still process-global and a
+    /// future test that forgets the guard re-opens the race.  DESTINATION:
+    /// the store root travels through the interpreter's `Environment` seam
+    /// as a typed field instead of an ambient env var, which is what the
+    /// TYPED-SPEC triplet doctrine asks for and would make the race
+    /// unrepresentable.  `pending-baliza: store-root-through-environment`
+    fn store_dir_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn fetchurl_via_file_url_returns_store_path() {
         use std::io::Write as _;
@@ -3157,6 +3185,7 @@ mod tests {
         let url = format!("file://{path}");
 
         let tmp = tempfile::tempdir().expect("tmp store");
+        let _store_guard = store_dir_guard();
         unsafe { std::env::set_var("SUI_TEST_STORE_DIR", tmp.path()); }
 
         let src = format!(r#"fetchurl {{ url = "{url}"; name = "hello.txt"; }}"#);
@@ -3178,6 +3207,7 @@ mod tests {
         let path = f.path().to_string_lossy().to_string();
         let url = format!("file://{path}");
         let tmp = tempfile::tempdir().expect("tmp store");
+        let _store_guard = store_dir_guard();
         unsafe { std::env::set_var("SUI_TEST_STORE_DIR", tmp.path()); }
 
         let src = format!(
@@ -3207,6 +3237,7 @@ mod tests {
 
         let url = format!("file://{}", tarball_path.to_string_lossy());
         let store_dir = tempfile::tempdir().expect("tmp store");
+        let _store_guard = store_dir_guard();
         unsafe { std::env::set_var("SUI_TEST_STORE_DIR", store_dir.path()); }
 
         let src = format!(r#"fetchTarball {{ url = "{url}"; name = "src"; }}"#);

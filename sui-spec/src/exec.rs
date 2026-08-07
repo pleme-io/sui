@@ -243,15 +243,31 @@ mod tests {
         assert!(out.exit_code.is_none() || out.exit_code == Some(-1));
     }
 
+    /// Build an [`ExitStatus`] carrying `code`, with no subprocess at all.
+    ///
+    /// **This used to spawn `/usr/bin/true` or `/bin/false`, and that made
+    /// both callers fail on every NixOS host in the fleet** — coreutils
+    /// lives in the nix store, so `/bin` contains only `sh` and `/usr/bin`
+    /// only `env`.  Both the primary and the fallback path were absent, so
+    /// `.expect("status must succeed")` panicked with
+    /// `NotFound: No such file or directory` before a single assertion in
+    /// the test body ran.  The tests were not weak — they were *unrunnable*
+    /// on the platform being measured, which is worse: a red instrument
+    /// reads as a red subject.
+    ///
+    /// The old comment justified the spawn with "rust's `ExitStatus` has no
+    /// public constructor on stable".  That is false on unix and has been
+    /// since 1.12: [`ExitStatusExt::from_raw`] takes a raw `wait(2)`
+    /// status, in which a normal exit encodes its code in bits 8..15.  So
+    /// `code << 8` is the status for "exited normally with `code`", and the
+    /// whole filesystem dependency disappears — hermetic, instant, and
+    /// correct on any unix.
+    ///
+    /// unix-only, which costs nothing here: this module already reaches for
+    /// `libc::kill` and `#[cfg(unix)]` in its watchdog.
+    #[cfg(unix)]
     fn fake_exit(code: i32) -> ExitStatus {
-        // Use `false` (exit 1) or `true` (exit 0) since rust's ExitStatus
-        // has no public constructor on stable.  We invoke the binary that
-        // matches the desired code; this is test-only.
-        let bin = if code == 0 { "/usr/bin/true" } else { "/usr/bin/false" };
-        let alt = if code == 0 { "/bin/true" } else { "/bin/false" };
-        let path = if std::path::Path::new(bin).exists() { bin } else { alt };
-        std::process::Command::new(path)
-            .status()
-            .expect("status must succeed")
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(code << 8)
     }
 }
