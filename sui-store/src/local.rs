@@ -1393,6 +1393,195 @@ mod tests {
         );
     }
 
+        /// The child half of [`two_processes_on_one_store_do_not_corrupt_it`].
+    ///
+    /// `#[ignore]` so the normal suite never runs it: it is only meaningful
+    /// when the parent has already created the scratch database and passes its
+    /// path in `SUI_TWO_PROC_DB`. Run directly it does nothing and passes.
+    #[tokio::test]
+    #[ignore = "child process of the two-process store test; driven by its parent"]
+    async fn two_process_writer_child() {
+        let Ok(db) = std::env::var("SUI_TWO_PROC_DB") else {
+            return; // invoked without a parent — nothing to do
+        };
+        let store = LocalStore::open_rw(&db).await.expect("child: open");
+
+        // HANDSHAKE, so overlap is proven rather than hoped. Without it the
+        // parent's 25 writes can finish during process spawn + runtime start +
+        // sqlite open, and the two never contend — the same vacuity the
+        // single-process version of this test shipped with before it was
+        // rewritten with tokio::join!.
+        std::fs::write(format!("{db}.child-ready"), "1").expect("child: ready");
+        let go = format!("{db}.go");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !std::path::Path::new(&go).exists() {
+            assert!(std::time::Instant::now() < deadline, "child: parent never said go");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        for n in 0..25usize {
+            let info = PathInfo {
+                path: format!("/nix/store/c{n:031}-child"),
+                nar_hash: format!("sha256:{:064x}", n + 1000),
+                nar_size: 2048 + n as i64,
+                references: vec![],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 1_700_000_000,
+                content_address: None,
+            };
+            // A child write may legitimately lose a race and error; the parent
+            // reconciles errors against readable rows. What must NOT happen is
+            // a silent success that is absent afterwards.
+            if store.register_path(&info).await.is_ok() {
+                println!("CHILD_OK {n}");
+            }
+        }
+    }
+
+    /// ── THE TWO-PROCESS HALF, WHICH IS WHERE FILE LOCKING ACTUALLY LIVES ───
+    ///
+    /// `two_writers_on_one_file_backed_store_do_not_corrupt_it` (above)
+    /// measured two handles inside ONE process and found 50/50, 0 errors. That
+    /// narrowed the blocker in `theory/BALIZA.md` objection 1 but could not
+    /// close it, and the reason is precise: two connections in one process
+    /// share a SQLite library instance and its own mutexes. Cross-PROCESS
+    /// contention is a different mechanism — POSIX advisory locks on the
+    /// database file — and it is the one that matters, because the real
+    /// scenario is sui and CppNix as separate programs.
+    ///
+    /// This spawns the test binary again as a genuine second process (the
+    /// `current_exe` + `--ignored --exact` pattern) pointed at the same scratch
+    /// database, and writes concurrently from both.
+    ///
+    /// STILL A SCRATCH STORE — never `/nix/store`, never the real
+    /// `db.sqlite`. And still NOT the full question: the child here is sui, not
+    /// CppNix, so this measures sui-vs-sui across processes. sui-vs-CppNix adds
+    /// CppNix's own transaction discipline and its daemon's locking, which no
+    /// test in this repo can stand in for.
+    ///
+    /// MEASURED 2026-08-07 on x86_64-linux, with overlap PROVEN by the
+    /// handshake below: **parent 25/25 present (0 errors), child 25/25 present
+    /// (25 reported ok), child exit 0.** Cross-process writes to one scratch
+    /// database neither corrupted it nor lost a row.
+    ///
+    /// RED-RUN RECEIPT: making the child claim success for row 7 without
+    /// writing it turns this red with
+    ///   `left: 24, right: 25 — every child write that reported success must be
+    ///   readable; a vanished row is silent loss`
+    /// so the assertion detects exactly the failure it names, rather than
+    /// passing because nothing ever went wrong.
+    #[tokio::test]
+    async fn two_processes_on_one_store_do_not_corrupt_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+        std::fs::File::create(&db_path).expect("create db file");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Parent creates the schema before the child opens it.
+        let parent = LocalStore::open_rw(&db_str).await.expect("parent open");
+        parent.create_tables().await.expect("schema");
+
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut child = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "local::tests::two_process_writer_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("SUI_TWO_PROC_DB", &db_str)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn child writer");
+
+        // Wait for the child to exist AND have the database open, then
+        // release both sides together. Bounded, so a child that never starts
+        // fails the test loudly instead of hanging it.
+        let ready = format!("{db_str}.child-ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !std::path::Path::new(&ready).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never signalled ready; the test would otherwise have \
+                 measured a race that did not happen"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::fs::write(format!("{db_str}.go"), "1").expect("go");
+
+        // Parent writes its own 25 while the child writes its 25.
+        let mut parent_errors = 0usize;
+        for n in 0..25usize {
+            let info = PathInfo {
+                path: format!("/nix/store/p{n:031}-parent"),
+                nar_hash: format!("sha256:{n:064x}"),
+                nar_size: 1024 + n as i64,
+                references: vec![],
+                deriver: None,
+                signatures: vec![],
+                registration_time: 1_700_000_000,
+                content_address: None,
+            };
+            if parent.register_path(&info).await.is_err() {
+                parent_errors += 1;
+            }
+        }
+
+        let out = child.wait_with_output().expect("child exit");
+        let child_ok = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.starts_with("CHILD_OK"))
+            .count();
+
+        // A third, fresh handle must still open and read the database. Failure
+        // here is CORRUPTION — the outcome this whole test exists to detect.
+        let reader = LocalStore::open(&db_str).await.expect(
+            "the database must still open after cross-process writes; failure \
+             here is corruption, not a race",
+        );
+
+        let mut parent_found = 0usize;
+        for n in 0..25usize {
+            let sp = StorePath::from_absolute_path(&format!("/nix/store/p{n:031}-parent"))
+                .expect("parse");
+            if reader.query_path_info(&sp).await.expect("query").is_some() {
+                parent_found += 1;
+            }
+        }
+        let mut child_found = 0usize;
+        for n in 0..25usize {
+            let sp = StorePath::from_absolute_path(&format!("/nix/store/c{n:031}-child"))
+                .expect("parse");
+            if reader.query_path_info(&sp).await.expect("query").is_some() {
+                child_found += 1;
+            }
+        }
+
+        println!(
+            "two-PROCESS scratch-store result: parent {parent_found}/25 present \
+             ({parent_errors} errors), child {child_found}/25 present \
+             ({child_ok} reported ok), child exit {}",
+            out.status
+        );
+
+        // The invariant is NOT "everything succeeded" — a cross-process write
+        // may legitimately lose a race and say so. It is that a write which
+        // REPORTED SUCCESS is readable afterwards. Silent loss is the failure
+        // that would make sui unsafe beside CppNix.
+        assert_eq!(
+            child_found, child_ok,
+            "every child write that reported success must be readable; a \
+             vanished row is silent loss"
+        );
+        assert_eq!(
+            parent_found + parent_errors,
+            25,
+            "every parent write either errored or is readable"
+        );
+    }
+
     #[tokio::test]
     async fn register_path_simple_no_references() {
         let store = LocalStore::open_in_memory().await.unwrap();
