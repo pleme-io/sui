@@ -382,11 +382,33 @@ fn evaluate_flake_inner(
                             let mut merged = immediate;
                             let flake_result =
                                 evaluate_flake_ctx(&dir, Some(child_ctx.clone()))?;
-                            if let Value::Attrs(ref flake_out_attrs) = flake_result {
-                                for (k, v) in flake_out_attrs.iter() {
-                                    if !merged.contains_key(&k) {
-                                        merged.insert(k.clone(), v.clone());
+                            match flake_result {
+                                Value::Attrs(ref flake_out_attrs) => {
+                                    for (k, v) in flake_out_attrs.iter() {
+                                        if !merged.contains_key(&k) {
+                                            merged.insert(k.clone(), v.clone());
+                                        }
                                     }
+                                }
+                                // SILENT DROP, CLOSED 2026-08-08. A non-attrs
+                                // result used to be ignored, leaving the input
+                                // with only its sourceInfo-shaped attrs and NONE
+                                // of its outputs — which surfaces far away as
+                                // `AttrNotFound('nixosModules' | 'darwinModules')`
+                                // on a consumer that had every right to expect
+                                // them. Name it here instead.
+                                other => {
+                                    return Err(EvalError::TypeError(format!(
+                                        "flake input '{}' evaluated its flake.nix to a \
+                                         {} rather than an attribute set, so it \
+                                         contributes NO outputs. Every attribute a \
+                                         consumer reads from this input (nixosModules, \
+                                         darwinModules, overlays, packages…) would \
+                                         otherwise fail as a bare AttrNotFound far from \
+                                         this point.",
+                                        child_ctx.node_name,
+                                        other.type_name(),
+                                    )));
                                 }
                             }
                             Ok(Value::Attrs(Rc::new(merged)))
@@ -394,6 +416,38 @@ fn evaluate_flake_inner(
                         resolved_inputs.insert(input_name, Value::Thunk(thunk));
                         continue;
                     }
+
+                    // SILENT DROP, CLOSED 2026-08-08 — the second half of the
+                    // same class. The node is declared a FLAKE (`flake` absent
+                    // or true) but no `flake.nix` was found at either candidate
+                    // directory, so the code fell through to the plain-attrs
+                    // insert below and the input arrived carrying its sourceInfo
+                    // fields and NONE of its outputs. Nothing said so; the
+                    // failure surfaced later and elsewhere as
+                    // `AttrNotFound('nixosModules' | 'darwinModules')` — the
+                    // shape `theory/BALIZA-PLAN.md` records for blackmatter-vpn
+                    // and …-tailscale.
+                    //
+                    // cppnix refuses this outright ("path ... does not contain a
+                    // 'flake.nix', consider using 'flake = false'"), so erroring
+                    // is the parity-correct behaviour, not a stricter one. It is
+                    // LAZY here only so that a flake declaring an input it never
+                    // touches is not punished for it.
+                    let node_for_msg = target_node_name.clone();
+                    let searched = eval_dir.display().to_string();
+                    let thunk = Thunk::new_native(move || {
+                        Err(EvalError::TypeError(format!(
+                            "flake input '{node_for_msg}' is declared as a flake but no \
+                             `flake.nix` was found for it (looked in '{searched}'). It \
+                             therefore contributes no outputs at all — reads of \
+                             nixosModules / darwinModules / overlays / packages on it \
+                             would otherwise fail as a bare AttrNotFound far from here. \
+                             If this input is genuinely not a flake, declare it \
+                             `flake = false`."
+                        )))
+                    });
+                    resolved_inputs.insert(input_name, Value::Thunk(thunk));
+                    continue;
                 }
 
                 resolved_inputs.insert(input_name, Value::Attrs(Rc::new(input_val)));
