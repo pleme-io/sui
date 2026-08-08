@@ -130,6 +130,13 @@ members = [
     # and sui-registry (=porto). Extracted from sui-cache so porto does not
     # depend on the full cache server crate just for the store trait.
     "sui-castore",
+    # The Nix language server, over sui's OWN parser and lowering. The point is
+    # that it is not a third Nix front end: nil and nixd each re-implement one
+    # so an editor can answer questions, which leaves the editor's idea of a
+    # file and the evaluator's idea of it agreeing only by effort. Here a
+    # diagnostic is what sui actually says about the file. M0 is diagnostics on
+    # open/change; hover and goto need the resolver's scope chain surfaced.
+    "sui-lsp",
 ]
 resolver = "3"
 
@@ -182,6 +189,16 @@ sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.170" }
 sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.170" }
 sui-bigorna = { path = "sui-bigorna", version = "0.1.170" }
 sui-castore = { path = "sui-castore", version = "0.1.170" }
+sui-lsp = { path = "sui-lsp", version = "0.1.170" }
+# tower-lsp — the LSP SERVER framework. The fleet split is deliberate: a server
+# takes tower-lsp (caixa-lsp set that precedent), a client hand-rolls its
+# framing, because the client side of tower-lsp assumes it owns the runtime.
+tower-lsp = "0.20"
+# zahyou (座標) — byte offsets <-> LSP line/UTF-16 positions, shared with
+# escriba-lsp-client. Both ends of the wire must do the same arithmetic or they
+# disagree about where a squiggle goes; the emoji case makes the obvious
+# `chars()` implementation wrong. See zahyou.
+zahyou = "0.1"
 
 # Lisp surface for declarative specs — pleme-io's homoiconic
 # S-expression reader, published on crates.io. Version-pinned to keep

@@ -1,0 +1,22 @@
+[package]
+name         = "sui-lsp"
+description  = "Nix language server over sui's own parser and lowering — diagnostics from the same engine that evaluates the file."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+sui-ir      = { workspace = true }
+rnix        = { workspace = true }
+rowan       = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tower-lsp   = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+zahyou      = { workspace = true }
+
+[lints]
+workspace = true

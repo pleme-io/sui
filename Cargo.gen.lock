@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b0a91de4c7c01efe4ec428f93269a07d5d1e42f05a0e7b076ff03d04d8292150",
+  "cargo_lock_sha256": "b0b7313429d212f565f7ecb25cbea06cc49efd556f8821d4d6c7ab086c5788c0",
   "manifest_sha256": {
-    "Cargo.toml": "941a7d644bc03e126294219f879dd399f36b1a4f344823f3e02ce65383dde365",
+    "Cargo.toml": "4ad4439c8bfeaf8d3f6aa632df465d31be3c34ce226033bf81b4b969ce1704e1",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -24,6 +24,7 @@
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
     "sui-ir/Cargo.toml": "8f8f1ae5c85cbd47531e003690af936a9302a649257030bed5963d39e9b77467",
+    "sui-lsp/Cargo.toml": "0f855980721f0d727edfb01e559daf3c46690c3dffea0e4542ab03ccacc79b8d",
     "sui-nix-wrap/Cargo.toml": "49b662142a60fdcde71413be49d2aa38b3eb705e3567e2fa2cded887873d26df",
     "sui-orchestrate/Cargo.toml": "b474092b7e9b5723ad3dc466ad43708524fa6ad7da71bfa8bb6d239c4bd4213f",
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
@@ -1557,6 +1558,46 @@
       },
       "atomic-waker-1.1.2": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "auto_impl-1.3.0": {
+        "runtime_dependencies": [
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.46",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-2.0.118",
+            "kind": "normal",
+            "features": [
+              "full",
+              "visit",
+              "visit-mut"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -4205,6 +4246,62 @@
           {
             "name": "syn",
             "package_key": "syn-2.0.118",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "dashmap-5.5.3": {
+        "runtime_dependencies": [
+          {
+            "name": "cfg_if",
+            "package_key": "cfg-if-1.0.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hashbrown",
+            "package_key": "hashbrown-0.14.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "lock_api",
+            "package_key": "lock_api-0.4.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "once_cell",
+            "package_key": "once_cell-1.21.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "parking_lot_core",
+            "package_key": "parking_lot_core-0.9.12",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -13463,6 +13560,68 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "lsp-types-0.94.1": {
+        "runtime_dependencies": [
+          {
+            "name": "bitflags",
+            "package_key": "bitflags-1.3.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_repr",
+            "package_key": "serde_repr-0.1.20",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "url",
+            "package_key": "url-2.5.8",
+            "kind": "normal",
+            "features": [
+              "serde"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
       },
       "lzma-sys-0.1.20": {
         "runtime_dependencies": [
@@ -26164,6 +26323,107 @@
         "build_dependencies": [],
         "features": []
       },
+      "sui-lsp-0.1.170": {
+        "runtime_dependencies": [
+          {
+            "name": "rnix",
+            "package_key": "rnix-0.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rowan",
+            "package_key": "rowan-0.16.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_ir",
+            "package_key": "sui-ir-0.1.170",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_lsp",
+            "package_key": "tower-lsp-0.20.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing_subscriber",
+            "package_key": "tracing-subscriber-0.3.23",
+            "kind": "normal",
+            "features": [
+              "env-filter",
+              "json"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zahyou",
+            "package_key": "zahyou-0.1.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sui-nix-wrap-0.1.170": {
         "runtime_dependencies": [
           {
@@ -29469,6 +29729,214 @@
         "build_dependencies": [],
         "features": []
       },
+      "tower-lsp-0.20.0": {
+        "runtime_dependencies": [
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "auto_impl",
+            "package_key": "auto_impl-1.3.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.12.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "dashmap",
+            "package_key": "dashmap-5.5.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [
+              "async-await",
+              "std"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "httparse",
+            "package_key": "httparse-1.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "lsp_types",
+            "package_key": "lsp-types-0.94.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "memchr",
+            "package_key": "memchr-2.8.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_util",
+            "package_key": "tokio-util-0.7.18",
+            "kind": "normal",
+            "features": [
+              "codec"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower",
+            "package_key": "tower-0.4.13",
+            "kind": "normal",
+            "features": [
+              "util"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_lsp_macros",
+            "package_key": "tower-lsp-macros-0.9.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "runtime-tokio",
+          "tokio",
+          "tokio-util"
+        ]
+      },
+      "tower-lsp-macros-0.9.0": {
+        "runtime_dependencies": [
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.46",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-2.0.118",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "tower-service-0.3.3": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -30336,11 +30804,32 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_derive",
+            "package_key": "serde_derive-1.0.228",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "host"
           }
         ],
         "build_dependencies": [],
         "features": [
           "default",
+          "serde",
           "std"
         ]
       },
@@ -30654,6 +31143,13 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "zahyou-0.1.1": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
       },
       "zerocopy-0.8.52": {
         "runtime_dependencies": [
@@ -38487,6 +38983,10 @@
     "atomic-waker-1.1.2": {
       "edition": "2018"
     },
+    "auto_impl-1.3.0": {
+      "edition": "2021",
+      "proc_macro": true
+    },
     "autocfg-1.5.1": {
       "edition": "2015"
     },
@@ -38750,6 +39250,9 @@
     "darling_macro-0.23.0": {
       "edition": "2021",
       "proc_macro": true
+    },
+    "dashmap-5.5.3": {
+      "edition": "2018"
     },
     "dashmap-6.2.1": {
       "edition": "2018"
@@ -39390,6 +39893,9 @@
     },
     "lru-slab-0.1.2": {
       "edition": "2021"
+    },
+    "lsp-types-0.94.1": {
+      "edition": "2018"
     },
     "lzma-sys-0.1.20": {
       "edition": "2018",
@@ -40322,6 +40828,19 @@
         "path": "src/lib.rs"
       }
     },
+    "sui-lsp-0.1.170": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_lsp",
+        "path": "src/lib.rs"
+      },
+      "binaries": [
+        {
+          "name": "sui-lsp",
+          "path": "src/main.rs"
+        }
+      ]
+    },
     "sui-nix-wrap-0.1.170": {
       "edition": "2024",
       "binaries": [
@@ -40570,6 +41089,13 @@
     "tower-layer-0.3.3": {
       "edition": "2018"
     },
+    "tower-lsp-0.20.0": {
+      "edition": "2021"
+    },
+    "tower-lsp-macros-0.9.0": {
+      "edition": "2021",
+      "proc_macro": true
+    },
     "tower-service-0.3.3": {
       "edition": "2018"
     },
@@ -40740,6 +41266,9 @@
     "yoke-derive-0.8.2": {
       "edition": "2021",
       "proc_macro": true
+    },
+    "zahyou-0.1.1": {
+      "edition": "2024"
     },
     "zerocopy-0.8.52": {
       "edition": "2021",
