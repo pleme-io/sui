@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "82e99787d55adbd1bae47c5ba8a8bffeb8ca284f186db6a5831adf0c6fb7d5ce",
+  "cargo_lock_sha256": "64fda6c6f2a4548161e0b87f400d0efc6bd40f6610dbb98c4f4c2eafcc8324fd",
   "manifest_sha256": {
-    "Cargo.toml": "0fdae902433ed0470bcfab39a7c5171678e7759d562a792a63f6678835673f96",
+    "Cargo.toml": "f29fafc50692efbc160b7fa720cf1df48f7a38bb85aa5ade9b27455ad642122e",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -20,6 +20,7 @@
     "sui-dockerfile-verify/Cargo.toml": "8633feb20ff44887444d830413b8d3eec601e78db2667a21aa92e35ce80f8684",
     "sui-dockerfile-wrapper/Cargo.toml": "42004479393d8f9dcf29dd17b674af0dc6e24b47bff5df795a9589255b33d8b9",
     "sui-eval/Cargo.toml": "f04dbcfd2168a0dd7bd857bb4540f1626b756e76ee0f0b77a0b9895e9d3cde0c",
+    "sui-fmt/Cargo.toml": "c6b3ceec3b679871e1a63b78790e5a2cd8d7b40fa960fedd5575d9c4f969bd4b",
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
     "sui-ir/Cargo.toml": "8f8f1ae5c85cbd47531e003690af936a9302a649257030bed5963d39e9b77467",
@@ -25895,6 +25896,32 @@
         "build_dependencies": [],
         "features": []
       },
+      "sui-fmt-0.1.168": {
+        "runtime_dependencies": [
+          {
+            "name": "rnix",
+            "package_key": "rnix-0.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rowan",
+            "package_key": "rowan-0.16.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sui-graph-store-0.1.168": {
         "runtime_dependencies": [
           {
@@ -40264,6 +40291,13 @@
       "edition": "2024",
       "lib_target": {
         "name": "sui_eval",
+        "path": "src/lib.rs"
+      }
+    },
+    "sui-fmt-0.1.168": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_fmt",
         "path": "src/lib.rs"
       }
     },
