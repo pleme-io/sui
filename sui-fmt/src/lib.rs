@@ -1094,11 +1094,98 @@ fn if_else(node: &SyntaxNode) -> Doc {
         }
     }
 
-    let docs: Vec<Doc> = arms
-        .into_iter()
-        .map(|(k, d)| Doc::text(k).concat(Doc::text(" ")).concat(d))
-        .collect();
-    lead.concat(Doc::join(docs, Doc::line()).group())
+    // Shape derived by EXPERIMENT against `nixfmt --strict`, not from prose:
+    //
+    //   { a = if p then q else r; }                    -> stays flat
+    //   { a = if p then q else if s then t else u; }   -> ALWAYS breaks (44 cols)
+    //   single if/else, line length 100                -> flat
+    //   single if/else, line length 101                -> broken
+    //
+    // So there are TWO rules, and only one of them is about width:
+    //   * a single if/else is ordinary width-driven `group` behaviour, and the
+    //     boundary is exactly the 100-column width (bisected: 100 flat,
+    //     101 broken);
+    //   * an ELSE-IF CHAIN always breaks no matter how short it is. That is a
+    //     COUNT rule, the same shape as the n>=2 attrset rule, not a width one
+    //     — which is why treating `if` as purely width-driven never converges.
+    //
+    // Broken layout, with `then` staying on the `if` line and `else` returning
+    // to the `if`'s own indent:
+    //
+    //   if <cond> then
+    //     <then>
+    //   else if <cond> then
+    //     <then>
+    //   else
+    //     <else>
+    let (cond, then_br, else_br) = (arms.first(), arms.get(1), arms.get(2));
+    let Some((_, cond)) = cond else {
+        return lead.concat(verbatim(node));
+    };
+    let Some((_, then_br)) = then_br else {
+        return lead.concat(verbatim(node));
+    };
+
+    // `else if` — the else arm is itself an if. nixfmt keeps the nested `if` on
+    // the SAME line as `else` and at the SAME indent, so the chain reads as one
+    // ladder rather than a staircase drifting right.
+    let else_is_chain = node
+        .children()
+        .nth(2)
+        .is_some_and(|n| n.kind() == SyntaxKind::NODE_IF_ELSE);
+
+    // …and the chain propagates DOWNWARD. An `if` that is itself the else-arm
+    // of another `if` must break too, or the ladder collapses halfway:
+    //
+    //   if p then          <- outer broke
+    //     q
+    //   else if s then t else u;    <- inner stayed flat, because ITS own
+    //                                  else is a plain value and it fits
+    //
+    // nixfmt breaks the whole ladder as one unit. Detected from the parent
+    // rather than threaded through as a parameter, so the rule holds no matter
+    // which entry point rendered this node.
+    let is_else_arm = node.parent().is_some_and(|p| {
+        p.kind() == SyntaxKind::NODE_IF_ELSE
+            && p.children().nth(2).is_some_and(|n| n == *node)
+    });
+
+    // TWO DISTINCT FACTS, and conflating them renders `else u;` instead of a
+    // broken final arm:
+    //   * `else_is_chain` — MY else-arm is an `if`, so the tail is emitted
+    //     inline as `else <if>` at this indent;
+    //   * `force_break`   — this `if` participates in a ladder at all (either
+    //     because it chains, or because it IS someone's else-arm), so every
+    //     separator is hard.
+    // The inner link of a ladder has force_break=true and else_is_chain=false.
+    let force_break = else_is_chain || is_else_arm;
+
+    let sep = if force_break {
+        Doc::hardline()
+    } else {
+        Doc::line()
+    };
+
+    let head = Doc::text("if ")
+        .concat(cond.clone())
+        .concat(Doc::text(" then"))
+        .concat(sep.clone().concat(then_br.clone()).nest_if_broken(INDENT));
+
+    let tail = match else_br {
+        None => Doc::nil(),
+        // A chained `else if` is emitted inline after `else `, so the nested
+        // form continues at this level instead of indenting one step per link.
+        Some((_, e)) if else_is_chain => sep
+            .clone()
+            .concat(Doc::text("else "))
+            .concat(e.clone()),
+        Some((_, e)) => sep
+            .clone()
+            .concat(Doc::text("else"))
+            .concat(sep.clone().concat(e.clone()).nest_if_broken(INDENT)),
+    };
+
+    lead.concat(head.concat(tail).group())
 }
 
 /// `with pkgs; body` / `assert c; body`
