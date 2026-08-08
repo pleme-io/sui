@@ -5,7 +5,51 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use thiserror::Error;
 
-use crate::hash::base64_encode;
+use crate::hash::{base64_encode, decode_hash_any, HashAlgorithm};
+use crate::store_path::nix_base32_encode;
+
+/// Canonicalize a narinfo `NarHash` to the encoding Nix fingerprints with.
+///
+/// ── THE THIRD INSTANCE OF THIS FILE'S RECURRING BUG ──────────────────────
+/// `compute_fingerprint` already canonicalizes reference ORDER and reference
+/// FORM at the one place each is decided (see its doc comment). Hash ENCODING
+/// was the third axis and was not canonicalized at all — the caller's string
+/// went into the fingerprint verbatim.
+///
+/// That is a real, measured break, not a tidiness concern. Nix builds the
+/// fingerprint with the narHash rendered in **Nix-base32**
+/// (`Hash::to_string(Base32, true)`), while sui's own `NixHash::to_nix_string`
+/// emits `<algo>:<base16>` — and its doc comment calls base16 "Nix's default
+/// display format", which is true for *display* and false for *fingerprints*.
+/// A cache that stored or served a hex `NarHash` therefore signed a string Nix
+/// never computes, producing a well-formed signature over the wrong bytes.
+///
+/// Measured 2026-08-08 against the live fleet origin (rio:5000): every path it
+/// served was discarded by every consumer with *"ignoring substitute … not
+/// signed by any of the keys in 'trusted-public-keys'"*, even though the path
+/// carried `Sig: rio-sui-1:…`, `rio-sui-1` was in `trusted-public-keys`, and
+/// the recorded public key really did derive from the signing secret. The
+/// signature verified against the HEX fingerprint and failed against the
+/// BASE32 one — so the cache plane was silently serving nothing.
+///
+/// Idempotent by construction: a value already in base32 decodes and re-encodes
+/// to itself, so this is safe to apply on both the signing and verifying side.
+/// Fail-open on an unparseable input (return it unchanged) keeps the function
+/// total — a malformed hash must surface as a verification failure, never a
+/// panic inside a substituter.
+fn canonical_nar_hash(nar_hash: &str) -> String {
+    let (algo_str, raw) = match nar_hash.split_once(':') {
+        Some((a, r)) => (a, r),
+        None => ("sha256", nar_hash),
+    };
+    let Ok(algo) = HashAlgorithm::from_nix_str(algo_str) else {
+        return nar_hash.to_string();
+    };
+    let Ok(bytes) = decode_hash_any(algo, raw) else {
+        return nar_hash.to_string();
+    };
+    format!("{algo_str}:{}", nix_base32_encode(&bytes))
+}
 
 /// Trait for verifying store path signatures.
 ///
@@ -155,6 +199,10 @@ pub fn compute_fingerprint(
         .collect();
     sorted_refs.sort_unstable();
     let refs = sorted_refs.join(",");
+    // Third canonicalization, same rationale as sorting and absolutizing above:
+    // decided HERE so signer, verifier and every future caller fingerprint
+    // identical bytes regardless of the hash encoding they happen to hold.
+    let nar_hash = canonical_nar_hash(nar_hash);
     format!("1;{store_path};{nar_hash};{nar_size};{refs}")
 }
 
@@ -726,10 +774,43 @@ mod tests {
     #[test]
     fn fingerprint_with_long_store_path_and_hash() {
         let path = format!("/nix/store/{}", "a".repeat(200));
+        // 64 zeros IS a well-formed sha256 hex digest, so this is no longer
+        // passed through verbatim: `canonical_nar_hash` decodes it and renders
+        // Nix-base32, which is what Nix fingerprints with. This assertion used
+        // to require the HEX form to survive into the fingerprint — i.e. it
+        // pinned the very bug that made rio's cache serve unverifiable
+        // signatures. It now pins the canonical form instead.
         let hash = format!("sha256:{}", "0".repeat(64));
         let fp = compute_fingerprint(&path, &hash, 999_999_999, &[]);
         assert!(fp.contains(&path));
-        assert!(fp.contains(&hash));
+        let canonical = format!("sha256:{}", nix_base32_encode(&[0u8; 32]));
+        assert!(
+            fp.contains(&canonical),
+            "fingerprint must carry the base32 hash; got {fp}"
+        );
+        assert!(
+            !fp.contains(&hash),
+            "the raw hex form must NOT survive canonicalization"
+        );
+    }
+
+    #[test]
+    fn canonical_nar_hash_is_idempotent_and_fails_open() {
+        // Already-base32 input round-trips unchanged — this is what makes the
+        // normalization safe to apply on both the signing and verifying side.
+        let b32 = format!("sha256:{}", nix_base32_encode(&[0u8; 32]));
+        assert_eq!(canonical_nar_hash(&b32), b32);
+
+        // hex and base32 of the same digest converge on one string.
+        let hex = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(canonical_nar_hash(&hex), b32);
+
+        // Garbage is returned unchanged rather than panicking: a malformed
+        // hash must surface as a verification FAILURE, never a crash inside a
+        // substituter. ("sha256:2222" is exactly this shape, and several
+        // fixtures in this file rely on it.)
+        assert_eq!(canonical_nar_hash("sha256:2222"), "sha256:2222");
+        assert_eq!(canonical_nar_hash("not-a-hash"), "not-a-hash");
     }
 
     // ── Real signing-then-verify with multiple key bytes ──
