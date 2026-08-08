@@ -600,8 +600,17 @@ fn evaluate_flake_inner(
     // (`self.lib.evalConfig (...)`) errored "attribute not found:
     // 'lib'" at invocation time.
     let self_promise: Rc<std::cell::OnceCell<Rc<NixAttrs>>> = Rc::new(std::cell::OnceCell::new());
+    // Records whether the outputs body forced `self` before the promise was
+    // filled — i.e. whether the one-attribute fallback below was ever handed
+    // out. `Thunk::force` MEMOISES (`value.rs`, the OnceCell fast path), so a
+    // single early force caches that skeleton for the life of the thunk and
+    // every later `self.<attr>` resolves against it. This flag is what lets
+    // step 9 notice and re-run with a `self` that resolves. See
+    // `theory/BALIZA-PLAN.md` §2.5.2.
+    let self_forced_early: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     let self_thunk = {
         let self_promise = self_promise.clone();
+        let self_forced_early = self_forced_early.clone();
         // Carry the same store-path context on the fallback skeleton's
         // `outPath` (see `self_out_path_val` above) so a `src = self`
         // coerced in the rare pre-output path still records its `source`
@@ -612,11 +621,17 @@ fn evaluate_flake_inner(
                 Ok(Value::Attrs(attrs.clone()))
             } else {
                 // outputs body forced `self` BEFORE we filled the
-                // OnceCell.  This is rare but possible if outputs
-                // does something like `forAllSystems = self.…`
-                // eagerly at the top level.  Return the pre-output
-                // skeleton with whatever flake-body metadata we
-                // have so the caller can read outPath etc.
+                // OnceCell.  NOT rare: `flake-parts.lib.mkFlake` runs a
+                // module fixpoint DURING the outputs call, so every
+                // flake-parts flake whose `flake = {…}` block contains a
+                // self-reference (`default = self.nixosModules.topology`)
+                // lands here.  Because this thunk memoises, the skeleton
+                // below would otherwise be `self` forever — which is
+                // exactly how `nix-topology` produced
+                // `AttrNotFound('nixosModules')` on every node config that
+                // imports it.  Flag it so step 9 can re-run outputs once
+                // the promise is filled.
+                self_forced_early.set(true);
                 let mut fallback = NixAttrs::new();
                 fallback.insert("outPath".to_string(),
                     fallback_out_path.clone());
@@ -626,14 +641,18 @@ fn evaluate_flake_inner(
     };
 
     // 6. Build arguments for `outputs`.
+    // `resolved_inputs` is shared rather than moved: step 9 may need to call
+    // `outputs` a second time with the identical input set.
+    let resolved_inputs_rc = Rc::new(resolved_inputs);
     let mut outputs_args = NixAttrs::new();
     outputs_args.insert("self".to_string(), Value::Thunk(self_thunk));
-    for (k, v) in resolved_inputs.iter() {
+    for (k, v) in resolved_inputs_rc.iter() {
         outputs_args.insert(k.clone(), v.clone());
     }
 
-    // 7. Call outputs(args).
-    let result = crate::eval::apply(outputs_fn, Value::Attrs(Rc::new(outputs_args)))?;
+    // 7. Call outputs(args).  `outputs_fn` is cloned, not moved, for the same
+    // reason.
+    let result = crate::eval::apply(outputs_fn.clone(), Value::Attrs(Rc::new(outputs_args)))?;
     let result = crate::eval::force_value(&result)?;
 
     // 8. Build the final flake value.
@@ -665,7 +684,7 @@ fn evaluate_flake_inner(
     if let Some(lm) = self_last_modified {
         final_attrs.insert("lastModified".to_string(), Value::Int(lm));
     }
-    final_attrs.insert("inputs".to_string(), Value::Attrs(Rc::new(resolved_inputs)));
+    final_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs_rc.clone()));
     final_attrs.insert("outputs".to_string(), result.clone());
 
     if shape.spreads_output_fn() {
@@ -694,6 +713,84 @@ fn evaluate_flake_inner(
     // outputs now resolve `self.lib`, `self.darwinModules`, etc.
     // against this final attrset.
     let _ = self_promise.set(final_attrs_rc.clone());
+
+    // 9. THE SECOND PASS — only for flakes that forced `self` too early.
+    //
+    // Pass 1 handed those flakes the one-attribute skeleton, and because
+    // `Thunk::force` memoises, every value that captured it is permanently
+    // wrong. Re-running `outputs` with a FRESH `self` thunk fixes them: the
+    // promise is filled now, so the fresh thunk resolves to the real attrset on
+    // its first (and only) force.
+    //
+    // Pass 1's attrset is a sound seed because the KEYS of a `flake = {…}`
+    // block do not depend on `self` — only their values do. `nix-topology`
+    // exposes `nixosModules = { topology = ./nixos/module.nix; default =
+    // self.nixosModules.topology; }`: `topology` is a plain path and is already
+    // correct in pass 1, so pass 2's `default` resolves through it.
+    //
+    // Cost is paid ONLY by flakes that trip the flag; every other flake keeps
+    // exactly one `outputs` call. Do not "fix" this by making the `self` thunk
+    // non-memoising instead — that cache is `Thunk::force`'s 150M-hit fast path.
+    //
+    // HONEST LIMIT: this is one fixpoint iteration, not a fixpoint. A flake
+    // whose pass-2 result depends on a pass-1 value that was ITSELF poisoned
+    // would need a third pass. Two passes cover the flake-parts shape that
+    // motivated this; a deeper case would need convergence-to-stable, which is
+    // not implemented and is not claimed. See `theory/BALIZA-PLAN.md` §2.5.2.
+    if self_forced_early.get() {
+        let fresh_self = {
+            let self_promise = self_promise.clone();
+            Thunk::new_native(move || match self_promise.get() {
+                Some(attrs) => Ok(Value::Attrs(attrs.clone())),
+                // Unreachable: set() above ran before this thunk can be forced.
+                // Named rather than silently falling back to a skeleton, which
+                // is the failure mode this whole step exists to remove.
+                None => Err(EvalError::TypeError(
+                    "flake self-fixpoint: promise unfilled entering the second \
+                     pass — this is a bug in sui, not in the flake"
+                        .to_string(),
+                )),
+            })
+        };
+
+        let mut args2 = NixAttrs::new();
+        args2.insert("self".to_string(), Value::Thunk(fresh_self));
+        for (k, v) in resolved_inputs_rc.iter() {
+            args2.insert(k.clone(), v.clone());
+        }
+        let result2 = crate::eval::apply(outputs_fn, Value::Attrs(Rc::new(args2)))?;
+        let result2 = crate::eval::force_value(&result2)?;
+
+        let mut f2 = NixAttrs::new();
+        for (k, v) in final_attrs_rc.iter() {
+            f2.insert(k.clone(), v.clone());
+        }
+        f2.insert("outputs".to_string(), result2.clone());
+        if shape.spreads_output_fn()
+            && let Value::Attrs(out2) = &result2
+        {
+            for (k, v) in out2.iter() {
+                // An output key may never overwrite the flake-identity attrs
+                // sui computed itself — that is the `description`-at-top-level
+                // regression class the shape spec exists to prevent.
+                if !matches!(
+                    k.as_str(),
+                    "_type"
+                        | "outPath"
+                        | "sourceInfo"
+                        | "narHash"
+                        | "rev"
+                        | "shortRev"
+                        | "lastModified"
+                        | "inputs"
+                        | "outputs"
+                ) {
+                    f2.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        return Ok(Value::Attrs(Rc::new(f2)));
+    }
 
     Ok(Value::Attrs(final_attrs_rc))
 }
