@@ -163,7 +163,7 @@ fn evaluate_flake_inner(
                 // blackmatter-vpn, …-tailscale — silently drop its flake
                 // outputs and surface as `AttrNotFound("darwinModules")`).
                 let mut read_dir: Option<std::path::PathBuf> = None;
-                let out_path = if let Some(ref locked) = node.locked {
+                let source_out_path = if let Some(ref locked) = node.locked {
                     if locked.source_type == "path" {
                         let p = locked.path.clone().unwrap_or_default();
                         read_dir = Some(std::path::PathBuf::from(&p));
@@ -208,7 +208,54 @@ fn evaluate_flake_inner(
                         }
                     }
                 } else {
-                    format!("/nix/store/flake-input-{input_name}")
+                    // No `locked` section for this node, so there is nothing to
+                    // fetch and no store path to compute. This used to emit
+                    // `/nix/store/flake-input-<name>` — a path that does not
+                    // exist, yet which PASSES the `starts_with("/nix/store/")`
+                    // tests below and so acquired copy-to-store string context
+                    // and an input-source registration, masquerading as a real
+                    // store reference until it failed as an opaque ENOENT.
+                    //
+                    // The sentinel is now self-describing and deliberately NOT
+                    // store-shaped, so the two guards below skip it and any use
+                    // names the input it came from. See `theory/BALIZA-PLAN.md`
+                    // §2.5 (measured on rio, 2026-08-08).
+                    format!("<unresolved-flake-input:{input_name}>")
+                };
+
+                // ── `dir=` SUBFLAKES ───────────────────────────────────────
+                // A flake input may name a flake in a SUBDIRECTORY of its
+                // source (`github:owner/repo?dir=sub`, carried as `dir` on the
+                // locked ref). CppNix then exposes two DIFFERENT paths:
+                //
+                //   sourceInfo.outPath = /nix/store/<narhash>-source
+                //   outPath            = /nix/store/<narhash>-source/<dir>
+                //
+                // and reads `flake.nix` from the subdirectory.
+                //
+                // `dir` was PARSED (`sui-compat::flake`, with tests asserting it
+                // round-trips) and then consumed NOWHERE — so sui evaluated the
+                // repo-ROOT `flake.nix` for every subflake input. The field
+                // existed, its test passed, the behaviour was absent.
+                //
+                // Measured on rio 2026-08-08 (`theory/BALIZA-PLAN.md` §2.5):
+                // `blue-bidamas` is `github:pleme-io/blue?dir=bidamas`, whose own
+                // `bidamas/flake.nix` declares ONLY `nixpkgs` (outputs are
+                // `{ self, nixpkgs }`), while blue's ROOT flake.nix also declares
+                // `substrate`. sui read the root, saw a `substrate` input the
+                // lock correctly had no edge for, and the failure surfaced far
+                // away as a non-existent store path. CppNix on the same input:
+                // `outPath = <root>/bidamas`, `sourceInfo.outPath = <root>`.
+                //
+                // `sourceInfo` keeps the ROOT; only `outPath` and the on-disk
+                // read directory descend into `dir`.
+                let subdir = node.locked.as_ref().and_then(|l| l.dir.clone());
+                let out_path = match subdir {
+                    Some(ref d) if !d.is_empty() => {
+                        read_dir = read_dir.map(|p| p.join(d));
+                        format!("{source_out_path}/{d}")
+                    }
+                    _ => source_out_path.clone(),
                 };
                 // Register the `outPath` → real-tree mapping so any read the
                 // flake's own Nix code issues under this input's `-source`
@@ -268,7 +315,25 @@ fn evaluate_flake_inner(
                     }
 
                     let mut source_info = NixAttrs::new();
-                    source_info.insert("outPath".to_string(), out_path_val.clone());
+                    // `sourceInfo.outPath` is the SOURCE ROOT, never the `dir=`
+                    // subdirectory — cppnix keeps the two distinct, and only
+                    // `outPath` above descends. For a non-subflake input the two
+                    // are equal, so this is a no-op there.
+                    source_info.insert(
+                        "outPath".to_string(),
+                        if source_out_path.starts_with("/nix/store/") {
+                            let mut ctx = crate::value::StringContext::new();
+                            ctx.add_plain(source_out_path.as_str());
+                            Value::String(std::rc::Rc::new(
+                                crate::value::NixString::with_context(
+                                    source_out_path.as_str(),
+                                    ctx,
+                                ),
+                            ))
+                        } else {
+                            Value::string(source_out_path.clone())
+                        },
+                    );
                     if let Some(ref rev) = locked.rev {
                         source_info.insert("rev".to_string(), Value::string(rev.clone()));
                     }
@@ -341,10 +406,47 @@ fn evaluate_flake_inner(
             && let Value::Attrs(declared_inputs) = inputs_forced {
                 for key in declared_inputs.keys() {
                     if !resolved_inputs.contains_key(&key) {
+                        // An input reaches here ONLY when it was declared in
+                        // `flake.nix` but never resolved from the lock — either
+                        // its edge target is missing from `lock.nodes` (§4's
+                        // `continue`) or `node_input_edges` could not resolve
+                        // the ref at all (it pushes only `if let Ok(target)`,
+                        // and `adjacency_map`'s doc concedes "any unresolvable
+                        // edges are silently skipped").
+                        //
+                        // This used to hand the input a FABRICATED store path,
+                        // `/nix/store/flake-input-<key>`. That path does not
+                        // exist and never will, so the failure surfaced
+                        // thousands of eval-steps later as a bare ENOENT on
+                        // `import`, naming neither the flake nor the input —
+                        // measured on rio 2026-08-08 (`theory/BALIZA-PLAN.md`
+                        // §2.5). Worse, the fake path STARTS WITH `/nix/store/`,
+                        // so it also picked up copy-to-store string context and
+                        // an input-source registration, i.e. it masqueraded as a
+                        // real store reference all the way down.
+                        //
+                        // A resolution miss now fails AT THE BORDER with a typed
+                        // error naming `(node, input)`. It stays LAZY — CppNix
+                        // only errors when an unresolved input is actually used,
+                        // and a flake may legally declare an input it never
+                        // touches, so erroring eagerly here would reject flakes
+                        // cppnix accepts.
                         let mut stub = NixAttrs::new();
+                        let input_key = key.clone();
+                        let owner = current_node.clone();
                         stub.insert(
                             "outPath".to_string(),
-                            Value::string(format!("/nix/store/flake-input-{key}")),
+                            Value::Thunk(crate::value::Thunk::new_native(move || {
+                                Err(EvalError::TypeError(format!(
+                                    "flake input '{input_key}' is declared in the \
+                                     `inputs` of flake node '{owner}' but was not \
+                                     resolved from flake.lock: its lock edge is \
+                                     missing or unresolvable. sui previously \
+                                     substituted the non-existent path \
+                                     `/nix/store/flake-input-{input_key}` here, \
+                                     which failed later as an opaque ENOENT."
+                                )))
+                            })),
                         );
                         resolved_inputs.insert(key.clone(), Value::Attrs(Rc::new(stub)));
                     }
