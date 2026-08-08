@@ -24,7 +24,13 @@ pub enum Doc {
     HardLine,
     Concat(Rc<Doc>, Rc<Doc>),
     Nest(isize, Rc<Doc>),
+    /// Indent ONLY if the enclosing group broke. nixfmt indents an absorbed
+    /// term relative to the LINE it hugged onto, not to the logical nesting.
+    NestIfBroken(isize, Rc<Doc>),
     Group(Rc<Doc>),
+    /// Transparent at print time; in `fits`, a hard break inside it ENDS the
+    /// measurement successfully instead of forbidding flatness.
+    Absorb(Rc<Doc>),
 }
 
 impl Doc {
@@ -63,8 +69,16 @@ impl Doc {
         Doc::Nest(indent, Rc::new(self))
     }
 
+    pub fn nest_if_broken(self, indent: isize) -> Self {
+        Doc::NestIfBroken(indent, Rc::new(self))
+    }
+
     pub fn group(self) -> Self {
         Doc::Group(Rc::new(self))
+    }
+
+    pub fn absorb(self) -> Self {
+        Doc::Absorb(Rc::new(self))
     }
 
     pub fn join(docs: impl IntoIterator<Item = Doc>, sep: Doc) -> Doc {
@@ -93,6 +107,9 @@ impl Doc {
 enum Mode {
     Flat,
     Break,
+    /// `fits`-only: inside an absorbed term. A hard break here means "the
+    /// first line ended", i.e. SUCCESS, not "cannot be flat".
+    Absorbed,
 }
 
 /// Render `doc` at `width` columns.
@@ -100,6 +117,11 @@ pub fn pretty(doc: &Doc, width: usize) -> String {
     let mut out = String::new();
     let mut stack: Vec<(isize, Mode, Doc)> = vec![(0, Mode::Break, doc.clone())];
     let mut col: usize = 0;
+    // MEASURED (nixfmt 1.3.1): the fit budget does NOT charge the line's
+    // leading indentation. `{ a = <95 b>; }` stays flat at attrset depth 1
+    // AND depth 3 -- same n, six columns of indent apart -- and nixfmt emits
+    // a 108-column line rather than break.
+    let mut line_indent: usize = 0;
 
     while let Some((indent, mode, d)) = stack.pop() {
         match d {
@@ -111,20 +133,25 @@ pub fn pretty(doc: &Doc, width: usize) -> String {
                 // LAST line, or every group after a multi-line literal
                 // measures against a phantom column and breaks wrongly.
                 match s.rfind('\n') {
-                    Some(i) => col = s[i + 1..].chars().count(),
+                    Some(i) => {
+                        col = s[i + 1..].chars().count();
+                        line_indent = 0;
+                    }
                     None => col += s.chars().count(),
                 }
             }
             Doc::HardLine => {
                 newline(&mut out, indent, &mut col);
+                line_indent = col;
             }
             Doc::Line { flat } => match mode {
-                Mode::Flat => {
+                Mode::Flat | Mode::Absorbed => {
                     out.push_str(flat);
                     col += flat.chars().count();
                 }
                 Mode::Break => {
                     newline(&mut out, indent, &mut col);
+                    line_indent = col;
                 }
             },
             Doc::Concat(a, b) => {
@@ -134,8 +161,16 @@ pub fn pretty(doc: &Doc, width: usize) -> String {
             Doc::Nest(n, inner) => {
                 stack.push((indent + n, mode, (*inner).clone()));
             }
+            Doc::NestIfBroken(n, inner) => {
+                let i = if mode == Mode::Break { indent + n } else { indent };
+                stack.push((i, mode, (*inner).clone()));
+            }
+            Doc::Absorb(inner) => {
+                stack.push((indent, mode, (*inner).clone()));
+            }
             Doc::Group(inner) => {
-                let m = if fits(width.saturating_sub(col), &inner, &stack) {
+                let used = col.saturating_sub(line_indent);
+                let m = if fits(width.saturating_sub(used), &inner, &stack) {
                     Mode::Flat
                 } else {
                     Mode::Break
@@ -159,8 +194,12 @@ pub fn pretty(doc: &Doc, width: usize) -> String {
 /// Trimming only what `newline` wrote is precise by construction: a newline
 /// inside a verbatim `Text` never reaches this function.
 fn newline(out: &mut String, indent: isize, col: &mut usize) {
-    while out.ends_with(' ') {
-        out.pop();
+    // Trim ONLY when the whole current line is whitespace this printer wrote
+    // as an indent. Trailing spaces after real content are semantic inside a
+    // `''` body once its lines are rendered as separate Texts.
+    let start = out.rfind('\n').map_or(0, |i| i + 1);
+    if out[start..].chars().all(|c| c == ' ') {
+        out.truncate(start);
     }
     out.push('\n');
     let pad = indent.max(0) as usize;
@@ -173,19 +212,25 @@ fn newline(out: &mut String, indent: isize, col: &mut usize) {
 /// Would `doc`, rendered flat, fit in `space` columns?
 fn fits(space: usize, doc: &Doc, rest: &[(isize, Mode, Doc)]) -> bool {
     let mut remaining = space as isize;
-    let mut local: Vec<(Mode, Doc)> = vec![(Mode::Flat, doc.clone())];
+    // `nested` = we have descended into a SUBGROUP. An `Absorb` marker is
+    // honoured only by the group it directly belongs to; a group further out
+    // still sees the hard break and must break. Without this the marker leaks
+    // outward and a 1-item attrset holding a multi-line string stays flat.
+    let mut local: Vec<(Mode, bool, Doc)> = vec![(Mode::Flat, false, doc.clone())];
     let mut tail_idx = rest.len();
+    let mut in_tail = false;
 
     loop {
-        let (mode, d) = match local.pop() {
+        let (mode, nested, d) = match local.pop() {
             Some(x) => x,
             None => {
                 if tail_idx == 0 {
                     return remaining >= 0;
                 }
+                in_tail = true;
                 tail_idx -= 1;
                 let (_, m, d) = &rest[tail_idx];
-                (*m, d.clone())
+                (*m, true, d.clone())
             }
         };
         if remaining < 0 {
@@ -204,17 +249,31 @@ fn fits(space: usize, doc: &Doc, rest: &[(isize, Mode, Doc)]) -> bool {
             // be flat. Returning `false` is what propagates "this contains a
             // comment" outward, which is the whole mechanism keeping a
             // comment on its own line.
-            Doc::HardLine => return false,
+            Doc::HardLine => {
+                if in_tail || mode == Mode::Absorbed {
+                    return remaining >= 0;
+                }
+                return false;
+            }
             Doc::Line { flat } => match mode {
                 Mode::Break => return remaining >= 0,
-                Mode::Flat => remaining -= flat.chars().count() as isize,
+                Mode::Flat | Mode::Absorbed => remaining -= flat.chars().count() as isize,
             },
             Doc::Concat(a, b) => {
-                local.push((mode, (*b).clone()));
-                local.push((mode, (*a).clone()));
+                local.push((mode, nested, (*b).clone()));
+                local.push((mode, nested, (*a).clone()));
             }
-            Doc::Nest(_, inner) => local.push((mode, (*inner).clone())),
-            Doc::Group(inner) => local.push((Mode::Flat, (*inner).clone())),
+            Doc::Nest(_, inner) | Doc::NestIfBroken(_, inner) => {
+                local.push((mode, nested, (*inner).clone()))
+            }
+            Doc::Absorb(inner) => {
+                let m = if nested { mode } else { Mode::Absorbed };
+                local.push((m, nested, (*inner).clone()));
+            }
+            Doc::Group(inner) => {
+                let m = if mode == Mode::Absorbed { Mode::Absorbed } else { Mode::Flat };
+                local.push((m, true, (*inner).clone()));
+            }
         }
     }
 }

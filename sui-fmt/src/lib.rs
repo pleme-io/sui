@@ -168,15 +168,11 @@ fn render_comment(text: &str) -> String {
     if t.starts_with("#!") {
         return t.to_string();
     }
-    match t.strip_prefix('#') {
-        Some(rest) if !rest.trim().is_empty() => {
-            let mut s = String::from("# ");
-            s.push_str(rest.trim());
-            s
-        }
-        Some(_) => "#".to_string(),
-        None => t.to_string(),
-    }
+    // MEASURED (nixfmt --strict 1.3.1): the body after `#` is copied
+    // VERBATIM. No space is inserted (`#no space` stays `#no space`), interior
+    // indentation is kept (`#   b` stays `#   b`), tabs are kept. Only trailing
+    // whitespace is stripped, which collapses a whitespace-only `#   ` to `#`.
+    t.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +209,7 @@ fn expr(node: &SyntaxNode) -> Doc {
         NODE_UNARY_OP => unary_op(node),
         NODE_HAS_ATTR => spaced(node),
         NODE_SELECT | NODE_ATTRPATH => tight(node),
+        NODE_STRING if is_indented_string(node) => indented_string(node),
         NODE_STRING | NODE_INTERPOL | NODE_DYNAMIC => verbatim(node),
         NODE_IDENT | NODE_LITERAL | NODE_PATH_ABS | NODE_PATH_REL | NODE_PATH_HOME
         | NODE_PATH_SEARCH | NODE_CUR_POS => verbatim(node),
@@ -317,7 +314,21 @@ fn attr_set(node: &SyntaxNode) -> Doc {
         .filter_map(|c| c.into_token())
         .any(|t| t.kind() == SyntaxKind::TOKEN_COMMENT);
 
-    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+    let n_items = node
+        .children()
+        .filter(|c| {
+            matches!(
+                c.kind(),
+                SyntaxKind::NODE_ATTRPATH_VALUE | SyntaxKind::NODE_INHERIT
+            )
+        })
+        .count();
+    let wide = attrset_forced_wide(node);
+    let sep = if has_comment || wide || n_items >= 2 {
+        Doc::hardline()
+    } else {
+        Doc::line()
+    };
     let inner = Doc::join(items, sep.clone());
     lead.concat(
         Doc::text("{")
@@ -345,7 +356,8 @@ fn list(node: &SyntaxNode) -> Doc {
     if items.is_empty() {
         return Doc::text("[ ]");
     }
-    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+    let n_items = node.children().count();
+    let sep = if has_comment || n_items >= 2 { Doc::hardline() } else { Doc::line() };
     Doc::text("[")
         .concat(sep.clone().concat(Doc::join(items, sep.clone())).nest(INDENT))
         .concat(sep)
@@ -353,20 +365,288 @@ fn list(node: &SyntaxNode) -> Doc {
         .group()
 }
 
+
+
+
+
+fn pattern_expands(n: &SyntaxNode) -> bool {
+    use SyntaxKind::*;
+    if n.kind() != NODE_PATTERN {
+        return false;
+    }
+    let named = n.children().filter(|c| c.kind() == NODE_PAT_ENTRY).count();
+    let has_default = n.children().any(|c| {
+        c.kind() == NODE_PAT_ENTRY
+            && c.children_with_tokens()
+                .filter_map(|x| x.into_token())
+                .any(|t| t.kind() == TOKEN_QUESTION)
+    });
+    let has_comment = n
+        .children_with_tokens()
+        .filter_map(|x| x.into_token())
+        .any(|t| t.kind() == TOKEN_COMMENT);
+    named >= 3 || has_default || has_comment
+}
+
+fn has_at_bind(n: &SyntaxNode) -> bool {
+    n.kind() == SyntaxKind::NODE_PATTERN
+        && n.children().any(|c| c.kind() == SyntaxKind::NODE_PAT_BIND)
+}
+
+/// Can this expression's opening delimiter hug a lambda colon?
+fn hug_absorbable(n: &SyntaxNode) -> bool {
+    use SyntaxKind::*;
+    match n.kind() {
+        NODE_ATTR_SET | NODE_LEGACY_LET | NODE_LIST => n.children().next().is_some(),
+        NODE_STRING => n.text().to_string().starts_with("''") && n.text().to_string().contains('\n'),
+        NODE_WITH => n.children().last().is_some_and(|b| hug_absorbable(&b)),
+        NODE_PAREN => n
+            .children()
+            .next()
+            .is_some_and(|c| matches!(c.kind(), NODE_ATTR_SET | NODE_LIST) && c.children().next().is_some()),
+        _ => false,
+    }
+}
+
+/// Does this abstraction chain end in a term its colon can hug?
+fn lambda_hugs(n: &SyntaxNode) -> bool {
+    if n.kind() != SyntaxKind::NODE_LAMBDA {
+        return hug_absorbable(n);
+    }
+    let Some(param) = n.children().next() else { return false };
+    if param.kind() == SyntaxKind::NODE_PATTERN && (has_at_bind(&param) || pattern_expands(&param)) {
+        return false;
+    }
+    match n.children().last() {
+        Some(b) => lambda_hugs(&b),
+        None => false,
+    }
+}
+
+/// Number of arguments in the whole left-associated apply spine this node
+/// belongs to. `f x y` -> 2, counted from the OUTERMOST apply.
+fn apply_chain_args(node: &SyntaxNode) -> usize {
+    let mut top = node.clone();
+    while let Some(p) = top.parent() {
+        if p.kind() == SyntaxKind::NODE_APPLY && p.children().next().map(|c| c == top).unwrap_or(false) {
+            top = p;
+        } else {
+            break;
+        }
+    }
+    let mut n = 0usize;
+    let mut cur = top;
+    while cur.kind() == SyntaxKind::NODE_APPLY {
+        n += 1;
+        match cur.children().next() {
+            Some(f) => cur = f,
+            None => break,
+        }
+    }
+    n
+}
+
+/// Positions that force an attrset one-per-line regardless of item count or
+/// width. Lists have no such rule.
+fn attrset_forced_wide(node: &SyntaxNode) -> bool {
+    use SyntaxKind::*;
+    let Some(parent) = node.parent() else { return false };
+    let is_last = parent.children().last().map(|c| c == *node).unwrap_or(false);
+    match parent.kind() {
+        // (a) direct RHS of a binding, AND it holds at least one `k = v;`
+        NODE_ATTRPATH_VALUE if is_last => node
+            .children()
+            .any(|c| c.kind() == NODE_ATTRPATH_VALUE),
+        // (b)/(c) body of a `let ... in` / `assert c;` -- predicate is just
+        // "non-empty", an inherit-only set expands here too.
+        NODE_LET_IN | NODE_ASSERT if is_last => node.children().next().is_some(),
+        _ => false,
+    }
+}
+
+
+/// A multi-line `''...''` string, RE-INDENTED.
+///
+/// nixfmt does re-indent these: the common leading indentation is stripped
+/// and the body re-emitted at (opening line indent + 2). That is value-
+/// preserving because Nix strips the common indent itself at parse time.
+fn indented_string(node: &SyntaxNode) -> Doc {
+    enum Seg {
+        Txt(String),
+        Interp(SyntaxNode),
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    for c in node.children_with_tokens() {
+        match c {
+            NodeOrToken::Token(t) => {
+                if t.kind() == SyntaxKind::TOKEN_STRING_CONTENT {
+                    segs.push(Seg::Txt(t.text().to_string()));
+                }
+            }
+            NodeOrToken::Node(n) => segs.push(Seg::Interp(n)),
+        }
+    }
+    // Split into lines of pieces.
+    let mut lines: Vec<Vec<Seg>> = vec![Vec::new()];
+    for s in segs {
+        match s {
+            Seg::Interp(n) => lines.last_mut().unwrap().push(Seg::Interp(n)),
+            Seg::Txt(t) => {
+                let mut first = true;
+                for part in t.split('\n') {
+                    if !first {
+                        lines.push(Vec::new());
+                    }
+                    first = false;
+                    if !part.is_empty() {
+                        lines.last_mut().unwrap().push(Seg::Txt(part.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    // The opening line and the closer's line drop out when blank.
+    let blank = |l: &Vec<Seg>| {
+        l.iter().all(|s| match s {
+            Seg::Txt(t) => t.chars().all(|c| c == ' ' || c == '\t'),
+            Seg::Interp(_) => false,
+        })
+    };
+    if !lines.is_empty() && blank(&lines[0]) {
+        lines.remove(0);
+    }
+    // Whether the CLOSER sat on its own line, which is part of the VALUE:
+    //   ''\n  a\n''  -> "a\n"      (closer on its own line)
+    //   ''\n  a''    -> "a"        (closer on the content line)
+    // Emitting the trailing newline unconditionally added a `\n` to every
+    // string of the second shape — a real value change, caught by the law on
+    // 8 files (substrate's lockfile-delta, cargo-nix-tie, format-ban, …), all
+    // of them assertion messages whose text is what an operator reads.
+    let closer_on_own_line = lines.len() > 1 && blank(lines.last().unwrap());
+    if closer_on_own_line {
+        lines.pop();
+    }
+    // Minimum leading-SPACE count over non-blank lines. A tab terminates the
+    // run, so a tab-led line measures 0.
+    let lead = |l: &Vec<Seg>| -> usize {
+        match l.first() {
+            Some(Seg::Txt(t)) => t.chars().take_while(|c| *c == ' ').count(),
+            _ => 0,
+        }
+    };
+    let m = lines
+        .iter()
+        .filter(|l| !blank(l))
+        .map(lead)
+        .min()
+        .unwrap_or(0);
+
+    let mut body = Doc::nil();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            body = body.concat(Doc::hardline());
+        }
+        if blank(l) {
+            // A whitespace-only line narrower than the common indent becomes
+            // completely empty; a wider one keeps what is left.
+            let w: usize = l
+                .iter()
+                .map(|s| match s {
+                    Seg::Txt(t) => t.chars().count(),
+                    Seg::Interp(_) => 0,
+                })
+                .sum();
+            if w > m {
+                body = body.concat(Doc::text(" ".repeat(w - m)));
+            }
+            continue;
+        }
+        let mut first = true;
+        for s in l {
+            match s {
+                Seg::Txt(t) => {
+                    let t = if first {
+                        let k = t.chars().take_while(|c| *c == ' ').count().min(m);
+                        t.chars().skip(k).collect::<String>()
+                    } else {
+                        t.clone()
+                    };
+                    body = body.concat(Doc::text(t));
+                }
+                Seg::Interp(n) => body = body.concat(verbatim(n)),
+            }
+            first = false;
+        }
+    }
+    let opened = Doc::text("''").concat(Doc::hardline().concat(body).nest(INDENT));
+    if closer_on_own_line {
+        opened.concat(Doc::hardline()).concat(Doc::text("''"))
+    } else {
+        // No break before the closer: the value ends without a newline and
+        // must keep ending without one.
+        opened.concat(Doc::text("''"))
+    }
+}
+
+/// Only reflow the SAFE shape: an `''` string whose opening line is blank.
+/// A single-line `''x''` reflowed to three lines gains a trailing newline in
+/// its VALUE, and text left on the opening line makes the common-indent
+/// computation disagree with Nix's own. Both were caught by the law, not by
+/// eye -- 153 files at once.
+fn is_indented_string(node: &SyntaxNode) -> bool {
+    if node.kind() != SyntaxKind::NODE_STRING {
+        return false;
+    }
+    let t = node.text().to_string();
+    let Some(rest) = t.strip_prefix("''") else { return false };
+    match rest.find('\n') {
+        Some(i) => rest[..i].chars().all(|c| c == ' ' || c == '\t'),
+        None => false,
+    }
+}
+
+/// A term whose opening delimiter can be hugged onto the current line: the
+/// enclosing group is judged on that first line alone.
+fn is_absorbable(node: &SyntaxNode) -> bool {
+    use SyntaxKind::*;
+    match node.kind() {
+        NODE_ATTR_SET | NODE_LEGACY_LET => node.children().next().is_some(),
+        NODE_LIST => node.children().next().is_some(),
+        NODE_PAREN => true,
+        NODE_STRING => node.text().to_string().starts_with("''"),
+        _ => false,
+    }
+}
+
 /// `a.b = expr;`
 fn attrpath_value(node: &SyntaxNode) -> Doc {
     let mut path = Doc::nil();
     let mut value = Doc::nil();
+    let mut value_node: Option<SyntaxNode> = None;
     let mut seen_assign = false;
     let mut lead = Doc::nil();
+    // Comments between `=` and the value are LEADING TRIVIA OF THE VALUE, not
+    // of the binding. Hoisting them above `path =` is a RELOCATION — nixfmt
+    // keeps them where they were, which forces the `path =` / newline / value
+    // shape at one extra indent step.
+    let mut value_lead = Doc::nil();
+    let mut value_lead_n = 0usize;
 
     for p in pieces(node) {
         match p {
             Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_ASSIGN => seen_assign = true,
+            Piece::Blank if seen_assign && value_lead_n > 0 => {
+                value_lead = value_lead.concat(Doc::hardline());
+            }
+            Piece::Comment(c) if seen_assign => {
+                value_lead = value_lead.concat(Doc::text(c)).concat(Doc::hardline());
+                value_lead_n += 1;
+            }
             Piece::Comment(c) => lead = lead.concat(Doc::text(c)).concat(Doc::hardline()),
             Piece::Node(n) => {
                 if seen_assign {
                     value = expr(&n);
+                    value_node = Some(n);
                 } else {
                     path = expr(&n);
                 }
@@ -374,9 +654,27 @@ fn attrpath_value(node: &SyntaxNode) -> Doc {
             _ => {}
         }
     }
+    if value_lead_n > 0 {
+        return lead.concat(
+            path.concat(Doc::text(" ="))
+                .concat(
+                    Doc::hardline()
+                        .concat(value_lead)
+                        .concat(value)
+                        .nest(INDENT),
+                )
+                .concat(Doc::text(";")),
+        );
+    }
+    let value = if value_node.as_ref().is_some_and(is_absorbable) {
+        value.absorb()
+    } else {
+        value
+    };
     lead.concat(
-        path.concat(Doc::text(" = "))
-            .concat(value)
+        path.concat(Doc::text(" ="))
+            .concat(Doc::line().concat(value).nest_if_broken(INDENT))
+            .group()
             .concat(Doc::text(";")),
     )
 }
@@ -389,7 +687,12 @@ fn inherit(node: &SyntaxNode) -> Doc {
             Piece::Node(n) => {
                 d = d.concat(Doc::text(" ")).concat(expr(&n));
             }
-            Piece::Comment(c) => d = d.concat(Doc::text(" ")).concat(Doc::text(c)),
+            Piece::Comment(c) => {
+                d = d
+                    .concat(Doc::hardline())
+                    .concat(Doc::text(c))
+                    .concat(Doc::hardline());
+            }
             _ => {}
         }
     }
@@ -418,6 +721,7 @@ fn paren(node: &SyntaxNode) -> Doc {
 fn let_in(node: &SyntaxNode) -> Doc {
     let mut binds: Vec<Doc> = Vec::new();
     let mut body = Doc::nil();
+    let mut body_lead = Doc::nil();
     let mut seen_in = false;
     let mut pending_blank = false;
 
@@ -426,6 +730,13 @@ fn let_in(node: &SyntaxNode) -> Doc {
             Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_IN => seen_in = true,
             Piece::Blank => pending_blank = true,
             Piece::Comment(c) => {
+                // AFTER `in`, the comment is leading trivia of the BODY, not a
+                // last binding. Filing it into `binds` printed it above `in`,
+                // which relocates it past a keyword.
+                if seen_in {
+                    body_lead = body_lead.concat(Doc::text(c)).concat(Doc::hardline());
+                    continue;
+                }
                 if pending_blank && !binds.is_empty() {
                     binds.push(Doc::nil());
                     pending_blank = false;
@@ -456,6 +767,7 @@ fn let_in(node: &SyntaxNode) -> Doc {
         .concat(Doc::hardline())
         .concat(Doc::text("in"))
         .concat(Doc::hardline())
+        .concat(body_lead)
         .concat(body)
 }
 
@@ -463,6 +775,11 @@ fn let_in(node: &SyntaxNode) -> Doc {
 fn lambda(node: &SyntaxNode) -> Doc {
     let mut param = Doc::nil();
     let mut body = Doc::nil();
+    // Comments sitting between `:` and the body are LEADING TRIVIA of the body:
+    // they render on their own lines, at the body's indent, immediately above
+    // it. Accumulating them into `body` and then assigning `body = expr(&n)`
+    // DROPPED them outright (`x:\n# c\nx` rendered as `x: x`).
+    let mut body_lead = Doc::nil();
     let mut seen_colon = false;
     for p in pieces(node) {
         match p {
@@ -474,14 +791,27 @@ fn lambda(node: &SyntaxNode) -> Doc {
                     param = pattern_or_ident(&n);
                 }
             }
-            Piece::Comment(c) => body = body.concat(Doc::text(c)).concat(Doc::hardline()),
+            Piece::Comment(c) => {
+                if seen_colon {
+                    body_lead = body_lead.concat(Doc::text(c)).concat(Doc::hardline());
+                } else {
+                    param = param.concat(Doc::text(c)).concat(Doc::hardline());
+                }
+            }
             _ => {}
         }
     }
+    let body = body_lead.concat(body);
     // A lambda body goes on the same line when it fits, and on the next line
     // (NOT indented) when it does not — the standard Nix shape for the
     // `{ pkgs, ... }: { ... }` module idiom, where indenting the body would
     // push every module one step right for no gain.
+    if lambda_hugs(node) {
+        return param
+            .concat(Doc::text(":"))
+            .concat(Doc::text(" "))
+            .concat(body.absorb());
+    }
     param
         .concat(Doc::text(":"))
         .concat(Doc::line())
@@ -529,9 +859,9 @@ fn pattern_or_ident(node: &SyntaxNode) -> Doc {
                         .find(|c| c.kind() == SyntaxKind::NODE_IDENT)
                         .map_or_else(|| expr(&n), |i| expr(&i));
                     if seen_brace {
-                        bind_after = Doc::text(" @ ").concat(name);
+                        bind_after = Doc::text("@").concat(name);
                     } else {
-                        bind_before = name.concat(Doc::text(" @ "));
+                        bind_before = name.concat(Doc::text("@"));
                     }
                 }
                 _ => entries.push((expr(&n), false)),
@@ -548,7 +878,20 @@ fn pattern_or_ident(node: &SyntaxNode) -> Doc {
     // A comment forces the broken shape and takes NO comma: `# note,` would
     // put the separator inside the comment, where the parser can never see it.
     let has_comment = entries.iter().any(|(_, c)| *c);
-    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+    // MEASURED: a pattern expands at >= 3 named formals, or if ANY formal
+    // carries a `? default`. `...` is not a formal and does not count.
+    let named = node
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::NODE_PAT_ENTRY)
+        .count();
+    let has_default = node.children().any(|c| {
+        c.kind() == SyntaxKind::NODE_PAT_ENTRY
+            && c.children_with_tokens()
+                .filter_map(|x| x.into_token())
+                .any(|t| t.kind() == SyntaxKind::TOKEN_QUESTION)
+    });
+    let hard = has_comment || named >= 3 || has_default;
+    let sep = if hard { Doc::hardline() } else { Doc::line() };
 
     let last_real = entries.iter().rposition(|(_, c)| !*c);
     let mut inner = Doc::nil();
@@ -557,11 +900,10 @@ fn pattern_or_ident(node: &SyntaxNode) -> Doc {
             inner = inner.concat(sep.clone());
         }
         inner = inner.concat(d.clone());
-        // Every non-comment entry except the last gets a comma. The last one
-        // gets one too WHEN BROKEN, which is the fleet's own style and
-        // nixfmt-rfc-style's: a trailing comma keeps the next added parameter
-        // to a one-line diff. The law exempts it explicitly.
-        if !*is_comment && Some(i) != last_real {
+        // In the BROKEN form every named formal takes a comma, the last one
+        // included; `...` never does. In the flat form the last one does not.
+        let is_ellipsis = ellipsis && Some(i) == last_real;
+        if !*is_comment && !is_ellipsis && (hard || Some(i) != last_real) {
             inner = inner.concat(Doc::text(","));
         }
     }
@@ -582,7 +924,10 @@ fn apply(node: &SyntaxNode) -> Doc {
     let parts: Vec<Doc> = pieces(node)
         .into_iter()
         .filter_map(|p| match p {
-            Piece::Node(n) => Some(expr(&n)),
+            Piece::Node(n) => {
+                let d = expr(&n);
+                Some(if is_absorbable(&n) { d.absorb() } else { d })
+            }
             Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
             _ => None,
         })
@@ -590,23 +935,129 @@ fn apply(node: &SyntaxNode) -> Doc {
     if parts.len() < 2 {
         return Doc::concat_all(parts);
     }
+    // MEASURED: a chain of <= 2 arguments has NO break point at any width.
+    if apply_chain_args(node) <= 2 {
+        return Doc::join(parts, Doc::text(" "));
+    }
     let mut it = parts.into_iter();
     let head = it.next().unwrap_or_else(Doc::nil);
     let rest = Doc::join(it, Doc::line());
-    head.concat(Doc::line().concat(rest).nest(INDENT)).group()
+    head.concat(Doc::line().concat(rest).nest_if_broken(INDENT)).group()
+}
+
+
+fn binop_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .find(|t| !t.kind().is_trivia())
+}
+
+/// Nix precedence class of a binary operator token.
+fn prec_of(t: &SyntaxToken) -> u8 {
+    match t.text() {
+        "++" => 5,
+        "*" | "/" => 6,
+        "+" | "-" => 7,
+        "//" => 9,
+        "<" | ">" | "<=" | ">=" => 10,
+        "==" | "!=" => 11,
+        "&&" => 12,
+        "||" => 13,
+        "->" => 14,
+        _ => 99,
+    }
+}
+
+/// Flatten a maximal same-precedence operator run.
+fn flatten_chain(node: &SyntaxNode, p: u8, ops: &mut Vec<String>, operands: &mut Vec<SyntaxNode>) {
+    if node.kind() == SyntaxKind::NODE_BIN_OP {
+        if let Some(t) = binop_token(node) {
+            if prec_of(&t) == p {
+                let kids: Vec<SyntaxNode> = node.children().collect();
+                if kids.len() == 2 {
+                    flatten_chain(&kids[0], p, ops, operands);
+                    ops.push(t.text().to_string());
+                    flatten_chain(&kids[1], p, ops, operands);
+                    return;
+                }
+            }
+        }
+    }
+    operands.push(node.clone());
 }
 
 fn bin_op(node: &SyntaxNode) -> Doc {
-    let parts: Vec<Doc> = pieces(node)
-        .into_iter()
-        .filter_map(|p| match p {
-            Piece::Node(n) => Some(expr(&n)),
-            Piece::Token(t) => Some(Doc::text(t.text().to_string())),
-            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
-            Piece::Blank => None,
-        })
-        .collect();
-    Doc::join(parts, Doc::text(" ")).group()
+    // DESCENDANTS, not direct children. `flatten_chain` descends past inner
+    // same-precedence `NODE_BIN_OP`s, so a comment attached to one of THOSE
+    // is consumed by the flatten and never rendered. Checking only this
+    // node's own tokens lost 34 comments in one file
+    // (modules/pleme/nixos/node-budget.nix, 227 -> 193) and broke the law on
+    // 13 files — a comment sitting between two operands of a `++` chain is an
+    // extremely common shape in this fleet.
+    //
+    // Deliberately CONSERVATIVE: any comment anywhere beneath this node sends
+    // the whole chain down the safe path. That gives up some parity on chains
+    // whose comment sits deep inside an operand and could in principle have
+    // been kept, and that trade is correct — parity bought by dropping a
+    // comment is not parity, it is data loss with a better score.
+    let has_comment = node
+        .descendants_with_tokens()
+        .filter_map(|c| c.into_token())
+        .any(|t| t.kind() == SyntaxKind::TOKEN_COMMENT);
+    let tok = binop_token(node);
+    let kids: Vec<SyntaxNode> = node.children().collect();
+    if has_comment || tok.is_none() || kids.len() != 2 {
+        let parts: Vec<Doc> = pieces(node)
+            .into_iter()
+            .filter_map(|p| match p {
+                Piece::Node(n) => Some(expr(&n)),
+                Piece::Token(t) => Some(Doc::text(t.text().to_string())),
+                Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+                Piece::Blank => None,
+            })
+            .collect();
+        return Doc::join(parts, Doc::text(" ")).group();
+    }
+    let tok = tok.unwrap();
+    // Only the OUTERMOST node of a same-precedence run lays the chain out.
+    let p = prec_of(&tok);
+    if let Some(parent) = node.parent() {
+        if parent.kind() == SyntaxKind::NODE_BIN_OP
+            && binop_token(&parent).map(|t| prec_of(&t)) == Some(p)
+        {
+            // handled by the ancestor; render as a plain flat join so the
+            // ancestor's flatten sees it -- unreachable in practice because
+            // flatten_chain descends past us.
+        }
+    }
+    let mut ops = Vec::new();
+    let mut operands = Vec::new();
+    flatten_chain(node, p, &mut ops, &mut operands);
+
+    // Non-associative comparisons with an absorbable RHS have NO break point.
+    let comparison = matches!(p, 10 | 11);
+    if ops.len() == 1 && comparison && is_absorbable(&operands[1]) {
+        return expr(&operands[0])
+            .concat(Doc::text(" "))
+            .concat(Doc::text(ops[0].clone()))
+            .concat(Doc::text(" "))
+            .concat(expr(&operands[1]).absorb());
+    }
+    let mut d = expr(&operands[0]);
+    for (i, op) in ops.iter().enumerate() {
+        let o = &operands[i + 1];
+        let item = if is_absorbable(o) {
+            Doc::text(op.clone())
+                .concat(Doc::text(" "))
+                .concat(expr(o).absorb())
+        } else {
+            Doc::text(op.clone())
+                .concat(Doc::line().concat(expr(o)).nest_if_broken(INDENT))
+                .group()
+        };
+        d = d.concat(Doc::line()).concat(item);
+    }
+    d.group()
 }
 
 fn unary_op(node: &SyntaxNode) -> Doc {

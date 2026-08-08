@@ -65,7 +65,7 @@ pub fn signature(src: &str) -> Signature {
                 // was wrong. An over-strict law is not the safe direction: it
                 // makes a correct formatter unadoptable.
                 SyntaxKind::TOKEN_STRING_CONTENT if in_indented_string(&t) => {
-                    tokens.push((SyntaxKind::TOKEN_STRING_CONTENT, strip_indent(t.text())))
+                    tokens.push((SyntaxKind::TOKEN_STRING_CONTENT, strip_indent_global(&t)))
                 }
                 k => tokens.push((k, t.text().to_string())),
             }
@@ -116,6 +116,75 @@ fn strip_indent(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Nix computes the common indent over the WHOLE `''` string, but an
+/// interpolation splits it into several content tokens. Normalizing each
+/// token on its own makes a whole-string RE-INDENT -- exactly what nixfmt
+/// does -- look like a changed program: a fragment that starts mid-line has
+/// a 0-indent first line, so its own minimum is 0 and nothing is stripped,
+/// while every other line moved by the same delta. Measured: 131 false
+/// breaches out of 134. The minimum is therefore computed once per STRING
+/// and applied to every fragment.
+fn strip_indent_global(t: &rnix::SyntaxToken) -> String {
+    let Some(string) = t.parent() else {
+        return strip_indent(t.text());
+    };
+    // Reconstruct the body, marking interpolations so a line that begins with
+    // one is not mistaken for a zero-indent line.
+    let mut body = String::new();
+    let mut starts: Vec<(usize, usize)> = Vec::new(); // (offset, len) of each content token
+    for c in string.children_with_tokens() {
+        match c {
+            NodeOrToken::Token(x) if x.kind() == SyntaxKind::TOKEN_STRING_CONTENT => {
+                starts.push((body.len(), x.text().len()));
+                body.push_str(x.text());
+            }
+            NodeOrToken::Node(_) => body.push('\u{1}'),
+            _ => {}
+        }
+    }
+    let min = body
+        .split('\n')
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    // Strip `min` leading spaces from every TRUE line start inside this token.
+    let mut out = String::new();
+    let text = t.text();
+    let mut first = true;
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let is_line_start = i > 0 || {
+            // token starts a line iff it is the first content token of the
+            // string, or the byte before it in `body` is a newline
+            let off = starts
+                .iter()
+                .find(|(o, l)| {
+                    let _ = l;
+                    body[*o..].starts_with(text) && first
+                })
+                .map(|(o, _)| *o);
+            match off {
+                Some(0) => true,
+                Some(o) => body.as_bytes().get(o - 1) == Some(&b'\n'),
+                None => false,
+            }
+        };
+        first = false;
+        if is_line_start && !line.trim().is_empty() {
+            let k = (line.len() - line.trim_start().len()).min(min);
+            out.push_str(&line[k..]);
+        } else if is_line_start {
+            out.push_str("");
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Is the next non-trivia token after `t` the `}` that closes a pattern?
