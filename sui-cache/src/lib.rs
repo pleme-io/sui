@@ -16,6 +16,7 @@
 pub mod config;
 pub mod gc;
 pub mod push;
+pub mod resign;
 pub mod server;
 pub mod signing;
 

@@ -731,6 +731,24 @@ enum CacheCommands {
     },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
     Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
+    /// Re-sign every narinfo already in the cache.
+    ///
+    /// For when the stored signatures are valid-looking but wrong — the
+    /// fingerprint computation changed, or the signing key rotated. The
+    /// INGEST path cannot repair these: it skips any narinfo already carrying
+    /// a signature under our key name so it does not double-sign, which means
+    /// a bad signature by our own key is permanent until something rewrites
+    /// it. This rewrites it.
+    ///
+    /// Reads and rewrites narinfo text only — no NAR is re-uploaded — so it is
+    /// O(entries) rather than O(bytes), and it repairs entries whose original
+    /// store path no longer exists locally. Idempotent: a second run resigns
+    /// nothing. Signatures by other key names are preserved.
+    Resign {
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+        /// Path to the ed25519 signing secret (`keyname:base64(64)`).
+        #[arg(long)] signing_key: String,
+    },
     /// Clear the ENTIRE cache — every narinfo + NAR across all tiers (Redis L1,
     /// Postgres L2, object/local L3). The inverse of a warm push: the cache is
     /// regenerable by construction, so a wipe merely forces the next build COLD
@@ -6869,6 +6887,38 @@ async fn main() -> Result<(), CliError> {
                     "GC: deleted {} paths, freed {} bytes",
                     result.paths_deleted, result.bytes_freed
                 );
+            }
+            CacheCommands::Resign { store_path, signing_key } => {
+                let secret = std::fs::read_to_string(&signing_key)
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "cache resign",
+                        message: format!("read signing key: {e}"),
+                    })?;
+                let signer =
+                    sui_cache::signing::CacheSigner::from_secret_key_string(secret.trim())
+                        .map_err(|e| CliError::Orchestrate {
+                            operation: "cache resign",
+                            message: e.to_string(),
+                        })?;
+                let storage = sui_cache::LocalStorage::new(&store_path);
+                let r = sui_cache::resign::resign_all(&storage, &signer)
+                    .await
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "cache resign",
+                        message: e.to_string(),
+                    })?;
+                println!(
+                    "resign: {} examined, {} re-signed, {} already correct, {} failed",
+                    r.total, r.resigned, r.unchanged, r.failed
+                );
+                if r.failed > 0 {
+                    // A partial sweep must not read as success: the operator
+                    // needs to know some entries are still unverifiable.
+                    return Err(CliError::Orchestrate {
+                        operation: "cache resign",
+                        message: format!("{} narinfo(s) could not be re-signed", r.failed),
+                    });
+                }
             }
             CacheCommands::Info { store_path } => {
                 let storage = sui_cache::LocalStorage::new(&store_path);
