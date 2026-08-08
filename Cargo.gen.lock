@@ -2,7 +2,7 @@
   "schema_version": 2,
   "cargo_lock_sha256": "1435ce7934ec4e15fe48086224bf4dc98d7c41d4c9034aeeda16b7503534dd63",
   "manifest_sha256": {
-    "Cargo.toml": "ca42da554a453559ebf79b7e983d27fafe3f79ed69d44c8a607dd891d2a58b54",
+    "Cargo.toml": "3e39bb2601e9046540f54bca586bec2d0a6b1082ba5bee61c3e4c40b3de4ab3c",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",

@@ -130,13 +130,6 @@ members = [
     # and sui-registry (=porto). Extracted from sui-cache so porto does not
     # depend on the full cache server crate just for the store trait.
     "sui-castore",
-    # The Nix language server, over sui's OWN parser and lowering. The point is
-    # that it is not a third Nix front end: nil and nixd each re-implement one
-    # so an editor can answer questions, which leaves the editor's idea of a
-    # file and the evaluator's idea of it agreeing only by effort. Here a
-    # diagnostic is what sui actually says about the file. M0 is diagnostics on
-    # open/change; hover and goto need the resolver's scope chain surfaced.
-    "sui-lsp",
 ]
 resolver = "3"
 
