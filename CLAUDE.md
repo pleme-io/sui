@@ -99,7 +99,15 @@ Rust's type system enforces invariants at compile time — no runtime checks nee
 
 **The pattern:** encode the invariant in the TYPE. The compiler enforces it. Bad states are unrepresentable.
 
-## Workspace (11 crates)
+## Workspace — the core crates
+
+**Counted 2026-08-08: the workspace has 30 members; the table below is the
+evaluator core plus the surfaces you are most likely to touch, not the whole
+list.** The header used to read "11 crates" and was read as a total — it was a
+subset that stopped being refreshed, which is the downward-rot shape the
+org-level dated-claim rule warns about (a stale count reads as modest, so
+nothing ever flags it as wrong). `Cargo.toml`'s `members` is the real roster and
+carries a comment per non-obvious crate; count there, never here.
 
 | Crate | Purpose |
 |-------|---------|
@@ -114,6 +122,45 @@ Rust's type system enforces invariants at compile time — no runtime checks nee
 | `sui-cache` | Binary cache (S3, local, redb) |
 | `sui-daemon` | Daemon mode (worker protocol) |
 | `sui-orchestrate` | System rebuild + fleet deployment |
+| `sui-lsp` | Nix language server over sui's own parser + lowering (M0: diagnostics) |
+
+### `sui-lsp` — the editor face, and why it is not a third front end
+
+`nil` and `nixd` each re-implement a Nix front end so an editor can answer
+questions about a file. That leaves the editor's idea of a file and the
+evaluator's idea of the same file as two implementations that agree only by
+effort. sui already owns the parser, the resolver, the lowering pass and the
+evaluator — so the move is not writing a third front end, it is **exposing the
+one that already evaluates the file**. A diagnostic from `sui-lsp` is not a
+lookalike of the build's opinion; it is the build's opinion.
+
+Shape: `diagnostics.rs` is pure (`&str` → `Vec<Diagnostic>`, no async, no LSP
+types, no IO) and holds every decision worth testing; `server.rs` is the
+`tower-lsp` shell and holds almost none. Positions come from `zahyou`, shared
+with `escriba-lsp-client`, so both ends of the wire do the same UTF-16
+arithmetic.
+
+Two things worth knowing before extending it:
+
+- **Most of the error surface has no span.** Five of rnix 0.14's eight
+  `ParseError` variants carry a `TextRange`; three do not. One of `sui-ir`'s
+  five `LowerError` variants carries byte offsets. `Anchor` exists so "we were
+  not told where this is" is a represented state with a per-case answer —
+  defaulting a span-less error to line 0 puts a squiggle on the first character
+  for an unclosed brace at the bottom of a 400-line file.
+- **`rnix::ParseError` is `#[non_exhaustive]`**, so the `match` over it is *not*
+  a compile-time guard and a new upstream variant will fall into the wildcard.
+  That is why the wildcard produces `Finding::UnrecognizedParseError` rather
+  than quietly labelling it "unexpected token". Tier: only-mitigated (C2 — the
+  variant set is upstream's and it opted out of the check).
+
+**M0 scope, tier-honest:** diagnostics on open and change, proven end-to-end
+against the real binary over stdio (`tests/stdio_smoke.rs` — handshake, a
+correctly-positioned diagnostic on an emoji-bearing file, and the empty publish
+that clears them). **No hover, goto-definition, completion or workspace
+symbols** — those need the resolver's scope chain surfaced, and `initialize`
+advertises only what is implemented so the editor never offers a feature that
+silently does nothing.
 
 ## Laziness-First Evaluation
 

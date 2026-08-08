@@ -10,8 +10,10 @@ members = [
     # canonicality gate at sui's parse door, which needs
     # `is_canonical(src) = format(src) == src` — and that needs byte parity
     # with `nixfmt --strict` (RFC 166), the canonical form the fleet adopted.
-    # Parity is currently 16% on a 300-file corpus sample, so gating on it
-    # today would reject ~84% of correctly-formatted files. Parity is a
+    # Parity is 14.7% (44/300) on a corpus sample measured from this crate's
+    # own `examples/parity.rs`, so gating on it today would reject ~85% of
+    # correctly-formatted files. Re-measure, never cite this figure; it is a
+    # dated reading, not a property. Parity is a
     # tracked RATCHET, never a precondition that deadlocks the gate: nixfmt
     # is a greedy `layoutGreedy`, this is Oppen, so agreement is measured,
     # not assumed.
@@ -128,6 +130,13 @@ members = [
     # and sui-registry (=porto). Extracted from sui-cache so porto does not
     # depend on the full cache server crate just for the store trait.
     "sui-castore",
+    # The Nix language server, over sui's OWN parser and lowering. The point is
+    # that it is not a third Nix front end: nil and nixd each re-implement one
+    # so an editor can answer questions, which leaves the editor's idea of a
+    # file and the evaluator's idea of it agreeing only by effort. Here a
+    # diagnostic is what sui actually says about the file. M0 is diagnostics on
+    # open/change; hover and goto need the resolver's scope chain surfaced.
+    "sui-lsp",
 ]
 resolver = "3"
 
@@ -155,6 +164,7 @@ pedantic = "warn"
 gen-nix = "0.1"
 # Internal crates
 sui-intern = { path = "sui-intern", version = "0.1.169" }
+sui-fmt = { path = "sui-fmt", version = "0.1.169" }
 sui-resolve = { path = "sui-resolve", version = "0.1.169" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.169" }
 sui-cache = { path = "sui-cache", version = "0.1.169" }
