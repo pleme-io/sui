@@ -731,6 +731,39 @@ enum CacheCommands {
     },
     Gc { #[arg(long, default_value = "/var/cache/sui")] store_path: String, #[arg(long)] keep: Vec<String> },
     Info { #[arg(long, default_value = "/var/cache/sui")] store_path: String },
+    /// Keep the warm cache alive across `nix-collect-garbage` (atatame L2).
+    ///
+    /// Captures newly-realized store paths into the cache so a GC cannot take
+    /// a path the cache advertises. This is the surface `attic watch-store`
+    /// used to provide; attic was retired 2026-07-31 and nothing has covered
+    /// it since — `theory/ATATAME.md` calls it the single highest-value gap
+    /// in that doctrine.
+    ///
+    /// It RECONCILES rather than following events, so it converges after a
+    /// restart and — unlike a post-build hook — also captures paths that
+    /// arrived by SUBSTITUTION, which nothing else covers.
+    ///
+    /// By default only paths realized AFTER startup are captured: a full
+    /// reconcile on a real machine would try to mirror the whole store
+    /// (measured on rio: 60,025 store paths vs 6,929 cached). Pass
+    /// `--initial-reconcile` to backfill deliberately.
+    Watch {
+        #[arg(long, default_value = "/var/cache/sui")] store_path: String,
+        /// ed25519 signing secret. Required — an unsigned warm cache is one
+        /// every consumer discards, which is a silent no-op rather than an
+        /// error.
+        #[arg(long)] signing_key: String,
+        /// Seconds between passes.
+        #[arg(long, default_value = "30")] interval_secs: u64,
+        /// Run exactly one pass and exit (cron / systemd OnCalendar shape).
+        #[arg(long)] once: bool,
+        /// Start from an EMPTY baseline, so every uncached path is a
+        /// candidate. Drains at `--max-per-pass` per pass.
+        #[arg(long)] initial_reconcile: bool,
+        /// Upper bound on captures per pass, so one large build cannot turn a
+        /// single tick into an unbounded upload.
+        #[arg(long, default_value = "200")] max_per_pass: usize,
+    },
     /// Re-sign every narinfo already in the cache.
     ///
     /// For when the stored signatures are valid-looking but wrong — the
@@ -6887,6 +6920,146 @@ async fn main() -> Result<(), CliError> {
                     "GC: deleted {} paths, freed {} bytes",
                     result.paths_deleted, result.bytes_freed
                 );
+            }
+            CacheCommands::Watch {
+                store_path,
+                signing_key,
+                interval_secs,
+                once,
+                initial_reconcile,
+                max_per_pass,
+            } => {
+                let secret = std::fs::read_to_string(&signing_key).map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "cache watch",
+                        message: format!("read signing key: {e}"),
+                    }
+                })?;
+                let signer =
+                    sui_cache::CacheSigner::from_secret_key_string(secret.trim()).map_err(|e| {
+                        CliError::Orchestrate {
+                            operation: "cache watch",
+                            message: e.to_string(),
+                        }
+                    })?;
+                let storage = sui_cache::LocalStorage::new(&store_path);
+                let codec = sui_cache::CacheConfig::resolve().nar_codec;
+                let local = LocalStore::open(NIX_DB_PATH)
+                    .await
+                    .map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+
+                // narinfo References/Deriver are BASENAMES. nix rejects the
+                // whole narinfo on a '/', so this must match the push path
+                // exactly — same helper, same reason.
+                let basename =
+                    |p: &str| -> String { p.strip_prefix("/nix/store/").unwrap_or(p).to_string() };
+                let hash_of = |p: &str| -> String {
+                    p.strip_prefix("/nix/store/")
+                        .unwrap_or(p)
+                        .split('-')
+                        .next()
+                        .unwrap_or(p)
+                        .to_string()
+                };
+
+                // The baseline decides the whole posture: non-empty => only
+                // capture what appears from now on; empty => backfill.
+                let mut baseline: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                if !initial_reconcile {
+                    let paths =
+                        local.query_all_valid_paths().await.map_err(|e| CliError::Orchestrate {
+                            operation: "cache watch",
+                            message: format!("query_all_valid_paths: {e}"),
+                        })?;
+                    baseline = paths
+                        .iter()
+                        .map(|sp| hash_of(&sp.to_absolute_path()))
+                        .collect();
+                    println!(
+                        "watch: baseline {} path(s) — capturing only what is realized from now on",
+                        baseline.len()
+                    );
+                } else {
+                    println!("watch: --initial-reconcile — every uncached path is a candidate");
+                }
+
+                loop {
+                    let valid = match local.query_all_valid_paths().await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("watch: query_all_valid_paths failed: {e}");
+                            if once { break; }
+                            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                            continue;
+                        }
+                    };
+                    let by_hash: std::collections::HashMap<String, _> = valid
+                        .iter()
+                        .map(|sp| (hash_of(&sp.to_absolute_path()), sp.clone()))
+                        .collect();
+                    let valid_hashes: Vec<String> = by_hash.keys().cloned().collect();
+
+                    let cached: std::collections::HashSet<String> = storage
+                        .list_narinfos()
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+
+                    let plan = sui_cache::watch::plan_capture(
+                        &valid_hashes,
+                        &cached,
+                        &baseline,
+                        max_per_pass,
+                    );
+                    let mut report = sui_cache::watch::WatchReport {
+                        scanned: valid_hashes.len(),
+                        deferred: plan.deferred,
+                        ..Default::default()
+                    };
+
+                    for h in &plan.to_capture {
+                        let Some(sp) = by_hash.get(h) else { continue };
+                        let path = sp.to_absolute_path();
+                        // A missing path-info is a SKIP with a reason, never a
+                        // push with empty References — a narinfo claiming no
+                        // references makes nix substitute the path and stop,
+                        // leaving its runtime deps absent.
+                        let info = match local.query_path_info(sp).await {
+                            Ok(Some(i)) => i,
+                            _ => {
+                                report.failed += 1;
+                                continue;
+                            }
+                        };
+                        let references: Vec<String> =
+                            info.references.iter().map(|r| basename(r)).collect();
+                        let deriver = info.deriver.as_deref().map(basename);
+                        match sui_cache::push::push_path(
+                            &storage, &signer, &path, h, &references, deriver.as_deref(), codec,
+                        )
+                        .await
+                        {
+                            Ok(_) => report.captured += 1,
+                            Err(e) => {
+                                eprintln!("watch: capture {path} failed: {e}");
+                                report.failed += 1;
+                            }
+                        }
+                    }
+
+                    if report.captured > 0 || report.failed > 0 || report.deferred > 0 {
+                        println!(
+                            "watch: {} scanned, {} captured, {} failed, {} deferred",
+                            report.scanned, report.captured, report.failed, report.deferred
+                        );
+                    }
+                    if once {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                }
             }
             CacheCommands::Resign { store_path, signing_key } => {
                 let secret = std::fs::read_to_string(&signing_key)

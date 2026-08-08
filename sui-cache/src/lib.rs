@@ -19,6 +19,7 @@ pub mod push;
 pub mod resign;
 pub mod server;
 pub mod signing;
+pub mod watch;
 
 // ---------------------------------------------------------------------------
 // Backward-compatibility re-exports from sui-castore.
