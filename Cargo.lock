@@ -6756,6 +6756,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-fmt"
+version = "0.1.165"
+dependencies = [
+ "rnix",
+ "rowan",
+]
+
+[[package]]
 name = "sui-graph-store"
 version = "0.1.168"
 dependencies = [

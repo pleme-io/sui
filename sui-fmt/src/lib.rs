@@ -1,0 +1,711 @@
+//! A deterministic Nix formatter over rnix's lossless CST.
+//!
+//! **There is no configuration type, and that is the feature** — the same
+//! rule `blue-lang-fmt` states. A width knob would forfeit the text<->tree
+//! bijection: two widths are two canonical forms, and "canonical" then means
+//! nothing. The fleet has already paid for the alternative — `caixa-fmt`'s
+//! library default is 80 (`config.rs:40`, with a comment justifying "Not
+//! 100") while the `feira` CLI that formatted all 568 `.tlisp` files passes
+//! `.unwrap_or(100)` (`caixa-feira/src/cmd/fmt.rs:34`). Two sources of truth
+//! for one number, disagreeing, and `tatara-kanmon`'s build gate now has to
+//! tell people NOT to run `feira fmt` because it "would reformat these
+//! straight back into a red build".
+//!
+//! ## Why this can go further than the tatara-lisp side
+//!
+//! `tatara-kanmon/build.rs` records exactly why the `.tlisp` gate stops at
+//! build-rejected: sealing parse-time "requires the canonical renderer to
+//! live at or below `tatara-lisp` so the reader itself can refuse — blocked
+//! today because `caixa-fmt` AND `caixa-ast` both take a normal dependency
+//! on `tatara-lisp`, making any edge back a hard cargo cycle, and because
+//! the reader discards trivia".
+//!
+//! Neither blocker exists here. `rnix` is an external crate, so
+//! `sui-eval -> sui-fmt -> rnix` is acyclic; and rnix's CST is lossless
+//! (verified: `Root::parse(s).syntax().text() == s` byte-for-byte across
+//! comments, `''` strings, interpolation, `inherit`, CRLF and comment-only
+//! files). So the reader itself CAN refuse.
+
+pub mod doc;
+pub mod law;
+
+use doc::Doc;
+use rnix::{SyntaxKind, SyntaxNode, SyntaxToken};
+use rowan::NodeOrToken;
+
+/// The one line width. Not configurable — see the module docs.
+pub const WIDTH: usize = 100;
+
+/// One indent step.
+const INDENT: isize = 2;
+
+/// Format Nix source into its canonical form.
+pub fn format_source(src: &str) -> Result<String, FormatError> {
+    let parsed = rnix::Root::parse(src);
+    let errors = parsed.errors();
+    if !errors.is_empty() {
+        // A file that is only comments/whitespace parses with an error
+        // ("unexpected EOF") but is a perfectly valid thing to have on disk.
+        // Refusing it would make the gate reject a legitimate file.
+        if is_trivia_only(src) {
+            return Ok(canonical_trivia_only(src));
+        }
+        return Err(FormatError::Parse(
+            errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+        ));
+    }
+    let node = parsed.syntax();
+    let rendered = doc::pretty(&root(&node), WIDTH);
+    Ok(normalize_trailing(&rendered))
+}
+
+/// Is `src` already in canonical form?
+///
+/// Parses, re-renders and compares BYTES — the formatter's own verdict
+/// rather than a reimplementation of it. `tatara-kanmon/build.rs` uses the
+/// same shape for the same reason: a gate that re-derives the rule is a
+/// second rule that can disagree with the first.
+pub fn is_canonical(src: &str) -> bool {
+    matches!(format_source(src), Ok(out) if out == src)
+}
+
+#[derive(Debug)]
+pub enum FormatError {
+    Parse(String),
+}
+
+impl std::fmt::Display for FormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FormatError::Parse(m) => write!(f, "does not parse: {m}"),
+        }
+    }
+}
+
+fn is_trivia_only(src: &str) -> bool {
+    let p = rnix::Root::parse(src);
+    !p.syntax()
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| !t.kind().is_trivia())
+}
+
+fn canonical_trivia_only(src: &str) -> String {
+    let mut out = String::new();
+    for line in src.lines() {
+        let l = line.trim();
+        if !l.is_empty() {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Exactly one trailing newline at end of file.
+///
+/// It does NOT trim per-line trailing space — `doc::newline` already does
+/// that for the space this printer emitted, and doing it here would reach
+/// inside `''...''` bodies, where trailing space is part of the value.
+fn normalize_trailing(s: &str) -> String {
+    let mut out = s.trim_end_matches(['\n', ' ']).to_string();
+    out.push('\n');
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Trivia-aware child iteration
+//
+// This is the whole reason a lossless CST is worth the walk: a comment is a
+// TOKEN sitting between two children, so it can be placed STRUCTURALLY — next
+// to the thing it documents — rather than re-interleaved by byte position the
+// way `blue-lang-fmt` must. blue's `FormatError::UnplaceableComments` class
+// therefore has no analogue here: there is no comment position this cannot
+// represent.
+// ---------------------------------------------------------------------------
+
+enum Piece {
+    Node(SyntaxNode),
+    Token(SyntaxToken),
+    Comment(String),
+    /// The author left one or more blank lines here.
+    Blank,
+}
+
+/// Split a node's children into renderable pieces, preserving comments and
+/// collapsing runs of blank lines to at most one.
+fn pieces(node: &SyntaxNode) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Node(n) => out.push(Piece::Node(n)),
+            NodeOrToken::Token(t) => match t.kind() {
+                SyntaxKind::TOKEN_COMMENT => out.push(Piece::Comment(render_comment(t.text()))),
+                SyntaxKind::TOKEN_WHITESPACE => {
+                    // Two or more newlines means the author left a blank line.
+                    // Preserving it is not cosmetic: blank lines are how a
+                    // reader groups a long attrset, and deleting them all is
+                    // the single most-hated thing a formatter can do.
+                    if t.text().matches('\n').count() >= 2 && !out.is_empty() {
+                        if !matches!(out.last(), Some(Piece::Blank)) {
+                            out.push(Piece::Blank);
+                        }
+                    }
+                }
+                _ => out.push(Piece::Token(t)),
+            },
+        }
+    }
+    out
+}
+
+/// `#x` -> `# x`; `#!shebang` and `/* ... */` are left exactly alone.
+fn render_comment(text: &str) -> String {
+    let t = text.trim_end();
+    if t.starts_with("/*") {
+        return t.to_string();
+    }
+    if t.starts_with("#!") {
+        return t.to_string();
+    }
+    match t.strip_prefix('#') {
+        Some(rest) if !rest.trim().is_empty() => {
+            let mut s = String::from("# ");
+            s.push_str(rest.trim());
+            s
+        }
+        Some(_) => "#".to_string(),
+        None => t.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+fn root(node: &SyntaxNode) -> Doc {
+    let mut d = Doc::nil();
+    for p in pieces(node) {
+        match p {
+            Piece::Node(n) => d = d.concat(expr(&n)),
+            Piece::Comment(c) => d = d.concat(Doc::text(c)).concat(Doc::hardline()),
+            Piece::Blank => d = d.concat(Doc::hardline()),
+            Piece::Token(_) => {}
+        }
+    }
+    d
+}
+
+fn expr(node: &SyntaxNode) -> Doc {
+    use SyntaxKind::*;
+    match node.kind() {
+        NODE_ATTR_SET | NODE_LEGACY_LET => attr_set(node),
+        NODE_LIST => list(node),
+        NODE_LET_IN => let_in(node),
+        NODE_ATTRPATH_VALUE => attrpath_value(node),
+        NODE_INHERIT => inherit(node),
+        NODE_PAREN => paren(node),
+        NODE_IF_ELSE => if_else(node),
+        NODE_WITH | NODE_ASSERT => with_or_assert(node),
+        NODE_LAMBDA => lambda(node),
+        NODE_APPLY => apply(node),
+        NODE_BIN_OP => bin_op(node),
+        NODE_UNARY_OP => unary_op(node),
+        NODE_HAS_ATTR => spaced(node),
+        NODE_SELECT | NODE_ATTRPATH => tight(node),
+        NODE_STRING | NODE_INTERPOL | NODE_DYNAMIC => verbatim(node),
+        NODE_IDENT | NODE_LITERAL | NODE_PATH_ABS | NODE_PATH_REL | NODE_PATH_HOME
+        | NODE_PATH_SEARCH | NODE_CUR_POS => verbatim(node),
+        NODE_ROOT => root(node),
+        // Deliberately loud rather than silently plausible. `unknown_kinds`
+        // in the coverage test asserts this set is EMPTY over the corpus, so
+        // a construct nobody wrote a rule for fails the build instead of
+        // round-tripping through a fallback that happens to re-parse.
+        _ => verbatim(node),
+    }
+}
+
+/// Emit a node's source text exactly, minus leading/trailing whitespace.
+/// Correct for atoms and for anything whose interior is SEMANTIC — an
+/// indented string's body above all, where re-indentation changes the value.
+fn verbatim(node: &SyntaxNode) -> Doc {
+    Doc::text(node.text().to_string())
+}
+
+/// Children separated by single spaces, flattening to a group.
+fn spaced(node: &SyntaxNode) -> Doc {
+    let parts: Vec<Doc> = pieces(node)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Node(n) => Some(expr(&n)),
+            Piece::Token(t) => Some(Doc::text(t.text().to_string())),
+            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+            Piece::Blank => None,
+        })
+        .collect();
+    Doc::join(parts, Doc::text(" ")).group()
+}
+
+/// Children with no separator — `a.b.c`, an attrpath — EXCEPT `or`, which is
+/// a keyword and needs its spaces.
+///
+/// Gluing it produced `cfg.status or "x"` -> `cfg.statusor "x"`: a different,
+/// still-parseable identifier. Nothing about the output looks wrong at a
+/// glance, which is exactly why the token-stream law rather than an eyeball
+/// is what caught it, across 8 files at once.
+fn tight(node: &SyntaxNode) -> Doc {
+    let mut out = Doc::nil();
+    for p in pieces(node) {
+        match p {
+            Piece::Node(n) => out = out.concat(expr(&n)),
+            Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_OR => {
+                out = out
+                    .concat(Doc::text(" "))
+                    .concat(Doc::text(t.text().to_string()))
+                    .concat(Doc::text(" "));
+            }
+            Piece::Token(t) => out = out.concat(Doc::text(t.text().to_string())),
+            Piece::Comment(c) => out = out.concat(Doc::text(c)).concat(Doc::hardline()),
+            Piece::Blank => {}
+        }
+    }
+    out
+}
+
+/// `{ a = 1; b = 2; }` — flat when it fits, one binding per line otherwise.
+fn attr_set(node: &SyntaxNode) -> Doc {
+    let mut lead = Doc::nil();
+    let mut items: Vec<Doc> = Vec::new();
+    let mut pending_blank = false;
+
+    for p in pieces(node) {
+        match p {
+            Piece::Token(t) => match t.kind() {
+                SyntaxKind::TOKEN_REC | SyntaxKind::TOKEN_LET => {
+                    lead = lead.concat(Doc::text(t.text().to_string())).concat(Doc::text(" "));
+                }
+                _ => {}
+            },
+            Piece::Blank => pending_blank = true,
+            Piece::Comment(c) => {
+                if pending_blank && !items.is_empty() {
+                    items.push(Doc::nil());
+                    pending_blank = false;
+                }
+                items.push(Doc::text(c));
+            }
+            Piece::Node(n) => {
+                if pending_blank && !items.is_empty() {
+                    items.push(Doc::nil());
+                    pending_blank = false;
+                }
+                items.push(expr(&n));
+            }
+        }
+    }
+
+    if items.is_empty() {
+        return lead.concat(Doc::text("{ }"));
+    }
+
+    // A comment anywhere inside forces the broken shape: a `#` comment
+    // consumes the rest of its line, so flattening `{ # c
+    // a = 1; }` onto one line would swallow the binding INTO the comment.
+    // That is a semantic change, not a layout one.
+    let has_comment = node
+        .children_with_tokens()
+        .filter_map(|c| c.into_token())
+        .any(|t| t.kind() == SyntaxKind::TOKEN_COMMENT);
+
+    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+    let inner = Doc::join(items, sep.clone());
+    lead.concat(
+        Doc::text("{")
+            .concat(sep.clone().concat(inner).nest(INDENT))
+            .concat(sep)
+            .concat(Doc::text("}"))
+            .group(),
+    )
+}
+
+/// `[ a b c ]`
+fn list(node: &SyntaxNode) -> Doc {
+    let mut items: Vec<Doc> = Vec::new();
+    let mut has_comment = false;
+    for p in pieces(node) {
+        match p {
+            Piece::Node(n) => items.push(expr(&n)),
+            Piece::Comment(c) => {
+                has_comment = true;
+                items.push(Doc::text(c));
+            }
+            Piece::Blank | Piece::Token(_) => {}
+        }
+    }
+    if items.is_empty() {
+        return Doc::text("[ ]");
+    }
+    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+    Doc::text("[")
+        .concat(sep.clone().concat(Doc::join(items, sep.clone())).nest(INDENT))
+        .concat(sep)
+        .concat(Doc::text("]"))
+        .group()
+}
+
+/// `a.b = expr;`
+fn attrpath_value(node: &SyntaxNode) -> Doc {
+    let mut path = Doc::nil();
+    let mut value = Doc::nil();
+    let mut seen_assign = false;
+    let mut lead = Doc::nil();
+
+    for p in pieces(node) {
+        match p {
+            Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_ASSIGN => seen_assign = true,
+            Piece::Comment(c) => lead = lead.concat(Doc::text(c)).concat(Doc::hardline()),
+            Piece::Node(n) => {
+                if seen_assign {
+                    value = expr(&n);
+                } else {
+                    path = expr(&n);
+                }
+            }
+            _ => {}
+        }
+    }
+    lead.concat(
+        path.concat(Doc::text(" = "))
+            .concat(value)
+            .concat(Doc::text(";")),
+    )
+}
+
+/// `inherit a b;` / `inherit (pkgs) hello;`
+fn inherit(node: &SyntaxNode) -> Doc {
+    let mut d = Doc::text("inherit");
+    for p in pieces(node) {
+        match p {
+            Piece::Node(n) => {
+                d = d.concat(Doc::text(" ")).concat(expr(&n));
+            }
+            Piece::Comment(c) => d = d.concat(Doc::text(" ")).concat(Doc::text(c)),
+            _ => {}
+        }
+    }
+    d.concat(Doc::text(";"))
+}
+
+fn paren(node: &SyntaxNode) -> Doc {
+    let inner: Vec<Doc> = pieces(node)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Node(n) => Some(expr(&n)),
+            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+            _ => None,
+        })
+        .collect();
+    Doc::text("(")
+        .concat(Doc::softline().concat(Doc::concat_all(inner)).nest(INDENT))
+        .concat(Doc::softline())
+        .concat(Doc::text(")"))
+        .group()
+}
+
+/// `let a = 1; in body` — `let` bodies ALWAYS break. A `let` collapsed onto
+/// one line is legal Nix and unreadable at any size above trivial, and
+/// allowing both shapes would mean one tree has two canonical forms.
+fn let_in(node: &SyntaxNode) -> Doc {
+    let mut binds: Vec<Doc> = Vec::new();
+    let mut body = Doc::nil();
+    let mut seen_in = false;
+    let mut pending_blank = false;
+
+    for p in pieces(node) {
+        match p {
+            Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_IN => seen_in = true,
+            Piece::Blank => pending_blank = true,
+            Piece::Comment(c) => {
+                if pending_blank && !binds.is_empty() {
+                    binds.push(Doc::nil());
+                    pending_blank = false;
+                }
+                binds.push(Doc::text(c));
+            }
+            Piece::Node(n) => {
+                if seen_in {
+                    body = expr(&n);
+                } else {
+                    if pending_blank && !binds.is_empty() {
+                        binds.push(Doc::nil());
+                        pending_blank = false;
+                    }
+                    binds.push(expr(&n));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Doc::text("let")
+        .concat(
+            Doc::hardline()
+                .concat(Doc::join(binds, Doc::hardline()))
+                .nest(INDENT),
+        )
+        .concat(Doc::hardline())
+        .concat(Doc::text("in"))
+        .concat(Doc::hardline())
+        .concat(body)
+}
+
+/// `x: body` / `{ a, b ? 1, ... }@args: body`
+fn lambda(node: &SyntaxNode) -> Doc {
+    let mut param = Doc::nil();
+    let mut body = Doc::nil();
+    let mut seen_colon = false;
+    for p in pieces(node) {
+        match p {
+            Piece::Token(t) if t.kind() == SyntaxKind::TOKEN_COLON => seen_colon = true,
+            Piece::Node(n) => {
+                if seen_colon {
+                    body = expr(&n);
+                } else {
+                    param = pattern_or_ident(&n);
+                }
+            }
+            Piece::Comment(c) => body = body.concat(Doc::text(c)).concat(Doc::hardline()),
+            _ => {}
+        }
+    }
+    // A lambda body goes on the same line when it fits, and on the next line
+    // (NOT indented) when it does not — the standard Nix shape for the
+    // `{ pkgs, ... }: { ... }` module idiom, where indenting the body would
+    // push every module one step right for no gain.
+    param
+        .concat(Doc::text(":"))
+        .concat(Doc::line())
+        .concat(body)
+        .group()
+}
+
+fn pattern_or_ident(node: &SyntaxNode) -> Doc {
+    if node.kind() != SyntaxKind::NODE_PATTERN {
+        return expr(node);
+    }
+    let mut entries: Vec<(Doc, bool)> = Vec::new();
+    let mut bind_before = Doc::nil();
+    let mut bind_after = Doc::nil();
+    let mut seen_brace = false;
+    let mut ellipsis = false;
+
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) => match t.kind() {
+                SyntaxKind::TOKEN_L_BRACE => seen_brace = true,
+                SyntaxKind::TOKEN_ELLIPSIS => ellipsis = true,
+                // A comment inside a formal pattern is the single most common
+                // place one appears in this fleet — `{ config, # unused\n
+                // pkgs, ... }` — and dropping it silently is the exact data
+                // loss `blue-lang-fmt` calls "the one part of a program a
+                // machine cannot reconstruct". Ignoring TOKEN_COMMENT here
+                // lost 5 to 10 comments per file across 5 fleet files.
+                SyntaxKind::TOKEN_COMMENT => {
+                    entries.push((Doc::text(render_comment(t.text())), true))
+                }
+                _ => {}
+            },
+            NodeOrToken::Node(n) => match n.kind() {
+                SyntaxKind::NODE_PAT_ENTRY => entries.push((spaced(&n), false)),
+                // rnix wraps the `@`-binding in its own NODE_PAT_BIND, on
+                // EITHER side of the brace. Letting it fall through to the
+                // catch-all rendered `inputs @` as a pattern ENTRY, producing
+                // `{ inputs @, self, ... }` — which does not re-parse. Caught
+                // by the token-stream law over the fleet corpus, not by any
+                // hand-written case.
+                SyntaxKind::NODE_PAT_BIND | SyntaxKind::NODE_IDENT => {
+                    let name = n
+                        .children()
+                        .find(|c| c.kind() == SyntaxKind::NODE_IDENT)
+                        .map_or_else(|| expr(&n), |i| expr(&i));
+                    if seen_brace {
+                        bind_after = Doc::text(" @ ").concat(name);
+                    } else {
+                        bind_before = name.concat(Doc::text(" @ "));
+                    }
+                }
+                _ => entries.push((expr(&n), false)),
+            },
+        }
+    }
+    if ellipsis {
+        entries.push((Doc::text("..."), false));
+    }
+    if entries.is_empty() {
+        return bind_before.concat(Doc::text("{ }")).concat(bind_after);
+    }
+
+    // A comment forces the broken shape and takes NO comma: `# note,` would
+    // put the separator inside the comment, where the parser can never see it.
+    let has_comment = entries.iter().any(|(_, c)| *c);
+    let sep = if has_comment { Doc::hardline() } else { Doc::line() };
+
+    let last_real = entries.iter().rposition(|(_, c)| !*c);
+    let mut inner = Doc::nil();
+    for (i, (d, is_comment)) in entries.iter().enumerate() {
+        if i > 0 {
+            inner = inner.concat(sep.clone());
+        }
+        inner = inner.concat(d.clone());
+        // Every non-comment entry except the last gets a comma. The last one
+        // gets one too WHEN BROKEN, which is the fleet's own style and
+        // nixfmt-rfc-style's: a trailing comma keeps the next added parameter
+        // to a one-line diff. The law exempts it explicitly.
+        if !*is_comment && Some(i) != last_real {
+            inner = inner.concat(Doc::text(","));
+        }
+    }
+
+    bind_before
+        .concat(
+            Doc::text("{")
+                .concat(sep.clone().concat(inner).nest(INDENT))
+                .concat(sep)
+                .concat(Doc::text("}"))
+                .group(),
+        )
+        .concat(bind_after)
+}
+
+/// `f a b` — the head stays put; arguments indent when they break.
+fn apply(node: &SyntaxNode) -> Doc {
+    let parts: Vec<Doc> = pieces(node)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Node(n) => Some(expr(&n)),
+            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+            _ => None,
+        })
+        .collect();
+    if parts.len() < 2 {
+        return Doc::concat_all(parts);
+    }
+    let mut it = parts.into_iter();
+    let head = it.next().unwrap_or_else(Doc::nil);
+    let rest = Doc::join(it, Doc::line());
+    head.concat(Doc::line().concat(rest).nest(INDENT)).group()
+}
+
+fn bin_op(node: &SyntaxNode) -> Doc {
+    let parts: Vec<Doc> = pieces(node)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Node(n) => Some(expr(&n)),
+            Piece::Token(t) => Some(Doc::text(t.text().to_string())),
+            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+            Piece::Blank => None,
+        })
+        .collect();
+    Doc::join(parts, Doc::text(" ")).group()
+}
+
+fn unary_op(node: &SyntaxNode) -> Doc {
+    let parts: Vec<Doc> = pieces(node)
+        .into_iter()
+        .filter_map(|p| match p {
+            Piece::Node(n) => Some(expr(&n)),
+            Piece::Token(t) => Some(Doc::text(t.text().to_string())),
+            Piece::Comment(c) => Some(Doc::text(c).concat(Doc::hardline())),
+            Piece::Blank => None,
+        })
+        .collect();
+    Doc::concat_all(parts)
+}
+
+/// `if c then a else b`
+fn if_else(node: &SyntaxNode) -> Doc {
+    let mut arms: Vec<(String, Doc)> = Vec::new();
+    let mut kw = String::from("if");
+    let mut lead = Doc::nil();
+    for p in pieces(node) {
+        match p {
+            Piece::Token(t) => match t.kind() {
+                SyntaxKind::TOKEN_THEN => kw = "then".into(),
+                SyntaxKind::TOKEN_ELSE => kw = "else".into(),
+                _ => {}
+            },
+            Piece::Node(n) => arms.push((kw.clone(), expr(&n))),
+            // A comment between `if` and its condition has nowhere structural
+            // to go, so it leads the whole form. Dropping it was silent data
+            // loss — see `with_or_assert`.
+            Piece::Comment(c) => lead = lead.concat(Doc::text(c)).concat(Doc::hardline()),
+            Piece::Blank => {}
+        }
+    }
+
+    let docs: Vec<Doc> = arms
+        .into_iter()
+        .map(|(k, d)| Doc::text(k).concat(Doc::text(" ")).concat(d))
+        .collect();
+    lead.concat(Doc::join(docs, Doc::line()).group())
+}
+
+/// `with pkgs; body` / `assert c; body`
+fn with_or_assert(node: &SyntaxNode) -> Doc {
+    let kw = if node.kind() == SyntaxKind::NODE_WITH {
+        "with"
+    } else {
+        "assert"
+    };
+    // `with pkgs; # note` is a common shape, and dropping that comment was
+    // the largest remaining comment-loss class over the fleet corpus
+    // (31 files). Comments lead the form rather than vanishing.
+    let mut parts: Vec<Doc> = Vec::new();
+    let mut trailing = Doc::nil();
+    for p in pieces(node) {
+        match p {
+            Piece::Node(n) => parts.push(expr(&n)),
+            // The comment sits between `with X;` and the body, which is where
+            // it stays. An earlier cut HOISTED it above the keyword; that is a
+            // RELOCATION, and a relocation is not a fixed point — the second
+            // pass sees a comment attached to a different position and moves
+            // it again. Idempotence over the fleet corpus fell from 99.67% to
+            // 97.57% on exactly that change, which is how it was found.
+            Piece::Comment(c) => trailing = trailing.concat(Doc::text(c)).concat(Doc::hardline()),
+            _ => {}
+        }
+    }
+    let mut it = parts.into_iter();
+    let subject = it.next().unwrap_or_else(Doc::nil);
+    let body = it.next().unwrap_or_else(Doc::nil);
+    Doc::text(kw)
+        .concat(Doc::text(" "))
+        .concat(subject)
+        .concat(Doc::text(";"))
+        .concat(Doc::hardline())
+        .concat(trailing)
+        .concat(body)
+}
+
+/// Every `NODE_*` kind the renderer reaches via the catch-all arm.
+/// The coverage test asserts this is empty over the corpus.
+pub fn unhandled_kinds(src: &str) -> Vec<SyntaxKind> {
+    use SyntaxKind::*;
+    const HANDLED: &[SyntaxKind] = &[
+        NODE_ATTR_SET, NODE_LEGACY_LET, NODE_LIST, NODE_LET_IN, NODE_ATTRPATH_VALUE,
+        NODE_INHERIT, NODE_PAREN, NODE_IF_ELSE, NODE_WITH, NODE_ASSERT, NODE_LAMBDA,
+        NODE_APPLY, NODE_BIN_OP, NODE_UNARY_OP, NODE_HAS_ATTR, NODE_SELECT, NODE_ATTRPATH,
+        NODE_STRING, NODE_INTERPOL, NODE_DYNAMIC, NODE_IDENT, NODE_LITERAL, NODE_PATH_ABS,
+        NODE_PATH_REL, NODE_PATH_HOME, NODE_PATH_SEARCH, NODE_CUR_POS, NODE_ROOT,
+        NODE_PATTERN, NODE_PAT_ENTRY, NODE_PAT_BIND, NODE_INHERIT_FROM, NODE_IDENT_PARAM,
+    ];
+    let mut out: Vec<SyntaxKind> = rnix::Root::parse(src)
+        .syntax()
+        .descendants()
+        .map(|n| n.kind())
+        .filter(|k| !HANDLED.contains(k))
+        .collect();
+    out.sort_by_key(|k| *k as u16);
+    out.dedup();
+    out
+}

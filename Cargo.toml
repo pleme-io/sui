@@ -1,6 +1,21 @@
 [workspace]
 members = [
     "sui-intern",
+    # Deterministic Nix formatter over rnix's LOSSLESS CST (comments and
+    # whitespace are real tokens, verified: `Root::parse(s).syntax().text()
+    # == s` byte-for-byte across comments, `''` strings, interpolation,
+    # `inherit`, CRLF and comment-only files).
+    #
+    # NOT YET WIRED TO ANYTHING, deliberately. The destination is a
+    # canonicality gate at sui's parse door, which needs
+    # `is_canonical(src) = format(src) == src` — and that needs byte parity
+    # with `nixfmt --strict` (RFC 166), the canonical form the fleet adopted.
+    # Parity is currently 16% on a 300-file corpus sample, so gating on it
+    # today would reject ~84% of correctly-formatted files. Parity is a
+    # tracked RATCHET, never a precondition that deadlocks the gate: nixfmt
+    # is a greedy `layoutGreedy`, this is Oppen, so agreement is measured,
+    # not assumed.
+    "sui-fmt",
     # Parse-time variable-resolution side-table (ENV-RESOLVE M0). A pure
     # `bind_vars` pass over the rnix AST + a cppnix-shaped StaticEnv chain
     # (with-scope frames as barriers) precomputes each ident's interned

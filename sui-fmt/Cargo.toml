@@ -1,0 +1,19 @@
+[package]
+name = "sui-fmt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic Nix formatter over rnix's lossless CST — RFC 166 (nixfmt --strict) as the canonical form"
+keywords = ["nix", "formatter", "rfc166", "pretty-printer"]
+categories = ["development-tools"]
+
+[dependencies]
+rnix.workspace = true
+rowan.workspace = true
+
+[dev-dependencies]
+
+[lints.clippy]
+pedantic = "warn"
