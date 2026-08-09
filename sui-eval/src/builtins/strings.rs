@@ -20,7 +20,28 @@ fn cached_regex(pattern: &str) -> Result<regex::Regex, EvalError> {
         if let Some(re) = cache.get(pattern) {
             return Ok(re.clone());
         }
-        let re = regex::Regex::new(pattern)
+        // `.` MUST MATCH A NEWLINE — CppNix parity, and the difference is a
+        // SILENT WRONG ANSWER rather than an error.
+        //
+        // CppNix compiles with `std::regex::extended` (POSIX ERE), where `.`
+        // matches any character INCLUDING `\n`. Rust's `regex` crate defaults
+        // the other way, so every pattern of the shape `.*needle.*` returns
+        // `null` here for a multi-line subject while CppNix returns a match.
+        //
+        // Measured 2026-08-09, minimal case:
+        //     builtins.match ".*b.*" "a\nb"    nix: [ ]   sui: null
+        //     builtins.match ".*b.*" "ab"      both match
+        //
+        // Blast radius is not niche: nixpkgs implements `lib.hasInfix` as
+        // `builtins.match ".*<needle>.*"`, so ANY hasInfix over generated
+        // multi-line text — a script body, an ssh config block, an activation
+        // snippet — silently answered `false`. It cost 5 wrong assertions in
+        // this fleet's own iroha suite (776/781 vs nix's 781/781) with no
+        // error anywhere, which is exactly the "wrong value that still
+        // evaluates" class sui's own north star ranks worse than a crash.
+        let re = regex::RegexBuilder::new(pattern)
+            .dot_matches_new_line(true)
+            .build()
             .map_err(|e| EvalError::TypeError(format!("invalid regex '{pattern}': {e}")))?;
         cache.insert(pattern.to_string(), re.clone());
         Ok(re)

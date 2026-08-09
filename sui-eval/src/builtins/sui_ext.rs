@@ -106,7 +106,15 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
     register_curried(sui_ext, "regexNamedCaptures", |pat, subj| {
         let p = pat.as_string()?;
         let s = subj.as_string()?;
-        let re = regex::Regex::new(p)
+        // Same `dot_matches_new_line` as `builtins.match` (see
+        // builtins/strings.rs). This one is a sui EXTENSION, so CppNix parity
+        // does not force it — consistency does: two regex surfaces in one
+        // evaluator disagreeing about whether `.` crosses a newline is a trap
+        // that only shows up on multi-line input, which is precisely where it
+        // is hardest to notice.
+        let re = regex::RegexBuilder::new(p)
+            .dot_matches_new_line(true)
+            .build()
             .map_err(|e| EvalError::TypeError(format!("sui.regexNamedCaptures: {e}")))?;
         let Some(caps) = re.captures(s) else {
             return Ok(Value::Null);
