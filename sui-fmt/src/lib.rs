@@ -27,6 +27,7 @@
 //! files). So the reader itself CAN refuse.
 
 pub mod doc;
+pub mod gate;
 pub mod law;
 
 use doc::Doc;
