@@ -308,9 +308,22 @@ fn evaluate_flake_inner(
                         );
                     }
                     if let Some(last_modified) = locked.last_modified {
-                        input_val.insert(
+                        // CppNix emits BOTH `lastModified` (int) and `lastModifiedDate`
+                    // (YYYYMMDDHHMMSS string) on every flake input. sui emitted only
+                    // the int, so nixpkgs' `versionSuffix` — built from
+                    // lastModifiedDate — fell back to the Unix epoch and every NixOS
+                    // system got named `...25.11.19700101.<rev>` instead of
+                    // `...25.11.20260630.<rev>`. That changes the system NAME, hence
+                    // the toplevel drvPath: a silent whole-system divergence.
+                    input_val.insert(
                             "lastModified".to_string(),
                             Value::Int(last_modified as i64),
+                        );
+                        input_val.insert(
+                            "lastModifiedDate".to_string(),
+                            Value::string(super::fetchers::format_unix_yyyymmddhhmmss(
+                                last_modified as i64,
+                            )),
                         );
                     }
 
@@ -347,6 +360,12 @@ fn evaluate_flake_inner(
                         source_info.insert(
                             "lastModified".to_string(),
                             Value::Int(last_modified as i64),
+                        );
+                        source_info.insert(
+                            "lastModifiedDate".to_string(),
+                            Value::string(super::fetchers::format_unix_yyyymmddhhmmss(
+                                last_modified as i64,
+                            )),
                         );
                     }
                     input_val.insert("sourceInfo".to_string(), Value::Attrs(Rc::new(source_info)));
@@ -573,6 +592,10 @@ fn evaluate_flake_inner(
         }
         if let Some(lm) = self_last_modified {
             a.insert("lastModified".to_string(), Value::Int(lm));
+            a.insert(
+                "lastModifiedDate".to_string(),
+                Value::string(super::fetchers::format_unix_yyyymmddhhmmss(lm)),
+            );
         }
         a
     };
@@ -683,6 +706,10 @@ fn evaluate_flake_inner(
     }
     if let Some(lm) = self_last_modified {
         final_attrs.insert("lastModified".to_string(), Value::Int(lm));
+        final_attrs.insert(
+            "lastModifiedDate".to_string(),
+            Value::string(super::fetchers::format_unix_yyyymmddhhmmss(lm)),
+        );
     }
     final_attrs.insert("inputs".to_string(), Value::Attrs(resolved_inputs_rc.clone()));
     final_attrs.insert("outputs".to_string(), result.clone());
