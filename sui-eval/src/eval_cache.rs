@@ -34,6 +34,17 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use sui_graph_store::{GraphHash, GraphKind, GraphStore};
 
+/// Identity of the evaluator that produced a cached answer.
+///
+/// KNOWN RESIDUAL, stated rather than papered over: this is the crate
+/// VERSION, so two builds of the SAME version with different code — i.e.
+/// local evaluator development — still share entries. The workspace releases
+/// many times a day, so this covers every PUBLISHED sui; while working ON the
+/// evaluator, pass `--no-eval-cache` or bump the version. Closing that fully
+/// needs a build-identity stamp from build.rs (a git rev or source hash),
+/// which does not exist today.
+const EVALUATOR_ID: &str = concat!("sui-eval/", env!("CARGO_PKG_VERSION"));
+
 // ── Types ──────────────────────────────────────────────────────
 
 /// Hash of a source file plus its transitive inputs (flake.lock).
@@ -218,7 +229,32 @@ impl EvalCache {
     /// exists in the same directory, its hash is included as the lock_hash.
     pub fn key_for_file(path: &Path) -> Option<CacheKey> {
         let content = std::fs::read(path).ok()?;
-        let source_hash = sha256_hex(&content);
+        // THE EVALUATOR IS PART OF THE KEY, folded in HERE rather than at any
+        // one tier's lookup.
+        //
+        // `get`/`put` use the `CacheKey` DIRECTLY for the memory and JSON
+        // tiers and only pass through `graph_hash_for_key` for the GraphStore
+        // tier — so scoping the graph hash alone (as a first attempt did)
+        // leaves the persistent JSON cache at ~/.cache/sui/eval-cache.json
+        // still serving another sui's answers. Measured: after that partial
+        // fix the stale value was still returned. Folding it into
+        // `source_hash` at construction means every present and FUTURE tier
+        // inherits the scoping by construction, instead of each one having to
+        // remember.
+        //
+        // Why it must be scoped at all: a cached value is this evaluator's
+        // ANSWER, not a property of the source. Keying by source alone
+        // asserts that every sui agrees — the very thing still being proven.
+        // On 2026-08-09 that turned a real fix invisible: the corrected
+        // binary kept returning the pre-fix drvPath and read as "the patch
+        // did nothing".
+        let source_hash = {
+            let mut h = Sha256::new();
+            h.update(EVALUATOR_ID.as_bytes());
+            h.update(b"::");
+            h.update(&content);
+            format!("{:x}", h.finalize())
+        };
 
         let lock_hash = path
             .parent()
@@ -280,7 +316,39 @@ impl Default for EvalCache {
 /// already SHA-256 hex digests with stable ordering.
 fn graph_hash_for_key(key: &CacheKey) -> GraphHash {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"evalcache::v1::");
+    // ── v2: THE EVALUATOR IS PART OF THE KEY ──────────────────────────
+    //
+    // v1 hashed only (source_hash, lock_hash), so a cache entry written by
+    // one sui was served verbatim to a DIFFERENT sui. The cached value is
+    // this evaluator's ANSWER, not a property of the source — keying it by
+    // source alone asserts that every sui agrees, which is exactly the thing
+    // still being proven.
+    //
+    // Measured 2026-08-09. After fixing a flake-input divergence and
+    // rebuilding, the same command returned the OLD wrong answer:
+    //
+    //   sui eval …toplevel.drvPath                  …25.11.19700101.…
+    //   sui eval --no-eval-cache …toplevel.drvPath  …25.11.20260630.…  (correct)
+    //
+    // Three consequences, ascending: a fix does not reach any machine with a
+    // warm cache; every silent divergence becomes a DURABLE one; and you
+    // cannot verify your own fix — that verification read as "the patch did
+    // nothing" and nearly got the fix reverted.
+    //
+    // Bumping the domain separator to v2 also retires every v1 entry, which
+    // is correct: they were written under a scheme that could not say which
+    // evaluator produced them, so none of them is trustworthy.
+    //
+    // KNOWN RESIDUAL, stated rather than papered over: this keys on the
+    // crate VERSION, so two builds of the SAME version with different code —
+    // i.e. local evaluator development — still share entries. The workspace
+    // releases many times a day so this covers every published sui, but
+    // while you are working ON the evaluator, pass `--no-eval-cache` or bump
+    // the version. Closing that properly needs a build-identity stamp from
+    // build.rs (a git rev or a source hash), which does not exist today.
+    hasher.update(b"evalcache::v2::");
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(b"::");
     hasher.update(key.source_hash.as_bytes());
     hasher.update(b"::");
     if let Some(lock) = &key.lock_hash {
@@ -433,6 +501,57 @@ mod tests {
             },
         );
         assert!(cache.get(&key).is_none());
+    }
+
+    /// **The evaluator is part of the cache key.**
+    ///
+    /// A cached value is this sui's ANSWER, not a property of the source, so
+    /// keying by source alone lets one sui serve its answer to another. That
+    /// made a real fix invisible on 2026-08-09: after correcting a
+    /// flake-input divergence and rebuilding, the same command still returned
+    /// the pre-fix value from cache and read as "the patch did nothing".
+    ///
+    /// Asserted against the LITERAL version string rather than
+    /// `env!("CARGO_PKG_VERSION")` on both sides — comparing the constant to
+    /// itself would pass no matter what the hash actually consumed, which is
+    /// the vacuous shape this repo keeps rediscovering.
+    #[test]
+    fn cache_key_is_scoped_to_the_evaluator_version() {
+        let key = CacheKey {
+            source_hash: "deadbeef".to_string(),
+            lock_hash: None,
+        };
+        let got = graph_hash_for_key(&key);
+
+        let mut expect = blake3::Hasher::new();
+        expect.update(b"evalcache::v2::");
+        expect.update(env!("CARGO_PKG_VERSION").as_bytes());
+        expect.update(b"::");
+        expect.update(b"deadbeef");
+        expect.update(b"::");
+        expect.update(b"<no-lock>");
+        assert_eq!(
+            got,
+            GraphHash(expect.finalize().into()),
+            "graph_hash_for_key must domain-separate on v2 AND the evaluator version"
+        );
+
+        // Falsifiability: a DIFFERENT evaluator version must produce a
+        // different hash for identical source. If this ever passes, the
+        // version is being hashed into a constant position that does not
+        // affect the digest.
+        let mut other = blake3::Hasher::new();
+        other.update(b"evalcache::v2::");
+        other.update(b"0.0.0-not-this-build");
+        other.update(b"::");
+        other.update(b"deadbeef");
+        other.update(b"::");
+        other.update(b"<no-lock>");
+        assert_ne!(
+            got,
+            GraphHash(other.finalize().into()),
+            "two evaluator versions must not share a cache entry"
+        );
     }
 
     #[test]

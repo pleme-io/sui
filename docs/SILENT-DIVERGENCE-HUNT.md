@@ -143,7 +143,21 @@ and already exposes a live divergence today (§VI).
 **The invariant:** *the corpus must contain the call the flip requires.*
 Anything else proves a neighbourhood of it.
 
-### V.2 Key the eval cache on the evaluator — **this blocks everything else**
+### V.2 Key the eval cache on the evaluator — ✅ **DONE 2026-08-09**
+
+> **Fixed and proven end-to-end.** With the cache ON, sui now returns the
+> corrected value where it previously served the pre-fix one. Landed at
+> **two** sites, because there are two key functions and fixing one is not
+> enough — see the note at the end of this section.
+>
+> **Residual, deliberately left:** the key uses the crate VERSION, so two
+> builds of the SAME version with different code — i.e. local evaluator
+> work — still share entries. That covers every PUBLISHED sui, which is the
+> case that reaches other machines. **While working ON the evaluator, use
+> `--no-eval-cache`.** Closing it fully needs a build identity (git rev or
+> source hash) stamped by `build.rs`, which does not exist today.
+
+The problem it solved:
 
 ```
 sui eval …toplevel.drvPath                  …19700101…   (stale, OLD binary)
@@ -158,9 +172,15 @@ in ascending severity:
 3. **You cannot verify your own fix.** The first post-build check of §III.2
    returned the epoch name and read as *"the patch did nothing"*.
 
-Nothing else on this list is trustworthy until the cache key includes the
-evaluator's identity (version, or better a build hash). **Do this first.**
-It is the difference between a fix and a fix you can *prove*.
+**THE TRAP THAT COST TWO FAILED ATTEMPTS — there are TWO key functions.**
+`EvalCache::key_for_file` (sui-eval/src/eval_cache.rs) keys file-based evals,
+while the CLI's `.#installable` path uses `eval_cache_key_for_installable`
+(src/main.rs), which builds a `CacheKey` independently. Fixing only
+`graph_hash_for_key` misses the memory and JSON tiers, which key on
+`CacheKey` DIRECTLY; fixing only `key_for_file` misses the CLI path entirely.
+Both attempts looked correct, passed their unit tests, and changed nothing
+end-to-end. **Any future key-scoping change must touch both, and must be
+proven with a real `sui eval` — not a unit test.**
 
 ### V.3 Compare SCALARS, never renderings
 

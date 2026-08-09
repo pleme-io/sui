@@ -7805,6 +7805,34 @@ fn eval_cache_key_for_installable(
     h.update(git_rev.as_bytes());
     h.update(b"\0renderv=");
     h.update(EVAL_RENDER_VERSION.as_bytes());
+    // ── THE EVALUATOR IS PART OF THE KEY ──────────────────────────────
+    //
+    // `EVAL_RENDER_VERSION` above scopes the RENDER format. Nothing scoped
+    // the evaluator's SEMANTICS, so a cache entry written by one sui was
+    // served verbatim to a different sui. A cached value is this evaluator's
+    // ANSWER, not a property of the source; keying without it asserts that
+    // every sui agrees, which is the thing still being proven.
+    //
+    // Measured 2026-08-09. After fixing a flake-input divergence and
+    // rebuilding, the same command returned the OLD wrong answer:
+    //
+    //   sui eval …toplevel.drvPath                  …25.11.19700101.…
+    //   sui eval --no-eval-cache …toplevel.drvPath  …25.11.20260630.…  correct
+    //
+    // Three consequences, ascending: a fix never reaches a machine with a
+    // warm cache; every silent divergence becomes DURABLE; and you cannot
+    // verify your own fix — that check read as "the patch did nothing" and
+    // nearly got a correct fix reverted.
+    //
+    // KNOWN RESIDUAL, stated rather than papered over: this is the crate
+    // VERSION, so two builds of the SAME version with different code — local
+    // evaluator work — still share entries. It covers every PUBLISHED sui,
+    // which is the case that reaches other machines. While working ON the
+    // evaluator, use `--no-eval-cache`. Closing it fully needs a build
+    // identity (git rev / source hash) stamped by build.rs, which does not
+    // exist today.
+    h.update(b"\0evalv=");
+    h.update(env!("CARGO_PKG_VERSION").as_bytes());
     let source_hash = format!("{:x}", h.finalize());
     Some(sui_eval::eval_cache::CacheKey { source_hash, lock_hash: Some(lock_hash) })
 }
