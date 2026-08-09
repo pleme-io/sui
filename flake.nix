@@ -52,32 +52,50 @@
         architectures = [ "amd64" ];
       };
 
-      # Deep-merge ONLY dockerImage-amd64 per system so the workspace's own
-      # crate-build packages in `base` are preserved (never clobbered).
-      mergedPackages = builtins.foldl'
-        (acc: sys: acc // {
-          ${sys} = (base.packages.${sys} or { }) // {
-            inherit (imageFlake.packages.${sys}) dockerImage-amd64;
-          };
-        })
-        (base.packages or { })
-        (builtins.attrNames imageFlake.packages);
+      # The Nix language server. Same `rust.workspace` shape as the wrapper,
+      # different member. It exists so `sui-lsp` is INSTALLABLE — an editor
+      # spawns it by name off PATH (escriba's ServerRegistry maps `nix` to it),
+      # so a crate that only ever builds under `cargo test` is a server nobody
+      # can actually run. `toolName` is passed explicitly for the same reason as
+      # the wrapper: the exposed attribute must read as the crate name.
+      lspServer = substrate.rust.workspace {
+        src = ./.;
+        member = "sui-lsp";
+        toolName = "sui-lsp";
+      };
 
-      # Same fold technique, second pass: fold in sui-dockerfile-wrapper's
-      # packages (all 4 default systems — it's a plain `rust.workspace` tool,
-      # not an image build restricted to amd64) without clobbering what's
-      # already in mergedPackages.
-      mergedPackagesWithWrapper = builtins.foldl'
-        (acc: sys: acc // {
-          ${sys} = (acc.${sys} or { }) // {
-            inherit (dockerfileWrapper.packages.${sys}) sui-dockerfile-wrapper;
-          };
-        })
-        mergedPackages
-        (builtins.attrNames dockerfileWrapper.packages);
+      # Fold one member flake's package into the accumulating set, per system,
+      # without clobbering what is already there.
+      #
+      # This shape was about to be transcribed a THIRD time (image, wrapper,
+      # lsp), so it is a function now. The three differ only in which attribute
+      # they contribute and over which systems — the image is amd64-only, the
+      # two tools build on all four defaults, and folding over each flake's OWN
+      # `packages` attribute names is what keeps that difference implicit
+      # instead of hardcoded.
+      foldMemberPackage = acc: memberFlake: attrName:
+        builtins.foldl'
+          (a: sys: a // {
+            ${sys} = (a.${sys} or { }) // {
+              ${attrName} = memberFlake.packages.${sys}.${attrName};
+            };
+          })
+          acc
+          (builtins.attrNames memberFlake.packages);
+
+      # base's own crate-build packages are the floor; each member adds exactly
+      # one attribute on top and none may clobber another.
+      allPackages = builtins.foldl'
+        (acc: m: foldMemberPackage acc m.flake m.attr)
+        (base.packages or { })
+        [
+          { flake = imageFlake; attr = "dockerImage-amd64"; }
+          { flake = dockerfileWrapper; attr = "sui-dockerfile-wrapper"; }
+          { flake = lspServer; attr = "sui-lsp"; }
+        ];
     in
     base // {
-      packages = mergedPackagesWithWrapper;
+      packages = allPackages;
 
       # Re-attached after the bare substrate.rust.workspace migration (b1b9e09)
       # dropped the module trio. `overlays.default` + `packages` are still auto-emitted
