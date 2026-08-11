@@ -1023,6 +1023,80 @@ enabling sui selection while the toplevel drvPath still diverges would ship a
 known-wrong path. The flip is gated on R2 going green, not on this measurement —
 recorded here so the gate is the drvPath, not a stale belief about ref syntax.
 
+## §V.17 R2 BISECTED to a single root: `system-path`, a pure reorder of 189 identical packages
+
+With the release binary (§V.16) the derivation-graph bisect became affordable.
+`SUI_EMIT_DRV` dumped sui's ATerms; `nix derivation show -r` dumped nix's graph
+for the SAME config.
+
+**Method note — a harness error caught and corrected mid-bisect.** The first run
+compared nix's graph for the CONTROL toplevel against sui's ATerms for `minimal`
+— two different configurations. It "found" `etc-hostname` differing
+`text='nixos'` vs `text='minimal'`, which is just the two configs' hostnames, not
+an engine divergence. Re-dumped nix's graph for `minimal` before drawing any
+conclusion. Second correction: matching derivations by NAME conflates every
+`fetchFromGitHub` result, all of which are named `source` — the first "root"
+candidates were `snowballstem/snowball` vs `alex/pretend`, unrelated upstreams
+sharing a generic name. Restricting to names that are unambiguous in BOTH graphs
+is what made the bisect readable.
+
+**Result, apples-to-apples on `minimal`:**
+
+```
+sui drvs 3095   nix drvs 2989   BYTE-IDENTICAL 2980  (99.7% of nix)
+unambiguously-named in both: 2455        divergent among them: 7
+```
+
+Of those 7, exactly ONE has zero mismatched inputs — every one of its own inputs
+agrees with nix, so it is the FIRST divergence and the other six are cascade:
+
+| derivation | mismatched inputs |
+|---|---|
+| **`system-path`** | **0 / 77** |
+| `X-Restart-Triggers-dbus` | 1 / 3 |
+| `dbus-1` | 1 / 6 |
+| `user-units` | 1 / 14 |
+| `system-units` | 1 / 81 |
+| `nixos-system-minimal-…` (toplevel) | 2 / 33 |
+| `etc` | 4 / 90 |
+
+**And `system-path` diverges by ORDER ALONE:**
+
+```
+nix pkgs entries = 189   sui pkgs entries = 189   same MULTISET = True
+first difference at index 0:
+  [0] nix=rust_banken-0.1.15-aarch64-unknown-linux-musl   sui=nixos-version
+  [1] nix=nixos-version                                   sui=nixos-rebuild-ng-25.11
+```
+
+Same 189 packages, permuted. `banken` is contributed by `fleetUniversalModules`
+— i.e. by a USER module, the exact class `setDefaultModuleLocation` wraps.
+
+### The chain, now measured at every link
+
+```
+attr positions lost (inherit; // before v0.1.183)
+  -> unsafeGetAttrPos "modules" is null on nixosSystem's args
+  -> eval-config.nix:28 modulesLocation = null
+  -> setDefaultModuleLocation skipped; user modules NOT wrapped
+  -> genericClosure (breadth-first) places them one level shallower
+  -> environment.systemPackages definition order permutes   [MEASURED §V.13]
+  -> system-path `pkgs` reorders, 189 identical packages    [MEASURED here]
+  -> etc / system-units / toplevel cascade                  [MEASURED here]
+  -> R2 red
+```
+
+This is the `{ imports = … }` demotion trap the nix repo's own CLAUDE.md records
+("same 62 packages, 4 displaced — which moved system-path -> etc -> toplevel"),
+independently rediscovered from the derivation side.
+
+**What this buys: R2 is now a ONE-ROOT problem with a 41s falsification test.**
+Fix the position leak, re-run, and `system-path` either matches or it does not —
+no further guessing about which of 2989 derivations to look at. 99.7% of the
+graph is already byte-identical, which is the strongest evidence to date that
+sui's derivation construction is correct and the residue is this single
+ordering defect.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
