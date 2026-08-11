@@ -288,6 +288,64 @@ skips. An empty or `error`-prefixed reading is now `UNMEASURED`, never a match.
 A differential harness that cannot distinguish "equal" from "measured nothing"
 will manufacture green at exactly the moment it matters.
 
+## §V.2 R2 BISECTED TO ONE PACKAGE — and the VM/tree-walker split (2026-08-11)
+
+**The tree-walker is a WORKING REFERENCE. The infinite recursion is VM-only.**
+
+```
+$ sui        eval …'#nixosConfigurations.minimal.pkgs.system'  → stack overflow (thread sui-vm-eval)
+$ sui --no-vm eval …'#nixosConfigurations.minimal.pkgs.system'  → aarch64-linux   ✅ matches nix
+```
+
+The `--no-vm` run even emits nixpkgs' own deprecation warning (`'system' has been
+renamed to/replaced by 'stdenv.hostPlatform.system'`), proving it is genuinely
+executing nixpkgs rather than short-circuiting. So sui contains a second engine
+that survives the fixpoint the shipped engine cannot. **This is the single most
+useful fact for the eval work: there is an in-repo reference implementation to
+diff the VM against, and the corpus's `--no-vm` choice — long recorded as a
+weakness — is measuring the engine that actually works.**
+
+**On the tree-walker, R2 bisects to exactly ONE package out of 189.**
+
+| level | result |
+|---|---|
+| `pkgs.hello.drvPath`, `pkgs.coreutils.drvPath` | **MATCH** byte-for-byte — nixpkgs instantiation is correct |
+| `config.environment.systemPackages` length (119), `pathsToLink`, `system.path.name` | **MATCH** |
+| `system.path.drvAttrs` — every key except one | **MATCH** |
+| `system.path.drvAttrs.pkgs` — 189 paths, 188 identical | **1 DIVERGES** |
+
+The one: **`nixos-firewall-tool`** — nix `zcr0fpmb…`, sui `5qk60n31…`. Its own
+`drvPath` differs (`bjvx9wnp…` vs `byc82max…`) while **every attribute in its
+`drvAttrs` compares equal**, including `src`, once the source is materialised.
+
+**A transient double-prefix was observed and then could not be reproduced.** The
+first cold dump showed sui's `src` as
+`/nix/store/<newhash>-<oldhash>-nixos-firewall-tool` — a store path re-added to
+the store. Re-queried warm, both engines return `ar6s9jl9…-nixos-firewall-tool`.
+So sui's `filterSource` over an already-in-store path is correct in isolation and
+correct when warm; the double-prefix appears to be a **cold-path materialisation
+artifact**, and it is NOT the residual divergence (which survives when `src`
+matches).
+
+**What the divergence is NOT** — each ruled out by a passing synthetic probe:
+`toString null` / `typeOf null` / `toJSON` of a null field (all MATCH);
+`__ignoreNulls` with a null attribute (MATCH); `__ignoreNulls` +
+`__structuredAttrs` + explicit `outputs` together (MATCH).
+
+**What is known about the target.** nix's real `.drv` for this package carries
+**31 env keys and `userHook` is ABSENT** — `__ignoreNulls = 1` dropped it. The
+derivation also sets `__structuredAttrs = true`. sui's equivalent `.drv` **cannot
+be inspected: it was never written to disk** — sui computes a drvPath without
+instantiating (the R3 gap, §III), which is precisely why this had to be chased
+through `drvAttrs` instead of by diffing two files. **That is the tooling gap
+this bisect proves the cost of.**
+
+**Next probe, stated so it is not re-derived:** the divergence survives equal
+`drvAttrs`, so it lives in derivation *construction* — the ordering, filtering or
+serialisation applied between `drvAttrs` and the ATerm — reached via `stdenv`'s
+`mkDerivation` rather than via a bare `derivation` call. R3 (write the `.drv`)
+would answer it in one diff.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
