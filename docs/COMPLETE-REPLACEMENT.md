@@ -1,0 +1,219 @@
+# COMPLETE-REPLACEMENT — what "sui replaces CppNix" MEANS, as a predicate
+
+> **Status: DEFINITION + PLAN (2026-08-11).** No rung below is green for any node.
+> This doc defines the predicate and the seals; it claims no progress against them.
+> Every measurement cited was taken on 2026-08-11 unless dated otherwise.
+
+## §I. Why a definition is the first deliverable
+
+"sui replaces nix" has been a direction, not a predicate — so it could not be
+finished, only felt. Worse, the instruments that appeared to measure it were
+measuring something else, and each one failed in the direction that reads as
+success:
+
+| instrument | what it reported | what it measured |
+|---|---|---|
+| `sui parity` | 77/77, 0 regressions | CI sets `SUI_PARITY_PUREONLY=1` unconditionally (`parity.yml:74`). Same binary, same host, flag off: **41 match / 35 regressions / exit 1** (`src/main.rs:4594-4602`). Total loss of nixpkgs eval shipped GREEN |
+| `sui parity` (engine) | sui ≡ nix | `--no-vm` (`main.rs:5045`) while `sui eval` defaults to the bytecode VM — the engine *proven* and the engine that *runs* are different programs |
+| `sui build-parity` | output NAR parity | on a multi-user store the **nix daemon performed both builds** — the row is a tautology |
+| `cli_parity`, `build_parity`, `full_build`, `real_nix_client` | `ok` | all four no-op without `SUI_TEST_ONLINE`, which **no workflow sets** |
+| `kataFlipParity` (nix repo) | ceu "fails parity" | `tryEval`-wrapped: an eval **failure** is indistinguishable from a byte **divergence**. ceu never failed parity; it failed to evaluate |
+| roadmap `store-add-path` | "CLI writes to ~/.cache" | stale — the CLI tries the daemon first (`main.rs:1699-1755`) |
+
+The lesson is the seal's own: **an instrument that reports green while measuring
+nothing is worse than no instrument.** So the definition must be a witness that
+cannot be constructed without a measurement, and the measurement must carry its
+own denominator.
+
+## §II. The predicate
+
+A node is **`Replaced`** iff a witness exists. The witness is not assertable —
+it has no public fields, no `Default`, and no constructor except one that
+consumes proof of every conjunct:
+
+```rust
+/// Witness that ONE node converges with no CppNix present.
+/// Private fields + no Default: `Replaced` cannot be written down, only earned.
+pub struct Replaced {
+    node: NodeName,
+    conformance: ConformanceWitness,
+    ceiling: Ceiling,
+}
+
+impl Replaced {
+    pub fn certify(
+        node: NodeName,
+        conformance: ConformanceWitness, // §III — all rungs green, denominator > 0
+        absence: NixAbsent,              // no cppnix binary, no cppnix daemon socket
+        steady: SteadyState,             // >= 10 consecutive converged reconciler ticks
+        rollback: RollbackProven,        // one deliberate rollback, verified
+        gc: GcSafe,                      // a full GC deleted nothing nix considers live
+        ceiling: Ceiling,                // REQUIRED: the named residual. No `None` arm.
+    ) -> Self { /* … */ }
+}
+```
+
+`Ceiling` is a required argument, not an `Option`. Per the seal's tier-honesty
+rule, a seal whose residual is unnamed is not a seal; making it non-optional is
+how "we forgot to state what this still doesn't prove" becomes unrepresentable.
+
+**Fleet-complete** is then `[Replaced; 18]` — one witness per configuration
+(16 nixos + 2 darwin, measured `nix eval .#nixosConfigurations|.#darwinConfigurations`
+→ 16 + 2). Not a majority, not "the live ones": the *denominator is the flake's own
+output set*, so a config added later lowers the score until it too is witnessed.
+
+### §II.1 The anti-vacuity constructor
+
+`ConformanceWitness` is where the 77/77 lie is made unconstructible:
+
+```rust
+impl ConformanceWitness {
+    /// `Err` when ANY rung measured zero comparisons — a suite that ran nothing
+    /// cannot witness anything. This is the positive-only `Delta` seal applied to
+    /// coverage instead of to speed.
+    pub fn measured(rungs: [RungResult; 8]) -> Result<Self, Vacuous> {
+        for r in &rungs {
+            if r.compared == 0 { return Err(Vacuous::NothingCompared(r.rung)); }
+            if r.engine != Engine::Shipping { return Err(Vacuous::WrongEngine(r.rung)); }
+            if r.reclassified > 0 { return Err(Vacuous::Reclassified(r.rung)); }
+        }
+        // …
+    }
+}
+```
+
+Three refusals, one per lie in §I: **zero comparisons**, **a non-shipping engine**,
+**any reclassified skip**. `PUREONLY` cannot be expressed through this constructor.
+
+## §III. The rung ladder
+
+Each rung is a differential against nix as oracle. Every rung states what it
+compares and what it does NOT.
+
+| # | rung | artifact compared | status 2026-08-11 |
+|---|---|---|---|
+| R0 | scalar on a real fleet expression | `kataFleetGate` = 29, both engines | **GREEN** |
+| R1 | leaf nixpkgs `drvPath` | 10/10 byte-identical (2026-08-09) | **GREEN** |
+| R2 | **node toplevel `drvPath`** | `minimal`: nix `szx145ay…` vs sui `aibwin419…` | **RED — measured** |
+| R3 | `.drv` **ATerm bytes** | — | **ABSENT** (sui must instantiate, not just eval) |
+| R4 | **closure set-difference** over the input-derivation graph | — | **ABSENT** (`parity-bisect` descends only the first child) |
+| R5 | **output NAR hash**, per derivation, nixpkgs corpus | 2 synthetic rows only | **ABSENT for real packages** |
+| R6 | **store state**: refs, deriver, sigs, `ultimate`, file modes | — | **ABSENT** |
+| R7 | **nix as CLIENT against sui's socket** | — | **ABSENT — the keystone** |
+| R8 | **activation text + system closure** | — | **ABSENT** |
+| R9 | steady state: 10 ticks, rollback, safe GC | — | **ABSENT** |
+
+**R7 is the keystone.** When `nix build`, `nix copy` and `nix-collect-garbage`
+drive sui's socket successfully, "sui replaces nix" stops being our opinion —
+**nix itself certifies it**, and the 36 unimplemented opcodes become a red list
+that shortens instead of a design intention.
+
+## §IV. The seals — each measured defect, cornered
+
+The seal doctrine's two central patterns land directly on what we measured.
+
+### §IV.1 The registry-parity seal → sui's daemon opcodes
+
+`sui-daemon/src/connection/dispatch.rs:49-72` is an exhaustive `match` over the
+opcodes sui knows. **An exhaustive match over your own enum seals only what is
+already IN the enum** — it cannot see the ~36 nix opcodes sui never enumerated,
+and the omission is silent *in the direction that reads as fine*: fewer variants
+looks like a smaller supported surface, never like a bug. This is textbook
+registry-parity: sui's enum mirrors an external registry (nix's worker protocol).
+
+```rust
+const NIX_PROTO: &str = include_str!("…/nix/src/libstore/worker-protocol.hh");
+let declared = scan_wopcodes(NIX_PROTO);       // scan EVERY declaration form
+let covered  = SuiOp::ALL.map(wire_tag);
+assert!(declared.len() >= NIX_OPCODE_FLOOR,    // else a broken scan reads as green
+        "the scan itself broke — this gate would be vacuously green");
+assert!(declared.difference(&covered).is_empty()); // unimplemented: the real defect
+assert!(covered.difference(&declared).is_empty()); // phantom: fails against nix
+```
+
+**TIER: CI-caught (C2).** Cross-language set-equality is not expressible in Rust's
+types. **Destination:** generate `SuiOp` from the protocol header so two lists
+collapse into one and the seal moves to truly-unrepresentable. Per
+UNREPRESENTABILITY: **record one red run** (delete a variant; the gate must name it)
+before landing.
+
+### §IV.2 Option-plus-predicate → four fallible constructors
+
+Each of these is `Option<T>` + an ignorable predicate today. The seal is the same
+move every time: non-optional field, private, fallibility in a constructor at the
+boundary where the observation happens.
+
+| defect (measured) | today | the seal | tier after |
+|---|---|---|---|
+| Substitution files content at the **wrong address** and reports success (`substitute.rs:178-181` → `add_to_store` recomputes the path) | `add_to_store(name, …)` cannot honour a demanded path | `add_to_store_at(demanded: StorePath, …) -> Result<_, AddressMismatch>` — the demanded path is an **argument**, so filing elsewhere has no expressible path | **truly-unrep** |
+| `try_substitute_outputs` returns `true` without re-checking validity (`local_builder.rs:478-496`) | `bool` | return `Valid` — a witness obtainable **only** from `is_valid_path` | **truly-unrep** |
+| `register_path` **silently drops** refs whose target isn't registered (`local.rs:298-311`, `if let Some` with no `else`) | refs are best-effort | `ResolvedRefs::observed(&[StorePath]) -> Result<_, UnregisteredRef>` | **truly-unrep** |
+| Sandboxes **fail open** to `NoSandbox` and return success (`sandbox.rs:317-325`, `:480-489`) | success is a `bool` | registration requires a `Sandboxed` witness; `NoSandbox` **cannot produce one** | **truly-unrep** |
+
+**The tell that each is done right:** a test you can no longer write. When
+`assert!(result.is_valid())` becomes impossible to fail, the seal moved from
+only-mitigated to truly-unrepresentable. If the assertion is still meaningful, it
+did not.
+
+### §IV.3 Only-mitigated, with ceilings named
+
+| invariant | tier | ceiling |
+|---|---|---|
+| sui's store state ≡ nix's after a build | **only-mitigated (C2)** | external-world observation — the oracle is another process's SQLite |
+| GC deletes nothing live | **only-mitigated (C2)** | runtime roots are `/proc` state, not a type. Today sui reads neither `temproots` nor runtime roots (`local.rs:728-747`) — strictly worse than the ceiling |
+| Node activation ≡ nix's | **only-mitigated (C2)** | activation is non-transactional I/O against a live machine |
+| drvPath equality | **CI-caught (C2)** | nix remains the soundness authority; a corpus proves only what it covers |
+
+## §V. The plan, ordered by what it seals
+
+**Phase 0 — make the instruments incapable of lying.** Drop `PUREONLY`; move the
+corpus to the shipping VM engine; set `SUI_TEST_ONLINE` in CI; split
+`kataFlipParity`'s `tryEval` into distinct eval-failure and divergence verdicts;
+land `ConformanceWitness::measured` with its three refusals. *Exit:* every parity
+number in the repo is reproducible on the engine that ships, with a stated
+denominator, and a red run recorded per refusal.
+
+**Phase 1 — R2 green.** The frontier is already located and red on `minimal`
+(seconds to run, a real system). Build R3 and R4 first so a divergence localises
+to a derivation instead of a hash. *Exit:* byte-identical toplevel drvPath, all 18
+configs, shipping engine, no `--impure`.
+
+**Phase 2 — the four §IV.2 constructors.** Each is small, each removes a class,
+each is verified by a test becoming unwritable. *Exit:* all four at truly-unrep.
+
+**Phase 3 — R7, the keystone.** Land the §IV.1 opcode parity gate first: it turns
+"the daemon is incomplete" into an enumerated, shrinking list. Then implement
+against that list until nix drives sui's socket. *Exit:* `nix build`, `nix copy`,
+`nix-collect-garbage` succeed against sui.
+
+**Phase 4 — R5, R6, R8.** Store state, real-package NAR parity (single-user store
+or the row is void), activation bytes. NixOS additionally requires
+`switch-to-configuration` and a bootloader entry — absent today (`system.rs:508`),
+and the reason a NixOS `switch` half-converges and `boot` boots the old generation.
+
+**Phase 5 — R9 per node, then absence.** Order by blast radius: **ryn** (physical
+access, cid is a peer rebuilder) → **cid** → **zek** → **ceu** once provisioned →
+**rio last** (only x86_64 builder + live sui cache origin + no console). `nix.enable
+= false` is the **consequence** of `Replaced::certify` returning, never a decision.
+
+## §VI. Independent of the plan — today
+
+`sui store gc` reads neither `temproots` nor runtime roots, and accepts
+`--max-age-days` then ignores it (`traits.rs:157-162`; `local.rs:384-483`). It
+operates on the real `/nix/var/nix/db/db.sqlite` with no busy-timeout and no
+transaction. **It will delete live bytes from under a running build.** Guard it
+now; it is not part of any rung.
+
+## §VII. Tier-honest bottom line
+
+**True today:** R0 and R1 are green. sui's evaluator is mature; `realize_via_daemon`
+converges a darwin node *by handing the build to CppNix's daemon*.
+
+**A plan:** everything in §V.
+
+**A hope:** that R2's divergence is one root and not a family. Unknown until R3/R4
+exist.
+
+**Unverified and named as such:** whether the columnar-attrset remedy greenlit
+2026-07-15 (`EVAL-MEMORY.md`) landed; the cid-toplevel OOM (14.57–18.8 GB) is a
+month-old measurement that no rung currently re-takes.
