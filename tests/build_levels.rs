@@ -328,10 +328,31 @@ async fn level4_build_simple_package() {
         vec![],
     ));
     let sub = sui_store::Substitutor::new(store.clone(), vec![cache]);
-    let builder = sui_build::LocalBuilder::new(
-        store,
-        Box::new(sui_build::sandbox::DarwinSandbox::new()),
-    );
+    // ── ★ THE SANDBOX IS PLATFORM-GATED; THIS TEST WAS NOT ──────────────
+    // `DarwinSandbox` is `#[cfg(target_os = "macos")]`, and this line named it
+    // unconditionally. That compiles on a Mac and CANNOT compile anywhere else,
+    // so it passed every local run and failed every CI run — with consequences
+    // far past this file: the release workflow's `Test gate` runs on Linux and
+    // gates `Bump`/`Ship`/`Drip`, so `cargo test --no-run --workspace` dying
+    // here SKIPPED PUBLISHING FOR NINETEEN RELEASES. crates.io sat at 0.1.157
+    // while tags advanced to 0.1.177, which in turn forced consumers onto git
+    // deps and made sentinela pin a sui-orchestrate too old to resolve the
+    // fleet's own flake refs.
+    //
+    // Selected per platform rather than skipped: the test is about the build
+    // levels, not about macOS, so Linux runs it against `LinuxSandbox` and
+    // anything else falls back to `NoSandbox` (ungated, always present).
+    // `#[cfg]`-skipping instead would keep CI green while testing nothing.
+    #[cfg(target_os = "macos")]
+    let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+        Box::new(sui_build::sandbox::DarwinSandbox::new());
+    #[cfg(target_os = "linux")]
+    let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
+        Box::new(sui_build::sandbox::LinuxSandbox::new());
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let sandbox: Box<dyn sui_build::sandbox::Sandbox> = Box::new(sui_build::sandbox::NoSandbox);
+
+    let builder = sui_build::LocalBuilder::new(store, sandbox);
 
     match builder.build_closure(&closure, Some(&sub)).await {
         Ok(result) => {
