@@ -830,6 +830,52 @@ side re-measured today and is stable at
 recorded when the divergence was first seen. The next probe is a file-based
 control on the SAME shape, running now.
 
+## §V.13 The file-based control DIVERGES — the artifact was real but is NOT the drvPath cause
+
+§V.12 closed on "the next probe is a file-based control on the SAME shape,
+running now." It landed, and it constrains the story sharply:
+
+```
+nixosSystem called FROM A FILE (/tmp/r2.nix), same bootable minimal module
+  nix: /nix/store/csw8ynyxvkidb63n2jkaxk9bjj0aqjvi-nixos-system-nixos-…drv
+  sui: /nix/store/wgpvrn0rjdqa6xyrvgl9xjzlgshybm1k-nixos-system-nixos-…drv
+  => DIVERGE
+```
+
+A file-based caller makes `unsafeGetAttrPos` agree on both engines (§V.12's
+table), so `modulesLocation` agrees, so the `setDefaultModuleLocation` wrap
+agrees. **The `--expr` artifact cannot apply here, and the drvPath still
+differs.** Both statements therefore stand together, and neither cancels the
+other:
+
+- the ordering divergence measured via `--expr` WAS an artifact of that harness
+  (§V.12 — the mechanism is proven, on nix alone, by toggling the wrap);
+- the toplevel drvPath divergence is GENUINE and survives a file-based caller.
+
+Stated plainly because the temptation runs the other way: finding one real bug in
+the harness does not retire the finding the harness was chasing. §V.12 fixed how
+R2 is MEASURED; it did not move R2.
+
+**What this rules out as the drvPath cause:** everything in §V.12's ruled-out
+list, plus module definition ordering *if* the ordering probe re-run from a file
+matches (running; the two outcomes separate cleanly — ordering-matches means the
+cause is downstream of module evaluation, ordering-diverges means §V.12's
+artifact story is itself wrong).
+
+**Why the on-disk diff was not available.** nix's `.drv` is in the store; sui's
+is ABSENT — sui computes the path but does not write the ATerm (the store is
+daemon-owned). So the next bisect goes through `SUI_EMIT_DRV`, which dumps sui's
+ATerms to a directory, against `nix derivation show -r` for nix's graph. Match by
+derivation NAME, then find the divergent derivation all of whose own inputs
+agree — that is the FIRST divergence, and the only one worth reading by hand.
+
+**Measurement cost, recorded because it shapes what is worth probing.** Every
+number in §V.11–§V.13 came from `target/debug/sui`; there is no release build.
+A full NixOS toplevel eval runs ~10 min on nix and substantially longer on a
+debug sui, so each row of this table is a multi-minute wait and the corpus-style
+sweeps are not affordable at this build profile. Building `--release` before the
+next sweep is the cheap fix.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
