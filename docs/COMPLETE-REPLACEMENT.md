@@ -196,6 +196,64 @@ access, cid is a peer rebuilder) → **cid** → **zek** → **ceu** once provis
 **rio last** (only x86_64 builder + live sui cache origin + no console). `nix.enable
 = false` is the **consequence** of `Replaced::certify` returning, never a decision.
 
+## §V.1 R2 BISECTED (2026-08-11) — the frontier is `pkgs`, not size
+
+The R2 divergence was bisected on `minimal`, the smallest config in the repo,
+comparing `nix eval --raw` against `sui eval --no-eval-cache --raw` per attribute.
+
+| attribute | nix | sui |
+|---|---|---|
+| `config.system.name` | `minimal` | `minimal` — **MATCH** |
+| `config.nixpkgs.system` | `aarch64-linux` | `aarch64-linux` — **MATCH** |
+| `options.system.name.type.name` | `str` | `str` — **MATCH** |
+| `config.system.path.drvPath` | `jzddq8y2…-system-path.drv` | `i2xn2r8i…` — **DIVERGE** |
+| `config.system.build.etc.drvPath` | `ng0ak1bc…-etc.drv` | `xwvwll4s…` — **DIVERGE** |
+| `pkgs.hello.drvPath` | `lagmxdbc…-hello-2.12.2.drv` | **stack overflow** |
+| `pkgs.hello.name` | `hello-2.12.2` | **stack overflow** |
+| **`pkgs.system`** | `aarch64-linux` | **stack overflow** |
+| `config.environment.systemPackages` | (list) | **stack overflow** |
+
+**The minimal reproducer is one plain string on the smallest config:**
+
+```
+$ sui eval --no-eval-cache --raw '.#nixosConfigurations.minimal.pkgs.system'
+fatal runtime error: stack overflow, aborting
+$ nix eval --raw '.#nixosConfigurations.minimal.pkgs.system'
+aarch64-linux
+```
+
+Three things follow, and they reframe the whole eval problem:
+
+1. **It is not size.** This is the *smallest* config in the flake and a
+   *string-valued* attribute — no derivation, no closure, no nixpkgs traversal
+   the answer depends on. The cid OOM has been read for a month as "the fleet's
+   configs are too big for a GC-less evaluator" (`EVAL-MEMORY.md`); a plain
+   string on `minimal` overflowing says the reachable-set size is not the
+   mechanism, or at least not the only one.
+2. **It is not derivation hashing.** The module system itself works — plain
+   options and the `options.*` tree evaluate and MATCH. The divergence and the
+   overflow both live on the path to the **package set**.
+3. **The two failures are related but distinct.** `config.system.path.drvPath`
+   *evaluates* (and diverges), while `pkgs.system` *overflows* — so there are at
+   least two defects on the pkgs path, and fixing the overflow will not by itself
+   make R2 green.
+
+**What this changes about the plan.** Phase 1 previously read "close the drvPath
+divergence, weeks, unknown shape". It now has a seconds-long deterministic
+reproducer that needs no fleet config, no network, and no memory ceiling — the
+single most tractable form this bug has ever had. The approved remedy in
+`EVAL-MEMORY.md` (columnar attrset) **never landed** — `git grep "Rc<[Symbol]>"`
+across every branch returns nothing; what shipped instead was HAMT → hashbrown
+(`fab4566`, self-reporting -33% peak RSS on a *probe*, not on a node). So the
+memory work is both unstarted and, on this evidence, aimed at the wrong target.
+
+**Method note, recorded because it nearly cost the finding.** The first version
+of this bisect compared two empty strings and printed `MATCH` — the probe's own
+vacuity bug, the same shape as `PUREONLY` and `system_eval_parity`'s silent
+skips. An empty or `error`-prefixed reading is now `UNMEASURED`, never a match.
+A differential harness that cannot distinguish "equal" from "measured nothing"
+will manufacture green at exactly the moment it matters.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
@@ -214,6 +272,12 @@ converges a darwin node *by handing the build to CppNix's daemon*.
 **A hope:** that R2's divergence is one root and not a family. Unknown until R3/R4
 exist.
 
-**Unverified and named as such:** whether the columnar-attrset remedy greenlit
-2026-07-15 (`EVAL-MEMORY.md`) landed; the cid-toplevel OOM (14.57–18.8 GB) is a
-month-old measurement that no rung currently re-takes.
+**Resolved since first writing:** the columnar-attrset remedy **never landed**
+(§V.1) — HAMT → hashbrown shipped in its place. The cid-toplevel OOM was
+re-measured 2026-08-11: release ran 24 min without a result driving swap
+13 → 41 GB; debug died of **stack overflow at 508 MB RSS**, a failure mode no
+doc records and which §V.1 now reproduces in seconds on `minimal`.
+
+**Still unverified:** whether the `minimal` overflow and the cid OOM are one
+defect or two. They are assumed related here and that assumption is NOT
+evidence.
