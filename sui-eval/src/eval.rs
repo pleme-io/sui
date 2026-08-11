@@ -6960,8 +6960,14 @@ mod tests {
         // The real `attrTag` path: a literal attrset built in an IMPORTED file.
         // `import` registers the file's source text + pushes it on the eval
         // stack, so `eval_attrset` captures the key positions against that file
-        // and `unsafeGetAttrPos` resolves them. CppNix reports the file, line 1,
-        // and column = the KEY's 1-based byte offset (verified against `nix eval`).
+        // and `unsafeGetAttrPos` resolves them. CppNix reports the file plus a
+        // real newline-resolved line and BYTE column.
+        //
+        // Re-baselined: this used to assert line 1 and column = the key's
+        // 1-based byte offset in the whole file, citing "verified against nix
+        // eval". It was not — that was sui's own output taken as the oracle,
+        // and the same false rule was pinned in pos.rs. Measured on nix 2.31.5:
+        // for `{ a = 1;\n  b = 2; }` the `b` key is 2:3, not 1:12.
         let dir = tempfile::tempdir().unwrap();
         // The literal's `b` key sits at a known byte offset in this file.
         let file_body = "{ a = 1;\n  b = 2; }\n";
@@ -6974,11 +6980,15 @@ mod tests {
             attrs.get("file").unwrap().as_string().unwrap(),
             f.to_string_lossy(),
         );
-        assert_eq!(*attrs.get("line").unwrap(), Value::Int(1));
-        // Column = the `b` KEY token's 1-based byte offset in file_body.
-        let expected_col = (file_body.find("b = 2").unwrap() as i64) + 1;
+        // `b` is on the SECOND line, at byte column 3.
+        let off = file_body.find("b = 2").unwrap();
+        let bol = file_body[..off].rfind('\n').map_or(0, |i| i + 1);
+        let expected_line = 1 + file_body[..off].matches('\n').count() as i64;
+        let expected_col = (off - bol) as i64 + 1;
+        assert_eq!(expected_line, 2, "fixture must put `b` on line 2");
+        assert_eq!(*attrs.get("line").unwrap(), Value::Int(expected_line));
         let col = match attrs.get("column").unwrap() { Value::Int(n) => *n, o => panic!("{o:?}") };
-        assert_eq!(col, expected_col, "column must be the 1-based byte offset");
+        assert_eq!(col, expected_col, "column must be the 1-based BYTE column");
     }
 
     #[test]

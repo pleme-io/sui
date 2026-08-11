@@ -128,15 +128,31 @@ pub struct ResolvedPos {
 /// `<string>` eval, no position) or the file was never parsed (no source
 /// text registered — the attrset can't have originated in a real file).
 ///
-/// LINE/COLUMN match CppNix's *observed* `unsafeGetAttrPos` behavior exactly
-/// (byte-parity is sacred, even for a quirk): for a position obtained this
-/// way CppNix reports `line = 1` and `column = byte_offset + 1` — the raw
-/// 1-based byte offset into the file, NOT a newline-resolved visual position.
-/// Verified against `nix eval` on multi-line files (aaaaa@off4→col5,
-/// bbbbb@off17→col18, ccccc@off30→col31, all line 1) via both `import` and
-/// `--file`. `options.json` itself drops `declarationPositions` (so only
-/// `.file` feeds the dock-declarations root), but matching line/column keeps
-/// every `unsafeGetAttrPos`-consuming surface byte-identical.
+/// LINE/COLUMN are resolved against the file's text, 1-based, with BYTE
+/// columns.
+///
+/// This used to return `line = 1, column = byte_offset + 1` unconditionally,
+/// documented as CppNix's "observed" behaviour and "verified against `nix
+/// eval`" with the fixture below. It was not verified — the cited numbers are
+/// this function's OWN output, recorded as if they were the oracle's, and two
+/// unit tests pinned them green. Re-measured against nix 2.31.5 on exactly
+/// that fixture (`{\n  aaaaa = 1;\n  bbbbb = 2;\n  ccccc = 3;\n}`):
+///
+/// ```text
+///           nix        sui (before)
+///   aaaaa   2:3        1:5
+///   bbbbb   3:3        1:18
+///   ccccc   4:3        1:31
+/// ```
+///
+/// Columns count BYTES, not characters — measured: with a 2-byte `é` earlier
+/// on the line, CppNix's column advances by 2. A tab advances by 1; `\r` is
+/// not special.
+///
+/// The recorded OFFSETS were always correct: normalising both engines back to
+/// `base_of_line(line) + column - 1` agreed on 30/30 non-null rows (quoted,
+/// escaped, unicode and tab-indented keys; keys after comments; cross-file and
+/// `toFile` store-path sets). Only this mapping step was missing.
 #[must_use]
 pub fn resolve(file: Option<&Path>, offset: u32) -> Option<ResolvedPos> {
     // CppNix has no position for a `<string>`-eval'd expression (no file);
@@ -145,35 +161,59 @@ pub fn resolve(file: Option<&Path>, offset: u32) -> Option<ResolvedPos> {
     // Existence check only: an attrset with a position table originated in a
     // parsed file, so its text is registered. A missing entry means the
     // position can't be trusted → `null` (matches CppNix's unknown-pos).
-    let _ = text_for(file_path)?;
+    let text = text_for(file_path)?;
     let file = crate::path::dematerialize(file_path)
         .to_string_lossy()
         .into_owned();
-    let (line, column) = line_col(offset);
+    let (line, column) = line_col(&text, offset);
     Some(ResolvedPos { file, line, column })
 }
 
-/// CppNix's observed `unsafeGetAttrPos` line/column: `line = 1`,
-/// `column = byte_offset + 1` (the raw 1-based byte offset into the file, not
-/// a newline-resolved position). See [`resolve`] for the verification.
-fn line_col(offset: u32) -> (u64, u64) {
-    (1, u64::from(offset) + 1)
+/// Map a byte offset to CppNix's 1-based (line, BYTE column).
+///
+/// Linear scan: `unsafeGetAttrPos` is rare enough that this never showed up in
+/// a profile. If it ever does, memoise a per-file line-start table beside
+/// `SOURCE_TEXTS` and binary-search it — do NOT go back to a constant.
+fn line_col(text: &str, offset: u32) -> (u64, u64) {
+    let off = (offset as usize).min(text.len());
+    let head = &text.as_bytes()[..off];
+    let line = 1 + head.iter().filter(|b| **b == b'\n').count();
+    let bol = head.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    (line as u64, (off - bol) as u64 + 1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Re-baselined against `nix eval` 2.31.5 — the previous expectations
+    /// (line 1, column offset+1) were this function's own output recorded as
+    /// the oracle's, which is why they never went red.
     #[test]
-    fn line_col_matches_cppnix_offset_rule() {
-        // CppNix's `unsafeGetAttrPos` reports line=1 always and
-        // column = byte_offset + 1 (verified: aaaaa@4→col5, bbbbb@17→col18,
-        // ccccc@30→col31, all on "line 1", via `nix eval` on a multi-line
-        // file through both `import` and `--file`).
-        assert_eq!(line_col(0), (1, 1));
-        assert_eq!(line_col(4), (1, 5));
-        assert_eq!(line_col(17), (1, 18));
-        assert_eq!(line_col(30), (1, 31));
+    fn line_col_matches_cppnix() {
+        // The fixture the old doc comment cited. ACTUAL nix answers:
+        //   aaaaa 2:3   bbbbb 3:3   ccccc 4:3
+        let t = "{\n  aaaaa = 1;\n  bbbbb = 2;\n  ccccc = 3;\n}\n";
+        assert_eq!(line_col(t, t.find("aaaaa").unwrap() as u32), (2, 3));
+        assert_eq!(line_col(t, t.find("bbbbb").unwrap() as u32), (3, 3));
+        assert_eq!(line_col(t, t.find("ccccc").unwrap() as u32), (4, 3));
+        assert_eq!(line_col(t, 0), (1, 1));
+    }
+
+    /// Columns count BYTES, not chars — measured against nix: a 2-byte `é`
+    /// earlier on the line advances the reported column by 2.
+    #[test]
+    fn line_col_columns_are_bytes_not_chars() {
+        let t = "{ \"é\" = 1; b = 2; }";
+        let b = t.find(" b =").unwrap() as u32 + 1;
+        assert_eq!(line_col(t, b), (1, u64::from(b) + 1));
+        assert!(t.chars().count() < t.len(), "fixture must be multi-byte");
+    }
+
+    /// An out-of-range offset clamps instead of panicking.
+    #[test]
+    fn line_col_clamps_past_end() {
+        assert_eq!(line_col("ab\ncd", 9_999), (2, 3));
     }
 
     #[test]
@@ -195,10 +235,12 @@ mod tests {
         clear_sources();
         let f = PathBuf::from("/nix/store/deadbeef-source/foo.nix");
         register_source(Some(&f), "a = 1;\nbcd = 2;");
-        // offset 7 is `bcd` — CppNix reports line 1, column offset+1 = 8.
+        // offset 7 is `bcd`, which is on line 2 at column 1. The old
+        // expectation here was line 1 / column 8 — the offset+1 rule, not
+        // CppNix's answer.
         let p = resolve(Some(&f), 7).unwrap();
         assert_eq!(p.file, "/nix/store/deadbeef-source/foo.nix");
-        assert_eq!(p.line, 1);
-        assert_eq!(p.column, 8);
+        assert_eq!(p.line, 2);
+        assert_eq!(p.column, 1);
     }
 }
