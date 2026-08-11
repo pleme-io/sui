@@ -940,6 +940,44 @@ ordering bug, but it is a byte-visible difference wherever a `.file` reaches an
 output (nixpkgs `lib/types.nix`'s `attrTag` puts `pos.file` straight into
 `declarations`).
 
+## §V.15 The leak is `inherit` — found, partially fixed, REVERTED as incomplete
+
+§V.14 named `lib.extend`/`fix` as the suspect. It was wrong. The leak is
+`inherit`:
+
+```nix
+let a = { x = 1; };
+    b = { inherit (a) x; };   # line 2
+    c = { inherit a; };       # line 3
+  nix: inheritFrom=2  inheritPlain=3
+  sui: inheritFrom=NULL  inheritPlain=NULL
+```
+
+`attach_attrset_positions` iterates `set.entries()` and matches only
+`ast::Entry::AttrpathValue`, so `ast::Entry::Inherit` contributes nothing to the
+position table. An `inherit` BINDS an attribute exactly as `x = …` does, and
+CppNix gives each inherited name the position of its own ident.
+
+That is why every nixpkgs `lib` key came back null: `lib/default.nix` re-exports
+through `inherit (self.options) mkOption …`. It is a much larger blast radius
+than `modulesLocation` — `lib/types.nix`'s `attrTag` puts `pos.file` directly
+into `declarations`, so every inherited option's documentation is affected too.
+
+**Attempted, MEASURED WRONG, and reverted in the same session.** Adding an
+`Entry::Inherit` arm made the position non-null but at the WRONG LINE — sui
+reported 1 and 1 where CppNix reports 2 and 3, i.e. the ident offsets are not
+resolving the way `AttrpathValue`'s do. And it did NOT change nixpkgs' `lib`,
+which still reports null, so a second mechanism is in play beyond the missing
+arm.
+
+**Reverted deliberately.** A wrong position is a NEW divergence, not a partial
+fix: null is at least distinguishable, whereas a plausible-but-wrong line lands
+in `declarations` and diverges bytes while looking correct. Shipping it would
+have traded a known gap for a silent one. The next step is to find why the
+inherit ident's offset resolves to line 1 — compare against `static_attr_offset`
+on the `AttrpathValue` path, which does resolve correctly — and to find the
+second mechanism that keeps nixpkgs' `lib` null even with the arm present.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
