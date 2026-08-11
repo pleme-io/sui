@@ -77,7 +77,12 @@ pub enum InputRef {
 }
 
 /// Locked (pinned) revision of a flake input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `Default` so a caller can construct the two or three fields a given source
+// type actually uses without hand-writing `None` for the other nine. Every
+// field is already `Option` or defaulted by serde, so the derive adds no new
+// representable state — an all-`None` LockedInput was constructible from JSON
+// before this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LockedInput {
     #[serde(rename = "type")]
     pub source_type: String,

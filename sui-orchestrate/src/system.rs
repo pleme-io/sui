@@ -379,8 +379,22 @@ impl SystemOrchestrator {
                 flake_ref.attribute
             );
 
+            // ── ★ A REMOTE REF IS MATERIALISED, THEN EVALUATED AS A PATH ──
+            // This is the whole of what kept sui out of the fleet reconciler.
+            // `evaluate_flake` takes a `&Path`, so a `github:owner/repo/<rev>`
+            // ref — the only form sentinela ever builds — used to arrive as a
+            // nonexistent directory and fail with `No such file or directory`.
+            //
+            // Nothing new fetches here: `Fetcher` has pulled github tarballs
+            // for locked flake INPUTS all along, and `FlakeSource::locked_input`
+            // hands it exactly the struct it already takes. The fetch is
+            // content-addressed and cached, so a repeated build of the same rev
+            // costs no network.
+            let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref)
+                .map_err(|e| SystemError::RebuildFailed(format!("fetch: {e}")))?;
+
             // Evaluate the flake natively to get the derivation.
-            let flake_result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir)
+            let flake_result = sui_eval::builtins::evaluate_flake(&flake_dir)
                 .map_err(|e| SystemError::RebuildFailed(format!("eval: {e}")))?;
 
             // Navigate the outputs attrset to the system derivation.

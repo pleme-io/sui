@@ -8,6 +8,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use sui_compat::flake::LockedInput;
+use sui_compat::flake_ref::FlakeRef;
 
 // ── Error type ────────────────────────────────────────────────
 
@@ -936,5 +937,38 @@ mod tests {
     fn tarball_from_malformed_path_returns_none() {
         assert!(github_tarball_from_git_url("https://github.com/", "abc").is_none());
         assert!(github_tarball_from_git_url("https://github.com/only-owner", "abc").is_none());
+    }
+}
+
+
+/// Turn a parsed flake reference into a directory on disk, fetching it first
+/// if it is remote.
+///
+/// ── ★ ONE PLACE, BECAUSE THERE ARE THREE CALLERS ────────────────────────
+/// `evaluate_flake` takes a `&Path`, so every entry point that accepts a
+/// `--flake` argument has to answer "where is it?" — `sui-orchestrate`'s
+/// `build_toplevel` and two sites in the `sui` CLI. Written per-caller, the
+/// remote case would be right in whichever one was being fixed and missing in
+/// the others, which is precisely how `github:` refs came to work in some
+/// paths and not the one the fleet reconciler uses.
+///
+/// A local ref costs nothing here. A remote one is content-addressed and
+/// cached by the same fetcher that pulls locked flake inputs, so re-resolving
+/// the same rev does no network.
+///
+/// # Errors
+///
+/// Returns [`FetchError`] when a remote source cannot be fetched or
+/// extracted.
+pub fn resolve_flake_dir(flake_ref: &FlakeRef) -> Result<std::path::PathBuf, FetchError> {
+    match flake_ref.local_dir() {
+        Some(p) => Ok(p.to_path_buf()),
+        None => {
+            let locked = flake_ref
+                .source
+                .locked_input()
+                .ok_or_else(|| FetchError::UnsupportedType("non-fetchable flake source".into()))?;
+            InputFetcher::new().fetch(&locked)
+        }
     }
 }

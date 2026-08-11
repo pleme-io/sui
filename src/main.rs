@@ -6349,8 +6349,18 @@ async fn main() -> Result<(), CliError> {
                             message: format!("flake ref parse: {e}"),
                         }
                     })?;
+                // Remote refs are fetched first; see
+                // `sui_eval::fetcher::resolve_flake_dir`. Shared with the
+                // orchestrate path so `github:owner/repo/<rev>#attr` behaves
+                // the same from every entry point.
+                let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| {
+                    CliError::Orchestrate {
+                        operation: "build",
+                        message: format!("fetch: {e}"),
+                    }
+                })?;
                 let flake_result = sui_eval::builtins::evaluate_flake(
-                    &flake_ref.flake_dir,
+                    &flake_dir,
                 )
                 .map_err(|e| CliError::Orchestrate {
                     operation: "build",
@@ -7157,7 +7167,8 @@ async fn main() -> Result<(), CliError> {
 
         Commands::Run { installable, args } => {
             let flake_ref = sui_compat::flake_ref::FlakeRef::parse(&installable).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("flake ref parse: {e}") })?;
-            let result = sui_eval::builtins::evaluate_flake(&flake_ref.flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
+            let flake_dir = sui_eval::fetcher::resolve_flake_dir(&flake_ref).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("fetch: {e}") })?;
+            let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "run", message: format!("eval: {e}") })?;
             let system = current_system();
             let attr_name = &flake_ref.attribute;
             let program = try_navigate_program(&result, &system, attr_name).or_else(|| try_navigate_drv_path(&result, &system, attr_name)).ok_or_else(|| CliError::Orchestrate { operation: "run", message: format!("could not find apps.{system}.{attr_name}.program or packages.{system}.{attr_name}") })?;
