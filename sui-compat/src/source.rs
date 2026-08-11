@@ -497,3 +497,72 @@ mod tests {
         assert_eq!(a.nar_hash_sri, b.nar_hash_sri);
     }
 }
+
+/// Strip a leading `<32-char nix-base32 hash>-` from a store-path basename.
+///
+/// `/nix/store/<hash>-foo` → `foo`; anything else is returned unchanged.
+///
+/// ── ★ WHY THIS EXISTS ────────────────────────────────────────────────────
+/// A path already inside the store has a basename of `<hash>-<name>`. Passing
+/// that to [`nar_hash_source_tree`] as the NAME yields
+/// `<newhash>-<oldhash>-<name>` — a store path carrying the old hash inside it.
+/// CppNix's `addToStore` takes the name as a separate argument and never
+/// re-derives it from a basename, so nix is unaffected.
+///
+/// MEASURED 2026-08-11: this produced sui's only divergence in `minimal`'s
+/// 189-path system closure (`nixos-firewall-tool`, whose `src` is a
+/// `filterSource` over an in-store directory), 66 extra ATerm bytes → a
+/// different `out` → a different drvPath → a different node toplevel.
+///
+/// The nix-base32 alphabet omits e/o/u/t, so a 32-char run of it followed by
+/// `-` is unambiguous: a real name of that shape would have to avoid five
+/// letters across all 32 positions.
+#[must_use]
+pub fn strip_store_hash_prefix(name: &str) -> &str {
+    const NIX_BASE32: &str = "0123456789abcdfghijklmnpqrsvwxyz";
+    match name.as_bytes().get(32) {
+        Some(b'-') if name.is_char_boundary(32) && name[..32].chars().all(|c| NIX_BASE32.contains(c)) => &name[33..],
+        _ => name,
+    }
+}
+
+#[cfg(test)]
+mod strip_store_hash_prefix_tests {
+    use super::strip_store_hash_prefix;
+
+    #[test]
+    fn a_store_basename_loses_exactly_its_hash() {
+        // The measured 2026-08-11 case: `filterSource` over an in-store dir.
+        // Without the strip the copy landed at `<newhash>-<oldhash>-<name>`,
+        // which changed `out`, the drvPath, and the whole node toplevel.
+        assert_eq!(
+            strip_store_hash_prefix("ar6s9jl94xw7fvvzy8p1hn6635i20bl2-nixos-firewall-tool"),
+            "nixos-firewall-tool"
+        );
+    }
+
+    #[test]
+    fn a_plain_name_is_untouched() {
+        for n in ["source", "nixos-firewall-tool", "hello-2.12.2", ""] {
+            assert_eq!(strip_store_hash_prefix(n), n, "must not rewrite {n:?}");
+        }
+    }
+
+    #[test]
+    fn a_lookalike_that_is_not_a_hash_is_untouched() {
+        // 32 chars + '-', but 'e','o','u','t' are NOT in nix-base32, so this is
+        // a package name and stripping it would silently corrupt the store path.
+        let name = "eoutbase32lookalikeeoutbase32look-thing";
+        assert_eq!(strip_store_hash_prefix(name), name);
+        // 31 chars + '-' is also not a hash.
+        assert_eq!(strip_store_hash_prefix("0123456789abcdfghijklmnpqrsvwxy-x"),
+                   "0123456789abcdfghijklmnpqrsvwxy-x");
+    }
+
+    #[test]
+    fn a_multibyte_name_does_not_panic() {
+        // `is_char_boundary` guard: slicing [..32] on a non-boundary would panic.
+        let name = "日本語のとても長いパッケージ名前ですここまで-x";
+        assert_eq!(strip_store_hash_prefix(name), name);
+    }
+}

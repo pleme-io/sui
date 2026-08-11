@@ -124,6 +124,18 @@ fn compute_full_drv(input: &NixAttrs, name: &str) -> Result<ComputedDrv, EvalErr
     let (_name, drv) = construct_derivation(input)?;
     let (drv_path, out_paths, mut drv) = compute_derivation_outputs(input, name, drv)?;
     write_derivation_to_store(&drv_path, &out_paths, &mut drv)?;
+    // R3 (moved 2026-08-11): the emitter belongs HERE, where the FINAL path and
+    // drv are both in hand. Its first home was inside `compute_derivation_outputs`,
+    // which not every derivation routes through — 455 ATerms emitted while the one
+    // under investigation never appeared, which read as a fourth construction path
+    // and was really a misplaced probe. `compute_full_drv` is the single funnel.
+    if let Ok(dir) = std::env::var("SUI_EMIT_DRV") {
+        if !dir.is_empty() {
+            let base = drv_path.rsplit('/').next().unwrap_or(&drv_path);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(std::path::Path::new(&dir).join(base), drv.serialize().as_bytes());
+        }
+    }
 
     // Diagnostic: `SUI_DUMP_DRV=<name>` (or `all`) dumps the fully-computed
     // derivation — inputDrvs / inputSrcs / env / outputs / args / the ATerm —
@@ -467,37 +479,6 @@ fn compute_derivation_outputs(
         let drv_path = sui_compat::store_path::compute_drv_path_with_refs(
             drv_content.as_bytes(), name, &drv_refs);
 
-        // ── R3: EMIT THE ATERM SO A DIVERGENCE CAN BE DIFFED ────────────────
-        // These are the exact bytes whose hash IS `drv_path` — i.e. what nix
-        // writes to /nix/store/<hash>-<name>.drv. sui computes the hash and
-        // throws the bytes away, so when a drvPath diverges from nix there is
-        // nothing to compare: you are left bisecting `drvAttrs` attribute by
-        // attribute through the evaluator. Measured cost, 2026-08-11: R2 on
-        // `minimal` narrowed to ONE package out of 189 (nixos-firewall-tool)
-        // whose every drvAttr compares EQUAL while its drvPath differs — the
-        // divergence is in construction, between the attrs and the ATerm, and
-        // is invisible from the Nix level. Two files would have answered it in
-        // one diff.
-        //
-        // Opt-in via `SUI_EMIT_DRV=<dir>`, so this is a diagnostic and changes
-        // no default behaviour: eval stays pure, nothing is written to the real
-        // store, and a failure to write is IGNORED (a diagnostic must never
-        // break an evaluation). Filename mirrors the store: `<basename>.drv`,
-        // so the two sides diff by name.
-        //
-        // NOT a substitute for instantiation. sui still does not register the
-        // .drv in the store, so this makes the bytes INSPECTABLE, not the
-        // derivation REALIZABLE — R3 on the ladder, not R5.
-        if let Ok(dir) = std::env::var("SUI_EMIT_DRV") {
-            if !dir.is_empty() {
-                let base = drv_path.rsplit('/').next().unwrap_or(&drv_path);
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::fs::write(
-                    std::path::Path::new(&dir).join(base),
-                    drv_content.as_bytes(),
-                );
-            }
-        }
 
         // CppNix `hashDerivationModulo` for a FIXED-OUTPUT derivation is NOT the
         // input-addressed ATerm hash — it is the special

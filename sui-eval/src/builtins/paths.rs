@@ -298,10 +298,29 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             });
         }
         let canon = std::fs::canonicalize(&src_path_buf).unwrap_or(src_path_buf.clone());
-        let name = canon
+        // ── ★ STRIP THE STORE-PATH HASH FROM THE NAME ─────────────────────
+        // `canon` is the MATERIALIZED path, so when the source already lives in
+        // the store its basename is `<hash>-<name>` — and feeding that to
+        // `nar_hash_source_tree` as the NAME produces `<newhash>-<oldhash>-<name>`,
+        // a store path with the old hash embedded in it.
+        //
+        // MEASURED 2026-08-11, and it is the root of R2 on `minimal`:
+        //   nix src: /nix/store/ar6s9jl9…-nixos-firewall-tool
+        //   sui src: /nix/store/nr1fj1g7…-ar6s9jl9…-nixos-firewall-tool
+        // 66 extra bytes in the ATerm, which changes `out`, which changes the
+        // drvPath, which changes system-path, which changes the whole node
+        // toplevel. One package out of 189 — nixos-firewall-tool is the only one
+        // in that closure calling `filterSource` on an in-store path.
+        //
+        // CppNix's `addToStore` takes the name as a SEPARATE argument and never
+        // re-derives it from a store basename, which is why nix is unaffected.
+        // Stripping the 32-char nix-base32 hash + '-' restores that: a
+        // non-store path has no such prefix and is unchanged.
+        let raw_name = canon
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "source".into());
+        let name = sui_compat::source::strip_store_hash_prefix(&raw_name);
         let pred_fn = crate::eval::force_value(&pred)?;
         // Filter sees the ORIGINAL src path string (`src_path`, the store
         // path a flake input carries), not the materialized cache tree

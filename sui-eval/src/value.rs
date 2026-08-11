@@ -3616,11 +3616,16 @@ impl Value {
                     // (→ NAR hash) were already correct. Recover the logical
                     // `-source` name from the input-source map; fall back to the
                     // real dir's basename for a normal local `src = ./.`.
+                    // `strip_store_hash_prefix`: `canon` may ALREADY be a store
+                    // path, whose basename is `<hash>-<name>`. Without the strip
+                    // the copy lands at `<newhash>-<oldhash>-<name>`. See the
+                    // helper's docs for the measured 2026-08-11 receipt.
                     let name = crate::path::source_name_for_read_dir(&canon)
                         .or_else(|| {
                             canon
                                 .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
+                                .map(|n| sui_compat::source::strip_store_hash_prefix(
+                                    &n.to_string_lossy()).to_string())
                         })
                         .unwrap_or_else(|| "source".to_string());
                     let src = sui_compat::source::nar_hash_source_tree(&canon, &name)
