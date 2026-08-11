@@ -372,6 +372,20 @@ fn compute_derivation_outputs(
             &drv_refs,
         );
 
+        // R3: emit the ATerm when SUI_EMIT_DRV is set. See the twin in
+        // sui-eval/src/builtins/derivation.rs for why this exists — a diverging
+        // drvPath is undiagnosable without the bytes whose hash it IS.
+        if let Ok(dir) = std::env::var("SUI_EMIT_DRV") {
+            if !dir.is_empty() {
+                let base = drv_path.rsplit('/').next().unwrap_or(&drv_path);
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(
+                    std::path::Path::new(&dir).join(base),
+                    drv_content.as_bytes(),
+                );
+            }
+        }
+
         // FOD `hashDerivationModulo` = sha256("fixed:out:<methodAlgo>:<hex>:<out>").
         let method_algo = if is_recursive {
             format!("r:{output_hash_algo}")

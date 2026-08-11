@@ -2722,6 +2722,20 @@ impl<'a> VM<'a> {
             let drv_path = sui_compat::store_path::compute_drv_path_with_refs(
                 drv_content.as_bytes(), &name, &drv_refs);
 
+            // R3: emit the ATerm when SUI_EMIT_DRV is set. See the twin in
+            // sui-eval/src/builtins/derivation.rs for why this exists — a diverging
+            // drvPath is undiagnosable without the bytes whose hash it IS.
+            if let Ok(dir) = std::env::var("SUI_EMIT_DRV") {
+                if !dir.is_empty() {
+                    let base = drv_path.rsplit('/').next().unwrap_or(&drv_path);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(
+                        std::path::Path::new(&dir).join(base),
+                        drv_content.as_bytes(),
+                    );
+                }
+            }
+
             // CppNix `hashDerivationModulo` for a FIXED-OUTPUT derivation is the
             // special sha256("fixed:out:<methodAlgo>:<hashHex>:<outPath>"), NOT
             // the input-addressed ATerm hash. Cache it against this FOD's drv
