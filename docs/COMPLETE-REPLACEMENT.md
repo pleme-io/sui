@@ -612,6 +612,57 @@ inversion nix shows for `banken`, which is appended last in
 config's module graph selects a different position, and the synthetics do not yet
 capture it. **That is the whole remaining gap for R2 on `minimal`.**
 
+## §V.9 R2's residual REPRODUCED in two modules — nix re-orders, sui does not
+
+The ordering divergence now has a minimal reproducer with no fleet machinery:
+
+```nix
+f.inputs.nixpkgs.lib.nixosSystem {
+  system = "aarch64-linux";
+  modules = [ <repo>/nodes/minimal <repo>/modules/shared/banken.nix ];
+}
+```
+```
+nix: banken.nix, tools×7     ← banken FIRST
+sui: tools×7, banken.nix     ← banken LAST
+```
+
+**And it is NOT list order.** Swapping the two entries changes nothing on either
+engine — nix yields `banken.nix` first both ways, sui yields `tools.nix` first
+both ways. So nix is applying an ordering of its own to the merged definition
+list, and sui is preserving declaration order (`banken` is appended last at
+`lib/nodes.nix:203` and lands last).
+
+**It is not lexicographic either**, which was the obvious next guess and is
+wrong: `rbcgq4db…-source/modules/shared/banken.nix` sorts AFTER
+`4k79ns9d…-source/nixos/modules/installer/tools/tools.nix`, yet nix places it
+first. So nix's order comes from its module-graph traversal, not from a sort on
+`_file`.
+
+**Six synthetics reproduce the shape and all MATCH**, which is why this took so
+long to corner — the rule is implemented, the input to it differs:
+
+| probe | verdict |
+|---|---|
+| `mkIf` vs plain definitions | MATCH |
+| module via `imports=` vs direct | MATCH |
+| path-valued modules | MATCH |
+| one module imported by two parents (dedup) | MATCH |
+| `_file` pointing at another store input | MATCH |
+| `nixosSystem` with two real modules | **DIVERGE** ← the reproducer |
+
+**Found on the way, a separate bug:** given `modules = [ ./nodes/minimal … ]`
+inside a `getFlake` expression, sui resolved the RELATIVE path against nixpkgs'
+`lib/` directory rather than the flake root —
+`import /nix/store/4k79ns9d…-source/lib/nodes/…` — and errored. nix resolves it
+against the file that wrote it. Worked around with absolute paths for the
+reproducer above; **logged here as its own defect**, not folded into the ordering
+one.
+
+**This is the whole remaining gap for R2 on `minimal`.** Every other input —
+189 store paths, identical priorities, 33 drvAttrs, all inputs and contexts —
+matches. One definition's position in one list.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
