@@ -876,6 +876,70 @@ debug sui, so each row of this table is a multi-minute wait and the corpus-style
 sweeps are not affordable at this build profile. Building `--release` before the
 next sweep is the cheap fix.
 
+## §V.14 Root-cause chain for the ordering divergence — two bugs fixed, leak narrowed
+
+The ordering divergence is genuine (§V.13). Traced, it runs:
+
+```
+sui reports NULL for unsafeGetAttrPos "modules" on nixosSystem's args attrset
+  -> eval-config.nix:28 sets modulesLocation = null
+  -> setDefaultModuleLocation is SKIPPED, so user modules are not wrapped
+  -> collectModules' breadth-first genericClosure leaves them one level SHALLOWER
+  -> NixOS option definition order permutes -> toplevel drvPath diverges
+```
+
+Measured on the minimal config: nix puts the user module FIRST, sui puts it
+EIGHTH, behind seven `installer/tools/tools.nix` children.
+
+### Two real position bugs found and FIXED on the way (both shipped, both tested)
+
+1. **`//` dropped attr positions entirely.** `overlay()` builds its node with an
+   empty position slot (deliberately — `//` is O(1) and lazy), but `pos_for()`
+   read only that slot, so EVERY key of EVERY `//` result reported null. This
+   matters directly: `lib.nixosSystem` ends in
+   `{ …; modules = …; } // removeAttrs args [ "modules" ]`. Fixed at the lookup
+   (`pos_entry` walks right-then-left, matching `//`'s own precedence) so `//`
+   stays O(1). Verified against nix in both directions; regression test
+   **red-run** against the pre-fix behaviour before being trusted.
+2. **A fileless frame was skipped instead of masking.** `EVAL_FILE_STACK` was
+   `Vec<PathBuf>` and could not represent "no source file", so a thunk captured
+   in an `--expr` context pushed nothing and inherited the CALLEE's file where
+   CppNix returns null. Now `Vec<Option<PathBuf>>`.
+
+**Neither closed the ordering divergence** — they were real bugs on the path,
+not the remaining one. Stated plainly so the fixes are not mistaken for a fix to
+R2.
+
+### Where the position leak actually is — narrowed by elimination
+
+All measured post-fix, `unsafeGetAttrPos … .file`:
+
+| source of the attrset | nix | sui | |
+|---|---|---|---|
+| literal in a local flake's `flake.nix` | store path | **local path** | non-null, PATH DIFFERS |
+| literal returned from a closure in a flake | store path | local path | non-null |
+| `a // removeAttrs b […]` inside a flake | store path | local path | non-null |
+| `import` of a store-path file (`toFile`) | store path | store path | MATCH |
+| **`nixpkgs.lib.nixosSystem`** | `…-source/flake.nix` | **NULL** | **DIVERGE** |
+| **`nixpkgs.lib.mkOption`** | `…-source/lib/default.nix` | **NULL** | **DIVERGE** |
+| **`nixpkgs.lib` (the flake output attr)** | `…-source/flake.nix` | **NULL** | **DIVERGE** |
+
+So positions survive flakes, closures, `//`, and store-path sources — and are
+lost across the whole of nixpkgs' EXTENDED `lib`. The remaining suspect is the
+`lib.extend` / `makeExtensible` / `fix` construction (`extends f rattrs = self:
+let super = rattrs self; in super // (f self super)`), reached through a
+fix-point thunk rather than a direct `//` of two literals. Note `NixAttrs::update`
+— the eager merge at `value.rs:2465` — also builds `AttrsInner::Flat(result)`
+with an empty position slot, and unlike `overlay` there is no node left to walk;
+that is the first place to look.
+
+**A second, independent divergence surfaced by the same table:** for a LOCAL
+flake sui reports the working-directory path where nix reports the copied
+`/nix/store/…-source/…` path. Non-null on both, so it does not cause this
+ordering bug, but it is a byte-visible difference wherever a `.file` reaches an
+output (nixpkgs `lib/types.nix`'s `attrTag` puts `pos.file` straight into
+`declarations`).
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
