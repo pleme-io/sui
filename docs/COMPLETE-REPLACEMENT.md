@@ -978,6 +978,51 @@ inherit ident's offset resolves to line 1 — compare against `static_attr_offse
 on the `AttrpathValue` path, which does resolve correctly — and to find the
 second mechanism that keeps nixpkgs' `lib` null even with the arm present.
 
+## §V.16 A release build makes the measurement 15x cheaper — corpus sweeps are now affordable
+
+§V.13 recorded that every number so far came from `target/debug/sui` with no
+release build. Built one:
+
+```
+minimal toplevel drvPath, sui --no-vm
+  debug:   ~10+ min   (the reason every row in V.11-V.15 was a multi-minute wait)
+  release: 41 s
+```
+
+That is not a footnote — it is the difference between bisecting by hand and
+running a differential corpus. Every sweep this document defers as "not
+affordable at this build profile" should be re-priced against 41 s.
+
+**R2 re-measured on the release binary — still divergent, and informatively so:**
+
+```
+nix: /nix/store/szx145ay52y2lpmrj54y6l95vlznhpk6-nixos-system-minimal-…drv
+sui: /nix/store/adjbgkwapyw7f6w7g7jq2bsvmdpn6x8b-nixos-system-minimal-…drv
+```
+
+sui's value is **byte-identical to the pre-`//`-fix debug measurement**. So the
+`//` position fix — real and shipped in v0.1.183 — changed nothing for this
+config, which is exactly what §V.15 predicted once `inherit` was identified as
+the operative leak. Two independent confirmations now agree: `//` was a genuine
+bug on the path but not the one holding R2.
+
+### Also measured: `FlakeRefSyntax::Sui => LocalPathOnly` in sentinela is STALE
+
+sentinela (`sentinela-config/src/lib.rs:210`) restricts the sui driver to
+local-path flake refs, which blocks selecting sui at all. Tested against the
+release binary — all three forms resolve:
+
+| ref form | result |
+|---|---|
+| `.#nixosConfigurations.minimal.config.system.stateVersion` | `25.11` |
+| `path:<repo>#nixosConfigurations.…` | `25.11` |
+| `<abs-path>#nixosConfigurations.…` | `25.11` |
+
+So the restriction records a limitation sui no longer has. It is NOT yet flipped:
+enabling sui selection while the toplevel drvPath still diverges would ship a
+known-wrong path. The flip is gated on R2 going green, not on this measurement —
+recorded here so the gate is the drvPath, not a stale belief about ref syntax.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
