@@ -748,6 +748,88 @@ eliminated. The next probe is to instrument `collectStructuredModules` from the
 Nix side (wrap it and print the collection order on both engines), which is
 cheap and would name the responsible builtin directly rather than by guessing.
 
+## §V.12 The ordering divergence was an artifact of the MEASUREMENT HARNESS
+
+§V.11 logged `unsafeGetAttrPos` as "not the R2 ordering cause" on the strength of
+one check (`_file` matched on both engines). That check was sound but did not
+reach the mechanism. Continuing the hunt found the mechanism, and it inverts the
+conclusion — **for the `--expr` reproducer specifically**.
+
+**The chain.** `nixos/lib/eval-config.nix:28` derives `modulesLocation` from
+`(builtins.unsafeGetAttrPos "modules" evalConfigArgs).file or null`. When that is
+non-null, eval-config wraps EVERY user module:
+
+```nix
+locatedModules = map (lib.setDefaultModuleLocation modulesLocation) modules;
+#   setDefaultModuleLocation file m  =>  { _file = file; imports = [ m ]; }
+```
+
+The inner module keeps its own `_file` — which is why the `_file` check matched
+and why it was the wrong probe. What changes is DEPTH: `collectModules` walks
+with `builtins.genericClosure`, which is breadth-first, so the wrapper demotes
+each user module one level and moves its definitions after every level-0 one.
+This is the `{ imports = … }` trap the nix repo's own CLAUDE.md already records,
+arrived at from the opposite direction.
+
+**Measured on nix alone (the oracle), same expression, wrap toggled:**
+
+```
+unwrapped (modulesLocation == null):  kid3,kid2,kid1,USER,plain
+wrapped   (modulesLocation != null):  USER,kid3,kid2,kid1,plain
+```
+
+nix's real output put the user module FIRST (the wrapped shape); sui's put it
+after the seven `tools.nix` children (the unwrapped shape). So the two engines
+disagreed about `modulesLocation`, i.e. about `unsafeGetAttrPos`.
+
+**And that disagreement only exists when the caller has no source file:**
+
+| caller of the attrset literal | nix | sui | |
+|---|---|---|---|
+| written in a `.nix` FILE | `/tmp/caller.nix` | `/tmp/caller.nix` | MATCH |
+| written in `--expr` (no file) | `NULL` | the CALLEE's file | **DIVERGE** |
+
+Every R2 ordering probe reconstructed the `nixosSystem` call in `--expr`. The
+fleet never does: `nixosConfigurations.minimal` is `parts/nixos.nix:47`, a file.
+**The reproducer manufactured the divergence it reported.**
+
+**The lesson, which is the durable part: measure the fleet's own call shape, not
+a synthetic reconstruction of it.** An `--expr` rebuild of a file-based call is
+not the same expression — it differs in a property (having a source file) that
+nixpkgs reads and branches on. Two sessions of ordering work were spent inside
+that gap.
+
+### The underlying sui defect (real, contained, NOT fleet-affecting)
+
+`EVAL_FILE_STACK` is a `Vec<PathBuf>` (`sui-eval/src/eval.rs:40`) and therefore
+cannot represent "evaluating something with no file". A thunk created in a
+fileless context restores its file with `.map(push_eval_file)` (`:3273`) —
+`Option::map`, so `None` pushes NOTHING and the callee's file stays on top.
+`attach_attrset_positions` then stamps the literal with the callee's file.
+
+Fix shape: make the stack `Vec<Option<PathBuf>>` and push an explicit fileless
+frame. Deliberately NOT applied in the same change as an R2 measurement — it
+alters relative-path resolution for fileless closures, and rebuilding the binary
+mid-measurement would invalidate the run.
+
+### Ruled out, each measured on both engines, each MATCH
+
+`builtins.genericClosure` traversal order · `builtins.sort` stability at 42 equal
+keys (the earlier stability check was under Rust's ~20-element insertion-sort
+threshold, so it was re-run at the real size) · `concatMap` / `attrNames` /
+`attrValues` / `catAttrs` · relative-path resolution across a lazy-import
+boundary AND across a closure called from another file · `unsafeGetAttrPos` with
+a file-based caller · `extendModules` definition ordering.
+
+### Where R2 actually stands
+
+Unchanged as a blocker, and now correctly scoped. `minimal`'s divergence is
+genuine — it is called from a file, so none of the above applies to it. nix's
+side re-measured today and is stable at
+`szx145ay52y2lpmrj54y6l95vlznhpk6-nixos-system-minimal-…drv`, the same value
+recorded when the divergence was first seen. The next probe is a file-based
+control on the SAME shape, running now.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
