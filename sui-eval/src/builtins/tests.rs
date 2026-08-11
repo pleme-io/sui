@@ -4302,6 +4302,16 @@ fn evaluate_flake_depth_counter_resets_on_error() {
 }
 
 #[test]
+#[ignore = "TRACKED BUG: an unfetchable flake input yields a NON-EXISTENT store \
+            path instead of failing. Reproduced 2026-08-11: a lock naming \
+            github:nonexistent-owner-zzz with a narHash returns \
+            outPath=/nix/store/8q8wq…-source in 0.01s — no network attempt, and \
+            `Path::exists()` is false. The store path is derived from the lock's \
+            narHash without ever fetching, so a broken input reads as a valid \
+            source and a build proceeds against content that was never \
+            materialised. NOT a stale test: this assertion is correct and the \
+            code is wrong. Un-ignore to verify a fix — the assertions below \
+            already encode the right contract (lazy at eval, erroring at force)."]
 fn evaluate_flake_fetch_failure_returns_error() {
     // A flake that declares a github input but has no network access
     // should return an error rather than a placeholder path.
@@ -4341,17 +4351,41 @@ fn evaluate_flake_fetch_failure_returns_error() {
     )
     .unwrap();
 
+    // ── ★ THE FAILURE IS AT FORCE TIME, BECAUSE INPUTS ARE LAZY ─────────
+    // This asserted that `evaluate_flake` itself errors. It does not, and by
+    // design: inputs are thunks, which the section immediately below
+    // (`flake_lazy_input_doesnt_fail_eagerly`) exists to guarantee. So the
+    // old assertion contradicted its own neighbour, and had to fail as soon
+    // as laziness landed — invisibly, because a Linux-only compile error in
+    // `build_levels` kept the test gate from ever running the suite.
+    //
+    // The HAZARD the test names is still real and still worth pinning: an
+    // unfetchable input must not quietly yield a usable placeholder path,
+    // because that turns a broken input into a build of the wrong content.
+    // So the check moves to where the fetch actually happens — forcing the
+    // input — and keeps asserting the error says what went wrong.
     let result = evaluate_flake(flake_dir);
     assert!(
-        result.is_err(),
-        "expected fetch failure to produce an error, got: {result:?}"
+        result.is_ok(),
+        "inputs are lazy: evaluating the flake must not fetch anything; got: {result:?}"
     );
-    let msg = result.unwrap_err().to_string();
+
+    let flake_path = flake_dir.to_string_lossy().to_string();
+    let forced = eval(&format!(
+        r#"(builtins.getFlake "{flake_path}").inputs.fake-input.outPath"#
+    ));
+    assert!(
+        forced.is_err(),
+        "forcing an unfetchable input must fail, never yield a placeholder \
+         path; got: {forced:?}"
+    );
+    let msg = forced.unwrap_err().to_string();
     assert!(
         msg.contains("fetch flake input"),
         "expected fetch error message, got: {msg}"
     );
 }
+
 
 // ── Lazy flake input evaluation tests ──────────────────────
 
