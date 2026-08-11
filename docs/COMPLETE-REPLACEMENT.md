@@ -387,6 +387,51 @@ experiment:** put a panic-on-name or a backtrace at the three emit sites keyed t
 external avenue is now exhausted; continuing to probe from Nix would be
 re-deriving what these seven rows already settled.
 
+## §V.4 The divergence is INVISIBLE from Nix — every observable agrees
+
+Continued from §V.3 with an inside view. Three engines were instrumented and a
+name-keyed backtrace added; the pre-existing `SUI_IR_DUMP_DRV` dumper on the IR
+path was used as well (it had existed all along — my `SUI_EMIT_DRV` partly
+duplicates it, which is itself the triplication problem showing up a second
+time).
+
+**Measured, and it is a contradiction worth stating flatly:**
+
+- With the filter unset, `sui-eval`'s derivation builtin fires **547 times** in
+  this evaluation, emitting 455 files. **`nixos-firewall-tool` is not among
+  them.** Every one of the 547 is a fetch/bootstrap derivation — tarballs and
+  `.cabal` files — with no build derivations at all.
+- `SUI_IR_DUMP_DRV=firewall` on the IR path: **never fires.**
+- The VM site: **never fires** (and the VM cannot reach this expression anyway,
+  §V.1).
+- Yet `overrideAttrs (o: { pname = "probe-marker"; })` **changes** sui's answer,
+  so the path is genuinely computed, not replayed.
+
+**And every Nix-level observable AGREES with nix:**
+
+| observable | result |
+|---|---|
+| every key of `drvAttrs`, `src` included | MATCH |
+| `buildInputs` drvPaths | MATCH (`f7zq8yia…-bash-interactive-5.3p3.drv`) |
+| `builtins.getContext` of `src` | MATCH (`ar6s9jl9…-nixos-firewall-tool`) |
+| the resulting `drvPath` | **DIFFERS** (`bjvx9wnp…` vs `byc82max…`) |
+
+nix's own `.drv` records **5 `inputDrvs` and 3 `inputSrcs`**; sui writes no
+`.drv` for this derivation at all, so the two cannot be diffed even with R3.
+
+**Conclusion, stated as a limit rather than a guess.** Identical attributes,
+identical inputs, identical string context, different hash — and no construction
+event on any instrumented path. The divergence lives somewhere that neither the
+Nix level nor the three derivation-construction sites can observe. Every external
+avenue is exhausted; **this now needs a debugger on a running eval**, not another
+experiment, and that is where it is left. Nothing here is guessed at.
+
+**Method cost worth recording:** ~15 probes to establish that a divergence is
+unreachable from outside. That is not a failure of the probes — it is the
+strongest possible argument for the rungs the ladder already names (R3 writing a
+`.drv` for EVERY derivation, R4 diffing closure sets), because those turn this
+class of question into one `diff`.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
