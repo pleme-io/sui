@@ -432,6 +432,51 @@ strongest possible argument for the rungs the ladder already names (R3 writing a
 `.drv` for EVERY derivation, R4 diffing closure sets), because those turn this
 class of question into one `diff`.
 
+## §V.5 STANDALONE REPRODUCER — 33 identical attributes, different hash
+
+The divergence reproduces with **no flake, no module system, no fleet config** —
+one import and one attribute:
+
+```
+E='(import /nix/store/4k79ns9…-source { system="aarch64-linux"; }).nixos-firewall-tool.drvPath'
+nix       eval --raw --impure --expr "$E"  → /nix/store/bjvx9wnp…-nixos-firewall-tool.drv
+sui --no-vm eval --raw --impure --expr "$E" → /nix/store/byc82max…-nixos-firewall-tool.drv
+```
+
+**With a clean control in the same nixpkgs:** `hello.drvPath` **MATCHES**,
+`nixos-firewall-tool.drvPath` **DIVERGES**. Same import, same system, same
+engine — so this is a property of the package, not of the evaluator's setup.
+
+**nix's answer is config-independent.** Standalone and inside the fleet config it
+returns the same `bjvx9wnp…`, so sui's value is the outlier in both settings and
+the fleet config is not implicated at all.
+
+**And every attribute is identical.** Comparing `drvAttrs` key-by-key with values
+rendered through `toString`:
+
+```
+keys equal: True | nix 33 sui 33
+VALUE DIFFS: NONE — every attribute identical
+```
+
+Also verified equal: `buildInputs` drvPaths, `builtins.getContext` of `src`, and
+`src` itself under both the reconstructed predicate and the package's real
+`lib.hasSuffix ".nix"` one.
+
+**Therefore the divergence is in DERIVATION SERIALIZATION, not in evaluation.**
+33 attributes that compare equal cannot produce two hashes unless the bytes built
+from them differ — the ATerm's field ordering, escaping, output-set encoding, or
+the `inputDrvs`/`inputSrcs` composition (nix's own `.drv` records 5 and 3
+respectively). That is a much narrower and more tractable target than "the
+evaluator diverges", and it is squarely inside `sui-compat/src/derivation.rs`.
+
+**The blocker on closing it is still R3's coverage.** sui emits 455 ATerms in
+this very run and this derivation is not among them, on any of the three
+construction sites, while `overrideAttrs` proves the path is genuinely computed.
+Something constructs it outside all three instrumented sites. **Finding that
+site is now the whole task** — and it is a code-reading task in
+`sui-eval`/`sui-compat`, not another differential experiment.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
