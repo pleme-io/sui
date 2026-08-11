@@ -37,7 +37,15 @@ thread_local! {
 // so the `PathRel` handler and `import` builtin can resolve correctly.
 
 thread_local! {
-    static EVAL_FILE_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// `None` frame = "evaluating something with no source file" (a `--expr` /
+    /// `<string>` literal). Representing that explicitly is load-bearing: a
+    /// thunk captured in a fileless context used to push NOTHING when it
+    /// forced, so the callee's file stayed on top and `unsafeGetAttrPos`
+    /// stamped the literal with the callee's path where CppNix returns `null`.
+    /// That fed `eval-config.nix`'s `modulesLocation`, which wraps every user
+    /// module in `{ _file; imports = [ m ]; }` — demoting it one
+    /// `genericClosure` level and permuting NixOS definition order.
+    static EVAL_FILE_STACK: RefCell<Vec<Option<PathBuf>>> = const { RefCell::new(Vec::new()) };
     /// Nix-level error context stack — captures source positions for --show-trace.
     /// Each entry: (file, expression_snippet). Pushed on function calls, select,
     /// force, and popped on return. Attached to errors for structured diagnostics.
@@ -192,13 +200,24 @@ pub fn attach_trace(err: EvalError) -> EvalError {
 /// Used by the `PathRel` AST handler to resolve relative path literals.
 #[must_use]
 pub fn current_eval_dir() -> Option<PathBuf> {
-    EVAL_FILE_STACK.with(|s| s.borrow().last().and_then(|p| p.parent().map(PathBuf::from)))
+    EVAL_FILE_STACK
+        .with(|s| s.borrow().last().cloned())
+        .flatten()
+        .and_then(|p| p.parent().map(PathBuf::from))
 }
 
 /// Push a file onto the eval stack. Returns an RAII guard that pops
 /// it on drop. Use when entering an `import <file>` so subsequent
 /// relative path literals resolve against the right directory.
 pub fn push_eval_file(file: PathBuf) -> EvalFileGuard {
+    push_eval_frame(Some(file))
+}
+
+/// Push a frame that may be fileless. `None` means "this code has no source
+/// file" and MUST still occupy a stack slot — pushing nothing would leave the
+/// caller's file visible to `current_eval_file`, which is exactly the
+/// `unsafeGetAttrPos` divergence documented on `EVAL_FILE_STACK`.
+pub fn push_eval_frame(file: Option<PathBuf>) -> EvalFileGuard {
     EVAL_FILE_STACK.with(|s| s.borrow_mut().push(file));
     EvalFileGuard
 }
@@ -207,7 +226,7 @@ pub fn push_eval_file(file: PathBuf) -> EvalFileGuard {
 /// Used by error sites to attach source location context.
 #[must_use]
 pub fn current_eval_file() -> Option<PathBuf> {
-    EVAL_FILE_STACK.with(|s| s.borrow().last().cloned())
+    EVAL_FILE_STACK.with(|s| s.borrow().last().cloned()).flatten()
 }
 
 
@@ -215,6 +234,7 @@ pub fn current_eval_file() -> Option<PathBuf> {
 pub fn eval_file_stack_snapshot() -> Vec<String> {
     EVAL_FILE_STACK.with(|s| {
         s.borrow().iter().map(|p| {
+            let Some(p) = p else { return "<no-file>".to_string() };
             let s = p.display().to_string();
             s.rsplit_once("-source/").map_or(s.clone(), |(_, r)| r.to_string())
         }).collect()
@@ -3266,11 +3286,12 @@ fn apply_inner(func: Value, arg: Value) -> Result<Value, EvalError> {
                 });
             }
             let mut call_env = closure.env.child();
-            let _file_guard = closure
-                .env
-                .eval_file()
-                .cloned()
-                .map(push_eval_file);
+            // ALWAYS push a frame, even when the closure captured no file:
+            // `.map(push_eval_file)` pushed nothing for `None`, leaving the
+            // CALLER's file on top, so a literal written in a fileless
+            // context got stamped with the callee's path. CppNix returns
+            // `null` there. See `EVAL_FILE_STACK`.
+            let _file_guard = push_eval_frame(closure.env.eval_file().cloned());
             // Push Nix-level trace frame for function calls. Lazy: stores
             // only the raw ingredients (O(1) Rc-clone of the closure env +
             // the current-eval-file snapshot) and defers the format!/strip
@@ -6807,6 +6828,29 @@ mod tests {
             // Inner dropped — outer is back on top.
             assert_eq!(current_eval_dir(), Some(std::path::PathBuf::from("/a")));
         }
+    }
+
+    /// A fileless frame MASKS the parent's file rather than being skipped.
+    ///
+    /// Regression: the stack used to be `Vec<PathBuf>`, so a thunk captured in
+    /// a `--expr` context pushed nothing when it forced and the callee's file
+    /// stayed visible. `builtins.unsafeGetAttrPos` then reported the callee's
+    /// path where CppNix reports `null`, which set `eval-config.nix`'s
+    /// `modulesLocation` and permuted NixOS module definition order.
+    #[test]
+    fn fileless_frame_masks_parent_file() {
+        let outer = std::path::PathBuf::from("/a/x.nix");
+        let _g_outer = push_eval_file(outer.clone());
+        assert_eq!(current_eval_file(), Some(outer.clone()));
+        {
+            let _g_none = push_eval_frame(None);
+            // The whole point: NOT Some("/a/x.nix").
+            assert_eq!(current_eval_file(), None);
+            assert_eq!(current_eval_dir(), None);
+            assert_eq!(eval_file_stack_snapshot().last().map(String::as_str), Some("<no-file>"));
+        }
+        // Popped — the parent is visible again.
+        assert_eq!(current_eval_file(), Some(outer));
     }
 
     // ── Source-mapped error context ────────────────────────

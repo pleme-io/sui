@@ -2230,10 +2230,47 @@ impl NixAttrs {
     /// no file (a `<string>`-eval'd literal).
     #[must_use]
     pub fn pos_for(&self, key: &str) -> Option<crate::pos::ResolvedPos> {
-        let table = self.1.as_ref()?;
         let sym = intern(key);
-        let offset = *table.keys.get(&sym)?;
-        crate::pos::resolve(table.file.as_deref(), offset)
+        let (file, offset) = self.pos_entry(sym)?;
+        crate::pos::resolve(file.as_deref(), offset)
+    }
+
+    /// Find `sym`'s (file, offset) — walking an `//` overlay RIGHT first, then
+    /// LEFT, so a key's reported position follows the same precedence `//`
+    /// itself gives the key's VALUE.
+    ///
+    /// Why this walks instead of reading `self.1`: `overlay` builds the
+    /// `AttrsInner::Overlay` node with an empty position slot (it is O(1) and
+    /// lazy by construction — eagerly merging two tables on every `//` would
+    /// cost on a very hot path). Reading only the slot therefore reported
+    /// `null` for EVERY key of every `//` result.
+    ///
+    /// That was not cosmetic. nixpkgs' `lib.nixosSystem` ends in
+    /// `{ …; modules = …; } // removeAttrs args [ "modules" ]`, and
+    /// `nixos/lib/eval-config.nix:28` derives `modulesLocation` from
+    /// `unsafeGetAttrPos "modules"` on exactly that attrset. A `null` there
+    /// skips `setDefaultModuleLocation`, which skips wrapping every user
+    /// module in `{ _file; imports = [ m ]; }` — and since `collectModules`
+    /// walks breadth-first via `genericClosure`, the missing wrapper leaves
+    /// each user module one level SHALLOWER than CppNix puts it, permuting
+    /// NixOS option definition order and diverging the toplevel drvPath.
+    fn pos_entry(&self, sym: Symbol) -> Option<(Option<std::path::PathBuf>, u32)> {
+        if let Some(table) = self.1.as_ref() {
+            if let Some(offset) = table.keys.get(&sym) {
+                return Some((table.file.clone(), *offset));
+            }
+        }
+        match &self.0 {
+            AttrsInner::Overlay { left, right, .. } => {
+                let r = right.borrow().pos_entry(sym);
+                if r.is_some() {
+                    return r;
+                }
+                let l = left.borrow().pos_entry(sym);
+                l
+            }
+            _ => None,
+        }
     }
 
     /// Borrow the underlying map. Flattens if overlay.
