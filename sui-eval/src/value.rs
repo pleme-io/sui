@@ -3887,6 +3887,54 @@ mod tests {
         assert_eq!(std::mem::size_of::<Value>(), 16);
     }
 
+    // ── `//` carries attr positions (regression) ─────────
+
+    /// A key's position must survive `//` — from either side, with the RIGHT
+    /// winning, matching the precedence `//` gives the key's value.
+    ///
+    /// Regression: `overlay()` builds its node with an empty position slot, so
+    /// reading only that slot reported `null` for every key of every `//`
+    /// result. nixpkgs' `lib.nixosSystem` ends in
+    /// `{ …; modules = …; } // removeAttrs args [ "modules" ]` and
+    /// `eval-config.nix:28` reads `unsafeGetAttrPos "modules"` off it to set
+    /// `modulesLocation`; a null there permutes NixOS definition order and
+    /// diverges the toplevel drvPath from CppNix.
+    #[test]
+    fn overlay_carries_attr_positions_from_both_sides() {
+        let tbl = |file: &str, key: &str, off: u32| {
+            let mut t = crate::pos::AttrPositions::new(Some(std::path::PathBuf::from(file)));
+            t.insert(intern(key), off);
+            Rc::new(t)
+        };
+        // Both operands must be NON-empty: `overlay` short-circuits to the
+        // other side when either is empty, so an empty operand would never
+        // build the Overlay node this test exists to walk.
+        let mk = |file: &str, key: &str, off: u32| {
+            let mut a = NixAttrs::new();
+            a.insert(key.to_string(), Value::Int(1));
+            a.set_positions(tbl(file, key, off));
+            a
+        };
+
+        // Key only on the LEFT — the shape nixosSystem actually hits, since
+        // `removeAttrs args [ "modules" ]` strips it from the right.
+        let left_only = mk("/l.nix", "modules", 11).overlay(mk("/r.nix", "other", 22));
+        assert_eq!(
+            left_only.pos_entry(intern("modules")),
+            Some((Some(std::path::PathBuf::from("/l.nix")), 11)),
+        );
+
+        // Key on BOTH sides — right wins, as it does for the value.
+        let both = mk("/l.nix", "modules", 11).overlay(mk("/r.nix", "modules", 22));
+        assert_eq!(
+            both.pos_entry(intern("modules")),
+            Some((Some(std::path::PathBuf::from("/r.nix")), 22)),
+        );
+
+        // Absent key stays absent — the walk must not invent a position.
+        assert_eq!(both.pos_entry(intern("nope")), None);
+    }
+
     // ── Value::to_json for every variant ─────────────────
 
     #[test]
