@@ -712,6 +712,42 @@ and it only shows up through `nixosSystem`, which is why every hand-built
 four-line regression test available. It is the last known blocker for R2 on
 `minimal`.
 
+## §V.11 A third bug: `unsafeGetAttrPos` across a function boundary
+
+Found while tracing what `nixosSystem` adds over bare `evalModules`
+(`nixos/lib/eval-config.nix:28` derives `modulesLocation` from it):
+
+```nix
+# /tmp/pos.nix
+args: builtins.toString ((builtins.unsafeGetAttrPos "modules" args).file or "NULL")
+
+(import /tmp/pos.nix) { modules = [1]; }
+  nix → NULL            # the attr came from the CALLER's expression
+  sui → /tmp/pos.nix    # the CALLEE's own file
+```
+
+sui attributes the position to the file performing the lookup rather than the
+file that wrote the attribute. Inline (`let a = { modules = [1]; }; in …`) both
+return `NULL`, so this only appears across a function boundary — the exact shape
+`eval-config.nix` uses.
+
+**Not the R2 ordering cause** — measured: the `_file` recorded for the user's
+module is `/tmp/probe-empty.nix` on BOTH engines, so `modulesLocation` lands
+correctly despite the divergence. Logged as its own defect (the third found this
+session) rather than being folded into the ordering hunt.
+
+**Also ruled out as the ordering cause**, each measured: `concatMap`,
+`attrNames`, `attrValues`, `catAttrs` (all MATCH — so the ordering-sensitive
+builtins nixpkgs' `collectStructuredModules` relies on are correct), and
+`builtins.sort` stability (§V.10).
+
+**Where R2 stands.** sui runs nixpkgs' own `lib/modules.nix` — there is no Rust
+reimplementation of module collection to fix — so the divergence must come from
+a builtin that collection depends on, and the obvious candidates are now
+eliminated. The next probe is to instrument `collectStructuredModules` from the
+Nix side (wrap it and print the collection order on both engines), which is
+cheap and would name the responsible builtin directly rather than by guessing.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
