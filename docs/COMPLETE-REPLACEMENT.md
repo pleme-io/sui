@@ -523,6 +523,45 @@ hypothesis, NOT as a finding — it has not been tested.**
 (both keep `nixos-firewall-tool`, correct — `name` is set explicitly in
 `package.nix`), so there is no second naming bug.
 
+## §V.7 The dev-output hypothesis is FALSIFIED; four more features cleared
+
+§V.6 named the non-default (`dev`) output as the next hypothesis. **Tested and
+wrong** — the minimal case matches exactly:
+
+```
+stdenv.mkDerivation { name="multiout-probe"; buildInputs=[ p.bashInteractive.dev ]; }
+nix → 9ld89r8c…-multiout-probe.drv   sui → 9ld89r8c…  MATCH
+```
+
+Working forward from the real `package.nix` instead, every distinctive feature
+was reproduced in isolation and every one **matches**:
+
+| feature of the failing package | probe | result |
+|---|---|---|
+| non-default `dev` output input | `buildInputs=[ bashInteractive.dev ]` | MATCH |
+| `stdenvNoCC` rather than `stdenv` | `stdenvNoCC.mkDerivation` + dev input | MATCH |
+| `strictDeps` + native/build split | `strictDeps=true`, both input lists | MATCH |
+| the `doCheck` bootstrap predicate | `buildPackages.shellcheck-minimal.compiler.bootstrapAvailable` → `1` both | MATCH |
+| the `nativeBuildInputs` member | `installShellFiles.drvPath` | MATCH |
+| `filterSource` src (§V.4) | both predicates | MATCH |
+| all 33 `drvAttrs` (§V.5) | key-by-key | MATCH |
+
+**`doCheck = false` still diverges** (`wbbqv4pc…` vs `6p26l54j…`), so
+check-inputs are not the trigger either. Every ingredient is individually
+correct; only the assembled derivation differs.
+
+**And the decisive negative:** that `doCheck=false` override forces a FRESH
+derivation with a hash neither engine had computed before — it cannot be replayed
+from anything. sui emitted **71 ATerms in that run and this was still not among
+them.** A derivation that is provably computed fresh, and provably not emitted at
+any of the three instrumented `compute_drv_path_with_refs` sites, establishes a
+**fourth construction path** as fact rather than inference.
+
+**That is now the single blocking question for R2**, and it is a code-reading
+task: find the code that produces a `.drv` store path for an `stdenv.mkDerivation`
+result without calling `compute_drv_path_with_refs`. Until it is found, no probe
+from the Nix level can see the bytes, because the bytes are never written.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
