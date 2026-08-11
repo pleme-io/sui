@@ -1485,16 +1485,41 @@ mod tests {
             buf
         };
 
+        // ── ★ THE NARINFO MUST SURVIVE TWO REAL GATES ───────────────────
+        // Substitution refuses a path that is not both TRUSTED and
+        // BYTE-INTACT (`substitute.rs` steps 2 and 5). This fixture predates
+        // both: it advertised `NarHash: sha256:bbbb` over bytes that hash to
+        // something else, and `Sig: key:sig` signed by nobody. Correctly
+        // refused, sui fell back to BUILDING — and the build fails, because
+        // the fixture's builder is `/bin/sh -c true`, which creates no
+        // output. So a security guard doing its job presented as "the
+        // substitutor is broken".
+        //
+        // Fixed by making the fixture honest rather than by weakening the
+        // gate: the NarHash is computed from the very bytes the mock serves,
+        // and the cache is built with `require_signatures(false)` — the
+        // FIRST acceptance branch, which is a real operator posture (a
+        // trusted local cache), not a bypass. The byte-integrity gate still
+        // runs, and still has to pass.
+        // `NixHash`'s Display is exactly `algo:hex`, which is the form
+        // `verify_nar_hash` parses — the project's own primitive rather than
+        // a hand-rolled encoding that could drift from it.
+        let real_nar_hash = sui_compat::hash::NixHash::new(
+            sui_compat::hash::HashAlgorithm::Sha256,
+            Sha256::digest(&nar_bytes).to_vec(),
+        )
+        .to_string();
         let narinfo_text = format!(
             "StorePath: {out_path}\n\
              URL: nar/{hash}.nar.none\n\
              Compression: none\n\
-             FileHash: sha256:aaaa\n\
-             FileSize: 100\n\
-             NarHash: sha256:bbbb\n\
-             NarSize: 200\n\
-             References: \n\
-             Sig: key:sig\n"
+             FileHash: {real_nar_hash}\n\
+             FileSize: {}\n\
+             NarHash: {real_nar_hash}\n\
+             NarSize: {}\n\
+             References: \n",
+            nar_bytes.len(),
+            nar_bytes.len()
         );
 
         // Build a mock HTTP client
@@ -1533,6 +1558,7 @@ mod tests {
         let cache = Arc::new(
             sui_store::BinaryCacheStore::builder("https://test.cache")
                 .http_client(Box::new(http_client))
+                .require_signatures(false)
                 .build(),
         );
 
@@ -1548,9 +1574,24 @@ mod tests {
         ]);
 
         let result = builder.build_closure(&closure, Some(&substitutor)).await.unwrap();
-        assert!(result.is_success());
-        assert!(result.log.contains("1 substituted"));
-        assert!(result.log.contains("0 built"));
+        // Assertions carry their evidence: a bare `assert!(is_success())`
+        // reports only that the build was not successful, which is the one
+        // thing already known. The log names WHICH derivation failed and why.
+        assert!(
+            result.is_success(),
+            "closure build should succeed via substitution; log:\n{}",
+            result.log
+        );
+        assert!(
+            result.log.contains("1 substituted"),
+            "expected the path to be substituted, not built; log:\n{}",
+            result.log
+        );
+        assert!(
+            result.log.contains("0 built"),
+            "expected nothing to be built locally; log:\n{}",
+            result.log
+        );
     }
 
     #[tokio::test]

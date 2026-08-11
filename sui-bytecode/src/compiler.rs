@@ -3204,7 +3204,32 @@ mod tests {
         unsafe { std::env::set_var("NIX_PATH", "other=/nonexistent") };
         let result = Compiler::compile("<nosuchpkg>");
         unsafe { std::env::remove_var("NIX_PATH") };
-        assert!(result.is_err(), "expected compile error for missing search path");
+
+        // ── ★ AN UNRESOLVABLE SEARCH PATH IS DEFERRED, NOT A COMPILE ERROR ──
+        // This asserted `is_err()`, which the compiler deliberately stopped
+        // doing: an unresolvable `<…>` is now compiled to a THUNK that throws
+        // when forced, "to match CppNix: unresolvable search paths are
+        // deferred and caught by tryEval at force-time" (see the emit site).
+        // The test pinned the behaviour the change was made to remove, so it
+        // has failed ever since — invisibly, because a Linux-only compile
+        // error in `build_levels` kept the test gate from ever running.
+        //
+        // Asserting `is_ok()` ALONE would be vacuous: it passes just as well
+        // if the compiler silently resolved `<nosuchpkg>` to some wrong path.
+        // So the deferral itself is what gets checked — a closure carrying the
+        // throw message reaches the constant pool, exactly as the sibling test
+        // above checks for a resolved `Path` constant.
+        assert!(
+            result.is_ok(),
+            "an unresolvable search path is deferred to force-time, not a \
+             compile error; got: {result:?}"
+        );
+        let (chunk, _) = result.unwrap();
+        assert!(
+            chunk.constants.iter().any(|c| matches!(c, VMValue::Closure(_))),
+            "expected a deferred-throw closure in the constant pool, got: {:?}",
+            chunk.constants,
+        );
     }
 
     #[test]
