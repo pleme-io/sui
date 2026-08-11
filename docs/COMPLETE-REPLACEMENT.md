@@ -562,6 +562,56 @@ task: find the code that produces a `.drv` store path for an `stdenv.mkDerivatio
 result without calling `compute_drv_path_with_refs`. Until it is found, no probe
 from the Nix level can see the bytes, because the bytes are never written.
 
+## §V.8 FIRST PARITY BUG FIXED — and R2's residual is one list position
+
+**FIXED (`56ac876`): a store path copied INTO the store kept its old hash.**
+Found by diffing the ATerms once R3's emitter was moved to the real funnel:
+
+```
+nix src: /nix/store/ar6s9jl9…-nixos-firewall-tool
+sui src: /nix/store/nr1fj1g7…-ar6s9jl9…-nixos-firewall-tool
+```
+
+sui derived the store NAME from the materialized basename, which for an in-store
+path is already `<hash>-<name>` — so `nar_hash_source_tree` produced
+`<newhash>-<oldhash>-<name>`. CppNix passes the name as a separate argument to
+`addToStore` and never re-derives it, hence no divergence there. One shared
+`strip_store_hash_prefix` in `sui-compat` now serves both call sites (not copied
+— the triplication mistake §V.3 flagged), with 4 tests including a nix-base32
+lookalike and a multibyte non-panic guard.
+
+`nixos-firewall-tool` now matches nix **byte-for-byte** (`bjvx9wnp…`), and the
+node toplevel moved `aibwin419…` → `adjbgkwa…` — the fix propagates.
+
+**The probe that had been lying, and for how long.** The first R3 emitter sat in
+`compute_derivation_outputs`, which not every derivation routes through: 455
+ATerms emitted while the one under investigation never appeared. That was read as
+a caching artifact twice and written up once as a "fourth construction path"
+(§V.7). It was a **misplaced probe**. `compute_full_drv` is the single funnel;
+once the emitter moved there the byte diff was immediate. **An instrument's
+placement is part of its correctness** — this cost most of a session and is the
+same class as every vacuity defect this doc catalogues.
+
+**R2's residual: ONE list position.** `system.path.drvAttrs.pkgs` holds the same
+189 paths with identical priorities; **8 positions differ, and all 8 are one
+element moving**. `environment.systemPackages` has 37 definitions in both engines,
+same files, same contents — but `banken.nix` is definition **#1** for nix and
+**#8** for sui, before vs after the seven `tools.nix` definitions.
+
+**Reproduced three ways, all MATCHING — so the ordering rule itself is correct:**
+
+| synthetic probe | nix | sui |
+|---|---|---|
+| `mkIf` vs plain definitions | `plain1,plain2,FROM_MKIF` | same |
+| module via `imports=` vs direct | `LAST_IMPORTED,b,a` | same |
+| path-valued modules (the fleet's shape) | `z,b,a` | same |
+
+Note all three agree that a LATER module's definition can come FIRST — the same
+inversion nix shows for `banken`, which is appended last in
+`lib/nodes.nix:203`. So sui implements the rule; something specific to the real
+config's module graph selects a different position, and the synthetics do not yet
+capture it. **That is the whole remaining gap for R2 on `minimal`.**
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
