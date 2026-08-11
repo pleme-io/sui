@@ -6886,11 +6886,22 @@ mod tests {
         assert!(msg.contains("test-assert.nix"), "msg: {msg}");
     }
 
+    /// A missing-argument error names the file the LAMBDA came from.
+    ///
+    /// Evaluated with `eval_with_file`, not `push_eval_file` + bare `eval`, and
+    /// the difference is the point. Calling a closure now pushes the closure's
+    /// OWN file — including a fileless frame when it has none — so a lambda
+    /// defined in a fileless string no longer borrows whatever unrelated file
+    /// happens to sit on the stack. That borrowing is what the old form
+    /// asserted, and CppNix does not do it: an `--expr` lambda has no file.
+    /// Associating the source with a file, as every real `import` does, keeps
+    /// the original intent (errors carry file context) while testing the path
+    /// production actually takes. Verified against CppNix: for a lambda in a
+    /// real file both engines name that file.
     #[test]
     fn error_missing_argument_includes_file_context() {
         let p = std::path::PathBuf::from("/nix/store/func.nix");
-        let _g = push_eval_file(p);
-        let result = eval("({ a, b }: a) { a = 1; }");
+        let result = eval_with_file("({ a, b }: a) { a = 1; }", Some(p));
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("missing argument"), "msg: {msg}");
         assert!(msg.contains("func.nix"), "msg: {msg}");
