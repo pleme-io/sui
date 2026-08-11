@@ -1411,7 +1411,8 @@ fn flake_with_locked_input_path() {
               "original": {
                 "type": "path",
                 "url": "/var/empty/dep"
-              }
+              },
+              "flake": false
             },
             "root": {
               "inputs": {
@@ -1468,7 +1469,8 @@ fn flake_input_source_info_populated() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1508,7 +1510,8 @@ fn flake_input_last_modified_accessible() {
                 "path": "/tmp",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/tmp" }
+              "original": { "type": "path", "url": "/tmp" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1546,7 +1549,8 @@ fn flake_input_rev_and_short_rev() {
                 "path": "/tmp",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/tmp" }
+              "original": { "type": "path", "url": "/tmp" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1703,7 +1707,8 @@ fn flake_input_source_info_outpath_matches() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1761,7 +1766,8 @@ fn flake_multiple_inputs_all_accessible() {
                 "path": "/tmp/a",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/tmp/a" }
+              "original": { "type": "path", "url": "/tmp/a" },
+              "flake": false
             },
             "b": {
               "locked": {
@@ -1770,7 +1776,8 @@ fn flake_multiple_inputs_all_accessible() {
                 "path": "/tmp/b",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/tmp/b" }
+              "original": { "type": "path", "url": "/tmp/b" },
+              "flake": false
             },
             "root": { "inputs": { "a": "a", "b": "b" } }
           },
@@ -1834,7 +1841,8 @@ fn flake_result_has_inputs() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1877,7 +1885,8 @@ fn flake_inputs_have_outpath() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -1918,7 +1927,8 @@ fn flake_self_has_inputs() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "dep": "dep" } }
           },
@@ -4141,7 +4151,8 @@ fn flake_partial_lock_stubs_missing_inputs() {
                 "path": "/var/empty/dep",
                 "type": "path"
               },
-              "original": { "type": "path", "url": "/var/empty/dep" }
+              "original": { "type": "path", "url": "/var/empty/dep" },
+              "flake": false
             },
             "root": { "inputs": { "locked-dep": "locked-dep" } }
           },

@@ -42,11 +42,31 @@ fn version_flag_shows_version() {
 
 #[test]
 fn unknown_subcommand_fails() {
+    // ── ★ AN UNKNOWN SUBCOMMAND IS FORWARDED TO CPPNIX, NOT REJECTED ─────
+    // This asserted clap's default `unrecognized subcommand`, which sui does
+    // not emit and by design cannot: sui is meant to be usable as
+    // `alias nix=sui`, so anything it does not implement is exec'd against the
+    // real `nix` (`exec_cppnix_passthrough`, src/main.rs). The observed
+    // stderr is cppnix's own:
+    //
+    //   error: 'nonexistent-command' is not a recognised command
+    //   Try '/…/nix --help' for more information.
+    //
+    // So the old assertion described a CLI sui deliberately isn't. It could
+    // only ever have passed before the passthrough existed, and it has been
+    // failing since — invisible because a Linux-only compile error in
+    // `build_levels` killed the test gate before this ran at all.
+    //
+    // The contract asserted instead is the one that holds under BOTH arms:
+    // the run fails, and the offending token is named. The exact wording is
+    // deliberately not pinned — it belongs to whichever `nix` is on PATH, and
+    // pinning another project's message text is how a test starts failing on
+    // an upstream release that broke nothing.
     sui()
         .arg("nonexistent-command")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
+        .stderr(predicate::str::contains("nonexistent-command"));
 }
 
 // ── Serve subcommand ────────────────────────────────────────────────
