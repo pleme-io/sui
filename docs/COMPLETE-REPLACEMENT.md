@@ -477,6 +477,52 @@ Something constructs it outside all three instrumented sites. **Finding that
 site is now the whole task** — and it is a code-reading task in
 `sui-eval`/`sui-compat`, not another differential experiment.
 
+## §V.6 Serialization is byte-correct; the fault is upstream of it
+
+**sui's ATerm is BYTE-IDENTICAL to nix's** for a derivation it gets right —
+proven with R3 on `hello`'s tarball drv: `cmp` against `/nix/store/<same-name>`
+succeeds. So `Derivation::serialize` is not generically broken, and the
+serialization hypothesis of §V.5 is **narrowed, not confirmed**: whatever differs
+for `nixos-firewall-tool` is not a systematic ATerm defect.
+
+**The distinguishing feature of the failing package, found:** its `buildInputs`
+select a **non-default output**. nix's own `.drv` records
+
+```
+bash-interactive-5.3p3.drv   outputs=['dev']     ← the only non-'out' input
+ShellCheck / install-shell-files / stdenv-linux / bash   outputs=['out']
+```
+
+`hello` (the control that MATCHES) has no such input. This is the one structural
+difference between them, and it was invisible to the earlier `buildInputs`
+comparison because that compared **drvPaths**, which are identical regardless of
+which output is referenced.
+
+**But sui records the selection correctly.** `builtins.getContext` on that
+buildInput returns, on both engines, byte for byte:
+
+```
+{"/nix/store/f7zq8yia…-bash-interactive-5.3p3.drv":{"outputs":["dev"]}}
+```
+
+So: identical attributes (33/33), identical inputs, identical output selection,
+identical context, byte-correct serializer — and a different hash. The fault is
+in how the multi-output selection is carried from context into the
+`input_derivations` map, or in the modulo resolution of that entry — after the
+values are correct and before the bytes are written.
+
+**One promising code path, not yet proven:** `serialize_modulo`
+(`sui-compat/src/derivation.rs:246-274`) resolves each input to its modulo hash
+and re-sorts — a fix whose own comment says it "survived until a 2-input stdenv
+drv". The outputs *within* an entry are emitted in stored order and never sorted
+(`:271`). With single-output inputs that is unobservable; `dev` is precisely the
+case that could expose an ordering or selection defect. **Stated as the next
+hypothesis, NOT as a finding — it has not been tested.**
+
+**Ruled out this round:** a `pname` override renames the drv on neither engine
+(both keep `nixos-firewall-tool`, correct — `name` is set explicitly in
+`package.nix`), so there is no second naming bug.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
