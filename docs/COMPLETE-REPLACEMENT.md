@@ -663,6 +663,55 @@ one.
 189 store paths, identical priorities, 33 drvAttrs, all inputs and contexts —
 matches. One definition's position in one list.
 
+## §V.10 MINIMAL REPRODUCER — four lines, one module, no fleet code
+
+R2's residual reduces to this, and nothing in it is pleme-io's:
+
+```nix
+# /tmp/probe-empty.nix
+{ config.environment.systemPackages = [ ]; }
+```
+```nix
+nixosSystem { system = "aarch64-linux"; modules = [ /tmp/probe-empty.nix ]; }
+```
+```
+nix: definition #1 is probe-empty.nix   ← the USER's module comes first
+sui: definition #1 is tools.nix         ← a nixpkgs-internal module comes first
+```
+
+**`banken` was never special.** Any external module that touches
+`environment.systemPackages` reproduces it; the fleet's `banken.nix` was simply
+the first one in the list. The whole earlier investigation into what made that
+package different was chasing a coincidence.
+
+**nix's rule, read from its source rather than guessed.** `lib/modules.nix`
+sorts definitions with `sortProperties` (`:1373`) by `mkOrder` priority, and
+`lib.sort` is STABLE, so equal-priority definitions keep collection order. Since
+`banken.nix` carries no `mkOrder` (grep: zero hits), priority is not the
+mechanism — the two engines COLLECT definitions in different orders, and nix's
+collection puts the caller's modules ahead of the imports pulled in beneath them.
+
+**Ruled out along the way, each measured:**
+
+| hypothesis | verdict |
+|---|---|
+| list order of `modules = [ … ]` | swapping changes NEITHER engine |
+| lexicographic sort on `_file` | banken's store path sorts AFTER nixpkgs', yet nix puts it first |
+| `builtins.sort` instability | stable on both (`LOW,A,B,C`) |
+| `mkOrder` / `mkBefore` priority | absent from `banken.nix` |
+| import-flattening depth (deep child vs later leaf) | MATCH |
+| the module's own content | a 4-line stand-in reproduces it identically |
+
+**Seven synthetics matched before this one diverged** — mkIf, imports=,
+path-valued modules, dedup across parents, cross-input `_file`, flattening depth,
+sort stability. The rule is implemented; the definition-collection ORDER differs,
+and it only shows up through `nixosSystem`, which is why every hand-built
+`evalModules` probe agreed.
+
+**This is now a bounded fix in sui's module-system collection**, with a
+four-line regression test available. It is the last known blocker for R2 on
+`minimal`.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
