@@ -346,6 +346,47 @@ serialisation applied between `drvAttrs` and the ATerm — reached via `stdenv`'
 `mkDerivation` rather than via a bare `derivation` call. R3 (write the `.drv`)
 would answer it in one diff.
 
+## §V.3 R3 BUILT; the firewall divergence is NOT reachable from the Nix level
+
+**R3 shipped** (`SUI_EMIT_DRV=<dir>`, commit a4a0225): sui now writes the exact
+ATerm bytes whose hash IS the drvPath, at all three construction sites
+(`sui-eval/builtins/derivation.rs`, `sui-ir/derivation.rs`,
+`sui-bytecode/vm.rs`). Opt-in; eval stays pure; a write failure is ignored.
+
+**Finding while landing it: derivation construction is TRIPLICATED.** Three
+engines each carry their own near-identical copy. Instrumenting one emitted 459
+drvs while the derivation under investigation never appeared — which reads as a
+caching artifact and is not. Three copies of derivation construction is three
+places for parity to drift; retiring them into one helper is a PRIME DIRECTIVE
+item, deliberately not done inside a diagnostic commit.
+
+**The `nixos-firewall-tool` divergence resisted every probe available from the
+Nix level.** Eliminated, each by measurement, not reasoning:
+
+| hypothesis | how it was ruled out |
+|---|---|
+| `filterSource` double-prefixing an in-store path | matches in isolation AND warm; the double-prefix seen once on a cold path never reproduced |
+| `null` / `toString` / `toJSON` handling | all MATCH |
+| `__ignoreNulls` + `__structuredAttrs` interaction | synthetic combination MATCHes |
+| sui's eval cache | cold `XDG_CACHE_HOME`: identical answer |
+| silently-dropped attributes | `SUI_PARITY_STRICT` → *"no swallowed force-error drops (clean eval)"* |
+| the redb drv cache (`drv_cache.rs`) | `~/.cache/sui/drv-cache.redb` does not exist; no hit/miss log on this path |
+| a stale value rather than a computed one | `overrideAttrs (o: { pname = "probe-marker"; })` CHANGES sui's path — so it is genuinely computed |
+
+**The contradiction that remains, stated plainly.** sui returns
+`byc82max…-nixos-firewall-tool.drv`, responds correctly to an override, and yet
+that derivation is never emitted by any of the three `compute_drv_path_with_refs`
+sites in the same evaluation (455–459 OTHER drvs are emitted in the same run,
+written seconds before the check, so the emitter demonstrably works). Either a
+fourth construction path exists that does not use that helper, or the emission is
+suppressed on this route. **Not yet explained, and not guessed at here.**
+
+**Next probe, and it needs the inside of the evaluator, not another Nix-level
+experiment:** put a panic-on-name or a backtrace at the three emit sites keyed to
+`nixos-firewall-tool`, and see which stack actually produces the string. Every
+external avenue is now exhausted; continuing to probe from Nix would be
+re-deriving what these seven rows already settled.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
