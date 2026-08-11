@@ -645,7 +645,15 @@ mod tests {
         git(&["config", "user.name", "sui-test"]);
         fs::write(dir.join("flake.nix"), "{ outputs = _: {}; }").unwrap();
         git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "initial"]);
+        // `--no-verify`: the pleme-io fleet installs a GLOBAL commit-msg hook
+        // (core.hooksPath) that refuses ~75 placeholder subjects, "initial"
+        // among them. Without this the fixture commit never lands, HEAD has no
+        // commits, and the test dies as `Branch 'refs/heads/main' does not have
+        // any commits` — a failure with nothing to do with the code under test,
+        // reproducible only on a machine carrying the fleet's git config. This
+        // is the escape git provides for exactly this case, and the fleet's own
+        // docs prescribe it for throwaway fixture repos.
+        git(&["commit", "-q", "--no-verify", "-m", "initial"]);
 
         // Clean worktree → Some(head_rev).
         let rev = clean_worktree_rev(&dir);
