@@ -2311,16 +2311,61 @@ impl NixAttrs {
                 // second as_flat sees them already empty and skips. The closure's
                 // borrows above are dropped by here, so these borrow_muts can't
                 // conflict (single-threaded, sequential).
+                // Release VALUES but keep the POSITION SKELETON. Swapping in a
+                // bare `NixAttrs::new()` also discarded every `AttrPositions`
+                // table in the released subtree, so `pos_entry`'s overlay walk
+                // found nothing and `unsafeGetAttrPos` returned null for any
+                // `//` result that had been TOUCHED — measured:
+                //   fresh overlay        nix line 1, sui line 1
+                //   after one attr read  nix line 1, sui NULL
+                // which is every real use, since nixpkgs reads from an attrset
+                // before anyone asks for a position. `position_husk` keeps the
+                // same tree shape and the position tables (small, and only
+                // present on literals) while dropping the values, so the
+                // cascade-free still reclaims the expensive part.
                 {
                     let mut l = left.borrow_mut();
-                    if !l.is_empty() { *l = Rc::new(NixAttrs::new()); }
+                    if !l.is_empty() { *l = Rc::new(l.position_husk()); }
                 }
                 {
                     let mut r = right.borrow_mut();
-                    if !r.is_empty() { *r = Rc::new(NixAttrs::new()); }
+                    if !r.is_empty() { *r = Rc::new(r.position_husk()); }
                 }
                 flat
             }
+        }
+    }
+
+    /// A value-free copy carrying only what `pos_entry` reads: this node's own
+    /// position table and, for an overlay, the same shape recursively.
+    ///
+    /// Used when `as_flat` releases a flattened overlay's parents. The values
+    /// are what cost memory; the `AttrPositions` tables are small and exist
+    /// only on attrset LITERALS with static keys, so keeping the skeleton
+    /// preserves `unsafeGetAttrPos` at negligible cost. Returns an empty
+    /// position-less set when the subtree carries no positions at all, so the
+    /// common case allocates no more than the old `NixAttrs::new()` did.
+    fn position_husk(&self) -> NixAttrs {
+        match &self.0 {
+            AttrsInner::Overlay { left, right, .. } => {
+                let (l, r) = (left.borrow().position_husk(), right.borrow().position_husk());
+                if l.1.is_none() && r.1.is_none() && !matches!(l.0, AttrsInner::Overlay { .. })
+                    && !matches!(r.0, AttrsInner::Overlay { .. })
+                {
+                    // Nothing below carries a position — collapse to the cheap
+                    // empty set rather than rebuilding a pointless spine.
+                    return NixAttrs(AttrsInner::Flat(AttrsMap::default()), self.1.clone());
+                }
+                NixAttrs(
+                    AttrsInner::Overlay {
+                        left: RefCell::new(Rc::new(l)),
+                        right: RefCell::new(Rc::new(r)),
+                        cache: Rc::new(OnceCell::new()),
+                    },
+                    self.1.clone(),
+                )
+            }
+            AttrsInner::Flat(_) => NixAttrs(AttrsInner::Flat(AttrsMap::default()), self.1.clone()),
         }
     }
 
