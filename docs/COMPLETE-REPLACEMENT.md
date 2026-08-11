@@ -238,6 +238,40 @@ Three things follow, and they reframe the whole eval problem:
    least two defects on the pkgs path, and fixing the overflow will not by itself
    make R2 green.
 
+**The overflow is INFINITE, not deep — measured 2026-08-11.** The recursion was
+sampled mid-flight (`sample <pid>`), showing a tight repeating cycle thousands of
+frames deep:
+
+```
+eval_expr → eval_expr_inner → eval_apply → apply_inner → apply
+          → force_thunk → Thunk::force → force_inner → eval_expr → …
+```
+
+(4201 `eval_expr` frames in a 2-second sample.) The stack was then raised from
+256 MB to **2 GB** on both eval threads and rebuilt: it still overflows. A debug
+frame is on the order of a kilobyte, so 2 GB admits something like a million
+frames — exhausting that is a cycle, not a depth.
+
+**It is the VM engine, which is what ships.** The abort names its thread:
+`thread 'sui-vm-eval' has overflowed its stack`. `sui eval` desugars
+`flake-ref#attr` to `(builtins.getFlake …).attr` and runs it on the bytecode VM
+(`src/main.rs:6204`), NOT the tree-walker (`eval_render_threaded`,
+`src/main.rs:7859`, thread `sui-eval`). This is the same split the corpus has:
+`sui parity` proves `--no-vm` while the shipped path is the VM.
+
+**Consequence for the memory work.** `EVAL-MEMORY.md`'s entire frame — retention,
+GC-less evaluator, columnar attrsets, peak RSS — is aimed at a size problem. A
+plain string on the smallest config, looping forever inside 2 GB of stack, is not
+a size problem. The memory work may still be worth doing; it is not what stands
+between sui and a node eval.
+
+**Note `EvalError::RecursionLimit` already exists** (`sui-eval/src/value.rs:3022`,
+constructed at `:5079`) — so a depth guard is available and the VM path is not
+using it. Converting this abort into a typed error is the smallest honest
+improvement: SIGABRT kills the test process (which is why `nix_repo_cid_drv_path`
+can never report), while a `RecursionLimit` is catchable, printable, and lets an
+instrument record the failure instead of dying with it.
+
 **What this changes about the plan.** Phase 1 previously read "close the drvPath
 divergence, weeks, unknown shape". It now has a seconds-long deterministic
 reproducer that needs no fleet config, no network, and no memory ceiling — the
