@@ -655,10 +655,23 @@ impl DaemonConn {
         store_path: &str,
         disk_path: &Path,
     ) -> Result<(), DaemonRealizeError> {
-        let name = Path::new(store_path)
+        // The NAME, not the basename. `AddTextToStore` takes the store object's
+        // name and computes `<hash>-<name>` itself, so passing the basename —
+        // which already carries the hash — makes the daemon hash the hash:
+        //
+        //   sent:     hcz4z4s0…-sui-remote-probe-fresh.drv
+        //   daemon:   "should be /nix/store/f7ysdivla…-hcz4z4s0…-sui-remote-probe-fresh"
+        //                                    ^^^^^^^^^^ ^^^^^^^^^ two hashes
+        //
+        // and it then rejects the build because the recomputed output path does
+        // not match the one the derivation declares. Same class as the
+        // store-path double-prefix bug fixed in `sui-compat::source`, which is
+        // why that helper is reused here rather than re-deriving the rule.
+        let basename = Path::new(store_path)
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| DaemonRealizeError::Protocol(format!("bad drv path {store_path}")))?;
+        let name = sui_compat::source::strip_store_hash_prefix(basename);
 
         let bytes = std::fs::read(disk_path)
             .map_err(|e| DaemonRealizeError::Protocol(format!("read {disk_path:?}: {e}")))?;
