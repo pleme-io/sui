@@ -1331,6 +1331,42 @@ non-mutating. `switch` activates the operator's workstation — hard to reverse 
 so it is not run against a standing goal without explicit authorization. `build`
 covers the identical path up to activation.
 
+## §V.22 The drvPath fix cleared the first wall; the darwin arm now dies on MEMORY
+
+`sui system rebuild build --flake <repo>#cid`, after `92692ce`:
+
+```
+before the fix:  failed at  226 s  — "derivation attrset missing drvPath"
+after  the fix:  ran   1 022 s  — then SIGKILL (EXIT=137)
+```
+
+No `timeout` was set on the run, so the kill came from outside. Evidence points
+at memory pressure rather than a defect in the work: during the run macOS grew
+the swap file from **17 408 MB to 35 840 MB** — the OS doubling swap is a
+pressure response, and jetsam terminating the largest resident process fits
+`EXIT=137` exactly. Recorded as *strongly-indicated*, not proven: no jetsam entry
+was recovered from `log show`, so the mechanism is inferred from the swap growth
+and the signal, not read from a kill record.
+
+**What this changes about the shape of the remaining work.** The darwin arm's
+next blocker is not correctness — evaluation reached the build phase and got 17
+minutes in. It is FOOTPRINT. `nix eval` of the same config completes in minutes
+without provoking swap growth, so this is a sui-versus-CppNix resource gap on a
+whole-system closure, and it is the thing to measure next (peak RSS on cid, sui
+vs nix) before any further parity work on this arm.
+
+**Rungs, honestly, after this session:**
+
+- **R2 (eval parity): GREEN** — `minimal` toplevel drvPath byte-identical on the
+  tree-walker AND the default VM engine; 2989/2989 derivations byte-identical;
+  five position bugs fixed and sealed by a corpus gate.
+- **rebuild path: PARTIAL** — one real bug found and fixed by running the actual
+  command; the darwin `build` action now proceeds into realization but does not
+  complete on cid.
+- **NixOS arm: BLOCKED** — no `switch-to-configuration` entry point at all
+  (re-measured today: 0 hits in sui-orchestrate).
+- **`nix run .#rebuild` on sui: NOT ACHIEVED.**
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
