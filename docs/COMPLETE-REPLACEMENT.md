@@ -1630,6 +1630,66 @@ closed), so the shape was known; what is new is that the memory factor is now
 quantified and the remote-builder gap is now the *only* thing between a green
 parity config and an actual sui rebuild.
 
+## §V.29 THE IMMEDIATE BLOCKER IS NOT MEMORY: sui cannot instantiate a derivation on a multi-user store
+
+Found by building a derivation CppNix had never seen — the one test that
+distinguishes "sui realized it" from "sui found what nix already built".
+
+```
+sui build /private/tmp/lbtest#probe        (fresh aarch64-linux derivation)
+  -> "closure …-sui-remote-probe-fresh.drv: derivation error:
+      cannot read /nix/store/…-sui-remote-probe-fresh.drv:
+      No such file or directory (os error 2)"
+```
+
+The same flake with the derivation nix had ALREADY built returned the correct
+store path — which is why every earlier probe looked fine. **The pass was a cache
+hit on CppNix's work.**
+
+### Root cause, and it is a silent fallback
+
+`sui-eval/src/builtins/derivation.rs:570` `write_derivation_to_store` writes the
+ATerm with a plain `std::fs::write` into `/nix/store`. On a MULTI-USER store —
+root-owned, which is every real fleet machine including cid — that is
+`PermissionDenied`, and the handler:
+
+```rust
+Err(e) if e.kind() == PermissionDenied => {
+    let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
+    …write there instead…            // debug-level log
+}
+…
+Ok(())                               // <- reports SUCCESS
+```
+
+writes the `.drv` to `/tmp/sui-drv-cache/`, logs at **debug**, and returns
+`Ok(())`. Nothing downstream reads that directory. Evaluation therefore reports
+success, and the failure surfaces later, somewhere else, as a *missing file* —
+the failure mode is indistinguishable from the success mode at the point where it
+happens, and the message at the point where it is noticed names the wrong problem.
+
+There is no daemon path for this: sui talks to the nix daemon for realization but
+has no `AddToStore`/`AddTextToStore` equivalent for writing a derivation, so on a
+daemon-owned store it has no legal way to instantiate at all.
+
+### This REORDERS the blocker list
+
+| blocker | when it bites |
+|---|---|
+| **cannot write a `.drv` to a multi-user store** | **FIRST — on any machine, at any config size, for anything CppNix has not already built** |
+| 12.3x memory factor (§V.25–§V.27) | second — only once instantiation works |
+| absent remote builders (§V.21) | **NOT a blocker after all** — the nix daemon dispatches; `sui build` produced a correct aarch64-linux output via `ssh-ng://builder@linux-builder` for a drv nix had instantiated |
+
+The third row is a correction: §V.21 recorded "remote builders absent" as gating
+the darwin hosts. Measured today, sui's realization goes through the daemon and
+the daemon does the remote dispatch, so sui builds Linux derivations on this
+darwin host today. What it cannot do is *create* the derivation to build.
+
+**The fix is bounded and well-defined:** add a daemon-mediated derivation write
+(the protocol op CppNix uses for exactly this), and — independently — make the
+permission failure LOUD, because a silent fallback that returns `Ok` is what let
+this sit behind a misleading error.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
