@@ -1599,6 +1599,37 @@ byte-identical (§V.18), the rebuild path's own `drvPath` bug is fixed (§V.21),
 the NixOS activation entry point exists (§V.22). The chain now fails at exactly
 one link, and that link is named.
 
+## §V.28 EXHAUSTIVE: there is no configuration on which `nix run .#rebuild` can use sui today
+
+The remaining question was whether SOME config is small enough to demonstrate the
+rebuild path end-to-end. Enumerated, with the disqualifying reason measured for
+each class:
+
+| class | configs | why it cannot run under sui today |
+|---|---|---|
+| **darwin** (buildable natively on this host) | `cid`, `ryn` | too large. CppNix peak: cid **17.25 GB**, ryn **16.58 GB**. At sui's measured 12.3x that is ~205-212 GB, against ~21 GB free. Both were killed by the OS in practice (§V.22, §V.24). |
+| **NixOS** (all 15, incl. the small `minimal`) | `minimal`, `rio`, `plo`, `mar`, `zek`, … | not buildable from a darwin host without a REMOTE BUILDER, and sui has **zero** remote-builder implementation (`buildMachines` / `--builders` / `remote-builders`: 0 hits). `minimal` evaluates fine under sui (10.85 GB, byte-identical drvPath) — evaluation is not what stops it. |
+
+So the two arms fail for *different* reasons, and neither is a near miss:
+
+- the darwin arm is blocked by the **12.3x memory factor** — an arm where sui
+  evaluates correctly but cannot fit;
+- the NixOS arm is blocked by an **absent capability** — an arm that would fit
+  (`minimal` needs 10.85 GB) but has no way to dispatch the build.
+
+`minimal` is the sharpest statement of the state of things: sui produces a
+**byte-identical toplevel drvPath and a 2989/2989 identical derivation graph** for
+it, and still cannot rebuild it, because building a Linux system from a darwin
+host requires a builder sui cannot talk to.
+
+**This closes the search.** Not "we have not found a working config yet" —
+every configuration in the fleet is disqualified, by measurement, for one of two
+named reasons. Both are on the roadmap in `nix/lib/build-engine.nix` as data
+(`remoteBuilders = false`, and the absent NixOS activation key which THIS session
+closed), so the shape was known; what is new is that the memory factor is now
+quantified and the remote-builder gap is now the *only* thing between a green
+parity config and an actual sui rebuild.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
