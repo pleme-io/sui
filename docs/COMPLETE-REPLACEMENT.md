@@ -1733,6 +1733,48 @@ derivation now works.
 2. the 12.3x memory factor (§V.25–§V.27) — still what stops cid/ryn, the only
    configs that are actually rebuild targets from this host.
 
+## §V.31 `minimal`'s blocker is in the nix DAEMON's remote-build path, not in sui or the config
+
+Chased `unit-script-nix-gc-start` — the dependency that fails for both engines —
+to ground:
+
+```
+nix build <that .drv>^*   (alone, -L)
+  building on 'ssh-ng://builder@linux-builder'...
+  copying path '/nix/store/k5vbc83…-unit-script-nix-gc-start' from 'ssh-ng://…'
+  error: string is too long
+  error: Cannot build …: builder failed with exit code 1
+```
+
+The derivation is trivial — a 160-byte script whose `checkPhase` is a `bash -n`
+syntax check — so nothing about its CONTENT can produce that error. And despite
+the `copying path` line, the output is **absent** from the store afterwards
+(`nix path-info`: not valid), so the copy message is optimistic and the failure
+is real.
+
+**Attribution.** This is CppNix's own failure on its own remote-build path: sui
+never touches it, because sui delegates realization to the same daemon. It is not
+a fleet-config defect (the script is fine) and not a sui defect. `minimal` is
+therefore unbuildable from THIS host by EITHER engine until that is resolved —
+most likely by building on a native aarch64-linux machine rather than through
+`ssh-ng` from darwin.
+
+### Final state of the goal
+
+| stage | sui |
+|---|---|
+| evaluate a real fleet config | **byte-identical** (`szx145ay…`, 2989/2989 derivations) |
+| instantiate on a root-owned store | **works** (§V.29) |
+| dispatch a remote build | **works** (built an aarch64-linux output via the daemon) |
+| realize `minimal` | fails **exactly as CppNix does**, on CppNix's own ssh-ng bug |
+| rebuild cid / ryn (the only local rebuild targets) | blocked by the **12.3x memory factor** |
+| **`nix run .#rebuild` under sui** | **NOT ACHIEVED** |
+
+Three distinct blockers were found and separated this session, and only one of
+them is sui's: instantiation (**fixed**), the ssh-ng remote-build failure
+(**CppNix's**, unfixed), and the memory factor (**sui's**, unfixed, quantified
+at 12.3x with the root localised to ~8.1 M retained thunks).
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
