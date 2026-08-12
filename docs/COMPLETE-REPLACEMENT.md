@@ -1499,6 +1499,61 @@ is a strong signal and it predicts cid's behaviour correctly, but it is not a
 profile — no allocation attribution was collected, so WHICH structure holds the
 memory remains unmeasured.
 
+## §V.26 ROOT CAUSE LOCALISED: 8.1 M retained thunks ≈ the entire 10 GB
+
+sui already instruments this; the switch is `SUI_LIVE_CENSUS=1`. On `minimal`,
+at exit:
+
+```
+thunk_live  8_078_642    thunk_made 11_487_097    thunk_eval 9_291_589
+attrs_live    577_344    attrs_made  5_274_084
+nixstr_live   795_394    list_live     799_420
+rss 10_350 MB
+```
+
+**70 % of every thunk ever created is still live when the process exits**, against
+11 % for attrsets. The result being computed is a single drvPath string, so
+essentially none of that is reachable output. At the size of a `ThunkInner`
+(a `OnceCell` + an `UnsafeCell<ThunkRepr>`) 8.1 M of them accounts for the bulk
+of the 10.35 GB directly — the retained thunks ARE the footprint, not a symptom
+beside it.
+
+### What is already ruled out
+
+*Not a forced-thunk env leak.* Forcing replaces the repr with
+`Evaluated(Box<Value>)` / `EvaluatedConcrete` (`value.rs:1458,1461,1496`), so the
+`Suspended { expr, env }` payload — and the `Env` it pins — is dropped on force.
+That was the cheap hypothesis and it is wrong.
+
+*Not the §V.18 position husk.* Isolated by measurement in §V.25: ~1 %.
+
+### What the asymmetry points at
+
+`Rc` cannot collect cycles, and sui's evaluator is `Rc` end-to-end with no arena
+and no GC (`Arena`/`bumpalo`/`typed_arena`/`slotmap`: zero hits). The cycle is
+structurally available — `Thunk(Rc<ThunkInner>)` holds `Suspended { env: Env }`,
+`Env(Rc<EnvInner>)` holds `Value`s, and a `Value` can be a `Thunk` — and nixpkgs
+closes it constantly, since every `rec` attrset, every recursive `let` and every
+`makeExtensible` fixpoint is exactly that shape. CppNix uses a tracing collector
+(Boehm) for precisely this reason.
+
+That thunks retain at 70 % while attrsets retain at 11 % is the discriminating
+observation: a uniform "the output graph is big" explanation would retain both.
+
+**Tier-honest.** The cycle is confirmed as *structurally possible* and the
+retention is *measured*; that cycles are the actual retainer is **inferred, not
+proven** — no heap-ownership attribution was collected. The next step that would
+settle it is instrumenting `Rc::strong_count` on a sample of live `ThunkInner`s
+at exit, or building with a leak checker, to distinguish a cycle from a live root
+holding the graph.
+
+**Why this matters for the goal.** A 12.3x factor traced to ~8 M uncollected
+thunks is not a tuning problem; it is the absence of cycle collection in an
+evaluator whose input language is built on fixpoints. Closing it means weak
+back-edges, an arena with a collection pass, or a tracing GC — a design change to
+sui's core, and the single thing standing between the shipped parity work
+(§V.11–§V.20) and `nix run .#rebuild`.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
