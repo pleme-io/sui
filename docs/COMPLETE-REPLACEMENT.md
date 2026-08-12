@@ -1417,6 +1417,45 @@ frees.
 | darwin arm on cid | **BLOCKED ON MEMORY** — measured above |
 | `nix run .#rebuild` on sui | **NOT ACHIEVED** |
 
+## §V.24 BOTH engines exhaust memory on cid — the VM ~6x faster. Not engine-specific.
+
+The obvious hypothesis after §V.23 was that the footprint belonged to the
+tree-walker (every cid measurement used `--no-vm`) and that the shipped VM would
+be leaner. Tested; it is the opposite:
+
+```
+free memory during `eval .#darwinConfigurations.cid.system.drvPath`
+  tree-walker (--no-vm):  ~4.8 GB -> ~70 MB over ~580 s
+  bytecode VM (default):    21 GB ->     0 GB over ~90 s     <- EXIT=137
+  CppNix:                 completes in 172.7 s at 17.25 GB peak
+```
+
+Both were killed by the OS; both recovered the machine to ~20-22 GB the moment
+they died.
+
+**What this rules out and rules in.** It is NOT a defect of one evaluator — the
+two engines share the value representation (`Value`, `NixAttrs`, thunks,
+`sui-eval`'s attrset machinery), and both blow up on the same input. So the
+footprint lives in the shared representation or in what neither engine frees,
+not in tree-walking versus bytecode. The VM reaching exhaustion ~6x faster is
+consistent with it allocating more aggressively per unit of work, not with it
+holding a different structure.
+
+**Consequence for the goal, stated plainly.** `nix run .#rebuild` on sui is
+blocked on cid by a resource gap of at least the order of the whole machine, and
+that is a memory-model problem in sui's core — not a wiring problem, not a
+missing flag, and not something the position/parity work of §V.11–§V.20
+addresses. It wants a real investigation: allocation profiling on a completing
+run, then attacking whatever retains the graph (the overlay chain and the thunk
+representation are the standing suspects, and note `position_husk` deliberately
+retains a skeleton CppNix would free — cheap on `minimal`, unmeasured on cid).
+
+**Scale context so this is not read as a general verdict:** `minimal` evaluates
+in 30 s and its full 2989-derivation graph is byte-identical. The gap appears at
+the large end. CppNix needing 17.25 GB for the same config says cid is genuinely
+enormous; sui needing more than the box has says the multiplier over CppNix is
+the problem, not the absolute size.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
