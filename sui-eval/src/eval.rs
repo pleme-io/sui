@@ -2219,14 +2219,15 @@ fn attach_attrset_positions(set: &ast::AttrSet, attrs: &mut NixAttrs, env: &Env)
         if let ast::Entry::AttrpathValue(apv) = entry {
             let Some(attrpath) = apv.attrpath() else { continue };
             let path_attrs: Vec<ast::Attr> = attrpath.attrs().collect();
-            // Only a single-segment static key gets a position (a dotted path
-            // `a.b = …` desugars to a nested set; CppNix points the position
-            // at the head, and nixpkgs never `unsafeGetAttrPos`es a dotted
-            // tag). Skip anything else.
-            if path_attrs.len() != 1 {
-                continue;
-            }
-            let Some(offset) = static_attr_offset(&path_attrs[0]) else { continue };
+            // A dotted path `a.b = …` desugars to a nested set and CppNix gives
+            // the OUTER key the position of the path's HEAD, so record
+            // `path_attrs[0]` whatever the length. This previously skipped any
+            // multi-segment path, on the assumption that nixpkgs never asks for
+            // a dotted tag's position. Measured — for
+            // `{ …; nested.deep = 3; }` at line 6:
+            //   nix  nested=6:3      sui  nested=NULL
+            let Some(head) = path_attrs.first() else { continue };
+            let Some(offset) = static_attr_offset(head) else { continue };
             // Resolve the static key name (Ident/Str) — never forces (a
             // dynamic key already returned None above).
             if let Ok(Some(name)) = eval_attr_maybe_null(&path_attrs[0], env) {
@@ -6943,6 +6944,78 @@ mod tests {
         let bol = body[..off].rfind('\n').map_or(0, |i| i + 1);
         assert_eq!(*attrs.get("line").unwrap(), Value::Int(1));
         assert_eq!(*attrs.get("column").unwrap(), Value::Int((off - bol) as i64 + 1));
+    }
+
+    /// Corpus gate: every attribute-BINDING form carries a position.
+    ///
+    /// Seals the class the three position bugs came from, rather than the three
+    /// instances: `//` dropping positions wholesale, `pos::line_col` returning a
+    /// constant, and `inherit` never being recorded. Each was found only because
+    /// a NixOS toplevel drvPath diverged — an expensive way to learn that an
+    /// attribute lost its position.
+    ///
+    /// Expectations are DERIVED from the fixture, never written out, so the test
+    /// cannot drift into agreeing with whatever the implementation emits. That
+    /// is exactly how `line_col`'s own "verified against nix eval" comment came
+    /// to document the bug it contained.
+    ///
+    /// Anti-vacuity: the row count is asserted, and any `NULL` fails. A change
+    /// that stops attaching positions altogether makes every row `NULL` — which
+    /// must be a failure, not an empty-set pass.
+    #[test]
+    fn every_binding_form_carries_a_position() {
+        let dir = tempfile::tempdir().unwrap();
+        // One line per key so the expected line number is its 1-based index.
+        let body = concat!(
+            "let src = { i = 1; j = 2; }; in {\n",
+            "  plain = 1;\n",
+            "  \"quoted\" = 2;\n",
+            "  inherit (src) i;\n",
+            "  inherit src;\n",
+            "  nested.deep = 3;\n",
+            "}\n",
+        );
+        let f = dir.path().join("forms.nix");
+        std::fs::write(&f, body).unwrap();
+
+        // `nested` is the head of a dotted path; CppNix points at the head.
+        let keys = ["plain", "quoted", "i", "src", "nested"];
+        let probe = keys
+            .iter()
+            .map(|k| format!(
+                "(let q = builtins.unsafeGetAttrPos \"{k}\" t; \
+                 in if q == null then \"{k}=NULL\" \
+                 else \"{k}=${{toString q.line}}:${{toString q.column}}\")"
+            ))
+            .collect::<Vec<_>>()
+            .join(" + \" \" + ");
+        let got = eval(&format!("let t = import {}; in {probe}", f.display()))
+            .unwrap()
+            .as_string()
+            .unwrap()
+            .to_string();
+
+        assert!(!got.contains("NULL"), "a binding form lost its position: {got}");
+        let rows: Vec<&str> = got.split(' ').collect();
+        assert_eq!(rows.len(), keys.len(), "corpus shrank — gate would be vacuous: {got}");
+
+        // Derive each expectation by locating the key token in the fixture.
+        for (k, row) in keys.iter().zip(&rows) {
+            let needle = match *k {
+                "quoted" => "\"quoted\"".to_string(),
+                "i" => "i;".to_string(),
+                "src" => "src;".to_string(),
+                // A dotted path's head is followed by `.`, not ` =` — CppNix
+                // reports the HEAD token's position for the outer key.
+                "nested" => "nested.".to_string(),
+                other => format!("{other} ="),
+            };
+            let off = body.find(&needle).unwrap();
+            let bol = body[..off].rfind('\n').map_or(0, |i| i + 1);
+            let line = 1 + body[..off].matches('\n').count();
+            let col = off - bol + 1;
+            assert_eq!(*row, format!("{k}={line}:{col}"), "wrong position for `{k}` in:\n{body}");
+        }
     }
 
     /// A missing-argument error names the file the LAMBDA came from.
