@@ -404,13 +404,32 @@ impl SystemOrchestrator {
 
             // Extract drvPath from the derivation attrset.
             match drv_value {
-                sui_eval::Value::Attrs(ref attrs) => attrs
-                    .get("drvPath")
-                    .and_then(|v| v.as_string().ok())
-                    .map(std::string::ToString::to_string)
-                    .ok_or_else(|| {
+                // FORCE the member before reading it. `navigate_attrs` forces
+                // along the PATH, so `drv_value` is an evaluated attrset — but
+                // its members are still lazy thunks, and `as_string()` on an
+                // unforced thunk fails. The old code swallowed that with
+                // `.ok()`, so a perfectly good derivation reported
+                // "derivation attrset missing drvPath": a present attribute,
+                // read too early, indistinguishable from an absent one.
+                //
+                // Measured: `sui system rebuild build --flake <repo>#cid` failed
+                // this way after 226 s, while `sui eval …system.build.toplevel
+                // .drvPath` on the SAME config returned the byte-correct path —
+                // the tell that this was a consumption bug, not an eval bug.
+                sui_eval::Value::Attrs(ref attrs) => {
+                    let raw = attrs.get("drvPath").ok_or_else(|| {
                         SystemError::RebuildFailed("derivation attrset missing drvPath".into())
-                    })?,
+                    })?;
+                    let forced = sui_eval::eval::force_value(&raw).map_err(|e| {
+                        SystemError::RebuildFailed(format!("forcing drvPath: {e}"))
+                    })?;
+                    forced
+                        .as_string()
+                        .map_err(|e| {
+                            SystemError::RebuildFailed(format!("drvPath is not a string: {e}"))
+                        })?
+                        .to_string()
+                }
                 _ => {
                     return Err(SystemError::RebuildFailed(format!(
                         "eval failed: expected derivation attrset, got {}",
