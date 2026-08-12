@@ -1775,6 +1775,32 @@ them is sui's: instantiation (**fixed**), the ssh-ng remote-build failure
 (**CppNix's**, unfixed), and the memory factor (**sui's**, unfixed, quantified
 at 12.3x with the root localised to ~8.1 M retained thunks).
 
+## §V.32 A better suspect than cycles for the 12.3x: `IMPORT_CACHE` roots every imported file's graph
+
+`sui-eval/src/builtins/import_cache.rs:20`:
+
+```rust
+static IMPORT_CACHE: RefCell<HashMap<PathBuf, Value>>
+```
+
+A process-lifetime map holding the fully-evaluated `Value` of every imported
+file. nixpkgs imports thousands of files, so this keeps each one's entire
+evaluated graph REACHABLE — which fits the census shape (§V.26: 8.1 M live
+thunks against only 577 K live attrsets, i.e. deep graphs hanging off relatively
+few roots) better than the `Rc`-cycle hypothesis does.
+
+**It is not a leak.** `import` must be memoised — the same file has to return the
+same value — so CppNix caches imports too. The question is not whether to cache
+but what the cache RETAINS: CppNix's cached value is a GC-managed pointer whose
+unreachable interior can still be collected, while an `Rc` graph held by this map
+can free nothing until the entry is dropped.
+
+**This supersedes the cycle hypothesis as the first thing to test**, and it is
+cheap to test: clear `IMPORT_CACHE` (or bound it) on a run of `minimal` and
+re-measure peak RSS against the 10.85 GB baseline. If the number moves, the fix
+is a retention policy, not a collector. If it does not, cycles are back in play.
+Neither has been measured — stated as a ranked hypothesis, not a finding.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
