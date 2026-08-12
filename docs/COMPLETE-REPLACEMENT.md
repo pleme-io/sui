@@ -1554,6 +1554,51 @@ back-edges, an arena with a collection pass, or a tracing GC — a design change
 sui's core, and the single thing standing between the shipped parity work
 (§V.11–§V.20) and `nix run .#rebuild`.
 
+## §V.27 The eval cache does not help — every cheap lead is now exhausted
+
+Last remaining cheap hypothesis: all footprint measurements ran with
+`--no-eval-cache` (required for parity), so the cache might cut the working set.
+It does not.
+
+```
+sui --no-vm eval  (cache ENABLED)  .#…minimal…toplevel.drvPath
+  run 1 (cold)  28.45 s   10_858_528_768 B
+  run 2 (warm)  27.74 s   10_858_496_000 B     — 32 KB apart
+vs --no-eval-cache          29.70 s   10_852_597_760 B
+```
+
+Identical to three significant figures, warm or cold. The cache does not change
+what the evaluator holds.
+
+### Every cheap explanation is now eliminated, by measurement
+
+| hypothesis | result |
+|---|---|
+| tree-walker is the heavy engine; the VM is leaner | **worse** — VM exhausts 21 GB in ~90 s vs ~580 s (§V.24) |
+| the §V.18 `position_husk` retains what `as_flat` used to free | **~1 %** (§V.25) |
+| forced thunks keep pinning their `Env` | **already released** — repr becomes `Evaluated` (§V.26) |
+| the eval cache would shrink the working set | **no effect** (this entry) |
+
+What remains is the one thing the census actually shows: **8.1 M live thunks at
+exit, 70 % of every thunk created**, against 11 % for attrsets (§V.26). That is
+not a knob, a flag, or a regression from this session's work. It is the absence
+of cycle collection in an `Rc`-only evaluator whose input language is built on
+fixpoints.
+
+### Where this leaves the goal
+
+`nix run .#rebuild` on sui is blocked on ONE named defect with a measured size
+(12.3x CppNix) and a localised owner (thunk retention in the shared value
+representation, `sui-eval/src/value.rs`). Closing it is a core design change —
+weak back-edges on the `Thunk -> Env -> Value` loop, an arena with a collection
+pass, or a tracing collector — and it is separate from the still-absent remote
+builders that independently gate the darwin hosts.
+
+Everything upstream of that defect is done and verified: eval parity is green and
+byte-identical (§V.18), the rebuild path's own `drvPath` bug is fixed (§V.21), and
+the NixOS activation entry point exists (§V.22). The chain now fails at exactly
+one link, and that link is named.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
