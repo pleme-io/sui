@@ -2689,10 +2689,25 @@ impl fmt::Debug for Env {
     }
 }
 
+/// Decrements `ENV_LIVE` so the census reports a live COUNT rather than a
+/// monotonic total. One relaxed atomic, and only when `SUI_LIVE_CENSUS=1` —
+/// `census::dropped` checks `enabled()` first.
+///
+/// `EnvInner` derives `Clone`, so a clone is a NEW allocation and must be
+/// counted; `Env` itself is `Rc`-cloned and must not be. That is why the
+/// increments sit in `Env::new`/`Env::child` (the two `Rc::new(EnvInner …)`
+/// sites) rather than in a `Clone` impl.
+impl Drop for EnvInner {
+    fn drop(&mut self) {
+        census::dropped(&census::ENV_LIVE);
+    }
+}
+
 impl Env {
     /// Create a root environment with no bindings.
     #[must_use]
     pub fn new() -> Self {
+        census::made(&census::ENV_MADE, &census::ENV_LIVE);
         Self(Rc::new(EnvInner {
             bindings: FxHashMap::default(),
             with_scopes: Vec::new(),
@@ -2708,6 +2723,12 @@ impl Env {
     #[must_use]
     pub fn child(&self) -> Self {
         crate::perf::inc(crate::perf::Counter::EnvClone);
+        // `ENV_MADE`/`ENV_LIVE` existed but nothing ever incremented them, so
+        // `census dump` reported `env_live=0 env_made=0` — and `Env` is the
+        // leading suspect for sui's 12.3x footprint over CppNix, since every
+        // suspended thunk holds one and nixpkgs makes them constantly. The one
+        // structure most worth counting was the one the census could not see.
+        census::made(&census::ENV_MADE, &census::ENV_LIVE);
         Self(Rc::new(EnvInner {
             bindings: self.0.bindings.clone(), // O(1) structural sharing
             with_scopes: self.0.with_scopes.clone(),

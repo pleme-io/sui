@@ -1838,6 +1838,46 @@ high live-COUNT as high live-BYTES without checking `size_of`. A count is not a
 footprint. The `size_of` check took under a minute and refuted a hypothesis that
 had already been written up twice.
 
+## §V.34 `Env` instrumented and EXONERATED — the bytes are in the HAMT backing the value graph
+
+Wired the dead `ENV_MADE`/`ENV_LIVE` counters (§V.33 item 1). On `minimal`:
+
+```
+env_made 6_891_927   env_live 387_866      ->  94 % FREED
+thunk_live 8_078_642 (70 % of made)   attrs_live 577_344 (11 %)
+list_live    799_420 (41 %)           nixstr_live 795_394 (25 %)
+rss 10 362 MB
+```
+
+`Env` is created ~6.9 M times and collected almost entirely. It is **not** the
+retainer — which retires §V.33's top-ranked suspect on its first measurement, the
+whole point of instrumenting it.
+
+**Where the bytes actually are.** Thunk headers are 8.08 M x 72 B = 583 MB (§V.33),
+so ~94 % of the 10.36 GB is in the *contents* of the retained value graph: 577 K
+attrsets, 799 K lists, 795 K strings — and, critically, the **interior nodes of the
+`im_rc` HAMTs backing them, which the census does not count at all**.
+
+`sui-eval/src/value.rs:25` — `pub type FxHashMap<K, V> = im_rc::HashMap<K, V, FxBuildHasher>`
+— is used for BOTH attrset contents and env bindings. A HAMT buys the O(1)
+structural-sharing `Env::child()` the evaluator depends on, but it costs several
+`Rc`'d interior nodes per map, and nixpkgs' attrsets are overwhelmingly SMALL.
+CppNix's `Bindings` is a flat sorted array with one allocation and no interior
+nodes. That difference, multiplied across ~577 K live attrsets and every env,
+is a far better fit for a 12.3x constant factor than anything measured so far.
+
+**Correction to §V.26 and §V.32, both now retired:** the retained thunks are not
+the memory (6 %), and `IMPORT_CACHE` roots the graph but does not explain its
+SIZE. Two hypotheses written up before checking `size_of` and before counting the
+one structure that was uninstrumented.
+
+**Next, and it is a measurement not a redesign:** count `im_rc` interior nodes (or
+compare `NixAttrs` memory against a flat-map prototype on a small attrset corpus).
+If a HAMT costs ~10x a flat array for the 1-5-entry attrsets that dominate
+nixpkgs, the fix is a representation split — flat for small/immutable attrsets,
+HAMT only where structural sharing is actually exercised — and NOT a garbage
+collector.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
