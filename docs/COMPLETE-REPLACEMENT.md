@@ -1097,6 +1097,78 @@ graph is already byte-identical, which is the strongest evidence to date that
 sui's derivation construction is correct and the residue is this single
 ordering defect.
 
+## §V.18 R2 IS GREEN — root found, fixed, and verified on BOTH engines
+
+```
+.#nixosConfigurations.minimal.config.system.build.toplevel.drvPath
+  nix          szx145ay52y2lpmrj54y6l95vlznhpk6-nixos-system-minimal-…drv
+  sui --no-vm  szx145ay52y2lpmrj54y6l95vlznhpk6-…   MATCH
+  sui (VM,     szx145ay52y2lpmrj54y6l95vlznhpk6-…   MATCH   <- the DEFAULT engine
+      default)
+whole graph: 2989 / 2989 nix derivations BYTE-IDENTICAL (was 2980)
+             0 divergent of 2455 unambiguously-named (was 7)
+sui-eval suite: 1392 passed, 0 failed
+```
+
+### The root: `as_flat()` freed the storage `pos_entry` reads
+
+`as_flat`'s "RELEASE the parents" optimization swapped a flattened overlay's
+`left`/`right` for empty attrsets. Byte-neutral for VALUES — every value reader
+routes through the cache — but `pos_entry` is the ONE consumer that reads
+`left`/`right`, so the release discarded every `AttrPositions` table beneath it:
+
+```
+fresh overlay        nix line 1, sui line 1
+after ONE attr read  nix line 1, sui NULL
+```
+
+That is why §V.14's `//` fix passed in isolation and did nothing for nixpkgs:
+nixpkgs READS from an attrset long before anyone asks for a position. It also
+fired at CONSTRUCTION for a nested `//`, since `overlay()` calls `is_empty()`
+which routes through `as_flat()`.
+
+**Fix — `position_husk`:** release the values, keep the position skeleton (same
+tree shape, keys mapped to `Value::Null`). The tables are small and exist only on
+attrset literals; `Null` is inline, so every `Rc` the real values held is still
+dropped. The memory win is retained, the walk survives.
+
+### Two more roots fixed in the same pass
+
+**`pos::line_col` was a CONSTANT `(1, offset + 1)`** — no offset→line/column
+conversion existed; `resolve` fetched the file text and discarded it. The doc
+comment claimed "Verified against `nix eval`" and cited three numbers that were
+**this function's own output recorded as the oracle's**, pinned green by two unit
+tests, so the bug was structurally incapable of going red. Real answers on that
+exact fixture: `2:3 / 3:3 / 4:3`, not `1:5 / 1:18 / 1:31`. Now resolved properly,
+with BYTE columns (measured: a 2-byte `é` advances CppNix's column by 2). Three
+tests re-baselined against nix rather than deleted. **Not on the
+`modulesLocation` path** — `eval-config.nix:28` reads `.file` only — so this is
+independent of R2 and reaches the other `unsafeGetAttrPos` consumers.
+
+**`//` returned the LOSER's position.** The right-then-left walk added in
+§V.14 fell through on `None`, so `a // (mapAttrs … )` reported the shadowed
+literal's position where CppNix reports null. CppNix copies each attribute WITH
+its position, so the winner's verdict stands even when it is "no position". This
+is the INVERSE error on the `modulesLocation` path — an invented position makes
+sui wrap where nix does not. Fixed; found by the fan-out, by no existing test.
+
+### Correction to §V.15
+
+§V.15 recorded the `inherit` arm as "measured wrong" because it produced line 1.
+That diagnosis was wrong: EVERY position reported line 1, because of the
+`line_col` constant above. The arm was fine. `inherit` remains genuinely
+unhandled (`attach_attrset_positions` matches only `Entry::AttrpathValue`) and is
+now cleanly separable work — it is NOT what was blocking R2.
+
+### Contradiction left open, honestly
+
+The fan-out's VM axis reported that the bytecode VM "has no attribute-position
+machinery at all", which would make every fix here invisible to the shipped
+engine. **Measured otherwise:** the default engine produces the byte-identical
+toplevel drvPath. Either the VM shares this code or flake/module evaluation
+routes through the tree-walker. Not yet resolved — the measurement is trusted
+over the code read, and the code read is not dismissed.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
