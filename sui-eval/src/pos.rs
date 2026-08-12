@@ -91,12 +91,43 @@ thread_local! {
 /// Register a file's source text so a key offset in that file resolves to a
 /// line/column. Called by `eval_with_file`. A `None` file (a `<string>`
 /// eval) registers nothing (it has no reportable position).
+/// `(file count, total source bytes)` currently retained by `SOURCE_TEXTS`.
+///
+/// The registry keeps every parsed file's FULL TEXT for the process lifetime so
+/// `unsafeGetAttrPos` can resolve an offset to a line/column. That is a real
+/// retainer nothing counted, and it is a proxy for a much bigger one: the rowan
+/// GREEN TREE parsed from each of those files, held by `IMPORT_CACHE` and by
+/// every unforced `Suspended { expr, .. }` thunk. `rnix::ast::Expr` measures
+/// 16 B only because it is a handle into that tree.
+///
+/// Backed by GLOBAL atomics, not by reading `SOURCE_TEXTS` directly: that map is
+/// a `thread_local`, and the census's exit dump runs on the periodic-dump
+/// THREAD, where it is empty. Reading it there reported `src_files=0` for an
+/// evaluation that had parsed thousands of files — a cross-thread read of
+/// thread-local state, indistinguishable from "nothing was registered".
+pub(crate) static SRC_FILES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+pub(crate) static SRC_BYTES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+#[must_use]
+pub fn source_text_census() -> (usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        SRC_FILES.load(Relaxed).max(0) as usize,
+        SRC_BYTES.load(Relaxed).max(0) as usize,
+    )
+}
+
 pub fn register_source(file: Option<&Path>, text: &str) {
     let Some(file) = file else { return };
     SOURCE_TEXTS.with(|s| {
         let mut s = s.borrow_mut();
         // Only store the text the first time a path is seen (identical on
         // re-parse; avoids re-allocating the `Rc<str>` on cache-cold imports).
+        use std::sync::atomic::Ordering::Relaxed;
+        if !s.contains_key(file) {
+            SRC_FILES.fetch_add(1, Relaxed);
+            SRC_BYTES.fetch_add(text.len() as i64, Relaxed);
+        }
         s.entry(file.to_path_buf())
             .or_insert_with(|| Rc::from(text));
     });

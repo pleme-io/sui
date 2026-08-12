@@ -168,6 +168,11 @@ list_live={ll} list_made={lm}",
             ll = LIST_LIVE.load(Relaxed),
             lm = LIST_MADE.load(Relaxed),
         );
+        let (src_files, src_bytes) = crate::pos::source_text_census();
+        eprintln!(
+            "[census {tag}] src_files={src_files} src_bytes={src_mb:.1}MB",
+            src_mb = src_bytes as f64 / (1024.0 * 1024.0),
+        );
     }
 
     /// Spawn the periodic-dump thread (only when enabled). Dumps every 2s so a

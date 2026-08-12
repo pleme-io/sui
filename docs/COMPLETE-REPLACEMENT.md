@@ -1967,6 +1967,49 @@ the map `NixAttrs` uses, without checking line 41 sixteen lines below. The
 benchmark then "confirmed" a cost that the code does not pay — a measurement
 answering a question the code had already settled differently.
 
+## §V.37 Source retention measured (34.4 MB, 3 056 files) — and a thread-local trap caught in the act
+
+Instrumented `SOURCE_TEXTS` per §V.36. First reading: `src_files=0
+src_bytes=0.0MB` for an evaluation that had demonstrably parsed thousands of
+files. **That was the harness, not the finding.** `SOURCE_TEXTS` is a
+`thread_local` and the census exit dump runs on the periodic-dump THREAD, where
+the map is empty — a cross-thread read of thread-local state, whose output is
+indistinguishable from "nothing was ever registered". The other counters read
+correctly only because they are global atomics. Re-backed by atomics:
+
+```
+src_files=3056   src_bytes=34.4MB
+```
+
+**So the text registry is negligible**, and at a typical ~20x rowan green-tree
+expansion the parse trees are on the order of 0.7 GB — real, but not the answer
+either.
+
+### The accounting, with every measured number this session
+
+```
+thunks     8 078 642 x   72 B  = 0.58 GB   (§V.33)
+envs         387 866 x 1412 B  = 0.55 GB   (§V.34, §V.36)
+attrsets     577 344 x  274 B  = 0.16 GB   (flat std::HashMap, §V.36)
+source text  3 056 files       = 0.03 GB   (here)
+green trees  ~20x source       ≈ 0.7  GB   (ESTIMATED, not measured)
+                                 -------
+                                 ~2   GB   of a 10.36 GB peak
+```
+
+**~8 GB remains unaccounted**, and every structure the census knows about has now
+been counted. Closing the gap needs heap-ownership attribution — a real profiler
+— which is unavailable in this sandbox (`ps -o rss`, `ps -o cputime` and
+`log show` for jetsam all fail with `requires entitlement`). Further hypothesising
+from structure would repeat what §V.26/§V.32/§V.35 each did: name a plausible
+retainer, then find it accounts for a few percent.
+
+**What is now solid about the memory blocker:** it is 12.3x CppNix, measured on a
+config that completes; it is not thunks, not `Env`, not attrset representation,
+not the import-source registry, and not `Rc` cycles by any evidence collected.
+The next honest step is a profiler on a machine without these restrictions, not
+another structural guess.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
