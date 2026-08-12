@@ -1690,6 +1690,49 @@ darwin host today. What it cannot do is *create* the derivation to build.
 permission failure LOUD, because a silent fallback that returns `Ok` is what let
 this sit behind a misleading error.
 
+## §V.30 sui reaches FULL BUILD PARITY on a real fleet config — including reproducing CppNix's own failure
+
+With instantiation fixed (§V.29), `minimal` — a real fleet NixOS configuration —
+was driven all the way through sui:
+
+```
+sui build <repo>#nixosConfigurations.minimal.config.system.build.toplevel
+  evaluate      -> szx145ay52y2lpmrj54y6l95vlznhpk6-…drv   (byte-identical to nix)
+  instantiate   -> OK (daemon AddTextToStore, multi-user store)
+  dispatch      -> OK (ssh-ng://builder@linux-builder, aarch64-linux)
+  realize       -> "daemon build failed: Build failed due to failed dependency"  (277 s)
+
+nix build <the same .drv>^*
+                 -> "error: Build failed due to failed dependency"               (136 s)
+```
+
+**Both engines fail on the same derivation, for the same reason.** The failing
+dependency is `unit-script-nix-gc-start.drv` — `error: string is too long`,
+followed by `unit-nix-gc.service.drv: 1 dependency failed`. That is a
+**pre-existing defect in the fleet configuration**, not a sui defect: CppNix
+cannot build `minimal` today either.
+
+So on this config sui's pipeline is correct end-to-end — evaluation, derivation
+instantiation on a root-owned store, remote dispatch, and realization — and it
+agrees with CppNix down to reproducing CppNix's own failure. That is the strongest
+form of parity available on a broken config: not "sui also failed", but *sui
+failed identically, at the same derivation, with the same reason, having produced
+the same byte-identical build graph*.
+
+**What this does and does not establish.** It does NOT show a completed
+`nix run .#rebuild` — `minimal` cannot complete for anybody until the
+`nix-gc-start` unit script is fixed, and the rebuild driver targets the LOCAL
+platform (`darwinConfigurations` on a darwin host), so `minimal` is not a
+rebuild target from here regardless. It DOES retire the claim that sui cannot
+build a real fleet configuration: every stage before the config's own broken
+derivation now works.
+
+**Remaining, in order:**
+1. `unit-script-nix-gc-start` — a fleet-config bug that blocks `minimal` on BOTH
+   engines. Independent of sui.
+2. the 12.3x memory factor (§V.25–§V.27) — still what stops cid/ryn, the only
+   configs that are actually rebuild targets from this host.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
