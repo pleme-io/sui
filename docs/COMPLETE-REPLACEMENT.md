@@ -1169,6 +1169,56 @@ toplevel drvPath. Either the VM shares this code or flake/module evaluation
 routes through the tree-walker. Not yet resolved — the measurement is trusted
 over the code read, and the code read is not dismissed.
 
+## §V.19 The `//`-winner fix was REVERTED — it was a >20x hot-path regression
+
+§V.18 landed three fixes. The third (the `//` "winner decides" rule, R7 from the
+fan-out) was measured on the release binary, quiet machine, and reverted the same
+session:
+
+```
+.#nixosConfigurations.minimal … system.stateVersion         13 s   ok
+.#nixosConfigurations.minimal … environment.systemPackages  >10 min TIMEOUT
+.#nixosConfigurations.minimal … toplevel.drvPath            >10 min TIMEOUT
+                                            (30-57 s before, 30 s after revert)
+```
+
+**Cause.** To answer *"does the WINNING side supply this key?"* the fix needed key
+membership to survive husking, so `position_husk` copied the key set on every
+overlay flatten — dropping the cheap-collapse guard the R2 husk had. `as_flat` is
+hot and the attrsets it flattens are frequently huge and position-FREE (package
+sets built by `mapAttrs` and friends), so an O(1) drop became an O(n) map
+allocation per flatten.
+
+**There is no cheap version of the rule as designed.** The R7 case is precisely a
+*positionless* right side (`a // (mapAttrs …)`), so the key set of the expensive
+side is exactly what must be preserved. Preserving positions alone cannot work:
+`pos_entry` then cannot distinguish "right has the key, with no position" from
+"right does not have the key".
+
+**Kept the verified win, documented the open bug.** R7 remains a real divergence:
+
+```
+a = { x = 1; };  a // (builtins.mapAttrs (n: v: v) { x = 9; })
+  unsafeGetAttrPos "x"  ->  nix null,  sui line 1  (the LOSER's position)
+```
+
+It did **not** affect R2 — the whole-graph bisect was 2989/2989 byte-identical
+with this bug present. The correct fix is a merged position table computed once
+at flatten time with value precedence, which requires `AttrPositions` to carry a
+per-key file. That is a design change, not a patch, and is not worth blocking a
+green R2 on. `pending-attr-pos: // winner-decides needs per-key file in AttrPositions`
+
+**Two process notes worth keeping.**
+
+*Load average on this box is not a contention signal.* It read 88–98 while every
+process showed 0.0% CPU — it counts I/O wait. A 57 s measurement timing out at
+10 min was first blamed on contention; the machine was idle and the slowdown was
+real. Check `%CPU`, never the load average, before dismissing a timing result.
+
+*Two overlapping sweeps ran because the second was launched without stopping the
+first*, doubling the work and muddying exactly the measurement that would have
+caught this sooner. One sweep at a time.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
