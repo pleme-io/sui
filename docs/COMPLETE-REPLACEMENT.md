@@ -1275,6 +1275,62 @@ engines. Fleet rows must use `2>/dev/null` and validate the captured value
 matches `/nix/store/<32>-…\.drv` before comparing. Rows measured the old way are
 NOT evidence of divergence.
 
+## §V.21 The REBUILD PATH is a second consumer, and it had its own bug
+
+Every rung measured so far compared `sui eval` against `nix eval`. The goal is
+`nix run .#rebuild`, which does not go through that path at all:
+
+```
+nix run .#rebuild  ->  fleet rebuild  ->  <engine>.rebuildDriver[<class>]
+```
+
+and the engine inventory is already typed data at `nix/lib/build-engine.nix`
+(`registry.cppnix` / `registry.sui`, plus a `bootstrap` that is deliberately NOT
+a projection of `selected`).
+
+**Running the actual command found a bug four sessions of differential
+evaluation could not.**
+
+```
+sui system rebuild build --flake <repo>#cid
+  -> "rebuild failed: derivation attrset missing drvPath"   (after 226 s)
+sui eval <repo>#nixosConfigurations.minimal…toplevel.drvPath
+  -> the byte-correct path, same flake
+```
+
+`navigate_attrs` forces along the PATH, so the derivation attrset is evaluated —
+but its MEMBERS are still lazy thunks. `attrs.get("drvPath").and_then(|v|
+v.as_string().ok())` called `as_string` on an unforced thunk and `.ok()` swallowed
+the failure, so a **present attribute read too early was reported identically to
+an absent one**, under an error message that actively misdirects. Fixed
+(`92692ce`), and the three cases — absent / unforceable / not-a-string — now
+carry distinct messages.
+
+**The lesson is structural, not incidental:** eval and the rebuild driver are two
+independent CONSUMERS of the same evaluated data. R2 proves the data. It says
+nothing about the second consumer, and only the second consumer is the goal.
+
+### The remaining blockers, RE-MEASURED today (the registry's notes are dated 2026-08-07)
+
+| claim in `lib/build-engine.nix` | re-measured | verdict |
+|---|---|---|
+| NixOS activation absent — `switch-to-configuration` nowhere in sui-orchestrate | **0 hits** in `sui-orchestrate` (6 repo-wide, all comments elsewhere) | **STANDS** — builds a NixOS system it cannot install |
+| `remoteBuilders = false` | 0 hits for `buildMachines` / `--builders` / `remote-builders` | **STANDS** — cid/ryn cannot build linux natively |
+| `flakeRefSyntax = "local-path-only"` | `.#attr`, `path:<repo>#attr`, `<abs>#attr` all resolve | **STALE** |
+| `package = null` on most nodes | on PATH for 2 of 17 configurations | stands |
+
+So **darwin is the reachable arm today** and NixOS activation is a genuine
+missing capability, not polish. The registry models this well: the absent NixOS
+entry point is a MISSING KEY, and `activates` is derived from those keys, so
+"claims a class it has no entry point for" is unrepresentable rather than an
+assertion someone must remember to write.
+
+**Scope note on how far this is being taken without asking.** The darwin arm is
+exercised with `sui system rebuild build` (and `--dry-run`/`dry-activate`), both
+non-mutating. `switch` activates the operator's workstation — hard to reverse —
+so it is not run against a standing goal without explicit authorization. `build`
+covers the identical path up to activation.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
