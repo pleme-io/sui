@@ -1456,6 +1456,49 @@ the large end. CppNix needing 17.25 GB for the same config says cid is genuinely
 enormous; sui needing more than the box has says the multiplier over CppNix is
 the problem, not the absolute size.
 
+## §V.25 The blocker is ONE number: sui's working set is 12.3x CppNix's
+
+Measured on `minimal` — the config that COMPLETES, so these are real peak-RSS
+figures from `/usr/bin/time -l`, not inferences from free-page collapse:
+
+```
+.#nixosConfigurations.minimal.config.system.build.toplevel.drvPath
+  nix    8.41 s     885_653_504 B   ( 0.886 GB)
+  sui   29.70 s  10_852_597_760 B   (10.85  GB)      -> 12.3x memory, 3.5x time
+```
+
+**And that multiplier explains cid exactly.** CppNix needs 17.25 GB there; 12.3x
+is ~200 GB, against a machine that has ~21 GB free. Both sui engines being killed
+(§V.24) is not a mystery to investigate — it is this ratio applied to a config
+3-4x larger than `minimal`. Nothing about cid is special except its size.
+
+### The husk introduced in §V.18 is NOT the cause — isolated by measurement
+
+`position_husk` retains an `AttrPositions` skeleton that the pre-fix `as_flat`
+freed, which made it the prime suspect for a regression introduced by this
+session's own work. Tested by short-circuiting it to `NixAttrs::new()` (the exact
+pre-fix behaviour), rebuilding, and re-measuring the same attribute:
+
+```
+  with husk     10_852_597_760 B
+  without husk  10_739_777_536 B     delta 112 MB  ->  ~1 %
+```
+
+So the correctness fix costs about 1 %, and the 12.3x is **pre-existing in sui's
+core value representation**. The probe was reverted immediately and R2
+re-verified green on the rebuilt binary.
+
+That matters for what to do next: there is no point hunting a regression in the
+position work. The target is the representation itself — `Value`, `NixAttrs`,
+the thunk layout, and whatever keeps the evaluated graph reachable. A 12x
+constant factor against CppNix is a design-level gap, and it is the single
+blocker standing between the shipped parity work and `nix run .#rebuild`.
+
+**Tier-honest:** 12.3x is one config on one machine, measured once per engine. It
+is a strong signal and it predicts cid's behaviour correctly, but it is not a
+profile — no allocation attribution was collected, so WHICH structure holds the
+memory remains unmeasured.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
