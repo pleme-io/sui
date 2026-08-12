@@ -1219,6 +1219,62 @@ real. Check `%CPU`, never the load average, before dismissing a timing result.
 first*, doubling the work and muddying exactly the measurement that would have
 caught this sooner. One sweep at a time.
 
+## §V.20 `inherit` positions landed; and TWO harness defects that manufactured findings
+
+**Fix landed** (`d6484cd`). `attach_attrset_positions` matched only
+`ast::Entry::AttrpathValue`, so every `inherit`-bound key was position-less —
+most of nixpkgs' `lib`, which re-exports via `inherit (self.options) mkOption …`.
+
+```
+let a = { x = 1; }; b = { inherit (a) x; }; c = { inherit a; };
+  before  nix 2, 3                    sui NULL, NULL
+  after   nix 2, 3                    sui 2, 3
+unsafeGetAttrPos "mkOption" nixpkgs.lib   (also "mkIf")
+  before  nix …-source/lib/default.nix   sui NULL
+  after   nix …-source/lib/default.nix   sui …-source/lib/default.nix
+```
+
+R2 re-verified green from a clean rebuild (33 s); suite 1393 passed, 0 failed.
+§V.15's "the arm reports the wrong line" is formally retracted — that was
+`pos::line_col`'s constant, not this arm.
+
+### Harness defect 1 — a scripted source rewrite DELETED the code under test
+
+A `python3` heredoc using `s.index(…)` slicing to replace a test block also
+removed the `Entry::Inherit` arm several hundred lines away. What followed is the
+part worth recording, because the deletion was never the confusing bit:
+
+1. the test failed → diagnosed as thread-shared-state flakiness (wrong);
+2. rewrote the test → still failed → diagnosed as an in-process harness
+   limitation, "confirmed" because the **CLI passed** — but that binary had been
+   built *before* the deletion, so it was a stale artifact;
+3. committed a message asserting a fix the commit did not contain.
+
+Caught by `git show HEAD:<file> | grep -c '<the arm>'` → `0`. Note `grep -c
+'Entry::Inherit'` returned **5**, all comment mentions — counting a symbol name
+is not evidence the code exists.
+
+Rules taken: source edits go through a tool that fails loudly on a bad anchor,
+never an index slice; when a test fails right after an edit, verify the code
+under test still EXISTS before theorising; and never background a
+`cp <backup>` restore — it can land after a later commit and silently undo it.
+
+### Harness defect 2 — `2>&1 | tail -1` conflates `trace:` with the result
+
+`cid` was recorded as DIVERGE/ERROR with the "value"
+`-mod=vendor. Fix is one line: 'go 1.20.0'.` That is not sui failing: it is a
+`substrate.mkGoTool` **trace warning on stderr**, and the accompanying
+`exit=137` was SIGKILL from the measurement's own `timeout`. Merging stderr into
+stdout and taking the last line reads a warning as the answer.
+
+**This pattern was used for every fleet-sweep row in this document.** `minimal`
+is unaffected (trace-free, and its value is a well-formed store path), but any
+config whose evaluation emits a `trace:` — which is most of the fleet, given
+substrate's Go advisories — would have produced a meaningless comparison on BOTH
+engines. Fleet rows must use `2>/dev/null` and validate the captured value
+matches `/nix/store/<32>-…\.drv` before comparing. Rows measured the old way are
+NOT evidence of divergence.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
