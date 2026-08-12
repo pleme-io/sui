@@ -1878,7 +1878,7 @@ nixpkgs, the fix is a representation split — flat for small/immutable attrsets
 HAMT only where structural sharing is actually exercised — and NOT a garbage
 collector.
 
-## §V.35 CONFIRMED: the persistent HAMT costs 5.1x a flat map at nixpkgs' attrset sizes
+## §V.35 RETRACTED — the HAMT is NOT used for attrsets (see §V.36)
 
 The bounded experiment §V.34 asked for, run rather than left as a
 recommendation (`measure_hamt_vs_flat_attrset_cost`, `#[ignore]`d as a
@@ -1917,6 +1917,55 @@ size (no: it roots, does not inflate), `Env` is the retainer (no: 94 % freed),
 Each was written up before the cheap measurement that refuted it. The cheap
 measurements — `size_of`, wiring two dead counters, this 40-line benchmark —
 each took under a minute and each moved the answer.
+
+## §V.36 §V.35 was WRONG: attrsets are ALREADY flat. The 5.14x applies only to `Env`.
+
+Retracting §V.35, which this session committed as "CONFIRMED". The benchmark
+numbers are real; the attribution was not.
+
+```rust
+value.rs:25  pub type FxHashMap<K,V> = im_rc::HashMap<K,V,FxBuildHasher>;          // Env.bindings
+value.rs:41  pub type AttrsMap<K,V>  = std::collections::HashMap<K,V,FxBuildHasher>; // NixAttrs
+```
+
+`NixAttrs` stores `AttrsMap`, i.e. a **flat `std::HashMap`**. Attrsets never pay
+the HAMT cost, so "577 K live attrsets x HAMT overhead" — the whole basis of
+§V.35's conclusion — describes something that does not exist. The persistent map
+is confined to `Env.bindings`, where `child()` genuinely needs the sharing.
+
+**What the 5.14x actually bounds.** `env_live` is 387 866 (§V.34), so even at
+1 412 B/map the live HAMTs are ~0.55 GB of a 10.36 GB peak. Real, worth having,
+nowhere near sufficient.
+
+**Where the bytes are NOT.** Summing everything the census counts, with measured
+per-object sizes:
+
+```
+thunks   8 078 642 x  72 B  =  0.58 GB
+envs       387 866 x 1412 B =  0.55 GB
+attrsets   577 344 x ~274 B =  0.16 GB
+                              -------
+                               ~1.3 GB  of a 10.36 GB peak
+```
+
+**~9 GB is in structures the census does not count at all.** The leading
+candidate is now the one §V.32 raised and §V.35 displaced: the **rowan green
+trees** for every parsed nixpkgs file, retained for the process lifetime by
+`IMPORT_CACHE` plus every unforced `Suspended { expr, .. }` thunk. `rnix::ast::Expr`
+is 16 B (§V.33) because it is a *handle*; the green tree it points into is not,
+and nothing counts it.
+
+**Next measurement, and it is again cheap:** count `IMPORT_CACHE` entries and sum
+the byte length of the source text each one parsed, then compare against the
+unaccounted ~9 GB. If nixpkgs' parsed ASTs dominate, the fix is parse-tree
+retention (drop green trees once a file's value is fully forced), NOT a map
+representation and NOT a collector.
+
+**Fifth hypothesis retired, and the first one I had already published as
+confirmed.** The failure was reading `FxHashMap` at line 25 and assuming it was
+the map `NixAttrs` uses, without checking line 41 sixteen lines below. The
+benchmark then "confirmed" a cost that the code does not pay — a measurement
+answering a question the code had already settled differently.
 
 ## §VI. Independent of the plan — today
 
