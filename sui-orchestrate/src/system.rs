@@ -503,6 +503,40 @@ impl SystemOrchestrator {
     /// `# nix-darwin: deprecated`); exec'ing it is pointless and it is being
     /// removed in 25.11, so we skip it and only exec a genuinely active
     /// `activate-user`.
+    /// The activation entry point for a platform, as (program, args).
+    ///
+    /// Darwin: `${toplevel}/activate`, no arguments — nix-darwin's script reads
+    /// no verb. NixOS: `${toplevel}/bin/switch-to-configuration <verb>`, which
+    /// REQUIRES the verb and rejects an empty argv.
+    ///
+    /// Kept as a pure function so the mapping is testable without root, a
+    /// built toplevel, or a live machine — the three things that made this gap
+    /// survive as long as it did.
+    fn activation_entrypoint(
+        platform: Platform,
+        system_path: &str,
+        action: RebuildAction,
+    ) -> (String, Vec<String>) {
+        match platform {
+            Platform::Darwin => (format!("{system_path}/activate"), Vec::new()),
+            _ => (
+                format!("{system_path}/bin/switch-to-configuration"),
+                // `Build`/`DryActivate` never reach activation (rebuild_native
+                // short-circuits both), but map them to the non-mutating verb
+                // rather than to `switch`: if a future caller does reach here,
+                // the safe verb is the one that cannot change the machine.
+                vec![match action {
+                    RebuildAction::Switch => "switch".to_string(),
+                    RebuildAction::Boot => "boot".to_string(),
+                    RebuildAction::Test => "test".to_string(),
+                    RebuildAction::Build | RebuildAction::DryActivate => {
+                        "dry-activate".to_string()
+                    }
+                }],
+            ),
+        }
+    }
+
     async fn activate_system(
         &self,
         system_path: &str,
@@ -522,12 +556,26 @@ impl SystemOrchestrator {
                 pm.set(std::path::Path::new(system_path))
                     .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
 
-                // Run the activate script and CHECK its result — the script's own
-                // `id -u` root check exits 2 otherwise, which must surface.
-                let activate = format!("{system_path}/activate");
+                // Run the activation entry point and CHECK its result — the
+                // script's own `id -u` root check exits 2 otherwise, which must
+                // surface.
+                //
+                // ── THE ENTRY POINT IS PER-PLATFORM, NOT UNIVERSAL ──────────
+                // This used to exec `${toplevel}/activate` unconditionally.
+                // That is nix-darwin's entry point and NixOS does not have it:
+                // NixOS activates through `${toplevel}/bin/switch-to-configuration
+                // <action>`. So sui could BUILD a NixOS system and then fail to
+                // install it — the gap `nix/lib/build-engine.nix` records by
+                // giving `registry.sui` no `activationEntrypoint.nixos` key.
+                let (activate, args) = Self::activation_entrypoint(
+                    self.platform,
+                    system_path,
+                    action,
+                );
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
                 let output = self
                     .runner
-                    .run(&activate, &[])
+                    .run(&activate, &argv)
                     .await
                     .map_err(|e| SystemError::RebuildFailed(format!("activate: {e}")))?;
                 if !output.success {
@@ -1088,6 +1136,50 @@ fn days_to_ymd(total_days: u64) -> (u64, u64, u64) {
 mod tests {
     use super::*;
     use crate::command::{CommandOutput, CommandError};
+
+    /// NixOS and darwin do NOT share an activation entry point.
+    ///
+    /// Regression: `activate_system` exec'd `${toplevel}/activate`
+    /// unconditionally — nix-darwin's script. NixOS has no such file; it
+    /// activates through `${toplevel}/bin/switch-to-configuration <verb>`, and
+    /// the verb is required. sui could therefore BUILD a NixOS system and fail
+    /// to install it, which `nix/lib/build-engine.nix` records by giving
+    /// `registry.sui` no `activationEntrypoint.nixos` key.
+    ///
+    /// Pure-function test on purpose: the gap survived because reproducing it
+    /// needed root, a built toplevel and a live NixOS box. None are needed to
+    /// check the mapping.
+    #[test]
+    fn activation_entrypoint_is_per_platform() {
+        let top = "/nix/store/deadbeef-system";
+
+        // Darwin: one script, no verb — nix-darwin's activate reads no argv.
+        let (prog, args) =
+            SystemOrchestrator::activation_entrypoint(Platform::Darwin, top, RebuildAction::Switch);
+        assert_eq!(prog, "/nix/store/deadbeef-system/activate");
+        assert!(args.is_empty(), "nix-darwin's activate takes no verb");
+
+        // NixOS: switch-to-configuration, verb REQUIRED and action-specific.
+        for (action, verb) in [
+            (RebuildAction::Switch, "switch"),
+            (RebuildAction::Boot, "boot"),
+            (RebuildAction::Test, "test"),
+        ] {
+            let (prog, args) =
+                SystemOrchestrator::activation_entrypoint(Platform::NixOS, top, action);
+            assert_eq!(prog, "/nix/store/deadbeef-system/bin/switch-to-configuration");
+            assert_eq!(args, vec![verb.to_string()], "wrong verb for {action:?}");
+        }
+
+        // The non-mutating actions never reach activation, but if a future
+        // caller reaches here the verb must be the one that cannot change the
+        // machine — never a defaulted `switch`.
+        for action in [RebuildAction::Build, RebuildAction::DryActivate] {
+            let (_, args) =
+                SystemOrchestrator::activation_entrypoint(Platform::NixOS, top, action);
+            assert_eq!(args, vec!["dry-activate".to_string()], "{action:?} must not switch");
+        }
+    }
 
     /// A mock command runner for testing.
     struct MockCommandRunner {
