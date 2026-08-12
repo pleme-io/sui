@@ -2262,14 +2262,35 @@ impl NixAttrs {
         }
         match &self.0 {
             AttrsInner::Overlay { left, right, .. } => {
-                let r = right.borrow().pos_entry(sym);
-                if r.is_some() {
-                    return r;
+                // THE WINNER DECIDES, even when it has no position. CppNix's
+                // `//` copies each attribute together WITH its own position, so
+                // if the right side supplies the value and that value came from
+                // a positionless source (`mapAttrs`, `listToAttrs`, …), the
+                // result has NO position — it does not fall back to the left.
+                // Falling through on `None` reported the LOSER's position:
+                //   { x = 1; } // (builtins.mapAttrs (n: v: v) { x = 9; })
+                //     nix null    sui 1:4   <- the shadowed literal's position
+                // and on the modulesLocation path an invented position is the
+                // inverse error: sui would wrap user modules where nix does not.
+                if right.borrow().has_key(sym) {
+                    return right.borrow().pos_entry(sym);
                 }
-                let l = left.borrow().pos_entry(sym);
-                l
+                left.borrow().pos_entry(sym)
             }
             _ => None,
+        }
+    }
+
+    /// Key membership without flattening.
+    ///
+    /// `as_flat` would collapse (and previously destroy) the overlay this walk
+    /// depends on, so `pos_entry` must not reach for it.
+    fn has_key(&self, sym: Symbol) -> bool {
+        match &self.0 {
+            AttrsInner::Flat(m) => m.contains_key(&sym),
+            AttrsInner::Overlay { left, right, .. } => {
+                right.borrow().has_key(sym) || left.borrow().has_key(sym)
+            }
         }
     }
 
@@ -2347,25 +2368,23 @@ impl NixAttrs {
     /// common case allocates no more than the old `NixAttrs::new()` did.
     fn position_husk(&self) -> NixAttrs {
         match &self.0 {
-            AttrsInner::Overlay { left, right, .. } => {
-                let (l, r) = (left.borrow().position_husk(), right.borrow().position_husk());
-                if l.1.is_none() && r.1.is_none() && !matches!(l.0, AttrsInner::Overlay { .. })
-                    && !matches!(r.0, AttrsInner::Overlay { .. })
-                {
-                    // Nothing below carries a position — collapse to the cheap
-                    // empty set rather than rebuilding a pointless spine.
-                    return NixAttrs(AttrsInner::Flat(AttrsMap::default()), self.1.clone());
-                }
-                NixAttrs(
-                    AttrsInner::Overlay {
-                        left: RefCell::new(Rc::new(l)),
-                        right: RefCell::new(Rc::new(r)),
-                        cache: Rc::new(OnceCell::new()),
-                    },
-                    self.1.clone(),
-                )
-            }
-            AttrsInner::Flat(_) => NixAttrs(AttrsInner::Flat(AttrsMap::default()), self.1.clone()),
+            AttrsInner::Overlay { left, right, .. } => NixAttrs(
+                AttrsInner::Overlay {
+                    left: RefCell::new(Rc::new(left.borrow().position_husk())),
+                    right: RefCell::new(Rc::new(right.borrow().position_husk())),
+                    cache: Rc::new(OnceCell::new()),
+                },
+                self.1.clone(),
+            ),
+            // Keys are kept (mapped to `Null`) because `has_key` needs them:
+            // `pos_entry` must know whether the WINNING side supplies a key even
+            // when it has no position for it. `Null` is inline, so this still
+            // drops every Rc the real values held — the deep data is what cost
+            // memory, not the key set.
+            AttrsInner::Flat(m) => NixAttrs(
+                AttrsInner::Flat(m.keys().map(|k| (*k, Value::Null)).collect()),
+                self.1.clone(),
+            ),
         }
     }
 
