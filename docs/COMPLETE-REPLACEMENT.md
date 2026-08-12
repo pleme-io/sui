@@ -1367,6 +1367,56 @@ vs nix) before any further parity work on this arm.
   (re-measured today: 0 hits in sui-orchestrate).
 - **`nix run .#rebuild` on sui: NOT ACHIEVED.**
 
+## §V.23 The darwin blocker is MEASURED: sui exhausts memory where nix peaks at 17 GB
+
+§V.22 inferred memory pressure from swap growth. Measured directly on cid:
+
+```
+nix eval  .#darwinConfigurations.cid.system.drvPath
+    172.74 s real          17_254_678_528  maximum resident set size   (17.25 GB)
+
+sui eval  (same attribute, --no-vm, --no-eval-cache)
+    still running at 582 s, and while it ran the machine's FREE memory fell
+    314_439 pages -> 4_505 pages, i.e. ~4.8 GB -> ~70 MB.
+    Killed manually to protect the box; free returned to 22 GB immediately.
+    macOS grew the swap file across these runs: 17 408 MB -> 46 080 MB.
+```
+
+That converts §V.22's `EXIT=137` from "strongly-indicated" to **confirmed in
+mechanism**: sui drives the machine to memory exhaustion and jetsam kills it.
+
+**Two things this does NOT say, and both matter.**
+
+*It is not "sui is a memory hog" in general.* R2's config (`minimal`) evaluates in
+30 s and its whole 2989-derivation graph is byte-identical. cid is a far larger
+configuration — nix itself needs 17.25 GB for it, which is already extreme. The
+gap is on the LARGE end, and that is exactly where the goal lives, since cid is
+an operator workstation.
+
+*It is not yet a root cause.* No peak-RSS number for sui exists here: `ps -o rss`
+and `ps -o cputime` both fail with `requires entitlement` in this sandbox, so the
+footprint was inferred from system-wide free-page collapse rather than read off
+the process. The honest statement is "sui's working set on cid exceeds what the
+machine can hold, while nix's is 17.25 GB", not "sui uses N GB".
+
+**Next measurement, stated so it is not re-derived:** get a real peak-RSS for sui
+(run under `/usr/bin/time -l` on a box where the run COMPLETES, or on a smaller
+darwin config), then bisect the footprint — the eval-cache is off in these runs
+(`--no-eval-cache`), and the thunk/attrset representation is the obvious suspect
+given `position_husk` and the overlay chain both retain structure that CppNix
+frees.
+
+### Ledger after this session
+
+| rung | status |
+|---|---|
+| R2 eval parity (`minimal`) | **GREEN** — byte-identical both engines, 2989/2989 derivations |
+| rebuild path (`drvPath` thunk) | **FIXED** — found only by running the real command |
+| NixOS activation entry point | **PRESENT** — was absent; `switch-to-configuration <verb>` now dispatched per platform |
+| remote builders | **ABSENT** — independently gates darwin hosts that cannot build linux |
+| darwin arm on cid | **BLOCKED ON MEMORY** — measured above |
+| `nix run .#rebuild` on sui | **NOT ACHIEVED** |
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
