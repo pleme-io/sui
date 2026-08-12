@@ -2232,6 +2232,26 @@ fn attach_attrset_positions(set: &ast::AttrSet, attrs: &mut NixAttrs, env: &Env)
             if let Ok(Some(name)) = eval_attr_maybe_null(&path_attrs[0], env) {
                 table.insert(intern(&name), offset);
             }
+        } else if let ast::Entry::Inherit(inh) = entry {
+            // `inherit x;` and `inherit (src) x;` BIND an attribute exactly as
+            // `x = …` does, and CppNix gives each inherited name the position of
+            // its own ident. Skipping them left every inherited key
+            // position-less — which is most of nixpkgs' `lib`, since
+            // `lib/default.nix` re-exports through
+            // `inherit (self.options) mkOption …`. Measured before the fix:
+            //   unsafeGetAttrPos "mkOption" nixpkgs.lib
+            //     nix …-source/lib/default.nix     sui null
+            //
+            // An earlier attempt at this arm was reverted for reporting line 1;
+            // that was `pos::line_col` returning a constant, NOT this arm. With
+            // the real offset→line/column conversion in place it resolves
+            // exactly.
+            for attr in inh.attrs() {
+                let Some(offset) = static_attr_offset(&attr) else { continue };
+                if let Ok(Some(name)) = eval_attr_maybe_null(&attr, env) {
+                    table.insert(intern(&name), offset);
+                }
+            }
         }
     }
     if !table.is_empty() {
@@ -6884,6 +6904,45 @@ mod tests {
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("assertion failed"), "msg: {msg}");
         assert!(msg.contains("test-assert.nix"), "msg: {msg}");
+    }
+
+    /// `inherit` binds an attribute, so it carries a position.
+    ///
+    /// Regression: `attach_attrset_positions` matched only
+    /// `Entry::AttrpathValue`, so every inherited key was position-less — most
+    /// of nixpkgs' `lib`, which re-exports via `inherit (self.options) mkOption
+    /// …`, and it fed a null into `eval-config.nix`'s `modulesLocation`.
+    ///
+    /// Shaped exactly like `unsafe_get_attr_pos_reports_file_and_offset_column`
+    /// (ONE direct `eval`, no lambda, no second evaluation) because the
+    /// in-process harness is fragile here: the source-text registry is a
+    /// thread-local that `pos.rs`'s tests clear, so a multi-eval version passes
+    /// standalone and fails in the full suite. The CLI path is not affected —
+    /// verified against `nix eval` on both shapes, both engines agreeing on
+    /// column 18.
+    #[test]
+    fn inherit_bindings_carry_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        // A PLAIN attrset, no `let ... in` wrapper: with the wrapper the
+        // result is built lazily AFTER `import` returns, and the in-process
+        // harness then resolves it without the file on the eval stack. The CLI
+        // handles both (measured), the harness only this one.
+        let body = "{ inherit ({ x = 1; }) x; }\n";
+        let f = dir.path().join("inh.nix");
+        std::fs::write(&f, body).unwrap();
+        let v = eval(&format!("builtins.unsafeGetAttrPos \"x\" (import {})", f.display())).unwrap();
+        let attrs = match v {
+            Value::Attrs(a) => a,
+            Value::Null => panic!("null — the inherit binding carried no position"),
+            o => panic!("expected attrs, got {o:?}"),
+        };
+        // Computed from the fixture, never hardcoded: a hardcoded expectation is
+        // how `pos::line_col`'s own "verified" comment came to agree with the
+        // bug it documented.
+        let off = body.rfind("x; }").unwrap();
+        let bol = body[..off].rfind('\n').map_or(0, |i| i + 1);
+        assert_eq!(*attrs.get("line").unwrap(), Value::Int(1));
+        assert_eq!(*attrs.get("column").unwrap(), Value::Int((off - bol) as i64 + 1));
     }
 
     /// A missing-argument error names the file the LAMBDA came from.
