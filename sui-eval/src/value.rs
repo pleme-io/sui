@@ -3948,6 +3948,46 @@ mod tests {
 
     // ── Value size assertion ──────────────────────────────
 
+    /// Measures the per-map cost of the persistent HAMT against a flat map at
+    /// the sizes nixpkgs actually uses. Not an assertion — a measurement, run
+    /// with `--nocapture`. See docs/COMPLETE-REPLACEMENT.md §V.34.
+    #[test]
+    #[ignore = "measurement, not a gate: run with --ignored --nocapture"]
+    fn measure_hamt_vs_flat_attrset_cost() {
+        use crate::value::census::rss_bytes;
+        const N: usize = 300_000;
+        const ENTRIES: usize = 4; // typical small nixpkgs attrset
+
+        let syms: Vec<Symbol> = (0..ENTRIES).map(|i| intern(&format!("k{i}"))).collect();
+
+        let base = rss_bytes();
+        let mut hamts: Vec<FxHashMap<Symbol, Value>> = Vec::with_capacity(N);
+        for _ in 0..N {
+            let mut m = FxHashMap::default();
+            for s in &syms { m.insert(*s, Value::Int(1)); }
+            hamts.push(m);
+        }
+        let after_hamt = rss_bytes();
+
+        let mut flats: Vec<std::collections::HashMap<Symbol, Value>> = Vec::with_capacity(N);
+        for _ in 0..N {
+            let mut m = std::collections::HashMap::with_capacity(ENTRIES);
+            for s in &syms { m.insert(*s, Value::Int(1)); }
+            flats.push(m);
+        }
+        let after_flat = rss_bytes();
+
+        let hamt_cost = after_hamt.saturating_sub(base);
+        let flat_cost = after_flat.saturating_sub(after_hamt);
+        eprintln!("N={N} entries={ENTRIES}");
+        eprintln!("  im_rc HAMT : {} B total, {} B/map", hamt_cost, hamt_cost / N as u64);
+        eprintln!("  std flat   : {} B total, {} B/map", flat_cost, flat_cost / N as u64);
+        if flat_cost > 0 {
+            eprintln!("  ratio      : {:.2}x", hamt_cost as f64 / flat_cost as f64);
+        }
+        std::hint::black_box((&hamts, &flats));
+    }
+
     #[test]
     fn value_is_16_bytes() {
         assert_eq!(std::mem::size_of::<Value>(), 16);

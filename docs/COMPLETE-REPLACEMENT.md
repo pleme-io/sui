@@ -1878,6 +1878,46 @@ nixpkgs, the fix is a representation split — flat for small/immutable attrsets
 HAMT only where structural sharing is actually exercised — and NOT a garbage
 collector.
 
+## §V.35 CONFIRMED: the persistent HAMT costs 5.1x a flat map at nixpkgs' attrset sizes
+
+The bounded experiment §V.34 asked for, run rather than left as a
+recommendation (`measure_hamt_vs_flat_attrset_cost`, `#[ignore]`d as a
+measurement rather than a gate):
+
+```
+300 000 attrsets x 4 entries  (the size that dominates nixpkgs)
+  im_rc HAMT :  423 624 704 B total   1 412 B/map
+  std flat   :   82 411 520 B total     274 B/map
+  ratio      :  5.14x
+```
+
+`sui-eval/src/value.rs:25` aliases `FxHashMap` to `im_rc::HashMap` and uses it
+for BOTH attrset contents and env bindings. At 577 K live attrsets that is
+~0.81 GB of pure HAMT overhead over a flat representation for attrsets ALONE,
+before env bindings, and the multiplier compounds because every interior node is
+a separate `Rc` allocation.
+
+**This is a sufficient explanation for the 12.3x.** CppNix's `Bindings` is a flat
+sorted array — one allocation, no interior nodes, no per-node refcount. sui pays
+5.1x per map for a structural-sharing property that `Env::child()` genuinely
+needs but that an ordinary attrset **never exercises**: an attrset literal is
+built once and never structurally extended.
+
+**The fix is therefore a representation split, not a garbage collector:**
+flat storage for attrset contents (built once, read many), HAMT retained only
+for `Env` bindings where `child()` actually shares. That is a bounded change to
+one type's backing store, behind the existing `NixAttrs` API, and it is testable
+against the same `minimal` baseline (10.85 GB) and the R2 parity gate that is
+already green.
+
+**Four of this session's own hypotheses were retired by measurement to get
+here** — retained thunks are the memory (no: 6 %), `IMPORT_CACHE` explains the
+size (no: it roots, does not inflate), `Env` is the retainer (no: 94 % freed),
+`Rc` cycles are the cause (unproven, and now unnecessary as an explanation).
+Each was written up before the cheap measurement that refuted it. The cheap
+measurements — `size_of`, wiring two dead counters, this 40-line benchmark —
+each took under a minute and each moved the answer.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
