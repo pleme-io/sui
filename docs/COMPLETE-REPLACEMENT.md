@@ -1801,6 +1801,43 @@ re-measure peak RSS against the 10.85 GB baseline. If the number moves, the fix
 is a retention policy, not a collector. If it does not, cycles are back in play.
 Neither has been measured — stated as a ranked hypothesis, not a finding.
 
+## §V.33 Struct sizes REFUTE the representation hypothesis — and reveal the census's blind spot
+
+Measured with `size_of`:
+
+```
+Value 16 B   ThunkInner 72 B   ThunkRepr 56 B   rnix::ast::Expr 16 B
+Env 8 B      EnvInner 80 B
+```
+
+8.1 M live thunks x 72 B = **583 MB**, against a 10.85 GB peak. Thunk headers are
+~6 % of the footprint, so "sui's thunks are fat" is **wrong** — §V.26's inference
+that the retained thunks *are* the memory was too quick. They are the visible
+COUNT; the bytes are in what they reference.
+
+**And the census cannot see the leading suspect.** It reports
+`env_live=0 env_made=0` — `Env` is never instrumented (`Env::new` does not call
+`census::made`), so the structure most likely to dominate is invisible in the one
+tool that would show it. Every `Suspended` thunk holds an `Env`, `EnvInner` is
+80 B plus its bindings map, and nixpkgs' `with`/`rec`/fixpoint scopes make those
+maps large and widely shared.
+
+**Revised ranking for the next session**, each cheap and each currently
+unmeasured:
+
+1. **instrument `Env`** in the census (`ENV_MADE`/`ENV_LIVE` already exist and are
+   dead) — one-line change that turns the biggest suspect from invisible to
+   counted;
+2. attrset maps + interned strings — `attrs_live` 577 K and `nixstr_live` 795 K
+   are counted but their per-entry cost is not;
+3. rowan green trees for every parsed file, retained via `IMPORT_CACHE` (§V.32);
+4. `Rc` cycles (§V.26) — now the LAST suspect, not the first.
+
+**The methodological point, stated because it cost two entries:** §V.26 read a
+high live-COUNT as high live-BYTES without checking `size_of`. A count is not a
+footprint. The `size_of` check took under a minute and refuted a hypothesis that
+had already been written up twice.
+
 ## §VI. Independent of the plan — today
 
 `sui store gc` reads neither `temproots` nor runtime roots, and accepts
