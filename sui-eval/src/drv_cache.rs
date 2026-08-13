@@ -59,10 +59,11 @@ impl DrvCache {
 
     /// Default cache path: `~/.cache/sui/drv-cache.redb`.
     pub fn default_path() -> PathBuf {
-        let base = std::env::var("XDG_CACHE_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
+        // .filter(!is_empty) was already here; absoluteness was the missing
+        // half — the partial-guard shape, which reads as guarded.
+        let base = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
             .or_else(|| {
                 std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))
             })

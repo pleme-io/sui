@@ -226,13 +226,22 @@ pub fn load_system_registry() -> Registry {
 }
 
 fn user_registry_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("nix/registry.json"));
-        }
-    }
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/nix/registry.json"))
+    // Both arms used to take their variable verbatim behind a non-empty check
+    // only, so XDG_CONFIG_HOME="rel" read a registry out of the cwd — see
+    // theory/MASKED-BRANCH.md on the partial-guard shape.
+    //
+    // This one maps onto okiba exactly, unlike its three siblings in this
+    // crate: $XDG_CONFIG_HOME then ~/.config with no platform divergence, and
+    // the app segment genuinely IS "nix" — this is nix's registry, which sui
+    // reads. So `for_app("nix").path(Tier::Config, "registry.json")` yields the
+    // identical path for every valid configuration, now absolute by
+    // construction. The siblings keep inline filters because their fallbacks
+    // (~/Library/Caches, an exists/create dance) are ones okiba does not model.
+    Some(
+        okiba::Okiba::for_app("nix")
+            .try_path(okiba::Tier::Config, "registry.json")
+            .ok()?,
+    )
 }
 
 thread_local! {

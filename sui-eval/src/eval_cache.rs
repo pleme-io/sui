@@ -383,10 +383,22 @@ fn default_cache_path() -> Option<PathBuf> {
 
 /// Platform cache directory (`$XDG_CACHE_HOME` or `~/.cache`).
 fn dirs_next() -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("XDG_CACHE_HOME") {
-        if !val.is_empty() {
-            return Some(PathBuf::from(val));
-        }
+    // The non-empty check was here already; the ABSOLUTE check was not — the
+    // partial-guard shape from theory/MASKED-BRANCH.md, where considering the
+    // degenerate case makes the arm read as finished. XDG_CACHE_HOME="rel/x"
+    // passed and gave a cwd-relative cache, so every working directory got its
+    // own cache and none of them hit.
+    //
+    // Deliberately NOT okiba: the fallback below is ~/Library/Caches on macOS,
+    // and okiba's Tier::Cache is XDG-only (~/.cache everywhere), so routing
+    // this through it would relocate every Mac's cache and orphan what is
+    // there. Preserving where a valid configuration resolves outranks using
+    // the shared primitive.
+    if let Some(val) = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Some(val);
     }
     #[cfg(target_os = "macos")]
     {

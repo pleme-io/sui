@@ -10,6 +10,13 @@ keywords = ["nix", "evaluator", "lazy", "tree-walker", "vm"]
 categories = ["compilers", "parser-implementations"]
 
 [dependencies]
+# okiba (置き場) — XDG resolution where a RELATIVE override is IGNORED per spec.
+# Four cache/config paths in this crate checked only !is_empty(), never
+# is_absolute() — the partial-guard shape, which reads as finished. Used here
+# for the one that maps onto a tier exactly; the other three keep inline
+# filters because their fallbacks (~/Library/Caches on macOS, an exists/create
+# dance) are not what okiba resolves to.
+okiba = "0.2"
 sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-intern.workspace = true

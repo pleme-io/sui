@@ -535,12 +535,18 @@ fn url_to_safe_name(url: &str) -> String {
 /// Platform-aware cache directory discovery.
 fn dirs_cache_dir() -> PathBuf {
     // Try XDG_CACHE_HOME first, then platform default, then /tmp.
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME")
-        && !xdg.is_empty() {
-            return PathBuf::from(xdg);
-        }
-    if let Some(home) = std::env::var_os("HOME") {
-        let default = PathBuf::from(home).join(".cache");
+    // Absolute, not merely non-empty — see eval_cache.rs for the class.
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return xdg;
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        let default = home.join(".cache");
         if default.exists() || std::fs::create_dir_all(&default).is_ok() {
             return default;
         }
