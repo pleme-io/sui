@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "a53faaa328edfcf0fdce1c675cbd597361ab82906d63060e7c81cbee9b0eb36f",
+  "cargo_lock_sha256": "16a802cac55e2f191addd4a444f3c3717d02530153c2982cd45048ef17dc7549",
   "manifest_sha256": {
     "Cargo.toml": "15132ec6f11d74aa90707ba2716f8f7619ff86d2b63a9479bcb236280356bd6d",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -19,7 +19,7 @@
     "sui-dockerfile-prewarmer/Cargo.toml": "7788c66f49a023b0af5fbae36fdcf3b5f2117034088029f49d679171cee780d6",
     "sui-dockerfile-verify/Cargo.toml": "8633feb20ff44887444d830413b8d3eec601e78db2667a21aa92e35ce80f8684",
     "sui-dockerfile-wrapper/Cargo.toml": "42004479393d8f9dcf29dd17b674af0dc6e24b47bff5df795a9589255b33d8b9",
-    "sui-eval/Cargo.toml": "f8f9ffeb963c1f9b9baf162181f7afc0cfda0ffd2ca76ebbf7069db02e34a82c",
+    "sui-eval/Cargo.toml": "1151aa4d551e8894b666a75cae5fab110f7fefabc997bb50817fbf6c738a62fb",
     "sui-fmt/Cargo.toml": "c6b3ceec3b679871e1a63b78790e5a2cd8d7b40fa960fedd5575d9c4f969bd4b",
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
@@ -14903,7 +14903,7 @@
           "walkdir"
         ]
       },
-      "okiba-0.2.1": {
+      "okiba-0.3.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -25782,7 +25782,7 @@
           },
           {
             "name": "okiba",
-            "package_key": "okiba-0.2.1",
+            "package_key": "okiba-0.3.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -40050,7 +40050,7 @@
     "object_store-0.12.5": {
       "edition": "2021"
     },
-    "okiba-0.2.1": {
+    "okiba-0.3.1": {
       "edition": "2024"
     },
     "once_cell-1.21.4": {

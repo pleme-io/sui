@@ -16,7 +16,7 @@ categories = ["compilers", "parser-implementations"]
 # for the one that maps onto a tier exactly; the other three keep inline
 # filters because their fallbacks (~/Library/Caches on macOS, an exists/create
 # dance) are not what okiba resolves to.
-okiba = "0.2"
+okiba = "0.3"
 sui-bytecode.workspace = true
 sui-compat.workspace = true
 sui-intern.workspace = true

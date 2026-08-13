@@ -240,7 +240,8 @@ fn user_registry_path() -> Option<PathBuf> {
     Some(
         okiba::Okiba::for_app("nix")
             .try_path(okiba::Tier::Config, "registry.json")
-            .ok()?,
+            .ok()?
+            .into_path_buf(),
     )
 }
 
