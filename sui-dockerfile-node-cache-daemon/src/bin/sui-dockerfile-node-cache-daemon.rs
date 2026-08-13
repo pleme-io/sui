@@ -20,9 +20,23 @@ use tokio::sync::watch;
 async fn main() -> ExitCode {
     tracing_subscriber_init();
 
-    let socket_path = env::var("SUI_NODE_CACHE_SOCKET_PATH").map_or_else(|_| default_socket_path(), PathBuf::from);
-    let cache_dir = env::var("SUI_NODE_CACHE_DIR")
-        .map_or_else(|_| PathBuf::from("/var/lib/sui-dockerfile-cache"), PathBuf::from);
+    // Both overrides are ABSOLUTE-only. Each used to be a bare `PathBuf::from`
+    // on the set arm while the unset arm returned a literal, so the chain read
+    // as safe and only the value an operator actually sets was unguarded.
+    //
+    // The socket is the sharp one: it is a shared hostPath that this DaemonSet
+    // pod and a same-node runner pod both mount TO FIND EACH OTHER. A relative
+    // value resolves against each container's own cwd, so the two land on
+    // different files, the client's probe misses, and it reports "no daemon
+    // available" — a supported, silent path that just builds without the cache.
+    let socket_path = env::var_os("SUI_NODE_CACHE_SOCKET_PATH")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(default_socket_path);
+    let cache_dir = env::var_os("SUI_NODE_CACHE_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/var/lib/sui-dockerfile-cache"));
 
     let backend_config = match env::var("SUI_CACHE_BACKEND_CONFIG") {
         Ok(raw) => match serde_json::from_str::<BackendConfig>(&raw) {

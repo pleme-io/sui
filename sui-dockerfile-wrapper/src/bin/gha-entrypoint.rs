@@ -40,8 +40,16 @@ use sui_dockerfile_wrapper::{run_wrapper, DaemonAwareCacheClient, FilesystemDock
 /// for symmetry with the rest of the crate's fallible surfaces and to
 /// leave room for a future fallible probe (e.g. a permission check)
 /// without a signature break.
+/// A non-absolute `env_override` is IGNORED, not resolved against the cwd.
+///
+/// This must match the daemon's rule exactly. The two processes rendezvous on
+/// this path from different containers, so hardening one side alone would not
+/// fix the split — it would move it.
 fn resolve_daemon_socket_path(env_override: Option<&str>, probe_exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
-    let candidate = env_override.map_or_else(default_socket_path, PathBuf::from);
+    let candidate = env_override
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(default_socket_path);
     if probe_exists(&candidate) {
         Some(candidate)
     } else {
@@ -151,5 +159,36 @@ mod tests {
     fn env_override_path_absent_still_resolves_to_none() {
         let resolved = resolve_daemon_socket_path(Some("/custom/socket.sock"), |_| false);
         assert_eq!(resolved, None);
+    }
+
+    /// A relative override is IGNORED, not resolved against the cwd — and the
+    /// daemon applies the identical rule, which is the point.
+    ///
+    /// These two processes rendezvous on this path from DIFFERENT containers
+    /// (a DaemonSet pod and a same-node runner pod, sharing a hostPath). A
+    /// relative value resolves against each one's own cwd, so they land on
+    /// different files, this probe misses, and the caller reports "no daemon
+    /// available" — a supported, silent path that simply builds without the
+    /// cache. Nothing errors; the cache just stops working.
+    #[test]
+    fn a_relative_override_is_ignored_and_falls_back_to_the_shared_path() {
+        for bad in ["", "relative/socket.sock", "./socket.sock", "node-cache.sock"] {
+            let resolved = resolve_daemon_socket_path(Some(bad), |p| p == default_socket_path());
+            assert_eq!(
+                resolved,
+                Some(default_socket_path()),
+                "{bad:?} must fall back to the shared hostPath, not be joined"
+            );
+        }
+    }
+
+    /// The invariant, whatever the override says: never a cwd-relative path.
+    #[test]
+    fn the_resolved_socket_is_never_relative() {
+        for ov in [None, Some(""), Some("rel/x.sock"), Some("/abs/x.sock")] {
+            if let Some(p) = resolve_daemon_socket_path(ov, |_| true) {
+                assert!(p.is_absolute(), "{ov:?} produced a relative {p:?}");
+            }
+        }
     }
 }
