@@ -539,6 +539,32 @@ fn evaluate_flake_inner(
     ))?;
     let source_store_path = source_hash.store_path.clone();
     let source_nar_sri = source_hash.nar_hash_sri.clone();
+
+    // ── ★ THE ROOT FLAKE NEEDS THE SAME REGISTRATION ITS INPUTS GET ───────
+    // `register_input_source` was called in the INPUTS loop only, so `self`
+    // (and `self.sourceInfo`) handed out a `/nix/store/<narhash>-source` path
+    // that resolved to nothing: it is never copied into the store, and with no
+    // map entry there was nothing to redirect it to either.
+    //
+    // Measured 2026-08-17, on this repo and on a trivial fixture:
+    //
+    //     builtins.pathExists (f.outPath + "/flake.nix")  =>  false
+    //     builtins.readFile   (f.outPath + "/flake.nix")  =>  ENOENT
+    //
+    // where CppNix answers `true` and the contents. That is the shape behind
+    // the `hashFile` failure chased earlier today: substrate's D2 gate reads
+    // `${src}/Cargo.lock` where `src = self`, so the guard passed on paths the
+    // read then could not find. Fixing `hashFile`'s incantation was necessary
+    // and not sufficient — the path it was handed pointed nowhere.
+    //
+    // `self_path` is the real on-disk tree (a local dir or a fetched input's
+    // cache dir), which is exactly what the redirect wants.
+    if source_store_path.starts_with("/nix/store/") {
+        crate::path::register_input_source(
+            std::path::Path::new(&source_store_path),
+            std::path::Path::new(&self_path),
+        );
+    }
     // Byte-parity root (marquee darwin, GATE 1 2026-07-15): a LOCKED flake
     // input's `self` must carry the input's own `rev`/`shortRev`/`lastModified`
     // — exactly as CppNix populates `sourceInfo` for a fetched git input.
