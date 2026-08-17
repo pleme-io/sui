@@ -3113,11 +3113,14 @@ impl<'a> VM<'a> {
         scope_nix: &str,
         path: &str,
     ) -> Result<NanBox, VMError> {
+        // Same materializer redirect as `import_file` — `scopedImport` reads
+        // the same trees `import` does.
+        let read_path = crate::bridge::materialize(path);
         // Directory → default.nix fallback (Nix convention).
-        let resolved = if std::path::Path::new(path).is_dir() {
-            format!("{path}/default.nix")
+        let resolved = if std::path::Path::new(&read_path).is_dir() {
+            format!("{read_path}/default.nix")
         } else {
-            path.to_string()
+            read_path
         };
         let source = std::fs::read_to_string(&resolved)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
@@ -3510,7 +3513,14 @@ impl<'a> VM<'a> {
     /// Handles the Nix convention that importing a directory is equivalent
     /// to importing `<directory>/default.nix`.
     fn import_file(&mut self, path: &str) -> Result<NanBox, VMError> {
-        let resolved = std::fs::canonicalize(path)
+        // Redirect the DISK side through the installed path materializer
+        // before canonicalizing. A flake input's `/nix/store/<narhash>-source`
+        // prefix is never written to disk by sui, so `canonicalize` ENOENTs on
+        // it — and redirecting `pathExists` while leaving `import` bare is the
+        // exact guard-passes-then-read-ENOENTs shape that broke every fleet
+        // rebuild through `hashFile`. Identity when nothing is installed.
+        let read_path = crate::bridge::materialize(path);
+        let resolved = std::fs::canonicalize(&read_path)
             .map_err(|e| VMError::ImportError(format!("{path}: {e}")))?;
         // Directory → default.nix fallback (Nix convention).
         let resolved = if resolved.is_dir() {

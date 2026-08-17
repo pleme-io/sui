@@ -87,9 +87,122 @@ pub fn call_builtin_bridge(
     })
 }
 
+// ── Path materializer ──────────────────────────────────────────────────
+//
+// WHY THIS EXISTS (measured 2026-08-17): a fetched flake input is NAMED by a
+// `/nix/store/<narhash>-source` path that sui never writes to disk — the bytes
+// live in the fetcher cache (`~/.cache/sui/inputs/…`). sui-eval's tree-walker
+// redirects every filesystem READ through `crate::path::materialize`, keeping
+// the store-path STRING byte-correct while the read lands on the real tree.
+//
+// The VM had NO such redirect: its `pathExists`/`readFile`/`readFileType` and
+// `import` called `std::fs` on the raw store name, so a flake input's files
+// read as ABSENT. That is silent — `pathExists` answers `false`, no error is
+// raised, and the VM's per-file fallback to the tree-walker structurally
+// cannot fire on a wrong-but-successful answer.
+//
+// `sui-bytecode` CANNOT depend on `sui-eval` (see this crate's Cargo.toml: the
+// dev-dep is path-only to break a publish cycle), so the redirect arrives the
+// same way the builtin bridge does — a thread-local callback installed by
+// sui-eval, with an RAII guard. Bridgeless (`tests/parity.rs`, the benches),
+// `materialize` is the IDENTITY and the VM behaves exactly as before.
+
+/// Callback type for redirecting a filesystem path before it is read.
+///
+/// Takes the path the evaluator *names*; returns the path the read should
+/// actually land on. Must be the identity for any path it does not own.
+pub type PathMaterializerFn = Box<dyn Fn(&str) -> String>;
+
+thread_local! {
+    static PATH_MATERIALIZER: RefCell<Option<PathMaterializerFn>> = const { RefCell::new(None) };
+}
+
+/// Install a path materializer for the current thread.
+///
+/// Returns an RAII guard that restores the previous materializer on drop.
+pub fn set_path_materializer(materializer: PathMaterializerFn) -> PathMaterializerGuard {
+    let prev = PATH_MATERIALIZER.with(|m| m.borrow_mut().replace(materializer));
+    PathMaterializerGuard { _prev: prev }
+}
+
+/// RAII guard that restores the previous path materializer on drop.
+pub struct PathMaterializerGuard {
+    _prev: Option<PathMaterializerFn>,
+}
+
+impl Drop for PathMaterializerGuard {
+    fn drop(&mut self) {
+        let prev = self._prev.take();
+        PATH_MATERIALIZER.with(|m| *m.borrow_mut() = prev);
+    }
+}
+
+/// Redirect a path through the installed materializer.
+///
+/// The IDENTITY when no materializer is installed — the VM must keep working
+/// standalone, so this is never allowed to fail or to change a path it does
+/// not own. This is a FILESYSTEM-READ-ONLY redirect: the result is used to
+/// touch disk, never to build a value the evaluator observes.
+#[must_use]
+pub fn materialize(path: &str) -> String {
+    PATH_MATERIALIZER.with(|m| {
+        let borrow = m.borrow();
+        match *borrow {
+            Some(ref f) => f(path),
+            None => path.to_string(),
+        }
+    })
+}
+
+/// `materialize` for a `&Path`, returning an owned `PathBuf`.
+#[must_use]
+pub fn materialize_path(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(materialize(&path.to_string_lossy()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_materializer_is_the_identity() {
+        // The bridgeless VM (parity.rs, the benches) must see paths unchanged.
+        assert_eq!(materialize("/nix/store/abc-source/flake.nix"), "/nix/store/abc-source/flake.nix");
+        assert_eq!(materialize("relative/path.nix"), "relative/path.nix");
+    }
+
+    #[test]
+    fn materializer_redirects_and_guard_restores() {
+        {
+            let _guard = set_path_materializer(Box::new(|p: &str| {
+                p.replace("/nix/store/abc-source", "/cache/abc")
+            }));
+            assert_eq!(materialize("/nix/store/abc-source/flake.nix"), "/cache/abc/flake.nix");
+            // A path the materializer does not own passes through untouched.
+            assert_eq!(materialize("/etc/nix/nix.conf"), "/etc/nix/nix.conf");
+        }
+        // Guard dropped — back to the identity.
+        assert_eq!(materialize("/nix/store/abc-source/flake.nix"), "/nix/store/abc-source/flake.nix");
+    }
+
+    #[test]
+    fn materializer_guard_restores_previous() {
+        let _outer = set_path_materializer(Box::new(|_: &str| "/outer".to_string()));
+        {
+            let _inner = set_path_materializer(Box::new(|_: &str| "/inner".to_string()));
+            assert_eq!(materialize("/x"), "/inner");
+        }
+        assert_eq!(materialize("/x"), "/outer");
+    }
+
+    #[test]
+    fn materialize_path_roundtrips_through_pathbuf() {
+        let _guard = set_path_materializer(Box::new(|p: &str| p.replace("/store", "/real")));
+        assert_eq!(
+            materialize_path(std::path::Path::new("/store/f.nix")),
+            std::path::PathBuf::from("/real/f.nix")
+        );
+    }
 
     #[test]
     fn no_bridge_returns_none() {

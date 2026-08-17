@@ -96,16 +96,41 @@ impl Evaluator for TreeWalkEvaluator {
 /// flake input resolution for all input types (GitHub, path, indirect).
 pub struct BytecodeEvaluator;
 
-impl BytecodeEvaluator {
-    /// Run a bytecode evaluation with tree-walker bridges installed.
-    ///
-    /// Installs two bridges before running the VM:
-    /// 1. **Flake resolver** — delegates `builtins.getFlake` to the tree-walker
-    /// 2. **Builtin bridge** — delegates missing builtins (getEnv, match, split,
-    ///    fromTOML, genericClosure, etc.) to tree-walker implementations
-    fn eval_with_flake_resolver(input: &str) -> Result<Value, EvalError> {
-        // Install flake resolver: tree-walker evaluate_flake → StringKeyedValue
-        let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
+/// RAII bundle of every tree-walker bridge the VM needs, held for the
+/// duration of one VM evaluation.
+///
+/// Dropping this restores whatever was installed before.
+pub struct VmBridgeGuards {
+    _flake: sui_bytecode::FlakeResolverGuard,
+    _bridge: sui_bytecode::BuiltinBridgeGuard,
+    _path: sui_bytecode::PathMaterializerGuard,
+}
+
+/// Install every tree-walker bridge the bytecode VM depends on, returning an
+/// RAII bundle that uninstalls them on drop.
+///
+/// ★ THIS IS THE ONE INSTALL SITE. `BytecodeEvaluator` calls it, and so does
+/// `sui-bytecode`'s bridged-parity test suite — so a test can never drift from
+/// what production wires up (which is precisely how a bridge-dependent
+/// divergence stayed invisible: `sui-bytecode/tests/parity.rs` runs the VM with
+/// NO bridge installed).
+///
+/// Three bridges, all thread-local (`sui-bytecode` cannot depend on `sui-eval`
+/// — see that crate's `Cargo.toml` for the publish cycle):
+/// 1. **Flake resolver** — delegates `builtins.getFlake` to the tree-walker.
+/// 2. **Builtin bridge** — delegates builtins the VM has no native
+///    implementation for (`getEnv`, `match`, `split`, `fromTOML`,
+///    `genericClosure`, `readDir`, `hashFile`, …) to the tree-walker.
+/// 3. **Path materializer** — redirects the VM's filesystem reads through
+///    [`path::materialize`], so a flake input's `/nix/store/<narhash>-source`
+///    path (which sui never writes to disk) resolves to the real fetcher-cache
+///    tree. Without it the VM answers `pathExists = false` for every file in a
+///    fetched input — silently, since `false` is a legal answer and the VM's
+///    per-file fallback only fires on an ERROR.
+#[must_use]
+pub fn install_vm_bridges() -> VmBridgeGuards {
+    // Install flake resolver: tree-walker evaluate_flake → StringKeyedValue
+    let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
             let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
                 std::path::PathBuf::from(flake_ref)
             } else if let Some(path) = flake_ref.strip_prefix("path:") {
@@ -166,6 +191,30 @@ impl BytecodeEvaluator {
                 Ok(eval_to_string_keyed(&forced))
             },
         ));
+
+    // Install path materializer: the VM's `std::fs` reads (pathExists,
+    // readFile, readFileType, import, scopedImport) go through the SAME
+    // store-path→cache-dir redirect the tree-walker uses. Identity for any
+    // path that is not under a registered flake-input source, so this is a
+    // no-op for every ordinary path.
+    let _path_guard = sui_bytecode::set_path_materializer(Box::new(|p: &str| {
+        crate::path::materialize_str(p)
+    }));
+
+    VmBridgeGuards {
+        _flake: _flake_guard,
+        _bridge: _bridge_guard,
+        _path: _path_guard,
+    }
+}
+
+impl BytecodeEvaluator {
+    /// Run a bytecode evaluation with tree-walker bridges installed.
+    ///
+    /// The bridges themselves are installed by [`install_vm_bridges`] — the
+    /// single install site, shared with the bridged-parity tests.
+    fn eval_with_flake_resolver(input: &str) -> Result<Value, EvalError> {
+        let _bridges = install_vm_bridges();
 
         match sui_bytecode::eval_full(input) {
             Ok(result) => Ok(convert::string_keyed_to_eval(&result.to_string_keyed())),

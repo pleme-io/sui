@@ -2735,6 +2735,38 @@ fn static_attr_name(attr: &ast::Attr) -> Result<String, CompileError> {
 }
 
 /// Check if a name is a Nix global builtin (available without `builtins.` prefix).
+///
+/// ★ THIS LIST IS MEASURED, NOT REMEMBERED — and it is deliberately SHORT.
+///
+/// It is consulted at step 4 of `compile_ident`, i.e. ABOVE the `with`-scope
+/// lookup at step 5. That ordering is correct — in CppNix the base environment
+/// is the outermost LEXICAL scope, and `with` is only consulted when a name
+/// fails to resolve lexically — which means every name listed here SHADOWS a
+/// `with`. So a name that is NOT actually global must not appear, or the VM
+/// silently answers with its own builtin where nix answers with the `with`.
+///
+/// This list previously carried 49 names against nix's real 23. Measured
+/// 2026-08-17 against nix 2.31.5, one `nix eval --impure --expr '<name>'`
+/// probe per attribute of `builtins.attrNames builtins` (118 names): exactly
+/// 23 resolve in the global scope, the other 95 raise `undefined variable`.
+/// `true` / `false` / `null` are three of the 23 and are handled earlier in
+/// `compile_ident` as literals; `builtins` is a fourth and is handled at step
+/// 3 — leaving the 19 below.
+///
+/// Two divergence shapes the 30 dropped names caused, both silent:
+///
+/// ```text
+///   with { isFunction = x: "LIB"; }; isFunction 1  nix/walker "LIB"  VM false
+///   with { typeOf     = x: "LIB"; }; typeOf 1      nix/walker "LIB"  VM "int"
+/// ```
+///
+/// This is nixpkgs-shaped: `with lib;` is everywhere, and `lib.isFunction` /
+/// `lib.functionArgs` are functor-aware REDEFINITIONS of the same-named
+/// builtins. Second order: nix ERRORS on a bare `typeOf`, so the VM answering
+/// it swallowed a genuine undefined-variable bug.
+///
+/// To re-measure: `nix eval --impure --expr '<name>'` for each name; exit 0
+/// means global, `undefined variable` means not.
 fn is_global_builtin(name: &str) -> bool {
     matches!(
         name,
@@ -2757,36 +2789,6 @@ fn is_global_builtin(name: &str) -> bool {
             | "scopedImport"
             | "throw"
             | "toString"
-            | "trace"
-            | "typeOf"
-            | "seq"
-            | "deepSeq"
-            | "tryEval"
-            | "genericClosure"
-            | "addErrorContext"
-            | "unsafeGetAttrPos"
-            | "isPath"
-            | "isFloat"
-            | "isInt"
-            | "isBool"
-            | "isString"
-            | "isList"
-            | "isAttrs"
-            | "isFunction"
-            | "functionArgs"
-            | "pathExists"
-            | "readFile"
-            | "readDir"
-            | "toFile"
-            | "toPath"
-            | "fromJSON"
-            | "toJSON"
-            | "storeDir"
-            | "nixVersion"
-            | "nixPath"
-            | "currentSystem"
-            | "currentTime"
-            | "langVersion"
     )
 }
 
