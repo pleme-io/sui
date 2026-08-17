@@ -6330,6 +6330,20 @@ async fn main() -> Result<(), CliError> {
             // uses, reused here for the operator build command.
 
             if std::path::Path::new(&installable).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("drv")) {
+                // ── ★ THE SECOND ARM. The first pass at this fix guarded the
+                // flake branch only, so `sui build --dry-run <path>.drv` still
+                // performed a real build — same wrong ACTION, different branch.
+                //
+                // Deliberately NOT hoisted above the split: on the flake arm
+                // `--dry-run` should still EVALUATE and report the drvPath it
+                // would build, which is what nix does and what makes the flag
+                // useful. Hoisting would make it skip evaluation and report
+                // only the installable string back to the caller. Two guards,
+                // because the two arms know different things at this point.
+                if dry_run {
+                    println!("would build: {installable}");
+                    return Ok(());
+                }
                 // Direct .drv path — realize it (daemon-aware).
                 let outputs = sui_orchestrate::realize_drv(&installable)
                     .await
