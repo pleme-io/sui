@@ -210,15 +210,75 @@ mod nar_memo {
     /// ACROSS runs with no fingerprint, no mtime heuristic and no staleness
     /// class. A working tree gets no disk tier: it mutates under us.
     fn content_addressed(dir: &str) -> bool {
+        embedded_nar_hash(dir).is_some()
+    }
+
+    /// The content hash the PATH ITSELF claims, e.g. `sha256-avzRM+ff…` from
+    /// `~/.cache/sui/inputs/sha256-avzRM+ff…/bm-guard-<rev>/`.
+    ///
+    /// ── ★ THIS IS THE ORACLE THE MEMO WAS MISSING ─────────────────────────
+    /// The doc above argues the disk tier needs "no fingerprint, no mtime
+    /// heuristic and no staleness class" because the directory name IS the
+    /// content hash. The first half of that is sound and the conclusion does
+    /// not follow: a path that STATES its hash is not a path that has been
+    /// CHECKED against it. The fetcher extracts into the final path
+    /// non-atomically (and `tar` with `overwrite: true` unions a re-extraction
+    /// over whatever is already there), so the tree at a content-addressed
+    /// path is transiently something else — and a memo written from that
+    /// window is wrong for the life of the cache.
+    ///
+    /// Measured 2026-08-17 on this host: the entry for
+    /// `…/inputs/sha256-avzRM+ff…/bm-guard-7fd3322…` recorded
+    /// `sha256-cEiI0dqw…`, so `getFlake` returned
+    /// `/nix/store/w33ka5il2…-source` where `CppNix` returns
+    /// `/nix/store/afw37kjkfn31…-source`. Both engines agreed on the NAR hash
+    /// and on the store-path arithmetic (an audit of all 925 entries found
+    /// 925 internally consistent); the single wrong input was the memo. That
+    /// is a persistent, cross-process byte-parity divergence produced by a
+    /// cache, which is the one thing a cache must never do.
+    ///
+    /// So the check costs a string compare and the path was carrying the
+    /// answer the whole time. Padding-insensitive because the fetcher strips
+    /// `=` when it builds the directory name.
+    fn embedded_nar_hash(dir: &str) -> Option<&str> {
         let mut parts = dir.split('/').peekable();
         while let Some(p) = parts.next() {
             if p == "inputs" {
-                if let Some(next) = parts.peek() {
-                    return next.starts_with("sha256-") || next.starts_with("sha512-");
+                let next = parts.peek()?;
+                if next.starts_with("sha256-") || next.starts_with("sha512-") {
+                    return Some(next);
                 }
+                return None;
             }
         }
-        false
+        None
+    }
+
+    /// Whether a recorded SRI denotes the same digest as a hash embedded in a
+    /// directory name.
+    ///
+    /// ── ★ THE DIRECTORY NAME IS A SANITIZED SRI, NOT AN SRI ───────────────
+    /// The fetcher builds the directory with
+    /// `hash.replace(':', "-").replace('/', "_").replace('=', "")`
+    /// (`sui-eval/src/fetcher.rs:345`), so base64's `/` becomes `_` and the
+    /// padding is dropped. Comparing the two forms literally is not a stricter
+    /// check, it is a WRONG one.
+    ///
+    /// Measured before this function existed: a literal comparison flagged
+    /// **116 of 238** live cache entries as poisoned — every input whose
+    /// base64 digest happens to contain a `/`. Shipping that would have
+    /// deleted 116 valid records on read and, via the write-side guard,
+    /// permanently refused to memoize that whole class. A verification pass
+    /// that condemns half the corpus is reporting its own bug, not the
+    /// corpus's.
+    fn sri_matches_dir_hash(recorded_sri: &str, dir_hash: &str) -> bool {
+        sanitize_hash(recorded_sri) == sanitize_hash(dir_hash)
+    }
+
+    /// Mirror of the fetcher's directory-name sanitizer. Applied to BOTH
+    /// sides so the comparison is well-defined whichever form each carries.
+    fn sanitize_hash(h: &str) -> String {
+        h.replace(':', "-").replace('/', "_").replace('=', "")
     }
 
     fn disk_entry(dir: &str, name: &str) -> Option<std::path::PathBuf> {
@@ -238,18 +298,48 @@ mod nar_memo {
 
     fn disk_get(dir: &str, name: &str) -> Option<(String, String)> {
         let path = disk_entry(dir, name)?;
-        let body = std::fs::read_to_string(path).ok()?;
+        let body = std::fs::read_to_string(&path).ok()?;
         let (store_path, nar_hash_sri) = body.split_once('\n')?;
         if store_path.is_empty() || nar_hash_sri.is_empty() {
             return None;
         }
-        Some((store_path.to_string(), nar_hash_sri.trim_end().to_string()))
+        let nar_hash_sri = nar_hash_sri.trim_end();
+
+        // ── ★ VERIFY THE ENTRY AGAINST THE PATH'S OWN CLAIM ───────────────
+        // The NAR hash is a function of the TREE, not of `name` — `name` only
+        // feeds the store-path fingerprint — so a content-addressed path's
+        // embedded hash is the right oracle for every entry under it,
+        // whatever it is named.
+        //
+        // A mismatch is not a miss to paper over: it is a poisoned record
+        // that would otherwise be returned forever, so DELETE it and force a
+        // recompute. That makes the failure self-healing rather than
+        // permanent, which matters because the poisoning window (a partial or
+        // unioned extraction) is invisible after the fact.
+        if let Some(expected) = embedded_nar_hash(dir)
+            && !sri_matches_dir_hash(nar_hash_sri, expected)
+        {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+
+        Some((store_path.to_string(), nar_hash_sri.to_string()))
     }
 
     /// Best effort: a failed write costs hit rate, never correctness. One file
     /// per entry written via tmp+rename, so concurrent evals cannot interleave
     /// a torn record.
     fn disk_put(dir: &str, name: &str, store_path: &str, nar_hash_sri: &str) {
+        // Refuse to persist a record the path itself contradicts. This is the
+        // write-side half of the same invariant `disk_get` enforces on read:
+        // catching it here means a tree hashed during a partial extraction
+        // never reaches disk at all, so the poisoning window closes instead of
+        // merely self-healing on the next read.
+        if let Some(expected) = embedded_nar_hash(dir)
+            && !sri_matches_dir_hash(nar_hash_sri, expected)
+        {
+            return;
+        }
         let Some(path) = disk_entry(dir, name) else {
             return;
         };
@@ -324,6 +414,147 @@ mod nar_memo {
         #[test]
         fn an_inputs_dir_without_a_hash_segment_is_not() {
             assert!(!content_addressed("/Users/x/.cache/sui/inputs/scratch"));
+        }
+    }
+
+    #[cfg(test)]
+    mod poisoned_memo_tests {
+        use super::{disk_get, disk_put, embedded_nar_hash, sri_matches_dir_hash};
+
+        // The exact record found poisoned on this host, 2026-08-17.
+        const DIR: &str = "/Users/x/.cache/sui/inputs/\
+                           sha256-avzRM+ffKgikqMRcOhhYp3ifgwXMGbH0rEGEZPEGMYE/bm-guard-7fd3322";
+        const TRUE_SRI: &str = "sha256-avzRM+ffKgikqMRcOhhYp3ifgwXMGbH0rEGEZPEGMYE=";
+        const WRONG_SRI: &str = "sha256-cEiI0dqw2Tktwj7tx6f0yJZktBan/hcrMVVRzuBCDgs=";
+        const WRONG_PATH: &str = "/nix/store/w33ka5il2fhxp2vzfdbjwmla3szfgc95-source";
+        const TRUE_PATH: &str = "/nix/store/afw37kjkfn31rfccgbbdr2rnkbiws5ms-source";
+
+        #[test]
+        fn the_path_states_its_own_hash_and_padding_does_not_matter() {
+            // The fetcher strips `=` building the directory name, so the
+            // comparison must be padding-insensitive or every entry looks
+            // poisoned and the memo silently degrades to a 0% hit rate.
+            let e = embedded_nar_hash(DIR).expect("a fetched input states its hash");
+            assert_eq!(e, "sha256-avzRM+ffKgikqMRcOhhYp3ifgwXMGbH0rEGEZPEGMYE");
+            assert!(
+                sri_matches_dir_hash(TRUE_SRI, e),
+                "padding AND the / -> _ substitution must not break the match"
+            );
+            assert!(!sri_matches_dir_hash(WRONG_SRI, e));
+            assert_eq!(embedded_nar_hash("/Users/x/code/some-worktree"), None);
+        }
+
+        /// ★ THE REGRESSION. Before this change `disk_get` returned whatever
+        /// was on disk, so a record written during a partial extraction served
+        /// a wrong `outPath` for the life of the cache — persistently, across
+        /// processes, on an engine whose entire thesis is byte-parity.
+        #[test]
+        fn a_poisoned_entry_is_refused_and_deleted_rather_than_served() {
+            let home = tempfile::tempdir().expect("tmp home");
+            temp_env_home(home.path(), || {
+                // Plant exactly the poisoned shape: a store path that follows
+                // correctly from a hash which is NOT this tree's.
+                disk_put_raw(DIR, "source", WRONG_PATH, WRONG_SRI);
+                assert!(
+                    disk_get(DIR, "source").is_none(),
+                    "a record contradicting the path's own hash must never be served"
+                );
+                assert!(
+                    disk_get(DIR, "source").is_none(),
+                    "and it must be GONE, so the failure self-heals instead of persisting"
+                );
+
+                // The honest counterpart: a correct record still round-trips,
+                // or this 'fix' would just be a cache that never hits.
+                disk_put(DIR, "source", TRUE_PATH, TRUE_SRI);
+                assert_eq!(
+                    disk_get(DIR, "source"),
+                    Some((TRUE_PATH.to_string(), TRUE_SRI.to_string())),
+                    "a consistent record must still be served"
+                );
+            });
+        }
+
+        #[test]
+        fn a_contradicting_record_is_never_written_in_the_first_place() {
+            let home = tempfile::tempdir().expect("tmp home");
+            temp_env_home(home.path(), || {
+                disk_put(DIR, "source", WRONG_PATH, WRONG_SRI);
+                assert!(
+                    disk_get(DIR, "source").is_none(),
+                    "the write side must close the poisoning window, not just the read side"
+                );
+            });
+        }
+
+        /// ★ THE NEAR-MISS THIS TEST EXISTS FOR.
+        ///
+        /// The first version of the verifier compared the recorded SRI to the
+        /// directory name with only `=` padding stripped. That is wrong: the
+        /// fetcher also maps `/` → `_` and `:` → `-` building the name, so
+        /// every input whose base64 digest contains a `/` looked poisoned.
+        /// Measured against the live cache before this test existed: **116 of
+        /// 238** entries would have been deleted on read and then refused on
+        /// write — silently disabling the disk memo for that entire class.
+        ///
+        /// A digest containing `/` is not an edge case; it is ~49% of them.
+        #[test]
+        fn a_digest_containing_a_slash_is_not_mistaken_for_poison() {
+            // Real shape from the live cache: base64 `/`, directory `_`.
+            let sri = "sha256-C6uP9917/Rtz3B1VM9KrZjVMHsjy6Jjatp9N6oO4ycI=";
+            let dir_hash = "sha256-C6uP9917_Rtz3B1VM9KrZjVMHsjy6Jjatp9N6oO4ycI";
+            assert!(
+                sri_matches_dir_hash(sri, dir_hash),
+                "`/` in base64 becomes `_` in the directory name — comparing the \
+                 two forms literally condemns half the corpus"
+            );
+            // And `:` → `-`, the third substitution.
+            assert!(sri_matches_dir_hash("sha256:abc=", "sha256-abc"));
+            // A genuinely different digest must still be caught.
+            assert!(!sri_matches_dir_hash(
+                "sha256-cEiI0dqw2Tktwj7tx6f0yJZktBan/hcrMVVRzuBCDgs=",
+                dir_hash
+            ));
+        }
+
+        #[test]
+        fn a_non_content_addressed_path_is_still_memoized_unverified() {
+            // A worktree states no hash, so there is nothing to verify
+            // against. It must keep working — `content_addressed` already
+            // keeps it off the DISK tier, and that is the existing contract.
+            let home = tempfile::tempdir().expect("tmp home");
+            temp_env_home(home.path(), || {
+                let wt = "/Users/x/code/some-worktree";
+                disk_put(wt, "source", TRUE_PATH, TRUE_SRI);
+                assert_eq!(
+                    disk_get(wt, "source"),
+                    Some((TRUE_PATH.to_string(), TRUE_SRI.to_string())),
+                    "no embedded hash means no verification, not a refusal"
+                );
+            });
+        }
+
+        /// Write without going through `disk_put`'s validation, so the
+        /// poisoned state can be planted at all.
+        fn disk_put_raw(dir: &str, name: &str, store_path: &str, sri: &str) {
+            let path = super::disk_entry(dir, name).expect("entry path");
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&path, [store_path, "\n", sri, "\n"].concat()).expect("write");
+        }
+
+        /// `HOME` is process-global, so these tests must not run concurrently
+        /// with each other; one mutex serialises them.
+        fn temp_env_home(home: &std::path::Path, f: impl FnOnce()) {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _g = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let prev = std::env::var_os("HOME");
+            // SAFETY: serialised by LOCK; no other thread reads HOME here.
+            unsafe { std::env::set_var("HOME", home) };
+            f();
+            match prev {
+                Some(p) => unsafe { std::env::set_var("HOME", p) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
         }
     }
 }
