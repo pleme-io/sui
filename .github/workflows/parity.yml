@@ -74,10 +74,41 @@ jobs:
           SUI_PARITY_PUREONLY: "1"
         run: ./target/debug/sui parity
 
-      # The cross-run eval-cache wiring box: a warm installable eval must be
-      # served byte-identically to a fresh one, `--raw` must equal nix's bare
-      # string (no quotes), `--no-eval-cache` must bypass, and render modes must
-      # not collide on one entry. Self-contained (a local no-input flake; no nix
-      # build), so a byte-drift in the warm-store path is a red check.
-      - name: Run eval-cache wiring gate
-        run: cargo test -p pleme-io-sui --test eval_cache_wiring
+      # ── ★ THE WHOLE SUITE, NOT ONE TEST FILE ────────────────────────────
+      # This step used to be `cargo test -p pleme-io-sui --test
+      # eval_cache_wiring` — 8 tests, and it was the ONLY `cargo test` any
+      # workflow ran on a push. Measured 2026-08-17: the repo has ~5,716
+      # passing tests, so **1.2% of the suite gated every commit** and the
+      # other 98.8% was written, maintained, and never run outside an
+      # operator's terminal. `cargo test --workspace` appeared in zero
+      # workflows.
+      #
+      # That is the single cheapest correctness change available to this
+      # repo, and it is one line.
+      #
+      # It could not be turned on honestly until today, because the suite was
+      # FLAKY: three process-global races (a NIX_PATH pair, the perf counters,
+      # and a HOME override + shared scratch path fixed alongside) made a full
+      # run fail roughly 1 in 2. A gate that goes red at random gets ignored
+      # and then deleted, so the races were fixed first and the suite measured
+      # stable over repeated full runs before this line changed. Do not relax
+      # this step to `--no-fail-fast || true` or to a subset if it goes red —
+      # a red here is the gate working.
+      #
+      # eval_cache_wiring is still covered; it is simply part of the workspace
+      # now rather than the only thing running.
+      - name: Run the test suite
+        run: cargo test --workspace
+
+      # NOT YET ENABLED, and named so it is not forgotten: this runner installs
+      # nix (three steps up) and then never uses it for the differentials.
+      # `SUI_TEST_ONLINE` is set by NO workflow, so 67 `skip_if_offline()` call
+      # sites across 20 files silently pass, and four declared sui-vs-nix gates
+      # (cli_parity, build_parity, full_build, real_nix_client) report `ok`
+      # while no-opping. Measured: the prebuilt `cli_parity` binary runs 10
+      # declared differentials in 0.00s with zero nix invocations and reports
+      # `ok` — not `ignored`. That is pure recovered coverage sitting one env
+      # var away, but those tests have never run in CI, so flipping it blind
+      # would turn this gate red for reasons unrelated to the commit that
+      # flips it. It wants its own change, run locally first.
+      #   pending-ci: SUI_TEST_ONLINE=1
