@@ -224,15 +224,81 @@ pub trait HttpTransport {
 
 /// Typed transport error.  Constructors at the impl boundary
 /// classify the failure so callers can branch on category.
+///
+/// # The classification was dead code until 2026-08-17
+///
+/// `NotFound` and `Forbidden` have existed here since the trait was lifted, and
+/// **no production transport ever constructed either.** `FsTransport` produced
+/// them from `io::ErrorKind` and `MockTransport` from a lookup miss, so both
+/// arms were exercised only by tests; every real HTTP outcome — 403, 404, 429,
+/// 500 — collapsed into `NetworkFailure(String)` at the two `ureq` call sites.
+/// The enum advertised a distinction the live code did not make, which is the
+/// most expensive shape a type can have: a reader checks the definition, sees
+/// the arms, and reasonably concludes the information is available.
+///
+/// `Throttled` and `UnexpectedStatus` are new. `Throttled` is separate from
+/// every other arm because its remedy is unlike theirs — another network egress
+/// can fetch identical bytes, verifiable against a pinned hash — and
+/// `UnexpectedStatus` exists so an unhandled code still reaches the caller as a
+/// number rather than as prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HttpError {
     BadUrl(String),
     UnsupportedScheme(String),
+    /// A genuine transport failure — DNS, TLS, connect timeout. **Not** a
+    /// status: a response that arrived and said "no" is one of the arms below.
     NetworkFailure(String),
     NotFound(String),
     Forbidden(String),
+    /// The upstream refused to serve content it has (429, or a 403 that carries
+    /// `Retry-After`).  `retry_after` is the server's own advice in seconds.
+    Throttled {
+        url: String,
+        status: u16,
+        retry_after: Option<u64>,
+    },
+    /// Any other non-2xx, code preserved.
+    UnexpectedStatus { url: String, status: u16 },
     BodyReadFailure(String),
     IoError(String),
+}
+
+impl HttpError {
+    /// Whether a different network egress could fetch the identical bytes.
+    /// True only for a throttle — a 403/404 is refused identically anywhere.
+    #[must_use]
+    pub fn is_throttled(&self) -> bool {
+        matches!(self, Self::Throttled { .. })
+    }
+
+    /// Classify a status code plus an optional `Retry-After` into an arm.
+    ///
+    /// Pure, and shared by every transport impl so the mapping cannot drift
+    /// between them — the drift that left this enum's arms unreachable.
+    #[must_use]
+    pub fn from_status(url: &str, status: u16, retry_after: Option<u64>) -> Self {
+        // A 403 carrying Retry-After is GitHub's secondary rate limit, not an
+        // authorization failure. Believe the header over the code: reading a
+        // throttle as a credential fault sends an operator to replace a token
+        // that is fine.
+        if status == 429 || (status == 403 && retry_after.is_some()) {
+            Self::Throttled {
+                url: url.to_string(),
+                status,
+                retry_after,
+            }
+        } else if status == 404 {
+            Self::NotFound(url.to_string())
+        } else if status == 401 || status == 403 {
+            Self::Forbidden(url.to_string())
+        } else {
+            Self::UnexpectedStatus {
+                url: url.to_string(),
+                status,
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for HttpError {
@@ -244,6 +310,15 @@ impl std::fmt::Display for HttpError {
             Self::NotFound(m)          => write!(f, "not found: {m}"),
             Self::Forbidden(m)         => write!(f, "forbidden: {m}"),
             Self::BodyReadFailure(m)   => write!(f, "body read: {m}"),
+            // Distinct bytes per arm is the contract (★★ kotae), so these two
+            // must not read like `NotFound`/`Forbidden` or like each other.
+            Self::Throttled { url, status, retry_after } => match retry_after {
+                Some(s) => write!(f, "throttled by {url} (HTTP {status}), retry after {s}s"),
+                None => write!(f, "throttled by {url} (HTTP {status})"),
+            },
+            Self::UnexpectedStatus { url, status } => {
+                write!(f, "{url} returned HTTP {status}")
+            }
             Self::IoError(m)           => write!(f, "io: {m}"),
         }
     }
@@ -463,6 +538,97 @@ pub fn load_named(name: &str) -> Result<FetcherSpec, SpecError> {
         .into_iter()
         .find(|f| f.name == name)
         .ok_or_else(|| SpecError::Load(format!("no (deffetcher) with :name {name:?}")))
+}
+
+#[cfg(test)]
+mod status_classification_tests {
+    use super::*;
+
+    const URL: &str = "https://api.github.com/repos/o/r/tarball/deadbeef";
+
+    #[test]
+    fn from_status_maps_every_documented_case() {
+        // Table-driven so a new arm cannot be added without a row, and so the
+        // 429/403 pair sits visibly adjacent — it is the distinction that
+        // matters and the one most easily got backwards.
+        let cases: &[(u16, Option<u64>, &str)] = &[
+            (429, Some(120), "throttle with the server's own advice"),
+            (429, None, "throttle with no advice — still a throttle"),
+            (403, Some(60), "GitHub's secondary rate limit, spelled 403"),
+            (403, None, "a real authorization failure"),
+            (401, None, "unauthenticated"),
+            (404, None, "absent, or invisible to this credential"),
+            (500, None, "an unhandled status, code preserved"),
+            (503, Some(5), "unhandled status that happens to advise a retry"),
+        ];
+        for (status, retry, why) in cases {
+            let e = HttpError::from_status(URL, *status, *retry);
+            match (*status, *retry) {
+                (429, r) => assert!(
+                    matches!(&e, HttpError::Throttled { retry_after, .. } if *retry_after == r),
+                    "{why}: got {e:?}"
+                ),
+                (403, Some(_)) => assert!(e.is_throttled(), "{why}: got {e:?}"),
+                (403 | 401, None) => assert!(matches!(e, HttpError::Forbidden(_)), "{why}: got {e:?}"),
+                (404, _) => assert!(matches!(e, HttpError::NotFound(_)), "{why}: got {e:?}"),
+                (s, _) => assert!(
+                    matches!(&e, HttpError::UnexpectedStatus { status, .. } if *status == s),
+                    "{why}: got {e:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_throttle_claims_another_egress_would_help() {
+        // The load-bearing predicate. A 403/404 is refused identically from any
+        // host, so answering true there would fund a second fetch path that
+        // cannot work.
+        assert!(HttpError::from_status(URL, 429, None).is_throttled());
+        assert!(HttpError::from_status(URL, 403, Some(1)).is_throttled());
+        for s in [401, 403, 404, 500, 503] {
+            assert!(
+                !HttpError::from_status(URL, s, None).is_throttled(),
+                "HTTP {s} without Retry-After must not claim recoverability"
+            );
+        }
+        assert!(!HttpError::NetworkFailure("dns".into()).is_throttled());
+    }
+
+    #[test]
+    fn no_two_arms_render_the_same_bytes_at_one_status() {
+        // ★★ kotae, tested at a CONSTANT status so the comparison is about the
+        // arms rather than about an interpolated number. (The sibling test in
+        // sui-eval was first written the other way and proved blind under a
+        // red run — same mistake is available here.)
+        let variants = [
+            HttpError::Throttled { url: URL.into(), status: 404, retry_after: None },
+            HttpError::Throttled { url: URL.into(), status: 404, retry_after: Some(9) },
+            HttpError::NotFound(URL.into()),
+            HttpError::Forbidden(URL.into()),
+            HttpError::UnexpectedStatus { url: URL.into(), status: 404 },
+            HttpError::NetworkFailure(URL.into()),
+            HttpError::BodyReadFailure(URL.into()),
+        ];
+        for (i, a) in variants.iter().enumerate() {
+            for b in variants.iter().skip(i + 1) {
+                assert_ne!(a.to_string(), b.to_string(), "{a:?} and {b:?} read alike");
+            }
+        }
+    }
+
+    #[test]
+    fn the_previously_dead_arms_are_now_reachable_from_a_status() {
+        // The regression guard for the actual defect: NotFound and Forbidden
+        // existed for months and no production transport could produce them.
+        // Anything that returns to routing status→NetworkFailure fails here.
+        assert!(matches!(HttpError::from_status(URL, 404, None), HttpError::NotFound(_)));
+        assert!(matches!(HttpError::from_status(URL, 403, None), HttpError::Forbidden(_)));
+        assert!(!matches!(
+            HttpError::from_status(URL, 404, None),
+            HttpError::NetworkFailure(_)
+        ));
+    }
 }
 
 #[cfg(test)]
