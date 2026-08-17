@@ -6317,7 +6317,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable: installable_opt, no_link: _, print_out_paths: _, json: _, dry_run: _, out_link: _, rebuild: _ } => {
+        Commands::Build { installable: installable_opt, no_link: _, print_out_paths: _, json: _, dry_run, out_link: _, rebuild: _ } => {
             let installable = installable_opt.unwrap_or_else(|| ".#default".to_string());
 
             // The realize path is daemon-aware: `sui_orchestrate::realize_drv`
@@ -6387,6 +6387,17 @@ async fn main() -> Result<(), CliError> {
                     _ => None,
                 };
                 if let Some(drv_path) = drv_path {
+                    // ── ★ --dry-run MUST NOT BUILD ────────────────────────
+                    // `dry_run` was destructured to `_`, so `sui build
+                    // --dry-run <x>` performed a real build. That is a wrong
+                    // ACTION, not merely a wrong answer, and it is the one
+                    // flag whose entire purpose is to promise the opposite.
+                    // `sui system rebuild --dry-run` gets this right and
+                    // comments about it; this arm simply never read the flag.
+                    if dry_run {
+                        println!("would build: {drv_path}");
+                        return Ok(());
+                    }
                     // Realize the flake target's derivation (daemon-aware — same
                     // `StoreAccess::detect()` dispatch as the direct-.drv branch).
                     let outputs = sui_orchestrate::realize_drv(&drv_path)
@@ -7722,6 +7733,27 @@ fn install_ifd_hook() -> sui_eval::realize::RealizeHookGuard {
 ///
 /// Anything else (remote scheme like `github:` / `https:` / `git+`)
 /// is currently out of scope for local-dir resolution.
+/// Resolve a flake ref to a local directory.
+///
+/// ── ★ AN UNRESOLVABLE REF IS AN ERROR, NOT THE CURRENT DIRECTORY ──────
+/// This used to end `else { Ok(current_dir()) }`, which turned every ref it
+/// could not resolve into a confident answer about somewhere else. Measured
+/// 2026-08-17:
+///
+///     cd <some-flake> && sui flake metadata github:no-such-org-xyz/nope
+///     → prints THIS flake's metadata, exit 0
+///
+/// Three commands route through here — `metadata`, `show` and `check` — and
+/// `check` is the one that stings: it is a *verdict*, so a CI job running
+/// `sui flake check github:org/repo` got `flake check passed` about an
+/// entirely different flake, and exited 0.
+///
+/// A remote ref is refused explicitly rather than silently localized. Note
+/// the capability already exists in this binary — `Commands::Build` and
+/// `Commands::Run` resolve remotes through `sui_eval::fetcher` — so these
+/// three handlers were not blocked, they simply never called it. Routing
+/// them there is the real fix; this is the honest floor until then, and it
+/// converts a wrong answer into a clear one.
 fn resolve_flake_dir(flake_ref: Option<&str>) -> Result<std::path::PathBuf, CliError> {
     let raw = match flake_ref {
         None | Some("") | Some(".") => return Ok(std::env::current_dir()?),
@@ -7733,10 +7765,34 @@ fn resolve_flake_dir(flake_ref: Option<&str>) -> Result<std::path::PathBuf, CliE
     let head = head.strip_prefix("path:").unwrap_or(head);
     let p = std::path::PathBuf::from(head);
     if p.is_dir() {
-        Ok(p)
-    } else {
-        Ok(std::env::current_dir()?)
+        return Ok(p);
     }
+    if is_remote_flake_ref(head) {
+        return Err(CliError::NotImplemented(
+            [
+                "remote flake refs are not yet supported by this subcommand: ",
+                head,
+                " — `build` and `run` resolve them; `metadata`/`show`/`check` do not. \
+                 Refusing rather than answering about the current directory.",
+            ]
+            .concat(),
+        ));
+    }
+    Err(CliError::MissingArgument(
+        ["no flake at ", head].concat(),
+    ))
+}
+
+/// Whether a flake ref names something that is not a local path.
+///
+/// Kept deliberately broad: anything with a known scheme, or an `owner/repo`
+/// shape, is a ref we cannot resolve rather than a directory we failed to
+/// find — and the two deserve different messages.
+fn is_remote_flake_ref(head: &str) -> bool {
+    const SCHEMES: [&str; 8] = [
+        "github:", "gitlab:", "sourcehut:", "git+", "https://", "http://", "flake:", "tarball+",
+    ];
+    SCHEMES.iter().any(|s| head.starts_with(s))
 }
 
 /// Normalize a `nix eval`-style installable flake-ref into the string
