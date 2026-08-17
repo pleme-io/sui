@@ -21,9 +21,21 @@
 # `cargo clippy` exits 101 on them with no `-D` flag anywhere. Two consequences
 # worth stating because they are the whole design:
 #
-#   1. The permitted count is ZERO by construction, so there is no baseline
-#      number to maintain and no "the count went down" bookkeeping. A
+#   1. The permitted count is ZERO OVER THE SCANNED TARGETS, so there is no
+#      baseline number to maintain and no "the count went down" bookkeeping. A
 #      warning-count ratchet is satisfiable by DELETING code; zero is not.
+#
+#      ★ NOT "zero by construction" — that phrasing was here and it was false.
+#      It is zero by TARGET SELECTION. `--all-targets` is excluded, and the
+#      baseline file records exactly why: 14 deny-tier `clippy::approx_constant`
+#      errors live in sui-eval's TEST targets. A gate configured to skip the
+#      targets where it is known-red does not have a zero permitted count; it
+#      has 14 permitted deny-tier violations, indefinitely, and saying otherwise
+#      rounds the tier up.
+#
+#      Those 14 are the honest next step for this gate, not a footnote:
+#      pending-clippy-gate: 14 approx_constant in sui-eval test targets, then
+#      --all-targets.
 #   2. The 1475 pedantic warnings stay warnings and never block a merge, so
 #      the gate is green on arrival without anyone burning down a backlog
 #      first. Pedantic can tighten later, on its own schedule, without
@@ -106,14 +118,78 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # ANTI-VACUITY FLOOR — runs before clippy, on purpose.
-      - name: Floor the gated crate count
+      #
+      # ★ THIS FLOOR COUNTED LINES, NOT CRATES, AND WAS THEREFORE VACUOUS.
+      # It was `grep -c '^  "-p", "' .cargo/config.toml`. Replace the eight
+      # entries with eight copies of one crate and: grep returns 8, the floor
+      # passes, cargo dedups the specs without complaint, and coverage collapses
+      # from ~126k lines across 8 crates to sui-intern's 1,012. Exit 0.
+      # Reproduced before fixing. Ordering was never the problem — the floor ran
+      # first and still could not see an emptied set, because it bounded the
+      # wrong quantity.
+      #
+      # Now: DISTINCT crate names, each verified to exist in the workspace. A
+      # duplicate no longer counts twice and a typo is a broken scan rather than
+      # a silently narrower one.
+      #
+      # ★ AND IT MUST NOT DIE UNDER `bash -e`. GitHub runs `run:` with `-e`, so
+      # a bare `n=$(grep …)` ABORTS the step the moment grep matches nothing —
+      # before any echo, with grep's own status. Measured: a missing config file
+      # exited 2, and a deleted alias exited 1, which is the code this gate
+      # reserves for "violations found". The two most complete forms of "the
+      # scan is broken" reported the one thing the header forbids. Every
+      # command that may legitimately find nothing is now `|| true`-guarded so
+      # the script reaches its own typed exit.
+      - name: Floor the gated crate set
         run: |
-          n=$(grep -c '^  "-p", "' .cargo/config.toml)
-          echo "gated-crates=$n (floor 8)"
-          [ "$n" -ge 8 ] || { echo "FAILED: gate names $n crates, floor 8 — a scan below its floor is a broken run, never a pass"; exit 3; }
+          set +e
+          crates=$(sed -n 's/^  "-p", "\([^"]*\)",\{0,1\}$/\1/p' .cargo/config.toml | sort -u)
+          n=$(printf '%s\n' "$crates" | grep -c . )
+          echo "gated-crates=$n (floor 8, DISTINCT)"
+          printf '%s\n' "$crates" | sed 's/^/  - /'
+          if [ "$n" -lt 8 ]; then
+            echo "FAILED(scan): gate names $n DISTINCT crates, floor 8 — a scan below its floor is a broken run, never a pass"
+            exit 3
+          fi
+          # Every named crate must exist, or `cargo clippy-gate` would fail with
+          # 101 — indistinguishable from a real lint hit.
+          missing=""
+          for c in $crates; do
+            grep -q "^name = \"$c\"$" ./*/Cargo.toml ./Cargo.toml 2>/dev/null || missing="$missing $c"
+          done
+          if [ -n "$missing" ]; then
+            echo "FAILED(scan): these gated crates do not exist in the workspace:$missing"
+            exit 3
+          fi
+          echo "OK: $n distinct crates, all resolvable"
 
       # Deny-tier only. No `-D warnings`: see the header.
       # The crate list lives in .cargo/config.toml so this line cannot drift
       # from what the floor above counted.
+      #
+      # ★ REPORT-ONLY ON ARRIVAL, and this is a dated, removable state — not a
+      # permanent hedge.
+      #
+      # "Green on arrival" was measured with nixpkgs clippy 1.91.1. This step
+      # runs `dtolnay/rust-toolchain@stable`, and this machine's own store
+      # already carries clippy 1.97.1 — the fleet's fenix `stable` floats there.
+      # That is six minor releases of new correctness-group lints between the
+      # measurement and the runtime, and none of them are measured. Worse,
+      # `cargo clippy` is not installable in the active toolchain here at all
+      # ("error: no such command: clippy"), so the gap CANNOT be closed from
+      # this workstation.
+      #
+      # Landing it blocking would mean shipping an unverified red risk into a
+      # gate every push depends on. That exact move was made earlier today —
+      # a flag contract refused `--impure`, sui's own parity corpus uses it, and
+      # `parity.yml` was red for six consecutive runs before anyone noticed.
+      #
+      # REMOVAL CONDITION, so this does not quietly become permanent: after ONE
+      # green run of this job on CI, delete `continue-on-error` in the same
+      # commit that cites the run URL. A report-only gate enforces nothing, and
+      # this repo has an entire audit trail about surfaces that declare more
+      # than they enforce — this line is on that list until it comes off.
+      #   pending-clippy-gate: report-only until one green CI run
       - name: Deny-tier clippy over the gated crate set
+        continue-on-error: true
         run: cargo clippy-gate
