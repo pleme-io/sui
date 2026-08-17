@@ -13,18 +13,100 @@ use sui_compat::flake_ref::FlakeRef;
 // ── Error type ────────────────────────────────────────────────
 
 /// Errors that can occur during input fetching.
+///
+/// # Why the HTTP failures are separate variants
+///
+/// Every network failure used to collapse into [`FetchError::Download`], a
+/// single `String`. The status code was *known* — it was read as a `u16` and
+/// immediately formatted into prose — so a rate-limit and a missing repository
+/// arrived at the caller as the same shape, distinguishable only by matching
+/// English text.
+///
+/// That cost real work, measured 2026-08-17: GitHub throttled a flake input's
+/// archive on one host **while the API quota showed 4653/5000 remaining** (a
+/// per-egress-IP limit on archive generation, unaffected by holding a valid
+/// token), and two full rebuilds died before the cause was understood. The
+/// remedy for a throttle is unlike the remedy for anything else here — another
+/// egress can fetch the identical bytes, and `flake.lock`'s pinned `narHash`
+/// makes "identical" *checkable* rather than merely hoped-for — so a consumer
+/// has to be able to branch on it. A downstream tool
+/// (`pleme-io/fleet`'s `warm-inputs`) was reduced to `contains("HTTP error
+/// 429")` on this crate's own error text for exactly that reason.
+///
+/// So: no status is discarded, and [`FetchError::UnexpectedStatus`] exists so
+/// that adding a *new* HTTP behaviour cannot silently fall back into a prose
+/// bucket — an unclassified code still arrives as a number.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FetchError {
     #[error("unsupported input type: {0}")]
     UnsupportedType(String),
     #[error("missing required field: {0}")]
     MissingField(&'static str),
+    /// A genuine transport failure — DNS, TLS, connect timeout, body read.
+    /// **Not** a status: an HTTP response that arrived and said "no" is one of
+    /// the four typed variants below.
     #[error("download failed: {0}")]
     Download(String),
+    /// The upstream refused to serve content it has: HTTP 429, or a 403 whose
+    /// body names a secondary rate limit. `retry_after` carries the server's
+    /// own `Retry-After` in seconds when it sent one — the only authority on
+    /// how long to wait, and previously thrown away unread.
+    #[error("throttled by {url} (HTTP {status}){}", match retry_after {
+        Some(s) => format!(", retry after {s}s"),
+        None => String::new(),
+    })]
+    Throttled {
+        url: String,
+        status: u16,
+        retry_after: Option<u64>,
+    },
+    /// 401 or 403 — our credential, not the content. Another egress does not
+    /// help; the token does.
+    #[error("not authorized for {url} (HTTP {status}) — check the access token")]
+    Unauthorized { url: String, status: u16 },
+    /// 404. For a private input this is frequently an *auth* failure wearing a
+    /// not-found mask, which is why the message says so rather than asserting
+    /// the content is absent.
+    #[error("{url} not found (HTTP 404) — or present but invisible to this credential")]
+    NotFound { url: String },
+    /// Any other non-2xx. Carries the code so an unhandled status is still a
+    /// number a caller can act on, never prose.
+    #[error("{url} returned HTTP {status}")]
+    UnexpectedStatus { url: String, status: u16 },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("archive extraction failed: {0}")]
     Extract(String),
+}
+
+impl FetchError {
+    /// The HTTP status, when this failure carried one.
+    ///
+    /// Exists so a caller branches on a number rather than re-deriving one from
+    /// the `Display` text — which is the habit this enum was widened to end.
+    #[must_use]
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Throttled { status, .. }
+            | Self::Unauthorized { status, .. }
+            | Self::UnexpectedStatus { status, .. } => Some(*status),
+            Self::NotFound { .. } => Some(404),
+            _ => None,
+        }
+    }
+
+    /// Whether fetching the identical bytes from a different network egress
+    /// could succeed.
+    ///
+    /// True **only** for a throttle. A 401/403/404 is about our credential or
+    /// the content, so another host is refused identically — and answering
+    /// `true` there would send an operator to build a second fetch path that
+    /// cannot work.
+    #[must_use]
+    pub fn is_throttled(&self) -> bool {
+        matches!(self, Self::Throttled { .. })
+    }
 }
 
 // ── InputFetcher ──────────────────────────────────────────────
@@ -600,7 +682,24 @@ fn find_single_subdir_or_self(dir: &Path) -> PathBuf {
 ///
 /// Body limit raised to 512 MiB to accommodate large inputs like nixpkgs tarballs.
 fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
-    let mut req = ureq::get(url);
+    // `http_status_as_error(false)` is load-bearing, not a preference.
+    //
+    // ureq 3 defaults it to TRUE, which turns every non-2xx into
+    // `Err(Error::StatusCode(_))` *before* the response object exists. Two
+    // consequences that both bit this function: the `!status().is_success()`
+    // branch below was **unreachable for real HTTP failures** — dead code that
+    // read as the status check — and `Retry-After` was unreachable too, because
+    // the headers live on a response we never received.
+    //
+    // Turning it off means a 429 arrives as a response we can classify AND
+    // read headers from, and the branch below becomes the live classifier it
+    // always looked like. `call()` then errors only on genuine transport
+    // failure, which is exactly what `FetchError::Download` should mean.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut req = agent.get(url);
 
     // Attach a host-appropriate auth token when one is available.
     // CppNix consults `~/.config/nix/nix.conf` `access-tokens =
@@ -617,10 +716,7 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))?;
 
     if !response.status().is_success() {
-        return Err(FetchError::Download(format!(
-            "{url}: HTTP {}",
-            response.status().as_u16()
-        )));
+        return Err(classify_status(url, &response));
     }
 
     response
@@ -629,6 +725,63 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
         .limit(512 * 1024 * 1024)
         .read_to_vec()
         .map_err(|e| FetchError::Download(format!("{url}: {e}")))
+}
+
+/// Turn a non-2xx response into the typed variant that names what happened.
+///
+/// Pure apart from reading the response's status and headers, so it is unit
+/// testable without a network — which matters because the interesting cases
+/// (429 with and without `Retry-After`, a 403 that is really a secondary rate
+/// limit) are precisely the ones nobody can reproduce on demand.
+fn classify_status<B>(url: &str, response: &ureq::http::Response<B>) -> FetchError {
+    let status = response.status().as_u16();
+    let retry_after = retry_after_seconds(response.headers());
+
+    // A secondary rate limit is spelled 403 by GitHub, and 403 otherwise means
+    // "your credential is not enough". The header is what separates them: a
+    // plain authorization failure carries no Retry-After. Reading a throttle as
+    // a credential fault sends an operator to re-provision a token that is
+    // fine — so when the server says "come back later", believe it over the code.
+    let throttled = status == 429 || (status == 403 && retry_after.is_some());
+
+    if throttled {
+        FetchError::Throttled {
+            url: url.to_string(),
+            status,
+            retry_after,
+        }
+    } else if status == 404 {
+        FetchError::NotFound {
+            url: url.to_string(),
+        }
+    } else if status == 401 || status == 403 {
+        FetchError::Unauthorized {
+            url: url.to_string(),
+            status,
+        }
+    } else {
+        FetchError::UnexpectedStatus {
+            url: url.to_string(),
+            status,
+        }
+    }
+}
+
+/// Read `Retry-After` as whole seconds.
+///
+/// RFC 9110 permits either a delta-seconds integer or an HTTP-date. Only the
+/// integer form is honoured here, and an HTTP-date yields `None` rather than a
+/// guess: a wrong wait derived from a misparsed date is worse than admitting we
+/// were not told, because a caller that receives `None` falls back to its own
+/// bounded policy while one that receives a wrong number obeys it.
+fn retry_after_seconds(headers: &ureq::http::HeaderMap) -> Option<u64> {
+    headers
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Resolve a host-appropriate auth token for outgoing requests.
@@ -778,6 +931,145 @@ fn dirs_cache_dir() -> PathBuf {
 }
 
 // ── Tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod status_classification_tests {
+    use super::*;
+
+    /// Build a response carrying only what the classifier reads.
+    fn resp(status: u16, headers: &[(&str, &str)]) -> ureq::http::Response<()> {
+        let mut b = ureq::http::Response::builder().status(status);
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(()).expect("a status + headers response always builds")
+    }
+
+    const URL: &str = "https://api.github.com/repos/o/r/tarball/deadbeef";
+
+    #[test]
+    fn a_429_is_throttled_and_keeps_the_servers_own_retry_after() {
+        // The measured case. `Retry-After` is the only authority on how long to
+        // wait, and it used to be discarded unread.
+        let e = classify_status(URL, &resp(429, &[("retry-after", "120")]));
+        assert!(matches!(
+            e,
+            FetchError::Throttled {
+                status: 429,
+                retry_after: Some(120),
+                ..
+            }
+        ));
+        assert!(e.is_throttled());
+        assert_eq!(e.status(), Some(429));
+    }
+
+    #[test]
+    fn a_429_without_a_header_is_still_throttled() {
+        // GitHub's archive throttle frequently sends no Retry-After. Absence of
+        // advice must not downgrade the classification.
+        let e = classify_status(URL, &resp(429, &[]));
+        assert!(matches!(e, FetchError::Throttled { retry_after: None, .. }));
+        assert!(e.is_throttled());
+    }
+
+    #[test]
+    fn a_403_with_retry_after_is_a_throttle_not_a_credential_fault() {
+        // GitHub spells its secondary rate limit 403. Reading it as an auth
+        // failure sends an operator to re-provision a token that is fine.
+        let e = classify_status(URL, &resp(403, &[("retry-after", "60")]));
+        assert!(
+            e.is_throttled(),
+            "a 403 that says 'come back later' is a throttle, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn a_bare_403_is_a_credential_fault_and_NOT_recoverable_elsewhere() {
+        // The other half of the pair: without the header, 403 means our
+        // credential. Answering `is_throttled` here would send a caller to
+        // build a second fetch path that is refused identically.
+        let e = classify_status(URL, &resp(403, &[]));
+        assert!(matches!(e, FetchError::Unauthorized { status: 403, .. }));
+        assert!(!e.is_throttled());
+    }
+
+    #[test]
+    fn a_404_says_it_may_be_an_invisible_private_input() {
+        let e = classify_status(URL, &resp(404, &[]));
+        assert!(matches!(e, FetchError::NotFound { .. }));
+        assert_eq!(e.status(), Some(404));
+        // For a private flake input a 404 is routinely an auth failure wearing
+        // a not-found mask, so the message must not assert absence.
+        let msg = e.to_string();
+        assert!(msg.contains("invisible to this credential"), "got {msg}");
+    }
+
+    #[test]
+    fn an_unhandled_status_arrives_as_a_NUMBER_never_as_prose() {
+        // The anti-regression variant: a status nobody wrote an arm for must
+        // still reach the caller as a u16, so widening HTTP behaviour cannot
+        // silently re-create the single-String bucket this enum replaced.
+        let e = classify_status(URL, &resp(503, &[]));
+        assert!(matches!(e, FetchError::UnexpectedStatus { status: 503, .. }));
+        assert_eq!(e.status(), Some(503));
+        assert!(!e.is_throttled());
+    }
+
+    #[test]
+    fn no_two_http_failures_render_the_same_bytes() {
+        // ★★ kotae: the whole point is that a caller can tell these apart. If
+        // any two rendered identically, a consumer would be back to guessing —
+        // which is the defect that made a downstream tool grep this crate's
+        // error text.
+        let rendered: Vec<String> = [429, 403, 404, 500]
+            .iter()
+            .map(|s| classify_status(URL, &resp(*s, &[])).to_string())
+            .collect();
+        let mut uniq = rendered.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            rendered.len(),
+            "two failures rendered identically: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn an_http_date_retry_after_yields_none_rather_than_a_guess() {
+        // RFC 9110 allows an HTTP-date. We do not parse it, and `None` is the
+        // honest answer: a caller given None uses its own bounded policy, while
+        // a caller given a wrong number obeys it.
+        let h = resp(429, &[("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT")]);
+        assert_eq!(retry_after_seconds(h.headers()), None);
+        // ...and the classification is unaffected.
+        assert!(classify_status(URL, &h).is_throttled());
+    }
+
+    #[test]
+    fn a_junk_retry_after_does_not_panic_or_lie() {
+        for v in ["", "  ", "abc", "-5", "12.5", "9999999999999999999999"] {
+            let h = resp(429, &[("retry-after", v)]);
+            assert_eq!(
+                retry_after_seconds(h.headers()),
+                None,
+                "{v:?} must not parse"
+            );
+        }
+        assert_eq!(retry_after_seconds(resp(429, &[("retry-after", " 30 ")]).headers()), Some(30));
+    }
+
+    #[test]
+    fn a_transport_failure_is_not_given_a_status() {
+        // `Download` is reserved for DNS/TLS/timeout — things with no response.
+        // If it ever reported a status, the two categories would have merged
+        // again.
+        let e = FetchError::Download("dns failure".into());
+        assert_eq!(e.status(), None);
+        assert!(!e.is_throttled());
+    }
+}
 
 #[cfg(test)]
 mod tests {
