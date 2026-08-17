@@ -1739,22 +1739,49 @@ impl crate::fetcher::FetcherEnvironment for InProcessFetcherEnv {
     }
 }
 
-/// `ureq`-backed HTTP transport.  Always available; gracefully
-/// surfaces network errors as typed `HttpError` variants so callers
-/// can branch.
+/// `ureq`-backed HTTP transport.  Always available; classifies a non-2xx
+/// response into the matching typed `HttpError` variant so callers can branch.
+///
+/// The previous doc comment here claimed it "gracefully surfaces network errors
+/// as typed `HttpError` variants so callers can branch" — and it did not: every
+/// outcome became `NetworkFailure(String)`, so there was nothing to branch on.
+/// Worth recording rather than quietly deleting, because the comment is what
+/// made the gap invisible: a reader checking whether the distinction existed
+/// found a sentence saying yes.
 struct UreqTransport;
 
 impl crate::fetcher::HttpTransport for UreqTransport {
     fn get(&self, url: &str) -> Result<Vec<u8>, crate::fetcher::HttpError> {
-        let resp = ureq::get(url)
+        use crate::fetcher::HttpError;
+
+        // See the sibling impl in `sui/src/main.rs`: ureq 3 turns non-2xx into
+        // an Err before a response exists, which hides both the status and the
+        // `Retry-After` header. Opting out is what makes classification possible.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+
+        let resp = agent
+            .get(url)
             .call()
-            .map_err(|e| crate::fetcher::HttpError::NetworkFailure(e.to_string()))?;
+            .map_err(|e| HttpError::NetworkFailure(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            return Err(HttpError::from_status(url, resp.status().as_u16(), retry_after));
+        }
+
         let mut body = Vec::new();
         use std::io::Read;
         resp.into_body()
             .into_reader()
             .read_to_end(&mut body)
-            .map_err(|e| crate::fetcher::HttpError::BodyReadFailure(e.to_string()))?;
+            .map_err(|e| HttpError::BodyReadFailure(e.to_string()))?;
         Ok(body)
     }
 }

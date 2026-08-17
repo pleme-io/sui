@@ -5514,8 +5514,36 @@ struct UreqTransport;
 impl sui_spec::fetcher::HttpTransport for UreqTransport {
     fn get(&self, url: &str) -> Result<Vec<u8>, sui_spec::fetcher::HttpError> {
         use sui_spec::fetcher::HttpError;
-        let resp = ureq::get(url).call()
+
+        // `http_status_as_error(false)` is what makes classification possible
+        // at all. ureq 3 defaults it to TRUE, so every non-2xx became
+        // `Err(StatusCode(_))` and was stringified into `NetworkFailure` —
+        // which is why `HttpError`'s `NotFound` / `Forbidden` arms sat
+        // unreachable from production while looking available to any reader.
+        // Turning it off yields a response we can read a status AND headers
+        // from, so `call()` now errors only on genuine transport failure.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+
+        let resp = agent
+            .get(url)
+            .call()
             .map_err(|e| HttpError::NetworkFailure(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            // One shared classifier (`from_status`) rather than a match here:
+            // two transports mapping status→arm independently is exactly how
+            // this enum's arms drifted out of reach in the first place.
+            return Err(HttpError::from_status(url, resp.status().as_u16(), retry_after));
+        }
+
         let mut body = Vec::new();
         use std::io::Read;
         resp.into_body().as_reader().read_to_end(&mut body)
