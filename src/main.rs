@@ -6861,6 +6861,21 @@ async fn main() -> Result<(), CliError> {
                         // trace of this path read as "no tree was hashed".
                         sui_compat::source::nar_hash_dump();
                         ifd_realize_dump();
+                        // …and SUI_PARITY_STRICT was the third instance of that
+                        // same wiring gap, with the worst failure mode of the
+                        // three. `report_parity_strict` was called only from
+                        // `eval_render_threaded` (the --no-vm path), so on the
+                        // DEFAULT engine a strict run printed NOTHING AT ALL —
+                        // not even the "clean eval" line — and an operator
+                        // reads silence as clean.
+                        //
+                        // It must be drained HERE, on the thread that
+                        // evaluated: the ledger is `thread_local!`
+                        // (sui-eval/src/builtins/derivation.rs:66), so draining
+                        // from the parent after `join()` would read a different
+                        // thread's empty ledger and report clean by
+                        // construction — the same bug wearing a different hat.
+                        report_parity_strict();
                         Ok(output)
                     })
                     .expect("failed to spawn VM eval thread");
