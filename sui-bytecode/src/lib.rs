@@ -69,6 +69,10 @@ pub mod intern;
 pub mod nanbox;
 /// Bytecode instruction set.
 pub mod opcode;
+/// The VM's normalized differential render — format-locked to
+/// `sui_eval::render::render_tree`, and refusing (never placeholdering) an
+/// unforced thunk.
+pub mod render;
 /// VM-specific value representation.
 pub mod value;
 /// Bytecode interpreter / execution engine.
@@ -189,6 +193,71 @@ pub fn eval_full(input: &str) -> Result<EvalResult, EvalError> {
 /// Useful in tests or when memory pressure is a concern.
 pub fn clear_compile_cache() {
     COMPILE_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Compile and execute a Nix **file** on the bytecode VM, with **no fallback**.
+///
+/// The file-shaped sibling of [`eval_full`], and the entry point the nix
+/// language corpus needs: until now the only way to run the VM over a file was
+/// through the CLI's VM arm, which re-runs the whole expression on the
+/// tree-walker the moment the VM errors — so a corpus driven through it would
+/// have measured the walker on both sides.
+///
+/// Two things make this different from `eval_full(&read_to_string(path))`:
+///
+/// 1. **Base directory.** Relative paths (`./foo.nix`, `import ./lib`) resolve
+///    against the file's own directory via
+///    [`Compiler::compile_with_base_dir`] — which, before this function, had
+///    **no call site anywhere in the workspace**.
+/// 2. **No compile cache.** [`eval_full`] keys its thread-local cache on the
+///    source *text*; two different files with identical text would share a
+///    chunk compiled against the first one's base directory. Corpus fixtures
+///    are small and duplicates are plausible, so this path compiles fresh.
+///
+/// There is deliberately no fallback arm. Fallback still exists *below* this
+/// call — at the imported-file and builtin boundaries inside the VM — and
+/// `SUI_VM_STRICT=1` is what turns the two failure-shaped ones into errors; see
+/// [`fallback`]. A caller measuring VM coverage must set it, or the answer it
+/// reads may be the walker's.
+///
+/// # Errors
+///
+/// [`FileEvalError::Read`] if the file cannot be read, otherwise the compile or
+/// runtime error, unmodified.
+pub fn eval_file(path: &std::path::Path) -> Result<EvalResult, FileEvalError> {
+    let source = std::fs::read_to_string(path).map_err(|e| FileEvalError::Read {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    let base_dir = path
+        .parent()
+        .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf);
+
+    let (chunk, mut interner) =
+        Compiler::compile_with_base_dir(&source, base_dir).map_err(EvalError::Compile)?;
+    let value = VM::execute(chunk, &mut interner).map_err(EvalError::Runtime)?;
+    Ok(EvalResult { value, interner })
+}
+
+/// Failure of [`eval_file`].
+///
+/// A separate type rather than a new [`EvalError`] variant on purpose: reading
+/// a file is not a compile or runtime event, and `EvalError` is matched
+/// exhaustively in `sui-eval` — widening it there would force an arm that has
+/// nothing to say.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FileEvalError {
+    /// The file could not be read.
+    #[error("cannot read {path}: {message}")]
+    Read {
+        /// The path as given.
+        path: String,
+        /// The OS error text.
+        message: String,
+    },
+    /// Compilation or execution failed.
+    #[error(transparent)]
+    Eval(#[from] EvalError),
 }
 
 /// Unified error type wrapping both compile and runtime errors.
