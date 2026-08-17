@@ -73,6 +73,38 @@ pub mod census {
     pub static LIST_LIVE: AtomicI64 = AtomicI64::new(0);
     pub static LIST_MADE: AtomicI64 = AtomicI64::new(0);
 
+    /// Scope-narrowing verdict counters (`SUI_SCOPE_NARROW`, `eval.rs`).
+    ///
+    /// Every `let` / `rec` / pattern-default binding whose value is a thunk is
+    /// classified exactly once: NARROWED means it kept its outer-env capture
+    /// (no `Thunk -> Env -> Thunk` cycle closed), PINNED means its RHS reaches
+    /// a sibling in the same scope and it still takes Phase 2's `update_env`.
+    ///
+    /// The ratio is the whole point: it is what says whether narrowing does
+    /// anything on REAL code rather than on a synthetic probe. Both counters
+    /// are monotonic totals, not live counts — there is nothing to decrement,
+    /// which is why they need no `Drop` partner (and so cannot acquire
+    /// `ENV_LIVE`'s under-reporting bug, where `Env::bind`'s `Rc::make_mut`
+    /// clone is never counted as `made` while every drop is counted).
+    pub static SCOPE_THUNKS_NARROWED: AtomicI64 = AtomicI64::new(0);
+    pub static SCOPE_THUNKS_PINNED: AtomicI64 = AtomicI64::new(0);
+
+    /// Record a binding that kept its outer-env capture.
+    #[inline(always)]
+    pub fn scope_narrowed() {
+        if enabled() {
+            SCOPE_THUNKS_NARROWED.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// Record a binding that still needs the scope env.
+    #[inline(always)]
+    pub fn scope_pinned() {
+        if enabled() {
+            SCOPE_THUNKS_PINNED.fetch_add(1, Relaxed);
+        }
+    }
+
     /// True iff `SUI_LIVE_CENSUS=1`. Cached — read once.
     #[inline]
     pub fn enabled() -> bool {
@@ -154,7 +186,8 @@ attrs_live={al} attrs_made={am} \
 thunk_live={tl} thunk_made={tm} thunk_eval={te} \
 env_live={el} env_made={em} \
 nixstr_live={sl} nixstr_made={sm} \
-list_live={ll} list_made={lm}",
+list_live={ll} list_made={lm} \
+scope_narrowed={sn} scope_pinned={sp}",
             rss_mb = rss as f64 / (1024.0 * 1024.0),
             al = ATTRS_LIVE.load(Relaxed),
             am = ATTRS_MADE.load(Relaxed),
@@ -167,6 +200,8 @@ list_live={ll} list_made={lm}",
             sm = NIXSTR_MADE.load(Relaxed),
             ll = LIST_LIVE.load(Relaxed),
             lm = LIST_MADE.load(Relaxed),
+            sn = SCOPE_THUNKS_NARROWED.load(Relaxed),
+            sp = SCOPE_THUNKS_PINNED.load(Relaxed),
         );
         let (src_files, src_bytes) = crate::pos::source_text_census();
         eprintln!(
