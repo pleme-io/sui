@@ -130,9 +130,28 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     });
 
     // hashFile (curried)
+    //
+    // ── ★ THE PATH MUST BE REALIZED *AND* MATERIALIZED ────────────────────
+    // Both halves, in this order, or this builtin ENOENTs on a path that
+    // `pathExists` just confirmed. `coerce_to_realized_path` is IFD (build a
+    // derivation argument before reading it); `materialize_str` is the
+    // FILESYSTEM-READ-ONLY redirect that rewrites a fetched input's
+    // `/nix/store/<narhash>-source` NAME onto the fetcher cache dir where the
+    // bytes actually live. A fetched flake input's store path never exists on
+    // the real filesystem, so the second half is not an optimisation.
+    //
+    // Measured 2026-08-17: substrate's D2 freshness gate is
+    // `if pathExists p && … then hashFile p`, so the guard passed and this
+    // threw, and `sui system rebuild` on every fleet darwin/NixOS config died
+    // at `navigate attrs: hashFile: No such file or directory` — identically
+    // for a local `.#host` ref and a remote `github:…/<rev>#host` one, which
+    // is what proved it was eval, not the fetcher. `pathExists` (paths.rs),
+    // `readFile`, `readDir`, `import` and `builtins.path` all already spell
+    // both halves; this one spelled neither.
     register_curried(builtins, "hashFile", |algo, path_val| {
         let algo_str = algo.as_string()?;
-        let path_str = path_val.coerce_to_path("hashFile")?;
+        let path_str =
+            crate::path::materialize_str(&path_val.coerce_to_realized_path("hashFile")?);
         let contents = std::fs::read(&path_str)
             .map_err(|e| EvalError::IoError { context: "hashFile".into(), message: e.to_string() })?;
         let hex = match algo_str {

@@ -150,9 +150,16 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
         }
     });
 
-    // File metadata helpers
+    // File metadata helpers.
+    //
+    // Both spell `materialize_str(coerce_to_realized_path(..))` for the same
+    // reason `hashFile` does (see convert.rs): a fetched flake input's
+    // `/nix/store/<narhash>-source` path is a NAME, not a location, so a bare
+    // `coerce_to_path` reads a path that never exists. These two carry no
+    // known caller — nixpkgs cannot reach the `sui.*` namespace — so this is
+    // closing the class, not a live bug.
     register_builtin(sui_ext, "fileSize", |args| {
-        let path = args[0].coerce_to_path("sui.fileSize")?;
+        let path = crate::path::materialize_str(&args[0].coerce_to_realized_path("sui.fileSize")?);
         let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
             context: format!("sui.fileSize: {path}"),
             message: e.to_string(),
@@ -160,7 +167,7 @@ pub(crate) fn register(sui_ext: &mut NixAttrs) {
         Ok(Value::Int(metadata.len() as i64))
     });
     register_builtin(sui_ext, "fileMtime", |args| {
-        let path = args[0].coerce_to_path("sui.fileMtime")?;
+        let path = crate::path::materialize_str(&args[0].coerce_to_realized_path("sui.fileMtime")?);
         let metadata = std::fs::metadata(&path).map_err(|e| EvalError::IoError {
             context: format!("sui.fileMtime: {path}"),
             message: e.to_string(),

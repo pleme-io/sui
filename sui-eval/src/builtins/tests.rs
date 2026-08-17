@@ -2447,6 +2447,65 @@ fn builtins_hash_file_missing() {
     assert!(result.is_err());
 }
 
+// ── ★ THE ORACLE THE OTHER TWO hashFile TESTS CANNOT BE ────────────────
+//
+// Both tests above operate on paths that exist (or don't) on the REAL
+// filesystem, so neither populates INPUT_SOURCE_MAP — and therefore neither
+// can tell a materialized read from a bare one. That blind spot is exactly
+// how the defect below shipped.
+//
+// A fetched flake input is named by a `/nix/store/<narhash>-source` path that
+// NEVER EXISTS on disk; the bytes live in the fetcher's cache dir, and
+// `materialize` is the redirect between the two. `hashFile` used a bare
+// `coerce_to_path`, so it read the store name directly and ENOENTed on a file
+// `pathExists` had just confirmed — which is precisely the shape substrate's
+// D2 gate takes (`if pathExists p && … then hashFile p`), and why
+// `sui system rebuild` died on every fleet config at
+// `navigate attrs: hashFile: No such file or directory`.
+//
+// This test asserts the INVARIANT, not the instance: on a registered input
+// source, every filesystem builtin must agree about the same path. Adding a
+// builtin that skips materialization fails here.
+#[test]
+fn fs_builtins_agree_on_a_registered_input_source_path() {
+    let real = std::env::temp_dir().join("sui_eval_test_input_src");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("Cargo.lock"), "hello").unwrap();
+
+    // The store name is deliberately absent from disk — that is the point.
+    let store = std::path::Path::new("/nix/store/0000000000000000000000000000000-source");
+    assert!(!store.exists(), "the fixture store path must NOT exist on disk");
+    crate::path::register_input_source(store, &real);
+
+    let p = format!("{}/Cargo.lock", store.display());
+
+    // pathExists was already correct — it is the guard the real failure passed.
+    let exists = eval(&format!(r#"builtins.pathExists "{p}""#)).unwrap();
+    assert_eq!(exists, Value::Bool(true), "pathExists must materialize");
+
+    // readFile was already correct.
+    let read = eval(&format!(r#"builtins.readFile "{p}""#)).unwrap();
+    match read {
+        Value::String(ns) => assert_eq!(ns.chars, "hello", "readFile must materialize"),
+        other => panic!("expected string, got {other:?}"),
+    }
+
+    // hashFile is the one that did not. sha256("hello"), same digest the
+    // plain-path test above asserts — so a pass here is agreement with it,
+    // not merely absence of an error.
+    let hashed = eval(&format!(r#"builtins.hashFile "sha256" "{p}""#))
+        .expect("hashFile must materialize a registered input path, not ENOENT on its store name");
+    match hashed {
+        Value::String(ns) => assert_eq!(
+            ns.chars, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "hashFile must hash the materialized bytes"
+        ),
+        other => panic!("expected string, got {other:?}"),
+    }
+
+    std::fs::remove_dir_all(&real).ok();
+}
+
 // ── unsafeGetAttrPos tests ──────────────────────────────
 
 #[test]
