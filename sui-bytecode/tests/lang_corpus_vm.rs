@@ -592,13 +592,32 @@ fn no_agreement_rests_on_a_placeholder() {
         agreeing.len()
     );
 
+    // Scan BOTH renders, not just the walker's.
+    //
+    // This loop read `r.tree` alone and the doc above claimed it "re-renders
+    // every agreeing row" — it did neither. For an (Ok, Ok) agreement the two
+    // strings are equal, so scanning one was not a false green; but it proved
+    // nothing whatever about `render_vm`, which is the render this file exists
+    // to trust. A guard that never looks at the engine under test is a guard
+    // about the oracle.
     let mut tainted: Vec<String> = Vec::new();
     for r in agreeing {
-        let Ok(rendered) = &r.tree else { continue };
-        for ph in PLACEHOLDERS {
-            if rendered.contains(ph) {
-                tainted.push(format!("  {}: agreement contains {ph} — {rendered}", r.name));
-                break;
+        // `tree` and `vm` carry different Err types, so both are narrowed to
+        // `Option<&str>` — the error side is irrelevant here, only the
+        // rendered text matters.
+        for (side, rendered) in [
+            ("walker", r.tree.as_deref().ok()),
+            ("vm", r.vm.as_ref().map(String::as_str).ok()),
+        ] {
+            let Some(rendered) = rendered else { continue };
+            for ph in PLACEHOLDERS {
+                if rendered.contains(ph) {
+                    tainted.push(format!(
+                        "  {} [{side}]: agreement contains {ph} — {rendered}",
+                        r.name
+                    ));
+                    break;
+                }
             }
         }
     }
@@ -664,4 +683,45 @@ fn the_render_depth_cap_is_shared() {
         sui_bytecode::render::DEEP_SENTINEL,
         sui_eval::render::DEEP_SENTINEL
     );
+}
+
+/// `escape_str` is duplicated across the two crates and MUST agree byte for
+/// byte, because the differential compares rendered strings.
+///
+/// It was pinned nowhere. The sibling constants above got a real cross-crate
+/// comparison; the one piece of duplicated *logic* got none, and the in-crate
+/// test that looked like its pin
+/// (`render.rs::the_depth_cap_matches_the_other_engines`) compares
+/// `MAX_RENDER_DEPTH` against a local function returning the literal `128` —
+/// it asserts `128 == 128` and cannot see sui-eval at all.
+///
+/// A divergence here is the worst kind for this file: it would surface as a
+/// corpus row DIVERGING on a value both engines computed identically, sending
+/// the reader after an evaluator bug that does not exist.
+#[test]
+fn escape_str_is_byte_identical_across_the_engines() {
+    // Every class the renderers can disagree on: the escapes themselves, the
+    // characters adjacent to them, and a non-ASCII case where a naive
+    // byte-wise implementation and a char-wise one part company.
+    let cases = [
+        "",
+        "plain",
+        "with \"quotes\"",
+        "back\\slash",
+        "new\nline",
+        "tab\there",
+        "carriage\rreturn",
+        "dollar${interp}",
+        "mixed \"a\\b\nc\"",
+        "unicode: é 日本語 🙂",
+        "\u{1}\u{7f}",
+    ];
+    for c in cases {
+        assert_eq!(
+            sui_bytecode::render::escape_str(c),
+            sui_eval::render::escape_str(c),
+            "escape_str diverges on {c:?} — a rendered-string differential \
+             would report this as an EVALUATOR divergence"
+        );
+    }
 }
