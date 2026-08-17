@@ -88,23 +88,23 @@ members = [
     # CiRun without the execution tree (CANTEIRO §7.1-C).
     "canteiro-types",
     "sui-supercacheci",
-    # supa-charge-akeyless-ci Phase 2 — the intercept/resolve/fall-through
+    # supa-charge-ci Phase 2 — the intercept/resolve/fall-through
     # wrapper around plain `docker build`.  Computes a sui-spec
     # DockerfileGraph, checks sui-cache's StorageBackend for each node, and
     # either materializes a cache hit or shells out to real `docker build`
     # on any miss (never a partial cache splice — see the crate docs).
     "sui-dockerfile-wrapper",
-    # Phase 3 of supa-charge-akeyless-ci: the standing pre-warming
+    # Phase 3 of supa-charge-ci: the standing pre-warming
     # service that polls watched public Dockerfiles for new commits and
     # invokes sui-dockerfile-wrapper in cache-miss mode to keep the
     # cache warm ahead of any real build.
     "sui-dockerfile-prewarmer",
-    # Phase 4 of supa-charge-akeyless-ci: the build equivalence checker.
+    # Phase 4 of supa-charge-ci: the build equivalence checker.
     # Compares two built images' `docker history` layer sequence + final
     # filesystem content (modulo a typed volatile-path allowlist), driven
     # through sui-dockerfile-wrapper's CommandRunner seam.
     "sui-dockerfile-verify",
-    # Phase 3b of supa-charge-akeyless-ci: node-local L0 disk cache
+    # Phase 3b of supa-charge-ci: node-local L0 disk cache
     # daemon. One instance per k8s node (DaemonSet), UDS protocol,
     # falls through to sui-cache's remote StorageBackend on local miss.
     "sui-dockerfile-node-cache-daemon",

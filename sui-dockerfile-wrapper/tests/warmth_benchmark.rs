@@ -1,7 +1,7 @@
 //! Warmth / cache-hit-rate benchmark harness — Phase 4 of
-//! `supa-charge-akeyless-ci`.
+//! `supa-charge-ci`.
 //!
-//! Runs the akeyless-shaped `nonroot-gateway` Dockerfile fixture (the
+//! Runs the vendor-shaped `nonroot-gateway` Dockerfile fixture (the
 //! same canonical instance `sui-spec`'s dockerfile tests use — see
 //! `sui-spec/specs/dockerfile.lisp`) through
 //! [`sui_dockerfile_wrapper::run_wrapper`] three times against the same

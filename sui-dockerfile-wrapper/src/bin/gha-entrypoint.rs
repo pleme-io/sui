@@ -1,4 +1,4 @@
-//! GHA-side integration point for Phase 3b of `supa-charge-akeyless-ci`.
+//! GHA-side integration point for Phase 3b of `supa-charge-ci`.
 //!
 //! **Scoped-gap note (see the phase's final report):** the fleet
 //! convention for shipping a GitHub Actions integration point is a

@@ -1,4 +1,4 @@
-//! Phase 2 of `supa-charge-akeyless-ci`: the intercept/resolve/fall-through
+//! Phase 2 of `supa-charge-ci`: the intercept/resolve/fall-through
 //! wrapper around plain `docker build`.
 //!
 //! Given a Dockerfile path + build context + build-arg map, this crate:
@@ -12,7 +12,7 @@
 //!    `docker pull` instead of rebuilding — [`WrapperOutcome::CacheHit`];
 //! 4. on **any** miss (partial or full), shells out to a real `docker
 //!    build` for the *entire* Dockerfile — never a partial cache splice,
-//!    an explicit non-goal per the `supa-charge-akeyless-ci` plan — then
+//!    an explicit non-goal per the `supa-charge-ci` plan — then
 //!    back-fills the cache with every node's hash → image reference for
 //!    next time — [`WrapperOutcome::CacheMiss`];
 //! 5. on a failing `docker build`, returns

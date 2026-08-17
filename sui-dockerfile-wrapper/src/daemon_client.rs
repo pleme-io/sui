@@ -1,4 +1,4 @@
-//! Daemon-aware cache client — Phase 3b of `supa-charge-akeyless-ci`.
+//! Daemon-aware cache client — Phase 3b of `supa-charge-ci`.
 //!
 //! [`DaemonAwareCacheClient`] implements the same
 //! [`StorageBackend`](sui_castore::StorageBackend) trait the

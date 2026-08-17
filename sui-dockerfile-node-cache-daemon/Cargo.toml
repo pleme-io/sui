@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Node-local L0 disk cache daemon for supa-charge-akeyless-ci (Phase 3b) — one instance per k8s node, falls through to sui-cache's remote StorageBackend on local miss"
+description = "Node-local L0 disk cache daemon for supa-charge-ci (Phase 3b) — one instance per k8s node, falls through to sui-cache's remote StorageBackend on local miss"
 keywords = ["nix", "docker", "cache", "ci", "daemon"]
 categories = ["caching"]
 

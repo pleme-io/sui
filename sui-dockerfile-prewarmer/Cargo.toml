@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Standing pre-warming service — polls watched public Dockerfiles for new commits and keeps sui's cache warm via sui-dockerfile-wrapper (supa-charge-akeyless-ci Phase 3)"
+description = "Standing pre-warming service — polls watched public Dockerfiles for new commits and keeps sui's cache warm via sui-dockerfile-wrapper (supa-charge-ci Phase 3)"
 keywords = ["nix", "docker", "cache", "ci"]
 categories = ["caching"]
 

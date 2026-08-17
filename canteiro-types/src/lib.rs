@@ -52,7 +52,7 @@ pub struct OutputAddr(pub String);
 pub enum EnvClass {
     /// No environment — pure build/lint/test that needs nothing live.
     None,
-    /// A local akeyless stack brought up on the runner (M1 — needs cofre
+    /// A local vendor service stack brought up on the runner (M1 — needs cofre
     /// cross-org secrets, CANTEIRO §5).
     LocalStack,
     /// A warm live tenant claimed from the viveiro pool (DESIGN, §7). The

@@ -1,6 +1,6 @@
 //! Real-docker integration test for the equivalence checker.
 //!
-//! Builds two tiny fixture images once (an akeyless-shaped nonroot
+//! Builds two tiny fixture images once (a vendor-shaped nonroot
 //! gateway-style Dockerfile) — one pair that must compare *equivalent*
 //! (same Dockerfile, rebuilt) and one pair that must compare
 //! *different* (one instruction changed) — then runs

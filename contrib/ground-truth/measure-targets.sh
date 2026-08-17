@@ -21,8 +21,8 @@
 # TARGETS: real Rust + real Go compiles with SMALL outputs (output NAR <= 2 MiB so
 # the whole target round-trips the current serve path — axum DefaultBodyLimit is
 # 2 MiB, larger NARs are rejected; see the numbers doc). These are SUBSTITUTES for
-# the akeyless service images, which are toolchain-gated (akeyless-csi-provider
-# needs go1.26; host has go1.25) — stated plainly, never faked.
+# the larger service images we actually target, which are toolchain-gated (one
+# of them needs go1.26; host has go1.25) — stated plainly, never faked.
 #
 # TIER-HONEST: measures the SOFTWARE (tiers, resolver, write/read-through, real
 # closure round-trip). Deps (rustc/go/stdenv) come from cache.nixos.org normally

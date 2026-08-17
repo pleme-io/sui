@@ -34,7 +34,7 @@
 //!   mutated until the operator flips the band LIVE (breathe's shadow gate).
 //! - **LiveTODO(loop):** the coordinator that *ticks* this plan tick-by-tick is
 //!   [`autorevivy`]'s CLEAN face (`superCacheCiRef`) — design-stage; the running
-//!   interim actuator is the `akeyless-nix-images` `camelot-cache-warm`
+//!   interim actuator is the vendor image repo's `camelot-cache-warm`
 //!   scheduled workflow (6 h cadence + on tracked-input change). This module
 //!   ships the **brain both derive from**, never a second controller.
 //! - **LiveTODO(observe-feed):** the real Observe beat reads L1/L2 presence
@@ -131,7 +131,7 @@ impl fmt::Display for TrackedInputKind {
 /// closure; a change to any of them re-warms the target.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WarmTarget {
-    /// The dep / service name (e.g. `"akeyless-auth"`).
+    /// The dep / service name (e.g. `"service-a"`).
     pub name: String,
     /// Which builder arch warms this target.
     pub arch: Arch,

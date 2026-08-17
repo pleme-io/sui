@@ -11,7 +11,7 @@
 ;;
 ;; Two canonical instances:
 ;;   1. "simple-three-instruction" -- FROM/RUN/CMD, no build args.
-;;   2. "nonroot-gateway" -- approximates a real akeyless-style
+;;   2. "nonroot-gateway" -- approximates a real production-style
 ;;      nonroot gateway image: apt-get installs, a
 ;;      `RUN --mount=type=bind,source=.,target=/build` FIPS install
 ;;      block gated on ARG FIPS + ARG TARGETARCH, and a final

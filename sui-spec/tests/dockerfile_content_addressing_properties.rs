@@ -455,7 +455,7 @@ proptest! {
 //
 // Pins the `nonroot-gateway` canonical fixture's exact partial-
 // invalidation number, so the property's abstraction stays anchored to
-// the real akeyless-shaped corpus the wrapper actually caches.
+// the real vendor-shaped corpus the wrapper actually caches.
 
 #[test]
 fn nonroot_gateway_single_run_edit_partial_invalidation_is_exact() {

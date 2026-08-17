@@ -4,7 +4,7 @@
 # schema). It is the DESTINATION posture (Postgres store L2 + Redis cache L1 +
 # tmpfs RAMDISK sandbox, never_touch_disk = true) narrowed to ONE local node:
 # localhost endpoints, bands sized for the 8 GiB podman VM, and the fleet-only
-# surfaces (multi-arch camelot runners, akeyless co-opt) left empty because a
+# surfaces (multi-arch camelot runners, image co-opt) left empty because a
 # single node cannot exercise them (tier-honest — do not fabricate a fleet).
 #
 # Consumed by:   sui cache serve --features tiered --supercache-config <this>
@@ -97,7 +97,7 @@ idle_scale_zero_secs = 0
   enabled = false
   max_ondemand = 0
 
-# ── coopt — OFF (M4; the akeyless-nix-images co-optimization loop is unwired) ───
+# ── coopt — OFF (M4; the vendor-images co-optimization loop is unwired) ────────
 [coopt]
 enabled = false
 images = []

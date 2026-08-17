@@ -1,4 +1,4 @@
-//! Phase 3b of `supa-charge-akeyless-ci`: a node-local L0 disk cache
+//! Phase 3b of `supa-charge-ci`: a node-local L0 disk cache
 //! daemon.
 //!
 //! One instance runs per Kubernetes node (as a `DaemonSet`, see the

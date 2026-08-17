@@ -1,5 +1,5 @@
 //! Dockerfile build **equivalence checker** — Phase 4 of
-//! `supa-charge-akeyless-ci`'s correctness half.
+//! `supa-charge-ci`'s correctness half.
 //!
 //! Given two already-built image references (or two `docker save`
 //! tarball paths — see [`filesystem::union_filesystem`]), this crate

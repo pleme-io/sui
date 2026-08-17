@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Intercept/resolve/fall-through wrapper around `docker build` — cache-first via sui-cache, falling through to real docker on any miss (supa-charge-akeyless-ci Phase 2)"
+description = "Intercept/resolve/fall-through wrapper around `docker build` — cache-first via sui-cache, falling through to real docker on any miss (supa-charge-ci Phase 2)"
 keywords = ["nix", "docker", "cache", "ci"]
 categories = ["caching"]
 
