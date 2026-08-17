@@ -768,13 +768,35 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// Read once through a `OnceLock` one-way latch — the `resolve_env::enabled()`
 /// idiom — so the value cannot change mid-eval and the default path pays a
 /// single relaxed load.
+/// ★ THE DEFAULT IS 2 (flipped 2026-08-17). `0` and `1` remain selectable for
+/// bisecting a suspected narrowing bug — that is the whole reason the latch
+/// survives rather than the code being inlined.
+///
+/// It shipped as `0`, and NOTHING in the tree set it. So the measured result —
+/// 700.0 MB / 1,020,001 live nodes → 22.2 MB / 0 on the gate probe, with the
+/// process RSS floor at 20.5 MB, i.e. *at the floor* — reached nobody. A fix
+/// present but unreached is the same shape as the VM bridges that were
+/// installed two-of-three, and as `vm_fallback_count()` sitting unread since
+/// the day it was written.
+///
+/// Flipped only after byte-parity was proven at every level, because a wrong
+/// drvPath is far worse than a leak:
+///   - the 117-fixture lang corpus: identical at 0, 1 and 2
+///   - the full `sui-eval` suite at level 2: 1685 pass
+///   - `sui eval --raw <expr>.drvPath` byte-identical across 0/1/2 AND equal to
+///     real nix
+///
+/// The narrowing removes the second half of an `Rc` cycle for bindings that
+/// provably do not need the scope env. It is NOT free of judgement: `P2`, a
+/// genuinely-recursive scope, must still pin, and it does — a narrowing that
+/// improved every probe would mean it was discarding something it should keep.
 fn scope_narrow_level() -> u8 {
     static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *LEVEL.get_or_init(
         || match std::env::var("SUI_SCOPE_NARROW").ok().as_deref() {
+            Some("0") => 0,
             Some("1") => 1,
-            Some("2") => 2,
-            _ => 0,
+            _ => 2,
         },
     )
 }
