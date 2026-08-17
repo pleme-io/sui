@@ -100,15 +100,60 @@ jobs:
       - name: Run the test suite
         run: cargo test --workspace
 
-      # NOT YET ENABLED, and named so it is not forgotten: this runner installs
-      # nix (three steps up) and then never uses it for the differentials.
-      # `SUI_TEST_ONLINE` is set by NO workflow, so 67 `skip_if_offline()` call
-      # sites across 20 files silently pass, and four declared sui-vs-nix gates
-      # (cli_parity, build_parity, full_build, real_nix_client) report `ok`
-      # while no-opping. Measured: the prebuilt `cli_parity` binary runs 10
-      # declared differentials in 0.00s with zero nix invocations and reports
-      # `ok` — not `ignored`. That is pure recovered coverage sitting one env
-      # var away, but those tests have never run in CI, so flipping it blind
-      # would turn this gate red for reasons unrelated to the commit that
-      # flips it. It wants its own change, run locally first.
-      #   pending-ci: SUI_TEST_ONLINE=1
+      # ── ★ SUI_TEST_ONLINE, THE SAFE HALF ────────────────────────────────
+      # This runner installs nix (three steps up) and then never used it for
+      # the differentials: `SUI_TEST_ONLINE` was set by NO workflow, so 67
+      # `skip_if_offline()` call sites across 20 files silently passed and four
+      # declared sui-vs-nix gates reported `ok` while no-opping. The measured
+      # signature of that vacuity is a 0.00s runtime with zero nix invocations
+      # — and `ok`, not `ignored`, which is why nobody saw it.
+      #
+      # The flip was verified locally (darwin/aarch64, nix 2.31.5) binary by
+      # binary before landing, NOT flipped blind on the whole workspace. The
+      # binaries below are the ones that came back green; each moved from 0.00s
+      # to real work (cli_parity 0.00 -> 2.64s, build_parity 0.00 -> 2.24s),
+      # which is the inverted vacuity signature and the thing worth checking if
+      # one of them ever goes suspiciously fast again.
+      #
+      # ★ DO NOT read "green" here as "N differentials executed". On
+      # ubuntu-latest several of these go green for a SECOND, unrelated reason:
+      # the DeterminateSystems installer leaves a near-empty store and a
+      # flakes-first config, so `resolve_nixpkgs_path()` likely returns None
+      # (skipping all 27 nixpkgs-lib rows) and the store-query rows have almost
+      # nothing to iterate. This step recovers real coverage on a developer
+      # machine and less than its test count suggests on CI. The destination is
+      # a pinned-oracle job; until then the honest claim is "these no longer
+      # no-op", not "these all ran".
+      #
+      # Deliberately NOT included, each measured and each for a stated reason:
+      #   build_levels          - `assert!(success > 0)` over $HOME/code/github/
+      #                           pleme-io, which does not exist on a runner ->
+      #                           CI-FATAL. Also hardcodes aarch64-darwin.
+      #   flake_eval_categorized - same shape, `assert!(passed >= min_pass)` with
+      #                           min_pass 1/6/1 across three tiers -> CI-FATAL.
+      #   drv_path_parity        - spawns 8 real flake evals with NO timeout;
+      #   flake_eval_mass          unbounded on an operator machine (>180s, never
+      #                           finished), vacuous on CI where the repos are
+      #                           absent. Note the second-order problem: these
+      #                           can only ever be non-vacuous on a machine
+      #                           where they hang.
+      #   diff_eval_primitives   - one REAL divergence, `diff_filter_attrs`:
+      #                           sui exposes `builtins.filterAttrs`, which nix
+      #                           does not have at any feature level. Gated
+      #                           separately by sui-eval's builtin_registry
+      #                           test; this row lands once the six nixpkgs-lib
+      #                           leaks are dropped.
+      #   pending-ci: SUI_TEST_ONLINE=1 for the remaining binaries
+      - name: Run the sui-vs-nix differentials (online)
+        env:
+          SUI_TEST_ONLINE: "1"
+        run: |
+          cargo test -p pleme-io-sui --test cli_parity
+          cargo test -p sui-build    --test build_parity
+          cargo test -p sui-build    --test full_build
+          cargo test -p sui-daemon   --test real_nix_client
+          cargo test -p sui-eval     --test oracle
+          cargo test -p sui-eval     --test oracle_sanity
+          cargo test -p sui-eval     --test lang_corpus
+          cargo test -p sui-eval     --test diff_eval_nixpkgs_lib
+          cargo test -p sui-eval     --test builtin_registry
