@@ -1,0 +1,81 @@
+# clippy-gate-baseline — packages NOT yet covered by the deny-tier clippy gate.
+#
+# Same shape, and the same contract, as runtime-install-baseline.txt: an entry
+# here is TRACKED DEBT, not an exemption. The list may only SHRINK. Nothing is
+# added to it — a new crate is gated from birth by adding it to the
+# `clippy-gate` alias in .cargo/config.toml, never by landing it here.
+#
+# WHY THESE ARE HERE, stated once and honestly: they are not known-dirty, they
+# are UNMEASURED. Establishing that a package is deny-tier clean requires
+# compiling it, and this baseline was produced on a workstation that was at 97%
+# disk with other builds running, under an explicit instruction not to build the
+# workspace. So the gate covers exactly what was compiled and observed green
+# (`cargo clippy -p sui-eval`, which pulls in seven workspace siblings and
+# therefore lints all eight), and every package that was not compiled is listed
+# below rather than assumed clean. An unmeasured package silently included in
+# the gate is how a gate ends up red on arrival.
+#
+# Graduating one is a small, bounded task: run `cargo clippy -p <name>`, and if
+# it exits 0, move the name into the alias and delete its line here. The
+# per-line note records what is actually known about each.
+#
+# ── denominator ──────────────────────────────────────────────────────────
+# gated:     8   (the `clippy-gate` alias in .cargo/config.toml)
+# ungated:  23   (the entries below)
+# total:    31   (30 `members` in Cargo.toml + the root package pleme-io-sui)
+#
+# 8 + 23 = 31. If that sum stops holding, one of the three files disagrees with
+# the workspace and the gate is examining something other than what it claims.
+# The workflow floors the gated count before it runs clippy; the ungated count
+# is carried here so the COVERAGE FRACTION is reviewable rather than implied.
+# Coverage today is 8/31 = 25.8% of packages. Stating that plainly is the point
+# — a gate whose scope is unstated reads as total.
+
+# ── ungated packages (measurement missing) ───────────────────────────────
+pleme-io-sui                        # root package + the `sui` binary; largest build
+canteiro-types
+sui-bigorna
+sui-build
+sui-cache
+sui-cache-eval
+sui-castore
+sui-daemon
+sui-daemon-client
+sui-daemon-frame
+sui-daemon-graph
+sui-dockerfile-node-cache-daemon
+sui-dockerfile-prewarmer
+sui-dockerfile-verify
+sui-dockerfile-wrapper
+sui-fmt
+sui-ir
+sui-lsp
+sui-nix-wrap
+sui-orchestrate
+sui-protocol
+sui-registry
+sui-supercacheci
+
+# ── target-kind debt: --all-targets is NOT gated ─────────────────────────
+# This one IS measured, and it is the reason the alias stops at the default
+# targets (lib + bins) instead of adding `--all-targets`.
+#
+# `cargo clippy -p sui-eval --lib --tests` exits 101 with 14 errors, all
+# `clippy::approx_constant` (deny-by-default), all of the shape:
+#
+#   sui-eval/src/convert.rs:153
+#     assert_eq!(string_keyed_to_eval(&StringKeyedValue::Float(3.14)),
+#                Value::Float(3.14));
+#     error: approximate value of `f{32, 64}::consts::PI` found
+#
+# These are arbitrary float fixtures, not an intended PI, so the lint is
+# correct about the literal and wrong about the intent. Graduating this means
+# choosing a fixture value clippy does not recognise (or a scoped
+# `#[allow(clippy::approx_constant)]` on the test modules, which is weaker) and
+# then adding `--all-targets` to the alias. It is deliberately NOT bundled into
+# the change that introduced this gate: it edits test fixtures, and the run
+# that would prove those tests still pass is a heavier build than the gate.
+#
+# Until then, test/bench/example targets are unlinted at deny tier for every
+# package, gated or not.
+--all-targets                       # blocked: 14 approx_constant in sui-eval tests

@@ -1128,7 +1128,7 @@ const _: () = assert!(std::mem::size_of::<Value>() <= 16);
 /// native stack overflow into the recoverable error nix itself raises.
 ///
 /// This is the runaway half of the same discipline the release-build
-/// `MAX_EVAL_DEPTH` guard provides (which is `usize::MAX` in release to
+/// `MAX_EVAL_DEPTH` guard provides (which is `None` in release to
 /// admit nixpkgs' legitimately-deep fixpoints); scoping the bound to
 /// *promotions* keeps ordinary deep evaluation unbounded while still
 /// catching a non-terminating fixpoint before the OS stack does.
@@ -1651,7 +1651,7 @@ impl Thunk {
                 // path `hello` hits when `builtins.currentSystem` is macOS).
                 // There the empty partial feeds a downstream `makeOverridable`
                 // fixpoint that recurses without bound.  Release disables the
-                // general `MAX_EVAL_DEPTH` guard (`usize::MAX`) to admit
+                // general `MAX_EVAL_DEPTH` guard (`None`) to admit
                 // nixpkgs' legitimately-deep fixpoints, so nothing else stops
                 // that recursion before the OS stack aborts.
                 //

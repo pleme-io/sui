@@ -329,28 +329,37 @@ pub fn is_pure_mode() -> bool {
 /// **Test builds** keep a low limit (2 048) so that infinite-recursion
 /// tests fail quickly instead of spinning for minutes.
 ///
-/// **Non-test builds** disable the depth guard entirely (`usize::MAX`).
+/// **Non-test builds** disable the depth guard entirely (`None`).
 /// nixpkgs uses deeply nested fixpoints (50+ overlay applications, each
 /// creating cascading chains of millions of `eval_expr` calls when
 /// attributes are forced). CppNix has no explicit depth limit — it
 /// relies on the OS stack, which `stacker` now emulates for us. True
 /// infinite recursion is caught by the thunk blackhole detector in
 /// `Thunk::force`, not by this counter.
+///
+/// "No limit" is carried by `None`, NOT by a `usize::MAX` sentinel. The
+/// sentinel form obliged every reader of this constant to re-guard it
+/// (`MAX_EVAL_DEPTH != usize::MAX && depth > MAX_EVAL_DEPTH`), and that
+/// guard did not actually remove the nonsense comparison it was written to
+/// suppress — `depth > usize::MAX` is false for every `usize`, which
+/// `clippy::absurd_extreme_comparisons` reports at deny level. With the
+/// bound typed as an `Option`, the non-test build contains no comparison
+/// at all and the absurd form has no way to be written.
 #[cfg(test)]
-const MAX_EVAL_DEPTH: usize = 2_048;
+const MAX_EVAL_DEPTH: Option<usize> = Some(2_048);
 #[cfg(not(test))]
-const MAX_EVAL_DEPTH: usize = usize::MAX;
+const MAX_EVAL_DEPTH: Option<usize> = None;
 
 /// Lightweight depth guard.
 ///
-/// In non-test builds where `MAX_EVAL_DEPTH == usize::MAX`, the guard
-/// is effectively a no-op (the overflow check never fires). The
-/// compiler should be able to elide most of the overhead.
+/// In non-test builds `MAX_EVAL_DEPTH` is `None`, so the guard is a no-op
+/// (the arm never matches). The compiler should be able to elide most of
+/// the overhead.
 struct DepthGuard;
 
 /// Release-active runaway backstop for the overlay-fixpoint promotion.
 ///
-/// Release builds set `MAX_EVAL_DEPTH = usize::MAX` (no eval-depth guard)
+/// Release builds set `MAX_EVAL_DEPTH = None` (no eval-depth guard)
 /// so nixpkgs' legitimately-deep fixpoints evaluate.  But a promoted
 /// empty-attrs partial that corrupts a downstream `makeOverridable` /
 /// `commonAttrs` fixpoint (the cross-system Darwin `apple-sdk` path `hello`
@@ -371,7 +380,7 @@ impl DepthGuard {
     fn enter() -> Result<Self, EvalError> {
         EVAL_DEPTH.with(|d| {
             let depth = d.get();
-            if MAX_EVAL_DEPTH != usize::MAX && depth > MAX_EVAL_DEPTH {
+            if matches!(MAX_EVAL_DEPTH, Some(max) if depth > max) {
                 return Err(EvalError::InfiniteRecursion(
                     "eval depth exceeded".into(),
                 ));

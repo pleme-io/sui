@@ -3,3 +3,55 @@
 # ssh-agent credentials — cargo's built-in libgit2 does not.
 [net]
 git-fetch-with-cli = true
+
+[alias]
+# ── clippy-gate — the DENY-TIER clippy gate (.github/workflows/clippy-gate.yml).
+#
+# Deliberately NOT `-D warnings`. The workspace sets `pedantic = "warn"`
+# (Cargo.toml `[workspace.lints.clippy]`), and pedantic currently emits 1475
+# warnings across the eight crates named below (sui-eval alone 622, measured
+# 2026-08-17). A `-D warnings` gate would therefore be red on arrival and get
+# switched off within the week, which is worse than no gate.
+#
+# What this gates instead is the tier that is ALREADY `deny` by default —
+# `clippy::correctness` (absurd_extreme_comparisons, approx_constant, …).
+# Those are errors, so a bare `cargo clippy` exits 101 on them with no `-D`
+# flag at all. The permitted count is therefore ZERO by construction, which is
+# a strictly better ratchet than a warning-count baseline: a count baseline is
+# satisfiable by DELETING code, and zero is not.
+#
+# ── the crate list IS the denominator ────────────────────────────────────
+# Every gated crate is named explicitly rather than reached via `--workspace`.
+# That is not verbosity: cargo hard-errors with `package ID specification ...
+# did not match any packages` when a name stops resolving, so a crate that is
+# renamed or dropped turns this gate RED instead of silently shrinking what it
+# examines. This repo has already been bitten by exactly that failure — four
+# workflows passed `-p sui` after the crate was renamed to `pleme-io-sui` in
+# 5f76b39 and were red-for-an-unrelated-reason for months (see the header of
+# .github/workflows/perf-seal.yml). A `--workspace` spelling would have hidden
+# the same class the other way: silently linting nothing.
+#
+# The count is floored separately in the workflow, BEFORE clippy runs, because
+# cargo validates the names it is given and cannot notice names it was not.
+#
+# ── scope, and why it is 8 and not 28 ────────────────────────────────────
+# These eight are the crates measured green at deny tier on 2026-08-17. The
+# remaining workspace members are grandfathered, with the measurement that is
+# missing for each, in .github/workflows/clippy-gate-baseline.txt. That file
+# is the ratchet: entries leave it, none are added.
+#
+# Note there is no `--all-targets` here, and that is measured rather than
+# assumed: with it, sui-eval's TEST targets fail on 14 `clippy::approx_constant`
+# errors (`Float(3.14)` fixtures that clippy reads as an intended `PI`). Also
+# tracked in the baseline file.
+clippy-gate = [
+  "clippy",
+  "-p", "sui-eval",
+  "-p", "sui-bytecode",
+  "-p", "sui-compat",
+  "-p", "sui-intern",
+  "-p", "sui-resolve",
+  "-p", "sui-store",
+  "-p", "sui-spec",
+  "-p", "sui-graph-store",
+]
