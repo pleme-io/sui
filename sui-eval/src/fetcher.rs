@@ -217,22 +217,7 @@ impl InputFetcher {
             return Err(e);
         }
 
-        // Publish. A concurrent fetcher may have won the race and already
-        // renamed a tree into place; on a mutable rev we also need to replace
-        // whatever is there. Remove-then-rename is not atomic, but the window
-        // now contains only COMPLETE trees, never a partial one.
-        if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest);
-        }
-        if std::fs::rename(&staging, &dest).is_err() {
-            let _ = std::fs::remove_dir_all(&staging);
-            // Losing the race is not a failure if the winner left a good tree.
-            if !is_non_empty_dir(&dest) {
-                return Err(FetchError::Extract(
-                    "could not publish the fetched tree and no other process left one".into(),
-                ));
-            }
-        }
+        publish(&staging, &dest, is_immutable_rev(rev))?;
         Ok(find_single_subdir_or_self(&dest))
     }
 
@@ -275,29 +260,38 @@ impl InputFetcher {
         let short_rev: String = rev.chars().take(12).collect();
         let dest = self.dest_dir(locked, &format!("git-{short_rev}"));
 
-        if dest.exists() {
-            if is_non_empty_dir(&dest) {
-                return Ok(dest);
-            }
-            let _ = std::fs::remove_dir_all(&dest);
+        // The cache key embeds the rev, so a full object id names one tree and
+        // a present one is adoptable. Same conditional as the archive path.
+        let immutable = is_immutable_rev(rev);
+        if immutable && is_non_empty_dir(&dest) {
+            return Ok(dest);
         }
+
+        // Everything below builds the tree in a staging dir and publishes it
+        // with one rename. This path was left out of the first stage-then-
+        // rename pass, so until now a killed clone or a killed unpack left a
+        // partial tree at the FINAL path that the non-empty predicate above
+        // then accepted as a complete cache hit.
+        let staging = staging_path(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
 
         // Try GitHub tarball first (avoids git CLI dependency in containers).
         // Most git-type inputs in flake.lock are GitHub repos that support
         // archive downloads via /archive/{rev}.tar.gz.
         if let Some(tarball_url) = github_tarball_from_git_url(url, rev) {
-            std::fs::create_dir_all(&dest)?;
+            std::fs::create_dir_all(&staging)?;
             match download_bytes(&tarball_url) {
                 Ok(bytes) => {
-                    if let Err(e) = extract_tar_gz(&bytes, &dest) {
-                        let _ = std::fs::remove_dir_all(&dest);
+                    if let Err(e) = extract_tar_gz(&bytes, &staging) {
+                        let _ = std::fs::remove_dir_all(&staging);
                         return Err(e);
                     }
+                    publish(&staging, &dest, immutable)?;
                     return Ok(find_single_subdir_or_self(&dest));
                 }
                 Err(e) => {
                     // Tarball fallback failed — try git CLI below.
-                    let _ = std::fs::remove_dir_all(&dest);
+                    let _ = std::fs::remove_dir_all(&staging);
                     tracing::debug!(url = %tarball_url, error = %e, "Tarball fallback failed, trying git CLI");
                 }
             }
@@ -306,7 +300,7 @@ impl InputFetcher {
         // Fall back to git CLI for non-GitHub repos or when tarball fails.
         let status = std::process::Command::new("git")
             .args(["clone", "--depth", "1", url])
-            .arg(&dest)
+            .arg(&staging)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -314,7 +308,7 @@ impl InputFetcher {
                 "git clone failed (git not in PATH?): {e}"
             )))?;
         if !status.success() {
-            let _ = std::fs::remove_dir_all(&dest);
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(FetchError::Download(format!(
                 "git clone failed for {url} (exit code: {})",
                 status.code().unwrap_or(-1)
@@ -322,9 +316,17 @@ impl InputFetcher {
         }
 
         // Checkout the exact revision.
-        crate::git::checkout_rev(&dest, rev)
-            .map_err(|e| FetchError::Download(format!("git checkout {rev}: {e}")))?;
+        //
+        // NOTE, unverified and flagged rather than fixed here: the clone above
+        // is `--depth 1` of the DEFAULT BRANCH, so an arbitrary `rev` is very
+        // likely not among the objects it fetched, and this checkout would
+        // fail for any non-HEAD rev. That belongs to whoever owns `git.rs`.
+        if let Err(e) = crate::git::checkout_rev(&staging, rev) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(FetchError::Download(format!("git checkout {rev}: {e}")));
+        }
 
+        publish(&staging, &dest, immutable)?;
         Ok(dest)
     }
 
@@ -337,27 +339,36 @@ impl InputFetcher {
             .map_or_else(|| url_to_safe_name(url), sanitize_hash);
         let dest = self.dest_dir(locked, &format!("tarball-{hash_suffix}"));
 
-        if dest.exists() {
-            let resolved = find_single_subdir_or_self(&dest);
-            if is_non_empty_dir(&resolved) {
-                return Ok(resolved);
-            }
-            let _ = std::fs::remove_dir_all(&dest);
+        // A tarball input is keyed on its narHash when it has one, which IS a
+        // content address, so a present tree is adoptable. When it has none
+        // the key is derived from the URL, which is mutable — same split as
+        // `is_immutable_rev` on the archive path.
+        let immutable = locked.nar_hash.is_some();
+        if immutable && is_non_empty_dir(&dest) {
+            return Ok(find_single_subdir_or_self(&dest));
         }
 
-        std::fs::create_dir_all(&dest)?;
+        // Stage then publish, exactly as `fetch_archive` does. This path was
+        // left behind by the first pass at that fix, so until now a killed
+        // `tarball:`/`file:` fetch could leave a partial tree that the
+        // non-empty predicate then accepted as a cache hit.
+        let staging = staging_path(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+
         let bytes = match download_bytes(url) {
             Ok(b) => b,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&dest);
+                let _ = std::fs::remove_dir_all(&staging);
                 return Err(e);
             }
         };
-        if let Err(e) = extract_tar_gz(&bytes, &dest) {
-            let _ = std::fs::remove_dir_all(&dest);
+        if let Err(e) = extract_tar_gz(&bytes, &staging) {
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(e);
         }
 
+        publish(&staging, &dest, immutable)?;
         Ok(find_single_subdir_or_self(&dest))
     }
 
@@ -396,8 +407,50 @@ fn github_tarball_from_git_url(url: &str, rev: &str) -> Option<String> {
 }
 
 /// Turn a narHash like `sha256-AAAA...=` into a filesystem-safe name.
+/// Turn a hash into a single safe path component.
+///
+/// ── ★ THE SUBSTITUTIONS ARE NOT A VALIDATION ──────────────────────────
+/// `:`→`-`, `/`→`_`, drop `=` makes a hash *look* like a filename; it does not
+/// make it *one*. `narHash` comes from a `flake.lock`, which is untrusted
+/// input for any flake you did not write yourself, and three values survive
+/// the transliteration as meaningful path components: `..`, `.` and `""`.
+///
+/// Because `/` is mapped away, a multi-level escape is impossible — the blast
+/// radius is exactly ONE level, and it should not be rounded up to arbitrary
+/// path deletion. One level is bad enough: `"narHash": ".."` makes the cache
+/// destination `<cache>/inputs/..` = `~/.cache/sui`, so (a) `fetch` returns
+/// `~/.cache/sui` AS the flake's source directory — a silently wrong eval with
+/// no error — and (b) on a miss, publishing `remove_dir_all`s it, taking
+/// `inputs/` and `nar-memo/` with it. That is the same memo whose poisoning
+/// `sui-compat/src/source.rs` was hardened against today.
+///
+/// So the component is validated, not merely transliterated: anything that is
+/// not a plain `[A-Za-z0-9._+-]` run, or that is `.`/`..`/empty, is replaced
+/// by a fixed-width digest of the input. Fixed-width by construction beats a
+/// denylist, which is what the transliteration was.
 fn sanitize_hash(hash: &str) -> String {
-    hash.replace(':', "-").replace('/', "_").replace('=', "")
+    let mapped = hash.replace(':', "-").replace('/', "_").replace('=', "");
+    let shaped = !mapped.is_empty()
+        && mapped != "."
+        && mapped != ".."
+        && mapped
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'));
+    if shaped {
+        mapped
+    } else {
+        // Deterministic, collision-resistant, and structurally incapable of
+        // being a traversal: hex has no `.` and no `/`.
+        use sha2::Digest as _;
+        let d = sha2::Sha256::digest(hash.as_bytes());
+        let mut out = String::with_capacity(2 + 64);
+        out.push_str("h-");
+        for b in d {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{b:02x}");
+        }
+        out
+    }
 }
 
 /// Whether `rev` names one immutable tree — a full git object id.
@@ -411,14 +464,109 @@ fn is_immutable_rev(rev: &str) -> bool {
 }
 
 /// A scratch path beside `dest`, on the same filesystem so the publish rename
-/// is atomic. The pid keeps two concurrent fetchers from sharing a staging dir.
+/// is atomic.
+///
+/// ── ★ PID IS NOT ENOUGH; THE THREAD ID IS PART OF THE KEY ─────────────
+/// An earlier version scoped this on the pid alone and claimed that "two
+/// concurrent fetchers cannot share a staging dir". That is true across
+/// processes and FALSE within one: two threads of the same process fetching
+/// the same input compute the same staging path, and the second one's
+/// `remove_dir_all(&staging)` fires while the first is mid-unpack — so the
+/// first then publishes a TRUNCATED tree, reintroducing exactly the defect
+/// the staging dance exists to prevent.
+///
+/// Latent today (there is no `rayon`/`par_iter` in the eval path), and it
+/// detonates the moment anyone parallelizes input fetching, which is the
+/// obvious next optimization on a lock file with N inputs. A claim that is
+/// true only until someone does the obvious thing is not an invariant.
 fn staging_path(dest: &Path) -> PathBuf {
     let name = dest
         .file_name()
         .map_or_else(|| "fetch".to_string(), |n| n.to_string_lossy().into_owned());
-    let tmp = [".", &name, ".tmp-", &std::process::id().to_string()].concat();
+    // `ThreadId`'s Debug is the only stable accessor on stable Rust; it
+    // renders as `ThreadId(N)`, so keep the digits and drop the rest.
+    let tid = format!("{:?}", std::thread::current().id());
+    let tid: String = tid.chars().filter(char::is_ascii_digit).collect();
+    let tmp = [
+        ".",
+        &name,
+        ".tmp-",
+        &std::process::id().to_string(),
+        "-",
+        &tid,
+    ]
+    .concat();
     dest.parent()
         .map_or_else(|| PathBuf::from(&tmp), |p| p.join(&tmp))
+}
+
+/// Move `staging` onto `dest` without ever leaving `dest` observably absent
+/// for longer than one rename syscall.
+///
+/// ── ★ WHY NOT `remove_dir_all(dest)` THEN RENAME ──────────────────────
+/// That was the first version, and it is a regression dressed as a fix. For a
+/// MUTABLE rev the guard above never short-circuits, so every invocation
+/// deleted the published tree and re-created it — meaning a concurrent eval
+/// reading that path got ENOENT for the whole duration of a recursive delete
+/// of (measured on `pleme-io/nix`) 654 files. The staging dance had narrowed
+/// the failure from "adopt a partial tree" to "have a complete tree yanked",
+/// which is better and is still a bug.
+///
+/// Two cases, and neither deletes in place:
+///
+/// - **Immutable rev, tree already present.** Another process published the
+///   same content-addressed tree. Theirs is by definition ours; adopt it and
+///   drop our staging. No delete of `dest` at all.
+/// - **Otherwise.** Rename the old tree ASIDE (one syscall), rename the new
+///   one in, then delete the aside at leisure. `dest` is unresolvable only
+///   between two renames rather than for the length of a tree walk.
+fn publish(staging: &Path, dest: &Path, immutable: bool) -> Result<(), FetchError> {
+    if immutable && is_non_empty_dir(dest) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Ok(());
+    }
+
+    let aside = with_suffix(staging, ".old");
+    let _ = std::fs::remove_dir_all(&aside);
+    let moved_aside = dest.exists() && std::fs::rename(dest, &aside).is_ok();
+
+    match std::fs::rename(staging, dest) {
+        Ok(()) => {
+            if moved_aside {
+                let _ = std::fs::remove_dir_all(&aside);
+            }
+            Ok(())
+        }
+        Err(_) => {
+            // Put the old tree back rather than leaving the cache emptier
+            // than we found it.
+            if moved_aside && !dest.exists() {
+                let _ = std::fs::rename(&aside, dest);
+            }
+            let _ = std::fs::remove_dir_all(staging);
+            let _ = std::fs::remove_dir_all(&aside);
+            if is_non_empty_dir(dest) {
+                // Lost the race; the winner left a good tree.
+                Ok(())
+            } else {
+                Err(FetchError::Extract(
+                    "could not publish the fetched tree and no other process left one".into(),
+                ))
+            }
+        }
+    }
+}
+
+/// `path` with `suffix` appended to its file name (not `with_extension`,
+/// which truncates at the last dot and would mangle `repo-1.2.3`).
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .map_or_else(|| "x".to_string(), |n| n.to_string_lossy().into_owned());
+    path.parent().map_or_else(
+        || PathBuf::from([&name, suffix].concat()),
+        |p| p.join([&name, suffix].concat()),
+    )
 }
 
 /// Return `true` when `dir` exists and has at least one child entry.
@@ -663,6 +811,107 @@ mod tests {
             "sha256-AAAAAAAAAAAAAAAAAAAAAA"
         );
         assert_eq!(sanitize_hash("sha256:abc/def="), "sha256-abc_def");
+    }
+
+    // ── sanitize_hash — a component, not a transliteration ──
+
+    #[test]
+    fn a_traversal_hash_cannot_become_a_path_component() {
+        // `narHash` is lock-file input. `..` survives the substitutions and
+        // would make the cache dest `<cache>/inputs/..` = `~/.cache/sui`,
+        // which then gets returned AS the flake source and, on a miss,
+        // remove_dir_all'd — taking `inputs/` and `nar-memo/` with it.
+        for hostile in ["..", ".", "", "../..", "..\u{0}"] {
+            let s = sanitize_hash(hostile);
+            assert!(
+                s != ".." && s != "." && !s.is_empty(),
+                "{hostile:?} sanitized to {s:?}, still a meaningful component"
+            );
+            assert!(
+                !s.contains('/') && !s.contains('\\'),
+                "{hostile:?} sanitized to {s:?}, still a separator"
+            );
+        }
+        // Deterministic — the same input must key the same directory.
+        assert_eq!(sanitize_hash(".."), sanitize_hash(".."));
+        // …and distinct inputs must not collide onto one entry.
+        assert_ne!(sanitize_hash(".."), sanitize_hash("."));
+    }
+
+    #[test]
+    fn a_well_formed_hash_is_untouched_by_the_guard() {
+        // The guard must not change the key for ordinary input, or every
+        // existing cache entry is orphaned on upgrade.
+        assert_eq!(
+            sanitize_hash("sha256-avzRM+ffKgikqMRcOhhYp3ifgwXMGbH0rEGEZPEGMYE="),
+            "sha256-avzRM+ffKgikqMRcOhhYp3ifgwXMGbH0rEGEZPEGMYE"
+        );
+        assert_eq!(sanitize_hash("sha256:abc/def="), "sha256-abc_def");
+    }
+
+    // ── publish — never leave `dest` absent during a tree walk ──
+
+    #[test]
+    fn publishing_an_immutable_tree_adopts_the_winner_and_deletes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("github-o-r-deadbeef");
+        let staging = staging_path(&dest);
+        // A concurrent process already published.
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("theirs"), b"x").unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("ours"), b"y").unwrap();
+
+        publish(&staging, &dest, true).unwrap();
+
+        assert!(
+            dest.join("theirs").exists(),
+            "an immutable tree is content-addressed: the winner's tree IS ours, \
+             and deleting it to install an identical one is pure risk"
+        );
+        assert!(!staging.exists(), "our staging must be cleaned up");
+    }
+
+    #[test]
+    fn publishing_a_mutable_tree_replaces_it_without_a_delete_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("github-o-r-main");
+        let staging = staging_path(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("old"), b"x").unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("new"), b"y").unwrap();
+
+        publish(&staging, &dest, false).unwrap();
+
+        assert!(dest.join("new").exists(), "the new tree must be published");
+        assert!(!dest.join("old").exists(), "and must REPLACE, not union");
+        assert!(!staging.exists());
+        // The aside must not be left behind as cache litter.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".old"))
+            .collect();
+        assert!(leftovers.is_empty(), "aside dirs left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn staging_is_scoped_by_thread_not_only_by_pid() {
+        // An earlier version keyed on pid alone and CLAIMED two concurrent
+        // fetchers could not collide. Two threads of one process share a pid,
+        // so the second one's cleanup would delete the first one's half-built
+        // tree and the first would then publish a truncated one.
+        let dest = std::path::Path::new("/c/inputs/github-o-r-deadbeef");
+        let here = staging_path(dest);
+        let there = std::thread::spawn(move || staging_path(dest))
+            .join()
+            .unwrap();
+        assert_ne!(
+            here, there,
+            "two threads must not share a staging directory"
+        );
     }
 
     // ── is_immutable_rev — what may be served from cache ──
