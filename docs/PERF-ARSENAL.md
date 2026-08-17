@@ -67,15 +67,20 @@ catalog exists to forbid.**
   byte-parity axis (drvPath) is unreachable when order could matter; **(b) no cross-entry force
   dependency** — the predicate is applied per entry as `apply(pred,k)` then `apply_and_force(_,v)`, a
   fresh partial over an immutable shared `pred`; one entry's force changes neither another's boolean
-  outcome nor whether it throws. **Load-bearing finding: there is NO parity corpus row and there
-  cannot be** — `builtins.filterAttrs` is a sui-ONLY extension (`builtins ? filterAttrs` = false in
-  nix), and nixpkgs `lib.filterAttrs` is `removeAttrs set (filter …)` (never routes through it). So
-  the marquee nixpkgs eval NEVER reaches this builtin → its `iter_unsorted` has **ZERO byte-parity
-  impact on the corpus**. Sealed instead by sui-internal result-set + no-cross-entry-force unit tests
-  (`builtins/attrs.rs` tests). **Residual (NOT rounded up):** under `iter_unsorted` WHICH throwing
-  entry errors FIRST is hasher-seed-nondeterministic → the error *message* is order-sensitive
-  (success-neutral, not error-deterministic). Byte-parity unaffected. Stays NEEDS-VERIFICATION, NOT
-  promoted to PROVABLY-NEUTRAL.
+  outcome nor whether it throws. **★ SUPERSEDED 2026-08-17 — C-filter NO LONGER EXISTS.** The
+  "load-bearing finding" recorded here was that there is NO parity corpus row and there cannot be,
+  because `builtins.filterAttrs` is a sui-ONLY extension (`builtins ? filterAttrs` = false in nix)
+  and nixpkgs `lib.filterAttrs` is `removeAttrs set (filter …)` (never routes through it). That is
+  correct, and read once more it is a **defect report, not a caveat**: a builtin sui had and nix did
+  not is sui accepting a program nix rejects. `filterAttrs` was removed from all three engines on
+  2026-08-17 along with the other five nixpkgs-lib leaks, so the optimization this row adjudicated
+  has no code path left. The `builtins/attrs.rs` unit tests that sealed it went with it. Nothing is
+  left unsealed — an unreachable optimization needs no seal — and the residual below is moot for the
+  same reason. `mapAttrs` carries the identical `iter_unsorted` shape and IS a real builtin; it is
+  the one that matters now. **Residual, now historical (NOT rounded up):** under `iter_unsorted`
+  WHICH throwing entry errored FIRST was hasher-seed-nondeterministic → the error *message* was
+  order-sensitive (success-neutral, not error-deterministic). Byte-parity unaffected. It was
+  NEEDS-VERIFICATION and was never promoted to PROVABLY-NEUTRAL.
 - **C-A · attrs-eq-by-borrow** (`Concrete::eq` Attrs arm) — **SHIPPED + PROMOTED to PROVABLY-NEUTRAL
   this branch (M1.5).** `a.inner() == b.inner()` (which flattened AND cloned both backing FxHashMaps
   via `inner()` = `as_flat().clone()`) → `a.as_flat() == b.as_flat()` (borrow). The demand-order
@@ -299,10 +304,10 @@ the ~40-min marquee cid cost.** "Boxed provably" is true over a *partial* corpus
   this branch.** C-A: `a.inner()==b.inner()` → `a.as_flat()==b.as_flat()`, demand-order obligation
   discharged (the arm forces nothing in the compare path; `Value::eq` swallows to `Null`) →
   **PROMOTED to PROVABLY-NEUTRAL**; sealed by 3 unit tests + 2 parity corpus rows (incl. an
-  `==`-selected drvPath) + a `SUI_EVAL_PERF attrs-eq` counter. C-filter: already `iter_unsorted`,
-  both obligations discharged, **stays NEEDS-VERIFICATION-with-argument** (error-message order
-  residual); NO corpus row possible — `builtins.filterAttrs` is sui-only + off the nixpkgs marquee
-  path (zero byte-parity impact); sealed by sui-internal result-set + no-cross-entry-force unit tests.
+  `==`-selected drvPath) + a `SUI_EVAL_PERF attrs-eq` counter. C-filter: **RETIRED 2026-08-17 —
+  `builtins.filterAttrs` was removed as a nixpkgs-lib leak, so the arm it optimized is gone.** It had
+  been NEEDS-VERIFICATION-with-argument (error-message order residual) with NO corpus row possible,
+  and *that* — sui-only + off the marquee path — was the leak announcing itself as a perf caveat.
 - **M2** — RISKY arms adjudicated (2026-07-12; see §2 RISKY block for the measured detail):
   **C-with DEFERRED** (≤460 O(1) HAMT clones on the marquee eval — negligible + ROOT #4a
   force-order risk); **C-slash DEFERRED** (0 invocations on the marquee — zero waste + `Rc::ptr_eq`

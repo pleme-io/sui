@@ -221,16 +221,18 @@ fn builtins_concat_strings_sep() {
     );
 }
 
+// `hasPrefix`/`hasSuffix` are nixpkgs `lib.strings`, not CppNix builtins.
+// These tests used to assert the leaked builtins worked; they now assert the
+// names are absent.
+
 #[test]
-fn builtins_has_prefix() {
-    assert_eq!(ev(r#"builtins.hasPrefix "foo" "foobar""#), Value::Bool(true));
-    assert_eq!(ev(r#"builtins.hasPrefix "bar" "foobar""#), Value::Bool(false));
+fn builtins_has_prefix_is_absent() {
+    assert_eq!(ev(r#"builtins ? hasPrefix"#), Value::Bool(false));
 }
 
 #[test]
-fn builtins_has_suffix() {
-    assert_eq!(ev(r#"builtins.hasSuffix "bar" "foobar""#), Value::Bool(true));
-    assert_eq!(ev(r#"builtins.hasSuffix "foo" "foobar""#), Value::Bool(false));
+fn builtins_has_suffix_is_absent() {
+    assert_eq!(ev(r#"builtins ? hasSuffix"#), Value::Bool(false));
 }
 
 #[test]
@@ -330,20 +332,25 @@ fn builtins_cat_attrs() {
     );
 }
 
-// ── New builtins: concatStrings ─────────────────────────
+// ── concatStrings: absent, capability preserved ─────────
+//
+// `concatStrings` is nixpkgs `lib.strings.concatStrings`. The name is gone;
+// `concatStringsSep ""` is the real-nix spelling and still produces the same
+// bytes, so each pair below pins BOTH halves — absence, and no capability loss.
 
 #[test]
-fn builtins_concat_strings() {
+fn builtins_concat_strings_is_absent() {
+    assert_eq!(ev(r#"builtins ? concatStrings"#), Value::Bool(false));
     assert_eq!(
-        ev(r#"builtins.concatStrings ["hello" " " "world"]"#),
+        ev(r#"builtins.concatStringsSep "" ["hello" " " "world"]"#),
         Value::string("hello world"),
     );
 }
 
 #[test]
-fn builtins_concat_strings_empty() {
+fn builtins_concat_strings_empty_via_sep() {
     assert_eq!(
-        ev(r#"builtins.concatStrings []"#),
+        ev(r#"builtins.concatStringsSep "" []"#),
         Value::string(""),
     );
 }
@@ -3797,96 +3804,29 @@ fn builtins_flake_ref_round_trip() {
     );
 }
 
-// ── filterAttrs ───────────────────────────────────────
+// ── filterAttrs: absent ───────────────────────────────
+//
+// `builtins.filterAttrs` is GONE — it is nixpkgs `lib.attrsets.filterAttrs`,
+// not a CppNix builtin at any feature level. The behavioural tests that lived
+// here (keeps-matching / by-name / empty / non-attrs-errors) tested a function
+// nix does not have; they are replaced by the absence assertion below.
+//
+// The four C-filter (PERF-ARSENAL) order-independence tests went with them,
+// and that is the honest outcome rather than a loss: they sealed the
+// `iter_unsorted` optimization of THIS builtin only. Their own comment already
+// recorded that no parity corpus row was possible because nix has no
+// `builtins.filterAttrs` — which, read the other way, was the defect announcing
+// itself. `mapAttrs` carries the same `iter_unsorted` shape and IS a real
+// builtin; its order-independence is the one worth sealing, and it is covered
+// by the corpus rather than by a sui-internal test.
 
 #[test]
-fn builtins_filter_attrs_keeps_matching() {
-    let v = ev(r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#);
-    if let Value::Attrs(a) = v {
-        assert_eq!(a.len(), 2);
-        assert_eq!(a.get("b"), Some(&Value::Int(2)));
-        assert_eq!(a.get("c"), Some(&Value::Int(3)));
-        assert!(a.get("a").is_none());
-    } else {
-        panic!("expected attrs");
-    }
-}
-
-#[test]
-fn builtins_filter_attrs_by_name() {
-    let v = ev(r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#);
-    if let Value::Attrs(a) = v {
-        assert_eq!(a.len(), 1);
-        assert_eq!(a.get("keep"), Some(&Value::Int(1)));
-    } else {
-        panic!("expected attrs");
-    }
-}
-
-#[test]
-fn builtins_filter_attrs_empty() {
-    let v = ev(r#"builtins.filterAttrs (n: v: true) {}"#);
-    if let Value::Attrs(a) = v {
-        assert!(a.is_empty());
-    } else {
-        panic!("expected attrs");
-    }
-}
-
-#[test]
-fn builtins_filter_attrs_non_attrs_errors() {
-    let result = eval(r#"builtins.filterAttrs (n: v: true) [1 2 3]"#);
-    assert!(result.is_err());
-}
-
-// ── C-filter (PERF-ARSENAL): iter_unsorted success-path neutrality ────
-// filterAttrs iterates `iter_unsorted`; the fresh result map discards
-// insertion order, so the SUCCESS path is result-identical regardless of
-// which order entries are visited. There is NO parity corpus row (nix has
-// no `builtins.filterAttrs`; nixpkgs `lib.filterAttrs` never routes through
-// it), so this sui-internal test IS the seal. Run over a large key set so
-// the FxHashMap hasher order is non-trivial; the resulting attrset is
-// observed sorted, so the outcome cannot depend on iteration order.
-
-#[test]
-fn filter_attrs_result_is_order_independent() {
-    // 12-key input; keep only even values. The result set + its sorted
-    // observation must be identical every run despite iter_unsorted order.
-    let v = ev(r#"builtins.filterAttrs (_: v: (v / 2) * 2 == v)
-        { a = 1; b = 2; c = 3; d = 4; e = 5; f = 6; g = 7; h = 8; i = 9; j = 10; k = 11; l = 12; }"#);
-    if let Value::Attrs(a) = v {
-        // Exactly the even-valued keys, nothing else.
-        let mut kept: Vec<String> = a.iter().map(|(k, _)| k).collect();
-        kept.sort();
-        assert_eq!(kept, vec!["b", "d", "f", "h", "j", "l"]);
-        assert_eq!(a.get("b"), Some(&Value::Int(2)));
-        assert_eq!(a.get("l"), Some(&Value::Int(12)));
-        assert!(a.get("a").is_none());
-    } else {
-        panic!("expected attrs");
-    }
-}
-
-#[test]
-fn filter_attrs_no_cross_entry_force_dependency() {
-    // Each entry's predicate is applied to its own (k, v); one entry's
-    // evaluation cannot change another's outcome (no shared mutable thunk).
-    // A predicate that only looks at its own value must give the same result
-    // set as an equivalent predicate that only looks at its own key — proving
-    // the per-entry test is independent of visit order and of siblings.
-    let by_val = ev(r#"builtins.filterAttrs (_: v: v == "yes") { a = "yes"; b = "no"; c = "yes"; }"#);
-    let by_key = ev(r#"builtins.filterAttrs (k: _: k == "a" || k == "c") { a = "yes"; b = "no"; c = "yes"; }"#);
-    let names = |v: &Value| -> Vec<String> {
-        if let Value::Attrs(a) = v {
-            let mut n: Vec<String> = a.iter().map(|(k, _)| k).collect();
-            n.sort();
-            n
-        } else {
-            panic!("expected attrs");
-        }
-    };
-    assert_eq!(names(&by_val), vec!["a", "c"]);
-    assert_eq!(names(&by_val), names(&by_key));
+fn builtins_filter_attrs_is_absent() {
+    assert_eq!(ev(r#"builtins ? filterAttrs"#), Value::Bool(false));
+    assert!(
+        eval(r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; }"#).is_err(),
+        "builtins.filterAttrs must fail the way real nix fails it"
+    );
 }
 
 // ── builtins.sui.* extensions ─────────────────────────
@@ -4090,31 +4030,27 @@ fn builtins_self_reference_does_not_loop() {
     assert_eq!(ev("builtins.builtins ? builtins"), Value::Bool(false));
 }
 
-// ── toLower / toUpper ────────────────────────────────
+// ── toLower / toUpper: absent ─────────────────────────
+//
+// Both are nixpkgs `lib.strings`, not CppNix builtins. Five behavioural tests
+// lived here; they asserted a function real nix does not expose.
+
+// NOTE on the string literals below: inside `r#"…"#` a `\"` is a LITERAL
+// backslash followed by a quote, NOT an escaped quote. Writing
+// `eval(r#"builtins.toLower \"HELLO\""#)` therefore feeds nix a PARSE ERROR,
+// and `.is_err()` passes for entirely the wrong reason — the assertion goes
+// green without ever reaching attribute lookup. Keep these as bare `"…"`.
 
 #[test]
-fn to_lower_basic() {
-    assert_eq!(ev(r#"builtins.toLower "HELLO""#), Value::string("hello"));
+fn to_lower_is_absent() {
+    assert_eq!(ev(r#"builtins ? toLower"#), Value::Bool(false));
+    assert!(eval(r#"builtins.toLower "HELLO""#).is_err());
 }
 
 #[test]
-fn to_upper_basic() {
-    assert_eq!(ev(r#"builtins.toUpper "hello""#), Value::string("HELLO"));
-}
-
-#[test]
-fn to_lower_empty() {
-    assert_eq!(ev(r#"builtins.toLower """#), Value::string(""));
-}
-
-#[test]
-fn to_upper_mixed() {
-    assert_eq!(ev(r#"builtins.toUpper "MiXeD""#), Value::string("MIXED"));
-}
-
-#[test]
-fn to_lower_already() {
-    assert_eq!(ev(r#"builtins.toLower "already""#), Value::string("already"));
+fn to_upper_is_absent() {
+    assert_eq!(ev(r#"builtins ? toUpper"#), Value::Bool(false));
+    assert!(eval(r#"builtins.toUpper "hello""#).is_err());
 }
 
 // ── Bug 1: inputs from flake.nix stub resolution ─────────

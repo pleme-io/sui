@@ -3470,27 +3470,6 @@ impl<'a> VM<'a> {
                 }
                 Ok(NanBox::attrs(result))
             }
-            FilterAttrs => {
-                let attrs_val = arg.to_vmvalue();
-                let attrs = match &attrs_val {
-                    VMValue::Attrs(a) => a,
-                    other => return Err(VMError::TypeError {
-                        expected: "set", got: other.type_name(),
-                        context: "builtins.filterAttrs".to_string(),
-                    }),
-                };
-                let func_nb = NanBox::from_vmvalue(&hob.func);
-                let entries: Vec<_> = attrs.iter().map(|(k, v)| (*k, v.clone())).collect();
-                let mut result = BTreeMap::new();
-                for (sym, val) in entries {
-                    let key_str = self.interner.resolve(sym).to_string();
-                    let partial = self.call_callable(&func_nb, NanBox::string(key_str))?;
-                    if self.call_callable(&partial, NanBox::from_vmvalue(&val))?.is_truthy()? {
-                        result.insert(sym, NanBox::from_vmvalue(&val));
-                    }
-                }
-                Ok(NanBox::attrs(result))
-            }
             Elem => {
                 // builtins.elem needle list — check if needle is in list.
                 // Needs VM-level handling because list elements may be thunks
@@ -3869,6 +3848,78 @@ mod tests {
             Compiler::compile(input).unwrap_or_else(|e| panic!("compile '{input}': {e}"));
         VM::execute(chunk, &mut interner).unwrap_err()
     }
+    // -- The nixpkgs-lib-leak ratchet, VM side --------------------------
+    //
+    // The walker's registry is pinned by
+    // `sui-eval/tests/fixtures/BUILTIN-REGISTRY.json`; that gate reads the
+    // walker IN-PROCESS and so cannot see the VM's registry without spawning a
+    // `sui` binary that may not be built when the test runs. That is why the
+    // manifest recorded `pending-builtin-registry: gate the VM registry` rather
+    // than gating it.
+    //
+    // This test is the in-process half for the VM: it needs no binary, no nix
+    // and no network. It does NOT pin the VM's full key set (the walker/VM
+    // delta is still real and still recorded in the manifest's
+    // `cli_divergence`) — it pins the one-way part, that the six removed
+    // nixpkgs `lib` leaks may not come back on this engine either.
+    //
+    // TIER: test-caught, not unrepresentable. Nothing stops someone writing
+    // `self.register("toUpper", ...)` again; this turns red afterwards.
+    #[test]
+    fn vm_has_no_nixpkgs_lib_leaks() {
+        // Kept in lockstep with `removed_nixpkgs_lib_leaks.names` in
+        // sui-eval/tests/fixtures/BUILTIN-REGISTRY.json.
+        const REMOVED_LEAKS: &[&str] = &[
+            "concatStrings",
+            "filterAttrs",
+            "hasPrefix",
+            "hasSuffix",
+            "toLower",
+            "toUpper",
+        ];
+
+        let live = match eval("builtins.attrNames builtins") {
+            VMValue::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    VMValue::String(s) => s.to_string(),
+                    other => panic!("attrNames produced a non-string: {other:?}"),
+                })
+                .collect::<Vec<String>>(),
+            other => panic!("attrNames must produce a list, got {other:?}"),
+        };
+
+        // ── ANTI-VACUITY FLOOR, checked BEFORE the verdict. Without it a
+        // registry that enumerated nothing would make every `contains` false
+        // and this test would pass having checked nothing at all.
+        assert!(
+            live.len() >= 100,
+            "the VM enumerated only {} builtins — that is not a usable subject, \
+             so this test would pass without checking anything",
+            live.len()
+        );
+
+        let resurrected: Vec<&str> = REMOVED_LEAKS
+            .iter()
+            .filter(|n| live.iter().any(|l| l == *n))
+            .copied()
+            .collect();
+
+        // The verdict carries its own denominators — how many names were
+        // checked and how large the registry was — so a collapsed scan fails
+        // rather than passing.
+        assert_eq!(
+            (REMOVED_LEAKS.len(), live.len() >= 100, resurrected.as_slice()),
+            (6, true, [].as_slice()),
+            "a removed nixpkgs `lib` leak is back in the VM: {resurrected:?} \
+             (checked {} names against a {}-name VM registry)",
+            REMOVED_LEAKS.len(),
+            live.len()
+        );
+
+        eprintln!("vm_has_no_nixpkgs_lib_leaks: VM registry is {} names", live.len());
+    }
+
     // -- Literals -------------------------------------------------------
     #[test]
     fn eval_integer() {
@@ -4537,42 +4588,10 @@ mod tests {
         );
     }
     #[test]
-    fn builtin_has_prefix() {
-        assert_eq!(
-            eval("builtins.hasPrefix \"he\" \"hello\""),
-            VMValue::Bool(true)
-        );
-        assert_eq!(
-            eval("builtins.hasPrefix \"wo\" \"hello\""),
-            VMValue::Bool(false)
-        );
-    }
-    #[test]
-    fn builtin_has_suffix() {
-        assert_eq!(
-            eval("builtins.hasSuffix \"lo\" \"hello\""),
-            VMValue::Bool(true)
-        );
-    }
-    #[test]
     fn builtin_concat_strings_sep() {
         assert_eq!(
             eval("builtins.concatStringsSep \", \" [\"a\" \"b\" \"c\"]"),
             VMValue::String("a, b, c".to_string())
-        );
-    }
-    #[test]
-    fn builtin_to_lower() {
-        assert_eq!(
-            eval("builtins.toLower \"Hello World\""),
-            VMValue::String("hello world".to_string())
-        );
-    }
-    #[test]
-    fn builtin_to_upper() {
-        assert_eq!(
-            eval("builtins.toUpper \"hello\""),
-            VMValue::String("HELLO".to_string())
         );
     }
     #[test]

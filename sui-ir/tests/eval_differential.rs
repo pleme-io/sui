@@ -585,9 +585,8 @@ const BUILTINS_VALUE_SEED: &[&str] = &[
     // zipAttrsWith
     "builtins.zipAttrsWith (n: vs: vs) [ { a = 1; } { a = 2; b = 3; } ]",
     "builtins.zipAttrsWith (n: vs: builtins.length vs) [ { a = 1; } { a = 2; } ]",
-    // filterAttrs
-    "builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }",
-    "builtins.filterAttrs (n: v: n == \"keep\") { keep = 1; drop = 2; }",
+    // filterAttrs rows removed: `builtins.filterAttrs` is a nixpkgs
+    // `lib.attrsets` leak, dropped from all three engines 2026-08-17.
     // functionArgs (pattern lambda, ident lambda, builtin)
     "builtins.functionArgs ({ a, b ? 1 }: a)",
     "builtins.functionArgs (x: x)",
@@ -595,17 +594,11 @@ const BUILTINS_VALUE_SEED: &[&str] = &[
     // genericClosure (trivial + BFS-with-dedup)
     "builtins.genericClosure { startSet = [ { key = 1; } ]; operator = item: [ ]; }",
     "builtins.genericClosure { startSet = [ { key = 1; } { key = 2; } ]; operator = item: if item.key < 3 then [ { key = item.key + 1; } ] else [ ]; }",
-    // concatStrings
-    "builtins.concatStrings [ \"a\" \"b\" \"c\" ]",
-    "builtins.concatStrings [ ]",
-    // toLower / toUpper
-    "builtins.toLower \"AbC\"",
-    "builtins.toUpper \"AbC\"",
-    // hasPrefix / hasSuffix
-    "builtins.hasPrefix \"ab\" \"abc\"",
-    "builtins.hasPrefix \"z\" \"abc\"",
-    "builtins.hasSuffix \"bc\" \"abc\"",
-    "builtins.hasSuffix \"z\" \"abc\"",
+    // concatStrings / toLower / toUpper / hasPrefix / hasSuffix rows removed:
+    // all five are nixpkgs `lib.strings` leaks, dropped from all three engines
+    // 2026-08-17. `concatStringsSep` (a REAL builtin, and the correct spelling
+    // of what `concatStrings` did) is still exercised above, so the
+    // string-concatenation path keeps its differential coverage.
     // match (anchored regex; null on no match; optional groups)
     "builtins.match \"[0-9]+\" \"123\"",
     "builtins.match \"a\" \"b\"",
@@ -695,16 +688,15 @@ const BUILTINS_ERROR_SEED: &[&str] = &[
     // attr HOF type errors
     "builtins.catAttrs \"a\" 5",
     "builtins.zipAttrsWith (n: v: v) [ 5 ]",
-    "builtins.filterAttrs (n: v: v) 5",
     "builtins.functionArgs 5",
     "builtins.genericClosure { startSet = [ ]; }",
     "builtins.genericClosure 5",
     // string / version type errors
-    "builtins.concatStrings 5",
-    "builtins.toLower 5",
-    "builtins.toUpper [ ]",
-    "builtins.hasPrefix 1 \"x\"",
-    "builtins.hasSuffix \"x\" 1",
+    // `builtins.{concatStrings,toLower,toUpper,hasPrefix,hasSuffix} <bad arg>`
+    // rows removed. They WOULD still pass — both engines error — but they
+    // would be proving "the attribute is missing", not the argument type error
+    // they were written to pin. A row that passes while exercising nothing is
+    // the vacuity this suite exists to avoid.
     "builtins.match 1 \"x\"",
     "builtins.compareVersions 1 \"x\"",
     "builtins.splitVersion 5",
@@ -814,10 +806,31 @@ fn builtins_registry_parity() {
     let src = "builtins.attrNames builtins";
     let ir = ir_outcome(src).expect("IR renders the builtins key list");
     match tree_outcome(src) {
-        Outcome::Val(tree) => assert_eq!(
-            tree, ir,
-            "builtins key sets diverge between the walker and the IR bridge"
-        ),
+        Outcome::Val(tree) => {
+            // ── ANTI-VACUITY FLOOR, before the comparison. Two empty renders
+            // compare EQUAL, so without this the strongest evidence that the
+            // two registries agree would also be produced by both of them
+            // vanishing. The IR registry is hand-maintained independently of
+            // the walker's (87 native builtins + 24 missing-seeded names +
+            // constants, in sui-ir/src/builtins.rs), so this really is a
+            // comparison of two lists and not a tautology.
+            // The render is nix list syntax — space-separated quoted strings,
+            // NOT comma-separated. Count quote pairs.
+            let entries = ir.matches('"').count() / 2;
+            assert!(
+                entries >= 100,
+                "the builtins key list rendered only ~{entries} entries — that \
+                 is not a usable comparison; two collapsed renders would agree \
+                 trivially.\n  ir: {ir}"
+            );
+            assert_eq!(
+                tree, ir,
+                "builtins key sets diverge between the walker and the IR bridge"
+            );
+            eprintln!(
+                "builtins_registry_parity: walker == eval_ir, ~{entries} names"
+            );
+        }
         Outcome::Error(e) => panic!("walker failed to enumerate builtins: {e}"),
     }
 }
@@ -1442,9 +1455,15 @@ mod generated {
     /// deep generated mul chain; the `+`/`-`/`*` OPERATORS, which ARE overflow-
     /// checked, stay in `BINOPS`, and the builtins are seed-tested with small
     /// numbers).
+    /// `hasPrefix`/`hasSuffix` were dropped from this list on 2026-08-17 with
+    /// the six nixpkgs-lib leaks. Leaving them would not have turned the suite
+    /// red — both engines now reject them, so every generated row would still
+    /// AGREE — but it would agree on "attribute missing" rather than on the
+    /// builtin's semantics. That is generator capacity spent proving nothing,
+    /// which is worse than a red row because it never asks to be looked at.
     const BUILTIN2: &[&str] = &[
         "elem", "lessThan", "map", "elemAt", "sort", "all", "any", "concatMap", "hasAttr",
-        "getAttr", "catAttrs", "compareVersions", "match", "hasPrefix", "hasSuffix",
+        "getAttr", "catAttrs", "compareVersions", "match",
     ];
 
     fn arb_ident() -> impl Strategy<Value = &'static str> {

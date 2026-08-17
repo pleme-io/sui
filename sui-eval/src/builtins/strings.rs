@@ -48,21 +48,11 @@ fn cached_regex(pattern: &str) -> Result<regex::Regex, EvalError> {
     })
 }
 
-/// Register a curried string predicate builtin (first arg is a pattern, second is the subject).
-macro_rules! register_string_predicate {
-    ($builtins:expr, $name:expr, $partial_name:expr, $check:expr) => {
-        register_builtin($builtins, $name, |args| {
-            let pattern = args[0].as_string()?.to_string();
-            Ok(Value::Builtin(Box::new(BuiltinFn {
-                name: $partial_name,
-                func: Rc::new(move |args2| {
-                    let s = args2[0].as_string()?;
-                    Ok(Value::Bool($check(&pattern, s)))
-                }),
-            })))
-        });
-    };
-}
+// `register_string_predicate!` lived here. Its only two users were
+// `hasPrefix`/`hasSuffix`, which are nixpkgs `lib.strings` functions and not
+// CppNix builtins at any feature level; both were removed with the macro. If a
+// REAL curried string-predicate builtin ever lands, reintroduce it then —
+// keeping a zero-user macro alive only advertises a shape nix does not have.
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toString", |args| {
@@ -122,21 +112,14 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         })))
     });
 
-    // Case conversion (context-preserving)
-    register_builtin(builtins, "toLower", |args| {
-        let ns = args[0].as_nix_string()?;
-        Ok(Value::String(Rc::new(NixString::with_context(
-            ns.chars.to_lowercase(),
-            ns.context.clone(),
-        ))))
-    });
-    register_builtin(builtins, "toUpper", |args| {
-        let ns = args[0].as_nix_string()?;
-        Ok(Value::String(Rc::new(NixString::with_context(
-            ns.chars.to_uppercase(),
-            ns.context.clone(),
-        ))))
-    });
+    // `toLower` / `toUpper` were registered here and are GONE: they are
+    // nixpkgs `lib.strings.toLower`/`toUpper`, not CppNix builtins. Measured
+    // against nix 2.31.5 with `--extra-experimental-features 'fetch-closure
+    // dynamic-derivations flakes nix-command'`: absent. Registering them made
+    // sui accept `builtins.toUpper "x"`, which real nix rejects with
+    // `error: attribute 'toUpper' missing` — the one direction a compatibility
+    // layer must never drift in. nixpkgs consumers are unaffected; `lib.toUpper`
+    // is implemented in nixpkgs and never routed through `builtins`.
 
     register_builtin(builtins, "replaceStrings", |args| {
         let from = args[0].to_list()?.iter()
@@ -251,24 +234,19 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             }),
         })))
     });
-    register_string_predicate!(builtins, "hasPrefix", "hasPrefix<partial>",
-        |prefix: &str, s: &str| s.starts_with(prefix));
-    register_string_predicate!(builtins, "hasSuffix", "hasSuffix<partial>",
-        |suffix: &str, s: &str| s.ends_with(suffix));
-
-    // concatStrings — concat without separator (= concatStringsSep "").
-    // Same context-accumulation contract as concatStringsSep above.
-    register_builtin(builtins, "concatStrings", |args| {
-        let list = args[0].to_list()?;
-        let mut result = String::new();
-        let mut ctx = StringContext::new();
-        for v in list.iter() {
-            let (s, c) = v.coerce_to_string()?;
-            result.push_str(&s);
-            ctx.merge(&c);
-        }
-        Ok(Value::String(Rc::new(NixString::with_context(result, ctx))))
-    });
+    // `hasPrefix` / `hasSuffix` / `concatStrings` were registered here and are
+    // GONE — all three are nixpkgs `lib` functions (`lib.strings.hasPrefix`,
+    // `lib.strings.hasSuffix`, `lib.strings.concatStrings`), not CppNix
+    // builtins at any feature level. Verified absent from nix 2.31.5 with every
+    // experimental feature enabled.
+    //
+    // `concatStrings` is the one worth a note: its behaviour is exactly
+    // `concatStringsSep ""`, which sui DOES have and nix DOES have, so the
+    // capability is not lost — only the name nix never had. The empty-separator
+    // context-accumulation path stays covered by the parity corpus row
+    // "concatStringsSep empty-sep single-element context" (src/parity_corpus.rs),
+    // which was deliberately written through `concatStringsSep ""` for this
+    // exact reason.
 
     // Regex: hashString, match, split
     register_curried(builtins, "hashString", |algo, s| {

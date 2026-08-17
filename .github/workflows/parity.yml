@@ -165,12 +165,33 @@ jobs:
       #                           absent. Note the second-order problem: these
       #                           can only ever be non-vacuous on a machine
       #                           where they hang.
-      #   diff_eval_primitives   - one REAL divergence, `diff_filter_attrs`:
-      #                           sui exposes `builtins.filterAttrs`, which nix
-      #                           does not have at any feature level. Gated
-      #                           separately by sui-eval's builtin_registry
-      #                           test; this row lands once the six nixpkgs-lib
-      #                           leaks are dropped.
+      #   diff_eval_primitives   - RESOLVED 2026-08-17, row added below. It held
+      #                           one REAL divergence, `diff_filter_attrs`: sui
+      #                           exposed `builtins.filterAttrs`, which nix does
+      #                           not have at any feature level. The six
+      #                           nixpkgs-lib leaks were dropped from all three
+      #                           engines that day.
+      #                           ★ Dropping them did NOT by itself make the
+      #                           binary green, and that is worth knowing before
+      #                           trusting any "removal fixed it" claim: with the
+      #                           builtin gone, nix and sui BOTH reject — but
+      #                           `run_cases` compares the full JSON including
+      #                           the `__error` string, and sui's diagnostics
+      #                           reproduce CppNix's wording nowhere
+      #                           (`attribute not found: 'x'` vs `error:
+      #                           attribute 'x' missing\n at «string»:1:1: …`).
+      #                           So the divergence changed CLASS (semantic ->
+      #                           message-text) rather than vanishing. The test
+      #                           is now `diff_filter_attrs_is_rejected_by_both`
+      #                           over a `run_both_reject` helper that compares
+      #                           ACCEPT-vs-REJECT only, which is the axis a
+      #                           compatibility layer must hold; the surviving
+      #                           prose divergence is left explicitly unasserted
+      #                           rather than papered over.
+      #                           Measured green: 29 passed / 0 failed / 4.17s
+      #                           with SUI_TEST_ONLINE=1 (darwin/aarch64, nix
+      #                           2.31.5, 2026-08-17), against 0.00s offline —
+      #                           the delta this list requires for admission.
       #   system_eval_parity     - CI-FATAL *and* currently broken. Its four
       #                           `nix_repo_*` tests read $HOME/code/github/
       #                           pleme-io/nix (absent on a runner -> vacuous),
@@ -199,6 +220,7 @@ jobs:
       #     vs_nix_hotshapes     0.00s -> 24.25s  (1 site)
       #     flake_lock_roundtrip 0.00s -> 0.81s   (5 sites)
       #     flake_eval_parity    0.00s -> 0.30s   (2 sites)
+      #     diff_eval_primitives 0.00s -> 4.17s   (29 tests, all online-gated)
       # The last two are green and no longer no-op, but their sub-second times
       # say they unlock much less than their site counts suggest — keep the
       # honest claim "these no longer no-op", not "these all ran".
@@ -230,3 +252,4 @@ jobs:
           cargo test -p sui-eval     --test vs_nix_hotshapes
           cargo test -p sui-eval     --test flake_lock_roundtrip
           cargo test -p sui-eval     --test flake_eval_parity
+          cargo test -p sui-eval     --test diff_eval_primitives
