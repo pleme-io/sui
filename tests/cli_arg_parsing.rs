@@ -915,3 +915,109 @@ fn nix_build_with_out_link() {
         .assert()
         .success();
 }
+
+// ── Commands that must REFUSE rather than succeed while doing the wrong
+// thing ──────────────────────────────────────────────────────────────────
+//
+// Each of these exited 0 while not performing its stated operation. The
+// assertions below pin the refusal, and — more importantly — pin the
+// STDOUT contract: a command that cannot do the job must not print a
+// result-shaped line that a caller would capture.
+
+/// `store repair` never repaired: it called `Path::exists()`, probed the
+/// substituter for a `.narinfo`, printed a row and exited 0. A CORRUPT
+/// path therefore reported `local=ok`, because existence is not integrity.
+#[test]
+fn store_repair_refuses_instead_of_reporting_local_ok() {
+    sui()
+        .args([
+            "store",
+            "repair",
+            "/nix/store/00000000000000000000000000000000-does-not-exist",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("store repair does not repair"))
+        // Empty, not merely "lacks local=ok". A `local=ok` assertion alone
+        // would be VACUOUS here — the probe path is absent, so the old code
+        // printed `local=missing` and the check passed against the very
+        // behaviour it was meant to catch. Emptiness is the real contract:
+        // a command that cannot repair prints no result row at all.
+        .stdout(predicate::str::is_empty());
+}
+
+/// `store add-file` printed a `/nix/store/…` path to STDOUT that did not
+/// exist, putting the caveat on STDERR where `p=$(…)` never sees it.
+/// The load-bearing assertion is the STDOUT one.
+#[test]
+fn store_add_file_refuses_instead_of_printing_a_path_that_does_not_exist() {
+    let f = std::env::temp_dir().join("sui-add-file-refusal-test.txt");
+    std::fs::write(&f, b"probe\n").expect("write probe file");
+
+    sui()
+        .args(["store", "add-file", f.to_str().expect("utf8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "would print a /nix/store path that does not exist",
+        ))
+        // A caller doing `p=$(sui store add-file x)` must capture NOTHING.
+        // Before the fix this held a non-existent store path — red-run
+        // observed `code=0`, stdout
+        // `/nix/store/0j5mm0r668gvpihbgf7h54i96v98jgdl-…`.
+        .stdout(predicate::str::contains("/nix/store").not())
+        .stdout(predicate::str::is_empty());
+}
+
+/// `develop` spawned `$SHELL` carrying only the STRING attrs of the
+/// devShell — dropping `buildInputs` — never sourcing `$stdenv/setup`,
+/// and setting `IN_SUI_SHELL` instead of `IN_NIX_SHELL`. It exited 0 with
+/// a prompt that looks like a devShell and is not one.
+///
+/// The flake below is deliberately valid and carries both a string attr
+/// and a list attr, so before the fix this test reached the real
+/// shell-spawn path (and passed `--command true`, exiting 0) rather than
+/// dying in evaluation. That is what makes it a genuine regression test
+/// and not merely an assertion that a broken input fails.
+#[test]
+fn develop_refuses_instead_of_spawning_a_partial_shell() {
+    let dir = std::env::temp_dir().join("sui-develop-refusal-test");
+    std::fs::create_dir_all(&dir).expect("create probe flake dir");
+    std::fs::write(
+        dir.join("flake.nix"),
+        br#"{
+  description = "probe flake for the sui develop refusal test";
+  outputs = { self }: {
+    devShells.aarch64-darwin.default = {
+      type = "derivation";
+      name = "probe-shell";
+      system = "aarch64-darwin";
+      PROBE_KEPT = "kept-value";
+      buildInputs = [ "dropped-one" "dropped-two" ];
+    };
+    devShells.x86_64-linux.default = {
+      type = "derivation";
+      name = "probe-shell";
+      system = "x86_64-linux";
+      PROBE_KEPT = "kept-value";
+      buildInputs = [ "dropped-one" "dropped-two" ];
+    };
+  };
+}
+"#,
+    )
+    .expect("write probe flake");
+
+    sui()
+        .args([
+            "develop",
+            dir.to_str().expect("utf8 path"),
+            "--command",
+            "true",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "develop does not enter the devShell",
+        ));
+}

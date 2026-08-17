@@ -48,14 +48,32 @@ use sui_spec::cli_coverage::{self, SuiCommandMaturity};
 // 10 -> 12: also demoted collect-garbage + search to `Partial` — collect-garbage
 // only prints a `sui store gc` hint (doesn't collect), and search shells out to
 // `nix flake show` (not a native replacement). Both verified against src/main.rs.
-const MAX_NON_WORKING: usize = 12;
+// 12 -> 15: demoted `develop`, `store add-file` and `store repair` to `Stub`.
+// All three exited 0 while not performing their stated operation, and all three
+// are now an unconditional `CliError::NotImplemented` (verified against
+// src/main.rs) — the same criterion as the ten demoted above:
+//   - `store repair` never repaired. `local=ok` came from `Path::exists()`
+//     alone, so a CORRUPT path — the one case the command exists for —
+//     reported ok and exited 0.
+//   - `store add-file` printed a `/nix/store` path to STDOUT that did not
+//     exist, and computed it with the RECURSIVE/NAR hash where `nix store
+//     add-file` uses FLAT ingestion, so the path was wrong as well as absent.
+//   - `develop` spawned $SHELL with only the STRING attrs of the devShell
+//     (dropping `buildInputs`), never sourced `$stdenv/setup`, and set
+//     IN_SUI_SHELL rather than IN_NIX_SHELL.
+const MAX_NON_WORKING: usize = 15;
 
 /// The committed floor on replacement coverage.
 // Lowered 1.0 -> 0.87 (2026-07-22, same honest demotion): true coverage is now
 // 67 Working / 77 non-SuiNative = 87.0%, not 100%. This is not a regression in
 // sui's behavior — it is the coverage NUMBER becoming truthful. Raise it back
 // toward 1.0 as the ten demoted stubs get real implementations.
-const MIN_REPLACEMENT_PCT: f64 = 0.84;
+// Lowered 0.84 -> 0.80 (same honesty demotion as MAX_NON_WORKING 12 -> 15):
+// true coverage is now 62 Working / 77 non-SuiNative = 80.5%. Again this is the
+// NUMBER becoming truthful, not sui regressing — the three commands behave
+// exactly as before minus the false exit 0. Raise it back as they get real
+// handlers.
+const MIN_REPLACEMENT_PCT: f64 = 0.80;
 
 /// The GAP maturities — the three that mean "sui does not do this yet".
 ///
@@ -123,8 +141,11 @@ fn working_command_count_is_stable_or_growing() {
     // demoted to `Stub`, so the truthful Working count is 67. This is the number
     // becoming honest, not sui regressing; the floor RATCHETS BACK UP as each
     // demoted stub gets a real handler.
+    // Floor lowered 65 -> 62 (honesty demotion of `develop`, `store add-file`
+    // and `store repair` — see MAX_NON_WORKING above). Same shape as the
+    // 75 -> 67 move: the count becoming honest, not sui regressing.
     assert!(
-        working >= 65,
-        "working command count regressed: now {working} (floor 65)",
+        working >= 62,
+        "working command count regressed: now {working} (floor 62)",
     );
 }

@@ -26,9 +26,9 @@
 (defsui-command
   :name "develop"
   :nix-equivalent "nix develop"
-  :maturity Working
+  :maturity Stub
   :substrate ("flake")
-  :notes "Enter devShell via flake reference + attribute")
+  :notes "REFUSES (unconditional NotImplemented). The old handler spawned $SHELL with only the STRING attrs of the devShell — list attrs like buildInputs were silently dropped — never built stdenv or sourced $stdenv/setup, and set IN_SUI_SHELL instead of IN_NIX_SHELL. Exited 0 with a shell that is not the devShell.")
 
 (defsui-command
   :name "run"
@@ -245,9 +245,9 @@
 (defsui-command
   :name "store add-file"
   :nix-equivalent "nix store add-file"
-  :maturity Working
+  :maturity Stub
   :substrate ("store_layout" "hash")
-  :notes "NAR-hashes content + computes canonical store path + caches locally (daemon write needs root)")
+  :notes "REFUSES (unconditional NotImplemented). The old handler printed a /nix/store path to STDOUT that did not exist (caveat on stderr only), never wrote to the store, and used the RECURSIVE/NAR hash where nix store add-file uses FLAT ingestion — so the path was wrong as well as absent.")
 
 (defsui-command
   :name "store prefetch-file"
@@ -266,9 +266,9 @@
 (defsui-command
   :name "store repair"
   :nix-equivalent "nix store repair"
-  :maturity Working
+  :maturity Stub
   :substrate ("substituter" "store_layout")
-  :notes "Probes the canonical substituter via http_get + reports local-vs-remote per path")
+  :notes "REFUSES (unconditional NotImplemented). The old handler never repaired: it reported local=ok from Path::exists() alone — existence is not integrity, so a CORRUPT path exited 0 reporting ok — and never compared the local NAR hash, downloaded a replacement, or wrote a byte.")
 
 ;; ── flake commands ─────────────────────────────────────────────
 
