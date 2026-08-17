@@ -138,47 +138,100 @@ impl InputFetcher {
         let rev = locked.rev.as_deref().ok_or(FetchError::MissingField("rev"))?;
 
         let url = Self::github_archive_url(owner, repo, rev);
-        let dest = self.dest_dir(locked, &format!("github-{owner}-{repo}-{rev}"));
-        std::fs::create_dir_all(&dest)?;
-
-        // Download and extract; on failure remove the (potentially empty) dest
-        // directory so the next attempt doesn't see a stale cache hit.
-        let bytes = match download_bytes(&url) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&dest);
-                return Err(e);
-            }
-        };
-        if let Err(e) = extract_tar_gz(&bytes, &dest) {
-            let _ = std::fs::remove_dir_all(&dest);
-            return Err(e);
-        }
-
-        Ok(find_single_subdir_or_self(&dest))
+        // Was a hand-inlined copy of `fetch_archive`'s body — the only copy of
+        // the three that lacked a cache guard, which is exactly how it came to
+        // re-download on every invocation. Sharing the body is the fix for the
+        // class; the guard below is the fix for the instance.
+        self.fetch_archive(locked, &url, &format!("github-{owner}-{repo}-{rev}"), rev)
     }
 
-    /// GitLab and Sourcehut share the same archive-fetch shape as
-    /// GitHub — download a tar.gz, extract, return the single top-
-    /// level directory. Only the URL construction differs.
+    /// GitHub, GitLab and Sourcehut share one archive-fetch shape — download a
+    /// tar.gz, extract, return the single top-level directory. Only the URL
+    /// construction differs.
+    ///
+    /// ── ★ STAGE THEN RENAME; NEVER EXTRACT INTO THE FINAL PATH ────────────
+    /// This used to `create_dir_all(dest)` and extract straight into it, which
+    /// produced three distinct defects from one decision:
+    ///
+    /// 1. **A partial tree is a valid cache hit.** The hit predicate is "the
+    ///    directory is non-empty", which goes true on the FIRST tar entry, so a
+    ///    concurrent process could adopt a half-extracted tree and evaluate it
+    ///    as if complete — a silently wrong eval, not an error.
+    /// 2. **A re-extraction UNIONS.** `tar` runs with `overwrite: true`, so
+    ///    extracting a second time over an existing tree leaves files that the
+    ///    newer tree deleted. Content at a "content-addressed" path then
+    ///    disagrees with the hash in its own name.
+    /// 3. **A failing process deleted another process's good cache entry.**
+    ///    Every error path called `remove_dir_all(&dest)` — on the FINAL path.
+    ///    A transient network error during a redundant re-fetch would wipe a
+    ///    complete tree that another eval was actively reading.
+    ///
+    /// Defect 2 is what poisoned `~/.cache/sui/nar-memo` and made `getFlake`
+    /// return a store path CppNix disagrees with (measured 2026-08-17; see
+    /// `sui-compat/src/source.rs`'s memo verifier, which is the read-side
+    /// defence this is the write-side cause of).
+    ///
+    /// Staging beside the target rather than in `/tmp` keeps the rename on one
+    /// filesystem, where it is atomic — the same reason `sui-castore`'s local
+    /// storage stages beside its target.
     fn fetch_archive(
         &self,
         locked: &LockedInput,
         url: &str,
         cache_key: &str,
+        rev: &str,
     ) -> Result<PathBuf, FetchError> {
         let dest = self.dest_dir(locked, cache_key);
-        std::fs::create_dir_all(&dest)?;
+
+        // ── The cache guard, and why it is conditional ────────────────────
+        // A rev that is a 40/64-hex commit names one immutable tree, so a
+        // complete directory at `dest` can be adopted with no network at all.
+        // A rev that is a BRANCH NAME does not: `github:owner/repo/main` is a
+        // legal ref (CppNix accepts it, so refusing it would be a parity
+        // divergence, not a safety win) and the tree behind it moves. Guarding
+        // unconditionally would freeze such an entry at whatever `main` was
+        // the first time it was fetched, forever.
+        //
+        // So: immutable revs are cached, mutable ones are always re-fetched.
+        // The old code re-fetched BOTH, which was wasteful for the first and
+        // accidentally correct for the second.
+        if is_immutable_rev(rev) && is_non_empty_dir(&dest) {
+            return Ok(find_single_subdir_or_self(&dest));
+        }
+
+        let staging = staging_path(&dest);
+        // A leftover staging dir means a previous process died mid-extract.
+        // It is ours to clear: the name carries our pid.
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+
         let bytes = match download_bytes(url) {
             Ok(b) => b,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&dest);
+                let _ = std::fs::remove_dir_all(&staging);
                 return Err(e);
             }
         };
-        if let Err(e) = extract_tar_gz(&bytes, &dest) {
-            let _ = std::fs::remove_dir_all(&dest);
+        if let Err(e) = extract_tar_gz(&bytes, &staging) {
+            let _ = std::fs::remove_dir_all(&staging);
             return Err(e);
+        }
+
+        // Publish. A concurrent fetcher may have won the race and already
+        // renamed a tree into place; on a mutable rev we also need to replace
+        // whatever is there. Remove-then-rename is not atomic, but the window
+        // now contains only COMPLETE trees, never a partial one.
+        if dest.exists() {
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+        if std::fs::rename(&staging, &dest).is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+            // Losing the race is not a failure if the winner left a good tree.
+            if !is_non_empty_dir(&dest) {
+                return Err(FetchError::Extract(
+                    "could not publish the fetched tree and no other process left one".into(),
+                ));
+            }
         }
         Ok(find_single_subdir_or_self(&dest))
     }
@@ -190,7 +243,7 @@ impl InputFetcher {
         let host = locked.host.as_deref();
         let url = Self::gitlab_archive_url(host, owner, repo, rev);
         let host_tag = host.unwrap_or("gitlab.com").replace('.', "_");
-        self.fetch_archive(locked, &url, &format!("gitlab-{host_tag}-{owner}-{repo}-{rev}"))
+        self.fetch_archive(locked, &url, &format!("gitlab-{host_tag}-{owner}-{repo}-{rev}"), rev)
     }
 
     fn fetch_sourcehut(&self, locked: &LockedInput) -> Result<PathBuf, FetchError> {
@@ -203,6 +256,7 @@ impl InputFetcher {
             locked,
             &url,
             &format!("sourcehut-{sanitized_owner}-{repo}-{rev}"),
+            rev,
         )
     }
 
@@ -344,6 +398,27 @@ fn github_tarball_from_git_url(url: &str, rev: &str) -> Option<String> {
 /// Turn a narHash like `sha256-AAAA...=` into a filesystem-safe name.
 fn sanitize_hash(hash: &str) -> String {
     hash.replace(':', "-").replace('/', "_").replace('=', "")
+}
+
+/// Whether `rev` names one immutable tree — a full git object id.
+///
+/// 40 hex for sha1, 64 for the sha256 transition. Anything else (a branch, a
+/// tag, a short rev) can move, so it must never be served from cache without a
+/// network check. Lowercase only: git emits lowercase, and accepting mixed case
+/// would let `ABC…` and `abc…` occupy two cache entries for one tree.
+fn is_immutable_rev(rev: &str) -> bool {
+    matches!(rev.len(), 40 | 64) && rev.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A scratch path beside `dest`, on the same filesystem so the publish rename
+/// is atomic. The pid keeps two concurrent fetchers from sharing a staging dir.
+fn staging_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map_or_else(|| "fetch".to_string(), |n| n.to_string_lossy().into_owned());
+    let tmp = [".", &name, ".tmp-", &std::process::id().to_string()].concat();
+    dest.parent()
+        .map_or_else(|| PathBuf::from(&tmp), |p| p.join(&tmp))
 }
 
 /// Return `true` when `dir` exists and has at least one child entry.
@@ -588,6 +663,64 @@ mod tests {
             "sha256-AAAAAAAAAAAAAAAAAAAAAA"
         );
         assert_eq!(sanitize_hash("sha256:abc/def="), "sha256-abc_def");
+    }
+
+    // ── is_immutable_rev — what may be served from cache ──
+
+    #[test]
+    fn only_a_full_object_id_is_treated_as_immutable() {
+        // sha1 and the sha256 transition: one rev, one tree, forever.
+        assert!(is_immutable_rev("7fd33221240a3ab97781a066c5efe0124979527f"));
+        assert!(is_immutable_rev(&"a".repeat(64)));
+
+        // ── ★ THE ONE THAT MATTERS ───────────────────────────────────────
+        // `github:owner/repo/main` is a legal ref and CppNix accepts it, so
+        // we must too — but the tree behind it MOVES. Caching it as if
+        // immutable would freeze the entry at whatever `main` was the first
+        // time it was fetched. There is a `github-pleme-io-nix-main`
+        // directory in the live cache today, so this is not hypothetical.
+        assert!(!is_immutable_rev("main"), "a branch name is not a commit");
+        assert!(!is_immutable_rev("v1.2.3"), "a tag can be moved");
+        assert!(!is_immutable_rev("7fd3322"), "a short rev is ambiguous");
+        assert!(!is_immutable_rev(""), "an empty rev names nothing");
+
+        // Length alone is not enough — 40 non-hex chars is not an object id.
+        assert!(!is_immutable_rev(&"z".repeat(40)));
+        // Uppercase is refused deliberately: git emits lowercase, and
+        // accepting both would give one tree two cache entries.
+        assert!(!is_immutable_rev(&"A".repeat(40)));
+    }
+
+    // ── staging_path — atomicity depends on it being a SIBLING ──
+
+    #[test]
+    fn staging_is_a_sibling_so_the_publish_rename_is_atomic() {
+        let dest = std::path::Path::new("/cache/sui/inputs/sha256-abc/github-o-r-deadbeef");
+        let staging = staging_path(dest);
+        assert_eq!(
+            staging.parent(),
+            dest.parent(),
+            "staging in /tmp would put the rename across filesystems, where it \
+             is a copy — and a copy is not atomic, which is the whole point"
+        );
+        assert_ne!(staging, dest.to_path_buf());
+        let name = staging.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with('.'), "hidden, so it is not mistaken for a tree");
+        assert!(
+            name.contains(&std::process::id().to_string()),
+            "pid-scoped, so two concurrent fetchers cannot share a staging dir"
+        );
+        // A dotted directory name must not be truncated the way
+        // `Path::with_extension` would truncate it.
+        let dotted = std::path::Path::new("/c/github-o-r-1.2.3");
+        assert!(
+            staging_path(dotted)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("github-o-r-1.2.3"),
+            "the full directory name must survive into the staging name"
+        );
     }
 
     // ── find_single_subdir_or_self ────────────────────────
