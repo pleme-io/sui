@@ -13,10 +13,11 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use sui::{CliError, NIX_DB_PATH};
 
 mod agent;
+mod cli_contract;
 mod legacy;
 mod parity_corpus;
 mod perf_seal;
@@ -26,21 +27,47 @@ use sui_store::{LocalStore, Store, Substitutor};
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]
 struct Cli {
+    /// Use the bytecode VM evaluator (the default engine).
     #[arg(long, global = true)] vm: bool,
+    /// Use the tree-walking evaluator instead of the bytecode VM.
     #[arg(long, global = true, conflicts_with = "vm")] no_vm: bool,
+    /// Emit an evaluation trace (equivalent to SUI_TRACE_EVAL=1).
     #[arg(long, global = true)] show_trace: bool,
+    /// [REFUSED] Print build logs to stderr.
     #[arg(short = 'L', long, global = true)] print_build_logs: bool,
-    #[arg(long, global = true, hide = true)] extra_experimental_features: Option<String>,
-    #[arg(long, global = true, hide = true)] no_write_lock_file: bool,
-    #[arg(long, global = true, hide = true)] accept_flake_config: bool,
-    #[arg(long, global = true, hide = true)] impure: bool,
-    #[arg(long, global = true, hide = true, num_args = 2, action = clap::ArgAction::Append)] option: Vec<String>,
-    #[arg(long, global = true, hide = true)] log_format: Option<String>,
-    #[arg(long, global = true, hide = true)] max_jobs: Option<String>,
-    #[arg(long, global = true, hide = true)] cores: Option<usize>,
-    #[arg(long, global = true, hide = true)] keep_going: bool,
-    #[arg(short = 'v', long, global = true, hide = true)] verbose: bool,
-    #[arg(long, global = true, hide = true)] quiet: bool,
+    // ── nix parse-compat globals ────────────────────────────────────────
+    //
+    // These eleven exist so `alias nix=sui` PARSES every `nix …` invocation.
+    // They were all `hide = true` and read by nothing — accepted, invisible in
+    // `--help`, and silently ignored, which is the worst reachable combination:
+    // undiscoverable, so nobody reports it, and confidently wrong when someone
+    // finds it. `hide` is gone and every one is REFUSED by `cli_contract`, so
+    // supplying one exits 2 with a typed reason instead of quietly changing the
+    // answer. Destination: fall through to cppnix (`exec_cppnix_passthrough`)
+    // for any nix flag sui cannot honour, at which point these become Honoured
+    // by delegation. See src/cli_contract.rs.
+    /// [REFUSED] nix parse-compat: enable extra experimental features.
+    #[arg(long, global = true)] extra_experimental_features: Option<String>,
+    /// [REFUSED] nix parse-compat: do not write flake.lock.
+    #[arg(long, global = true)] no_write_lock_file: bool,
+    /// [REFUSED] nix parse-compat: accept the flake's own nixConfig.
+    #[arg(long, global = true)] accept_flake_config: bool,
+    /// [REFUSED] nix parse-compat: evaluate impurely.
+    #[arg(long, global = true)] impure: bool,
+    /// [REFUSED] nix parse-compat: set an arbitrary nix setting.
+    #[arg(long, global = true, num_args = 2, action = clap::ArgAction::Append)] option: Vec<String>,
+    /// [REFUSED] nix parse-compat: select the log format.
+    #[arg(long, global = true)] log_format: Option<String>,
+    /// [REFUSED] nix parse-compat: bound build parallelism.
+    #[arg(long, global = true)] max_jobs: Option<String>,
+    /// [REFUSED] nix parse-compat: bound per-build core count.
+    #[arg(long, global = true)] cores: Option<usize>,
+    /// [REFUSED] nix parse-compat: keep building after a failure.
+    #[arg(long, global = true)] keep_going: bool,
+    /// [REFUSED] nix parse-compat: more diagnostic output.
+    #[arg(short = 'v', long, global = true)] verbose: bool,
+    /// [REFUSED] nix parse-compat: less output.
+    #[arg(long, global = true)] quiet: bool,
     #[command(subcommand)] command: Commands,
 }
 
@@ -68,17 +95,24 @@ enum Commands {
         #[arg(long, default_value = "0")] max_force_depth: usize,
         #[arg(long)]
         no_eval_cache: bool,
-        #[arg(long, hide = true)] apply: Option<String>,
-        #[arg(long = "file", short = 'f', hide = true)] file_flag: Option<String>,
+        /// [REFUSED] Apply a function to the evaluated value.
+        #[arg(long)] apply: Option<String>,
+        /// [REFUSED] Evaluate this file instead of the positional expression.
+        #[arg(long = "file", short = 'f')] file_flag: Option<String>,
     },
     Build {
         installable: Option<String>,
+        /// [REFUSED] Do not create the `result` symlink.
         #[arg(long)] no_link: bool,
+        /// [REFUSED] Print the output paths to stdout.
         #[arg(long)] print_out_paths: bool,
+        /// [REFUSED] Emit machine-readable JSON.
         #[arg(long)] json: bool,
         #[arg(long)] dry_run: bool,
+        /// [REFUSED] Path for the result symlink.
         #[arg(short = 'o', long)] out_link: Option<String>,
-        #[arg(long, hide = true)] rebuild: bool,
+        /// [REFUSED] Force a rebuild to check reproducibility.
+        #[arg(long)] rebuild: bool,
     },
     /// Flake operations
     Flake {
@@ -129,8 +163,26 @@ enum Commands {
     Search { flake_ref: String, query: String },
     Profile { #[command(subcommand)] command: ProfileCommands },
     Repl { flake_ref: Option<String>, #[arg(long)] file: Option<String> },
-    Copy { #[arg(long)] to: Option<String>, #[arg(long)] from: Option<String>, paths: Vec<String>, #[arg(long, hide = true)] no_check_sigs: bool },
-    #[command(name = "path-info")] PathInfo { paths: Vec<String>, #[arg(long)] json: bool, #[arg(long, hide = true)] closure_size: bool },
+    /// Copy store paths between stores.
+    ///
+    /// `--no-check-sigs` is honoured VACUOUSLY: `cmd_copy` verifies no
+    /// signature at any point, so "do not check signatures" is the only
+    /// behaviour there is. Revisit the CONTRACT row the day copy learns to
+    /// verify.
+    Copy {
+        #[arg(long)] to: Option<String>,
+        #[arg(long)] from: Option<String>,
+        paths: Vec<String>,
+        /// Do not verify signatures — already the only behaviour sui has.
+        #[arg(long)] no_check_sigs: bool,
+    },
+    #[command(name = "path-info")]
+    PathInfo {
+        paths: Vec<String>,
+        #[arg(long)] json: bool,
+        /// [REFUSED] Show the closure size column.
+        #[arg(long)] closure_size: bool,
+    },
     #[command(name = "collect-garbage")] CollectGarbage { #[arg(short = 'd', long)] delete_old: bool, #[arg(long)] delete_older_than: Option<String> },
     Derivation { #[command(subcommand)] command: DerivationCommands },
     #[command(name = "show-config")] ShowConfig { #[arg(long)] json: bool },
@@ -298,7 +350,12 @@ enum StoreCommands {
     Verify,
     Optimise { #[arg(long)] dry_run: bool },
     Info,
-    Delete { paths: Vec<String>, #[arg(long, hide = true)] ignore_liveness: bool },
+    Delete {
+        paths: Vec<String>,
+        /// Delete without a liveness check. REQUIRED — `store delete` refuses
+        /// without it, since sui has no `is_live` wired yet.
+        #[arg(long)] ignore_liveness: bool,
+    },
     Ls { path: String, #[arg(short = 'R', long)] recursive: bool, #[arg(short = 'l', long)] long: bool, #[arg(long)] json: bool },
     Cat { path: String },
     #[command(name = "dump-path")] DumpPath { path: String },
@@ -1357,20 +1414,137 @@ fn store_ls(path: &str, recursive: bool, long: bool, json: bool) -> Result<(), C
         "store ls: `{path}` not a recognised store path"
     )))?;
 
-    // Walk the directory.  Long-form / json output deferred.
-    let _ = (recursive, long, json);
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| CliError::NotImplemented(format!("store ls: stat {path}: {e}")))?;
-    if metadata.is_file() {
-        println!("{path}");
+    // All three of `recursive` / `long` / `json` used to die on one
+    // `let _ = (recursive, long, json);`. `-R` silently listed one level, `-l`
+    // silently printed bare names, and `--json` silently printed human text —
+    // three confident wrong answers from one line.
+    let mut rows = Vec::new();
+    collect_store_entries(std::path::Path::new(path), std::path::Path::new(path), recursive, &mut rows)?;
+
+    if json {
+        // Keyed by relative path, matching `nix store ls --json`'s shape
+        // closely enough that a consumer can walk it. `--long`'s extra columns
+        // are always present in JSON: a machine consumer that has to re-invoke
+        // with a different flag to get a field is the failure `--json` exists
+        // to prevent.
+        let mut obj = serde_json::Map::new();
+        for row in &rows {
+            obj.insert(
+                row.relative.clone(),
+                serde_json::json!({
+                    "type":       row.kind,
+                    "size":       row.size,
+                    "executable": row.executable,
+                    "target":     row.target,
+                }),
+            );
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path":    path,
+                "entries": obj,
+            }))?
+        );
         return Ok(());
     }
-    let entries = std::fs::read_dir(path)
-        .map_err(|e| CliError::NotImplemented(format!("store ls: readdir {path}: {e}")))?;
-    for entry in entries.flatten() {
-        println!("{}", entry.file_name().to_string_lossy());
+
+    for row in &rows {
+        if long {
+            let exec = if row.executable { "x" } else { "-" };
+            let target = row.target.as_deref().unwrap_or("");
+            let arrow = if target.is_empty() { "" } else { " -> " };
+            println!(
+                "{:<9} {exec} {:>12}  {}{arrow}{target}",
+                row.kind, row.size, row.relative,
+            );
+        } else {
+            println!("{}", row.relative);
+        }
     }
     Ok(())
+}
+
+/// One row of `store ls` output. Carrying `size` / `executable` / `target`
+/// unconditionally is what lets `--long` and `--json` be projections of the same
+/// walk rather than three divergent code paths.
+struct StoreLsRow {
+    relative: String,
+    kind: &'static str,
+    size: u64,
+    executable: bool,
+    target: Option<String>,
+}
+
+/// Walk `dir`, appending a row per entry. Recurses only when asked, so `-R` is
+/// the difference between one level and the whole subtree — which is what the
+/// flag says and what it previously did not do.
+fn collect_store_entries(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    recursive: bool,
+    out: &mut Vec<StoreLsRow>,
+) -> Result<(), CliError> {
+    // `symlink_metadata`, not `metadata`: a symlink must be reported AS a
+    // symlink rather than silently as whatever it points at (and a dangling one
+    // must not abort the listing).
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| CliError::NotImplemented(format!("store ls: stat {}: {e}", dir.display())))?;
+    if !meta.is_dir() {
+        out.push(store_ls_row(root, dir, &meta));
+        return Ok(());
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| CliError::NotImplemented(format!("store ls: readdir {}: {e}", dir.display())))?
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        out.push(store_ls_row(root, &path, &meta));
+        if recursive && meta.is_dir() {
+            collect_store_entries(root, &path, recursive, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn store_ls_row(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    meta: &std::fs::Metadata,
+) -> StoreLsRow {
+    use std::os::unix::fs::PermissionsExt as _;
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    let kind = if meta.is_dir() {
+        "directory"
+    } else if meta.is_symlink() {
+        "symlink"
+    } else {
+        "regular"
+    };
+    StoreLsRow {
+        relative: if relative.is_empty() {
+            path.to_string_lossy().into_owned()
+        } else {
+            relative
+        },
+        kind,
+        size: meta.len(),
+        executable: !meta.is_dir() && (meta.permissions().mode() & 0o111) != 0,
+        target: if meta.is_symlink() {
+            std::fs::read_link(path).ok().map(|t| t.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+    }
 }
 
 fn store_cat(path: &str) -> Result<(), CliError> {
@@ -1397,24 +1571,56 @@ fn store_cat(path: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn profile_list() -> Result<(), CliError> {
-    // Read the operator's default profile manifest if it exists.
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    let manifest = std::path::PathBuf::from(home)
-        .join(".local/state/nix/profiles/profile/manifest.json");
+/// `sui profile list [--profile <p>] [--json]`.
+///
+/// Both flags were declared and discarded: the profile was always the operator's
+/// default, and `--json` produced the same tab-separated human text a JSON
+/// consumer cannot parse. `--json` is IMPLEMENTED rather than refused — refusing
+/// pushes callers to scrape the human text, which is the precise failure `--json`
+/// exists to prevent.
+fn profile_list(profile: &ProfilePath, json: bool) -> Result<(), CliError> {
+    let manifest = profile.manifest();
     if !manifest.exists() {
-        println!("(no profile manifest at {})", manifest.display());
+        if json {
+            // An absent manifest is an EMPTY profile, not an error: a consumer
+            // gets a well-formed document it can iterate over zero times.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "profile":  profile.link.display().to_string(),
+                    "manifest": manifest.display().to_string(),
+                    "elements": {},
+                }))?
+            );
+        } else {
+            println!("(no profile manifest at {})", manifest.display());
+        }
         return Ok(());
     }
     let text = std::fs::read_to_string(&manifest)
         .map_err(|e| CliError::NotImplemented(format!("profile list: read: {e}")))?;
     let doc: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| CliError::NotImplemented(format!("profile list: parse: {e}")))?;
-    let elements = doc.get("elements")
+    let elements = doc
+        .get("elements")
         .and_then(|v| v.as_object())
         .ok_or_else(|| CliError::NotImplemented("profile list: missing `elements`".into()))?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "profile":  profile.link.display().to_string(),
+                "manifest": manifest.display().to_string(),
+                "elements": elements,
+            }))?
+        );
+        return Ok(());
+    }
+
     for (name, entry) in elements {
-        let store = entry.get("storePaths")
+        let store = entry
+            .get("storePaths")
             .and_then(|v| v.as_array())
             .and_then(|a| a.first())
             .and_then(|v| v.as_str())
@@ -1467,45 +1673,127 @@ fn derivation_show(paths: &[String]) -> Result<(), CliError> {
 
 const STORE_ROOT: &str = "/nix/store";
 
-fn profile_manifest_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    std::path::PathBuf::from(home)
-        .join(".local/state/nix/profiles/profile/manifest.json")
+/// Which profile a `sui profile …` subcommand operates on.
+///
+/// `--profile` was declared by all eight profile subcommands and read by none,
+/// so every one of them silently operated on the operator's default profile.
+/// This is IMPLEMENTED rather than refused, deliberately: refusing would have
+/// punished the operator who was *explicit* about the target while continuing
+/// to serve the one who said nothing and hit the default — inverting the safety
+/// incentive on four MUTATING subcommands (install / remove / upgrade /
+/// wipe-history), where being explicit is exactly the behaviour to reward.
+///
+/// One typed source (`link` — the profile symlink itself), from which the
+/// manifest path, the generation directory and every generation link name are
+/// DERIVED. The three used to be independent hardcoded strings free to point at
+/// different profiles.
+#[derive(Debug, Clone)]
+struct ProfilePath {
+    /// The profile symlink, e.g. `~/.local/state/nix/profiles/profile`.
+    link: std::path::PathBuf,
+    /// The directory holding the symlink and its `<stem>-<N>-link` generations.
+    dir: std::path::PathBuf,
+    /// The symlink's file name — the prefix every generation link carries.
+    stem: String,
 }
 
-fn profile_gens_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    std::path::PathBuf::from(home)
-        .join(".local/state/nix/profiles")
-}
-
-fn read_profile_manifest() -> serde_json::Value {
-    let path = profile_manifest_path();
-    if !path.exists() {
-        return serde_json::json!({ "version": 3, "elements": {} });
+impl ProfilePath {
+    /// Resolve `--profile <path>`, falling back to the operator's default
+    /// profile. A path with no parent directory or no file name has no
+    /// generation namespace, so it is rejected here rather than half-working
+    /// three functions later.
+    fn resolve(explicit: Option<&str>) -> Result<Self, CliError> {
+        let link = if let Some(p) = explicit {
+            std::path::PathBuf::from(p)
+        } else {
+            let home = std::env::var("HOME").map_err(|_| {
+                CliError::MissingArgument(
+                    "profile: $HOME is unset and --profile was not given, so there is no \
+                     profile to operate on"
+                        .into(),
+                )
+            })?;
+            std::path::PathBuf::from(home).join(".local/state/nix/profiles/profile")
+        };
+        let (Some(dir), Some(stem)) = (link.parent(), link.file_name()) else {
+            return Err(CliError::MissingArgument(format!(
+                "profile: `{}` is not a usable profile path — a profile needs a parent \
+                 directory (where its generations live) and a name",
+                link.display()
+            )));
+        };
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            stem: stem.to_string_lossy().into_owned(),
+            link: link.clone(),
+        })
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({ "version": 3, "elements": {} }))
-}
 
-fn write_profile_manifest(doc: &serde_json::Value) -> Result<(), CliError> {
-    let path = profile_manifest_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CliError::NotImplemented(format!("profile: mkdir {}: {e}", parent.display())))?;
+    fn manifest(&self) -> std::path::PathBuf {
+        self.link.join("manifest.json")
     }
-    std::fs::write(&path, serde_json::to_string_pretty(doc).unwrap())
-        .map_err(|e| CliError::NotImplemented(format!("profile: write {}: {e}", path.display())))?;
-    Ok(())
+
+    fn generation_link(&self, n: u32) -> std::path::PathBuf {
+        self.dir.join(format!("{}-{n}-link", self.stem))
+    }
+
+    /// The generation number encoded in a directory entry name, or `None` when
+    /// the entry belongs to a different profile in the same directory.
+    fn generation_number(&self, entry: &std::ffi::OsStr) -> Option<u32> {
+        entry
+            .to_string_lossy()
+            .strip_prefix(&format!("{}-", self.stem))?
+            .strip_suffix("-link")?
+            .parse()
+            .ok()
+    }
+
+    /// Every generation number for THIS profile, ascending.
+    fn generations(&self, op: &'static str) -> Result<Vec<u32>, CliError> {
+        if !self.dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut gens: Vec<u32> = std::fs::read_dir(&self.dir)
+            .map_err(|e| {
+                CliError::NotImplemented(format!("profile {op}: readdir {}: {e}", self.dir.display()))
+            })?
+            .filter_map(std::result::Result::ok)
+            .filter_map(|e| self.generation_number(&e.file_name()))
+            .collect();
+        gens.sort_unstable();
+        Ok(gens)
+    }
+
+    fn read_manifest(&self) -> serde_json::Value {
+        let path = self.manifest();
+        if !path.exists() {
+            return serde_json::json!({ "version": 3, "elements": {} });
+        }
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({ "version": 3, "elements": {} }))
+    }
+
+    fn write_manifest(&self, doc: &serde_json::Value) -> Result<(), CliError> {
+        let path = self.manifest();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CliError::NotImplemented(format!("profile: mkdir {}: {e}", parent.display()))
+            })?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(doc)?).map_err(|e| {
+            CliError::NotImplemented(format!("profile: write {}: {e}", path.display()))
+        })?;
+        Ok(())
+    }
 }
 
-fn profile_install(packages: &[String]) -> Result<(), CliError> {
+fn profile_install(profile: &ProfilePath, packages: &[String]) -> Result<(), CliError> {
     // Minimal install: add each store path (or flake-ref-resolved
     // store path) to the manifest.  Full impl would also realize
     // and symlink, but the manifest is the system-of-record.
-    let mut doc = read_profile_manifest();
+    let mut doc = profile.read_manifest();
     let elements = doc["elements"].as_object_mut()
         .ok_or_else(|| CliError::NotImplemented("profile install: manifest missing elements".into()))?;
 
@@ -1527,12 +1815,12 @@ fn profile_install(packages: &[String]) -> Result<(), CliError> {
         }));
         eprintln!("installed: {}", parsed.name);
     }
-    write_profile_manifest(&doc)?;
+    profile.write_manifest(&doc)?;
     Ok(())
 }
 
-fn profile_remove(packages: &[String]) -> Result<(), CliError> {
-    let mut doc = read_profile_manifest();
+fn profile_remove(profile: &ProfilePath, packages: &[String]) -> Result<(), CliError> {
+    let mut doc = profile.read_manifest();
     let elements = doc["elements"].as_object_mut()
         .ok_or_else(|| CliError::NotImplemented("profile remove: manifest missing elements".into()))?;
     for p in packages {
@@ -1542,105 +1830,103 @@ fn profile_remove(packages: &[String]) -> Result<(), CliError> {
             eprintln!("warning: no entry named `{p}` in profile");
         }
     }
-    write_profile_manifest(&doc)?;
+    profile.write_manifest(&doc)?;
     Ok(())
 }
 
-fn profile_upgrade(packages: &[String]) -> Result<(), CliError> {
-    // Real upgrade: for each element, look up the originalUrl
-    // (a flake-ref), re-resolve the latest revision via the
-    // github tarball API, hash the contents, and update the
-    // manifest's storePaths.  Full source re-eval needs the
-    // flake-eval bridge; for now we update originalUrl
-    // resolution + emit the change.
-    let mut doc = read_profile_manifest();
-    let elements = doc["elements"].as_object_mut()
-        .ok_or_else(|| CliError::NotImplemented("profile upgrade: manifest missing elements".into()))?;
+/// `sui profile upgrade` — REFUSED, and the write it used to perform is gone.
+///
+/// What it did before: for every element it reported `upgraded: <name>` and then
+/// executed `elem["url"] = originalUrl`, overwriting the LOCKED url with the
+/// UNLOCKED one, and wrote the manifest back. Two defects, and the second is the
+/// serious one:
+///
+/// * it claimed to have upgraded elements it had not upgraded (a wrong answer), and
+/// * it destroyed the lock — the whole point of `url` is that it pins what
+///   `originalUrl` merely requests. That is DATA LOSS, unrecoverable from the
+///   manifest itself, reported as success.
+///
+/// Nothing here re-resolved anything: there was no flake re-resolve, no fetch, no
+/// hash, no store realization. So this refuses rather than mutating, and reports
+/// what an upgrade WOULD have to touch. The destination is the flake-eval bridge
+/// (`sui_spec::flake::resolve_install` + a build pass); when it lands, the
+/// CONTRACT row for the command's arguments stays Honoured and this body does the
+/// work instead of naming it.
+fn profile_upgrade(profile: &ProfilePath, packages: &[String]) -> Result<(), CliError> {
+    let doc = profile.read_manifest();
+    let elements = doc
+        .get("elements")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            CliError::NotImplemented("profile upgrade: manifest missing elements".into())
+        })?;
     let targets: Vec<String> = if packages.is_empty() {
         elements.keys().cloned().collect()
     } else {
-        packages.iter().cloned().collect()
+        packages.to_vec()
     };
-    let mut upgraded = 0usize;
-    let mut summary = Vec::new();
     for name in &targets {
-        let Some(elem) = elements.get_mut(name) else { continue; };
-        let url = elem.get("originalUrl").and_then(|v| v.as_str()).map(String::from);
-        match url {
-            Some(u) => {
-                summary.push(format!("upgraded: `{name}` ← {u}"));
-                // Refresh the locked URL; full storePath update
-                // requires flake build, but operator sees the
-                // re-resolved reference.
-                elem["url"] = serde_json::Value::String(u);
-                upgraded += 1;
-            }
-            None => summary.push(format!("warning: `{name}` has no originalUrl")),
+        let Some(elem) = elements.get(name) else {
+            eprintln!("warning: no entry named `{name}` in {}", profile.link.display());
+            continue;
+        };
+        match elem.get("originalUrl").and_then(serde_json::Value::as_str) {
+            Some(u) => eprintln!("would re-resolve: `{name}` ← {u}"),
+            None => eprintln!("warning: `{name}` has no originalUrl, so it cannot be upgraded"),
         }
     }
-    write_profile_manifest(&doc)?;
-    for s in &summary { eprintln!("{s}"); }
-    eprintln!("profile upgrade: refreshed {upgraded} element(s) (full re-build needs sui build pass)");
-    Ok(())
+    Err(CliError::NotImplemented(format!(
+        "profile upgrade ({}): re-resolving a flake ref needs the flake-eval bridge, which is \
+         not wired. Refusing rather than reporting success — the previous implementation \
+         printed `upgraded: <name>` for {} element(s) it never upgraded AND overwrote each \
+         element's locked `url` with its unlocked `originalUrl`, destroying the lock. Nothing \
+         was written",
+        profile.link.display(),
+        targets.len(),
+    )))
 }
 
-fn profile_rollback() -> Result<(), CliError> {
-    // Find the previous generation in the profile dir + symlink
-    // it as the current.  Real impl renames `profile-N-link`.
-    let dir = profile_gens_dir();
-    if !dir.exists() {
+/// `sui profile rollback` — REFUSED.
+///
+/// It computed the target generation, printed `(would symlink …)` and
+/// `profile rollback: target generation N`, then returned `Ok`. An operator
+/// reading a computed generation number off a zero exit code concludes the
+/// rollback happened. It did not: no symlink is ever moved.
+fn profile_rollback(profile: &ProfilePath) -> Result<(), CliError> {
+    let gens = profile.generations("rollback")?;
+    if gens.len() < 2 {
         return Err(CliError::NotImplemented(format!(
-            "profile rollback: no profile dir at {}",
-            dir.display(),
+            "profile rollback ({}): need at least 2 generations, found {}",
+            profile.link.display(),
+            gens.len(),
         )));
     }
-    let mut gens: Vec<u32> = std::fs::read_dir(&dir)
-        .map_err(|e| CliError::NotImplemented(format!("profile rollback: readdir: {e}")))?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            e.file_name().to_string_lossy()
-                .strip_prefix("profile-")
-                .and_then(|s| s.strip_suffix("-link"))
-                .and_then(|n| n.parse().ok())
-        })
-        .collect();
-    gens.sort();
-    if gens.len() < 2 {
-        return Err(CliError::NotImplemented(
-            "profile rollback: need at least 2 generations".into()
-        ));
-    }
     let target = gens[gens.len() - 2];
-    eprintln!("(would symlink `profile` → `profile-{target}-link`)");
-    eprintln!("profile rollback: target generation {target}");
-    Ok(())
+    Err(CliError::NotImplemented(format!(
+        "profile rollback ({}): NOT PERFORMED. The target generation is {} \
+         ({}), but sui does not move the profile symlink — it only computed and printed the \
+         target while returning success, so a zero exit code meant nothing had happened. \
+         Refusing until the symlink swap is wired",
+        profile.link.display(),
+        target,
+        profile.generation_link(target).display(),
+    )))
 }
 
-fn profile_history() -> Result<(), CliError> {
-    let dir = profile_gens_dir();
-    if !dir.exists() {
-        println!("(no profile dir at {})", dir.display());
+fn profile_history(profile: &ProfilePath) -> Result<(), CliError> {
+    if !profile.dir.exists() {
+        println!("(no profile dir at {})", profile.dir.display());
         return Ok(());
     }
-    let mut gens: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(&dir)
-        .map_err(|e| CliError::NotImplemented(format!("profile history: readdir: {e}")))?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let n: u32 = e.file_name().to_string_lossy()
-                .strip_prefix("profile-")
-                .and_then(|s| s.strip_suffix("-link"))
-                .and_then(|n| n.parse().ok())?;
-            Some((n, e.path()))
-        })
-        .collect();
-    gens.sort_by_key(|(n, _)| *n);
-    for (n, path) in &gens {
-        let meta = std::fs::symlink_metadata(path).ok();
-        let modified = meta.and_then(|m| m.modified().ok())
+    for n in profile.generations("history")? {
+        let path = profile.generation_link(n);
+        let modified = std::fs::symlink_metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
             .map(|t| {
-                let secs = t.duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let secs = t
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
                 format!("ts={secs}")
             })
             .unwrap_or_default();
@@ -1649,60 +1935,44 @@ fn profile_history() -> Result<(), CliError> {
     Ok(())
 }
 
-fn profile_wipe_history() -> Result<(), CliError> {
-    let dir = profile_gens_dir();
-    if !dir.exists() {
+/// `sui profile wipe-history [--profile <p>]`.
+///
+/// `--older-than` is REFUSED by `cli_contract` before this runs. It NARROWED
+/// which generations are deleted and was discarded, so the safe-looking
+/// spelling silently widened to "delete everything but the newest" — an ignored
+/// argument that narrows a destructive operation must never default to the
+/// wider blast radius.
+fn profile_wipe_history(profile: &ProfilePath) -> Result<(), CliError> {
+    let gens = profile.generations("wipe-history")?;
+    let Some(&max_gen) = gens.last() else {
+        eprintln!(
+            "profile wipe-history ({}): no generations found",
+            profile.link.display()
+        );
         return Ok(());
-    }
+    };
     let mut wiped = 0usize;
-    let mut max_gen = 0u32;
-    let mut entries: Vec<(u32, std::path::PathBuf)> = Vec::new();
-    for entry in std::fs::read_dir(&dir)
-        .map_err(|e| CliError::NotImplemented(format!("profile wipe-history: readdir: {e}")))?
-        .filter_map(|e| e.ok())
-    {
-        if let Some(n) = entry.file_name().to_string_lossy()
-            .strip_prefix("profile-")
-            .and_then(|s| s.strip_suffix("-link"))
-            .and_then(|n| n.parse().ok())
-        {
-            if n > max_gen { max_gen = n; }
-            entries.push((n, entry.path()));
-        }
-    }
-    for (n, path) in &entries {
-        if *n < max_gen {
-            std::fs::remove_file(path).ok();
+    for n in gens.iter().copied().filter(|n| *n < max_gen) {
+        if std::fs::remove_file(profile.generation_link(n)).is_ok() {
             wiped += 1;
         }
     }
-    eprintln!("profile wipe-history: removed {wiped} old generation(s); current: {max_gen}");
+    eprintln!(
+        "profile wipe-history ({}): removed {wiped} old generation(s); current: {max_gen}",
+        profile.link.display()
+    );
     Ok(())
 }
 
-fn profile_diff() -> Result<(), CliError> {
-    // Diff the current manifest against the previous generation's.
-    let dir = profile_gens_dir();
-    let current = dir.join("profile-link");
-    let _ = current; // placeholder — symlink resolution below
-    let mut gens: Vec<u32> = std::fs::read_dir(&dir)
-        .map_err(|e| CliError::NotImplemented(format!("profile diff: readdir: {e}")))?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            e.file_name().to_string_lossy()
-                .strip_prefix("profile-")
-                .and_then(|s| s.strip_suffix("-link"))
-                .and_then(|n| n.parse().ok())
-        })
-        .collect();
-    gens.sort();
+fn profile_diff(profile: &ProfilePath) -> Result<(), CliError> {
+    let gens = profile.generations("diff")?;
     if gens.len() < 2 {
         eprintln!("profile diff: need ≥ 2 generations");
         return Ok(());
     }
     let prev = gens[gens.len() - 2];
     let curr = gens[gens.len() - 1];
-    eprintln!("profile diff: gen {prev} vs gen {curr}");
+    eprintln!("profile diff ({}): gen {prev} vs gen {curr}", profile.link.display());
     eprintln!("(full attr-by-attr diff needs both manifests parsed; today shows generation IDs only)");
     Ok(())
 }
@@ -1800,6 +2070,176 @@ enum AddPathDaemonError {
     Protocol(String),
 }
 
+/// The worker-protocol client handshake, and what the daemon said during it.
+///
+/// This used to exist only INSIDE `add_path_via_daemon`, where every negotiated
+/// value was bound to `_` and dropped — including the trust verdict. Meanwhile
+/// `store ping` printed `Trusted: 1` from a string literal. So sui read the real
+/// answer off the wire, threw it away, and printed a constant in its place: an
+/// AUTHORIZATION answer that was right by coincidence or wrong by construction,
+/// with no way for the operator to tell which.
+///
+/// One handshake, one definer, both callers.
+mod daemon_wire {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    pub const STDERR_LAST: u64 = 0x616c_7473;
+    pub const STDERR_ERROR: u64 = 0x6378_7470;
+    pub const STDERR_WRITE: u64 = 0x6f6c_6d67;
+
+    pub async fn w_u64(s: &mut tokio::net::UnixStream, v: u64) -> std::io::Result<()> {
+        s.write_all(&v.to_le_bytes()).await
+    }
+
+    pub async fn r_u64(s: &mut tokio::net::UnixStream) -> std::io::Result<u64> {
+        let mut b = [0u8; 8];
+        s.read_exact(&mut b).await?;
+        Ok(u64::from_le_bytes(b))
+    }
+
+    pub async fn w_str(s: &mut tokio::net::UnixStream, v: &str) -> std::io::Result<()> {
+        let b = v.as_bytes();
+        w_u64(s, b.len() as u64).await?;
+        s.write_all(b).await?;
+        let pad = (8 - (b.len() % 8)) % 8;
+        if pad > 0 {
+            s.write_all(&[0u8; 8][..pad]).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn r_str(s: &mut tokio::net::UnixStream) -> std::io::Result<String> {
+        let len = r_u64(s).await? as usize;
+        let mut buf = vec![0u8; len];
+        s.read_exact(&mut buf).await?;
+        let pad = (8 - (len % 8)) % 8;
+        if pad > 0 {
+            let mut p = [0u8; 8];
+            s.read_exact(&mut p[..pad]).await?;
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    /// What the daemon reported during the handshake — read off the wire, never
+    /// assumed.
+    pub struct Handshake {
+        /// The daemon's own protocol version (`major << 8 | minor`).
+        pub server_protocol_version: u64,
+        /// The daemon's version string.
+        pub daemon_version: String,
+        /// The daemon's TRUST verdict for THIS client connection, as sent.
+        pub trusted: u64,
+    }
+
+    impl Handshake {
+        /// Render the trust verdict without inventing one. cppnix sends an
+        /// optional-bool: 0 = the daemon declined to say, 1 = trusted,
+        /// 2 = explicitly not trusted. "Did not say" is a distinct answer from
+        /// "not trusted" and must not be rounded to either.
+        #[must_use]
+        pub fn trust_label(&self) -> &'static str {
+            match self.trusted {
+                1 => "1 (trusted)",
+                2 => "0 (not trusted)",
+                0 => "unknown (the daemon did not report a trust verdict)",
+                _ => "unrecognised trust code",
+            }
+        }
+    }
+}
+
+/// Connect to the daemon and complete the worker-protocol handshake.
+///
+/// # Errors
+///
+/// [`AddPathDaemonError::Unreachable`] when no socket answers —
+/// which is a REFUSAL for any caller that would otherwise report a daemon
+/// property, not a reason to substitute a default. [`AddPathDaemonError::Protocol`]
+/// when the daemon answers but does not speak the protocol.
+async fn daemon_handshake(
+    s: &mut tokio::net::UnixStream,
+) -> Result<daemon_wire::Handshake, AddPathDaemonError> {
+    use daemon_wire::{STDERR_LAST, r_str, r_u64, w_u64};
+    use sui_compat::wire::{PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2};
+    use tokio::io::AsyncWriteExt as _;
+
+    let io = |e: std::io::Error| AddPathDaemonError::Protocol(format!("io: {e}"));
+
+    w_u64(s, WORKER_MAGIC_1).await.map_err(io)?;
+    s.flush().await.map_err(io)?;
+    let magic2 = r_u64(s).await.map_err(io)?;
+    if magic2 != WORKER_MAGIC_2 {
+        return Err(AddPathDaemonError::Protocol(format!(
+            "bad server magic {magic2:#x}"
+        )));
+    }
+    let server_protocol_version = r_u64(s).await.map_err(io)?;
+    w_u64(s, PROTOCOL_VERSION).await.map_err(io)?;
+    w_u64(s, 0).await.map_err(io)?; // cpu affinity (obsolete)
+    w_u64(s, 0).await.map_err(io)?; // reserve space (obsolete)
+    s.flush().await.map_err(io)?;
+    let daemon_version = r_str(s).await.map_err(io)?;
+    let trusted = r_u64(s).await.map_err(io)?;
+    // Handshake terminates with STDERR_LAST.
+    if r_u64(s).await.map_err(io)? != STDERR_LAST {
+        return Err(AddPathDaemonError::Protocol(
+            "handshake missing STDERR_LAST".into(),
+        ));
+    }
+    Ok(daemon_wire::Handshake {
+        server_protocol_version,
+        daemon_version,
+        trusted,
+    })
+}
+
+/// `sui store ping` — the daemon's OWN answers, or a refusal.
+///
+/// It used to print a three-line block in which `Store URL` and `Trusted` were
+/// both literals: `Trusted: 1` was hardcoded, and the command returned 0 whether
+/// or not any daemon existed. `Trusted` is an authorization answer — an operator
+/// deciding whether a privileged store operation will be permitted reads that
+/// line — so a constant there is worse than no line at all.
+async fn store_ping() -> Result<(), CliError> {
+    let socket = daemon_socket_path().ok_or_else(|| {
+        CliError::Orchestrate {
+            operation: "store ping",
+            message: "NIX_REMOTE does not name a unix socket, so there is no daemon to ping"
+                .into(),
+        }
+    })?;
+    let mut s = tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
+        CliError::Orchestrate {
+            operation: "store ping",
+            message: format!(
+                "no daemon at {}: {e}. Refusing rather than reporting a store URL, a version \
+                 and `Trusted: 1` that were literals",
+                socket.display()
+            ),
+        }
+    })?;
+    let hs = daemon_handshake(&mut s)
+        .await
+        .map_err(|e| CliError::Orchestrate {
+            operation: "store ping",
+            message: match e {
+                AddPathDaemonError::Unreachable => {
+                    format!("daemon at {} went away mid-handshake", socket.display())
+                }
+                AddPathDaemonError::Protocol(m) => m,
+            },
+        })?;
+    println!("Store URL: unix://{}", socket.display());
+    println!("Version: {}", hs.daemon_version);
+    println!(
+        "Protocol: {}.{}",
+        hs.server_protocol_version >> 8,
+        hs.server_protocol_version & 0xff
+    );
+    println!("Trusted: {}", hs.trust_label());
+    Ok(())
+}
+
 /// Resolve the worker-protocol daemon socket path, honoring
 /// `NIX_REMOTE=unix://…` and falling back to the standard nix daemon
 /// socket. Returns `None` if `NIX_REMOTE` names a non-unix store.
@@ -1827,14 +2267,12 @@ async fn add_path_via_daemon(
     path: &std::path::Path,
     name: &str,
 ) -> Result<String, AddPathDaemonError> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use sui_compat::wire::{
-        PROTOCOL_VERSION, WORKER_MAGIC_1, WORKER_MAGIC_2, WorkerOp,
-    };
-
-    const STDERR_LAST: u64 = 0x616c7473;
-    const STDERR_ERROR: u64 = 0x63787470;
-    const STDERR_WRITE: u64 = 0x6f6c6d67;
+    use tokio::io::AsyncWriteExt;
+    use sui_compat::wire::WorkerOp;
+    // The wire helpers and the handshake now live in `daemon_wire` /
+    // `daemon_handshake`, shared with `store ping`. This body is otherwise
+    // unchanged.
+    use daemon_wire::{STDERR_ERROR, STDERR_LAST, STDERR_WRITE, r_str, w_str, w_u64};
 
     let socket = daemon_socket_path().ok_or(AddPathDaemonError::Unreachable)?;
 
@@ -1849,61 +2287,10 @@ async fn add_path_via_daemon(
     sui_compat::nar::NarWriter::write_path(&mut nar, path)
         .map_err(|e| AddPathDaemonError::Protocol(format!("NAR pack: {e}")))?;
 
-    // ── async wire helpers (client side) ──
-    async fn w_u64(s: &mut tokio::net::UnixStream, v: u64) -> std::io::Result<()> {
-        s.write_all(&v.to_le_bytes()).await
-    }
-    async fn r_u64(s: &mut tokio::net::UnixStream) -> std::io::Result<u64> {
-        let mut b = [0u8; 8];
-        s.read_exact(&mut b).await?;
-        Ok(u64::from_le_bytes(b))
-    }
-    async fn w_str(s: &mut tokio::net::UnixStream, v: &str) -> std::io::Result<()> {
-        let b = v.as_bytes();
-        w_u64(s, b.len() as u64).await?;
-        s.write_all(b).await?;
-        let pad = (8 - (b.len() % 8)) % 8;
-        if pad > 0 {
-            s.write_all(&[0u8; 8][..pad]).await?;
-        }
-        Ok(())
-    }
-    async fn r_str(s: &mut tokio::net::UnixStream) -> std::io::Result<String> {
-        let len = r_u64(s).await? as usize;
-        let mut buf = vec![0u8; len];
-        s.read_exact(&mut buf).await?;
-        let pad = (8 - (len % 8)) % 8;
-        if pad > 0 {
-            let mut p = [0u8; 8];
-            s.read_exact(&mut p[..pad]).await?;
-        }
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    }
-
     let io = |e: std::io::Error| AddPathDaemonError::Protocol(format!("io: {e}"));
 
-    // Handshake (client side of handshake.rs).
-    w_u64(&mut s, WORKER_MAGIC_1).await.map_err(io)?;
-    s.flush().await.map_err(io)?;
-    let magic2 = r_u64(&mut s).await.map_err(io)?;
-    if magic2 != WORKER_MAGIC_2 {
-        return Err(AddPathDaemonError::Protocol(format!(
-            "bad server magic {magic2:#x}"
-        )));
-    }
-    let _server_ver = r_u64(&mut s).await.map_err(io)?;
-    w_u64(&mut s, PROTOCOL_VERSION).await.map_err(io)?;
-    w_u64(&mut s, 0).await.map_err(io)?; // cpu affinity (obsolete)
-    w_u64(&mut s, 0).await.map_err(io)?; // reserve space (obsolete)
-    s.flush().await.map_err(io)?;
-    let _daemon_ver = r_str(&mut s).await.map_err(io)?;
-    let _trust = r_u64(&mut s).await.map_err(io)?;
-    // Handshake terminates with STDERR_LAST.
-    if r_u64(&mut s).await.map_err(io)? != STDERR_LAST {
-        return Err(AddPathDaemonError::Protocol(
-            "handshake missing STDERR_LAST".into(),
-        ));
-    }
+    // Handshake (client side of handshake.rs), shared with `store ping`.
+    let _handshake = daemon_handshake(&mut s).await?;
 
     // SetOptions with the base-6 + version-gated fields our negotiated
     // 1.37 version expects (the daemon's handle_set_options reads these
@@ -5850,12 +6237,22 @@ async fn main() -> Result<(), CliError> {
     // is rewritten to the modern `sui <subcommand>` form before clap
     // sees it.  The unsymlinked `sui` (or `nix`) invocation falls
     // through to the normal parse.
-    let cli = if let Some(cmd) = legacy::LegacyCmd::detect() {
+    // Parsing is split into its two halves — argv → `ArgMatches`, then
+    // `ArgMatches` → the typed `Cli` — because the flag partition has to run
+    // between them. `Cli` cannot say whether a field came from the command line
+    // or from a clap `default_value`, and `cli_contract::enforce` must refuse
+    // ONLY the former: refusing a defaulted argument would make the CLI refuse
+    // itself. `Parser::parse` is exactly these two steps, so nothing about
+    // parsing changes.
+    let mut matches = if let Some(cmd) = legacy::LegacyCmd::detect() {
         let raw: Vec<String> = std::env::args().skip(1).collect();
         let translated = legacy::translate_legacy_argv(cmd, &raw);
         let synthetic: Vec<String> =
             std::iter::once("sui".to_string()).chain(translated).collect();
-        Cli::parse_from(&synthetic)
+        match Cli::command().try_get_matches_from(&synthetic) {
+            Ok(m) => m,
+            Err(e) => e.exit(),
+        }
     } else {
         // `alias nix=sui` SUPERSET contract: sui must ACCEPT every `nix …`
         // invocation. An unrecognized subcommand OR an unknown flag on a known
@@ -5865,8 +6262,8 @@ async fn main() -> Result<(), CliError> {
         // a bad enum choice) still surface; `--help`/`--version` still print
         // sui's. This is the sui→cppnix fallthrough that sui-nix-wrap stripped
         // (cb36f7c), revived in the binary itself for the alias contract.
-        match Cli::try_parse() {
-            Ok(c) => c,
+        match Cli::command().try_get_matches() {
+            Ok(m) => m,
             Err(e)
                 if matches!(
                     e.kind(),
@@ -5878,6 +6275,22 @@ async fn main() -> Result<(), CliError> {
             }
             Err(e) => e.exit(),
         }
+    };
+
+    // ── THE FLAG PARTITION ──────────────────────────────────────────────
+    //
+    // Runs ONCE, before dispatch, so a refusal happens before any side effect:
+    // no half-written push, no partly-wiped generation list. An argument sui
+    // declares but does not honour exits 2 with a typed reason rather than
+    // running the command and reporting success. Table: src/cli_contract.rs.
+    if let Err(e) = cli_contract::enforce(&matches) {
+        eprintln!("error: {e}");
+        std::process::exit(2);
+    }
+
+    let cli = match Cli::from_arg_matches_mut(&mut matches) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
     };
 
     // `--show-trace` WAS A DEAD FLAG until 2026-07-20: declared as a global arg
@@ -6020,7 +6433,7 @@ async fn main() -> Result<(), CliError> {
                 StoreCommands::MakeContentAddressed { paths: mp } => {
                     store_make_content_addressed(&mp)?;
                 }
-                StoreCommands::Ping => { println!("Store URL: daemon\nVersion: sui {}\nTrusted: 1", env!("CARGO_PKG_VERSION")); }
+                StoreCommands::Ping => { store_ping().await?; }
                 StoreCommands::AddPath { path: p, name } => {
                     store_add_path(&p, name.as_deref()).await?;
                 }
@@ -6648,9 +7061,13 @@ async fn main() -> Result<(), CliError> {
                 })?;
                 println!("flake.lock written");
             }
-            FlakeCommands::Metadata { flake_ref, json: _ } => {
+            FlakeCommands::Metadata { flake_ref, json } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
-                print_flake_metadata(&flake_dir)?;
+                if json {
+                    print_flake_metadata_json(&flake_dir)?;
+                } else {
+                    print_flake_metadata(&flake_dir)?;
+                }
             }
             FlakeCommands::Init { template } => {
                 flake_init(template.as_deref().unwrap_or("default"))?;
@@ -6875,6 +7292,12 @@ async fn main() -> Result<(), CliError> {
                     }
                 })?;
             }
+            // `cache_url` is REFUSED by `cli_contract` before dispatch, so it
+            // can only ever be absent here. It used to be discarded silently
+            // while this handler wrote to the LOCAL `store_path` below and
+            // printed `pushed <path>` — the operator believed the artifact was
+            // on the shared cache, and only its consumers found out otherwise,
+            // as 404s. See src/cli_contract.rs.
             CacheCommands::Push { paths, cache_url: _, store_path, signing_key, recursive } => {
                 let storage: Arc<dyn sui_cache::StorageBackend> =
                     Arc::new(sui_cache::LocalStorage::new(&store_path));
@@ -7275,30 +7698,36 @@ async fn main() -> Result<(), CliError> {
         Commands::Search { flake_ref, query } => {
             cmd_search(&flake_ref, &query)?;
         }
+        // `--profile` reaches every one of the eight subcommands through a
+        // single `ProfilePath`, resolved once. It used to be declared by all
+        // eight and read by none, so the operator who named a profile got the
+        // same silent default as the one who did not.
         Commands::Profile { command } => match command {
-            ProfileCommands::List { .. } => {
-                profile_list()?;
+            ProfileCommands::List { profile, json } => {
+                profile_list(&ProfilePath::resolve(profile.as_deref())?, json)?;
             }
-            ProfileCommands::Install { packages, .. } => {
-                profile_install(&packages)?;
+            ProfileCommands::Install { packages, profile, priority: _ } => {
+                // `--priority` is REFUSED by cli_contract before dispatch.
+                profile_install(&ProfilePath::resolve(profile.as_deref())?, &packages)?;
             }
-            ProfileCommands::Remove { packages, .. } => {
-                profile_remove(&packages)?;
+            ProfileCommands::Remove { packages, profile } => {
+                profile_remove(&ProfilePath::resolve(profile.as_deref())?, &packages)?;
             }
-            ProfileCommands::Upgrade { packages, .. } => {
-                profile_upgrade(&packages)?;
+            ProfileCommands::Upgrade { packages, profile } => {
+                profile_upgrade(&ProfilePath::resolve(profile.as_deref())?, &packages)?;
             }
-            ProfileCommands::Rollback { .. } => {
-                profile_rollback()?;
+            ProfileCommands::Rollback { profile } => {
+                profile_rollback(&ProfilePath::resolve(profile.as_deref())?)?;
             }
-            ProfileCommands::History { .. } => {
-                profile_history()?;
+            ProfileCommands::History { profile } => {
+                profile_history(&ProfilePath::resolve(profile.as_deref())?)?;
             }
-            ProfileCommands::WipeHistory { .. } => {
-                profile_wipe_history()?;
+            ProfileCommands::WipeHistory { profile, older_than: _ } => {
+                // `--older-than` is REFUSED by cli_contract before dispatch.
+                profile_wipe_history(&ProfilePath::resolve(profile.as_deref())?)?;
             }
-            ProfileCommands::Diff { .. } => {
-                profile_diff()?;
+            ProfileCommands::Diff { profile } => {
+                profile_diff(&ProfilePath::resolve(profile.as_deref())?)?;
             }
         },
         Commands::Repl { .. } => { return Err(CliError::NotImplemented("repl".into())); }
@@ -7322,7 +7751,7 @@ async fn main() -> Result<(), CliError> {
                 derivation_graph(&path, max_depth, json)?;
             }
         },
-        Commands::ShowConfig { .. } => { println!("system = {}\nstore = /nix/store\ncores = {}", std::env::consts::ARCH, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)); }
+        Commands::ShowConfig { json } => { show_config(json); }
         Commands::Hash { command } => match command {
             HashCommands::File { path, r#type, base } => {
                 hash_file(&path, &r#type, &base)?;
@@ -7427,7 +7856,7 @@ async fn main() -> Result<(), CliError> {
             let entries = drv_cache::with_cache(|c| Some(c.len())).unwrap_or(0);
             println!("Cache now has {entries} entries at {}", drv_cache::DrvCache::default_path().display());
         }
-        Commands::Doctor => { println!("Running checks against your Nix installation...\nStore: /nix/store (OK)"); }
+        Commands::Doctor => { doctor().await?; }
         Commands::Parity { nix, json, track_nixpkgs } => {
             if let Some(reference) = track_nixpkgs {
                 let rev = resolve_nixpkgs_rev(&nix, &reference)?;
@@ -7516,6 +7945,169 @@ async fn main() -> Result<(), CliError> {
         }
     }
 
+    Ok(())
+}
+
+/// `sui show-config [--json]`.
+///
+/// Two defects, both fixed here.
+///
+/// `system` was `std::env::consts::ARCH` — `aarch64`, which is not a valid Nix
+/// system double and never was. Anything that fed sui's own reported system back
+/// into a nix expression (`packages.${system}.…`) looked up an attribute that
+/// cannot exist. `current_system()` was already in this file, twenty lines away,
+/// producing `aarch64-darwin`.
+///
+/// `--json` was accepted and discarded, so a caller asking for machine-readable
+/// config got `key = value` lines. IMPLEMENTED rather than refused: refusing
+/// pushes the caller into parsing that text, which is the failure `--json`
+/// exists to prevent.
+fn show_config(json: bool) {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let system = current_system();
+    let store = std::env::var("NIX_STORE_DIR").unwrap_or_else(|_| "/nix/store".into());
+    let daemon = daemon_socket_path().map(|p| p.display().to_string());
+
+    if json {
+        // Values are objects with a `value` key, matching
+        // `nix show-config --json`, so an existing consumer keeps working.
+        let doc = serde_json::json!({
+            "system":       { "value": system },
+            "store":        { "value": store },
+            "cores":        { "value": cores },
+            "daemon-socket":{ "value": daemon },
+            "sui-version":  { "value": env!("CARGO_PKG_VERSION") },
+        });
+        // `to_string_pretty` on a literal object cannot fail; print the debug
+        // form rather than swallowing an impossible error silently.
+        match serde_json::to_string_pretty(&doc) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("show-config: serialize: {e}"),
+        }
+        return;
+    }
+    println!("system = {system}");
+    println!("store = {store}");
+    println!("cores = {cores}");
+    println!("daemon-socket = {}", daemon.unwrap_or_else(|| "(none)".into()));
+    println!("sui-version = {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// One `sui doctor` check. `ok == false` is what makes the command able to fail.
+struct DoctorCheck {
+    name: &'static str,
+    ok: bool,
+    detail: String,
+}
+
+/// `sui doctor` — a health command that CAN fail.
+///
+/// It used to print two lines — `Running checks against your Nix
+/// installation...` and `Store: /nix/store (OK)` — and return 0. The `(OK)` was
+/// a literal: nothing was checked, including whether `/nix/store` existed. A
+/// health command whose only outcome is "healthy" answers no question, and its
+/// zero exit code is worse than no command at all, because scripts gate on it.
+///
+/// Every check below reads real state and every failure is fatal, so a red
+/// doctor is a red exit code.
+async fn doctor() -> Result<(), CliError> {
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+
+    let store = std::env::var("NIX_STORE_DIR").unwrap_or_else(|_| "/nix/store".into());
+    let store_path = std::path::Path::new(&store);
+    checks.push(match std::fs::metadata(store_path) {
+        Ok(m) if m.is_dir() => DoctorCheck {
+            name: "store directory",
+            ok: true,
+            detail: format!("{store} exists"),
+        },
+        Ok(_) => DoctorCheck {
+            name: "store directory",
+            ok: false,
+            detail: format!("{store} exists but is not a directory"),
+        },
+        Err(e) => DoctorCheck {
+            name: "store directory",
+            ok: false,
+            detail: format!("{store}: {e}"),
+        },
+    });
+
+    checks.push(match std::fs::read_dir(store_path) {
+        Ok(it) => DoctorCheck {
+            name: "store readable",
+            ok: true,
+            detail: format!("{} entries listed", it.count()),
+        },
+        Err(e) => DoctorCheck {
+            name: "store readable",
+            ok: false,
+            detail: format!("{store}: {e}"),
+        },
+    });
+
+    checks.push(match std::fs::metadata(NIX_DB_PATH) {
+        Ok(m) => DoctorCheck {
+            name: "store database",
+            ok: true,
+            detail: format!("{NIX_DB_PATH} ({} bytes)", m.len()),
+        },
+        Err(e) => DoctorCheck {
+            name: "store database",
+            ok: false,
+            detail: format!("{NIX_DB_PATH}: {e}"),
+        },
+    });
+
+    // The daemon is reported but NOT fatal: a single-user store legitimately has
+    // none, so failing on its absence would make doctor red on a healthy
+    // machine. Rounding this to a failure would be as dishonest as the literal
+    // `(OK)` it replaces, in the other direction.
+    let daemon_detail = match daemon_socket_path() {
+        None => "NIX_REMOTE names a non-unix store — no daemon expected".to_string(),
+        Some(sock) => match tokio::net::UnixStream::connect(&sock).await {
+            Err(e) => format!("{} unreachable: {e} (fine for a single-user store)", sock.display()),
+            Ok(mut s) => match daemon_handshake(&mut s).await {
+                Ok(hs) => format!(
+                    "{} — version {}, trusted={}",
+                    sock.display(),
+                    hs.daemon_version,
+                    hs.trust_label()
+                ),
+                Err(AddPathDaemonError::Protocol(m)) => {
+                    format!("{} answered but did not speak the worker protocol: {m}", sock.display())
+                }
+                Err(AddPathDaemonError::Unreachable) => {
+                    format!("{} went away mid-handshake", sock.display())
+                }
+            },
+        },
+    };
+    checks.push(DoctorCheck {
+        name: "daemon (informational)",
+        ok: true,
+        detail: daemon_detail,
+    });
+
+    checks.push(DoctorCheck {
+        name: "system",
+        ok: true,
+        detail: current_system(),
+    });
+
+    println!("Running checks against your Nix installation...");
+    for c in &checks {
+        println!("{:<24} {}  {}", c.name, if c.ok { "OK  " } else { "FAIL" }, c.detail);
+    }
+
+    let failed = checks.iter().filter(|c| !c.ok).count();
+    if failed > 0 {
+        return Err(CliError::Orchestrate {
+            operation: "doctor",
+            message: format!("{failed} of {} checks failed", checks.len()),
+        });
+    }
+    println!("{} checks passed", checks.len());
     Ok(())
 }
 
@@ -8247,6 +8839,52 @@ fn type_marker_json(t: &str) -> serde_json::Value {
 // ── flake metadata ──────────────────────────────────────────────
 
 /// Print flake metadata: description, path, revision, inputs.
+/// `sui flake metadata --json`.
+///
+/// `--json` was destructured to `_`, so a caller asking for machine-readable
+/// metadata got the human tree-drawing (`├───nixpkgs: …`) and either failed to
+/// parse or — worse — half-parsed it. IMPLEMENTED rather than refused:
+/// refusing would push callers to scrape that tree, which is exactly the
+/// failure `--json` exists to prevent.
+///
+/// Field names follow `nix flake metadata --json` (`description`, `path`,
+/// `revision`, `lastModified`, `locks`) so an existing consumer keeps working.
+fn print_flake_metadata_json(flake_dir: &std::path::Path) -> Result<(), CliError> {
+    let flake_nix_path = flake_dir.join("flake.nix");
+    let description = if flake_nix_path.exists() {
+        extract_description(&std::fs::read_to_string(&flake_nix_path)?)
+    } else {
+        None
+    };
+
+    let lock_path = flake_dir.join("flake.lock");
+    // The lock is emitted verbatim under `locks`, as nix does — re-shaping it
+    // here would be a second, divergent definition of a document that already
+    // has one.
+    let locks: serde_json::Value = if lock_path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&lock_path)?).map_err(|e| {
+            CliError::Orchestrate {
+                operation: "flake metadata",
+                message: format!("parse flake.lock: {e}"),
+            }
+        })?
+    } else {
+        serde_json::Value::Null
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "description":  description,
+            "path":         flake_dir.display().to_string(),
+            "revision":     get_git_revision(flake_dir).ok(),
+            "lastModified": get_last_modified(flake_dir).ok(),
+            "locks":        locks,
+        }))?
+    );
+    Ok(())
+}
+
 fn print_flake_metadata(flake_dir: &std::path::Path) -> Result<(), CliError> {
     // Read description from flake.nix (simple heuristic: look for `description =`).
     let flake_nix_path = flake_dir.join("flake.nix");
