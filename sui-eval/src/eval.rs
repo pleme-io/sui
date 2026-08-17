@@ -748,6 +748,49 @@ fn force_thunk(thunk: &Thunk) -> Result<Value, EvalError> {
 /// inherit-from-source clause) leave the existing
 /// `InfiniteRecursion` behaviour intact, which is the conservative
 /// fallback.
+/// `SUI_SCOPE_NARROW` — the scope-narrowing latch.
+///
+/// Every `let` / `rec` / pattern-default binding closes an `Rc` cycle today:
+/// the thunk is bound INTO the scope env, then Phase 2's `update_env` puts
+/// that same env back INTO the thunk. `Rc` has no cycle collector and no
+/// `Weak` sits on that edge, so the whole scope — every innocent leaf in it —
+/// is immortal for the life of the process. Narrowing removes the second half
+/// of the cycle for the bindings that provably do not need it.
+///
+/// * unset / `0` — today's behaviour, byte- AND allocation-identical. Not one
+///   extra tree walk runs on this path.
+/// * `1` — D3 (pattern-lambda formal defaults) + D1 (`let` / `rec` bindings
+///   whose RHS reaches no sibling keep their outer-env capture).
+/// * `2` — additionally D2 (bindings that DO need the scope get a *cluster*
+///   env holding only the names they can reach, so one recursive binding
+///   stops pinning its innocent siblings).
+///
+/// Read once through a `OnceLock` one-way latch — the `resolve_env::enabled()`
+/// idiom — so the value cannot change mid-eval and the default path pays a
+/// single relaxed load.
+fn scope_narrow_level() -> u8 {
+    static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(
+        || match std::env::var("SUI_SCOPE_NARROW").ok().as_deref() {
+            Some("1") => 1,
+            Some("2") => 2,
+            _ => 0,
+        },
+    )
+}
+
+/// True at `SUI_SCOPE_NARROW >= 1` — D1 + D3 are on.
+#[inline]
+fn scope_narrow_enabled() -> bool {
+    scope_narrow_level() >= 1
+}
+
+/// True at `SUI_SCOPE_NARROW = 2` — D2 (the cluster env) is on.
+#[inline]
+fn scope_cluster_enabled() -> bool {
+    scope_narrow_level() >= 2
+}
+
 /// The set of variable-reference ident names in `value_expr`'s subtree
 /// (`NODE_IDENT` whose parent is NOT a `NODE_ATTRPATH` — i.e. genuine
 /// variable references, not attribute names/keys). ONE subtree walk.
@@ -1486,6 +1529,20 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // names from inherit clauses).  Used by the recursive-thunk
             // detector below — a binding is part of the mutual fix-point
             // if its RHS references ANY of these names.
+            //
+            // D1 (`SUI_SCOPE_NARROW>=1`) — `names_complete` is the honesty half
+            // of the narrowing. Narrowing is only sound while
+            // `let_scope_names` is a COMPLETE list of what this scope binds: a
+            // binding is judged "reaches no sibling" by intersecting its RHS's
+            // free variables with that set, so a name MISSING from it reads as
+            // an outer reference and the binding wrongly keeps the outer env.
+            // A head that does not resolve here contributes nothing, so the
+            // whole scope forfeits narrowing rather than narrow on a partial
+            // set. (`Dynamic` heads are excluded even when they do resolve —
+            // the name is computed, so it is not a syntactic property of the
+            // scope.) Nothing about the EVALUATION below changes; this only
+            // decides whether the optimisation is allowed to apply.
+            let mut names_complete = true;
             let let_scope_names: HashSet<String> = {
                 let mut s = HashSet::new();
                 for entry in letin.entries() {
@@ -1493,16 +1550,30 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                         ast::Entry::AttrpathValue(apv) => {
                             if let Some(attrpath) = apv.attrpath() {
                                 if let Some(first) = attrpath.attrs().next() {
+                                    if let ast::Attr::Dynamic(_) = &first {
+                                        names_complete = false;
+                                    }
                                     if let Ok(name) = eval_attr(&first, env) {
                                         s.insert(name);
+                                    } else {
+                                        names_complete = false;
                                     }
+                                } else {
+                                    names_complete = false;
                                 }
+                            } else {
+                                names_complete = false;
                             }
                         }
                         ast::Entry::Inherit(inherit) => {
                             for attr in inherit.attrs() {
+                                if let ast::Attr::Dynamic(_) = &attr {
+                                    names_complete = false;
+                                }
                                 if let Ok(name) = eval_attr(&attr, env) {
                                     s.insert(name);
+                                } else {
+                                    names_complete = false;
                                 }
                             }
                         }
@@ -1510,6 +1581,42 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 }
                 s
             };
+            let narrow = scope_narrow_enabled() && names_complete;
+
+            // D2 (`SUI_SCOPE_NARROW=2`) — the CLUSTER env.
+            //
+            // D1 alone is not enough, and the reason is the shape of the
+            // graph: free-variable analysis is per-binding on the
+            // `thunk -> env` edge, but the `env -> thunk` edge is SHARED. One
+            // binding that really does reach a sibling keeps `new_env` alive,
+            // and `new_env` holds EVERY binding in the scope — so a single
+            // recursive `f` re-pins all fifty innocent leaves and the footprint
+            // is unchanged. (That is the P4 row, and it is why the headline
+            // gate is too easy: D1 greens it while doing nothing here.)
+            //
+            // The fix is to stop pointing the survivors at the whole scope.
+            // Phase 2 re-points them at a `fix_env` carrying ONLY the names the
+            // pinned bindings can actually reach — their own names plus
+            // `refs ∩ scope_names`. The body still gets the full `new_env`, so
+            // nothing the LET EXPRESSION evaluates to can change; only the
+            // envs captured by thunks shrink.
+            let cluster = narrow && scope_cluster_enabled();
+            // Every (name, value) bound into `new_env`, so the pinned subset can
+            // be re-bound into `fix_env`. Allocated only under D2.
+            let mut all_bound: Vec<(String, Value)> = Vec::new();
+            // The names that stayed pinned, and the free-variable sets of the
+            // bindings behind them. `pin` needs only the UNION of those sets, so
+            // no name→refs association is required — and that union already IS
+            // the fixpoint: a name added to `pin` that is not itself a pinned
+            // binding contributes no further refs, and one that is has its refs
+            // in the union already.
+            let mut pinned_names: HashSet<String> = HashSet::new();
+            let mut pinned_refs: Vec<HashSet<SmolStr>> = Vec::new();
+            // A dotted path (`let a.b = 1;`) pushes LEAF thunks whose names are
+            // inner path segments, not scope names, and whose free variables are
+            // never computed here — so `fix_env` cannot be shown to carry what
+            // they need. Such a scope forfeits D2 (D1 still applies).
+            let mut has_dotted = false;
 
             for entry in letin.entries() {
                 match entry {
@@ -1561,8 +1668,39 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                 maybe_thunk(&value_expr, env, true, Some(&defined_so_far))
                             };
                             new_env.bind(key.clone(), value.clone());
+                            if cluster {
+                                all_bound.push((key.clone(), value.clone()));
+                            }
                             if let Value::Thunk(t) = &value {
-                                thunks.push((key.clone(), t.clone()));
+                                // D1: `in_mutual_cycle` is ALREADY the
+                                // forward-complete "reaches a sibling"
+                                // predicate here (`let_scope_names` is a full
+                                // pre-pass, unlike the `rec` arm's
+                                // backward-only one), so it doubles as the
+                                // needs-scope test at zero extra cost — no
+                                // second tree walk.
+                                //
+                                // When it is false the RHS references nothing
+                                // this scope binds, so every name it CAN
+                                // resolve resolves identically in `env` and in
+                                // `new_env`: `Env::child` copies `with_scopes`,
+                                // `eval_file` and `source_id` verbatim, and the
+                                // only added bindings are the let-scope names
+                                // this RHS provably does not mention. Skipping
+                                // the re-point is therefore byte-neutral, and
+                                // it is what leaves the thunk holding the OUTER
+                                // env instead of closing
+                                // `thunk -> new_env -> thunk`.
+                                if in_mutual_cycle || !narrow {
+                                    thunks.push((key.clone(), t.clone()));
+                                    if cluster {
+                                        pinned_names.insert(key.clone());
+                                        pinned_refs.push(referenced);
+                                    }
+                                    crate::value::census::scope_pinned();
+                                } else {
+                                    crate::value::census::scope_narrowed();
+                                }
                             }
                             defined_so_far.insert(key);
                         } else if path_keys.len() > 1 {
@@ -1570,6 +1708,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // attrset with thunks at the leaves so the
                             // value expression can reference sibling
                             // let-bindings.
+                            has_dotted = true;
                             let key = path_keys[0].clone();
                             let value = build_nested_attr_thunk(
                                 &path_keys[1..],
@@ -1587,6 +1726,26 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     "inherit from missing expr".to_string(),
                                 )
                             })?;
+                            // D1: every `InheritSelect` in this clause shares
+                            // ONE source thunk, and `Thunk::update_env`
+                            // delegates straight through to it — so all N
+                            // pushes re-point the SAME env. Whether that
+                            // re-point is needed is therefore a property of the
+                            // source expression alone, computed ONCE above the
+                            // loop instead of N times inside it. Guarded by
+                            // `!narrow ||` so the default path does not pay the
+                            // walk at all.
+                            let source_refs: Option<HashSet<SmolStr>> = if narrow {
+                                Some(referenced_idents(&source_expr))
+                            } else {
+                                None
+                            };
+                            let source_needs_scope = match &source_refs {
+                                Some(refs) => let_scope_names
+                                    .iter()
+                                    .any(|n| refs.contains(n.as_str())),
+                                None => true,
+                            };
                             // Create ONE shared source thunk per
                             // `inherit (source)` clause. All inherited
                             // names share it via Rc clone — the source
@@ -1601,7 +1760,29 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     name.clone(),
                                 );
                                 new_env.bind(name.clone(), Value::Thunk(thunk.clone()));
-                                thunks.push((name, thunk));
+                                if cluster {
+                                    all_bound.push((
+                                        name.clone(),
+                                        Value::Thunk(thunk.clone()),
+                                    ));
+                                }
+                                if source_needs_scope {
+                                    if cluster {
+                                        pinned_names.insert(name.clone());
+                                    }
+                                    thunks.push((name, thunk));
+                                    crate::value::census::scope_pinned();
+                                } else {
+                                    crate::value::census::scope_narrowed();
+                                }
+                            }
+                            // One refs set for the whole clause — every name in
+                            // it re-points the SAME shared source thunk.
+                            if cluster
+                                && source_needs_scope
+                                && let Some(refs) = source_refs
+                            {
+                                pinned_refs.push(refs);
                             }
                         } else {
                             // `inherit name1 name2 ...` from the
@@ -1615,6 +1796,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                         format!("'{name}'{}", eval_file_ctx()),
                                     )
                                 })?;
+                                if cluster {
+                                    all_bound.push((name.clone(), value.clone()));
+                                }
                                 new_env.bind(name, value);
                             }
                         }
@@ -1628,12 +1812,50 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // existing inherit thunks — just bind directly.
             for (key, value) in dotted_attrs.iter() {
                 new_env.bind(key.clone(), value.clone());
+                if cluster {
+                    all_bound.push((key.clone(), value.clone()));
+                }
             }
+
+            // D2: the cluster env the survivors get re-pointed at, in place of
+            // the whole scope. Built only when it can actually shrink anything
+            // — some binding pinned, some binding not, and no dotted path (see
+            // `has_dotted`).
+            let fix_env: Option<Env> = if cluster && !has_dotted && !thunks.is_empty() {
+                // `pin` = the pinned names, plus every scope name they can
+                // reach. This union is already the fixpoint: a name pulled in
+                // that is not itself pinned contributes no further refs (its
+                // own thunk still holds the OUTER env and so resolves entirely
+                // outside this scope), and one that is pinned had its refs in
+                // the union from the start.
+                let mut pin = pinned_names;
+                for refs in &pinned_refs {
+                    for n in &let_scope_names {
+                        if refs.contains(n.as_str()) {
+                            pin.insert(n.clone());
+                        }
+                    }
+                }
+                if pin.len() < all_bound.len() {
+                    let mut fe = env.child();
+                    for (name, value) in &all_bound {
+                        if pin.contains(name) {
+                            fe.bind(name.clone(), value.clone());
+                        }
+                    }
+                    Some(fe)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // Phase 2: Update all thunks to capture the final env
             // (which now has all names bound).
+            let phase2_env: &Env = fix_env.as_ref().unwrap_or(&new_env);
             for (_key, thunk) in &thunks {
-                thunk.update_env(&new_env);
+                thunk.update_env(phase2_env);
             }
 
             let body = letin
@@ -2281,6 +2503,58 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
         // sibling binding.
         let mut dotted_attrs: NixAttrs = NixAttrs::new();
 
+        // D1 (`SUI_SCOPE_NARROW>=1`) — a SECOND predicate, deliberately not a
+        // widening of `is_recursive_binding` below.
+        //
+        // THE TRAP: `is_recursive_binding` is BACKWARD-BLIND on purpose — it
+        // tests `key` plus the siblings seen SO FAR, so `rec { b = a; a = 1; }`
+        // computes `false` for `b`. That verdict selects Promise semantics, so
+        // widening it would change which bindings get the fix-point sentinel
+        // and is not a refactor available here. Yet `b` genuinely does need the
+        // rec scope, and today gets it from Phase 2's blanket `update_env`.
+        // Narrowing therefore needs its own forward-complete question — "does
+        // this RHS reach ANY key this scope binds, declared before or after?" —
+        // answered against a full pre-pass, while `is_recursive_binding` stays
+        // byte-identical.
+        //
+        // The pre-pass is PURELY SYNTACTIC, which is the second trap: the
+        // Phase-1 loop below owns the evaluation order of `${…}` keys, and
+        // calling `eval_attr` here would run that arbitrary code earlier. So a
+        // head that is not a plain identifier forfeits narrowing for the whole
+        // scope instead of being evaluated for its name. Starting the flag at
+        // `scope_narrow_enabled()` also means the default path never walks the
+        // entries at all.
+        let mut names_complete = scope_narrow_enabled();
+        let rec_scope_names: HashSet<String> = if names_complete {
+            let mut s = HashSet::new();
+            for entry in set.entries() {
+                match entry {
+                    ast::Entry::AttrpathValue(apv) => {
+                        match apv.attrpath().and_then(|p| p.attrs().next()) {
+                            Some(ast::Attr::Ident(i)) => {
+                                s.insert(ident_text(&i));
+                            }
+                            _ => names_complete = false,
+                        }
+                    }
+                    ast::Entry::Inherit(inh) => {
+                        for attr in inh.attrs() {
+                            match attr {
+                                ast::Attr::Ident(i) => {
+                                    s.insert(ident_text(&i));
+                                }
+                                _ => names_complete = false,
+                            }
+                        }
+                    }
+                }
+            }
+            s
+        } else {
+            HashSet::new()
+        };
+        let narrow = names_complete;
+
         // Phase 1: Create thunks with placeholder env and bind them.
         for entry in set.entries() {
             match entry {
@@ -2333,10 +2607,25 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
                             // resolve directly.
                             maybe_thunk(&value_expr, env, true, Some(&defined_so_far))
                         };
+                        // Forward-complete needs-scope test (see the pre-pass
+                        // above). `is_recursive_binding` is folded in as
+                        // belt-and-braces: it is a subset whenever `narrow`
+                        // holds, since every key it can name came from an
+                        // `Ident` head and so is in `rec_scope_names`.
+                        let needs_scope = !narrow
+                            || is_recursive_binding
+                            || rec_scope_names
+                                .iter()
+                                .any(|n| referenced.contains(n.as_str()));
                         rec_env.bind(key.clone(), value.clone());
                         attrs.insert(key.clone(), value.clone());
                         if let Value::Thunk(t) = &value {
-                            thunks.push((key.clone(), t.clone()));
+                            if needs_scope {
+                                thunks.push((key.clone(), t.clone()));
+                                crate::value::census::scope_pinned();
+                            } else {
+                                crate::value::census::scope_narrowed();
+                            }
                         }
                         defined_so_far.insert(key);
                     } else {
@@ -3437,38 +3726,120 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
             let mut pairs: Vec<(String, Value)> =
                 if use_batch { Vec::with_capacity(entries.len()) } else { Vec::new() };
 
-            for entry in &entries {
-                let ident = entry.ident().ok_or_else(|| {
-                    EvalError::ParseError("pat entry missing ident".to_string())
-                })?;
-                let name = ident_text(&ident);
-                let value = if let Some(v) = attrs.get(&name) {
-                    v.clone()
-                } else if let Some(default_expr) = entry.default() {
-                    // Default values in pattern parameters must be lazy
-                    // (wrapped in thunks), matching CppNix semantics.
-                    // Patterns like `vendor ? assert false; null` rely on
-                    // the default never being forced when the body checks
-                    // `args ? vendor` instead of using `vendor` directly.
-                    let thunk = Thunk::new_suspended(
-                        ast::Expr::cast(default_expr.syntax().clone()).unwrap(),
-                        env.clone(),
-                    );
-                    default_thunks.push(thunk.clone());
-                    Value::Thunk(thunk)
-                } else {
-                    return Err(EvalError::type_error(
-                        format!("missing argument '{name}'{}", eval_file_ctx()),
-                    ));
-                };
-                if use_batch {
-                    pairs.push((name, value));
-                } else {
-                    env.bind(name, value);
+            // D3 (`SUI_SCOPE_NARROW>=1`) — the highest-yield arm of the fix,
+            // because it fires on every `callPackage`'d
+            // `{ stdenv, lib, foo ? null }` and every
+            // `{ config, lib, pkgs, ... }` module in the fleet.
+            //
+            // Today EVERY default thunk is re-pointed at the final all-formals
+            // env by Phase 2, so `{ a, b ? 1 }` closes
+            // `b-thunk -> env -> b-thunk` and the whole call frame is immortal.
+            // But a default only NEEDS the final env if it can reach a formal
+            // that is itself satisfied by a default — those are the only names
+            // still unbound when the default is built. Everything else (an
+            // argument-supplied formal, the `@`-bind, any outer name) is
+            // already in scope, so the capture is complete on the spot and the
+            // cycle never has to be closed.
+            //
+            // Splitting the single pass in two is what makes that true:
+            // pass A binds every argument-supplied formal FIRST, so pass B's
+            // captures see all of them regardless of declaration order.
+            //
+            // The reorder is byte-safe: formal names are unique (a duplicate
+            // is a parse error), `bindings` is a hash map read only by key, and
+            // building a thunk has no side effects — so nothing observes the
+            // order in which the two passes populate the env, only its final
+            // contents, which are unchanged.
+            let narrow = scope_narrow_enabled();
+            // The formals that will be satisfied BY A DEFAULT — i.e. exactly
+            // the names not yet bound when pass B runs.
+            let default_names: HashSet<String> = if narrow {
+                entries
+                    .iter()
+                    .filter(|e| e.default().is_some())
+                    .filter_map(ast::PatEntry::ident)
+                    .map(|i| ident_text(&i))
+                    .filter(|n| attrs.get(n).is_none())
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+
+            if narrow {
+                // PASS A — argument-supplied formals only. The
+                // `missing argument` error still fires here, in entry order,
+                // exactly where the single pass raised it.
+                let mut deferred: Vec<(String, ast::Expr)> =
+                    Vec::with_capacity(default_names.len());
+                for entry in &entries {
+                    let ident = entry.ident().ok_or_else(|| {
+                        EvalError::ParseError("pat entry missing ident".to_string())
+                    })?;
+                    let name = ident_text(&ident);
+                    if let Some(v) = attrs.get(&name) {
+                        env.bind(name, v.clone());
+                    } else if let Some(default_expr) = entry.default() {
+                        deferred.push((
+                            name,
+                            ast::Expr::cast(default_expr.syntax().clone()).unwrap(),
+                        ));
+                    } else {
+                        return Err(EvalError::type_error(
+                            format!("missing argument '{name}'{}", eval_file_ctx()),
+                        ));
+                    }
                 }
-            }
-            if use_batch {
-                env.bind_many(pairs);
+                // PASS B — the defaults, capturing an env that already carries
+                // every argument-supplied formal and the `@`-bind.
+                for (name, default_expr) in deferred {
+                    let thunk =
+                        Thunk::new_suspended(default_expr.clone(), env.clone());
+                    let referenced = referenced_idents(&default_expr);
+                    if default_names.iter().any(|n| referenced.contains(n.as_str())) {
+                        // Reaches another DEFAULTED formal, which may not be
+                        // bound yet — it needs Phase 2's re-point, and pays
+                        // the cycle.
+                        default_thunks.push(thunk.clone());
+                        crate::value::census::scope_pinned();
+                    } else {
+                        crate::value::census::scope_narrowed();
+                    }
+                    env.bind(name, Value::Thunk(thunk));
+                }
+            } else {
+                for entry in &entries {
+                    let ident = entry.ident().ok_or_else(|| {
+                        EvalError::ParseError("pat entry missing ident".to_string())
+                    })?;
+                    let name = ident_text(&ident);
+                    let value = if let Some(v) = attrs.get(&name) {
+                        v.clone()
+                    } else if let Some(default_expr) = entry.default() {
+                        // Default values in pattern parameters must be lazy
+                        // (wrapped in thunks), matching CppNix semantics.
+                        // Patterns like `vendor ? assert false; null` rely on
+                        // the default never being forced when the body checks
+                        // `args ? vendor` instead of using `vendor` directly.
+                        let thunk = Thunk::new_suspended(
+                            ast::Expr::cast(default_expr.syntax().clone()).unwrap(),
+                            env.clone(),
+                        );
+                        default_thunks.push(thunk.clone());
+                        Value::Thunk(thunk)
+                    } else {
+                        return Err(EvalError::type_error(
+                            format!("missing argument '{name}'{}", eval_file_ctx()),
+                        ));
+                    };
+                    if use_batch {
+                        pairs.push((name, value));
+                    } else {
+                        env.bind(name, value);
+                    }
+                }
+                if use_batch {
+                    env.bind_many(pairs);
+                }
             }
 
             // Phase 2: Update default thunks to see ALL formals.
