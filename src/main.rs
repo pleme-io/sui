@@ -5090,20 +5090,52 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
     const PUREONLY_SUI_ERROR_BUDGET: usize = 8;
     let mut pureonly_oracle_skips = 0usize;
     let mut pureonly_sui_skips = 0usize;
-    if std::env::var_os("SUI_PARITY_PUREONLY").is_some() {
-        let budget = std::env::var("SUI_PARITY_PUREONLY_BUDGET")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(PUREONLY_SUI_ERROR_BUDGET);
-        for (_, _, ex, v) in results.iter_mut() {
+    let pureonly = std::env::var_os("SUI_PARITY_PUREONLY").is_some();
+    // Per-row narrowing witness, index-aligned with `results` by
+    // construction — one entry per row, written only through the
+    // `enumerate` below. `Some(v)` is the verdict the row WOULD have
+    // carried had the flag not moved it out of the enforced set: the same
+    // `reclassified_from` shape `sui-spec`'s sweep records carry, so both
+    // gates feed the ONE classifier rather than each rolling its own.
+    let mut reclassified_from: Vec<Option<sui_spec::parity::Verdict>> = vec![None; results.len()];
+    if pureonly {
+        // ── The override may only TIGHTEN, and it may not be unreadable.
+        //
+        // This was `.ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT)`,
+        // which had a hole at each end. A typo'd value silently became the
+        // default — the setter believed they had changed the budget and
+        // nothing said otherwise — and an unbounded override meant
+        // `SUI_PARITY_PUREONLY_BUDGET=9999` silently removed the budget
+        // altogether. A knob that can disable the gate it configures is not
+        // a budget, so the override is clamped to the committed constant and
+        // an unparseable value is a hard error rather than a fallback.
+        let budget = match std::env::var("SUI_PARITY_PUREONLY_BUDGET") {
+            Err(_) => PUREONLY_SUI_ERROR_BUDGET,
+            Ok(raw) => {
+                let parsed: usize = raw.trim().parse().map_err(|_| CliError::Orchestrate {
+                    operation: "parity",
+                    message: format!(
+                        "SUI_PARITY_PUREONLY_BUDGET={raw:?} is not a non-negative integer. \
+                         Refusing to fall back to the default {PUREONLY_SUI_ERROR_BUDGET} — \
+                         a budget that silently ignores what you set is not a budget."
+                    ),
+                })?;
+                parsed.min(PUREONLY_SUI_ERROR_BUDGET)
+            }
+        };
+        for (i, (_, _, ex, v)) in results.iter_mut().enumerate() {
             if *ex != Expect::Match {
                 continue;
             }
             match v {
                 // Oracle-side: the runner cannot provide the comparison at all.
-                // Unlimited — this says nothing about sui.
+                // Unbudgeted — this says nothing about sui. What bounds it is
+                // the enforced floor below, which counts what REMAINS and so
+                // covers oracle-side skips, sui-side skips and rows that skip
+                // themselves with one number.
                 ParityVerdict::NixError(_) => {
                     pureonly_oracle_skips += 1;
+                    reclassified_from[i] = Some(sui_spec::parity::Verdict::NixFailOnly);
                     *v = ParityVerdict::Skipped(
                         "SUI_PARITY_PUREONLY: oracle (nix) could not evaluate — no pinned nixpkgs on this runner".into(),
                     );
@@ -5113,6 +5145,7 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 // capability cannot present as green.
                 ParityVerdict::SuiError(_) if pureonly_sui_skips < budget => {
                     pureonly_sui_skips += 1;
+                    reclassified_from[i] = Some(sui_spec::parity::Verdict::SuiFailOnly);
                     *v = ParityVerdict::Skipped(
                         "SUI_PARITY_PUREONLY: sui could not evaluate (within budget) — likely nixpkgs rev skew vs the byte-closed oracle".into(),
                     );
@@ -5139,6 +5172,93 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
     let tracked = results.iter().filter(|(_, _, ex, v)|
         *ex == Expect::KnownDiverge && matches!(v, ParityVerdict::Diverge { .. })).count();
     let unexpected = regressions + graduated;
+
+    // ══ ★★ THE VACUITY FLOOR — a gate that compared nothing must not
+    //    certify everything ════════════════════════════════════════════
+    //
+    // Until this landed, `sui parity` exited non-zero on `unexpected > 0`
+    // and on nothing else. Every counter it gated on was a count of rows
+    // that FAILED, and a row removed from the enforced set fails nothing.
+    // So the collapse case read green: measured 2026-08-17 on cid, running
+    // the corpus against a deliberately-failing oracle removed 50 of 77
+    // rows and the remaining tally printed `0 diverged` with a straight
+    // face. Reclassification was budgeted on the sui side only (8) and
+    // explicitly UNBUDGETED on the oracle side, so "the oracle failed on
+    // every single row" was a supported, silent, green outcome.
+    //
+    // The floor is stated as a MINIMUM ENFORCED COUNT rather than a
+    // maximum skip count, and that shape is the point. Of the 50 rows
+    // removed in that measurement, only 14 were flag-reclassified; the
+    // other 36 returned `Skipped` from their own probe bodies because
+    // `<nixpkgs>` would not resolve. No skip budget can see those — they
+    // are never flagged and never counted. A floor on what REMAINS covers
+    // every way a row can leave, including ways nobody has thought of yet.
+    //
+    // ── WHY THESE NUMBERS ──
+    //
+    // Half of the honestly-available corpus, following the fleet rule that
+    // a floor set to an exact count makes every added row a two-file change
+    // and then gets deleted for friction. Both derived on cid 2026-08-17;
+    // re-measure rather than infer, and note the corpus was red at the time
+    // for an unrelated reason (see the note in the return report), so these
+    // are structural counts, not counts of passing rows.
+    //
+    //   FULL     77 rows total; nothing legitimately skips when the oracle
+    //            is real and pinned  ->  floor 38.
+    //   PUREONLY 41 rows are environment-independent (hash/derivation/
+    //            context/attrset algebra). Derived by running the corpus
+    //            against a failing oracle and counting the rows that did
+    //            NOT self-skip: 77 - 36 = 41. This independently reproduces
+    //            the "~40 environment-independent rows" claim in
+    //            parity.yml, which was written from a different direction.
+    //            ->  floor 20.
+    //
+    // TIER: this is a committed-baseline gate — CI/eval-caught, not
+    // unrepresentable. What IS unrepresentable is a floor of zero: the
+    // floors are `NonZeroUsize`, so "no floor" and "floor 0" have no
+    // spelling here and there is no config surface to leave unset. A
+    // defaulted floor passes unconditionally, which is the same bug
+    // wearing a config file, so there is deliberately no env override.
+    const fn floor(n: usize) -> std::num::NonZeroUsize {
+        match std::num::NonZeroUsize::new(n) {
+            Some(n) => n,
+            None => panic!("a parity floor of 0 would pass unconditionally"),
+        }
+    }
+    const ENFORCED_FLOOR_FULL: std::num::NonZeroUsize = floor(38);
+    const ENFORCED_FLOOR_PUREONLY: std::num::NonZeroUsize = floor(20);
+    let enforced_floor = if pureonly {
+        ENFORCED_FLOOR_PUREONLY
+    } else {
+        ENFORCED_FLOOR_FULL
+    };
+
+    // Only the `Expect::Match` rows carry a byte-parity claim, so only they
+    // are the subject of the seal. A `KnownDiverge` row asserts the
+    // opposite of a claim and would be a lie in either direction if mapped
+    // onto a sweep `Verdict`; those stay accounted for by `tracked` /
+    // `graduated`, which is where they belong.
+    let sweep_rows: Vec<(sui_spec::parity::Verdict, Option<sui_spec::parity::Verdict>)> = results
+        .iter()
+        .zip(reclassified_from.iter())
+        .filter(|((_, _, ex, _), _)| *ex == Expect::Match)
+        .map(|((_, _, _, v), from)| {
+            let mapped = match v {
+                ParityVerdict::Match          => sui_spec::parity::Verdict::Match,
+                ParityVerdict::Diverge { .. } => sui_spec::parity::Verdict::Differ,
+                ParityVerdict::SuiError(_)    => sui_spec::parity::Verdict::SuiFailOnly,
+                ParityVerdict::NixError(_)    => sui_spec::parity::Verdict::NixFailOnly,
+                // Covers BOTH ways a row leaves: a flag moved it (then
+                // `from` is `Some`) or the probe body declined (then `from`
+                // is `None` and only the floor can see it).
+                ParityVerdict::Skipped(_)     => sui_spec::parity::Verdict::NotApplicable,
+            };
+            (mapped, *from)
+        })
+        .collect();
+    let enforced = sui_spec::parity::enforced_count(sweep_rows.iter().copied());
+    let sweep_verdict =
+        sui_spec::parity::SweepVerdict::classify(sweep_rows.iter().copied(), enforced_floor);
 
     if json {
         let probes_json: Vec<serde_json::Value> = results.iter().map(|(n, d, ex, v)| {
@@ -5167,6 +5287,22 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
             "pureonly_oracle_skips": pureonly_oracle_skips,
             "pureonly_sui_skips": pureonly_sui_skips,
             "pureonly_sui_budget": PUREONLY_SUI_ERROR_BUDGET,
+            // ── The denominator, as a COMPARED value ──
+            //
+            // `enforced` is how many `Match`-expectation rows the gate
+            // actually got a comparison answer for; `enforced_floor` is
+            // what it had to reach. Before these existed a machine reader
+            // could see `"match": 77` and `"match": 0` differ, but had no
+            // way to tell "the corpus shrank" from "the corpus is small".
+            "enforced": enforced,
+            "enforced_floor": enforced_floor.get(),
+            // The typed verdict, so the narrowing is a value and not prose.
+            // `reclassified` is `null` — not `0` — on every arm that makes a
+            // whole-corpus claim, so a reader cannot conflate "nothing was
+            // narrowed" with "this verdict cannot say".
+            "sweep_verdict": sweep_verdict.name(),
+            "sweep_refusal": sweep_verdict.refusal(),
+            "sweep_reclassified": sweep_verdict.reclassified().map(std::num::NonZeroUsize::get),
             "probes": probes_json,
         });
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
@@ -5231,16 +5367,82 @@ fn cmd_parity(nix: &std::path::Path, json: bool) -> Result<(), CliError> {
                 muted(&PUREONLY_SUI_ERROR_BUDGET.to_string()),
             );
         }
-        if unexpected == 0 {
-            println!("  {} corpus sealed — every Match row byte-identical to nix",
-                success("✔"));
+        // The denominator, printed next to the tally it qualifies. A reader
+        // seeing "0 regressions" needs the enforced count on the same
+        // screen — that pairing is the whole fix, because "0 regressions"
+        // over 3 enforced rows and over 41 look identical otherwise.
+        println!("  {} {} of {} Match-row(s) ENFORCED · floor {}",
+            body("⊢"),
+            if enforced < enforced_floor.get() { error(&enforced.to_string()) } else { success(&enforced.to_string()) },
+            muted(&sweep_rows.len().to_string()),
+            muted(&enforced_floor.to_string()),
+        );
+        // The seal is claimed ONLY on AllPassed. Every other arm says why
+        // not, in its own words, rather than printing the seal beside a
+        // caveat nobody reads.
+        match sweep_verdict.refusal() {
+            None if unexpected == 0 => {
+                println!("  {} corpus sealed — every Match row byte-identical to nix",
+                    success("✔"));
+            }
+            None => {}
+            Some(reason) => println!("  {} NOT SEALED: {}", error("✘"), error(&reason)),
         }
     }
 
-    if unexpected > 0 {
+    let verdict_fatal = parity_verdict_is_fatal(&sweep_verdict);
+    if verdict_fatal {
+        if let Some(reason) = sweep_verdict.refusal() {
+            eprintln!("parity: {reason}");
+        }
+    }
+    if unexpected > 0 || verdict_fatal {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Does this sweep verdict, on its own, fail the parity gate?
+///
+/// Extracted from `cmd_parity` so the gate's DECISION is a function with
+/// tests rather than a statement buried in a 700-line command. The claim
+/// worth pinning is not reachable any other way: the historical failure
+/// is a run where **nothing failed and the gate must still refuse**, and
+/// an end-to-end reproduction of that needs a corpus that is otherwise
+/// perfectly green.
+///
+/// `unexpected` — the regression/graduation tally — is deliberately NOT a
+/// parameter. It was the entire gate before this, and it can only ever
+/// count rows that FAILED, never rows that LEFT. Keeping the two
+/// conditions separate at the call site is what makes that distinction
+/// legible.
+///
+/// `Reclassified` is deliberately not fatal. `parity.yml` sets
+/// `SUI_PARITY_PUREONLY` on every run, so making it fatal would paint the
+/// gate permanently red by construction, and a gate that is always red is
+/// switched off within the week. What it does instead is withhold the
+/// SEAL claim — the run reports `Reclassified` and prints "NOT SEALED" —
+/// while the enforced floor is what turns an EXCESSIVE narrowing into a
+/// refusal. That split is the honest one: the flag legitimately narrows
+/// on that runner, and the destination (a pinned-oracle job, where the
+/// flag is not needed at all) is what restores the full corpus as a CI
+/// theorem.
+///
+/// The catch-all is FAIL-CLOSED, matching `rebuild-shadow` and
+/// `sui-sweep`: a future `SweepVerdict` arm is not a pass until someone
+/// decides it is.
+fn parity_verdict_is_fatal(verdict: &sui_spec::parity::SweepVerdict) -> bool {
+    match verdict {
+        sui_spec::parity::SweepVerdict::AllPassed { .. }
+        | sui_spec::parity::SweepVerdict::Reclassified { .. } => false,
+        sui_spec::parity::SweepVerdict::Diverged { .. }
+        | sui_spec::parity::SweepVerdict::Vacuous
+        | sui_spec::parity::SweepVerdict::BelowFloor { .. } => true,
+        other => {
+            eprintln!("parity: unhandled verdict {other:?} — refusing to report a pass");
+            true
+        }
+    }
 }
 
 /// The store-name of a `/nix/store/<32-hash>-<name>` path — the hash stripped,
@@ -9396,4 +9598,121 @@ fn days_to_ymd(total_days: u64) -> (u64, u64, u64) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// The parity gate's decision, under test.
+//
+// `src/main.rs` had no test module at all before this. The one added here
+// is deliberately narrow: it pins the ONE claim that cannot be reproduced
+// end-to-end, namely that a run in which NOTHING FAILED is still a
+// refusal when the set it enforced collapsed. Reproducing that against
+// the live corpus would need a corpus that is otherwise perfectly green,
+// which is exactly the state a collapse destroys.
+// ══════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod parity_gate_tests {
+    use super::parity_verdict_is_fatal;
+    use std::num::NonZeroUsize;
+    use sui_spec::parity::{SweepVerdict, Verdict};
+
+    fn floor(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).expect("test floor must be non-zero")
+    }
+
+    /// `n` ordinary compared rows that all matched.
+    fn compared(n: usize) -> Vec<(Verdict, Option<Verdict>)> {
+        std::iter::repeat_n((Verdict::Match, None), n).collect()
+    }
+
+    /// `n` rows that a run-time flag moved out of the enforced set.
+    fn reclassified_out(n: usize) -> Vec<(Verdict, Option<Verdict>)> {
+        std::iter::repeat_n((Verdict::NotApplicable, Some(Verdict::NixFailOnly)), n).collect()
+    }
+
+    /// ★ THE HISTORICAL INCIDENT, as an assertion.
+    ///
+    /// Every `Match` row reclassified `NixError -> Skipped`. Zero
+    /// regressions, zero divergences, zero graduations — because zero
+    /// comparisons. The old gate exited on `unexpected > 0` alone and so
+    /// exited 0 here: a gate that compared nothing certified everything.
+    #[test]
+    fn a_run_where_everything_was_reclassified_is_fatal() {
+        let collapsed = SweepVerdict::classify(reclassified_out(77), floor(20));
+        assert!(
+            matches!(collapsed, SweepVerdict::BelowFloor { enforced: 0, .. }),
+            "expected a collapsed enforced set, got {collapsed:?}"
+        );
+        assert!(
+            parity_verdict_is_fatal(&collapsed),
+            "the gate must refuse a run that compared nothing, even though \
+             nothing failed: {collapsed:?}"
+        );
+    }
+
+    /// The same shape one step less extreme: a partial collapse that still
+    /// falls under the floor. Nothing failed here either.
+    #[test]
+    fn a_partial_collapse_under_the_floor_is_fatal() {
+        let mut rows = compared(3);
+        rows.extend(reclassified_out(70));
+        let v = SweepVerdict::classify(rows, floor(20));
+        assert!(
+            matches!(v, SweepVerdict::BelowFloor { enforced: 3, .. }),
+            "{v:?}"
+        );
+        assert!(parity_verdict_is_fatal(&v));
+    }
+
+    /// The guard must not fire on the runs it is meant to allow, or it
+    /// gets switched off. A corpus that clears the floor with rows still
+    /// reclassified — the normal `parity.yml` shape — is NOT fatal, but is
+    /// also NOT a pass: the seal is withheld, not the exit code.
+    #[test]
+    fn the_normal_ci_shape_is_not_fatal_but_is_not_sealed_either() {
+        let mut rows = compared(41);
+        rows.extend(reclassified_out(36));
+        let v = SweepVerdict::classify(rows, floor(20));
+        assert!(
+            matches!(v, SweepVerdict::Reclassified { .. }),
+            "expected Reclassified, got {v:?}"
+        );
+        assert!(
+            !parity_verdict_is_fatal(&v),
+            "making the everyday CI shape fatal would paint the gate \
+             permanently red and it would be deleted"
+        );
+        assert!(!v.is_pass(), "the corpus-wide seal must still be withheld");
+        assert!(v.refusal().is_some(), "and it must say why");
+    }
+
+    /// A clean full-corpus run is a pass, is sealed, and says nothing.
+    #[test]
+    fn a_clean_full_corpus_run_passes_and_is_sealed() {
+        let v = SweepVerdict::classify(compared(77), floor(38));
+        assert!(v.is_pass(), "{v:?}");
+        assert_eq!(v.refusal(), None);
+        assert!(!parity_verdict_is_fatal(&v));
+    }
+
+    /// A byte-divergence outranks every denominator concern — if bytes
+    /// disagree that is the finding, and "you compared too little" would
+    /// bury it.
+    #[test]
+    fn a_divergence_is_fatal_and_outranks_the_floor() {
+        let mut rows = vec![(Verdict::Differ, None)];
+        rows.extend(reclassified_out(70));
+        let v = SweepVerdict::classify(rows, floor(20));
+        assert!(matches!(v, SweepVerdict::Diverged { .. }), "{v:?}");
+        assert!(parity_verdict_is_fatal(&v));
+    }
+
+    /// An empty corpus is `Vacuous` and fatal — distinct from `BelowFloor`
+    /// so a reader is told which of the two happened.
+    #[test]
+    fn an_empty_corpus_is_fatal() {
+        let v = SweepVerdict::classify(Vec::new(), floor(20));
+        assert_eq!(v, SweepVerdict::Vacuous);
+        assert!(parity_verdict_is_fatal(&v));
+    }
 }

@@ -63,16 +63,40 @@ jobs:
         # to a different rev than the corpus was byte-closed against, so the ~35
         # ecosystem rows (hello/stdenv/… + the darwin currentSystem seeds) cannot
         # evaluate here. SUI_PARITY_PUREONLY reclassifies those could-not-evaluate
-        # rows (SuiError, NEVER Diverge) as Skipped, so this gate BLOCKS on the ~40
+        # rows (SuiError, NEVER Diverge) as Skipped, so this gate BLOCKS on the 41
         # environment-independent rows (hash/derivation/context/attrset algebra) —
         # a real byte-divergence there is a red gate. A wrong-byte (Diverge) still
         # fails even here; only unevaluable rows skip. The FULL corpus is proven on
         # the operator machine + the pinned-oracle big-mem job (the destination:
         # a flake-locked oracle + per-row EnvCapability). A seal is only real if
         # its oracle is reproducible where enforced.
-        env:
-          SUI_PARITY_PUREONLY: "1"
-        run: ./target/debug/sui parity
+        #
+        # ── ★ THE NARROWING IS NOW A COMPARED VALUE, AND IT HAS A FLOOR ─────
+        #
+        # SUI_PARITY_PUREONLY is set INLINE on the run line, not in an `env:`
+        # block, because it changes what this gate enforces and that belongs in
+        # the command a reviewer reads. It used to be invisible in two ways at
+        # once: tucked in `env:`, and moving no number the gate read. The gate
+        # exited non-zero on `unexpected > 0` and nothing else — a count of rows
+        # that FAILED, which a reclassified row never does. So a run in which the
+        # flag removed every single row printed `∑ 0 match · 0 regressions` and
+        # exited 0: a gate that compared nothing, certifying everything.
+        #
+        # `sui parity` now derives a typed SweepVerdict over its Match rows and
+        # reports {enforced, enforced_floor, sweep_verdict} in both the table and
+        # the JSON. Two things follow:
+        #   - Reclassified  the seal claim is WITHHELD ("NOT SEALED: …"). Not
+        #                   fatal — this flag legitimately narrows on this
+        #                   runner, and a gate that is red by construction gets
+        #                   switched off.
+        #   - BelowFloor    fatal. Fewer than 20 rows actually enforced under
+        #                   PUREONLY (38 without it) means the gate compared too
+        #                   little to make a claim, however the rows left.
+        # The floor counts what REMAINS rather than what left, which is the only
+        # form that also catches rows that skip THEMSELVES — measured 2026-08-17,
+        # of 50 rows removed under a failing oracle only 14 were flag-reclassified
+        # and 36 self-skipped, invisible to every skip budget.
+        run: SUI_PARITY_PUREONLY=1 ./target/debug/sui parity
 
       # ── ★ THE WHOLE SUITE, NOT ONE TEST FILE ────────────────────────────
       # This step used to be `cargo test -p pleme-io-sui --test
@@ -102,11 +126,18 @@ jobs:
 
       # ── ★ SUI_TEST_ONLINE, THE SAFE HALF ────────────────────────────────
       # This runner installs nix (three steps up) and then never used it for
-      # the differentials: `SUI_TEST_ONLINE` was set by NO workflow, so 67
-      # `skip_if_offline()` call sites across 20 files silently passed and four
-      # declared sui-vs-nix gates reported `ok` while no-opping. The measured
-      # signature of that vacuity is a 0.00s runtime with zero nix invocations
-      # — and `ok`, not `ignored`, which is why nobody saw it.
+      # the differentials: `SUI_TEST_ONLINE` was set by NO workflow, so every
+      # `skip_if_offline()` call site silently passed and four declared
+      # sui-vs-nix gates reported `ok` while no-opping. The measured signature
+      # of that vacuity is a 0.00s runtime with zero nix invocations — and
+      # `ok`, not `ignored`, which is why nobody saw it.
+      #
+      # Counted 2026-08-17: **77 `skip_if_offline()` call sites across 21
+      # files.** This comment previously said "67 across 20", which was true
+      # when written and had drifted by the time anyone re-read it — the exact
+      # rot a bare count invites. Reproduce with
+      # `grep -rc skip_if_offline --include=*.rs .` and re-measure rather than
+      # trusting the number above; it is dated for that reason.
       #
       # The flip was verified locally (darwin/aarch64, nix 2.31.5) binary by
       # binary before landing, NOT flipped blind on the whole workspace. The
@@ -115,17 +146,14 @@ jobs:
       # which is the inverted vacuity signature and the thing worth checking if
       # one of them ever goes suspiciously fast again.
       #
-      # ★ DO NOT read "green" here as "N differentials executed". On
-      # ubuntu-latest several of these go green for a SECOND, unrelated reason:
-      # the DeterminateSystems installer leaves a near-empty store and a
-      # flakes-first config, so `resolve_nixpkgs_path()` likely returns None
-      # (skipping all 27 nixpkgs-lib rows) and the store-query rows have almost
-      # nothing to iterate. This step recovers real coverage on a developer
-      # machine and less than its test count suggests on CI. The destination is
-      # a pinned-oracle job; until then the honest claim is "these no longer
-      # no-op", not "these all ran".
+      # ── EVERY EXCLUSION HAS A REASON. The list below used to claim that and
+      # cover 5 binaries while 8 more were silently absent, holding ~30 vacuous
+      # `skip_if_offline()` sites — including a byte-level NAR differential. All
+      # 13 are now accounted for. Each of the 8 was RUN locally with
+      # SUI_TEST_ONLINE=1 (darwin/aarch64, nix 2.31.5, 2026-08-17) and measured
+      # against its own offline time; 5 came back green with real work unlocked
+      # and were added to the step below.
       #
-      # Deliberately NOT included, each measured and each for a stated reason:
       #   build_levels          - `assert!(success > 0)` over $HOME/code/github/
       #                           pleme-io, which does not exist on a runner ->
       #                           CI-FATAL. Also hardcodes aarch64-darwin.
@@ -143,7 +171,47 @@ jobs:
       #                           separately by sui-eval's builtin_registry
       #                           test; this row lands once the six nixpkgs-lib
       #                           leaks are dropped.
-      #   pending-ci: SUI_TEST_ONLINE=1 for the remaining binaries
+      #   system_eval_parity     - CI-FATAL *and* currently broken. Its four
+      #                           `nix_repo_*` tests read $HOME/code/github/
+      #                           pleme-io/nix (absent on a runner -> vacuous),
+      #                           each ran >60s locally, `nix_repo_eval_no_crash`
+      #                           FAILED, and `nix_repo_cid_drv_path` overflowed
+      #                           its stack -> SIGABRT, so the binary exits 101
+      #                           however it is run. 8 skip_if_offline sites,
+      #                           still vacuous; unblocking them needs the
+      #                           private-repo dependency removed first.
+      #                           pending-ci: system_eval_parity (needs a fixture
+      #                           repo, not $HOME, and a stack-overflow fix)
+      #   marquee_perf_profile   - measured NO DELTA: 5.50s offline vs 5.55s
+      #   perf_experiments         online, and 5.54s vs 5.39s. Adding them buys
+      #                           CI time and zero coverage — perf_experiments
+      #                           has **0** skip_if_offline sites (it was on the
+      #                           audit list in error) and marquee's single site
+      #                           gates nothing measurable. Both already run in
+      #                           the `cargo test --workspace` step above. The
+      #                           0.00s->real-work delta IS the admission test;
+      #                           these two fail it.
+      #
+      # ★ The delta, not the exit code, is what qualified each addition
+      # (offline -> online, measured 2026-08-17):
+      #     nar_parity           0.00s -> 6.78s   (4 sites; the NAR differential)
+      #     vs_cppnix            0.00s -> 53.89s  (1 site)
+      #     vs_nix_hotshapes     0.00s -> 24.25s  (1 site)
+      #     flake_lock_roundtrip 0.00s -> 0.81s   (5 sites)
+      #     flake_eval_parity    0.00s -> 0.30s   (2 sites)
+      # The last two are green and no longer no-op, but their sub-second times
+      # say they unlock much less than their site counts suggest — keep the
+      # honest claim "these no longer no-op", not "these all ran".
+      #
+      # ★ DO NOT read "green" here as "N differentials executed". On
+      # ubuntu-latest several of these go green for a SECOND, unrelated reason:
+      # the DeterminateSystems installer leaves a near-empty store and a
+      # flakes-first config, so `resolve_nixpkgs_path()` likely returns None
+      # (skipping all 27 nixpkgs-lib rows) and the store-query rows have almost
+      # nothing to iterate. This step recovers real coverage on a developer
+      # machine and less than its test count suggests on CI. The destination is
+      # a pinned-oracle job; until then the honest claim is "these no longer
+      # no-op", not "these all ran".
       - name: Run the sui-vs-nix differentials (online)
         env:
           SUI_TEST_ONLINE: "1"
@@ -157,3 +225,8 @@ jobs:
           cargo test -p sui-eval     --test lang_corpus
           cargo test -p sui-eval     --test diff_eval_nixpkgs_lib
           cargo test -p sui-eval     --test builtin_registry
+          cargo test -p sui-compat   --test nar_parity
+          cargo test -p sui-eval     --test vs_cppnix
+          cargo test -p sui-eval     --test vs_nix_hotshapes
+          cargo test -p sui-eval     --test flake_lock_roundtrip
+          cargo test -p sui-eval     --test flake_eval_parity
