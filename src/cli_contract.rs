@@ -114,9 +114,17 @@ const NOW: &str = "2026-08-17";
 pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // ── root: global arguments ──────────────────────────────────────────
     //
-    // `--vm` selects the bytecode VM, which is already the default engine:
-    // `main` branches on `no_vm` alone, so the code path taken with `--vm` is
-    // the code path taken without it. Vacuously honoured.
+    // `--vm` selects the bytecode VM. It used to be VACUOUSLY honoured —
+    // `main` branched on `no_vm` alone, so the VM was the default and passing
+    // `--vm` took the same code path as passing nothing.
+    //
+    // Since the 2026-08-17 flip the tree-walker is the default and `main`
+    // branches on `vm`, so this flag now genuinely selects an engine.
+    // `--no-vm` is the one that became a no-op: it names the default and is
+    // kept so existing scripts keep working. Both remain Honoured, but for
+    // opposite reasons than before — worth stating, because a flag whose
+    // meaning inverted while its classification stayed put is exactly the kind
+    // of drift this table exists to make visible.
     (&[], "vm", H),
     (&[], "no_vm", H),
     (&[], "show_trace", H),

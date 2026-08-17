@@ -1,15 +1,20 @@
 //! Documents the bytecode VM's current capabilities and known limitations.
 //!
-//! These tests exercise the VM (default backend) on increasingly complex
-//! Nix patterns. Tests that exercise features not yet supported by the VM
-//! are marked `#[ignore]` with a reason.
+//! ★ EVERY INVOCATION PASSES `--vm` EXPLICITLY. The tree-walker is the default
+//! for `sui eval` (flipped 2026-08-17), so an invocation that omitted it would
+//! document the WALKER's capabilities under a filename promising the VM's.
+//!
+//! Read the caveat in `vm_cli.rs` before trusting a green run: the CLI's VM arm
+//! falls back to the tree-walker on any error, so these rows say "the VM did
+//! not produce a different answer", not "the VM computed this". Closing that
+//! needs the strict-fallback latch.
 
 use assert_cmd::Command;
 
 fn eval_json(expr: &str) -> serde_json::Value {
     let assert = Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["eval", "--json", expr])
+        .args(["--vm", "eval", "--json", expr])
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -20,7 +25,7 @@ fn eval_json(expr: &str) -> serde_json::Value {
 fn eval_fails(expr: &str) -> String {
     let assert = Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["eval", expr])
+        .args(["--vm", "eval", expr])
         .assert()
         .failure();
     String::from_utf8_lossy(&assert.get_output().stderr).to_string()

@@ -27,9 +27,10 @@ use sui_store::{LocalStore, Store, Substitutor};
 #[derive(Parser)]
 #[command(name = "sui", version, about = "Rust-native Nix replacement")]
 struct Cli {
-    /// Use the bytecode VM evaluator (the default engine).
+    /// Use the bytecode VM evaluator (opt-in; the tree-walker is the default).
     #[arg(long, global = true)] vm: bool,
-    /// Use the tree-walking evaluator instead of the bytecode VM.
+    /// Use the tree-walking evaluator. This is the DEFAULT — the flag is kept
+    /// so existing invocations and scripts keep working, and is a no-op.
     #[arg(long, global = true, conflicts_with = "vm")] no_vm: bool,
     /// Emit an evaluation trace (equivalent to SUI_TRACE_EVAL=1).
     #[arg(long, global = true)] show_trace: bool,
@@ -6705,7 +6706,35 @@ async fn main() -> Result<(), CliError> {
             // does not honour --raw), so an entry written by one must never be
             // served to the other. Folding the engine into the mode keeps them
             // in disjoint namespaces without touching the key function.
-            let engine_tag = if cli.no_vm { "tw" } else { "vm" };
+            // ★ THE TREE-WALKER IS THE DEFAULT (flipped 2026-08-17).
+            //
+            // It used to be `if cli.no_vm { "tw" } else { "vm" }` — the VM by
+            // default. Three measured facts moved it:
+            //
+            //  1. CORRECTNESS. `VMValue::String` carries no string context
+            //     (sui-bytecode/src/value.rs:43, and vm.rs:2407-2412 says so),
+            //     so a derivation that interpolates another derivation gets an
+            //     EMPTY `inputDrvs` and therefore a WRONG drvPath — the shape
+            //     of essentially every non-leaf package. The per-file fallback
+            //     cannot rescue it, because a context-less build SUCCEEDS.
+            //  2. NO PERF REASON. `docs/STRATOSPHERE.md:305` measures both
+            //     engines as equally slow on U04; the cost they share is the
+            //     rowan re-walk. The VM's default status bought nothing.
+            //  3. THE CODE ALREADY SAID SO. The comment just below has called
+            //     the tree-walker "the parity-correct engine — the only one
+            //     whose drvPaths are byte-exact" this whole time, and
+            //     `sui build` has always used it. `sui eval` and `sui build`
+            //     answering the same question with different engines was the
+            //     defect.
+            //
+            // MODULARIZE, DON'T DELETE: the VM is one `--vm` away, and every
+            // VM test now passes it explicitly. `--no-vm` is kept as a no-op so
+            // existing scripts keep working.
+            //
+            // The tag stays in the eval-cache key, so `vm:`-keyed entries are
+            // simply never read again rather than being served to the walker.
+            let use_vm = cli.vm;
+            let engine_tag = if use_vm { "vm" } else { "tw" };
             let render_mode_owned = format!("{engine_tag}:{render_mode_base}");
             let render_mode = render_mode_owned.as_str();
             // Cross-run eval-cache key: installable-only, byte-safe, disabled by
@@ -6720,10 +6749,13 @@ async fn main() -> Result<(), CliError> {
             if max_force_depth > 0 {
                 sui_eval::trace::set_max_force_depth(max_force_depth);
             }
-            if cli.no_vm {
-                // Tree-walker evaluation path (the parity-correct engine —
-                // the only one whose drvPaths are byte-exact, so the only one
-                // the cross-run eval-cache serves).
+            if !use_vm {
+                // Tree-walker evaluation path — the parity-correct engine, the
+                // only one whose drvPaths are byte-exact, and now the DEFAULT.
+                //
+                // (The tail of this sentence used to read "so the only one the
+                // cross-run eval-cache serves". That went stale: both arms
+                // cache today, in disjoint namespaces keyed by `engine_tag`.)
                 //
                 // Fast path: an identical prior installable eval is served from
                 // the content-addressed eval-cache WITHOUT re-evaluating — the

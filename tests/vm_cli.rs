@@ -1,16 +1,27 @@
 //! CLI tests for the VM eval backend.
 //!
-//! The bytecode VM is now the default for `sui eval`. The tree-walker is
-//! available via `--no-vm`. These tests verify parity between the two
-//! backends and that both `--vm` (explicit, no-op) and `--no-vm` flags work.
+//! ★ THE VM SIDE MUST PASS `--vm` EXPLICITLY. The tree-walker is the default
+//! for `sui eval` (flipped 2026-08-17); relying on the default here would make
+//! every row below compare the walker to ITSELF and pass unconditionally.
+//!
+//! These tests were already weaker than they looked, and it is worth stating
+//! why so the shape is recognisable: the CLI's VM arm falls back to the
+//! tree-walker on ANY error, so a VM that failed outright still produced the
+//! walker's answer and the assertion `vm == tw` held anyway. **A VM failing
+//! 100% of these expressions passed 36/36.** Passing `--vm` fixes the engine
+//! SELECTION; it does not fix the fallback — that needs the strict latch, so
+//! until then read a green run here as "the VM did not produce a *different*
+//! answer", never as "the VM computed this".
 
 use assert_cmd::Command;
 
-/// Run `sui eval --json <expr>` (default = VM) and return parsed JSON.
+/// Run `sui --vm eval --json <expr>` and return parsed JSON.
+///
+/// `--vm` is explicit and load-bearing: the default engine is the tree-walker.
 fn vm_eval_json(expr: &str) -> serde_json::Value {
     let assert = Command::cargo_bin("sui")
         .expect("cargo_bin sui")
-        .args(["eval", "--json", expr])
+        .args(["--vm", "eval", "--json", expr])
         .assert()
         .success();
     let output = assert.get_output();
@@ -300,4 +311,51 @@ fn no_vm_eval_error_exits_nonzero() {
         .args(["--no-vm", "eval", "let in"])
         .assert()
         .failure();
+}
+
+// ── The calibration ───────────────────────────────────────────
+
+/// The two helpers above must reach **different engines**.
+///
+/// Every `assert_vm_tw_parity` row is worthless if they do not, and the failure
+/// is invisible: two identical invocations agree perfectly and 36 tests pass
+/// while proving nothing. That is not hypothetical — the tree-walker became the
+/// default on 2026-08-17, and had `vm_eval_json` not been given an explicit
+/// `--vm` in the same commit, every row here would have silently become
+/// walker-vs-walker.
+///
+/// The probe is a derivation that interpolates another derivation. The VM's
+/// `VMValue::String` carries no string context (`sui-bytecode/src/value.rs:43`),
+/// so its `inputDrvs` comes out empty and the drvPath hash differs from the
+/// walker's — which matches nix. Measured at the time of writing:
+///
+/// ```text
+/// nix + walker: /nix/store/fhfg067pxrm022w3hv7zsav1q9sxb30i-top.drv
+/// VM:           /nix/store/kicfsn1hmp1qr6mb3li07i5pcrh4x6x1-top.drv
+/// ```
+///
+/// This mirrors `sui-bytecode/tests/vm_vs_treewalker_derivation.rs`'s
+/// `known_vm_blocked_shapes_still_diverge`, at the CLI level.
+///
+/// **When the VM learns string context this test SHOULD fail**, and the fix is
+/// to delete it and pick a new calibration — not to relax it. A test asserting
+/// a divergence is a liability the moment the divergence is closed, so it says
+/// so out loud rather than being quietly weakened later.
+#[test]
+fn the_two_helpers_reach_different_engines() {
+    const CTX_BEARING: &str = "let dep = derivation { name = \"dep\"; \
+        system = \"aarch64-darwin\"; builder = \"/bin/sh\"; }; \
+        in (derivation { name = \"top\"; system = \"aarch64-darwin\"; \
+        builder = \"/bin/sh\"; ref = \"${dep}\"; }).drvPath";
+
+    let vm = vm_eval_json(CTX_BEARING);
+    let tw = tw_eval_json(CTX_BEARING);
+    assert_ne!(
+        vm, tw,
+        "the VM and tree-walker returned the SAME drvPath for a \
+         context-bearing derivation. Either both helpers are now invoking the \
+         same engine — in which case every parity row in this file is vacuous \
+         and `vm_eval_json` has lost its `--vm` — or the VM has gained string \
+         context, in which case delete this test and choose a new calibration."
+    );
 }
