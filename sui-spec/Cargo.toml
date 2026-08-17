@@ -10,6 +10,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# handan owns Retry-After parsing (both RFC 9110 forms) so the two transports
+# cannot drift. Zero dependencies.
+handan = "0.1"
 # kazari (飾り) — the fleet line-output typescape. sui's style.rs routes every
 # styled byte through kazari's typed, capability-honest (truecolor → 256 → 16 →
 # plain), format!()-free emission instead of hand-rolled ANSI. Published on

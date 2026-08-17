@@ -272,6 +272,31 @@ impl HttpError {
         matches!(self, Self::Throttled { .. })
     }
 
+    /// Parse a raw `Retry-After` header value into seconds from now.
+    ///
+    /// The sibling of [`HttpError::from_status`], and it exists for the same
+    /// reason that method's doc gives: **shared by every transport impl so it
+    /// cannot drift between them.** `from_status` was already shared; the
+    /// *parsing* was not, and both transports carried a byte-identical
+    /// `s.trim().parse::<u64>().ok()` — delta-seconds only.
+    ///
+    /// Delegating to `handan` closes the gap that duplication hid: RFC 9110
+    /// §10.2.3 defines **two** `Retry-After` forms, and the **HTTP-date** one
+    /// (`Sun, 06 Nov 1994 08:49:37 GMT`) was read as *no header at all*. That is
+    /// worse here than a missed optimisation, because
+    /// [`HttpError::from_status`] treats `retry_after.is_some()` as the witness
+    /// that a `403` is a throttle rather than a credential fault — so a
+    /// date-form `403` was being classified `Forbidden`, sending an operator to
+    /// replace a token that was fine. Exactly the misdiagnosis the `from_status`
+    /// comment below warns about, arriving through the parser instead of the
+    /// classifier.
+    ///
+    /// A date already past yields `0` (retry now), never an underflow.
+    #[must_use]
+    pub fn retry_after_secs(value: &str) -> Option<u64> {
+        handan::parse_retry_after(value).map(|a| a.delay_now().as_secs())
+    }
+
     /// Classify a status code plus an optional `Retry-After` into an arm.
     ///
     /// Pure, and shared by every transport impl so the mapping cannot drift
@@ -627,6 +652,46 @@ mod status_classification_tests {
         assert!(!matches!(
             HttpError::from_status(URL, 404, None),
             HttpError::NetworkFailure(_)
+        ));
+    }
+
+    /// Both RFC 9110 `Retry-After` forms are read, and the HTTP-date form
+    /// reaches the classifier rather than being dropped.
+    ///
+    /// This is not a parsing nicety. `from_status` uses `retry_after.is_some()`
+    /// as its witness that a `403` is a throttle and not a credential fault, so
+    /// while the parser handled delta-seconds only, a **date-form `403` was
+    /// classified `Forbidden`** — sending an operator to replace a token that
+    /// was fine. Same misdiagnosis `from_status`'s own comment warns about,
+    /// arriving through the parser instead of the classifier.
+    ///
+    /// The date asserted is in the PAST on purpose: `retry_after_secs` resolves
+    /// against the system clock, so a future date would pass today and start
+    /// failing when it arrives. A past date yields `0` for every possible "now".
+    #[test]
+    fn the_http_date_retry_after_form_reaches_the_classifier() {
+        // delta-seconds — the form that always worked
+        assert_eq!(HttpError::retry_after_secs("120"), Some(120));
+        // HTTP-date — previously dropped entirely
+        assert_eq!(
+            HttpError::retry_after_secs("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(0),
+            "a past date means retry now, not no-header"
+        );
+        // ...and unreadable values still decline, so callers fall back to backoff
+        assert_eq!(HttpError::retry_after_secs("soon"), None);
+
+        // The consequence that matters: a 403 whose advice came in date form is
+        // a throttle, not a Forbidden.
+        let advice = HttpError::retry_after_secs("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert!(
+            HttpError::from_status(URL, 403, advice).is_throttled(),
+            "a date-form 403 is GitHub's secondary rate limit, not a credential fault"
+        );
+        // Unchanged: a 403 with no advice at all is still a real denial.
+        assert!(matches!(
+            HttpError::from_status(URL, 403, None),
+            HttpError::Forbidden(_)
         ));
     }
 }

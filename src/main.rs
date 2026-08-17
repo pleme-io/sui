@@ -5781,7 +5781,7 @@ impl sui_spec::fetcher::HttpTransport for UreqTransport {
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<u64>().ok());
+                .and_then(HttpError::retry_after_secs);
             // One shared classifier (`from_status`) rather than a match here:
             // two transports mapping status→arm independently is exactly how
             // this enum's arms drifted out of reach in the first place.
