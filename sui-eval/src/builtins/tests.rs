@@ -3816,9 +3816,55 @@ fn builtins_flake_ref_round_trip() {
 // `iter_unsorted` optimization of THIS builtin only. Their own comment already
 // recorded that no parity corpus row was possible because nix has no
 // `builtins.filterAttrs` — which, read the other way, was the defect announcing
-// itself. `mapAttrs` carries the same `iter_unsorted` shape and IS a real
-// builtin; its order-independence is the one worth sealing, and it is covered
-// by the corpus rather than by a sui-internal test.
+// itself.
+//
+// ★ CORRECTED. This block previously said `mapAttrs` carries the same
+// `iter_unsorted` shape and "is covered by the corpus rather than by a
+// sui-internal test". BOTH halves were false, and an adversarial reviewer
+// caught them:
+//   - the surviving `iter_unsorted` is in `zipAttrsWith`
+//     (`sui-eval/src/builtins/attrs.rs:177`), not `mapAttrs`;
+//   - `mapAttrs` appears in `src/parity_corpus.rs` exactly once, in a COMMENT.
+//     There is no row. The corpus covered nothing.
+//
+// So a real seal was deleted and the gap was papered with a claim nothing
+// enforced — the precise failure this file spends most of its length warning
+// about. The seal below restores it on the actual carrier.
+
+/// `zipAttrsWith` must not depend on the ITERATION ORDER of its inputs.
+///
+/// It reads its inputs with `iter_unsorted` (`attrs.rs:177`) — an optimization
+/// that is only sound because the results feed a `BTreeMap`, which re-imposes
+/// the ordering. If that ever stops being true, the result depends on insertion
+/// order and the drv hash moves with it.
+///
+/// This is the surviving half of the four C-filter seals that went with
+/// `filterAttrs`. Unlike those, it CAN also be pinned against real nix —
+/// `builtins.zipAttrsWith` exists — so it is not sui-internal by necessity.
+#[test]
+fn zip_attrs_with_is_order_independent() {
+    // Same key set, different insertion orders on both the outer list and the
+    // inner attrsets.
+    let a = ev(r#"builtins.zipAttrsWith (n: vs: vs) [ { x = 1; y = 2; } { y = 3; x = 4; } ]"#);
+    let b = ev(r#"builtins.zipAttrsWith (n: vs: vs) [ { y = 2; x = 1; } { x = 4; y = 3; } ]"#);
+    assert_eq!(
+        a, b,
+        "zipAttrsWith result depends on attrset insertion order — the \
+         `iter_unsorted` optimization at attrs.rs:177 is no longer sound"
+    );
+
+    // CALIBRATION: the test must be able to see a difference at all. Reordering
+    // the LIST genuinely changes the result (the per-key value vectors are
+    // built in list order), so this pair must NOT be equal — otherwise the
+    // assertion above would hold for a `zipAttrsWith` that returned a constant.
+    let c = ev(r#"builtins.zipAttrsWith (n: vs: vs) [ { x = 1; } { x = 2; } ]"#);
+    let d = ev(r#"builtins.zipAttrsWith (n: vs: vs) [ { x = 2; } { x = 1; } ]"#);
+    assert_ne!(
+        c, d,
+        "list order must still matter; if it does not, this builtin is not \
+         discriminating and the order-independence assertion above is vacuous"
+    );
+}
 
 #[test]
 fn builtins_filter_attrs_is_absent() {

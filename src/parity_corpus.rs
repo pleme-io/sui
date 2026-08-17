@@ -715,10 +715,17 @@ pub fn generate() -> Vec<CorpusRow> {
     //     differential in sui-eval/tests/diff_eval_primitives.rs
     //     (`diff_filter_attrs_is_rejected_by_both`).
     //   - The C-filter `iter_unsorted` seal that used to live in
-    //     builtins/attrs.rs went WITH the builtin. Nothing is left unsealed:
-    //     the optimization it guarded is unreachable because the code path it
-    //     guarded no longer exists. `mapAttrs` carries the same `iter_unsorted`
-    //     shape and IS a real builtin, so that is the one the corpus covers.
+    //     builtins/attrs.rs went WITH the builtin. The optimization IT guarded
+    //     is unreachable, because the code path it guarded no longer exists.
+    //
+    //     ★ CORRECTED: this comment previously claimed `mapAttrs` carries the
+    //     same shape and "is the one the corpus covers". Both halves were
+    //     false — the surviving `iter_unsorted` is in `zipAttrsWith`
+    //     (attrs.rs:177), and `mapAttrs` occurs in THIS FILE exactly once, in
+    //     this very comment. There was no row; the corpus covered nothing.
+    //     The seal now lives at
+    //     `sui-eval/src/builtins/tests.rs::zip_attrs_with_is_order_independent`.
+    //     A comment claiming coverage is not coverage.
 
     rows
 }
