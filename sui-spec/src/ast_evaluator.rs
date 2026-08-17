@@ -1772,7 +1772,7 @@ impl crate::fetcher::HttpTransport for UreqTransport {
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<u64>().ok());
+                .and_then(HttpError::retry_after_secs);
             return Err(HttpError::from_status(url, resp.status().as_u16(), retry_after));
         }
 

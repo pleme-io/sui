@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "69ec340b3f40c90db657a0033f9debd143b0411389e11398831f8a550892548d",
+  "cargo_lock_sha256": "288842c35273a9bab1fb8085630ac0c3515f397e1ba0c7ea7d742a2c7b8607c0",
   "manifest_sha256": {
     "Cargo.toml": "b4e9ed4fa08676d5ed48358af28fb692c8fdc9c6e8749bd3bf4cf2f0e1659936",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -30,7 +30,7 @@
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
     "sui-registry/Cargo.toml": "20bc7698f123bb590dec8dbd527f55e85a99d2f7bf41ffc16c4080685bdc79cf",
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
-    "sui-spec/Cargo.toml": "5c34d132e44db0248697a462132623ff139818f0b7e0115729e3fb6295998ac0",
+    "sui-spec/Cargo.toml": "2d0bba9184a9482a333e7cc8e07588eba5e634b56d367aea195533bd2ed4fce7",
     "sui-store/Cargo.toml": "bfa3b32c514f2c21174ae90a9bb62a32e374434e9ec08fdd382e72f3e236b983",
     "sui-supercacheci/Cargo.toml": "9191709df80f9b1c1333da288d4b8579422da4a2304c66fbd9e0cb9abcdcfbb1"
   },
@@ -11644,6 +11644,11 @@
             "tree": "target"
           }
         ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "handan-0.1.2": {
+        "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
@@ -26982,6 +26987,16 @@
             "tree": "target"
           },
           {
+            "name": "handan",
+            "package_key": "handan-0.1.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "libc",
             "package_key": "libc-0.2.186",
             "kind": "normal",
@@ -39672,6 +39687,9 @@
     },
     "half-2.7.1": {
       "edition": "2021"
+    },
+    "handan-0.1.2": {
+      "edition": "2024"
     },
     "handlebars-6.4.2": {
       "edition": "2024"
