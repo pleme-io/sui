@@ -212,27 +212,19 @@ fn with_scope_shadows_every_name_that_is_not_a_real_nix_global() {
 fn a_real_global_still_wins_over_a_with_scope() {
     let _bridges = sui_eval::install_vm_bridges();
 
-    for name in [
-        "abort",
-        "baseNameOf",
-        "break",
-        "derivation",
-        "derivationStrict",
-        "dirOf",
-        "fetchGit",
-        "fetchMercurial",
-        "fetchTarball",
-        "fetchTree",
-        "fromTOML",
-        "import",
-        "isNull",
-        "map",
-        "placeholder",
-        "removeAttrs",
-        "scopedImport",
-        "throw",
-        "toString",
-    ] {
+    // Derived from the shared list, not re-typed. This loop WAS a fourth
+    // hand-written copy of the global scope — found by
+    // `sui-compat/tests/global_scope_funnel.rs`, which is the funnel doing its
+    // job on the very commit that introduced it.
+    //
+    // Deriving does not make the test self-referential in the way that matters:
+    // the const's agreement with NIX is checked separately and against the real
+    // oracle (`the_global_scope_matches_real_nix`, online), while this loop
+    // checks something different — that the VM *honours* the scope it is given.
+    // Two different questions, so the shared list is the right input to both,
+    // and a global added later is covered here automatically instead of being
+    // silently untested.
+    for name in sui_compat::scope::CALLABLE_GLOBALS.iter().copied() {
         // Comparing the resolved value against the string the `with` binds is
         // what tells us WHICH one was reached: `false` means the global won.
         let expr = format!(r#"with {{ {name} = "LIB"; }}; {name} == "LIB""#);

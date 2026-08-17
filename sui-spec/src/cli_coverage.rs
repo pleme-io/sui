@@ -195,6 +195,30 @@ pub fn maturity_histogram()
         .collect())
 }
 
+/// The honest floor for [`replacement_percentage`] — ONE source, two gates.
+///
+/// This number lived in two places: `coverage_at_100.rs`'s
+/// `MIN_REPLACEMENT_PCT` and an inline `0.84` in
+/// `substrate_cross_domain.rs::cli_coverage_meets_the_honest_floor`, whose own
+/// comment described itself as *"paired with coverage_at_100.rs's ratchet"*.
+/// They were not paired — they were two literals, and the moment one moved
+/// they disagreed: demoting three lying subcommands (`store repair`,
+/// `store add-file`, `develop`) from `Working` to `Stub` lowered coverage to
+/// 80.5%, the first floor was lowered to match, and the second one — which
+/// nothing pointed at — went red.
+///
+/// A comment asserting that two constants track each other is not a mechanism.
+/// This is the same shape as the `nixVersion` drift and the three hand-copied
+/// global-scope lists, and it gets the same fix.
+///
+/// **Lowering this is allowed and sometimes correct** — the alternative is
+/// leaving commands labelled `Working` that are not, which keeps CI green while
+/// the catalog lies, and is exactly what this budget exists to prevent. Lower
+/// it in the same commit as the demotion, and say why.
+///
+/// Currently 0.80: 62 Working of 77 non-`SuiNative` = 80.5%.
+pub const MIN_REPLACEMENT_PCT: f64 = 0.80;
+
 /// Headline coverage number: `Working / (everything that isn't SuiNative)`.
 ///
 /// # Errors

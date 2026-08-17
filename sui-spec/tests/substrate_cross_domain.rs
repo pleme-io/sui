@@ -175,10 +175,17 @@ fn cli_coverage_meets_the_honest_floor() {
     // the 2026-07-22 M3b honesty demotion (10 NotImplemented stubs -> Stub, 2
     // non-native commands -> Partial), truthful coverage is 65/77 = 84.4%. Assert
     // the honest floor, not a false 100%; it ratchets back up as stubs get real.
+    // The floor is READ from `cli_coverage`, not re-typed. It used to be an
+    // inline `0.84` here while `coverage_at_100.rs` held its own
+    // `MIN_REPLACEMENT_PCT` — and the comment above claiming the two were
+    // "paired" was aspirational: when three lying subcommands were honestly
+    // demoted Working -> Stub, the other floor was lowered to match and THIS
+    // one went red, because nothing connected them.
     let pct = cli_coverage::replacement_percentage().unwrap();
     assert!(
-        pct >= 0.84 - f64::EPSILON,
-        "nix-replacement coverage regressed below the honest floor (84%): {:.1}%",
+        pct >= cli_coverage::MIN_REPLACEMENT_PCT - f64::EPSILON,
+        "nix-replacement coverage regressed below the honest floor ({:.0}%): {:.1}%",
+        cli_coverage::MIN_REPLACEMENT_PCT * 100.0,
         pct * 100.0
     );
 }

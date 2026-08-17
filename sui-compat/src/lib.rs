@@ -13,5 +13,7 @@ pub mod narinfo;
 pub mod signature;
 pub mod source;
 pub mod store_path;
+/// The names Nix resolves as bare identifiers — one list, every engine.
+pub mod scope;
 pub mod versions;
 pub mod wire;

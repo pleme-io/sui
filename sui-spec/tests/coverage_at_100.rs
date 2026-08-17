@@ -73,7 +73,11 @@ const MAX_NON_WORKING: usize = 15;
 // NUMBER becoming truthful, not sui regressing — the three commands behave
 // exactly as before minus the false exit 0. Raise it back as they get real
 // handlers.
-const MIN_REPLACEMENT_PCT: f64 = 0.80;
+// Now READ from the library rather than declared here, so the sibling gate in
+// `substrate_cross_domain.rs` cannot hold a different value. It did: this one
+// was lowered 0.84 -> 0.80 with the honesty demotion above and the other kept
+// an inline 0.84, so the workspace went red on a floor nobody had pointed at.
+use sui_spec::cli_coverage::MIN_REPLACEMENT_PCT;
 
 /// The GAP maturities — the three that mean "sui does not do this yet".
 ///

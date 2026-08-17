@@ -242,36 +242,30 @@ pub fn register(env: &mut Env) {
 
     env.bind("builtins".to_string(), Value::Attrs(Rc::new(builtins_set.clone())));
 
-    const DEFAULT_SCOPE: &[&str] = &[
-        "abort",
-        "baseNameOf",
-        "derivation",
-        "derivationStrict",
-        "dirOf",
-        "false",
-        // nix exposes the fetchers + fromTOML as bare globals too; nixpkgs
-        // uses e.g. bare `fetchGit`/`fetchTree`/`fromTOML` unqualified.
-        "fetchGit",
-        "fetchMercurial",
-        "fetchTarball",
-        "fetchTree",
-        "fromTOML",
-        "import",
-        "isNull",
-        "map",
-        "null",
-        // `placeholder` is a bare global in nix (not only `builtins.placeholder`):
-        // nixpkgs uses `(placeholder "out")` unqualified, e.g. cpython's
-        // `--enable-framework=${placeholder "out"}`.  Without it the bare ref
-        // resolves to null inside the module fix-point and breaks eval.
-        "placeholder",
-        "removeAttrs",
-        "scopedImport",
-        "throw",
-        "toString",
-        "true",
-    ];
-    for name in DEFAULT_SCOPE {
+    // The bare-identifier scope, DERIVED from the one shared list rather than
+    // hand-written here.
+    //
+    // This was a local `const DEFAULT_SCOPE` of 21 names — one of three
+    // hand-maintained copies (walker, sui-ir, and the VM's
+    // `is_global_builtin`), and they had drifted: **this copy was missing
+    // `break`**, so `with { break = "LIB"; }; break` evaluated to `"LIB"` here
+    // while nix and the VM both say `false`. A genuine nix global cannot be
+    // shadowed by a `with`, so letting one through changes what a program
+    // means. Measured: `builtins.typeOf break` → `lambda` on nix 2.31.5.
+    //
+    // Same shape as the `nixVersion` drift and the `builtins` name-set drift,
+    // and the same fix: one source, N derived consumers. Rationale for the
+    // individual entries (why the fetchers, why `placeholder`) now lives with
+    // the list in `sui_compat::scope`.
+    //
+    // `builtins` is bound above rather than through this loop, so only the
+    // three literal names join the callable set here.
+    let default_scope: Vec<&str> = sui_compat::scope::CALLABLE_GLOBALS
+        .iter()
+        .copied()
+        .chain(["true", "false", "null"])
+        .collect();
+    for name in &default_scope {
         if let Some(v) = builtins_set.get(name) {
             env.bind((*name).to_string(), v.clone());
         }

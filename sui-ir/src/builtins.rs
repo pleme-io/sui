@@ -587,31 +587,24 @@ const MISSING_BUILTIN_NAMES: &[&str] = &[
     "warn",
 ];
 
-/// The walker's `DEFAULT_SCOPE` — builtins CppNix exposes bare at top
-/// level (mirrored from `sui-eval/src/builtins/mod.rs`).
-const DEFAULT_SCOPE: &[&str] = &[
-    "abort",
-    "baseNameOf",
-    "derivation",
-    "derivationStrict",
-    "dirOf",
-    "false",
-    "fetchGit",
-    "fetchMercurial",
-    "fetchTarball",
-    "fetchTree",
-    "fromTOML",
-    "import",
-    "isNull",
-    "map",
-    "null",
-    "placeholder",
-    "removeAttrs",
-    "scopedImport",
-    "throw",
-    "toString",
-    "true",
-];
+/// Builtins CppNix exposes bare at top level.
+///
+/// This was a hand-written list whose doc-comment said "mirrored from
+/// `sui-eval/src/builtins/mod.rs`" — and mirroring by hand is exactly how it
+/// went wrong: both this copy and the walker's were missing `break`, which the
+/// bytecode VM's copy had. `break` is a real nix global
+/// (`builtins.typeOf break` → `lambda`, nix 2.31.5), so a `with` could shadow
+/// it here and silently change what a program means.
+///
+/// Now derived from the single shared list. A comment claiming two lists match
+/// is not a mechanism; this is.
+fn default_scope() -> Vec<&'static str> {
+    sui_compat::scope::CALLABLE_GLOBALS
+        .iter()
+        .copied()
+        .chain(["true", "false", "null"])
+        .collect()
+}
 
 /// The walker's `current_system()` cfg ladder, mirrored — the "fixed
 /// injected string" the differential relies on being identical on the
@@ -708,7 +701,7 @@ pub fn builtins_attrs() -> Rc<IrAttrs> {
 pub fn base_env() -> IrEnv {
     let attrs = builtins_attrs();
     let mut env = IrEnv::new();
-    for name in DEFAULT_SCOPE {
+    for name in &default_scope() {
         if let Some(v) = attrs.get(*name) {
             env.bind(name, v.clone());
         }

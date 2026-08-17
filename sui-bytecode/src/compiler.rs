@@ -2767,29 +2767,23 @@ fn static_attr_name(attr: &ast::Attr) -> Result<String, CompileError> {
 ///
 /// To re-measure: `nix eval --impure --expr '<name>'` for each name; exit 0
 /// means global, `undefined variable` means not.
+/// Names Nix resolves as bare identifiers, and which therefore may NOT be
+/// shadowed by a `with`.
+///
+/// This used to be a hand-written `matches!` of 19 names — one of THREE
+/// hand-maintained copies, which had already drifted: this list carried
+/// `break` and the tree-walker's and `sui-ir`'s did not, so
+/// `with { break = "LIB"; }; break` evaluated to `"LIB"` on the walker while
+/// nix and this engine both say `false`. Measured against nix 2.31.5,
+/// `break` is a real global (`builtins.typeOf break` → `lambda`), so this
+/// engine was right and the other two were wrong.
+///
+/// `true`/`false`/`null` and `builtins` are deliberately absent: they are
+/// [`sui_compat::scope::STRUCTURAL_GLOBALS`], handled earlier in
+/// `compile_ident` as literals and as the attrset itself, which is why this
+/// predicate covers 19 names where the walker's scope list covers 21.
 fn is_global_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "abort"
-            | "baseNameOf"
-            | "break"
-            | "derivation"
-            | "derivationStrict"
-            | "dirOf"
-            | "fetchGit"
-            | "fetchMercurial"
-            | "fetchTarball"
-            | "fetchTree"
-            | "fromTOML"
-            | "import"
-            | "isNull"
-            | "map"
-            | "placeholder"
-            | "removeAttrs"
-            | "scopedImport"
-            | "throw"
-            | "toString"
-    )
+    sui_compat::scope::CALLABLE_GLOBALS.contains(&name)
 }
 
 /// Get the source line number for an expression (approximate).
