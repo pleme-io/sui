@@ -208,15 +208,20 @@ pub fn register(env: &mut Env) {
     builtins_set.insert("true".to_string(), Value::Bool(true));
     builtins_set.insert("false".to_string(), Value::Bool(false));
     builtins_set.insert("null".to_string(), Value::Null);
-    // Impersonate the version of the nix sui produces byte-parity against
-    // (the cid oracle is 2.34.7). nixpkgs/nix-darwin modules feature-gate on
-    // `lib.versionAtLeast builtins.nixVersion X`; a stale value (was "2.24.0")
-    // took the WRONG branch for every gate between the stale value and the real
-    // host version, silently forking the evaluated derivation graph. Tracks the
-    // impersonation target — bump alongside the host nix sui mirrors.
-    builtins_set.insert("nixVersion".to_string(), Value::string("2.34.7"));
+    // Impersonate the version of the nix sui produces byte-parity against.
+    // Rationale (why a stale value silently forks the derivation graph) lives
+    // with the constant. It moved to sui-compat because this fix had ALREADY
+    // been made here and never reached the bytecode VM, which sat at the stale
+    // "2.24.0" — three engines hand-listing one fact.
+    builtins_set.insert(
+        "nixVersion".to_string(),
+        Value::string(sui_compat::versions::IMPERSONATED_NIX_VERSION),
+    );
     builtins_set.insert("currentSystem".to_string(), Value::string(current_system()));
-    builtins_set.insert("langVersion".to_string(), Value::Int(6));
+    builtins_set.insert(
+        "langVersion".to_string(),
+        Value::Int(sui_compat::versions::LANG_VERSION),
+    );
 
     // ── builtins.sui.* — sui-specific extensions ─────────
     let mut sui_ext_set = NixAttrs::new();

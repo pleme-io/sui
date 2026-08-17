@@ -86,13 +86,24 @@ impl BuiltinRegistry {
         };
         attrs.insert(sys_sym, VMValue::String(system.to_string()));
 
-        // Add builtins.nixVersion
+        // Add builtins.nixVersion.
+        //
+        // This literal was "2.24.0" while the tree-walker and sui-ir both said
+        // "2.34.7" — the VM was the arm left behind when the impersonation
+        // target was corrected. Because nixpkgs feature-gates on
+        // `lib.versionAtLeast builtins.nixVersion X`, the VM took the wrong
+        // branch of every such gate and silently evaluated a different
+        // derivation graph than the walker. Now derived, so it cannot happen
+        // again in either direction.
         let ver_sym = interner.intern("nixVersion");
-        attrs.insert(ver_sym, VMValue::String("2.24.0".to_string()));
+        attrs.insert(
+            ver_sym,
+            VMValue::String(sui_compat::versions::IMPERSONATED_NIX_VERSION.to_string()),
+        );
 
         // Add builtins.langVersion
         let lang_sym = interner.intern("langVersion");
-        attrs.insert(lang_sym, VMValue::Int(6));
+        attrs.insert(lang_sym, VMValue::Int(sui_compat::versions::LANG_VERSION));
 
         // Add builtins.true / builtins.false / builtins.null
         let true_sym = interner.intern("true");

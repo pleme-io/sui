@@ -24,6 +24,36 @@
 //! `compareVersions "1.0-rc1" "1.0-pre1"` returned `0` on the VM
 //! and `1` on cppnix.  Same canonical implementation now lives here.
 
+/// The nix version sui impersonates through `builtins.nixVersion`.
+///
+/// **This is a load-bearing constant, not cosmetic.** nixpkgs and nix-darwin
+/// modules feature-gate on `lib.versionAtLeast builtins.nixVersion "X"`, so a
+/// stale value takes the WRONG branch for every gate between the stale value
+/// and the real host version — silently forking the evaluated derivation
+/// graph. No error, no warning, just a different graph.
+///
+/// It lives here because it drifted, exactly the way this module's own header
+/// predicted the version *algorithms* would: the tree-walker and `sui-ir` were
+/// corrected from `"2.24.0"` to `"2.34.7"` and the bytecode VM was left behind
+/// at the stale literal. Measured 2026-08-17 — walker `"2.34.7"`, VM
+/// `"2.24.0"`, host nix 2.31.5. One program, two answers to the same question,
+/// and the arm that was wrong is the one that evaluates flakes.
+///
+/// Three engines hand-listing one fact is three chances to disagree, and it
+/// took only one. Every engine now reads this constant; bump it here alongside
+/// the host nix sui mirrors, and all three move together.
+pub const IMPERSONATED_NIX_VERSION: &str = "2.34.7";
+
+/// `builtins.langVersion` — the Nix *language* version, distinct from the
+/// implementation version above.
+///
+/// Not observed to have drifted (all three engines said 6), but it was carried
+/// as a third independent literal in the same three files as
+/// [`IMPERSONATED_NIX_VERSION`], which is the same class of hazard whether or
+/// not it has fired yet. Centralised while the shape was being fixed rather
+/// than left as the next one to go stale.
+pub const LANG_VERSION: i64 = 6;
+
 /// Split a version string into typed components.
 ///
 /// Splits on `.` and `-` separators AND on boundaries between

@@ -660,14 +660,25 @@ pub fn builtins_attrs() -> Rc<IrAttrs> {
             IrValue::Builtin(*kind, Rc::new(Vec::new())),
         );
     }
-    // Constants (mirroring the walker's values byte-for-byte).
+    // Constants. This block used to be commented "mirroring the walker's values
+    // byte-for-byte" — a claimed property that nothing enforced, and which the
+    // BYTECODE VM had already violated (nixVersion "2.24.0" against the
+    // walker's "2.34.7"). Mirroring by hand is what made three copies free to
+    // disagree, so the version pair is now DERIVED from one typed source rather
+    // than asserted in prose.
     set.insert("storeDir".to_string(), IrValue::string("/nix/store"));
-    set.insert("nixVersion".to_string(), IrValue::string("2.34.7"));
+    set.insert(
+        "nixVersion".to_string(),
+        IrValue::string(sui_compat::versions::IMPERSONATED_NIX_VERSION),
+    );
     set.insert(
         "currentSystem".to_string(),
         IrValue::string(current_system()),
     );
-    set.insert("langVersion".to_string(), IrValue::Int(6));
+    set.insert(
+        "langVersion".to_string(),
+        IrValue::Int(sui_compat::versions::LANG_VERSION),
+    );
     set.insert("true".to_string(), IrValue::Bool(true));
     set.insert("false".to_string(), IrValue::Bool(false));
     set.insert("null".to_string(), IrValue::Null);
