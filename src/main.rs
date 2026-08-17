@@ -1252,14 +1252,35 @@ fn cmd_collect_garbage(delete_old: bool, age: Option<&str>) -> Result<(), CliErr
     });
     // If delete_old: pass max_age_days=0 (delete everything not pinned).
     let effective_age = if delete_old { Some(0) } else { max_age_days };
-    eprintln!("collect-garbage: invoking substrate gc (max_age_days={:?})", effective_age);
-    // The actual store gc command emits the typed report.  Today
-    // it lives in StoreCommands::Gc; we point the operator there.
-    eprintln!("  hint: equivalent: `sui store gc{}{}`",
-        if delete_old { " --max-age-days 0" } else { "" },
-        max_age_days.map(|d| format!(" --max-age-days {d}")).unwrap_or_default(),
-    );
-    Ok(())
+
+    // ── ★ THIS COMMAND FREED NOTHING AND REPORTED SUCCESS ─────────────────
+    // It printed "invoking substrate gc", invoked nothing, printed a hint,
+    // and returned Ok(()). `src/legacy.rs` routes `nix-collect-garbage -d`
+    // straight here — so the command an operator reaches for on a FULL DISK
+    // exited 0 having reclaimed zero bytes. "Ran and freed nothing" and
+    // "did not run" are indistinguishable to the caller, and the first
+    // reading is the one the exit code invites.
+    //
+    // Refusing rather than wiring it to `StoreCommands::Gc` is deliberate,
+    // and it is the conservative direction on purpose: this is a DESTRUCTIVE
+    // operation on the operator's live store, the working path is async and
+    // opens a read-write store this sync helper does not hold, and a GC
+    // wired hastily deletes real bytes. An honest refusal that names the
+    // exact working command costs the operator one paste; a hasty
+    // implementation costs them a store.
+    //
+    // The destination is not in doubt: make this arm async, open the store
+    // the way `StoreCommands::Gc` does, and call `rw_store.collect_garbage`
+    // with these same options. Until then this must not claim to have run.
+    Err(CliError::NotImplemented(format!(
+        "collect-garbage is not wired to the garbage collector and would free nothing. \
+         Run `sui store gc{}` instead. \
+         (Refusing rather than exiting 0: this command previously reported success \
+         while reclaiming zero bytes, which is the worst possible answer on a full disk.)",
+        effective_age
+            .map(|d| [" --max-age-days ", &d.to_string()].concat())
+            .unwrap_or_default(),
+    )))
 }
 
 fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
@@ -5441,7 +5462,11 @@ fn store_make_content_addressed(paths: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
-fn store_sign(paths: &[String], key_file: &str) -> Result<(), CliError> {
+async fn store_sign(
+    store: &dyn sui_store::Store,
+    paths: &[String],
+    key_file: &str,
+) -> Result<(), CliError> {
     // Sign the typed (store-path, nar-hash) pair with the ed25519
     // key from the file.  Without a NAR encoder we use the
     // recursive sha256 from sui's hash_path semantics as the
@@ -5474,9 +5499,40 @@ fn store_sign(paths: &[String], key_file: &str) -> Result<(), CliError> {
                 "store sign: `{p}` not a recognised store path"
             )));
         }
-        // Sign the path string itself for now; real NAR-hash
-        // signing needs the encoder.
-        let sig = signing.sign(p.as_bytes());
+        // ── ★ SIGN THE FINGERPRINT, NEVER THE PATH STRING ─────────────────
+        // This used to be `signing.sign(p.as_bytes())` with the note "real
+        // NAR-hash signing needs the encoder". It does not — the encoder is
+        // `sui_compat::signature::compute_fingerprint`, which is already in
+        // this workspace, is already what the VERIFIER uses, and already
+        // canonicalizes references and hash encoding so signer and verifier
+        // agree byte for byte.
+        //
+        // Signing the path string produced a well-formed `keyname:base64sig`
+        // that ATTESTS NOTHING ABOUT CONTENT: the same signature is valid for
+        // a path whose bytes have been swapped out entirely, and no nix would
+        // ever verify it. A signature that means nothing while looking valid
+        // is strictly worse than no signature — it is the one artifact whose
+        // whole job is to be trusted by someone who cannot check it.
+        //
+        // Refusing when the path info is unavailable is deliberate: emitting
+        // a signature over substitute bytes is exactly the defect being
+        // removed, so there is no fallback that is better than an error.
+        let sp = sui_compat::store_path::StorePath::from_absolute_path(p).map_err(|e| {
+            CliError::NotImplemented(format!("store sign: `{p}` is not a store path: {e:?}"))
+        })?;
+        let info = store.query_path_info(&sp).await?.ok_or_else(|| {
+            CliError::NotImplemented(format!(
+                "store sign: `{p}` has no path info in this store, so its NAR hash, size \
+                 and references are unknown. Refusing to sign — a signature over anything \
+                 other than the real fingerprint attests nothing."
+            ))
+        })?;
+        let nar_size = u64::try_from(info.nar_size).map_err(|_| {
+            CliError::NotImplemented(format!("store sign: `{p}` reports a negative NAR size"))
+        })?;
+        let fingerprint =
+            sui_compat::signature::compute_fingerprint(p, &info.nar_hash, nar_size, &info.references);
+        let sig = signing.sign(fingerprint.as_bytes());
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         println!("{key_name}:{sig_b64}\t{p}");
     }
@@ -5959,7 +6015,7 @@ async fn main() -> Result<(), CliError> {
                     store_prefetch_file(&url, name.as_deref(), hash.as_deref(), hash_type.as_deref(), unpack)?;
                 }
                 StoreCommands::Sign { paths: sp, key_file: kf } => {
-                    store_sign(&sp, &kf)?;
+                    store_sign(&store, &sp, &kf).await?;
                 }
                 StoreCommands::Repair { paths: rp } => {
                     store_repair(&rp)?;
