@@ -699,15 +699,26 @@ pub fn generate() -> Vec<CorpusRow> {
         RowExpect::Match,
     ));
 
-    // ── filterAttrs (PERF-ARSENAL C-filter) — NO parity corpus row ─────────
-    // `builtins.filterAttrs` is a sui-ONLY extension builtin: real nix has no
-    // such builtin (`builtins ? filterAttrs` = false), and nixpkgs'
-    // `lib.filterAttrs` is defined as `removeAttrs set (filter …)` — it never
-    // routes through it. So (a) it cannot be byte-compared against a nix oracle
-    // (there is nothing to compare), and (b) the marquee nixpkgs eval never
-    // reaches sui's builtin, so its `iter_unsorted` has ZERO byte-parity impact
-    // on the corpus. The C-filter success-path neutrality is sealed by a
-    // sui-internal result-set unit test in builtins/attrs.rs, NOT here.
+    // ── filterAttrs (PERF-ARSENAL C-filter) — NO row, AND NO LONGER A BUILTIN
+    // `builtins.filterAttrs` was a sui-ONLY extension: real nix has no such
+    // builtin (`builtins ? filterAttrs` = false), and nixpkgs' `lib.filterAttrs`
+    // is defined as `removeAttrs set (filter …)` — it never routes through it.
+    // That reasoning was recorded here as an explanation for why no corpus row
+    // was possible. Read once more it is the DEFECT REPORT: a name sui had and
+    // nix did not, which is the direction a compatibility layer must never
+    // drift in. It was removed from all three engines on 2026-08-17.
+    //
+    // Two consequences for anyone reading this block for guidance:
+    //   - There is still no corpus row, but the reason is now the boring one —
+    //     the expression is invalid on BOTH sides, so there is nothing to
+    //     byte-compare. It is pinned instead as an accept-vs-reject
+    //     differential in sui-eval/tests/diff_eval_primitives.rs
+    //     (`diff_filter_attrs_is_rejected_by_both`).
+    //   - The C-filter `iter_unsorted` seal that used to live in
+    //     builtins/attrs.rs went WITH the builtin. Nothing is left unsealed:
+    //     the optimization it guarded is unreachable because the code path it
+    //     guarded no longer exists. `mapAttrs` carries the same `iter_unsorted`
+    //     shape and IS a real builtin, so that is the one the corpus covers.
 
     rows
 }

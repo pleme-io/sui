@@ -62,51 +62,15 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         })))
     });
 
-    // filterAttrs
-    register_builtin(builtins, "filterAttrs", |args| {
-        let pred = args[0].clone();
-        Ok(Value::Builtin(Box::new(BuiltinFn {
-            name: "filterAttrs<partial>",
-            func: Rc::new(move |args2| {
-                let attrs = args2[0].to_attrs()?;
-                let mut result = NixAttrs::new();
-                // Fresh result map — insertion order is discarded (re-derived
-                // sorted at any sink), so the sorted `iter()` was dead work.
-                //
-                // NEEDS-PER-SITE-VERIFICATION (PERF-ARSENAL C-filter), argument
-                // discharged: byte-neutral on the SUCCESS path, verified by two
-                // obligations —
-                //  (a) NO drvPath on the error path: this builtin only ever
-                //      builds a fresh plain attrset; it constructs no derivation
-                //      and produces no drvPath. On a predicate throw it returns
-                //      `Err` with no value, so the sui-parity byte axis (drvPath)
-                //      is unreachable when order could matter.
-                //  (b) NO cross-entry force dependency: the predicate is applied
-                //      per entry as `apply(pred, k)` then `apply_and_force(_, v)`
-                //      — a fresh partial application each time over an immutable
-                //      shared `pred`. One entry's force neither changes another
-                //      entry's boolean outcome nor whether it throws.
-                // Residual (NOT rounded up): under iter_unsorted, WHICH throwing
-                // entry errors FIRST is hasher-seed-nondeterministic, so the
-                // error *message* is order-sensitive — success-neutral, not
-                // error-deterministic. Byte-parity is unaffected (no drvPath on
-                // error); this stays NEEDS-VERIFICATION-with-argument, not
-                // PROVABLY-NEUTRAL.
-                // Sym-keyed (lever 1): the String is still materialized — the
-                // predicate lambda needs it — but exactly ONCE, moved into the
-                // lambda arg; the insert stays in symbol space and the per-call
-                // Vec collect is gone.
-                for (sym, v) in attrs.iter_syms() {
-                    let k = sui_intern::resolve(sym);
-                    let partial = crate::eval::apply(pred.clone(), Value::string(k))?;
-                    if crate::eval::apply_and_force(partial, v.clone())?.as_bool()? {
-                        result.insert_sym(sym, v.clone());
-                    }
-                }
-                Ok(Value::Attrs(Rc::new(result)))
-            }),
-        })))
-    });
+    // `filterAttrs` was registered here and is GONE. It is nixpkgs
+    // `lib.attrsets.filterAttrs`, not a CppNix builtin at any feature level —
+    // verified absent from nix 2.31.5 with every experimental feature on.
+    //
+    // This one is the WORST of the six, and is why the class was found at all:
+    // nixpkgs feature-detects with `builtins ? filterAttrs`, so sui exposing it
+    // did not merely accept an extra expression — it silently steered nixpkgs
+    // down a DIFFERENT branch than real nix takes. A permissiveness bug that
+    // changes which code runs is not a superset, it is a fork.
 
     // Attrset higher-order operations
     register_builtin(builtins, "mapAttrs", |args| {

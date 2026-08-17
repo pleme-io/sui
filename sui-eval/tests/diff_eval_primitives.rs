@@ -46,6 +46,72 @@ fn run_cases(label: &str, cases: &[&str]) {
     }
 }
 
+/// Assert both engines REJECT every expression — without comparing the
+/// rejection prose.
+///
+/// `run_cases` compares the full JSON, `__error` string included, so it can
+/// only ever be used for cases both engines ACCEPT: sui's diagnostics do not
+/// reproduce CppNix's wording anywhere (`attribute not found: 'x'` vs
+/// `error: attribute 'x' missing\n at «string»:1:1: …`), so an error row put
+/// through `run_cases` fails on prose no matter how correct the behaviour is.
+///
+/// The axis that matters for a compatibility layer is ACCEPT-vs-REJECT: sui
+/// evaluating something nix rejects is the permissiveness bug this file exists
+/// to catch. Message text is a separate, lower-severity divergence and is
+/// deliberately NOT asserted here — claiming otherwise would be rounding the
+/// tier up.
+fn run_both_reject(label: &str, cases: &[&str]) {
+    if common::skip_if_offline(label) {
+        return;
+    }
+
+    // ── ANTI-VACUITY FLOOR, before the loop. An empty case list would make
+    // the loop body run zero times and the test pass having asserted nothing.
+    assert!(
+        !cases.is_empty(),
+        "{label}: no cases. An empty rejection suite passes unconditionally."
+    );
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut oracle_rejected = 0usize;
+    for (i, expr) in cases.iter().enumerate() {
+        let oracle = common::nix_eval_json(expr);
+        let ours = common::sui_eval_json(expr);
+        let nix_err = oracle.get("__error").is_some();
+        let sui_err = ours.get("__error").is_some();
+        if nix_err {
+            oracle_rejected += 1;
+        }
+        if nix_err != sui_err {
+            let who = if sui_err {
+                "nix ACCEPTED, sui rejected (sui is too strict)"
+            } else {
+                "sui ACCEPTED, nix rejected (sui is TOO PERMISSIVE — the \
+                 dangerous direction: sui runs a program nix refuses)"
+            };
+            failures.push(format!(
+                "  [{i}] {expr}\n       {who}\n       nix: {}\n       sui: {}",
+                serde_json::to_string(&oracle).unwrap_or_default(),
+                serde_json::to_string(&ours).unwrap_or_default(),
+            ));
+        }
+    }
+
+    // The ORACLE must have rejected every row, or this is not the suite it
+    // claims to be — if nix started ACCEPTING these, agreement would be
+    // reachable by sui accepting them too, and the test would go green while
+    // testing the opposite of its name.
+    assert_eq!(
+        (oracle_rejected, failures.is_empty()),
+        (cases.len(), true),
+        "{label}: nix rejected {oracle_rejected} of {} rows (expected all), and \
+         {} row(s) diverged:\n{}",
+        cases.len(),
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 // ── Arithmetic ───────────────────────────────────────────────────────
 
 #[test]
@@ -516,15 +582,72 @@ fn diff_flake_ref_round_trip() {
     );
 }
 
+/// The test that found the whole leak class — repointed.
+///
+/// It used to run these four through `run_cases`, expecting sui and nix to
+/// AGREE on a value. They never could: `builtins.filterAttrs` is nixpkgs
+/// `lib.attrsets.filterAttrs`, absent from nix at every feature level, so nix
+/// errored while sui happily returned an attrset. Because the test sat behind
+/// `SUI_TEST_ONLINE` — which no workflow set — it reported `ok` while executing
+/// nothing, and the divergence went unnoticed until 2026-08-17.
+///
+/// The six leaked names were removed that day. What the four rows now pin is
+/// the property that actually matters: sui and nix agree on REJECTING them.
+///
+/// ★ THE DIVERGENCE CHANGED CLASS, IT DID NOT VANISH — and rewriting the test
+/// is what makes that visible rather than hiding it. Measured after removal:
+///
+///     nix: error: attribute 'filterAttrs' missing
+///            at «string»:1:1: …
+///     sui: attribute not found: 'filterAttrs'
+///
+/// Both reject; the prose differs. That residual is REAL and is not asserted
+/// here, because `run_both_reject` compares accept-vs-reject only. Message-text
+/// parity is a separate, much lower-severity axis that sui does not have on any
+/// error path, and pretending this test covers it would be rounding the tier up.
+/// `pending-parity: sui error prose does not reproduce CppNix wording`
 #[test]
-fn diff_filter_attrs() {
-    run_cases(
-        "filter_attrs",
+fn diff_filter_attrs_is_rejected_by_both() {
+    run_both_reject(
+        "filter_attrs_rejected",
         &[
             r#"builtins.filterAttrs (n: v: v > 1) { a = 1; b = 2; c = 3; }"#,
             r#"builtins.filterAttrs (n: v: n == "keep") { keep = 1; drop = 2; }"#,
             r#"builtins.filterAttrs (n: v: true) {}"#,
             r#"builtins.filterAttrs (n: v: false) { a = 1; b = 2; }"#,
+        ],
+    );
+}
+
+/// The other five removed leaks, held to the same accept-vs-reject standard.
+/// `filterAttrs` had a test because it was the one somebody happened to write;
+/// the class is six names, so all six are pinned against the real oracle.
+#[test]
+fn diff_removed_lib_leaks_are_rejected_by_both() {
+    run_both_reject(
+        "removed_lib_leaks_rejected",
+        &[
+            r#"builtins.concatStrings ["a" "b" "c"]"#,
+            r#"builtins.concatStrings []"#,
+            r#"builtins.hasPrefix "he" "hello""#,
+            r#"builtins.hasSuffix "lo" "hello""#,
+            r#"builtins.toLower "HELLO""#,
+            r#"builtins.toUpper "hello""#,
+        ],
+    );
+}
+
+/// And the capability that `concatStrings` provided is still there under the
+/// name nix actually has, byte-for-byte against the oracle. Removing a leak
+/// must not cost a nix program anything it could legally write.
+#[test]
+fn diff_concat_strings_sep_replaces_concat_strings() {
+    run_cases(
+        "concat_strings_sep_empty",
+        &[
+            r#"builtins.concatStringsSep "" ["a" "b" "c"]"#,
+            r#"builtins.concatStringsSep "" []"#,
+            r#"builtins.concatStringsSep "" ["hello" " " "world"]"#,
         ],
     );
 }

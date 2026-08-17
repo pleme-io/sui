@@ -97,12 +97,9 @@ pub enum IrBuiltin {
     GenericClosure,
     SplitVersion,
     ParseDrvName,
-    ConcatStrings,
     HasContext,
     GetContext,
     UnsafeDiscardStringContext,
-    ToLower,
-    ToUpper,
     BaseNameOf,
     DirOf,
     // arity 1 — slice 6 (derivation + crypto)
@@ -154,11 +151,8 @@ pub enum IrBuiltin {
     ConcatMap,
     CatAttrs,
     ZipAttrsWith,
-    FilterAttrs,
     CompareVersions,
     Match,
-    HasPrefix,
-    HasSuffix,
     FindFile,
     Trace,
     TraceVerbose,
@@ -208,12 +202,9 @@ impl IrBuiltin {
             | B::GenericClosure
             | B::SplitVersion
             | B::ParseDrvName
-            | B::ConcatStrings
             | B::HasContext
             | B::GetContext
             | B::UnsafeDiscardStringContext
-            | B::ToLower
-            | B::ToUpper
             | B::BaseNameOf
             | B::DirOf
             | B::Derivation
@@ -255,11 +246,8 @@ impl IrBuiltin {
             | B::ConcatMap
             | B::CatAttrs
             | B::ZipAttrsWith
-            | B::FilterAttrs
             | B::CompareVersions
             | B::Match
-            | B::HasPrefix
-            | B::HasSuffix
             | B::FindFile
             | B::Trace
             | B::TraceVerbose
@@ -307,12 +295,9 @@ impl IrBuiltin {
             B::GenericClosure => "genericClosure",
             B::SplitVersion => "splitVersion",
             B::ParseDrvName => "parseDrvName",
-            B::ConcatStrings => "concatStrings",
             B::HasContext => "hasContext",
             B::GetContext => "getContext",
             B::UnsafeDiscardStringContext => "unsafeDiscardStringContext",
-            B::ToLower => "toLower",
-            B::ToUpper => "toUpper",
             B::BaseNameOf => "baseNameOf",
             B::DirOf => "dirOf",
             B::Derivation => "derivation",
@@ -344,11 +329,8 @@ impl IrBuiltin {
             B::ConcatMap => "concatMap",
             B::CatAttrs => "catAttrs",
             B::ZipAttrsWith => "zipAttrsWith",
-            B::FilterAttrs => "filterAttrs",
             B::CompareVersions => "compareVersions",
             B::Match => "match",
-            B::HasPrefix => "hasPrefix",
-            B::HasSuffix => "hasSuffix",
             B::FindFile => "findFile",
             B::Trace => "trace",
             B::TraceVerbose => "traceVerbose",
@@ -422,10 +404,7 @@ impl IrBuiltin {
             (B::ConcatMap, _) => "concatMap<partial>",
             (B::CatAttrs, _) => "catAttrs<partial>",
             (B::ZipAttrsWith, _) => "zipAttrsWith<partial>",
-            (B::FilterAttrs, _) => "filterAttrs<partial>",
             (B::CompareVersions, _) => "compareVersions<partial>",
-            (B::HasPrefix, _) => "hasPrefix<partial>",
-            (B::HasSuffix, _) => "hasSuffix<partial>",
             (B::Trace, _) => "trace<partial>",
             (B::TraceVerbose, _) => "traceVerbose<partial>",
             (B::Foldl, 1) => "foldl'<p1>",
@@ -484,12 +463,9 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::GenericClosure,
     IrBuiltin::SplitVersion,
     IrBuiltin::ParseDrvName,
-    IrBuiltin::ConcatStrings,
     IrBuiltin::HasContext,
     IrBuiltin::GetContext,
     IrBuiltin::UnsafeDiscardStringContext,
-    IrBuiltin::ToLower,
-    IrBuiltin::ToUpper,
     IrBuiltin::BaseNameOf,
     IrBuiltin::DirOf,
     IrBuiltin::Derivation,
@@ -534,11 +510,8 @@ const ALL_IMPLEMENTED: &[IrBuiltin] = &[
     IrBuiltin::ConcatMap,
     IrBuiltin::CatAttrs,
     IrBuiltin::ZipAttrsWith,
-    IrBuiltin::FilterAttrs,
     IrBuiltin::CompareVersions,
     IrBuiltin::Match,
-    IrBuiltin::HasPrefix,
-    IrBuiltin::HasSuffix,
     IrBuiltin::FindFile,
     IrBuiltin::Trace,
     IrBuiltin::TraceVerbose,
@@ -858,17 +831,16 @@ fn capture_check(kind: IrBuiltin, stage: usize, arg: &IrValue) -> Result<(), IrE
     match (kind, stage) {
         // `elemAt list index`: the list is validated at stage 0.
         (B::ElemAt, 0) => as_list(arg).map(|_| ()),
-        // String-first curried builtins. `catAttrs`/`compareVersions`/
-        // `hasPrefix`/`hasSuffix` validate their first (string) argument AT
-        // CAPTURE (the walker's staged closures run `as_string()?` there).
+        // String-first curried builtins. `catAttrs`/`compareVersions` validate
+        // their first (string) argument AT CAPTURE (the walker's staged
+        // closures run `as_string()?` there). `hasPrefix`/`hasSuffix` used to
+        // be in this group; they were removed as nixpkgs `lib.strings` leaks.
         (
             B::HasAttr
             | B::GetAttr
             | B::ConcatStringsSep
             | B::CatAttrs
-            | B::CompareVersions
-            | B::HasPrefix
-            | B::HasSuffix,
+            | B::CompareVersions,
             0,
         ) => as_str(arg).map(|_| ()),
         // Attrs-first curried builtins.
@@ -1283,38 +1255,10 @@ fn run_saturated(
             }
             Ok(IrValue::Attrs(Rc::new(result)))
         }
-        B::FilterAttrs => {
-            let pred = captured[0].clone();
-            let attrs = as_attrs(&arg)?;
-            let mut result = IrAttrs::new();
-            for (k, v) in attrs.iter() {
-                let partial = apply(pred.clone(), IrValue::string(k.clone()))?;
-                if apply(partial, v.clone())?.force()?.as_bool()? {
-                    result.insert(k.clone(), v.clone());
-                }
-            }
-            Ok(IrValue::Attrs(Rc::new(result)))
-        }
         B::FunctionArgs => function_args(&arg),
         B::GenericClosure => generic_closure(&arg),
 
         // ── slice 4: strings + versions ───────────────────────────────────
-        B::ConcatStrings => {
-            // Same context-accumulation contract as `concatStringsSep`.
-            let list = as_list(&arg)?;
-            let mut result = String::new();
-            let mut ctx = crate::eval_ir::IrStringContext::new();
-            for v in list.iter() {
-                let (s, c) = crate::eval_ir::coerce_to_string_ctx(v, false)?;
-                result.push_str(&s);
-                ctx.merge(&c);
-            }
-            Ok(IrValue::string_with_context(result, ctx))
-        }
-        B::ToLower => Ok(IrValue::string(as_str(&arg)?.to_lowercase())),
-        B::ToUpper => Ok(IrValue::string(as_str(&arg)?.to_uppercase())),
-        B::HasPrefix => Ok(IrValue::Bool(as_str(&arg)?.starts_with(as_str(&captured[0])?))),
-        B::HasSuffix => Ok(IrValue::Bool(as_str(&arg)?.ends_with(as_str(&captured[0])?))),
         B::Match => match_impl(as_str(&captured[0])?, as_str(&arg)?),
         B::CompareVersions => {
             let a = as_str(&captured[0])?;

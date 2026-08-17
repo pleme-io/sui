@@ -1,29 +1,40 @@
 //! The `builtins` registry drift gate.
 //!
-//! sui's `builtins` set is a strict SUPERSET of CppNix's — 124 names against
+//! sui's `builtins` set WAS a strict SUPERSET of CppNix's — 126 names against
 //! nix 2.31.5's 118 — and nothing in the tree noticed. The failure signature is
 //! the quiet direction: an expression using one of the extra names MUST fail on
-//! real nix and SUCCEEDS on sui, so sui accepts a program nix rejects. A
+//! real nix and SUCCEEDED on sui, so sui accepted a program nix rejects. A
 //! compatibility layer may lag; it may not be permissive.
 //!
 //! It went unnoticed because the one test that compares the two
 //! (`diff_eval_primitives::diff_filter_attrs`) sits behind `SUI_TEST_ONLINE`,
 //! which no workflow sets — so it reported `ok` while executing nothing.
 //!
-//! Two halves, and the split is deliberate:
+//! The six leaked names (concatStrings, filterAttrs, hasPrefix, hasSuffix,
+//! toLower, toUpper) were removed 2026-08-17; the walker is now 120 names.
+//!
+//! Three halves, and the split is deliberate:
 //!
 //!   - **offline, always runs, total** — sui's live registry must equal the
 //!     pinned list exactly. Adding or removing a builtin is red until
 //!     `fixtures/BUILTIN-REGISTRY.json` moves in the same commit. This half
 //!     needs no nix and no network, so it gates every push today.
+//!   - **offline ratchet** — `removed_lib_leaks_stay_removed`. The pin above is
+//!     deliberately MOVABLE, which makes it too weak on its own to keep a
+//!     removed leak removed: re-adding one to both the code and the pin goes
+//!     green. The ratchet says the six may never come back, and its list may
+//!     grow but never shrink.
 //!   - **online, `SUI_TEST_ONLINE=1`** — re-derives the sui-only and
 //!     absent-from-sui sets against the host's nix and checks the committed
 //!     classification still holds. This is what catches a name changing class
 //!     (an experimental builtin becoming stable, say).
 //!
-//! TIER: eval-caught. The truly-unrepresentable version is a single generated
-//! registry both the evaluator and the gate read, so a builtin that is not in
-//! the manifest has no registration path at all — named, not scheduled.
+//! TIER: eval-caught (a test assertion), NOT unrepresentable. Nothing here
+//! stops someone writing `register_builtin(builtins, "filterAttrs", …)` — it
+//! compiles fine and the gate goes red afterwards. The truly-unrepresentable
+//! version is a single generated registry both the evaluator and the gate read,
+//! so a builtin that is not in the manifest has no registration path at all —
+//! named, not scheduled.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -176,6 +187,89 @@ fn sui_builtin_registry_matches_the_pin() {
          \n  live: {} names, pinned: {} names",
         live.len(),
         pinned.len()
+    );
+}
+
+/// How many names `removed_nixpkgs_lib_leaks.names` must carry at minimum.
+/// The list may GROW past this; it may never shrink below it. Six is what was
+/// removed on 2026-08-17.
+const MIN_REMOVED_LEAKS: usize = 6;
+
+/// A floor on sui's own registry. This is the vacuity guard that matters for
+/// the ratchet: if `sui_registry()` ever returned an empty (or near-empty) set,
+/// `live.contains(name)` would be false for every name and the ratchet would
+/// pass having verified nothing at all.
+const LIVE_REGISTRY_FLOOR: usize = 100;
+
+/// The ratchet: a name once removed as a nixpkgs `lib` leak may not come back.
+///
+/// This exists because `sui_builtin_registry_matches_the_pin` cannot do the job
+/// alone. That pin is *movable by design* — the whole contract is that it moves
+/// in the same commit as the registry — so re-adding `filterAttrs` to both the
+/// evaluator and the pin is green. This test makes the removal one-way.
+///
+/// Offline and total. It needs no nix, so it gates every push.
+#[test]
+fn removed_lib_leaks_stay_removed() {
+    let m = manifest();
+    let removed = names(&m, &["removed_nixpkgs_lib_leaks", "names"]);
+    let live = sui_registry();
+
+    // ── ANTI-VACUITY FLOORS. Both are checked BEFORE the verdict below, and
+    // both are then re-carried INTO the compared value, so neither an emptied
+    // ratchet list nor a collapsed registry read can produce a green run.
+    assert!(
+        removed.len() >= MIN_REMOVED_LEAKS,
+        "`removed_nixpkgs_lib_leaks.names` holds {} entries, expected at least \
+         {MIN_REMOVED_LEAKS}. This list may GROW and may never SHRINK — \
+         shrinking it is exactly how a resurrected leak would be made to pass.",
+        removed.len()
+    );
+    assert!(
+        live.len() >= LIVE_REGISTRY_FLOOR,
+        "sui's live registry reported only {} names (floor {LIVE_REGISTRY_FLOOR}). \
+         That is not a usable subject: `live.contains(..)` would be false for \
+         every name and this test would pass having checked nothing.",
+        live.len()
+    );
+
+    let resurrected: Vec<String> = removed
+        .iter()
+        .filter(|n| live.contains(*n))
+        .cloned()
+        .collect();
+
+    // The verdict carries its own denominators. `(names_checked_ok,
+    // registry_big_enough, resurrected)` compares against `(true, true, [])`,
+    // so a scan that stops finding anything FAILS rather than passing — even if
+    // the two asserts above were ever weakened or reordered.
+    assert_eq!(
+        (
+            removed.len() >= MIN_REMOVED_LEAKS,
+            live.len() >= LIVE_REGISTRY_FLOOR,
+            resurrected.as_slice(),
+        ),
+        (true, true, [].as_slice()),
+        "\nA builtin that was removed as a nixpkgs `lib` leak is BACK in sui: \
+         {resurrected:?}\n\n\
+         Every name in `removed_nixpkgs_lib_leaks` was measured absent from nix \
+         2.31.5 with ALL experimental features enabled. Re-registering one makes \
+         sui accept an expression real nix rejects, and — for `filterAttrs` \
+         specifically — silently steers nixpkgs' `builtins ? filterAttrs` probe \
+         down a different branch than real nix takes.\n\n\
+         If nix has genuinely GAINED one of these, that is not a reason to \
+         delete the row: move it to `classification.experimental` (or out of the \
+         divergence set entirely) and say so, so the history stays legible.\n  \
+         (checked {} removed names against a {}-name live registry)",
+        removed.len(),
+        live.len()
+    );
+
+    eprintln!(
+        "removed_lib_leaks_stay_removed: {} removed names confirmed absent from \
+         a {}-name registry",
+        removed.len(),
+        live.len()
     );
 }
 

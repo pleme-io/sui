@@ -88,7 +88,6 @@ pub enum HigherOrderOp {
     /// `mapAttrs f attrs` -- apply f to each attr value
     MapAttrs,
     /// `filterAttrs pred attrs` -- keep attrs where pred name value is true
-    FilterAttrs,
     /// `elem needle list` -- check if needle is in list (needs VM to force elements)
     Elem,
 }

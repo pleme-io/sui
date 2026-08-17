@@ -5516,12 +5516,22 @@ mod tests {
         );
     }
 
+    /// `hasPrefix`/`hasSuffix` are nixpkgs `lib.strings` functions, NOT CppNix
+    /// builtins — so sui must not have them either. This test used to assert
+    /// they worked; it now asserts they are absent, which is the same test
+    /// pointed the correct way.
     #[test]
-    fn builtins_has_prefix_has_suffix() {
-        assert_eq!(ev(r#"builtins.hasPrefix "he" "hello""#), Value::Bool(true));
-        assert_eq!(ev(r#"builtins.hasPrefix "xx" "hello""#), Value::Bool(false));
-        assert_eq!(ev(r#"builtins.hasSuffix "lo" "hello""#), Value::Bool(true));
-        assert_eq!(ev(r#"builtins.hasSuffix "xx" "hello""#), Value::Bool(false));
+    fn builtins_has_prefix_has_suffix_are_not_builtins() {
+        assert_eq!(ev(r#"builtins ? hasPrefix"#), Value::Bool(false));
+        assert_eq!(ev(r#"builtins ? hasSuffix"#), Value::Bool(false));
+        assert!(
+            eval(r#"builtins.hasPrefix "he" "hello""#).is_err(),
+            "builtins.hasPrefix must fail the way real nix fails it"
+        );
+        assert!(
+            eval(r#"builtins.hasSuffix "lo" "hello""#).is_err(),
+            "builtins.hasSuffix must fail the way real nix fails it"
+        );
     }
 
     #[test]
@@ -6281,14 +6291,24 @@ mod tests {
     // 13. NEWLY IMPLEMENTED BUILTINS (eval-level tests)
     // ═══════════════════════════════════════════════════════════
 
+    /// `concatStrings` is nixpkgs `lib.strings.concatStrings`, not a CppNix
+    /// builtin. The CAPABILITY is not lost — `concatStringsSep ""` is the real
+    /// builtin spelling and is asserted here to still produce the same bytes,
+    /// so this test proves both halves: the invented name is gone, and nothing
+    /// a nix program can legally write got worse.
     #[test]
-    fn eval_builtins_concat_strings() {
+    fn eval_builtins_concat_strings_is_not_a_builtin() {
+        assert_eq!(ev(r#"builtins ? concatStrings"#), Value::Bool(false));
+        assert!(
+            eval(r#"builtins.concatStrings ["a" "b" "c"]"#).is_err(),
+            "builtins.concatStrings must fail the way real nix fails it"
+        );
         assert_eq!(
-            ev(r#"builtins.concatStrings ["a" "b" "c"]"#),
+            ev(r#"builtins.concatStringsSep "" ["a" "b" "c"]"#),
             Value::string("abc"),
         );
         assert_eq!(
-            ev(r#"builtins.concatStrings []"#),
+            ev(r#"builtins.concatStringsSep "" []"#),
             Value::string(""),
         );
     }

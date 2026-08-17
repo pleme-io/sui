@@ -389,13 +389,11 @@ impl BuiltinRegistry {
                 extra_args: Vec::new(),
             }))
         });
-        self.register("filterAttrs", 1, |args| {
-            Ok(VMValue::HigherOrderBuiltin(HigherOrderBuiltin {
-                op: HigherOrderOp::FilterAttrs,
-                func: Box::new(args[0].clone()),
-                extra_args: Vec::new(),
-            }))
-        });
+        // `filterAttrs` was registered here and is GONE — it is nixpkgs
+        // `lib.attrsets.filterAttrs`, not a CppNix builtin at any feature
+        // level. nixpkgs feature-detects with `builtins ? filterAttrs`, so
+        // exposing it silently steered nixpkgs down a different branch than
+        // real nix takes. See sui-eval/tests/fixtures/BUILTIN-REGISTRY.json.
         self.register("functionArgs", 1, |args| {
             match &args[0] {
                 VMValue::Builtin(_) | VMValue::HigherOrderBuiltin(_) => {
@@ -636,39 +634,11 @@ impl BuiltinRegistry {
             }))
         });
 
-        self.register("hasPrefix", 1, |args| {
-            let prefix = as_string(&args[0])?.to_string();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "hasPrefix<partial>",
-                func: Rc::new(move |args2| {
-                    let s = as_string(&args2[0])?;
-                    Ok(VMValue::Bool(s.starts_with(&*prefix)))
-                }),
-                arity: 1,
-            }))
-        });
-
-        self.register("hasSuffix", 1, |args| {
-            let suffix = as_string(&args[0])?.to_string();
-            Ok(VMValue::Builtin(VMBuiltin {
-                name: "hasSuffix<partial>",
-                func: Rc::new(move |args2| {
-                    let s = as_string(&args2[0])?;
-                    Ok(VMValue::Bool(s.ends_with(&*suffix)))
-                }),
-                arity: 1,
-            }))
-        });
-
-        self.register("toLower", 1, |args| {
-            let s = as_string(&args[0])?;
-            Ok(VMValue::String(s.to_lowercase()))
-        });
-
-        self.register("toUpper", 1, |args| {
-            let s = as_string(&args[0])?;
-            Ok(VMValue::String(s.to_uppercase()))
-        });
+        // `hasPrefix` / `hasSuffix` / `toLower` / `toUpper` were registered
+        // here and are GONE — all four are nixpkgs `lib.strings` functions,
+        // not CppNix builtins at any feature level (verified absent from nix
+        // 2.31.5 with every experimental feature enabled). The VM must not be
+        // more permissive than nix any more than the walker may be.
     }
 
     // ── Conversion operations ─────────────────────────────────────
@@ -1157,25 +1127,13 @@ impl BuiltinRegistry {
             Ok(VMValue::List(parts))
         });
 
-        // concatStrings is used internally
-        self.register("concatStrings", 1, |args| {
-            let list = as_list(&args[0])?;
-            let mut result = String::new();
-            for item in &list {
-                let item = force_vmvalue(item.clone()).unwrap_or_else(|_| item.clone());
-                match &item {
-                    VMValue::String(s) => result.push_str(s),
-                    _ => {
-                        return Err(VMError::TypeError {
-                            expected: "string",
-                            got: item.type_name(),
-                            context: "concatStrings element".to_string(),
-                        })
-                    }
-                }
-            }
-            Ok(VMValue::String(result))
-        });
+        // `concatStrings` was registered here and is GONE. The comment 90
+        // lines above already said it — "This isn't strictly a Nix builtin ...
+        // In Nix it's actually builtins.concatStringsSep \"\" (already
+        // registered)" — and it was registered anyway. Knowing a name is not a
+        // builtin and exposing it regardless is how the whole leak class got
+        // in; the correct spelling, `concatStringsSep ""`, is right there and
+        // is what a nix program can legally write.
 
         // ── String context builtins (no-ops in eval mode) ────────────
         // Nix string contexts track derivation dependencies. In eval-only
