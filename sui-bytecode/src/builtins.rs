@@ -1463,6 +1463,14 @@ fn bridge_call(name: &str, args: Vec<VMValue>) -> Result<VMValue, VMError> {
         .map(|a| a.to_string_keyed(&tmp_interner))
         .collect();
 
+    // Counted, never fatal — bridging a builtin is the VM's architecture, not
+    // a failure (it has no native getEnv/match/split/fromTOML/readDir/…). A
+    // caller that wants to prove the VM computed something WITHOUT the walker
+    // asserts `fallback::count(Layer::Builtin) == 0` for itself. Making this
+    // arm fatal under strict would leave strict mode unable to evaluate
+    // anything, which is a strict mode nobody can use.
+    let _ = crate::fallback::record(crate::fallback::Layer::Builtin, name);
+
     match crate::bridge::call_builtin_bridge(name, sk_args) {
         Ok(Some(result)) => Ok(string_keyed_to_vmvalue(&result, &mut Interner::new())),
         Ok(None) => Err(VMError::Throw(format!(

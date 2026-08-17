@@ -3566,6 +3566,16 @@ impl<'a> VM<'a> {
             Err(e) => {
                 // Any other error — fall back to tree-walker for this file.
                 // This includes AttrNotFound, TypeError, AssertionFailed, etc.
+                //
+                // Under SUI_VM_STRICT this is a refusal, not a fallback: the
+                // walker covering for the VM here is exactly what made a
+                // VM-vs-walker comparison answerable by the walker on both
+                // sides.
+                crate::fallback::record(
+                    crate::fallback::Layer::ImportedFile,
+                    &format!("runtime error importing {canonical}: {e}"),
+                )
+                .map_err(VMError::Throw)?;
                 eprintln!("[sui-vm] runtime fallback for {canonical}: {e}");
                 use std::sync::atomic::Ordering;
                 crate::vm::VM_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -3624,7 +3634,15 @@ impl<'a> VM<'a> {
             }
             Err(compile_error) => {
                 // Compilation failed (unsupported expression, etc.) —
-                // signal caller to fall back to tree-walker.
+                // signal caller to fall back to tree-walker. Under
+                // SUI_VM_STRICT, refuse instead: "the VM cannot compile this"
+                // is a fact a measurement needs, and silently handing the file
+                // to the walker is how it stayed invisible.
+                crate::fallback::record(
+                    crate::fallback::Layer::ImportedFile,
+                    &format!("cannot compile {canonical}: {compile_error}"),
+                )
+                .map_err(VMError::Throw)?;
                 VM_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
                 eprintln!("[sui-vm] fallback to tree-walker for {canonical}: {compile_error}");
                 Ok(None)

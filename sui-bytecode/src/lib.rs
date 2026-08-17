@@ -59,6 +59,10 @@ pub mod chunk;
 pub mod compiler;
 /// Error types for compiler and VM.
 pub mod error;
+
+/// Fallback accounting + the `SUI_VM_STRICT` latch — see the module docs for
+/// why the per-builtin layer is counted but never fatal.
+pub mod fallback;
 /// String interning for attribute names and identifiers.
 pub mod intern;
 /// NaN-boxed value representation for the VM stack.

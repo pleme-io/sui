@@ -6858,7 +6858,22 @@ async fn main() -> Result<(), CliError> {
                         let sk = match sui_bytecode::eval_full(&expr_clone) {
                             Ok(r) => r.to_string_keyed(),
                             Err(e) => {
-                                // VM failed — fall back to tree-walker.
+                                // VM failed — fall back to tree-walker, unless
+                                // SUI_VM_STRICT says not to.
+                                //
+                                // This is the coarsest of the three fallback
+                                // layers and the one that made `tests/vm_cli.rs`
+                                // vacuous: it re-runs the WHOLE expression on
+                                // the walker, so `vm == tw` held even when the
+                                // VM produced nothing at all.
+                                sui_bytecode::fallback::record(
+                                    sui_bytecode::fallback::Layer::WholeExpression,
+                                    &format!("{e}"),
+                                )
+                                .map_err(|msg| CliError::Orchestrate {
+                                    operation: "eval",
+                                    message: msg,
+                                })?;
                                 eprintln!("[sui-vm] CLI fallback to tree-walker: {e}");
                                 let tw_result = sui_eval::eval::eval(&expr_clone).map_err(|e| {
                                     CliError::Orchestrate {
@@ -6893,6 +6908,21 @@ async fn main() -> Result<(), CliError> {
                         // trace of this path read as "no tree was hashed".
                         sui_compat::source::nar_hash_dump();
                         ifd_realize_dump();
+                        // How much of "the VM evaluated this" was actually the
+                        // tree-walker. `vm_fallback_count()` has existed since
+                        // the per-file fallback was written and NOTHING has
+                        // ever read it — an instrument nobody consults is the
+                        // same as no instrument. Off by default (this is a
+                        // per-eval line, not a banner); the two fatal layers
+                        // are counted here too, though under SUI_VM_STRICT
+                        // they abort before reaching this point, so in a strict
+                        // run a non-zero `builtin=` is the interesting figure.
+                        if std::env::var_os("SUI_VM_FALLBACK_REPORT").is_some() {
+                            eprintln!(
+                                "[sui-vm] fallback {}",
+                                sui_bytecode::fallback::report()
+                            );
+                        }
                         // …and SUI_PARITY_STRICT was the third instance of that
                         // same wiring gap, with the worst failure mode of the
                         // three. `report_parity_strict` was called only from
