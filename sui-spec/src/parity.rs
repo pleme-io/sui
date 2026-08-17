@@ -360,19 +360,19 @@ pub struct ShadowReport {
 ///
 /// UNREPRESENTABILITY §II.4 clause 2: the pass arm must be
 /// non-constructible without a non-empty subject-set witness.  That is
-/// structural here — [`Examined::from_records`] is **private** and
-/// returns `Option`, so the only way to obtain an `Examined` is to hand
-/// it a non-empty `&[ProbeRecord]`, and the only code that can do so
-/// lives in this module.  No public constructor exists, so no caller
-/// can name a pass over subjects it never examined.
+/// structural here — this type has **no public constructor and no public
+/// fields**, so the only code that can build one is
+/// [`SweepVerdict::classify`] in this module, and that function will only
+/// do so when handed at least one `Verdict` per subject examined.  No
+/// caller can name a pass over subjects it never examined.
 ///
 /// `worst` is where the 8-way [`Verdict`] ordering earns its keep: the
 /// enum's `Ord` derive documents "a `Differ` is worse than a
 /// `BothFail`", and until now nothing in sui consumed it.  `max()` over
-/// the records is that ranking, and because `Iterator::max` yields
-/// `None` on an empty iterator, **the emptiness check and the severity
-/// ranking are the same operation** — there is no separate `is_empty()`
-/// branch to forget.
+/// the rows is that ranking, and because the running maximum is `None`
+/// exactly when the iterator was empty, **the emptiness check and the
+/// severity ranking are the same operation** — there is no separate
+/// `is_empty()` branch to forget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Examined {
     count: NonZeroUsize,
@@ -380,16 +380,6 @@ pub struct Examined {
 }
 
 impl Examined {
-    /// The sole ingress.  Private by design (see the type doc).
-    fn from_records(records: &[ProbeRecord]) -> Option<Self> {
-        // `max()` returns None exactly when `records` is empty, so this
-        // single call is both the non-emptiness proof and the severity
-        // ranking over the 8-way `Verdict` `Ord`.
-        let worst = records.iter().map(|r| r.verdict).max()?;
-        let count = NonZeroUsize::new(records.len())?;
-        Some(Self { count, worst })
-    }
-
     /// How many records the verdict was derived from.  A projection of
     /// the value — never a field a caller sets.
     #[must_use]
@@ -478,14 +468,187 @@ pub enum SweepVerdict {
         examined: Examined,
         reclassified: NonZeroUsize,
     },
+    /// The sweep ran, but the set it actually ENFORCED fell below the
+    /// committed floor, so no claim is made.
+    ///
+    /// [`Self::Vacuous`] is the `enforced == 0` end of this same axis
+    /// seen from the record side; this arm covers the whole axis and
+    /// carries the two numbers a reader needs to act — what was enforced
+    /// and what was required.
+    ///
+    /// **Why a floor is a distinct mechanism from `Reclassified`, and why
+    /// both are needed.** `Reclassified` counts only the rows a *flag*
+    /// moved out of the enforced set. It cannot see a row that removed
+    /// ITSELF — a probe whose body returns `Skipped` because `<nixpkgs>`
+    /// would not resolve is never flagged, never counted, and narrows the
+    /// denominator exactly as much. Measured 2026-08-17 by running the sui
+    /// parity corpus against a deliberately-failing oracle: of 77 rows, 14
+    /// were flag-reclassified and **36 skipped themselves**, i.e. the
+    /// larger half of the narrowing was invisible to every counter the
+    /// gate had. A minimum-enforced floor is the only form that covers
+    /// both, because it counts what REMAINS rather than what left.
+    ///
+    /// Ordered behind [`Self::Diverged`]: a real byte-divergence outranks
+    /// a shrunken denominator. Ordered AHEAD of [`Self::Reclassified`]:
+    /// once the floor is breached, "how it got there" is detail.
+    BelowFloor {
+        examined: Examined,
+        enforced: usize,
+        floor: NonZeroUsize,
+    },
+}
+
+/// Is this row part of the ENFORCED set — i.e. did the gate actually
+/// obtain a comparison answer for it?
+///
+/// The ONE definition, written once and read by both
+/// [`SweepVerdict::classify`] (which gates on it) and
+/// [`enforced_count`] (which reports it). Two copies of this predicate
+/// would be free to disagree, and the number a gate PRINTS disagreeing
+/// with the number it GATES on is its own small dishonesty.
+const fn is_enforced(verdict: Verdict, from: Option<Verdict>) -> bool {
+    // A flag moved it out, or it moved itself out. Both leave the
+    // enforced set; only the first is visible to a reclassification
+    // counter, which is why the floor counts what REMAINS.
+    from.is_none() && !matches!(verdict, Verdict::NotApplicable)
+}
+
+/// How many of `rows` are in the enforced set, by exactly the rule
+/// [`SweepVerdict::classify`] gates on.
+///
+/// Exposed so a caller can REPORT the enforced size — in a summary line,
+/// in JSON — without re-deriving the predicate and drifting from it.
+#[must_use]
+pub fn enforced_count<I>(rows: I) -> usize
+where
+    I: IntoIterator<Item = (Verdict, Option<Verdict>)>,
+{
+    rows.into_iter()
+        .filter(|(v, from)| is_enforced(*v, *from))
+        .count()
 }
 
 impl SweepVerdict {
+    /// The ONE narrowing-aware classifier, over a witness slice of
+    /// per-subject verdicts.
+    ///
+    /// **Why this exists as a free function over `(Verdict,
+    /// Option<Verdict>)` pairs rather than over [`ProbeRecord`].** Two
+    /// gates in this repo need this algebra — `sui-sweep`'s shadow sweep
+    /// and `sui parity` — and they share the GOAL (a differential that
+    /// must not report a pass when its denominator silently shrank) but
+    /// not the SHAPE: a `ProbeRecord` carries per-invocation sweep
+    /// evidence (argv, exit codes, durations, output excerpts) that the
+    /// parity corpus does not have and would have to fabricate. Forcing
+    /// parity rows into `ProbeRecord` would mean inventing that evidence,
+    /// which is precisely the forgery the type doc forbids. So the
+    /// extraction is the *algebra*, owned by neither original, and
+    /// [`ShadowReport::verdict`] is now one of its two callers rather
+    /// than its home.
+    ///
+    /// **The UNREPRESENTABILITY §II.4 clause-2 property survives the
+    /// move.** [`Examined`] still has no public constructor; the only way
+    /// to reach the pass arm is to hand this function one `Verdict` per
+    /// subject examined, so a caller still cannot name a pass over
+    /// subjects it never examined. What the old private
+    /// `Examined::from_records` actually read was `r.verdict` and
+    /// `records.len()` — nothing else — so dropping the sweep-only fields
+    /// costs the property nothing.
+    ///
+    /// **`reclassified` is DERIVED, never asserted.** Each row carries its
+    /// own `reclassified_from`, so the narrowing count is a projection of
+    /// the same slice the pass is derived from. A caller cannot claim
+    /// "nothing was reclassified" over rows that say otherwise — an
+    /// improvement on the two-independent-projections shape this replaces.
+    ///
+    /// **`floor` is `NonZeroUsize` on purpose.** A floor of zero passes
+    /// unconditionally and is the vacuity bug wearing a config file, so it
+    /// has no representation here: the type refuses it at the call site
+    /// rather than a runtime check catching it later. There is likewise no
+    /// `Option<NonZeroUsize>` and no default — every caller must state a
+    /// floor out loud.
+    ///
+    /// A row counts as ENFORCED iff it was not reclassified and did not
+    /// declare itself [`Verdict::NotApplicable`] — i.e. iff the gate
+    /// actually obtained a comparison answer for it.
+    #[must_use]
+    pub fn classify<I>(rows: I, floor: NonZeroUsize) -> Self
+    where
+        I: IntoIterator<Item = (Verdict, Option<Verdict>)>,
+    {
+        let mut count = 0usize;
+        let mut worst: Option<Verdict> = None;
+        let mut diverged = 0usize;
+        let mut reclassified = 0usize;
+        let mut enforced = 0usize;
+        for (verdict, from) in rows {
+            count += 1;
+            // `max` over the 8-way `Verdict` ordering, exactly as the old
+            // `Examined::from_records` did.
+            worst = Some(worst.map_or(verdict, |w| w.max(verdict)));
+            // Matches `ShadowReport::divergence_count` — every non-pass
+            // verdict, not only `Differ`.
+            if !verdict.is_pass() {
+                diverged += 1;
+            }
+            if from.is_some() {
+                reclassified += 1;
+            }
+            if is_enforced(verdict, from) {
+                enforced += 1;
+            }
+        }
+        // `worst` is `None` exactly when the iterator was empty, so this
+        // is both the non-emptiness proof and the severity ranking — the
+        // same single-operation property the old constructor had.
+        let (Some(worst), Some(count)) = (worst, NonZeroUsize::new(count)) else {
+            return Self::Vacuous;
+        };
+        let examined = Examined { count, worst };
+        if let Some(diverged) = NonZeroUsize::new(diverged) {
+            return Self::Diverged { examined, diverged };
+        }
+        // ★ The floor is checked BEFORE the pass arms, never after. A
+        // floor evaluated after a "nothing failed" early-return is not a
+        // floor: an emptied enforced set has nothing left to fail, so it
+        // would read green on its way past.
+        if enforced < floor.get() {
+            return Self::BelowFloor {
+                examined,
+                enforced,
+                floor,
+            };
+        }
+        match NonZeroUsize::new(reclassified) {
+            Some(reclassified) => Self::Reclassified {
+                examined,
+                reclassified,
+            },
+            None => Self::AllPassed { examined },
+        }
+    }
+
     /// `true` only for [`Self::AllPassed`].  Total over the closed sum —
     /// there is no `_ =>` arm that could round `Vacuous` up.
     #[must_use]
     pub const fn is_pass(&self) -> bool {
         matches!(self, Self::AllPassed { .. })
+    }
+
+    /// Stable arm name, suitable for a JSON field or a grouping key.
+    ///
+    /// A typed projection rather than `format!("{v:?}")` at the call site:
+    /// `Debug` output is not a contract, so a machine reader keyed on it
+    /// breaks the day someone reorders a struct field.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::AllPassed { .. } => "AllPassed",
+            Self::Diverged { .. } => "Diverged",
+            Self::Vacuous => "Vacuous",
+            Self::Reclassified { .. } => "Reclassified",
+            Self::BelowFloor { .. } => "BelowFloor",
+        }
     }
 
     /// The witness, when the verdict has one.
@@ -494,7 +657,8 @@ impl SweepVerdict {
         match self {
             Self::AllPassed { examined }
             | Self::Diverged { examined, .. }
-            | Self::Reclassified { examined, .. } => Some(*examined),
+            | Self::Reclassified { examined, .. }
+            | Self::BelowFloor { examined, .. } => Some(*examined),
             Self::Vacuous => None,
         }
     }
@@ -510,7 +674,45 @@ impl SweepVerdict {
     pub const fn reclassified(&self) -> Option<NonZeroUsize> {
         match self {
             Self::Reclassified { reclassified, .. } => Some(*reclassified),
-            Self::AllPassed { .. } | Self::Diverged { .. } | Self::Vacuous => None,
+            Self::AllPassed { .. }
+            | Self::Diverged { .. }
+            | Self::Vacuous
+            | Self::BelowFloor { .. } => None,
+        }
+    }
+
+    /// A one-line operator-facing reason, for a gate that has to say why
+    /// it is refusing.  `None` for [`Self::AllPassed`] — a pass has no
+    /// reason to give.
+    #[must_use]
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::AllPassed { .. } => None,
+            Self::Vacuous => Some(
+                "VACUOUS — 0 rows were examined, so nothing was proven".to_string(),
+            ),
+            Self::Diverged { diverged, examined } => Some(format!(
+                "DIVERGED — {diverged} of {} examined row(s) did not pass",
+                examined.count()
+            )),
+            Self::BelowFloor {
+                enforced,
+                floor,
+                examined,
+            } => Some(format!(
+                "BELOW FLOOR — only {enforced} of {} examined row(s) were actually enforced, \
+                 below the committed floor of {floor}. The gate compared too little to make \
+                 a claim; this is the vacuity guard, not a byte-divergence",
+                examined.count()
+            )),
+            Self::Reclassified {
+                reclassified,
+                examined,
+            } => Some(format!(
+                "RECLASSIFIED — {reclassified} of {} examined row(s) were moved out of the \
+                 enforced set by a run-time flag, so the corpus-wide seal is not claimed",
+                examined.count()
+            )),
         }
     }
 }
@@ -520,27 +722,28 @@ impl ShadowReport {
     ///
     /// No constructor anywhere accepts a [`SweepVerdict`]; this is the
     /// only way to obtain one (§II.4 clause 1).
+    /// Ordering is [`SweepVerdict::classify`]'s and is stated there: a
+    /// real byte-divergence outranks a shrunken denominator, because if
+    /// rows were reclassified AND something still diverged, the
+    /// divergence is the finding and being told the denominator moved
+    /// would bury it.
+    ///
+    /// The floor is [`NonZeroUsize::MIN`] — the weakest honest floor,
+    /// "at least one row must actually have been enforced". A sweep has
+    /// no committed per-corpus baseline to compare against the way `sui
+    /// parity` does, so it asserts only the part it can prove. Note this
+    /// is strictly stronger than the previous behaviour in one case: a
+    /// report whose every record is `NotApplicable` used to be
+    /// `AllPassed` (nothing failed, because nothing ran) and is now
+    /// `BelowFloor`. Both this crate's gate binaries already treat an
+    /// unrecognised arm as fail-closed, so that case turns into a
+    /// refusal-with-a-reason rather than a silent green.
     #[must_use]
     pub fn verdict(&self) -> SweepVerdict {
-        let Some(examined) = Examined::from_records(&self.records) else {
-            return SweepVerdict::Vacuous;
-        };
-        // Ordered deliberately: a real byte-divergence outranks a shrunken
-        // denominator. If rows were reclassified AND something still
-        // diverged, the divergence is the finding — being told the
-        // denominator moved would bury it.
-        if let Some(diverged) = NonZeroUsize::new(self.divergence_count()) {
-            return SweepVerdict::Diverged { examined, diverged };
-        }
-        // Nothing diverged among what was ENFORCED. That is only a pass if
-        // the enforced set is the whole corpus.
-        match NonZeroUsize::new(self.reclassified_count()) {
-            Some(reclassified) => SweepVerdict::Reclassified {
-                examined,
-                reclassified,
-            },
-            None => SweepVerdict::AllPassed { examined },
-        }
+        SweepVerdict::classify(
+            self.records.iter().map(|r| (r.verdict, r.reclassified_from)),
+            NonZeroUsize::MIN,
+        )
     }
 
     /// Count of records a run-time flag moved out of the enforced set.
@@ -835,6 +1038,149 @@ mod tests {
         );
         assert_eq!(empty_report().verdict().reclassified(), None);
         assert_eq!(empty_report().verdict(), SweepVerdict::Vacuous);
+    }
+
+    // ── The floor: `SweepVerdict::classify` ──────────────────────────
+    //
+    // These exercise the algebra directly rather than through
+    // `ShadowReport`, because its second caller (`sui parity`) has no
+    // `ShadowReport` to build — that is the whole reason the algebra was
+    // lifted out. `sui parity`'s own committed floors are asserted in
+    // `tests/parity_floor.rs` at the workspace root.
+
+    /// Shorthand: `n` rows of `v`, none reclassified.
+    fn rows(v: Verdict, n: usize) -> Vec<(Verdict, Option<Verdict>)> {
+        std::iter::repeat_n((v, None), n).collect()
+    }
+
+    fn floor(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).expect("test floor must be non-zero")
+    }
+
+    /// ★ THE VACUITY GUARD. An enforced set that collapses is a refusal,
+    /// not a pass — even though, with nothing left to compare, nothing
+    /// failed.
+    #[test]
+    fn a_collapsed_enforced_set_is_not_a_pass() {
+        // 40 rows examined, every one of them reclassified out. Zero
+        // divergences — because zero comparisons.
+        let all_reclassified: Vec<_> = std::iter::repeat_n(
+            (Verdict::NotApplicable, Some(Verdict::NixFailOnly)),
+            40,
+        )
+        .collect();
+        let v = SweepVerdict::classify(all_reclassified, floor(20));
+        assert!(
+            !v.is_pass(),
+            "a gate that compared nothing must not certify everything: {v:?}"
+        );
+        match v {
+            SweepVerdict::BelowFloor {
+                enforced,
+                floor,
+                examined,
+            } => {
+                assert_eq!(enforced, 0);
+                assert_eq!(floor.get(), 20);
+                // The witness survives: the operator can still see that 40
+                // rows were LOOKED at, which is what makes the refusal
+                // legible rather than mysterious.
+                assert_eq!(examined.count().get(), 40);
+            }
+            other => panic!("expected BelowFloor, got {other:?}"),
+        }
+    }
+
+    /// The floor is checked BEFORE the pass arms. A floor evaluated after
+    /// an early "nothing failed" return is not a floor — this pins the
+    /// ordering so a later refactor cannot quietly move it.
+    #[test]
+    fn the_floor_is_checked_before_the_pass_arms() {
+        // Nothing diverged and nothing was reclassified, so every pass
+        // arm would happily fire; only ordering keeps this a refusal.
+        let v = SweepVerdict::classify(rows(Verdict::Match, 3), floor(10));
+        assert!(matches!(v, SweepVerdict::BelowFloor { enforced: 3, .. }), "{v:?}");
+        assert!(!v.is_pass());
+    }
+
+    /// A row that skips ITSELF narrows the denominator exactly as much as
+    /// a flag-reclassified one, and no reclassification counter can see
+    /// it. The floor is the mechanism that covers both — this is the case
+    /// `Reclassified` structurally cannot catch.
+    #[test]
+    fn self_skipped_rows_narrow_the_denominator_too() {
+        let mut r = rows(Verdict::Match, 2);
+        // 8 rows that declared themselves non-applicable, unflagged.
+        r.extend(rows(Verdict::NotApplicable, 8));
+        let v = SweepVerdict::classify(r, floor(5));
+        assert_eq!(v.reclassified(), None, "nothing was FLAG-reclassified");
+        assert!(
+            matches!(v, SweepVerdict::BelowFloor { enforced: 2, .. }),
+            "the floor must still catch it: {v:?}"
+        );
+    }
+
+    /// Clearing the floor with rows still flag-reclassified is
+    /// `Reclassified`, not `AllPassed`: the corpus-wide seal is withheld.
+    #[test]
+    fn clearing_the_floor_with_reclassified_rows_still_withholds_the_seal() {
+        let mut r = rows(Verdict::Match, 6);
+        r.push((Verdict::NotApplicable, Some(Verdict::NixFailOnly)));
+        let v = SweepVerdict::classify(r, floor(5));
+        assert!(!v.is_pass(), "{v:?}");
+        assert_eq!(v.reclassified().map(NonZeroUsize::get), Some(1));
+    }
+
+    /// A clean run over a set that clears the floor is a pass — the guard
+    /// must not make every run a refusal, or it gets deleted.
+    #[test]
+    fn clearing_the_floor_cleanly_is_a_pass() {
+        let v = SweepVerdict::classify(rows(Verdict::Match, 41), floor(20));
+        assert!(v.is_pass(), "{v:?}");
+        assert_eq!(v.examined().map(|e| e.count().get()), Some(41));
+    }
+
+    /// A real divergence outranks the floor: if bytes disagree, that is
+    /// the finding, and a "you compared too little" message would bury it.
+    #[test]
+    fn divergence_outranks_the_floor() {
+        let mut r = rows(Verdict::Differ, 1);
+        r.extend(rows(Verdict::NotApplicable, 9));
+        let v = SweepVerdict::classify(r, floor(20));
+        assert!(matches!(v, SweepVerdict::Diverged { .. }), "{v:?}");
+    }
+
+    /// Zero rows is `Vacuous`, never `BelowFloor` — "we examined nothing"
+    /// and "we examined things but enforced too few" are different facts
+    /// and a reader needs to be told which.
+    #[test]
+    fn zero_rows_is_vacuous_not_below_floor() {
+        let v = SweepVerdict::classify(Vec::new(), floor(20));
+        assert_eq!(v, SweepVerdict::Vacuous);
+    }
+
+    /// Every non-pass arm can say WHY. A gate that refuses without a
+    /// reason gets overridden by the next person who hits it.
+    #[test]
+    fn every_refusal_carries_a_reason() {
+        assert_eq!(
+            SweepVerdict::classify(rows(Verdict::Match, 5), floor(1)).refusal(),
+            None,
+            "a pass has no reason to give"
+        );
+        for v in [
+            SweepVerdict::classify(Vec::new(), floor(1)),
+            SweepVerdict::classify(rows(Verdict::Differ, 2), floor(1)),
+            SweepVerdict::classify(rows(Verdict::Match, 1), floor(9)),
+            SweepVerdict::classify(
+                vec![(Verdict::Match, None), (Verdict::NotApplicable, Some(Verdict::SuiFailOnly))],
+                floor(1),
+            ),
+        ] {
+            let r = v.refusal();
+            assert!(r.is_some(), "{v:?} must explain itself");
+            assert!(!r.unwrap().is_empty());
+        }
     }
 
     fn report_with(verdicts: &[Verdict]) -> ShadowReport {

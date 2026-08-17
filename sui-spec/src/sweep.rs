@@ -200,7 +200,8 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
         crate::parity::SweepVerdict::AllPassed { .. } => crate::style::glyph_ok(),
         crate::parity::SweepVerdict::Diverged { .. } => crate::style::glyph_fail(),
         crate::parity::SweepVerdict::Vacuous
-        | crate::parity::SweepVerdict::Reclassified { .. } => crate::style::glyph_warn(),
+        | crate::parity::SweepVerdict::Reclassified { .. }
+        | crate::parity::SweepVerdict::BelowFloor { .. } => crate::style::glyph_warn(),
     };
     let tail = match verdict {
         crate::parity::SweepVerdict::Vacuous => {
@@ -221,6 +222,16 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
                  the enforced set — no claim over the whole corpus"
             ))
         }
+        // Same class as `Reclassified`, one step further along: the
+        // enforced set did not merely shrink, it fell below the floor. A
+        // sweep's floor is 1, so this says every record present declared
+        // itself non-applicable — "0 diverged" over zero comparisons.
+        crate::parity::SweepVerdict::BelowFloor {
+            enforced, floor, ..
+        } => crate::style::warn(&format!(
+            "0 diverged, but only {enforced} row(s) were actually ENFORCED \
+             (floor {floor}) — this sweep compared too little to claim anything"
+        )),
     };
     println!(
         "\n{}  {}  {}  {}  {}",
