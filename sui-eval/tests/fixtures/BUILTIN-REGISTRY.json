@@ -13,17 +13,17 @@
     "`diff_filter_attrs`, which had been gated off behind SUI_TEST_ONLINE and",
     "therefore never ran.",
     "",
-    "★ AND THE REGISTRY IS NOT ONE REGISTRY. Measured the same day, by this",
-    "gate's own first red run: `sui eval --json -E 'builtins.attrNames builtins'`",
-    "returns 124 names, and it is NOT the walker's 126. The difference is",
-    "BIDIRECTIONAL, so neither is a superset of the other:",
+    "★ AND THE REGISTRY IS NOT ONE REGISTRY. Found the same day, by this gate's",
+    "own first red run: `sui eval --json -E 'builtins.attrNames builtins'` did",
+    "NOT return the walker's set, and the difference was BIDIRECTIONAL — neither",
+    "was a superset of the other. At first measurement (CLI 124 vs walker 126):",
     "",
     "  in the walker, absent from the CLI (6):",
     "    builtins, flakeRefToString, parseFlakeRef, path, resolveFlakeRef, sui",
     "  in the CLI, absent from the walker (4):",
     "    fetchClosure, isStorePath, outputOf, toInt",
     "",
-    "`builtins.path` and the `builtins.builtins` self-reference exist for a",
+    "`builtins.path` and the `builtins.builtins` self-reference existed for a",
     "library consumer and NOT for anyone typing `sui eval`. Two evaluators, two",
     "languages, one binary name. This is the same shape as the four disjoint",
     "path-redirect namespaces already recorded in this repo, and it is the more",
@@ -31,10 +31,18 @@
     "bug, but a split registry means the answer depends on which door you came",
     "through.",
     "",
-    "The CLI half is NOT gated here, deliberately: it lives in the bytecode VM's",
-    "builtin surface, which is under active change. Pinning it from this test",
-    "would fight that work. `pending-builtin-registry: gate the VM registry and",
-    "prove walker == VM`.",
+    "RE-MEASURED after the VM's builtin fixes landed the same day (CLI 128 vs",
+    "walker 126): the VM gained builtins/path/parseFlakeRef/flakeRefToString, so",
+    "the split narrowed from 10 names to 6 — see `cli_divergence` for today's",
+    "values, which are the ones to trust. That work also CONFIRMED this file's",
+    "classification from the opposite direction: measuring the VM's registry",
+    "against nix independently produced the same 2 experimental + 8 lib-leak",
+    "split recorded below. Two separate measurements, same answer.",
+    "",
+    "The CLI half is still NOT gated here — the offline test reads the walker",
+    "in-process, and pinning the VM's set would mean spawning a binary that may",
+    "not be built when the test runs. `pending-builtin-registry: gate the VM",
+    "registry and prove walker == VM`.",
     "",
     "THE THREE CLASSES ARE NOT THE SAME DEFECT, and the split was measured with",
     "`--extra-experimental-features`, not assumed:",
@@ -80,7 +88,7 @@
   "oracle_nix_version": "2.31.5",
   "oracle_nix_builtin_count": 118,
   "walker_builtin_count": 126,
-  "cli_builtin_count": 124,
+  "cli_builtin_count": 128,
 
   "classification": {
     "_comment": [
@@ -109,10 +117,13 @@
 
   "cli_divergence": {
     "_comment": [
-      "Measured, not gated — see the header. The VM builtin surface is under",
-      "active change; this records the split so it is not rediscovered."
+      "Measured, not gated — see the header. Re-measured 2026-08-17 AFTER the",
+      "VM builtin fixes landed; the split is down from 10 names to 6. These are",
+      "the current values. Re-measure, never infer:",
+      "  ./target/debug/sui eval --json -E 'builtins.attrNames builtins'"
     ],
-    "walker_only": ["builtins", "flakeRefToString", "parseFlakeRef", "path", "resolveFlakeRef", "sui"],
+    "cli_builtin_count_at_measure": 128,
+    "walker_only": ["resolveFlakeRef", "sui"],
     "cli_only": ["fetchClosure", "isStorePath", "outputOf", "toInt"]
   },
 
