@@ -453,6 +453,31 @@ pub enum SweepVerdict {
     /// rather than erroring).  Before this arm existed, every one of
     /// those paths printed a green ✓ and exited 0.
     Vacuous,
+    /// The sweep ran, but a run-time flag moved records OUT of the
+    /// enforced set, so no claim is made over the whole corpus.
+    ///
+    /// This is the *partial* sibling of [`Self::Vacuous`]: there,
+    /// nothing was examined; here, something was, but the denominator
+    /// silently shrank underneath the numerator.
+    ///
+    /// The concrete instance is `SUI_PARITY_PUREONLY`, which the CI
+    /// workflow sets in an `env:` block.  It reclassifies the rows that
+    /// cannot evaluate without a pinned nixpkgs oracle from `SuiError`
+    /// to `Skipped` — legitimate on that runner, and the reclassification
+    /// *was* printed and *was* in the JSON.  But it was a **log line, not
+    /// a compared value**: the gate reported `77/77` and went green, and
+    /// the same `77/77` would print whether the flag removed 0 rows or
+    /// 35.  A flag that narrows what a gate enforces while moving no
+    /// number the gate reads is indistinguishable from no flag at all.
+    ///
+    /// Carrying `reclassified` as a witness makes the narrowing part of
+    /// the verdict, so turning the flag on changes the *answer* and not
+    /// merely the log.  Ordered behind `Diverged` at the call site: a
+    /// real byte-divergence outranks a shrunken denominator.
+    Reclassified {
+        examined: Examined,
+        reclassified: NonZeroUsize,
+    },
 }
 
 impl SweepVerdict {
@@ -467,8 +492,25 @@ impl SweepVerdict {
     #[must_use]
     pub const fn examined(&self) -> Option<Examined> {
         match self {
-            Self::AllPassed { examined } | Self::Diverged { examined, .. } => Some(*examined),
+            Self::AllPassed { examined }
+            | Self::Diverged { examined, .. }
+            | Self::Reclassified { examined, .. } => Some(*examined),
             Self::Vacuous => None,
+        }
+    }
+
+    /// How many records a run-time flag moved out of the enforced set.
+    ///
+    /// `None` for every arm except [`Self::Reclassified`] — a verdict that
+    /// makes a claim over its whole corpus has no narrowing to report, and
+    /// returning `Some(0)` for those would let a caller write
+    /// `reclassified().unwrap_or(0) == 0` and get the same answer for
+    /// "nothing was reclassified" and "this verdict cannot say".
+    #[must_use]
+    pub const fn reclassified(&self) -> Option<NonZeroUsize> {
+        match self {
+            Self::Reclassified { reclassified, .. } => Some(*reclassified),
+            Self::AllPassed { .. } | Self::Diverged { .. } | Self::Vacuous => None,
         }
     }
 }
@@ -483,10 +525,34 @@ impl ShadowReport {
         let Some(examined) = Examined::from_records(&self.records) else {
             return SweepVerdict::Vacuous;
         };
-        match NonZeroUsize::new(self.divergence_count()) {
-            Some(diverged) => SweepVerdict::Diverged { examined, diverged },
+        // Ordered deliberately: a real byte-divergence outranks a shrunken
+        // denominator. If rows were reclassified AND something still
+        // diverged, the divergence is the finding — being told the
+        // denominator moved would bury it.
+        if let Some(diverged) = NonZeroUsize::new(self.divergence_count()) {
+            return SweepVerdict::Diverged { examined, diverged };
+        }
+        // Nothing diverged among what was ENFORCED. That is only a pass if
+        // the enforced set is the whole corpus.
+        match NonZeroUsize::new(self.reclassified_count()) {
+            Some(reclassified) => SweepVerdict::Reclassified {
+                examined,
+                reclassified,
+            },
             None => SweepVerdict::AllPassed { examined },
         }
+    }
+
+    /// Count of records a run-time flag moved out of the enforced set.
+    ///
+    /// Like [`Self::divergence_count`] this is a raw count and not a
+    /// verdict — gate on [`Self::verdict`].
+    #[must_use]
+    pub fn reclassified_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|r| r.reclassified_from.is_some())
+            .count()
     }
 
     /// `true` iff the sweep examined at least one record and every one
@@ -534,6 +600,21 @@ pub struct ProbeRecord {
     pub sui_timed_out: bool,
     pub nix_timed_out: bool,
     pub verdict: Verdict,
+    /// The verdict this row WOULD have carried had a run-time flag not
+    /// moved it out of the enforced set.
+    ///
+    /// `None` is the normal case: the row's `verdict` is its own. `Some(v)`
+    /// means a flag (today only `SUI_PARITY_PUREONLY`) reclassified it —
+    /// `verdict` is what the sweep now counts, `v` is what it started as.
+    ///
+    /// `#[serde(default)]` so every report written before this field
+    /// existed still deserializes, and so the absent case means "not
+    /// reclassified" rather than failing the parse. It is a plain
+    /// `Option<Verdict>` rather than a new `Verdict` arm on purpose: a new
+    /// arm would break every exhaustive `match` on `Verdict` in the tree,
+    /// and the reclassification is metadata ABOUT a verdict, not a verdict.
+    #[serde(default)]
+    pub reclassified_from: Option<Verdict>,
 }
 
 /// Truncate a string to `max` bytes, appending an ellipsis if cut.
@@ -691,6 +772,71 @@ mod tests {
         assert_eq!(back_empty.verdict(), SweepVerdict::Vacuous);
     }
 
+    /// Like [`report_with`], but marks the first `n` records as having been
+    /// reclassified out of the enforced set.
+    fn report_with_reclassified(verdicts: &[Verdict], n: usize) -> ShadowReport {
+        let mut report = report_with(verdicts);
+        for r in report.records.iter_mut().take(n) {
+            r.reclassified_from = Some(Verdict::SuiFailOnly);
+        }
+        report
+    }
+
+    /// A sweep whose every ENFORCED row passed is NOT a pass if a flag moved
+    /// rows out of the enforced set.
+    ///
+    /// This is the defect in one assertion. `SUI_PARITY_PUREONLY` reclassified
+    /// ~35 rows on the CI runner and the gate printed the same `77/77` it
+    /// would have printed with the flag off — the narrowing was a log line,
+    /// never a compared value.
+    #[test]
+    fn reclassified_rows_are_not_a_pass() {
+        let report = report_with_reclassified(&[Verdict::Match, Verdict::Match], 1);
+        let v = report.verdict();
+        assert!(
+            !v.is_pass(),
+            "a narrowed denominator must not report a pass: {v:?}"
+        );
+        assert_eq!(v.reclassified().map(NonZeroUsize::get), Some(1));
+        // The witness survives, so the operator can still see what WAS checked.
+        assert!(v.examined().is_some());
+    }
+
+    /// With nothing reclassified the verdict is unchanged — the arm must not
+    /// swallow ordinary passes.
+    #[test]
+    fn an_unnarrowed_sweep_still_passes() {
+        let report = report_with(&[Verdict::Match, Verdict::Match]);
+        assert!(report.verdict().is_pass());
+        assert_eq!(report.verdict().reclassified(), None);
+        assert_eq!(report.reclassified_count(), 0);
+    }
+
+    /// A real divergence OUTRANKS a narrowed denominator: being told the
+    /// corpus shrank would bury the byte-divergence that is the actual finding.
+    #[test]
+    fn divergence_outranks_reclassification() {
+        let report = report_with_reclassified(&[Verdict::Differ, Verdict::Match], 1);
+        assert!(matches!(
+            report.verdict(),
+            SweepVerdict::Diverged { .. }
+        ));
+    }
+
+    /// `reclassified()` returns `None` — not `Some(0)` — for every arm that
+    /// makes a whole-corpus claim, so a caller cannot conflate "nothing was
+    /// narrowed" with "this verdict cannot say".
+    #[test]
+    fn reclassified_is_none_for_whole_corpus_verdicts() {
+        assert_eq!(report_with(&[Verdict::Match]).verdict().reclassified(), None);
+        assert_eq!(
+            report_with(&[Verdict::Differ]).verdict().reclassified(),
+            None
+        );
+        assert_eq!(empty_report().verdict().reclassified(), None);
+        assert_eq!(empty_report().verdict(), SweepVerdict::Vacuous);
+    }
+
     fn report_with(verdicts: &[Verdict]) -> ShadowReport {
         let mut report = empty_report();
         report.records = verdicts
@@ -713,6 +859,7 @@ mod tests {
                 sui_timed_out: false,
                 nix_timed_out: false,
                 verdict: *v,
+                reclassified_from: None,
             })
             .collect();
         report
@@ -744,6 +891,7 @@ mod tests {
             sui_duration_ms: 0, nix_duration_ms: 0,
             sui_timed_out: false, nix_timed_out: false,
             verdict: Verdict::Match,
+            reclassified_from: None,
         };
         let mut rec_fail = rec_pass.clone();
         rec_fail.verdict = Verdict::Differ;

@@ -199,7 +199,8 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
     let summary_glyph = match verdict {
         crate::parity::SweepVerdict::AllPassed { .. } => crate::style::glyph_ok(),
         crate::parity::SweepVerdict::Diverged { .. } => crate::style::glyph_fail(),
-        crate::parity::SweepVerdict::Vacuous => crate::style::glyph_warn(),
+        crate::parity::SweepVerdict::Vacuous
+        | crate::parity::SweepVerdict::Reclassified { .. } => crate::style::glyph_warn(),
     };
     let tail = match verdict {
         crate::parity::SweepVerdict::Vacuous => {
@@ -210,6 +211,16 @@ pub fn run(config: &SweepConfig) -> Result<ShadowReport, crate::SpecError> {
             "{diverged} diverged (worst: {})",
             examined.worst().name(),
         )),
+        // Not a pass, and it must not READ like one: everything enforced
+        // agreed, but a flag shrank what "enforced" means. The count is the
+        // whole point — "0 diverged" over a quietly narrowed corpus is the
+        // exact shape this arm exists to stop printing.
+        crate::parity::SweepVerdict::Reclassified { reclassified, .. } => {
+            crate::style::warn(&format!(
+                "0 diverged, but {reclassified} row(s) were RECLASSIFIED out of \
+                 the enforced set — no claim over the whole corpus"
+            ))
+        }
     };
     println!(
         "\n{}  {}  {}  {}  {}",
@@ -279,6 +290,10 @@ fn push_record(
         sui_duration_ms: 0, nix_duration_ms: 0,
         sui_timed_out: false, nix_timed_out: false,
         verdict,
+        // No sweep path reclassifies today; the flag that does lives in the
+        // `sui parity` CLI. Explicit `None` rather than `..Default::default()`
+        // so adding a reclassifying path here stays a compile error.
+        reclassified_from: None,
     });
 }
 
@@ -311,6 +326,10 @@ fn push_full_record(
         sui_timed_out: sui.timed_out,
         nix_timed_out: nix.timed_out,
         verdict,
+        // No sweep path reclassifies today; the flag that does lives in the
+        // `sui parity` CLI. Explicit `None` rather than `..Default::default()`
+        // so adding a reclassifying path here stays a compile error.
+        reclassified_from: None,
     });
 }
 
