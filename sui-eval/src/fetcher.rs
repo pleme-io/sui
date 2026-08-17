@@ -1018,22 +1018,40 @@ mod status_classification_tests {
 
     #[test]
     fn no_two_http_failures_render_the_same_bytes() {
-        // ★★ kotae: the whole point is that a caller can tell these apart. If
-        // any two rendered identically, a consumer would be back to guessing —
-        // which is the defect that made a downstream tool grep this crate's
-        // error text.
-        let rendered: Vec<String> = [429, 403, 404, 500]
-            .iter()
-            .map(|s| classify_status(URL, &resp(*s, &[])).to_string())
-            .collect();
-        let mut uniq = rendered.clone();
-        uniq.sort();
-        uniq.dedup();
-        assert_eq!(
-            uniq.len(),
-            rendered.len(),
-            "two failures rendered identically: {rendered:?}"
-        );
+        // ★★ kotae: a caller must be able to tell these apart. If any two
+        // rendered identically, a consumer would be back to guessing — the
+        // defect that made a downstream tool grep this crate's error text.
+        //
+        // The variants are constructed DIRECTLY at a deliberately CONSTANT
+        // status, and that shape is the whole point. An earlier version of this
+        // test classified four different statuses and compared the results — it
+        // passes trivially, because the status number is interpolated into every
+        // message, so the strings differ no matter how badly the *variants*
+        // collide. Red-running proved it: NotFound's message was rewritten to be
+        // byte-identical to UnexpectedStatus's and this test still went GREEN
+        // while an unrelated test caught the break. A test that cannot fail for
+        // the reason it names is worse than no test, because its green reads as
+        // coverage of a property nobody is checking.
+        let u = URL.to_string();
+        let cases: Vec<(&str, FetchError)> = vec![
+            ("Throttled(no advice)",  FetchError::Throttled { url: u.clone(), status: 404, retry_after: None }),
+            ("Throttled(advice)",     FetchError::Throttled { url: u.clone(), status: 404, retry_after: Some(30) }),
+            ("Unauthorized",          FetchError::Unauthorized { url: u.clone(), status: 404 }),
+            ("NotFound",              FetchError::NotFound { url: u.clone() }),
+            ("UnexpectedStatus",      FetchError::UnexpectedStatus { url: u.clone(), status: 404 }),
+            ("Download",              FetchError::Download(format!("{u}: connection reset"))),
+        ];
+
+        for (i, (name_a, a)) in cases.iter().enumerate() {
+            for (name_b, b) in cases.iter().skip(i + 1) {
+                assert_ne!(
+                    a.to_string(),
+                    b.to_string(),
+                    "{name_a} and {name_b} render identically at the same status \
+                     — a caller cannot distinguish them"
+                );
+            }
+        }
     }
 
     #[test]
