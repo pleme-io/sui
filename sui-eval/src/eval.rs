@@ -785,6 +785,12 @@ fn scope_narrow_enabled() -> bool {
     scope_narrow_level() >= 1
 }
 
+/// True at `SUI_SCOPE_NARROW = 2` — D2 (the cluster env) is on.
+#[inline]
+fn scope_cluster_enabled() -> bool {
+    scope_narrow_level() >= 2
+}
+
 /// The set of variable-reference ident names in `value_expr`'s subtree
 /// (`NODE_IDENT` whose parent is NOT a `NODE_ATTRPATH` — i.e. genuine
 /// variable references, not attribute names/keys). ONE subtree walk.
@@ -1577,6 +1583,41 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             };
             let narrow = scope_narrow_enabled() && names_complete;
 
+            // D2 (`SUI_SCOPE_NARROW=2`) — the CLUSTER env.
+            //
+            // D1 alone is not enough, and the reason is the shape of the
+            // graph: free-variable analysis is per-binding on the
+            // `thunk -> env` edge, but the `env -> thunk` edge is SHARED. One
+            // binding that really does reach a sibling keeps `new_env` alive,
+            // and `new_env` holds EVERY binding in the scope — so a single
+            // recursive `f` re-pins all fifty innocent leaves and the footprint
+            // is unchanged. (That is the P4 row, and it is why the headline
+            // gate is too easy: D1 greens it while doing nothing here.)
+            //
+            // The fix is to stop pointing the survivors at the whole scope.
+            // Phase 2 re-points them at a `fix_env` carrying ONLY the names the
+            // pinned bindings can actually reach — their own names plus
+            // `refs ∩ scope_names`. The body still gets the full `new_env`, so
+            // nothing the LET EXPRESSION evaluates to can change; only the
+            // envs captured by thunks shrink.
+            let cluster = narrow && scope_cluster_enabled();
+            // Every (name, value) bound into `new_env`, so the pinned subset can
+            // be re-bound into `fix_env`. Allocated only under D2.
+            let mut all_bound: Vec<(String, Value)> = Vec::new();
+            // The names that stayed pinned, and the free-variable sets of the
+            // bindings behind them. `pin` needs only the UNION of those sets, so
+            // no name→refs association is required — and that union already IS
+            // the fixpoint: a name added to `pin` that is not itself a pinned
+            // binding contributes no further refs, and one that is has its refs
+            // in the union already.
+            let mut pinned_names: HashSet<String> = HashSet::new();
+            let mut pinned_refs: Vec<HashSet<SmolStr>> = Vec::new();
+            // A dotted path (`let a.b = 1;`) pushes LEAF thunks whose names are
+            // inner path segments, not scope names, and whose free variables are
+            // never computed here — so `fix_env` cannot be shown to carry what
+            // they need. Such a scope forfeits D2 (D1 still applies).
+            let mut has_dotted = false;
+
             for entry in letin.entries() {
                 match entry {
                     ast::Entry::AttrpathValue(ref apv) => {
@@ -1627,6 +1668,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                 maybe_thunk(&value_expr, env, true, Some(&defined_so_far))
                             };
                             new_env.bind(key.clone(), value.clone());
+                            if cluster {
+                                all_bound.push((key.clone(), value.clone()));
+                            }
                             if let Value::Thunk(t) = &value {
                                 // D1: `in_mutual_cycle` is ALREADY the
                                 // forward-complete "reaches a sibling"
@@ -1649,6 +1693,10 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                 // `thunk -> new_env -> thunk`.
                                 if in_mutual_cycle || !narrow {
                                     thunks.push((key.clone(), t.clone()));
+                                    if cluster {
+                                        pinned_names.insert(key.clone());
+                                        pinned_refs.push(referenced);
+                                    }
                                     crate::value::census::scope_pinned();
                                 } else {
                                     crate::value::census::scope_narrowed();
@@ -1660,6 +1708,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // attrset with thunks at the leaves so the
                             // value expression can reference sibling
                             // let-bindings.
+                            has_dotted = true;
                             let key = path_keys[0].clone();
                             let value = build_nested_attr_thunk(
                                 &path_keys[1..],
@@ -1686,11 +1735,16 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             // loop instead of N times inside it. Guarded by
                             // `!narrow ||` so the default path does not pay the
                             // walk at all.
-                            let source_needs_scope = !narrow || {
-                                let refs = referenced_idents(&source_expr);
-                                let_scope_names
+                            let source_refs: Option<HashSet<SmolStr>> = if narrow {
+                                Some(referenced_idents(&source_expr))
+                            } else {
+                                None
+                            };
+                            let source_needs_scope = match &source_refs {
+                                Some(refs) => let_scope_names
                                     .iter()
-                                    .any(|n| refs.contains(n.as_str()))
+                                    .any(|n| refs.contains(n.as_str())),
+                                None => true,
                             };
                             // Create ONE shared source thunk per
                             // `inherit (source)` clause. All inherited
@@ -1706,11 +1760,27 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                     name.clone(),
                                 );
                                 new_env.bind(name.clone(), Value::Thunk(thunk.clone()));
+                                if cluster {
+                                    all_bound.push((
+                                        name.clone(),
+                                        Value::Thunk(thunk.clone()),
+                                    ));
+                                }
                                 if source_needs_scope {
+                                    if cluster {
+                                        pinned_names.insert(name.clone());
+                                    }
                                     thunks.push((name, thunk));
                                     crate::value::census::scope_pinned();
                                 } else {
                                     crate::value::census::scope_narrowed();
+                                }
+                            }
+                            // One refs set for the whole clause — every name in
+                            // it re-points the SAME shared source thunk.
+                            if cluster && source_needs_scope {
+                                if let Some(refs) = source_refs {
+                                    pinned_refs.push(refs);
                                 }
                             }
                         } else {
@@ -1725,6 +1795,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                                         format!("'{name}'{}", eval_file_ctx()),
                                     )
                                 })?;
+                                if cluster {
+                                    all_bound.push((name.clone(), value.clone()));
+                                }
                                 new_env.bind(name, value);
                             }
                         }
@@ -1738,12 +1811,50 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // existing inherit thunks — just bind directly.
             for (key, value) in dotted_attrs.iter() {
                 new_env.bind(key.clone(), value.clone());
+                if cluster {
+                    all_bound.push((key.clone(), value.clone()));
+                }
             }
+
+            // D2: the cluster env the survivors get re-pointed at, in place of
+            // the whole scope. Built only when it can actually shrink anything
+            // — some binding pinned, some binding not, and no dotted path (see
+            // `has_dotted`).
+            let fix_env: Option<Env> = if cluster && !has_dotted && !thunks.is_empty() {
+                // `pin` = the pinned names, plus every scope name they can
+                // reach. This union is already the fixpoint: a name pulled in
+                // that is not itself pinned contributes no further refs (its
+                // own thunk still holds the OUTER env and so resolves entirely
+                // outside this scope), and one that is pinned had its refs in
+                // the union from the start.
+                let mut pin = pinned_names;
+                for refs in &pinned_refs {
+                    for n in &let_scope_names {
+                        if refs.contains(n.as_str()) {
+                            pin.insert(n.clone());
+                        }
+                    }
+                }
+                if pin.len() < all_bound.len() {
+                    let mut fe = env.child();
+                    for (name, value) in &all_bound {
+                        if pin.contains(name) {
+                            fe.bind(name.clone(), value.clone());
+                        }
+                    }
+                    Some(fe)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // Phase 2: Update all thunks to capture the final env
             // (which now has all names bound).
+            let phase2_env: &Env = fix_env.as_ref().unwrap_or(&new_env);
             for (_key, thunk) in &thunks {
-                thunk.update_env(&new_env);
+                thunk.update_env(phase2_env);
             }
 
             let body = letin
