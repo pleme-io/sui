@@ -6801,55 +6801,28 @@ async fn main() -> Result<(), CliError> {
                 // on the VM thread too — VM builtin reads bridge to the tree-walker,
                 // which shares this thread-local hook.
                 let _ifd_guard = install_ifd_hook();
-                // Install flake resolver so VM getFlake delegates to tree-walker.
-                let _flake_guard = sui_bytecode::set_flake_resolver(Box::new(|flake_ref: &str| {
-                    let flake_dir = if flake_ref.starts_with('/') || flake_ref.starts_with('.') {
-                        std::path::PathBuf::from(flake_ref)
-                    } else if let Some(path) = flake_ref.strip_prefix("path:") {
-                        std::path::PathBuf::from(path)
-                    } else {
-                        return Err(format!("unsupported flake reference: {flake_ref}"));
-                    };
-                    let result = sui_eval::builtins::evaluate_flake(&flake_dir)
-                        .map_err(|e| e.to_string())?;
-                    Ok(sui_eval::eval_to_string_keyed(&result))
-                }));
-                // Install builtin bridge so VM can delegate missing builtins
-                // and compilation fallback (__import) to the tree-walker.
-                let _bridge_guard = sui_bytecode::set_builtin_bridge(Box::new(
-                    |name: &str, args: Vec<sui_bytecode::StringKeyedValue>| {
-                        if name == "__import" {
-                            let path_str = match &args[0] {
-                                sui_bytecode::StringKeyedValue::Path(p)
-                                | sui_bytecode::StringKeyedValue::String(p) => p.clone(),
-                                _ => return Err("__import: expected path or string argument".to_string()),
-                            };
-                            let path = std::path::Path::new(&path_str);
-                            let source = std::fs::read_to_string(path)
-                                .map_err(|e| format!("__import: {}: {e}", path.display()))?;
-                            let path_buf = path.to_path_buf();
-                            let _guard = sui_eval::eval::push_eval_file(path_buf.clone());
-                            let result = sui_eval::eval::eval_with_file(&source, Some(path_buf))
-                                .map_err(|e| e.to_string())?;
-                            let forced = sui_eval::eval::force_value(&result)
-                                .map_err(|e| e.to_string())?;
-                            return Ok(sui_eval::eval_to_string_keyed(&forced));
-                        }
-
-                        let eval_args: Vec<sui_eval::Value> = args
-                            .iter()
-                            .map(|a| sui_eval::convert::string_keyed_to_eval(a))
-                            .collect();
-
-                        let result = sui_eval::builtins::call_builtin_by_name(name, &eval_args)
-                            .map_err(|e| e.to_string())?;
-
-                        let forced = sui_eval::eval::force_value(&result)
-                            .map_err(|e| e.to_string())?;
-
-                        Ok(sui_eval::eval_to_string_keyed(&forced))
-                    },
-                ));
+                // ★ THE ONE INSTALL SITE — and now it actually is one.
+                //
+                // This block used to hand-roll the flake resolver and the
+                // builtin bridge inline, and it silently omitted the THIRD
+                // bridge: the path materializer. `install_vm_bridges()` exists
+                // precisely so a test cannot drift from what production wires
+                // up, and its doc-comment claimed to be "THE ONE INSTALL SITE"
+                // — while this duplicate sat here installing two of three.
+                //
+                // The consequence was exact, and it is the whole reason this
+                // shape is banned: the VM's filesystem-redirect fix was green
+                // in `sui-bytecode/tests/vm_bridge_parity.rs` (which DOES call
+                // `install_vm_bridges`) and ABSENT from the shipped binary. So
+                // `sui eval` answered `pathExists = false` for every file in a
+                // fetched flake input — silently, because `false` is a legal
+                // answer and the VM's per-file fallback only fires on an
+                // ERROR. A green test beside a broken binary.
+                //
+                // Do NOT re-inline these. Add a bridge in `install_vm_bridges`
+                // and every consumer gets it; copy one here and the next fix
+                // reaches the tests and nothing else.
+                let _vm_bridges = sui_eval::install_vm_bridges();
                         let sk = match sui_bytecode::eval_full(&expr_clone) {
                             Ok(r) => r.to_string_keyed(),
                             Err(e) => {
