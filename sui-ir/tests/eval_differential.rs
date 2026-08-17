@@ -806,10 +806,31 @@ fn builtins_registry_parity() {
     let src = "builtins.attrNames builtins";
     let ir = ir_outcome(src).expect("IR renders the builtins key list");
     match tree_outcome(src) {
-        Outcome::Val(tree) => assert_eq!(
-            tree, ir,
-            "builtins key sets diverge between the walker and the IR bridge"
-        ),
+        Outcome::Val(tree) => {
+            // ── ANTI-VACUITY FLOOR, before the comparison. Two empty renders
+            // compare EQUAL, so without this the strongest evidence that the
+            // two registries agree would also be produced by both of them
+            // vanishing. The IR registry is hand-maintained independently of
+            // the walker's (87 native builtins + 24 missing-seeded names +
+            // constants, in sui-ir/src/builtins.rs), so this really is a
+            // comparison of two lists and not a tautology.
+            // The render is nix list syntax — space-separated quoted strings,
+            // NOT comma-separated. Count quote pairs.
+            let entries = ir.matches('"').count() / 2;
+            assert!(
+                entries >= 100,
+                "the builtins key list rendered only ~{entries} entries — that \
+                 is not a usable comparison; two collapsed renders would agree \
+                 trivially.\n  ir: {ir}"
+            );
+            assert_eq!(
+                tree, ir,
+                "builtins key sets diverge between the walker and the IR bridge"
+            );
+            eprintln!(
+                "builtins_registry_parity: walker == eval_ir, ~{entries} names"
+            );
+        }
         Outcome::Error(e) => panic!("walker failed to enumerate builtins: {e}"),
     }
 }
