@@ -169,3 +169,227 @@ fn nix_matches_expected_output() {
         );
     }
 }
+
+// ── The quarantine ledger ────────────────────────────────────────────────
+//
+// `lang_fixtures()` above uses a NON-recursive `read_dir`, so the 21 pairs
+// under `known_broken/` are invisible to every test in this file. That is
+// what makes quarantine cheap: a newly-failing fixture moved down there
+// turns the suite green while REDUCING what it proves, and the printed
+// "N / N fixtures passing" line still reads 100% against a smaller N.
+//
+// The two tests below close both halves of that leak:
+//   - a quarantined fixture that starts PASSING is a silent graduation, so
+//     it is red until somebody banks it by promoting the fixture;
+//   - the denominator itself is a compared value, so shrinking it costs a
+//     reviewed diff to CORPUS-DENOMINATOR.json.
+
+/// Every `eval-okay-*.nix` under `known_broken/`, sorted for reproducible
+/// run order (same contract as `lang_fixtures`, different directory).
+fn known_broken_fixtures() -> Vec<PathBuf> {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dir.push("tests/fixtures/lang/known_broken");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("nix") {
+            continue;
+        }
+        if !p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("eval-okay-"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        out.push(p);
+    }
+    out.sort();
+    out
+}
+
+/// A quarantined fixture must still fail. One that has started passing is a
+/// fix nobody banked — promote it back into the active corpus.
+///
+/// TIER: eval-caught (a red `cargo test`), and the vacuity refusal below is a
+/// hand-written check rather than the `Examined`/`NonZeroUsize` witness type
+/// that `sui_spec::parity` uses for exactly this property. Reaching that
+/// witness would mean a `sui-eval` -> `sui-spec` dev-dependency edge; the
+/// destination is to move this test into `sui-spec` and inherit the witness
+/// (its private ingress makes a zero-denominator pass unconstructible rather
+/// than merely asserted). Named, not scheduled.
+#[test]
+fn quarantined_fixtures_still_fail() {
+    let quarantined = known_broken_fixtures();
+
+    // ANTI-VACUITY, AND IT MUST COME FIRST. With this check placed after the
+    // loop, `rm -rf known_broken/` iterates zero fixtures, collects zero
+    // graduations, and reports green — the empty set satisfies "all still
+    // fail" vacuously. Refusing up front is what makes deleting the
+    // quarantine a red test instead of a clean one.
+    assert!(
+        !quarantined.is_empty(),
+        "known_broken/ holds no eval-okay-* fixtures. Either the quarantine \
+         was emptied without promoting its contents into the active corpus, \
+         or the directory moved. An empty quarantine is NOT evidence that \
+         every fixture passes — it is the absence of evidence, and this test \
+         refuses to report it as a pass."
+    );
+
+    let mut graduated: Vec<PathBuf> = Vec::new();
+    let mut unpaired: Vec<PathBuf> = Vec::new();
+    for path in &quarantined {
+        // A quarantined fixture with no .exp cannot be compared at all, so
+        // it could never graduate — quarantine would be a dumping ground
+        // rather than a ledger. Surface it as its own failure mode.
+        let Some(expected) = read_expected(path) else {
+            unpaired.push(path.clone());
+            continue;
+        };
+        if common::sui_eval_json_file(path) == expected {
+            graduated.push(path.clone());
+        }
+    }
+
+    eprintln!(
+        "quarantined_fixtures_still_fail: {} / {} still failing (as expected)",
+        quarantined.len() - graduated.len() - unpaired.len(),
+        quarantined.len()
+    );
+
+    assert!(
+        unpaired.is_empty(),
+        "{} quarantined fixture(s) have no .exp sibling, so they can never be \
+         compared and can never graduate:\n{}",
+        unpaired.len(),
+        unpaired
+            .iter()
+            .map(|p| format!("  {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    assert!(
+        graduated.is_empty(),
+        "{} quarantined fixture(s) now PASS. This is a fix that was never \
+         banked: the corpus is stronger than its ledger says, and the slack \
+         is where the next regression hides.\n{}\n\nPromote each one per \
+         tests/fixtures/lang/known_broken/README.md (move the .nix/.exp pair \
+         up into tests/fixtures/lang/), then decrement `quarantined` and \
+         increment `active` in tests/fixtures/lang/CORPUS-DENOMINATOR.json.",
+        graduated.len(),
+        graduated
+            .iter()
+            .map(|p| format!("  {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// The corpus denominator is a compared value, not a printed one.
+///
+/// Both directions are red — see CORPUS-DENOMINATOR.json for why an
+/// improvement is also a re-pin rather than a warning.
+#[test]
+fn corpus_denominator_is_pinned() {
+    let mut lang = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    lang.push("tests/fixtures/lang");
+
+    let pin_path = lang.join("CORPUS-DENOMINATOR.json");
+    let pin: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&pin_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", pin_path.display())),
+    )
+    .unwrap_or_else(|e| panic!("parse {}: {e}", pin_path.display()));
+
+    // A MISSING or defaulted field is a hard error, never a zero. A pinned
+    // denominator that silently defaults to 0 is the vacuity bug wearing a
+    // config file: every count would then be >= its floor forever.
+    let field = |k: &str| -> usize {
+        pin.get(k)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} is missing the `{k}` field (or it is not a number). \
+                     Refusing to default it — a defaulted denominator passes \
+                     unconditionally.",
+                    pin_path.display()
+                )
+            })
+            .try_into()
+            .expect("count fits in usize")
+    };
+    let (want_active, want_quarantined, want_helpers) =
+        (field("active"), field("quarantined"), field("helpers"));
+
+    let got_active = lang_fixtures().len();
+    let got_quarantined = known_broken_fixtures().len();
+
+    // Helpers: top-level .nix that are not fixtures (imported.nix, lib.nix …).
+    let got_helpers = std::fs::read_dir(&lang)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.extension().and_then(|s| s.to_str()) == Some("nix")
+                        && !p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("eval-okay-"))
+                            .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+
+    assert_eq!(
+        (got_active, got_quarantined, got_helpers),
+        (want_active, want_quarantined, want_helpers),
+        "\nlang corpus denominator moved.\n  \
+         active:      {got_active} (pinned {want_active})\n  \
+         quarantined: {got_quarantined} (pinned {want_quarantined})\n  \
+         helpers:     {got_helpers} (pinned {want_helpers})\n\n\
+         If coverage GREW, bank it: update {} and keep the ratchet tight.\n\
+         If coverage SHRANK, that is the thing this gate exists to make you \
+         say out loud in a diff.",
+        pin_path.display()
+    );
+
+    // The three buckets must exhaust every .nix under lang/, so a fixture
+    // parked in some new subdirectory cannot shrink `active` and
+    // `quarantined` together while the pin still reconciles.
+    let mut total = 0usize;
+    let mut stack = vec![lang.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("nix") {
+                total += 1;
+            }
+        }
+    }
+    assert_eq!(
+        got_active + got_quarantined + got_helpers,
+        total,
+        "the three buckets ({got_active} active + {got_quarantined} \
+         quarantined + {got_helpers} helpers) do not account for all {total} \
+         .nix files under {}. A fixture is parked somewhere neither bucket \
+         reads, which is quarantine without a ledger.",
+        lang.display()
+    );
+
+    eprintln!(
+        "corpus_denominator_is_pinned: {{\"active\":{got_active},\
+         \"quarantined\":{got_quarantined},\"helpers\":{got_helpers}}}"
+    );
+}

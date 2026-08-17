@@ -44,7 +44,32 @@ Of 144 upstream eval-okay tests: 13 need `.flags` args, 19 the local oracle can'
 JSON-eval — 112 candidates. **sui passes 116** (now active in `../`); the **21**
 gaps parked here are the language frontier — expand the active corpus by closing
 them. This turned the language test surface from 25 curated fixtures into a
-measured 116/(116+21) coverage number against Nix's own tests.
+measured 117/(117+20) coverage number against Nix's own tests.
+
+> **That ratio is now a COMPARED value, not a printed one (2026-08-17).** It
+> lived only in this sentence and in a test's `eprintln!`, so it rotted the
+> moment a fixture moved — and it rotted *downward*, which never looks wrong.
+> It is pinned in `../CORPUS-DENOMINATOR.json` and enforced by
+> `corpus_denominator_is_pinned`; `quarantined_fixtures_still_fail` covers the
+> other half (a quarantined fixture that starts passing). Update the pin in the
+> same commit that moves a fixture, in either direction.
+
+### `eval-okay-getattrpos` — FIXED + graduated (2026-08-17), and found BY the new gate
+
+`builtins.unsafeGetAttrPos "foo" as` now returns the correct
+`{"column":5,"file":"eval-okay-getattrpos.nix","line":3}`.
+
+**Nobody noticed it had been fixed.** It was quarantined with no entry in this
+file, and it sat here passing — invisible, because `lang_fixtures()` uses a
+non-recursive `read_dir` and never looks in this directory. The suite reported
+`116 / 116 fixtures passing` the whole time, which was true of its numerator and
+silent about the fixture it was no longer counting.
+
+It was surfaced on the first run of `quarantined_fixtures_still_fail`, i.e. the
+gate paid for itself before it was committed. Verified a genuine pass, not a
+placeholder artifact: the `.exp` contains no `<thunk…>`/`<lambda>` token, so the
+match is real bytes rather than two error-shapes agreeing. Promotion is
+directory-independent here because the fixture uses `baseNameOf pos.file`.
 
 ### `eval-okay-deepseq` — FIXED + graduated (2026-07-22)
 
