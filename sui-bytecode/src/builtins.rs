@@ -135,6 +135,20 @@ impl BuiltinRegistry {
         let time_sym = interner.intern("currentTime");
         attrs.insert(time_sym, VMValue::Int(0));
 
+        // `builtins.builtins` — nix's `builtins` attrset contains ITSELF (it is
+        // what `scopedImport`'s injected scope is built from, and `lib` probes
+        // it), so `builtins ? builtins` is TRUE on nix and on the tree-walker.
+        // It answered FALSE here.
+        //
+        // Nix's is infinitely self-referential; this is ONE level deep, because
+        // the VM's `builtins` is rebuilt eagerly on every `PushBuiltins` and a
+        // truly cyclic value would not terminate. One level answers every shape
+        // observed in the wild (`builtins ? builtins`, `builtins.builtins.X`);
+        // `builtins.builtins.builtins` is the honest remaining gap.
+        let self_sym = interner.intern("builtins");
+        let inner = attrs.clone();
+        attrs.insert(self_sym, VMValue::Attrs(inner));
+
         VMValue::Attrs(attrs)
     }
 
@@ -898,7 +912,12 @@ impl BuiltinRegistry {
                     })
                 }
             };
-            Ok(VMValue::Bool(std::path::Path::new(&path).exists()))
+            // Redirect the READ through the installed path materializer: a
+            // flake input's `/nix/store/<narhash>-source` prefix is never on
+            // disk, so a bare `.exists()` answers NO for every file in a
+            // fetched input — silently, since `false` is a legal answer.
+            let read_path = crate::bridge::materialize(&path);
+            Ok(VMValue::Bool(std::path::Path::new(&read_path).exists()))
         });
 
         // readFile: read contents of a file
@@ -914,7 +933,11 @@ impl BuiltinRegistry {
                     })
                 }
             };
-            let content = std::fs::read_to_string(&path)
+            // Same redirect as `pathExists` — the two MUST agree about a path,
+            // or a `if pathExists p then readFile p` guard passes and the read
+            // then ENOENTs.
+            let read_path = crate::bridge::materialize(&path);
+            let content = std::fs::read_to_string(&read_path)
                 .map_err(|e| VMError::Throw(format!("readFile {path}: {e}")))?;
             Ok(VMValue::String(content))
         });
@@ -932,9 +955,14 @@ impl BuiltinRegistry {
                     })
                 }
             };
-            // Return empty attrs for now (VM doesn't have interner access here)
+            // Unreachable whenever a bridge is installed: `builtins.readDir`
+            // is bridge-dispatched by name in `VM::try_vm_builtin`, so the
+            // tree-walker answers it — and the tree-walker's `readDir` already
+            // routes through `path::materialize`. This stub is the bridgeless
+            // path only; it cannot succeed, so there is nothing to redirect.
+            let _ = path;
             Err(VMError::Throw(
-                "readDir: requires VM-level dispatch for interner access".to_string(),
+                "readDir: requires the tree-walker bridge (no interner access here)".to_string(),
             ))
         });
 
@@ -1257,7 +1285,9 @@ impl BuiltinRegistry {
                     });
                 }
             };
-            match std::fs::symlink_metadata(&path) {
+            // Same redirect as `pathExists`/`readFile`.
+            let read_path = crate::bridge::materialize(&path);
+            match std::fs::symlink_metadata(&read_path) {
                 Ok(meta) => {
                     let kind = if meta.is_symlink() {
                         "symlink"
@@ -1368,8 +1398,18 @@ impl BuiltinRegistry {
 
         // Bridge complex builtins to tree-walker.
         // These need tree-walker state, complex algorithms, or I/O.
+        //
+        // ★ REGISTERING A BRIDGE-DISPATCHED BUILTIN IS NOT OPTIONAL: the name
+        // must appear HERE even though `VM::try_vm_builtin` dispatches it by
+        // name, because `make_builtins_attrset` is built from THIS registry
+        // and it is what `builtins ? <name>` answers from. `path`,
+        // `parseFlakeRef` and `flakeRefToString` were dispatched but never
+        // registered, so `builtins ? path` answered FALSE while nix and the
+        // tree-walker answer TRUE — and nixpkgs `lib` gates on exactly that
+        // shape, so a false answer silently takes the other branch.
         for name in &["convertHash", "toXML", "toFile", "filterSource",
-                      "fetchClosure", "outputOf", "hashFile", "hashString"]
+                      "fetchClosure", "outputOf", "hashFile", "hashString",
+                      "path", "parseFlakeRef", "flakeRefToString"]
         {
             let n = (*name).to_string();
             self.register(name, 1, move |args| {

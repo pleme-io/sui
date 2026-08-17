@@ -71,7 +71,11 @@ pub mod value;
 pub mod vm;
 
 // Re-exports for ergonomic use.
-pub use bridge::{BuiltinBridgeFn, BuiltinBridgeGuard, call_builtin_bridge, set_builtin_bridge};
+pub use bridge::{
+    BuiltinBridgeFn, BuiltinBridgeGuard, PathMaterializerFn, PathMaterializerGuard,
+    call_builtin_bridge, materialize, materialize_path, set_builtin_bridge,
+    set_path_materializer,
+};
 pub use builtins::BuiltinRegistry;
 pub use chunk::Chunk;
 pub use compiler::Compiler;
