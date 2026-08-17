@@ -43,7 +43,7 @@
 //!   ladder is the wiring.
 //! - **LiveTODO(gen)** — absorb-all-languages: only [`GenDomain::Cargo`] is
 //!   shipped; the other domains are the GEN-TYPED-SPEC-CONTRACT M3 arc.
-//! - **LiveTODO(coopt)** — the akeyless-nix-images mutual co-optimization
+//! - **LiveTODO(coopt)** — the vendor-images mutual co-optimization
 //!   loop is M4; [`CooptCfg::enabled`] is `false` in the prescribed posture
 //!   until the promessa + lapidar controller is wired.
 //! - **LiveTODO(discovered)** — [`SuperCacheCiConfig::discovered`] is the
@@ -432,7 +432,7 @@ pub struct BreatheCfg {
     pub escalation: OnDemandLadder,
 }
 
-/// The akeyless-nix-images mutual co-optimization toggles.
+/// The vendor-images mutual co-optimization toggles.
 ///
 /// **LiveTODO(coopt):** M4 — [`enabled`](CooptCfg::enabled) is `false` in the
 /// prescribed posture until the promessa + lapidar controller is wired.
@@ -441,7 +441,7 @@ pub struct CooptCfg {
     /// Master toggle for the co-optimization loop.
     pub enabled: bool,
     /// The images super-cache-ci builds + co-optimizes with.
-    /// **LiveTODO:** populate from the akeyless-nix-images image manifest
+    /// **LiveTODO:** populate from the vendor image manifest
     /// (kept empty here rather than fabricate the microservice image names).
     pub images: Vec<String>,
     /// Git refs whose change re-triggers a co-optimized build.
@@ -479,7 +479,7 @@ pub struct SuperCacheCiConfig {
     pub builders: BuildersCfg,
     /// The lifecycle-breath posture.
     pub breathe: BreatheCfg,
-    /// The akeyless co-optimization toggles.
+    /// The image co-optimization toggles.
     pub coopt: CooptCfg,
     /// The **perpetual cache-warming** posture — keeps the super-cache HOT so a
     /// build substitutes warm instead of cold-compiling (re-warm on
@@ -628,7 +628,7 @@ impl TieredConfig for SuperCacheCiConfig {
                 // OFF until the M4 promessa + lapidar controller is wired.
                 enabled: false,
                 images: Vec::new(),
-                rebuild_on: vec!["akeyless-nix-images".to_string()],
+                rebuild_on: vec!["vendor-images".to_string()],
                 lapidar: false,
                 promessa_ref: None,
             },
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn coopt_is_off_until_wired() {
-        // The akeyless co-optimization loop is M4 (unwired). prescribed_default
+        // The image co-optimization loop is M4 (unwired). prescribed_default
         // must NOT claim it is running.
         let p = SuperCacheCiConfig::prescribed_default();
         assert!(!p.coopt.enabled);

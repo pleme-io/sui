@@ -753,8 +753,8 @@ mod tests {
 
     fn watched(path: &str, tag: &str) -> WatchedDockerfile {
         WatchedDockerfile {
-            owner: "akeylesslabs".to_string(),
-            repo: "akeyless-main-repo".to_string(),
+            owner: "example-org".to_string(),
+            repo: "example-images".to_string(),
             git_ref: "master".to_string(),
             path: path.to_string(),
             image_tag: tag.to_string(),

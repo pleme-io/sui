@@ -968,7 +968,7 @@ mod tests {
     fn env_path_prepend_self_reference_resolves() {
         let env = MockDockerfileEnvironment::default().with_dockerfile(
             "p",
-            "FROM ubuntu:24.04\nENV VIRTUAL_ENV=/opt/venv\nENV PATH=\"/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}\"\n",
+            "FROM ubuntu:24.04\nENV VIRTUAL_ENV=/opt/venv\nENV PATH=\"/opt/venv/bin:/opt/app/bin:/usr/local/ssl/bin:${PATH}\"\n",
         );
         let graph = apply(&DockerfileArgs { path: "p".into() }, &env).unwrap();
         assert_eq!(graph.nodes.len(), 3);
@@ -1022,61 +1022,55 @@ mod tests {
         }
     }
 
-    /// Regression fixture: the real `VOLUME` lines from akeyless's base
-    /// image Dockerfile (akeylesslabs/akeyless-main-repo,
-    /// `supa-charge-proof` branch,
-    /// `tools/deployment/docker/base/Dockerfile`, fetched 2026-07-08 via
-    /// the GitHub contents API) — this exact declarative shape (two
-    /// separate plain-form `VOLUME` lines with a trailing slash) is what
-    /// surfaced the gap during the supa-charge-akeyless-ci Phase 5 proof
-    /// run.
+    /// Regression fixture for the `VOLUME` shape a real vendor base image
+    /// Dockerfile uses: two separate plain-form `VOLUME` lines, each with a
+    /// trailing slash, one of them preceded by a comment. That exact
+    /// declarative shape surfaced a parser gap during a CI-acceleration
+    /// proof run, so it is pinned here.
     #[test]
-    fn real_akeyless_base_dockerfile_volume_lines_regression() {
+    fn vendor_base_dockerfile_volume_lines_regression() {
         let env = MockDockerfileEnvironment::default().with_dockerfile(
-            "akeyless-base",
+            "vendor-base",
             "FROM ubuntu:24.04\n\
-             VOLUME /akeyless_shared_vol/\n\
+             VOLUME /app_shared_vol/\n\
              # External shared volume to save log files\n\
-             VOLUME /var/log/akeyless/\n",
+             VOLUME /var/log/app/\n",
         );
-        let graph = apply(&DockerfileArgs { path: "akeyless-base".into() }, &env).unwrap();
+        let graph = apply(&DockerfileArgs { path: "vendor-base".into() }, &env).unwrap();
         assert_eq!(graph.nodes.len(), 3);
         match &graph.nodes[1].instruction {
             DockerfileInstruction::Volume { paths } => {
-                assert_eq!(paths, &vec!["/akeyless_shared_vol/".to_string()]);
+                assert_eq!(paths, &vec!["/app_shared_vol/".to_string()]);
             }
             _ => panic!("expected VOLUME"),
         }
         match &graph.nodes[2].instruction {
             DockerfileInstruction::Volume { paths } => {
-                assert_eq!(paths, &vec!["/var/log/akeyless/".to_string()]);
+                assert_eq!(paths, &vec!["/var/log/app/".to_string()]);
             }
             _ => panic!("expected VOLUME"),
         }
     }
 
-    /// Regression fixture: the real `ENV PATH` prepend line from
-    /// akeyless's base image Dockerfile (akeylesslabs/akeyless-main-repo,
-    /// `supa-charge-proof` branch,
-    /// `tools/deployment/docker/base/Dockerfile`, fetched 2026-07-08 via
-    /// the GitHub contents API) — `$PATH` here refers to the environment's
-    /// own inherited PATH, not a build ARG; this exact shape surfaced the
-    /// ARG-vs-ENV gap during the supa-charge-akeyless-ci Phase 5 proof run.
+    /// Regression fixture for the `ENV PATH` prepend shape a real vendor
+    /// base image Dockerfile uses — `$PATH` here refers to the
+    /// environment's own inherited PATH, not a build ARG. That exact shape
+    /// surfaced the ARG-vs-ENV gap during a CI-acceleration proof run.
     #[test]
-    fn real_akeyless_base_dockerfile_env_path_prepend_regression() {
+    fn vendor_base_dockerfile_env_path_prepend_regression() {
         let env = MockDockerfileEnvironment::default().with_dockerfile(
-            "akeyless-base",
+            "vendor-base",
             "FROM ubuntu:24.04\n\
-             RUN mkdir /akeyless/bin\n\
+             RUN mkdir /opt/app/bin\n\
              ENV VIRTUAL_ENV=/opt/venv\n\
-             ENV PATH=\"/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}\"\n",
+             ENV PATH=\"/opt/venv/bin:/opt/app/bin:/usr/local/ssl/bin:${PATH}\"\n",
         );
-        let graph = apply(&DockerfileArgs { path: "akeyless-base".into() }, &env).unwrap();
+        let graph = apply(&DockerfileArgs { path: "vendor-base".into() }, &env).unwrap();
         assert_eq!(graph.nodes.len(), 4);
         match &graph.nodes[3].instruction {
             DockerfileInstruction::Env { name, value } => {
                 assert_eq!(name, "PATH");
-                assert_eq!(value, "/opt/venv/bin:/akeyless/bin:/usr/local/ssl/bin:${PATH}");
+                assert_eq!(value, "/opt/venv/bin:/opt/app/bin:/usr/local/ssl/bin:${PATH}");
             }
             _ => panic!("expected ENV"),
         }

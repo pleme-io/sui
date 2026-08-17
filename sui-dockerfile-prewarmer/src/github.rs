@@ -181,8 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn latest_commit_sha_returns_the_configured_sha() {
-        let api = MockCommitsApi::new().with_sha("akeylesslabs", "akeyless-main-repo", "master", "Dockerfile", "abc123");
-        let sha = api.latest_commit_sha("akeylesslabs", "akeyless-main-repo", "master", "Dockerfile").await.unwrap();
+        let api = MockCommitsApi::new().with_sha("example-org", "example-images", "master", "Dockerfile", "abc123");
+        let sha = api.latest_commit_sha("example-org", "example-images", "master", "Dockerfile").await.unwrap();
         assert_eq!(sha, "abc123");
     }
 

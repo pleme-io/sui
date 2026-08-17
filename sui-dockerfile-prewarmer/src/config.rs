@@ -221,22 +221,22 @@ mod tests {
     #[test]
     fn valid_entry_validates() {
         let raw = RawWatchedDockerfile {
-            owner: "akeylesslabs".to_string(),
-            repo: "akeyless-main-repo".to_string(),
+            owner: "example-org".to_string(),
+            repo: "example-images".to_string(),
             git_ref: "master".to_string(),
-            path: "tools/deployment/docker/base/Dockerfile".to_string(),
-            image_tag: "akeyless/base:prewarm".to_string(),
+            path: "docker/base/Dockerfile".to_string(),
+            image_tag: "example/base:prewarm".to_string(),
         };
         let validated = raw.validate(0).unwrap();
-        assert_eq!(validated.owner, "akeylesslabs");
+        assert_eq!(validated.owner, "example-org");
         assert_eq!(validated.git_ref, "master");
     }
 
     #[test]
     fn missing_ref_defaults_to_main() {
         let raw = RawWatchedDockerfile {
-            owner: "akeylesslabs".to_string(),
-            repo: "akeyless-main-repo".to_string(),
+            owner: "example-org".to_string(),
+            repo: "example-images".to_string(),
             git_ref: String::new(),
             path: "Dockerfile".to_string(),
             image_tag: "img:tag".to_string(),
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn missing_repo_is_a_typed_config_error_not_a_panic() {
         let raw = RawWatchedDockerfile {
-            owner: "akeylesslabs".to_string(),
+            owner: "example-org".to_string(),
             repo: String::new(),
             git_ref: "main".to_string(),
             path: "Dockerfile".to_string(),
@@ -325,14 +325,14 @@ mod tests {
         let config_file = dir.path().join("prewarmer.yaml");
         std::fs::write(
             &config_file,
-            "poll_interval_secs: 60\nwatched:\n  - owner: akeylesslabs\n    repo: akeyless-main-repo\n    ref: master\n    path: tools/deployment/docker/base/Dockerfile\n    image_tag: akeyless/base:prewarm\n",
+            "poll_interval_secs: 60\nwatched:\n  - owner: example-org\n    repo: example-images\n    ref: master\n    path: docker/base/Dockerfile\n    image_tag: example/base:prewarm\n",
         )
         .unwrap();
 
         let cfg = PrewarmerConfig::load_from(&config_file).unwrap();
         assert_eq!(cfg.poll_interval_secs, 60);
         assert_eq!(cfg.watched.len(), 1);
-        assert_eq!(cfg.watched[0].owner, "akeylesslabs");
+        assert_eq!(cfg.watched[0].owner, "example-org");
         assert_eq!(cfg.watched[0].git_ref, "master");
     }
 
@@ -342,7 +342,7 @@ mod tests {
         let config_file = dir.path().join("prewarmer.yaml");
         std::fs::write(
             &config_file,
-            "watched:\n  - owner: akeylesslabs\n    path: Dockerfile\n    image_tag: img:tag\n",
+            "watched:\n  - owner: example-org\n    path: Dockerfile\n    image_tag: img:tag\n",
         )
         .unwrap();
 

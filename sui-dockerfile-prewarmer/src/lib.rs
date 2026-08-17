@@ -1,4 +1,4 @@
-//! Phase 3 of `supa-charge-akeyless-ci`: the standing pre-warming
+//! Phase 3 of `supa-charge-ci`: the standing pre-warming
 //! service.
 //!
 //! Polls a watched list of public Dockerfiles (config: repo, ref, path)
@@ -182,11 +182,11 @@ mod tests {
 
     fn watched() -> WatchedDockerfile {
         WatchedDockerfile {
-            owner: "akeylesslabs".to_string(),
-            repo: "akeyless-main-repo".to_string(),
+            owner: "example-org".to_string(),
+            repo: "example-images".to_string(),
             git_ref: "master".to_string(),
-            path: "tools/deployment/docker/base/Dockerfile".to_string(),
-            image_tag: "akeyless/base:prewarm".to_string(),
+            path: "docker/base/Dockerfile".to_string(),
+            image_tag: "example/base:prewarm".to_string(),
         }
     }
 

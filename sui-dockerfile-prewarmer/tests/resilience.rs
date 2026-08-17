@@ -152,11 +152,11 @@ impl CommitsApi for ScriptedApi {
 
 fn watched(path: &str) -> WatchedDockerfile {
     WatchedDockerfile {
-        owner: "akeylesslabs".to_string(),
-        repo: "akeyless-main-repo".to_string(),
+        owner: "example-org".to_string(),
+        repo: "example-images".to_string(),
         git_ref: "master".to_string(),
         path: path.to_string(),
-        image_tag: "akeyless/base:prewarm".to_string(),
+        image_tag: "example/base:prewarm".to_string(),
     }
 }
 
@@ -207,7 +207,7 @@ async fn one_failing_entry_does_not_abort_the_rest_of_the_cycle() {
     // The loop must keep going: entry A fails its check (404), entry B
     // succeeds and pre-warms. Proves a per-entry failure is isolated and
     // never aborts the whole poll cycle.
-    let entry_a = watched("tools/deployment/docker/base/Dockerfile");
+    let entry_a = watched("docker/base/Dockerfile");
     let entry_b = watched("Dockerfile.nonroot_gateway");
 
     let api = ScriptedApi::new(vec![

@@ -315,7 +315,7 @@ mod nar_memo {
         #[test]
         fn a_working_tree_is_not() {
             assert!(
-                !content_addressed("/Users/x/code/github/akeylesslabs/akeyless-main-repo"),
+                !content_addressed("/Users/x/code/github/example-org/example-images"),
                 "a working tree mutates, so memoizing it across runs would serve bytes that no \
                  longer exist -- exactly the stale-source class the disk tier must never enter"
             );

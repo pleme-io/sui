@@ -320,8 +320,8 @@ mod tests {
         assert_eq!(parse_env("n", "none"), Ok(EnvClass::None));
         assert_eq!(parse_env("n", "localstack"), Ok(EnvClass::LocalStack));
         assert_eq!(
-            parse_env("n", "warmpool:mte-staging"),
-            Ok(EnvClass::WarmPoolClaim("mte-staging".to_string()))
+            parse_env("n", "warmpool:example-staging"),
+            Ok(EnvClass::WarmPoolClaim("example-staging".to_string()))
         );
         assert_eq!(
             parse_env("n", "warmpool:"),

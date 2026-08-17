@@ -1,4 +1,4 @@
-//! Dockerfile parser edge-case coverage matching the REAL akeyless
+//! Dockerfile parser edge-case coverage matching REAL vendor
 //! Dockerfile shapes (multi-stage builds, `RUN --mount=type=bind`,
 //! `ARG TARGETARCH` multi-arch, `${VAR}` interpolation, comments,
 //! line-continuations, heredocs).
@@ -15,7 +15,7 @@
 //!     instructions), the error names the phase and offending token.
 //!
 //! Never a panic, never a silent WRONG graph. These tests do not rewrite
-//! the parser; they pin its behavior at the exact edges a real akeyless
+//! the parser; they pin its behavior at the exact edges a real vendor
 //! image build exercises.
 
 use sui_spec::dockerfile::{apply, DockerfileArgs, DockerfileGraph, DockerfileInstruction, InstructionKind, MockDockerfileEnvironment};
@@ -217,11 +217,11 @@ fn an_unresolved_arg_reference_is_a_clean_typed_error_not_a_panic() {
 
 #[test]
 fn env_self_referencing_path_prepend_is_left_literal_not_an_arg_error() {
-    // The real akeyless base image shape: prepend to $PATH. $PATH is a
+    // The real vendor base image shape: prepend to $PATH. $PATH is a
     // well-known env var (never a build ARG) so it is left literal, NOT
     // treated as an unresolved ARG reference.
     let g = parse(
-        "FROM ubuntu:24.04\nENV PATH=\"/opt/venv/bin:/akeyless/bin:${PATH}\"\n",
+        "FROM ubuntu:24.04\nENV PATH=\"/opt/venv/bin:/opt/app/bin:${PATH}\"\n",
         &[],
     )
     .expect("PATH prepend must not be an ARG error");
@@ -358,7 +358,7 @@ fn label_and_user_and_expose_are_typed_errors_not_silently_dropped() {
     // These are common real instructions this scoped parser does NOT
     // model — each must be a NAMED typed error, never silently skipped
     // (silent-skip would produce a wrong graph).
-    for instr in ["LABEL maintainer=akeyless", "USER nonroot", "EXPOSE 8080", "SHELL [\"/bin/bash\", \"-c\"]", "STOPSIGNAL SIGTERM"] {
+    for instr in ["LABEL maintainer=example", "USER nonroot", "EXPOSE 8080", "SHELL [\"/bin/bash\", \"-c\"]", "STOPSIGNAL SIGTERM"] {
         let text = format!("FROM debian\n{instr}\n");
         let err = parse(&text, &[]).expect_err("unsupported instruction must be a typed error");
         match err {
@@ -406,14 +406,14 @@ fn empty_volume_is_a_clean_typed_error() {
     assert!(matches!(err, SpecError::Interp { .. }), "typed error: {err:?}");
 }
 
-// ── a realistic composite akeyless-shaped Dockerfile ─────────────────
+// ── a realistic composite vendor-shaped Dockerfile ───────────────────
 
 #[test]
 fn a_composite_multi_stage_arch_gated_dockerfile_parses_to_the_expected_shape() {
     // Exercises multi-stage + AS-alias + ARG TARGETARCH multi-arch +
     // --mount=type=bind + ${VAR} interpolation + comments + line
     // continuation + COPY --from, all in one file — the shape a real
-    // akeyless gateway image build hits.
+    // vendor gateway image build hits.
     let text = "\
 # syntax=docker/dockerfile:1
 FROM golang:1.22 AS build
