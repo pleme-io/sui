@@ -5735,10 +5735,25 @@ fn parse_clone_target(flake_ref: &str) -> Result<(String, Option<String>), CliEr
     }
 }
 
+/// Ensure every locked flake input is present locally, and report per-input
+/// outcomes as typed data.
+///
+/// # What changed, and why it matters beyond this verb
+///
+/// This used to copy the flake's own source tree to a temp directory and stop —
+/// its comment said *"Full impl walks all inputs"* — so it shared a name with
+/// `nix flake archive` while doing something else entirely. Walking the inputs
+/// is the point: it is what makes "are my inputs available?" answerable.
+///
+/// The `--json` report exists so a consumer never has to read a sentence. A
+/// fleet tool was previously reduced to matching `"HTTP error 429"` against
+/// nix's English stderr to learn that an upstream had throttled it; the same
+/// fact is now a `kind: "throttled"` tag with the server's own `Retry-After`
+/// beside it. `scanned` is emitted as the denominator, so zero failures over
+/// zero inputs cannot read as success.
 fn flake_archive(flake_ref: &str, json: bool) -> Result<(), CliError> {
-    // Minimal archive: copy the flake's source + flake.lock to a
-    // store-like archive directory.  Full impl walks all inputs;
-    // for now produce a JSON summary or a notification.
+    use sui_eval::fetcher::{ArchiveReport, InputFailure, InputFetcher};
+
     let source = std::path::PathBuf::from(flake_ref);
     if !source.exists() {
         return Err(CliError::NotImplemented(format!(
@@ -5751,20 +5766,84 @@ fn flake_archive(flake_ref: &str, json: bool) -> Result<(), CliError> {
             "flake archive: no flake.nix at {}", flake_nix.display()
         )));
     }
-    let archive_dir = std::env::temp_dir()
-        .join(format!("sui-flake-archive-{}", std::process::id()));
-    std::fs::create_dir_all(&archive_dir)
-        .map_err(|e| CliError::NotImplemented(format!("flake archive: mkdir: {e}")))?;
-    copy_recursive(&source, &archive_dir)?;
-    if json {
-        println!("{}", serde_json::json!({
-            "source":  flake_ref,
-            "archive": archive_dir.display().to_string(),
-        }));
-    } else {
-        println!("archived to: {}", archive_dir.display());
+
+    // No lock file means nothing is pinned, and an unpinned walk would fetch
+    // whatever HEAD happens to be — a different operation with a different
+    // trust story. Refuse rather than silently doing the other thing.
+    let lock_path = source.join("flake.lock");
+    let lock_text = std::fs::read_to_string(&lock_path).map_err(|e| {
+        CliError::NotImplemented(format!(
+            "flake archive: cannot read {}: {e} — an unlocked flake has no pinned \
+             inputs to archive",
+            lock_path.display()
+        ))
+    })?;
+    let lock = sui_compat::flake::FlakeLock::parse(&lock_text)
+        .map_err(|e| CliError::NotImplemented(format!("flake archive: {}: {e}", lock_path.display())))?;
+
+    let fetcher = InputFetcher::new();
+    let mut report = ArchiveReport {
+        scanned: 0,
+        already_present: 0,
+        fetched: 0,
+        failures: Vec::new(),
+    };
+
+    for (name, node) in &lock.nodes {
+        // The root node carries no `locked` block — it IS this flake, not an
+        // input — so skipping it is correct and must not count toward `scanned`.
+        let Some(locked) = node.locked.as_ref() else { continue };
+        report.scanned += 1;
+
+        // A cache hit and a fresh fetch are counted separately because the
+        // difference is the whole operational question: "already warm" and "I
+        // just pulled 400 MB" are not the same answer.
+        let was_cached = fetcher.is_cached(locked);
+        match fetcher.fetch(locked) {
+            Ok(_) => {
+                if was_cached {
+                    report.already_present += 1;
+                } else {
+                    report.fetched += 1;
+                }
+            }
+            Err(e) => report.failures.push(InputFailure::from_error(name, &e)),
+        }
     }
-    Ok(())
+
+    if json {
+        // serde, not a hand-built string: ★★ TYPED EMISSION, and the report is
+        // the machine surface so its shape is a contract.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|e| CliError::NotImplemented(format!("flake archive: {e}")))?
+        );
+    } else {
+        println!(
+            "archive: {} input(s) scanned — {} already present, {} fetched, {} failed",
+            report.scanned, report.already_present, report.fetched, report.failures.len()
+        );
+        for f in &report.failures {
+            // Name the input and the remedy-bearing category, not just the text.
+            let hint = if f.recoverable_elsewhere {
+                " [another egress can fetch this]"
+            } else {
+                ""
+            };
+            println!("  {} — {}{}", f.input, f.message, hint);
+        }
+    }
+
+    if report.failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::NotImplemented(format!(
+            "flake archive: {} of {} input(s) unavailable",
+            report.failures.len(),
+            report.scanned
+        )))
+    }
 }
 
 fn flake_prefetch(flake_ref: &str, json: bool) -> Result<(), CliError> {

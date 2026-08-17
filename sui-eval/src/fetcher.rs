@@ -109,6 +109,113 @@ impl FetchError {
     }
 }
 
+// ── Typed archive report ──────────────────────────────────────
+
+/// Which category a per-input failure fell into, as a stable machine-readable
+/// tag.
+///
+/// This is the field a downstream tool branches on instead of matching prose.
+/// The tags are wire-facing, so they are kebab-case and **must not be renamed**
+/// once a consumer reads them — a renamed tag silently stops matching, which is
+/// the same class of failure as the prose-matching it replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureKind {
+    /// The upstream refused to serve content it has. **The one recoverable
+    /// kind**: a different network egress can fetch identical bytes.
+    Throttled,
+    /// Our credential is insufficient (401/403). Another egress is refused
+    /// identically.
+    Unauthorized,
+    /// 404 — absent, or present but invisible to this credential.
+    NotFound,
+    /// A non-2xx nobody wrote an arm for; `status` carries the code.
+    UnexpectedStatus,
+    /// DNS / TLS / timeout — no response arrived at all.
+    Transport,
+    /// Not an HTTP failure: unsupported input type, missing field, IO,
+    /// extraction.
+    Local,
+}
+
+/// One input that could not be fetched, described well enough that a caller can
+/// decide what to do without reading a sentence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InputFailure {
+    /// The `flake.lock` node name, so the operator knows *which* input.
+    pub input: String,
+    pub kind: FailureKind,
+    /// The HTTP status when there was one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// The server's own `Retry-After` in seconds, when it sent one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<u64>,
+    /// Whether a different network egress could plausibly succeed. Derived, not
+    /// stored twice — a consumer should not have to re-derive policy from a tag.
+    pub recoverable_elsewhere: bool,
+    /// The human sentence, kept for a log. **Not** the machine surface: a
+    /// consumer that parses this field has re-created the defect.
+    pub message: String,
+}
+
+impl InputFailure {
+    /// Classify a fetch failure for a named input.
+    #[must_use]
+    pub fn from_error(input: &str, err: &FetchError) -> Self {
+        let kind = match err {
+            FetchError::Throttled { .. } => FailureKind::Throttled,
+            FetchError::Unauthorized { .. } => FailureKind::Unauthorized,
+            FetchError::NotFound { .. } => FailureKind::NotFound,
+            FetchError::UnexpectedStatus { .. } => FailureKind::UnexpectedStatus,
+            FetchError::Download(_) => FailureKind::Transport,
+            _ => FailureKind::Local,
+        };
+        Self {
+            input: input.to_string(),
+            kind,
+            status: err.status(),
+            retry_after: match err {
+                FetchError::Throttled { retry_after, .. } => *retry_after,
+                _ => None,
+            },
+            recoverable_elsewhere: err.is_throttled(),
+            message: err.to_string(),
+        }
+    }
+}
+
+/// The outcome of walking every locked input.
+///
+/// `scanned` is carried deliberately: it is the **denominator**. A report of
+/// zero failures means nothing without it — a walk that discovered no inputs
+/// would otherwise be indistinguishable from a fleet that is fully warm, which
+/// is the vacuous-success shape this codebase keeps paying for.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ArchiveReport {
+    pub scanned: usize,
+    pub already_present: usize,
+    pub fetched: usize,
+    pub failures: Vec<InputFailure>,
+}
+
+impl ArchiveReport {
+    /// Whether every scanned input is now available locally.
+    ///
+    /// **False when nothing was scanned**, by construction: "warm" is a claim
+    /// about a non-empty set, and an empty walk has not earned it.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.scanned > 0 && self.failures.is_empty()
+    }
+
+    /// The failures a different egress could fix — what a recovery tool acts on.
+    #[must_use]
+    pub fn recoverable(&self) -> impl Iterator<Item = &InputFailure> {
+        self.failures.iter().filter(|f| f.recoverable_elsewhere)
+    }
+}
+
 // ── InputFetcher ──────────────────────────────────────────────
 
 /// A content-addressed input fetcher that downloads and caches flake inputs.
@@ -146,25 +253,50 @@ impl InputFetcher {
         &self.cache_dir
     }
 
+    /// Whether this input would be served from cache without any network access.
+    ///
+    /// Deliberately shares [`Self::cache_probe`] with [`Self::fetch`] rather
+    /// than re-deriving the cache path: two independent notions of "cached"
+    /// drift, and the drift is invisible — a reporter would announce "already
+    /// present" for an entry the fetcher then re-downloads. Note it applies the
+    /// same **non-empty** requirement, so a directory left behind by a fetch
+    /// that died mid-extract counts as a miss here exactly as it does there.
+    #[must_use]
+    pub fn is_cached(&self, locked: &LockedInput) -> bool {
+        self.cache_probe(locked).is_some()
+    }
+
+    /// Resolve a usable cache entry for `locked`, if one exists.
+    ///
+    /// `None` means "fetch is required", covering both no-entry and
+    /// entry-exists-but-is-empty.
+    fn cache_probe(&self, locked: &LockedInput) -> Option<PathBuf> {
+        let nar_hash = locked.nar_hash.as_ref()?;
+        let cached = self.cache_dir.join(sanitize_hash(nar_hash));
+        if !cached.exists() {
+            return None;
+        }
+        let resolved = find_single_subdir_or_self(&cached);
+        is_non_empty_dir(&resolved).then_some(resolved)
+    }
+
     /// Fetch a locked input and return the local filesystem path.
     ///
     /// Uses content-addressed caching by `narHash` — if the hash is present
     /// and a cached directory exists, returns immediately without network access.
     pub fn fetch(&self, locked: &LockedInput) -> Result<PathBuf, FetchError> {
-        // Check cache first (keyed by narHash).
+        // Check cache first (keyed by narHash), through the SAME probe
+        // `is_cached` uses so a reporter and the fetcher can never disagree
+        // about whether network access is about to happen.
+        if let Some(resolved) = self.cache_probe(locked) {
+            return Ok(resolved);
+        }
+        // A present-but-empty entry is a miss (a previous fetch created the
+        // directory then died before extracting). Clear it so the retry below
+        // is not blocked by its own debris.
         if let Some(ref nar_hash) = locked.nar_hash {
-            let cache_key = sanitize_hash(nar_hash);
-            let cached = self.cache_dir.join(&cache_key);
+            let cached = self.cache_dir.join(sanitize_hash(nar_hash));
             if cached.exists() {
-                let resolved = find_single_subdir_or_self(&cached);
-                // Validate the cache entry is non-empty.  A previous fetch may
-                // have created the directory but failed before extracting any
-                // content (e.g. network timeout).  Treat empty dirs as cache
-                // misses so the fetch is retried.
-                if is_non_empty_dir(&resolved) {
-                    return Ok(resolved);
-                }
-                // Cache entry is empty/invalid — remove it and re-fetch.
                 let _ = std::fs::remove_dir_all(&cached);
             }
         }
@@ -931,6 +1063,122 @@ fn dirs_cache_dir() -> PathBuf {
 }
 
 // ── Tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod archive_report_tests {
+    use super::*;
+
+    fn throttled(retry: Option<u64>) -> FetchError {
+        FetchError::Throttled { url: "u".into(), status: 429, retry_after: retry }
+    }
+
+    #[test]
+    fn a_throttle_becomes_a_machine_readable_tag_with_the_servers_advice() {
+        // The whole deliverable in one assertion: the fact a consumer used to
+        // recover by matching "HTTP error 429" is now a tag plus a number.
+        let f = InputFailure::from_error("nixpkgs", &throttled(Some(120)));
+        assert_eq!(f.kind, FailureKind::Throttled);
+        assert_eq!(f.status, Some(429));
+        assert_eq!(f.retry_after, Some(120));
+        assert!(f.recoverable_elsewhere);
+        assert_eq!(f.input, "nixpkgs", "the report must name WHICH input");
+    }
+
+    #[test]
+    fn each_error_maps_to_its_own_kind() {
+        let cases: Vec<(FetchError, FailureKind)> = vec![
+            (throttled(None), FailureKind::Throttled),
+            (FetchError::Unauthorized { url: "u".into(), status: 403 }, FailureKind::Unauthorized),
+            (FetchError::NotFound { url: "u".into() }, FailureKind::NotFound),
+            (FetchError::UnexpectedStatus { url: "u".into(), status: 503 }, FailureKind::UnexpectedStatus),
+            (FetchError::Download("dns".into()), FailureKind::Transport),
+            (FetchError::UnsupportedType("hg".into()), FailureKind::Local),
+            (FetchError::Extract("bad tar".into()), FailureKind::Local),
+        ];
+        for (err, want) in cases {
+            let got = InputFailure::from_error("i", &err).kind;
+            assert_eq!(got, want, "{err:?} classified as {got:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_throttle_is_marked_recoverable_elsewhere() {
+        for e in [
+            FetchError::Unauthorized { url: "u".into(), status: 401 },
+            FetchError::NotFound { url: "u".into() },
+            FetchError::UnexpectedStatus { url: "u".into(), status: 500 },
+            FetchError::Download("tls".into()),
+        ] {
+            assert!(
+                !InputFailure::from_error("i", &e).recoverable_elsewhere,
+                "{e:?} must not claim another egress would help"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_walk_is_NOT_complete() {
+        // The vacuity guard, and the reason `scanned` is in the wire shape at
+        // all: zero failures over zero inputs must never read as "warm". A
+        // discovery bug that finds no inputs would otherwise report success.
+        let empty = ArchiveReport { scanned: 0, already_present: 0, fetched: 0, failures: vec![] };
+        assert!(!empty.is_complete(), "an empty walk has not earned 'complete'");
+
+        let real = ArchiveReport { scanned: 3, already_present: 3, fetched: 0, failures: vec![] };
+        assert!(real.is_complete());
+    }
+
+    #[test]
+    fn recoverable_filters_to_exactly_the_throttles() {
+        let r = ArchiveReport {
+            scanned: 4,
+            already_present: 1,
+            fetched: 0,
+            failures: vec![
+                InputFailure::from_error("a", &throttled(Some(5))),
+                InputFailure::from_error("b", &FetchError::NotFound { url: "u".into() }),
+                InputFailure::from_error("c", &throttled(None)),
+            ],
+        };
+        let names: Vec<&str> = r.recoverable().map(|f| f.input.as_str()).collect();
+        assert_eq!(names, vec!["a", "c"]);
+        assert!(!r.is_complete());
+    }
+
+    #[test]
+    fn the_json_shape_is_the_contract_a_consumer_reads() {
+        // Field names and tag spellings are wire-facing. Pinning them here means
+        // a rename is a failing test rather than a consumer that silently stops
+        // matching — the same failure mode as the prose-matching this replaces.
+        let r = ArchiveReport {
+            scanned: 2,
+            already_present: 1,
+            fetched: 0,
+            failures: vec![InputFailure::from_error("nixpkgs", &throttled(Some(90)))],
+        };
+        let v: serde_json::Value = serde_json::to_value(&r).expect("serializes");
+        assert_eq!(v["scanned"], 2);
+        assert_eq!(v["already_present"], 1);
+        assert_eq!(v["failures"][0]["kind"], "throttled", "kebab-case tag");
+        assert_eq!(v["failures"][0]["status"], 429);
+        assert_eq!(v["failures"][0]["retry_after"], 90);
+        assert_eq!(v["failures"][0]["recoverable_elsewhere"], true);
+        assert_eq!(v["failures"][0]["input"], "nixpkgs");
+
+        // Absent optionals are OMITTED, not null — a consumer checking
+        // presence must not have to also check for null.
+        let r2 = ArchiveReport {
+            scanned: 1,
+            already_present: 0,
+            fetched: 0,
+            failures: vec![InputFailure::from_error("x", &FetchError::Download("dns".into()))],
+        };
+        let v2: serde_json::Value = serde_json::to_value(&r2).unwrap();
+        assert!(v2["failures"][0].get("status").is_none());
+        assert!(v2["failures"][0].get("retry_after").is_none());
+        assert_eq!(v2["failures"][0]["kind"], "transport");
+    }
+}
 
 #[cfg(test)]
 mod status_classification_tests {
