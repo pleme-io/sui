@@ -1,0 +1,157 @@
+;;; clippy-gate-floor — the anti-vacuity floor for the deny-tier clippy gate.
+;;;
+;;; Replaces 21 lines of shell that lived in a `run: |` block in
+;;; .github/workflows/clippy-gate.yml. That shell was written the same day it
+;;; was removed, which is the point: the fleet's NO SHELL rule is easy to keep
+;;; when authoring a script file and easy to lose when the shell arrives
+;;; embedded in YAML, where it reads as configuration rather than as a program.
+;;;
+;;; WHAT IT GUARDS
+;;;
+;;; `cargo clippy-gate` is an alias in .cargo/config.toml naming the crates the
+;;; deny-tier lint runs over. A gate is only as good as the set it scans, so the
+;;; set needs a floor — and the floor has to count the thing it claims to bound.
+;;;
+;;; The shell version did not. It ran
+;;;     grep -c '^  "-p", "' .cargo/config.toml
+;;; which counts LINES. Eight copies of one crate satisfied a floor of eight
+;;; while cargo deduplicated the specs and coverage collapsed from ~126k lines
+;;; across 8 crates to one crate's 1,012. Measured before it was replaced:
+;;; grep -c = 8, distinct crates = 1, exit 0.
+;;;
+;;; Ordering was never the defect. That floor already ran BEFORE the lint step;
+;;; it still could not see an emptied set. "Check the floor before the verdict"
+;;; is necessary and not sufficient.
+;;;
+;;; THREE OUTCOMES, and they must not share an exit code:
+;;;   0  the set is sound
+;;;   3  the SCAN is broken — too few distinct crates, or a name that does not
+;;;      resolve to a workspace member
+;;; A crate named here that does not exist would make `cargo clippy-gate` exit
+;;; 101, which is exactly what a genuine lint hit exits. Catching it up front is
+;;; what keeps 101 meaning one thing.
+;;;
+;;; WHY THIS IS NOT A SHELL SCRIPT IN A DIFFERENT FILE
+;;;
+;;; Under `bash -e` the original could not reach its own error handling: a bare
+;;; `n=$(grep …)` aborts the step with grep's status the moment grep matches
+;;; nothing. Measured: a missing config file exited 2, and a deleted alias
+;;; exited 1 — the code reserved for "violations found" — both before printing
+;;; anything at all. Here a missing file is a value, checked like any other.
+
+(define (crate-lines path)
+  ;; Lines of the alias body that name a crate: `  "-p", "<name>",`
+  ;; Read as data, not matched blind — `path-exists?` distinguishes "no file"
+  ;; from "no matches", which is the distinction the shell could not make.
+  (if (path-exists? path)
+      ;; NOTE the argument order: `string-split` is (string, sep) while
+      ;; `string-join` is (sep, list). Measured, not assumed — the first cut
+      ;; passed them the other way round, `string-split` returned the whole
+      ;; file as ONE element, zero lines matched, and the floor reported
+      ;; `gated-crates=0` — a broken scan correctly refusing rather than a
+      ;; silent pass. The shell it replaced would have reported 0 too, and
+      ;; also called it a scan failure, so the two agree even in error.
+      (filter (fn (l) (re-match? "^\\s*\"-p\",\\s*\"[^\"]+\"" l))
+              (string-split (read-file path) "\n"))
+      (list)))
+
+(define (crate-name line)
+  ;; `  "-p", "sui-eval",` → `sui-eval`.
+  ;;
+  ;; `re-captures` returns [whole-match, group-1, …], so index 1 is the bare
+  ;; name. `re-find-all` was the wrong tool here and would have been a silent
+  ;; wrong answer rather than an error: it returns the FULL matches, so the
+  ;; name would have arrived as the 3-char-longer `"sui-eval"` WITH its quotes,
+  ;; and every `workspace-declares?` lookup would then have failed on a name
+  ;; that does not exist. The floor would have reported a broken scan for a
+  ;; perfectly good config.
+  ;; `nth` is (index, list). Three primitives, three different conventions —
+  ;; `string-join` (sep, list), `string-split` (string, sep), `nth` (index,
+  ;; list) — which is why each one here was probed against the real binary
+  ;; before being written, rather than inferred from the neighbouring call.
+  (nth 1 (re-captures "\"-p\",\\s*\"([^\"]+)\"" line)))
+
+(define (workspace-declares? name)
+  ;; A crate resolves iff some Cargo.toml in the workspace declares it.
+  ;; `cargo` would answer this too — with exit 101, indistinguishable from a
+  ;; real lint hit. That is why it is answered here instead.
+  (let ((manifests (concat (glob "*/Cargo.toml") (list "Cargo.toml"))))
+    (< 0 (length
+           (filter (fn (m)
+                     (and (path-exists? m)
+                          (re-match? (string-format "(?m)^name = \"{}\"$" name)
+                                     (read-file m))))
+                   manifests)))))
+
+(define (main)
+  (let* ((cfg ".cargo/config.toml")
+         (floor 8)
+         (named (map crate-name (crate-lines cfg)))
+         (crates (distinct named))
+         (n (length crates)))
+
+    (print-line (string-format "gated-crates={} (floor {}, DISTINCT)" n floor))
+    (map (fn (c) (print-line (string-format "  - {}" c))) crates)
+
+    ;; ANTI-VACUITY, before the verdict AND counting distinct names. A
+    ;; duplicate no longer counts twice; a missing file yields 0, not a crash.
+    (if (< n floor)
+        (begin
+          (eprint-line
+            (string-format
+              "FAILED(scan): gate names {} DISTINCT crates, floor {} — a scan below its floor is a broken run, never a pass"
+              n floor))
+          (exit 3))
+        (let ((missing (filter (fn (c) (not (workspace-declares? c))) crates)))
+          (if (< 0 (length missing))
+              (begin
+                (eprint-line
+                  (string-format
+                    "FAILED(scan): these gated crates do not exist in the workspace: {}"
+                    (string-join " " missing)))
+                (exit 3))
+              (print-line
+                (string-format "OK: {} distinct crates, all resolvable" n)))))))
+
+;;; ── tests ────────────────────────────────────────────────────────────────
+;;;
+;;; The shell this replaces had NO tests, by construction — you cannot
+;;; unit-test a string embedded in a YAML `run:` block. That is not a small
+;;; part of why it shipped counting the wrong thing.
+;;;
+;;; Run with: tatara-script --test tools/clippy-gate-floor.tlisp
+
+(deftest "a crate line yields the BARE name, not the quoted match"
+  ;; The `re-find-all` version returned `"sui-eval"` WITH quotes — a silent
+  ;; wrong answer that would have failed every workspace lookup.
+  (assert (equal? "sui-eval" (crate-name "  \"-p\", \"sui-eval\","))
+          "crate-name must strip the quotes"))
+
+(deftest "the -p flag itself is never mistaken for a crate"
+  ;; Guards the capture group: index 0 of re-captures is the whole match.
+  (assert (not (equal? "-p" (crate-name "  \"-p\", \"sui-eval\",")))
+          "the flag must not be read as the crate name"))
+
+(deftest "DUPLICATES COLLAPSE — the defect this file exists for"
+  ;; Eight copies of one crate satisfied the shell's line-count floor while
+  ;; covering one crate. `distinct` is what makes the floor bound the right
+  ;; quantity.
+  (let ((dupes (list "sui-intern" "sui-intern" "sui-intern" "sui-intern"
+                     "sui-intern" "sui-intern" "sui-intern" "sui-intern")))
+    (assert (= 1 (length (distinct dupes)))
+            "eight duplicates must count as one distinct crate")))
+
+(deftest "CALIBRATION: distinct names are NOT collapsed"
+  ;; Without this, a `distinct` that returned a single element always would
+  ;; satisfy the test above and make the floor unsatisfiable-by-construction.
+  (let ((real (list "sui-eval" "sui-bytecode" "sui-compat")))
+    (assert (= 3 (length (distinct real)))
+            "three different crates must count as three")))
+
+(deftest "a missing config file yields no crates rather than an error"
+  ;; The shell aborted here under `bash -e` with grep's exit 2, before
+  ;; printing anything. A value is checkable; an aborted step is not.
+  (assert (= 0 (length (crate-lines "/nonexistent/.cargo/config.toml")))
+          "a missing file must be an empty result, not a crash"))
+
+(main)
