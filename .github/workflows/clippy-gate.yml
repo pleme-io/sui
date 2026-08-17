@@ -1,0 +1,119 @@
+# clippy-gate — the DENY-TIER lint box.
+#
+# Before this workflow, `git grep -n "clippy\|cargo fmt" -- .github/` returned
+# ZERO: no workflow in this repo ran either. Meanwhile Cargo.toml sets
+# `[workspace.lints.clippy] pedantic = "warn"` across the workspace, whose own
+# comment says "warn-level (never a hard build break)". So the repo's lint
+# posture read as a gate in a diff and enforced nothing.
+#
+# ── why this gate is not `-D warnings` ───────────────────────────────────
+# Measured 2026-08-17, `cargo clippy -p sui-eval`, eight crates:
+#
+#     sui-eval 622   sui-spec 308   sui-bytecode 283   sui-compat 120
+#     sui-store  97   sui-graph-store 32   sui-resolve 9   sui-intern 4
+#                                                        (1475 total)
+#
+# A `-D warnings` gate lands red on 1475 warnings, and a gate that is red on
+# arrival gets switched off within the week. So it is not the ratchet.
+#
+# What IS gated is the tier that is already `deny` BY DEFAULT — the
+# `clippy::correctness` group. Those are errors, not warnings, so a bare
+# `cargo clippy` exits 101 on them with no `-D` flag anywhere. Two consequences
+# worth stating because they are the whole design:
+#
+#   1. The permitted count is ZERO by construction, so there is no baseline
+#      number to maintain and no "the count went down" bookkeeping. A
+#      warning-count ratchet is satisfiable by DELETING code; zero is not.
+#   2. The 1475 pedantic warnings stay warnings and never block a merge, so
+#      the gate is green on arrival without anyone burning down a backlog
+#      first. Pedantic can tighten later, on its own schedule, without
+#      touching this file.
+#
+# This gate found and this branch fixed one real instance:
+# `clippy::absurd_extreme_comparisons` at sui-eval/src/eval.rs:374, where a
+# `usize::MAX` sentinel for "no depth limit" made `depth > MAX_EVAL_DEPTH`
+# always-false in non-test builds. Fixed by typing the bound `Option<usize>`,
+# which removes the comparison from the non-test build entirely rather than
+# guarding it.
+#
+# ── anti-vacuity ─────────────────────────────────────────────────────────
+# The floor step runs BEFORE clippy, deliberately. A floor checked after the
+# thing it is supposed to bound lets an emptied set report green on the way
+# past. Exit code 3 is the fleet's "the SCAN ITSELF is broken" code (see
+# `require-scanned!` in pleme-io/actions/_tlisp-stdlib), which is a different
+# verdict from 1 ("violations found") and must not share its code.
+#
+# The crate list itself is the other half of the denominator, and it is
+# enforced by cargo rather than by this workflow: `clippy-gate` names every
+# package explicitly, so a renamed or dropped crate produces `package ID
+# specification ... did not match any packages` and fails. That is not
+# hypothetical here — four workflows in this repo passed `-p sui` after the
+# crate was renamed to `pleme-io-sui` in 5f76b39 and were silently broken for
+# months (see the header of perf-seal.yml).
+#
+# ── scope, stated rather than implied ────────────────────────────────────
+# 8 of 31 packages (25.8%), default targets only (no `--all-targets`). The
+# other 23 packages and the `--all-targets` debt are itemised, with the
+# measurement missing for each, in clippy-gate-baseline.txt. That file may
+# only shrink.
+#
+# ── not in this change ───────────────────────────────────────────────────
+# `cargo fmt --check` is deliberately absent: the repo is not rustfmt-clean at
+# baseline (~100 files would move), so folding it in here would make this gate
+# red on arrival for a reason unrelated to lints — and would put a ~100-file
+# reformat inside the same commit that introduces a lint gate. It is a
+# separate change, and it needs its own commit so the reformat is reviewable
+# as a reformat.
+#
+# ── shape ────────────────────────────────────────────────────────────────
+# Hand-authored rather than a `(defpipeline …)` over pleme-io/actions, for the
+# reason runtime-install-lint.yml's header already gives: a pipeline names
+# ACTIONS, and there is no action to name here. `pleme-io/actions/rust-gate`
+# is the near-miss and was rejected on measurement, not taste — its clippy
+# invocation is hardcoded `clippy --all-targets -- -D warnings` (run.tlisp:61)
+# with no argument input, so it is unusable by any repo carrying a pedantic
+# backlog, which is most of them. Extending it with a `clippy-args` input is
+# the load-bearing fix and the destination for this file; it is not done here
+# because it is a change to another repo that this branch cannot verify.
+name: clippy-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  clippy-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `components: clippy` is load-bearing, not decoration. dtolnay's action
+      # installs the MINIMAL profile, which ships rustc/cargo/rust-std and no
+      # clippy — and the ambient toolchain on the fleet's darwin workstations
+      # has none either (`cargo clippy` there: "error: no such command:
+      # clippy", measured 2026-08-17). Drop this line and the gate does not
+      # degrade quietly; `cargo clippy-gate` fails outright, which is the
+      # correct direction for a missing scanner.
+      - name: Install Rust toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # ANTI-VACUITY FLOOR — runs before clippy, on purpose.
+      - name: Floor the gated crate count
+        run: |
+          n=$(grep -c '^  "-p", "' .cargo/config.toml)
+          echo "gated-crates=$n (floor 8)"
+          [ "$n" -ge 8 ] || { echo "FAILED: gate names $n crates, floor 8 — a scan below its floor is a broken run, never a pass"; exit 3; }
+
+      # Deny-tier only. No `-D warnings`: see the header.
+      # The crate list lives in .cargo/config.toml so this line cannot drift
+      # from what the floor above counted.
+      - name: Deny-tier clippy over the gated crate set
+        run: cargo clippy-gate
