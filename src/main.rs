@@ -1979,29 +1979,70 @@ fn profile_diff(profile: &ProfilePath) -> Result<(), CliError> {
 }
 
 fn store_add_file(path: &str, name: Option<&str>) -> Result<(), CliError> {
+    // ── ★ THIS COMMAND PRINTED A /nix/store PATH THAT DID NOT EXIST ───────
+    // It computed a store path, unconditionally copied the file into
+    // `~/.cache/sui/added-files/`, printed the `/nix/store/…` path to
+    // STDOUT and returned `Ok(())` — putting the "this did not actually
+    // happen" caveat on STDERR. So the ordinary shell idiom
+    //
+    //     p=$(sui store add-file ./x)
+    //
+    // captured a path that is not on disk, and every later use of `$p`
+    // failed somewhere else, far from the command that invented it.
+    // STDOUT is the contract. A caveat on STDERR does not redeem a wrong
+    // STDOUT, because the two streams are routinely separated — a command
+    // substitution reads one and discards the other by construction.
+    //
+    // TWO INDEPENDENT DEFECTS, either one fatal:
+    //
+    // (1) NOTHING IS WRITTEN TO THE STORE. Unlike its sibling
+    //     `store_add_path`, this never tried the daemon at all — it went
+    //     straight to the unprivileged cache copy. `add-path` at least
+    //     attempts `add_path_via_daemon` first and surfaces a real
+    //     `Protocol` error; only `Unreachable` falls through to its
+    //     (self-described "APPROXIMATE") fallback.
+    //
+    // (2) THE PATH USED THE WRONG INGESTION METHOD. `nix store add-file`
+    //     is FLAT ingestion — sha256 over the file's own bytes. This used
+    //     `hash_path_nar`, the RECURSIVE/NAR hash, which is `add-path`'s
+    //     method. Measured on a 10-byte file: flat `8200009363c5…`, NAR
+    //     `69288f56b9a6…` — different digests, therefore different store
+    //     paths. On top of that `store_path_for` base32s the content
+    //     digest directly rather than running cppnix's fixed-output-path
+    //     derivation, so the result matched neither method.
+    //
+    // WHY REFUSE RATHER THAN "TRY THE DAEMON FIRST, LIKE add-path DOES":
+    // that is the obvious fix and it is wrong *here*. `add_path_via_daemon`
+    // hardcodes `fixed:r:sha256` — recursive. Routing add-file through it
+    // would return a real, existing store path that answers add-PATH's
+    // question: exit 0, a path that passes an existence check, and still
+    // not what `nix store add-file` would have produced. That trades a
+    // detectable lie for an undetectable one, which is a regression even
+    // though the path suddenly exists. A flat add needs `fixed:sha256` on
+    // the wire — a genuine protocol change plus a write to the operator's
+    // live store, not something to bolt on under cover of a bug fix.
+    //
+    // The destination: a flat-mode sibling of `add_path_via_daemon` that
+    // sends `fixed:sha256` and prints the path the DAEMON returns (the
+    // authoritative one), with no approximate fallback reaching stdout,
+    // ever.
     let basename = name.unwrap_or_else(|| {
-        std::path::Path::new(path).file_name()
+        std::path::Path::new(path)
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("source")
     });
-    let nar_hash = sui_spec::nar::hash_path_nar(std::path::Path::new(path))
-        .map_err(|e| CliError::NotImplemented(format!("store add-file: NAR: {e}")))?;
-    let store_path = sui_spec::nar::store_path_for(STORE_ROOT, &nar_hash, basename);
-
-    if std::path::Path::new(&store_path).exists() {
-        println!("{store_path}");
-        return Ok(());
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let cache = std::path::PathBuf::from(home).join(".cache/sui/added-files");
-    std::fs::create_dir_all(&cache)
-        .map_err(|e| CliError::NotImplemented(format!("store add-file: mkdir cache: {e}")))?;
-    let cache_path = cache.join(std::path::Path::new(&store_path).file_name().unwrap());
-    std::fs::copy(path, &cache_path)
-        .map_err(|e| CliError::NotImplemented(format!("store add-file: cache copy: {e}")))?;
-    println!("{store_path}");
-    eprintln!("# cached locally at {} — daemon write requires sudo/root", cache_path.display());
-    Ok(())
+    Err(CliError::NotImplemented(format!(
+        "store add-file would print a /nix/store path that does not exist. It never \
+         writes to the store, and it computes the path with the RECURSIVE (NAR) hash \
+         while `nix store add-file` uses FLAT ingestion — so the path is the wrong one \
+         even before you notice it is absent. For a real, daemon-backed store write use \
+         `sui store add-path {path}` (note: recursive ingestion, so it is not a \
+         drop-in substitute for add-file's path). Requested name: `{basename}`. \
+         (Refusing rather than exiting 0: `p=$(sui store add-file …)` previously \
+         captured a non-existent path from stdout, with the caveat on stderr where a \
+         command substitution never sees it.)"
+    )))
 }
 
 async fn store_add_path(path: &str, name: Option<&str>) -> Result<(), CliError> {
@@ -6051,39 +6092,66 @@ async fn store_sign(
 }
 
 fn store_repair(paths: &[String]) -> Result<(), CliError> {
-    // For each path, verify via the canonical substituter
-    // (cache.nixos.org).  Real impl re-downloads if local NAR
-    // hash differs; for now we query the .narinfo from the
-    // substituter to confirm reachability.
+    // ── ★ THIS COMMAND NEVER REPAIRED ANYTHING AND REPORTED SUCCESS ───────
+    // It parsed each path, called `Path::exists()`, HTTP-GET'd
+    // `<cache>/<hash>.narinfo` to see whether the substituter *had* the
+    // path, printed a tab-separated row to STDOUT and returned `Ok(())`.
+    // At no point did it hash the local NAR, compare it against the
+    // narinfo's `NarHash:`, download a replacement, or write one byte.
+    // Its own comment admitted it: "Real impl re-downloads if local NAR
+    // hash differs; for now we query the .narinfo…".
+    //
+    // The load-bearing defect is that `local=ok` was derived from
+    // `Path::exists()` ALONE, and existence is not integrity. A path whose
+    // contents have been truncated, edited or bit-rotted still exists — so
+    // the exact case `repair` exists for, a CORRUPT path, printed
+    // `local=ok` and exited 0. The operator asked "fix this" and was told
+    // "it is fine", by a command that had not looked. Worse than useless:
+    // a wrong `local=ok` ENDS an investigation that should have continued.
+    //
+    // Refusing beats lying for the same reason as in `cmd_collect_garbage`:
+    // "repaired it" and "never checked" are indistinguishable at exit 0,
+    // and the exit code invites the first reading.
+    //
+    // The destination is not in doubt: hash the local path with
+    // `sui_spec::nar::hash_path_nar`, parse `NarHash:` out of the narinfo,
+    // compare, and on a mismatch fetch the narinfo's `URL:` and write the
+    // replacement through the daemon's privileged realizer (the path
+    // `add_path_via_daemon` already uses). Repair is a store WRITE and
+    // needs root or a daemon, and this sync helper holds neither. Until
+    // then it must not claim to have run.
     let layouts = sui_spec::store_layout::load_canonical()
         .map_err(|e| CliError::NotImplemented(format!("store repair: {e:?}")))?;
-    let substituters = sui_spec::substituter::load_canonical()
-        .map_err(|e| CliError::NotImplemented(format!("store repair: {e:?}")))?;
-    let cache = substituters.iter()
-        .find(|s| s.name.contains("cache.nixos.org"))
-        .ok_or_else(|| CliError::NotImplemented("store repair: no canonical cache.nixos.org substituter".into()))?;
 
+    // Validate the arguments first, so a malformed store path still gets
+    // the precise error it always got rather than being swallowed by the
+    // blanket refusal below.
+    let mut observed = Vec::new();
     for p in paths {
-        let parsed = layouts.iter()
+        layouts
+            .iter()
             .find_map(|l| sui_spec::store_layout::parse_path(l, p).ok())
-            .ok_or_else(|| CliError::NotImplemented(format!(
-                "store repair: `{p}` not a recognised store path"
-            )))?;
-        let local_exists = std::path::Path::new(p).exists();
-        let narinfo_url = format!("{}/{}.narinfo", cache.endpoint.trim_end_matches('/'), parsed.hash);
-
-        // Probe the substituter for the .narinfo.
-        let remote_status = match http_get(&narinfo_url) {
-            Ok(bytes) => format!("substituter has narinfo ({} bytes)", bytes.len()),
-            Err(_) => "substituter missing narinfo".to_string(),
-        };
-        println!("{p}\tlocal={}\t{}\t{}",
-            if local_exists { "ok" } else { "missing" },
-            remote_status,
-            narinfo_url,
-        );
+            .ok_or_else(|| {
+                CliError::NotImplemented(format!("store repair: `{p}` not a recognised store path"))
+            })?;
+        // Deliberately NOT called `ok`: this is presence, and this helper
+        // cannot tell presence from integrity. Naming it `ok` is the bug.
+        observed.push(format!(
+            "{p} (present={})",
+            std::path::Path::new(p).exists()
+        ));
     }
-    Ok(())
+
+    Err(CliError::NotImplemented(format!(
+        "store repair does not repair: it probed the substituter for a .narinfo and \
+         printed a report, but never compared the local NAR hash, never downloaded a \
+         replacement and never wrote a byte — so a CORRUPT path exited 0 reporting \
+         `local=ok`. Use `sui store verify` to check local integrity. Observed: {}. \
+         (Refusing rather than exiting 0: `local=ok` came from `Path::exists()` alone, \
+         and existence is not integrity — that answer ends an investigation instead of \
+         starting one.)",
+        observed.join(", ")
+    )))
 }
 
 fn derivation_add(path: &str) -> Result<(), CliError> {
@@ -7820,26 +7888,7 @@ async fn main() -> Result<(), CliError> {
         },
 
         Commands::Develop { flake_ref, attr, command } => {
-            let (flake_dir, override_attr) = if let Some((dir_part, attr_part)) = flake_ref.split_once('#') {
-                let dir = if dir_part == "." || dir_part.is_empty() { std::env::current_dir()? } else { std::path::PathBuf::from(dir_part) };
-                (dir, Some(attr_part.to_string()))
-            } else {
-                let dir = if flake_ref == "." || flake_ref.is_empty() { std::env::current_dir()? } else { std::path::PathBuf::from(&flake_ref) };
-                (dir, None)
-            };
-            let shell_attr = override_attr.as_deref().unwrap_or(&attr);
-            let system = current_system();
-            let result = sui_eval::builtins::evaluate_flake(&flake_dir).map_err(|e| CliError::Orchestrate { operation: "develop", message: format!("eval: {e}") })?;
-            let shell_drv = sui_eval::builtins::navigate_attrs(&result, &["devShells", &system, shell_attr]).map_err(|e| CliError::Orchestrate { operation: "develop", message: format!("navigate devShells.{system}.{shell_attr}: {e}") })?;
-            let env_vars = extract_shell_env(&shell_drv);
-            let shell_bin = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-            let mut cmd = std::process::Command::new(&shell_bin);
-            for (key, value) in &env_vars { cmd.env(key, value); }
-            if let Some(drv_path) = env_vars.get("PATH") { let existing = std::env::var("PATH").unwrap_or_default(); cmd.env("PATH", format!("{drv_path}:{existing}")); }
-            cmd.env("IN_SUI_SHELL", "1"); cmd.env("SUI_SHELL_NAME", shell_attr);
-            if let Some(run_cmd) = command { cmd.args(["-c", &run_cmd]); }
-            let status = cmd.status()?;
-            std::process::exit(status.code().unwrap_or(1));
+            cmd_develop(&flake_ref, &attr, command.as_deref())?;
         }
 
         Commands::Run { installable, args } => {
@@ -8273,6 +8322,90 @@ fn current_system() -> String {
     else if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" }.to_string()
 }
 
+fn cmd_develop(flake_ref: &str, attr: &str, command: Option<&str>) -> Result<(), CliError> {
+    // ── ★ THIS COMMAND HANDED BACK A SHELL MISSING MOST OF ITS ENV ────────
+    // It evaluated `devShells.<system>.<attr>`, ran the attrset through
+    // `extract_shell_env` (below), spawned `$SHELL` with the result and
+    // exited with that shell's status. Exit 0, a prompt, and an
+    // environment that is not the devShell's.
+    //
+    // THREE DEFECTS, and the first two are why this refuses OUTRIGHT
+    // rather than refusing only on a detectable shortfall:
+    //
+    // (1) EVERY NON-STRING ATTR IS SILENTLY DROPPED. `extract_shell_env`
+    //     keeps an attr only where `v.as_string()` succeeds. `buildInputs`
+    //     and `nativeBuildInputs` are LISTS, so on a real `mkShell` the
+    //     dependencies — the entire point of the shell — are discarded
+    //     without a word. `__structuredAttrs` JSON goes the same way.
+    //     Measured on a probe flake: `PROBE_KEPT` survived, `buildInputs`
+    //     came through empty.
+    //
+    // (2) stdenv IS NEVER BUILT AND `$stdenv/setup` IS NEVER SOURCED.
+    //     This is the unconditional one. Real `nix develop` builds the
+    //     shell's stdenv and sources its setup script, which is what
+    //     actually assembles `PATH`, the compiler wrappers, and every
+    //     phase helper. Here `PATH` is whatever a literal `PATH` *attr*
+    //     happened to hold — usually nothing. So even a devShell with
+    //     zero non-string attrs still gets a broken shell.
+    //
+    //     (2) is why a conditional refusal — "only refuse when something
+    //     was dropped" — was rejected: it would exit 0 on exactly the
+    //     shells it cannot detect are broken, adding the appearance of a
+    //     check to a path that is wrong regardless. A gate that passes the
+    //     cases it cannot see is worse than no gate, because it launders
+    //     them.
+    //
+    // (3) IT SETS `IN_SUI_SHELL=1`, NOT `IN_NIX_SHELL`. nixpkgs code
+    //     branching on `IN_NIX_SHELL` therefore behaves as if outside a
+    //     shell.
+    //
+    // ON (3), AND WHY THE RENAME IS DEFERRED RATHER THAN DONE HERE:
+    // `IN_NIX_SHELL` is NOT a boolean. Measured against the real stdenv
+    // shipped in this machine's store
+    // (`/nix/store/…-stdenv-darwin/setup`, lines 1014 and 1018):
+    //
+    //     if [[ -z "${NIX_SSL_CERT_FILE:-}" && "${IN_NIX_SHELL:-}" != "impure" ]]; then
+    //
+    // — the consumer compares against the literal string `impure`. So
+    // `IN_NIX_SHELL=1` would be read as "not impure", i.e. treated like a
+    // PURE shell, and would silently change certificate handling. Setting
+    // a plausible-looking value that the foreign consumer does not accept
+    // is precisely the class of bug this whole change is about, so the
+    // correct value (`pure` vs `impure`, decided by how the shell was
+    // entered) is left to the real implementation that can honour the
+    // distinction. Renaming the variable without that is not a fix, it is
+    // the same mistake with better spelling.
+    //
+    // The destination: realise the devShell derivation, build its stdenv,
+    // source `$stdenv/setup` in the spawned shell, carry non-string attrs
+    // through `__structuredAttrs`, and set `IN_NIX_SHELL` to the value
+    // that matches the entry mode. Until then this must not hand back a
+    // shell and call it the devShell.
+    Err(CliError::NotImplemented(format!(
+        "develop does not enter the devShell: it copies only the STRING attrs of \
+         `devShells.<system>.{attr}` into $SHELL, so list attrs like `buildInputs` are \
+         silently dropped; it never builds stdenv or sources `$stdenv/setup`, so PATH \
+         is not the devShell's PATH; and it sets IN_SUI_SHELL instead of IN_NIX_SHELL, \
+         so nixpkgs code behaves as if outside a shell. Use `nix develop {flake_ref}` \
+         until this is implemented.{} \
+         (Refusing rather than exiting 0: it previously returned a prompt with most of \
+         the environment missing, which is indistinguishable from a working shell until \
+         a build fails for an unrelated-looking reason.)",
+        command
+            .map(|c| [" Requested --command: `", c, "`."].concat())
+            .unwrap_or_default()
+    )))
+}
+
+/// Extract the string-valued attrs of a devShell derivation.
+///
+/// RETAINED DELIBERATELY (modularize, don't delete) as the starting point
+/// for a real `develop`, and kept honest about what it is: this is NOT a
+/// devShell environment. It drops every non-string attr — `buildInputs`,
+/// `nativeBuildInputs`, `__structuredAttrs` — and it knows nothing about
+/// stdenv or `$stdenv/setup`. Its only caller now refuses before reaching
+/// it; see `cmd_develop` above for the full account and the destination.
+#[allow(dead_code)]
 fn extract_shell_env(value: &sui_eval::Value) -> std::collections::BTreeMap<String, String> {
     let mut env = std::collections::BTreeMap::new();
     if let sui_eval::Value::Attrs(attrs) = value {
