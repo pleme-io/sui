@@ -2319,6 +2319,14 @@ impl<'a> VM<'a> {
                 let forced = self.deep_force(shallow)?;
                 let vmval = forced.to_vmvalue();
                 let sk = vmval.to_string_keyed(self.interner);
+                // Count the crossing. This site was MISSED when the counter was
+                // introduced, and it is the primary one: `try_vm_builtin` is
+                // consulted BEFORE the registry, so for every name in the arm
+                // above the recorded call in `builtins.rs` is shadowed and dead.
+                // The counter's reachable surface was `fetchClosure`,
+                // `outputOf` and `hashString` — none of the names its own
+                // module doc cites as the reason it exists.
+                let _ = crate::fallback::record(crate::fallback::Layer::Builtin, name);
                 match crate::bridge::call_builtin_bridge(name, vec![sk]) {
                     Ok(Some(result)) => {
                         let vm_result = crate::builtins::string_keyed_to_vmvalue(
@@ -2373,6 +2381,13 @@ impl<'a> VM<'a> {
                                 crate::value::StringKeyedValue::String(pattern.clone()),
                                 crate::value::StringKeyedValue::String(input),
                             ];
+                            // Second missed site — `match` / `split` reach the
+                            // walker through here, never through the counted
+                            // registry path.
+                            let _ = crate::fallback::record(
+                                crate::fallback::Layer::Builtin,
+                                &builtin_name,
+                            );
                             match crate::bridge::call_builtin_bridge(&builtin_name, sk_args) {
                                 Ok(Some(result)) => {
                                     let mut tmp = crate::intern::Interner::new();

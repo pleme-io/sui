@@ -9092,7 +9092,16 @@ fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<S
             let _ifd_guard = install_ifd_hook();
             let value = sui_eval::eval(&expr_clone)?;
             let output = if json_flag {
-                serde_json::to_string(&value.to_json())?
+                // `try_to_json`, not `to_json`: the latter renders a lambda as
+                // "<lambda>" and a FAILED force as "<thunk:error>", producing
+                // valid JSON and exit 0 where nix exits non-zero. Measured:
+                //   nix eval --json --expr '{ x = throw "boom"; }'  -> exit 1
+                //   sui (before)                                    -> exit 0
+                //                                       {"x":"<thunk:error>"}
+                // An evaluation error becoming a VALUE is the sharpest silent
+                // divergence this CLI had: a consumer parsing that JSON sees a
+                // string where nix refused outright.
+                serde_json::to_string(&value.try_to_json()?)?
             } else if raw_flag {
                 // `nix eval --raw` prints a string value's bytes verbatim (no
                 // surrounding quotes). The default `Display` wraps strings in

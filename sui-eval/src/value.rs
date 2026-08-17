@@ -3289,6 +3289,86 @@ impl Value {
         }
     }
 
+    /// Like [`Self::to_json`], but **refuses** where that one emits a
+    /// placeholder.
+    ///
+    /// `to_json` renders a lambda as the string `"<lambda>"`, a builtin as
+    /// `"<builtin name>"`, and — worst — a thunk whose force FAILED as
+    /// `"<thunk:error>"`. All three produce valid JSON and let the caller exit
+    /// 0. Measured against nix 2.31.5:
+    ///
+    /// ```text
+    /// nix eval --json --expr '{ f = x: x; }'        exit 1
+    /// sui eval --json -E    '{ f = x: x; }'         exit 0  {"f":"<lambda>"}
+    /// nix eval --json --expr '{ x = throw "boom"; }' exit 1
+    /// sui eval --json -E    '{ x = throw "boom"; }'  exit 0  {"x":"<thunk:error>"}
+    /// ```
+    ///
+    /// The last one is the sharpest silent divergence in the CLI: a real
+    /// evaluation error becomes a VALUE, and a consumer parsing that JSON sees
+    /// a string where nix would have refused outright.
+    ///
+    /// `to_json` itself is deliberately left alone. It is the body of
+    /// `builtins.toJSON`, whose placeholder behaviour is load-bearing for the
+    /// existing corpus, and changing it would be a language-semantics change
+    /// rather than a CLI fix. This variant is for OUTPUT BOUNDARIES — where a
+    /// human or a script reads the result and an exit code is the contract.
+    ///
+    /// # Errors
+    ///
+    /// A function, a builtin, or a thunk whose force fails. The force error is
+    /// propagated verbatim so the operator sees the `throw`'s own message
+    /// rather than a generic refusal.
+    pub fn try_to_json(&self) -> Result<serde_json::Value, EvalError> {
+        Ok(match self {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Int(n) => serde_json::json!(n),
+            Value::Float(f) => serde_json::json!(f),
+            Value::String(s) => serde_json::Value::String(s.chars.to_string()),
+            Value::Path(p) => serde_json::Value::String(p.to_string()),
+            Value::List(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for v in items.iter() {
+                    out.push(v.try_to_json()?);
+                }
+                serde_json::Value::Array(out)
+            }
+            Value::Attrs(attrs) => {
+                // Mirror `to_json`'s CppNix `tryAttrsToString` rule: an attrset
+                // carrying `__toString` or `outPath` serializes to that string.
+                // Dropping it here would not merely change the output, it would
+                // recurse forever on the self-referential derivation graph —
+                // the reason that rule exists in `to_json` at all.
+                if let Some(v) = attrs.get("outPath").or_else(|| attrs.get("__toString")) {
+                    return v.try_to_json();
+                }
+                let mut map = serde_json::Map::new();
+                for (k, v) in attrs.iter() {
+                    map.insert(k.clone(), v.try_to_json()?);
+                }
+                serde_json::Value::Object(map)
+            }
+            Value::Lambda(_) => {
+                return Err(EvalError::TypeError(
+                    "cannot convert a function to JSON".to_string(),
+                ))
+            }
+            Value::Builtin(b) => {
+                return Err(EvalError::TypeError(format!(
+                    "cannot convert a function to JSON (builtin '{}')",
+                    b.name
+                )))
+            }
+            Value::Thunk(thunk) => {
+                // Propagate rather than swallow. This arm is the whole point:
+                // `to_json` turns this error into the string "<thunk:error>".
+                let forced = thunk.force(&|expr, env| crate::eval::eval_expr(expr, env))?;
+                forced.try_to_json()?
+            }
+        })
+    }
+
     /// Like [`to_json`] but threads string context into `ctx`. Used by
     /// `__structuredAttrs` derivation-env building: a derivation value
     /// serializes to its outPath (a store-path string) and its drv reference
