@@ -1778,10 +1778,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                             }
                             // One refs set for the whole clause — every name in
                             // it re-points the SAME shared source thunk.
-                            if cluster && source_needs_scope {
-                                if let Some(refs) = source_refs {
-                                    pinned_refs.push(refs);
-                                }
+                            if cluster
+                                && source_needs_scope
+                                && let Some(refs) = source_refs
+                            {
+                                pinned_refs.push(refs);
                             }
                         } else {
                             // `inherit name1 name2 ...` from the
@@ -3756,7 +3757,7 @@ fn bind_param(param: &ast::Param, arg: &Value, env: &mut Env) -> Result<(), Eval
                 entries
                     .iter()
                     .filter(|e| e.default().is_some())
-                    .filter_map(|e| e.ident())
+                    .filter_map(ast::PatEntry::ident)
                     .map(|i| ident_text(&i))
                     .filter(|n| attrs.get(n).is_none())
                     .collect()
