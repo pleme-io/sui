@@ -296,15 +296,40 @@ impl Store for LocalStore {
         let path_id = inserted.id;
 
         // Insert reference edges into Refs.
+        //
+        // ── ★ AN UNKNOWN REFERENCE IS A REFUSAL, NOT A DROPPED EDGE ───────
+        // This used to be `if let Some(ref_row) = ...` with no else: a
+        // reference naming a path this store has never heard of was silently
+        // discarded and the registration reported success. The result is a
+        // store that believes a path has no dependency on something it
+        // genuinely depends on — so a GC can collect the referent out from
+        // under it, and a closure walk under-reports.
+        //
+        // CppNix does the opposite, and it is worth naming precisely because
+        // sui is supposed to be byte-compatible with it: `registerValidPaths`
+        // calls `queryValidPathId` for every reference and throws
+        // `InvalidPath("path '%s' is not valid")` on a miss, inside the
+        // transaction, so the whole registration rolls back
+        // (`local-store.cc:800-803`, `:935-937` in 2.34.4).
+        //
+        // So sui-as-daemon was ACCEPTING exactly what CppNix-as-daemon
+        // REJECTS. That is not a laxness to tolerate: it is the same
+        // "declares a dependency it never supplies" disease that lets a `.drv`
+        // carry an inputSrc nothing produced, seen from the store side.
         for ref_path_str in &info.references {
-            let ref_model = self.find_by_path(ref_path_str).await?;
-            if let Some(ref_row) = ref_model {
-                let new_ref = reference::ActiveModel {
-                    referrer: Set(path_id),
-                    reference: Set(ref_row.id),
-                };
-                new_ref.insert(&self.db).await.map_err(db_err)?;
-            }
+            let Some(ref_row) = self.find_by_path(ref_path_str).await? else {
+                return Err(StoreError::PathNotFound(format!(
+                    "cannot register {}: reference {ref_path_str} is not a valid path in this \
+                     store. CppNix rejects this too; accepting it would record a path whose \
+                     dependency the store does not know about, so a GC could collect it.",
+                    info.path
+                )));
+            };
+            let new_ref = reference::ActiveModel {
+                referrer: Set(path_id),
+                reference: Set(ref_row.id),
+            };
+            new_ref.insert(&self.db).await.map_err(db_err)?;
         }
 
         // If the path has a deriver ending in .drv, insert into DerivationOutputs.
