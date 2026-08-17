@@ -777,17 +777,51 @@ fn force_str(v: &IrValue) -> Result<String, IrEvalError> {
 
 /// The walker's `deep_force`: force to WHNF, recurse into attr values and
 /// list elements.
+///
+/// **Cycle-safe**, mirroring `sui_eval::builtins::control::deep_force` and
+/// cppnix's `forceValueDeep` `std::set<const Value*> seen`.
+///
+/// This function used to recurse unconditionally, so
+/// `let as = { x = 123; y = as; }; in builtins.deepSeq as 456` — the vendored
+/// CppNix fixture `eval-okay-deepseq` — recursed forever and aborted the
+/// process with a stack overflow. Not a hang: 256 MB of stack was exhausted
+/// outright.
+///
+/// The tree-walker had the identical bug and it was fixed on 2026-07-22, with
+/// the fixture graduated out of `known_broken/` as proof. **The fix never
+/// reached this engine**, because nothing ran the corpus against it — the 117
+/// lang fixtures had exactly one consumer, `sui-eval/tests/lang_corpus.rs`.
+/// `sui-ir/tests/lang_corpus_ir.rs` is what found it, on its first run.
+///
+/// Never removing from `seen` is correct AND an optimization: a value shared
+/// across two branches (a DAG, not a cycle) is deep-forced once, because
+/// forcing the shared `Rc` once forces it everywhere. cppnix does the same.
 fn deep_force(v: &IrValue) -> Result<(), IrEvalError> {
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    deep_force_seen(v, &mut seen)
+}
+
+fn deep_force_seen(
+    v: &IrValue,
+    seen: &mut std::collections::HashSet<usize>,
+) -> Result<(), IrEvalError> {
     let forced = v.force()?;
     match &forced {
         IrValue::Attrs(attrs) => {
+            // Break cycles: an attrset already descended into is skipped.
+            if !seen.insert(std::rc::Rc::as_ptr(attrs).cast::<()>() as usize) {
+                return Ok(());
+            }
             for value in attrs.values() {
-                deep_force(value)?;
+                deep_force_seen(value, seen)?;
             }
         }
         IrValue::List(items) => {
+            if !seen.insert(std::rc::Rc::as_ptr(items).cast::<()>() as usize) {
+                return Ok(());
+            }
             for item in items.iter() {
-                deep_force(item)?;
+                deep_force_seen(item, seen)?;
             }
         }
         _ => {}
