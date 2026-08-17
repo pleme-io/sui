@@ -174,16 +174,31 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
                      nixConfig at all, so the grant is unimplemented rather than merely unused",
         },
     ),
-    (
-        &[],
-        "impure",
-        Honour::Refused {
-            since: NOW,
-            reason: "selects impure evaluation; sui reads it nowhere, so an expression that \
-                     needs impurity evaluates under whatever purity sui defaults to — a \
-                     different answer, silently",
-        },
-    ),
+    // `--impure` asks for impure evaluation, and sui evaluates impurely
+    // ALREADY — measured, not assumed: without the flag, `builtins.getEnv
+    // "HOME"` returns the real environment variable and `builtins.currentSystem`
+    // resolves to the host double. sui implements no purity restriction at all,
+    // so the behaviour requested is the behaviour delivered.
+    //
+    // This row was briefly Refused, on the reasoning that "sui reads it
+    // nowhere, so an expression that needs impurity evaluates under whatever
+    // purity sui defaults to — a different answer, silently". That reasoning is
+    // wrong in its premise: sui's default IS impure, so there is no different
+    // answer to be had.
+    //
+    // ★ IT ALSO BROKE THE BYTE-PARITY GATE. sui's own parity corpus drives
+    // `sui eval --impure` (sui-spec/src/cli.rs), so refusing it made 70 of 77
+    // rows `SuiError` and `parity.yml` went red for six consecutive runs. The
+    // fleet-caller sweep that preceded the refusal checked other REPOSITORIES
+    // and found no `alias nix=sui` — it did not check sui's own test corpus,
+    // which is the one caller that was guaranteed to exist.
+    //
+    // Same shape as `copy --no-check-sigs`, kept Honoured for the same reason:
+    // a flag asking for LESS restriction, on an implementation that applies no
+    // restriction, is honoured rather than vacuous. The day sui grows a pure
+    // mode, this row inverts and `--pure-eval` (which does not exist yet) is
+    // the one to add.
+    (&[], "impure", H),
     (
         &[],
         "option",
@@ -1096,20 +1111,26 @@ mod tests {
     /// A GLOBAL refusal must fire regardless of where the flag sits in argv.
     ///
     /// Globals are keyed at the ROOT in `CONTRACT`, and clap propagates them up
-    /// from wherever they were typed — so `sui store paths --impure` must refuse
-    /// exactly as `sui --impure store paths` does. Without this, the gate would
-    /// be a half-gate catching one argv ordering, and the other ordering is the
-    /// one people actually type.
+    /// from wherever they were typed — so `sui store paths --option x y` must
+    /// refuse exactly as `sui --option x y store paths` does. Without this, the
+    /// gate would be a half-gate catching one argv ordering, and the other
+    /// ordering is the one people actually type.
+    ///
+    /// The probe was `--impure` until that flag was correctly reclassified to
+    /// Honoured (sui evaluates impurely already, and refusing it broke the
+    /// byte-parity gate, whose corpus drives `sui eval --impure`). `--option`
+    /// is used instead because it is refused for a reason that will not
+    /// evaporate: sui applies no nix settings at all.
     #[test]
     fn a_global_refusal_fires_at_any_argv_position() {
         for argv in [
-            &["sui", "--impure", "store", "paths"][..],
-            &["sui", "store", "paths", "--impure"][..],
+            &["sui", "--option", "cores", "4", "store", "paths"][..],
+            &["sui", "store", "paths", "--option", "cores", "4"][..],
         ] {
             let m = matches_from(argv);
             let err = enforce(&m)
                 .expect_err("a refused global must fire from either argv position");
-            assert!(err.to_string().contains("impure"), "{argv:?}: {err}");
+            assert!(err.to_string().contains("option"), "{argv:?}: {err}");
         }
         // …and a two-level subcommand, where propagation has one more hop.
         let m = matches_from(&["sui", "cache", "info", "--quiet"]);
