@@ -278,8 +278,34 @@ fn construct_derivation(
             if ignore_nulls && matches!(forced_v, Value::Null) {
                 continue;
             }
-            if let Ok(jv) = forced_v.to_json_with_context(&mut collected_ctx) {
-                obj.insert(k.clone(), jv);
+            // The `Err` arm used to have no `else`: a value that forced fine
+            // but could not be JSON-encoded vanished from `__json` with no
+            // record anywhere — not in the ledger, not behind SUI_DEBUG_DRV.
+            //
+            // That is the exact structural sibling of the flat-env coerce-none
+            // hole closed below (see the `None =>` arm), and it matters more,
+            // not less: `__structuredAttrs` is set by every modern
+            // `mkDerivation`, `__json` is an env var the drv hashes over, and a
+            // dropped key changes the hash silently. A strict run reported
+            // "clean eval" while this path was discarding attrs.
+            match forced_v.to_json_with_context(&mut collected_ctx) {
+                Ok(jv) => {
+                    obj.insert(k.clone(), jv);
+                }
+                Err(e) => {
+                    if std::env::var_os("SUI_DEBUG_DRV").is_some() {
+                        eprintln!(
+                            "[SUI_DEBUG_DRV] drv={name} attr={k} JSON-ENCODE-ERR type={} err={e:?}",
+                            forced_v.type_name()
+                        );
+                    }
+                    parity_strict::record(
+                        &name,
+                        &k,
+                        parity_strict::DropSite::StructuredAttrs,
+                        &format!("json-encode-err type={} {e:?}", forced_v.type_name()),
+                    );
+                }
             }
         }
         let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
