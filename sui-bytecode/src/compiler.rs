@@ -3173,8 +3173,30 @@ mod tests {
 
     // -- PathSearch tests -----------------------------------------------
 
+    /// Serializes every test that touches `NIX_PATH`.
+    ///
+    /// ── ★ THE "SAFETY" COMMENT WAS THE BUG ────────────────────────────
+    /// These tests carried `// SAFETY: test runs single-threaded; no
+    /// concurrent env access` above their `set_var`. libtest runs tests in
+    /// PARALLEL by default, so that justification was false and the three
+    /// NIX_PATH tests raced each other: one would `remove_var` while another
+    /// was mid-compile, and the loser saw either no NIX_PATH or the other's
+    /// value. Measured on the full workspace run: 1 failing suite in 2,
+    /// naming `path_search_compiles_with_matching_nix_path` and
+    /// `path_search_with_sub_path`.
+    ///
+    /// An env var is process-global; the only fix is to make the access
+    /// exclusive. This is the same shape as two other flakes found in this
+    /// fleet today (a `HOME` override and a shared scratch-file path), which
+    /// is why it is worth naming rather than just silencing.
+    fn nix_path_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn path_search_compiles_with_matching_nix_path() {
+        let _nix_path = nix_path_lock();
         // Set NIX_PATH to a directory containing a target, then compile
         // a search-path expression.
         let dir = tempfile::tempdir().unwrap();
@@ -3182,7 +3204,7 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         // Set NIX_PATH with prefix=path format.
         let nix_path_val = format!("mypkg={}", target.display());
-        // SAFETY: test runs single-threaded; no concurrent env access.
+        // SAFETY: `nix_path_lock` above makes this access exclusive.
         unsafe { std::env::set_var("NIX_PATH", &nix_path_val) };
         let result = Compiler::compile("<mypkg>");
         unsafe { std::env::remove_var("NIX_PATH") };
@@ -3199,8 +3221,9 @@ mod tests {
 
     #[test]
     fn path_search_fails_when_nix_path_no_match() {
+        let _nix_path = nix_path_lock();
         // Set NIX_PATH to something that doesn't match.
-        // SAFETY: test runs single-threaded; no concurrent env access.
+        // SAFETY: `nix_path_lock` above makes this access exclusive.
         unsafe { std::env::set_var("NIX_PATH", "other=/nonexistent") };
         let result = Compiler::compile("<nosuchpkg>");
         unsafe { std::env::remove_var("NIX_PATH") };
@@ -3234,13 +3257,14 @@ mod tests {
 
     #[test]
     fn path_search_with_sub_path() {
+        let _nix_path = nix_path_lock();
         // Test `<nixpkgs/lib>` style — prefix match with sub-path.
         let dir = tempfile::tempdir().unwrap();
         let nixpkgs = dir.path().join("nixpkgs-src");
         let lib_dir = nixpkgs.join("lib");
         std::fs::create_dir_all(&lib_dir).unwrap();
         let nix_path_val = format!("nixpkgs={}", nixpkgs.display());
-        // SAFETY: test runs single-threaded; no concurrent env access.
+        // SAFETY: `nix_path_lock` above makes this access exclusive.
         unsafe { std::env::set_var("NIX_PATH", &nix_path_val) };
         let result = Compiler::compile("<nixpkgs/lib>");
         unsafe { std::env::remove_var("NIX_PATH") };

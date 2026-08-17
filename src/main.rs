@@ -1286,7 +1286,6 @@ fn cmd_collect_garbage(delete_old: bool, age: Option<&str>) -> Result<(), CliErr
 fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
     let layouts = sui_spec::store_layout::load_canonical()
         .map_err(|e| CliError::NotImplemented(format!("store delete: {e:?}")))?;
-    let mut deleted = 0usize;
     for p in paths {
         let mut ok = false;
         for layout in &layouts {
@@ -1307,22 +1306,39 @@ fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError>
                 "store delete: refusing to delete without --ignore-liveness (liveness check needs sui_spec::gc::is_live)".into()
             ));
         }
-        let path = std::path::Path::new(p);
-        if path.exists() {
-            if path.is_dir() {
-                std::fs::remove_dir_all(path)
-                    .map_err(|e| CliError::NotImplemented(format!("store delete: {p}: {e}")))?;
-            } else {
-                std::fs::remove_file(path)
-                    .map_err(|e| CliError::NotImplemented(format!("store delete: {p}: {e}")))?;
-            }
-            deleted += 1;
-            eprintln!("deleted: {p}");
-        } else {
-            eprintln!("skipped (not found): {p}");
-        }
+        // ── ★ DELETING THE BYTES WITHOUT UNREGISTERING MANUFACTURES
+        //        STORE CORRUPTION, AT EXIT 0 ──────────────────────────────
+        // This removed the directory and never touched `db.sqlite`, so
+        // `query_all_valid_paths` kept returning a path that no longer
+        // exists. Every later consumer — a closure walk, a substituter
+        // decision, `verify`, a build that treats the path as an already-valid
+        // input — then reasons from a store the store itself contradicts.
+        //
+        // That is worse than the inert commands fixed alongside it: those did
+        // nothing and said they did something, while this one does something
+        // real and leaves the system less consistent than it found it. An
+        // unregistered delete is not a partial success; it is damage.
+        //
+        // Refusing rather than implementing the unregister for the same reason
+        // `collect-garbage` refuses: the DB write is async over a read-write
+        // store this sync helper does not hold, and a half-right implementation
+        // of a delete path is exactly how a store gets destroyed. The
+        // destination is `LocalStore`'s own delete/GC path, which already
+        // unregisters — `sui store gc` is the working command today.
+        //
+        // The `--ignore-liveness` guard above is a real mitigation and is why
+        // this was never reachable by accident. It is not a substitute for the
+        // invariant: an operator who supplies the flag is asking to skip the
+        // LIVENESS check, not asking for a corrupt database.
+        return Err(CliError::NotImplemented(format!(
+            "store delete: refusing to unlink `{p}` without unregistering it from the store \
+             database. Removing the bytes while `db.sqlite` still lists the path as valid \
+             leaves the store internally inconsistent — a closure walk, a substituter \
+             decision or a build would then treat a path that no longer exists as usable. \
+             Use `sui store gc`, which deletes and unregisters together."
+        )));
     }
-    eprintln!("store delete: {deleted} path(s) deleted");
+    // Only reachable with an empty path list.
     Ok(())
 }
 

@@ -294,6 +294,7 @@ fn write_report(body: &str) -> std::path::PathBuf {
 
 #[test]
 fn emit_perf_profile_report() {
+    let _perf = perf_scope_lock();
     let cases = load_corpus();
     assert!(!cases.is_empty(), "corpus empty");
 
@@ -313,8 +314,28 @@ fn emit_perf_profile_report() {
 // Sanity tests for the perf API itself.
 // ──────────────────────────────────────────────────────────────────
 
+/// Serializes every test that drives `perf::with_scope`.
+///
+/// ── ★ THE COUNTERS ARE PROCESS-GLOBAL ─────────────────────────────────
+/// `with_scope` enables, RESETS and then reads global counters, so two of
+/// these running concurrently interleave: one call's reset clears the
+/// other's accumulated deltas, and the loser asserts `> 0` against zero.
+/// libtest runs tests in parallel, so this is the default condition, not an
+/// edge case.
+///
+/// Measured on the full workspace run: `with_scope_captures_nonzero_counters`
+/// failed in 1 of 3 runs, from a suite that is otherwise green. It is the
+/// third distinct process-global-state race found in this fleet today (a
+/// `NIX_PATH` pair, a `HOME` override, a shared scratch-file path), all with
+/// the same shape and the same fix.
+fn perf_scope_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn with_scope_captures_nonzero_counters() {
+    let _perf = perf_scope_lock();
     let (_, snap) = perf::with_scope(|| {
         let _ = sui_eval::eval("let f = n: if n <= 0 then 0 else n + f (n - 1); in f 10");
     });
@@ -336,6 +357,7 @@ fn with_scope_captures_nonzero_counters() {
 
 #[test]
 fn with_scope_deltas_are_per_call() {
+    let _perf = perf_scope_lock();
     // Two independent scoped calls should yield independent deltas —
     // the second shouldn't see the first's accumulated counts.
     let (_, a) = perf::with_scope(|| {
@@ -360,6 +382,7 @@ fn with_scope_deltas_are_per_call() {
 
 #[test]
 fn dominant_expr_kind_is_sensible() {
+    let _perf = perf_scope_lock();
     let (_, snap) = perf::with_scope(|| {
         let _ = sui_eval::eval(
             "let xs = builtins.genList (x: x) 50; in \

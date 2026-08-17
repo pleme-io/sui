@@ -287,11 +287,37 @@ async fn add_to_store_wire_carries_references() {
     let fixture = Fixture::start().await;
     let name = "with-refs";
     let nar = nar_for_file(b"payload");
-    // A syntactically-valid store path reference living in the temp dir.
-    let reference = format!(
-        "{}/00000000000000000000000000000000-dep",
-        fixture.store_dir.display()
+
+    // ── ★ THE REFERENCE MUST BE A PATH THAT ACTUALLY EXISTS ───────────────
+    // This used to name `<store>/00000000000000000000000000000000-dep`, a
+    // syntactically-valid path that was never added — so the test only passed
+    // because `register_path` silently DROPPED references it could not
+    // resolve. CppNix rejects that request outright (`registerValidPaths`
+    // calls `queryValidPathId` per reference and throws `path '%s' is not
+    // valid`, rolling back the transaction), so the old fixture asserted a
+    // laxness the tool it mirrors does not have.
+    //
+    // Registering the dependency first keeps the test's real intent — that
+    // references survive the wire round-trip — and additionally proves they
+    // are VALIDATED, which is the property that matters: a store that accepts
+    // a reference to a path it does not have can let a GC collect the
+    // referent out from under the referrer.
+    let dep_nar = nar_for_file(b"dep payload");
+    let mut dep_conn = fixture.connect();
+    write_u64(&mut dep_conn, WorkerOp::AddToStore as u64);
+    write_string(&mut dep_conn, "dep");
+    write_string(&mut dep_conn, "fixed:r:sha256");
+    write_u64(&mut dep_conn, 0); // no references of its own
+    write_u64(&mut dep_conn, 0); // repair
+    write_framed(&mut dep_conn, &dep_nar);
+    dep_conn.flush().unwrap();
+    drain_to_stderr_last(&mut dep_conn);
+    let reference = read_string(&mut dep_conn);
+    assert!(
+        reference.starts_with(&format!("{}/", fixture.store_dir.display())),
+        "the dependency must land in the temp store dir, got {reference}"
     );
+    drop(dep_conn);
 
     let mut c = fixture.connect();
     write_u64(&mut c, WorkerOp::AddToStore as u64);
