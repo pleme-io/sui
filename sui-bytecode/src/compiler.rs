@@ -653,6 +653,34 @@ impl Compiler {
     // ── Let/in ─────────────────────────────────────────────────
 
     fn compile_let(&mut self, letin: &ast::LetIn) -> Result<(), CompileError> {
+        // ★ A `let` is a RECURSIVE binder, so the plan is built with
+        // `recursive = true`. This is what gives `let` dotted bindings and
+        // duplicate-key merging, both of which the loop below simply refused
+        // or lost:
+        //
+        //   let a = {b=1;}; a = {c=2;}; in a    was {"c":2}   nix {"b":1,"c":2}
+        //   let a = {b=1;}; a.c = 2;    in a    was a hard `Unsupported("dotted
+        //                                       let bindings")` refusal
+        match sui_normalize::plan_for_group_total(letin, true) {
+            Ok(plan) if plan.dynamics.is_empty() => {
+                let body = letin
+                    .body()
+                    .ok_or_else(|| CompileError::MissingNode("let body".to_string()))?;
+                self.begin_scope();
+                let local_count = self.bind_plan_group_locals(&plan)?;
+                // The body's result lands on top of the local slots.
+                self.compile_expr(&body)?;
+                self.end_scope(local_count);
+                return Ok(());
+            }
+            // A dynamic key cannot name a local slot, and nix rejects
+            // `let ${k} = 1; in k` at parse time for exactly that reason. Left
+            // to the loop below, which refuses it — rather than dropped.
+            Ok(_) => {}
+            // A group nix itself rejects; see `compile_attrset`.
+            Err(_) => {}
+        }
+
         self.begin_scope();
 
         // Collect all binding names and value expressions first so we
@@ -1588,8 +1616,48 @@ impl Compiler {
         &mut self,
         plan: &sui_normalize::GroupPlan,
     ) -> Result<(), CompileError> {
-        use sui_normalize::Binding;
         self.begin_scope();
+        let local_count = self.bind_plan_group_locals(plan)?;
+
+        // Build the attrset from the locals.
+        let mut count = local_count;
+        for b in &plan.statics {
+            let name = sui_intern::resolve(b.name);
+            let slot = self.find_local_slot(&name);
+            self.emit(OpCode::GetLocal);
+            self.emit_u16(slot);
+            self.emit_constant(VMValue::String(name))?;
+        }
+        // Dynamic keys resolve in the group's OWN scope, so they are emitted
+        // here, while the locals are still live.
+        count += self.emit_plan_dynamics(plan)?;
+
+        self.emit(OpCode::MakeAttrs);
+        self.emit_u16(count);
+        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
+
+        // Move the attrset down past the locals.
+        self.end_scope(local_count);
+        Ok(())
+    }
+
+    /// Bind a recursive group's names into fresh locals, leaving the scope
+    /// OPEN — the caller owns `begin_scope`/`end_scope` and decides what to
+    /// leave on top: an attrset (`rec { … }`), a body (`let … in e`), or one
+    /// selected member (legacy `let { … body = e; }`). Returns the local count
+    /// the caller must pass to `end_scope`.
+    ///
+    /// That three-way split is exactly why this is separate: all three are the
+    /// same recursive binder over the same plan and differ only in the last
+    /// two instructions, and before the plan they were three hand-maintained
+    /// copies of the two-phase protocol that had already drifted — `let`
+    /// refused dotted bindings outright (`Unsupported("dotted let bindings")`)
+    /// while `rec` supported them.
+    fn bind_plan_group_locals(
+        &mut self,
+        plan: &sui_normalize::GroupPlan,
+    ) -> Result<u16, CompileError> {
+        use sui_normalize::Binding;
 
         let local_count =
             u16::try_from(plan.statics.len()).map_err(|_| CompileError::TooManyLocals)?;
@@ -1670,26 +1738,7 @@ impl Compiler {
             }
         }
 
-        // Build the attrset from the locals.
-        let mut count = local_count;
-        for b in &plan.statics {
-            let name = sui_intern::resolve(b.name);
-            let slot = self.find_local_slot(&name);
-            self.emit(OpCode::GetLocal);
-            self.emit_u16(slot);
-            self.emit_constant(VMValue::String(name))?;
-        }
-        // Dynamic keys resolve in the group's OWN scope, so they are emitted
-        // here, while the locals are still live.
-        count += self.emit_plan_dynamics(plan)?;
-
-        self.emit(OpCode::MakeAttrs);
-        self.emit_u16(count);
-        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
-
-        // Move the attrset down past the locals.
-        self.end_scope(local_count);
-        Ok(())
+        Ok(local_count)
     }
 
     /// Compile a legacy let expression (`let { x = 1; body = x; }`).
@@ -1698,6 +1747,30 @@ impl Compiler {
     /// The entries are recursive (like `rec { ... }`), and the result
     /// is the `body` attribute.
     fn compile_legacy_let(&mut self, ll: &ast::LegacyLet) -> Result<(), CompileError> {
+        // `let { … }` IS `(rec { … }).body`, so it is the same recursive
+        // binder over the same plan, selecting one member instead of building
+        // an attrset. Same measured defect:
+        //
+        //   let { a = {b=1;}; a.c = 2; body = a; }   was {"c":2}
+        //                                            nix {"b":1,"c":2}
+        match sui_normalize::plan_for_group_total(ll, true) {
+            Ok(plan) if plan.dynamics.is_empty() => {
+                let body_sym = sui_intern::intern("body");
+                if plan.statics.iter().any(|b| b.name == body_sym) {
+                    self.begin_scope();
+                    let local_count = self.bind_plan_group_locals(&plan)?;
+                    let slot = self.find_local_slot("body");
+                    self.emit(OpCode::GetLocal);
+                    self.emit_u16(slot);
+                    self.end_scope(local_count);
+                    return Ok(());
+                }
+                // No `body` member: fall through so the existing path emits
+                // its own diagnostic rather than this one inventing a second.
+            }
+            Ok(_) | Err(_) => {}
+        }
+
         self.begin_scope();
 
         // Collect bindings — same logic as compile_rec_attrset but

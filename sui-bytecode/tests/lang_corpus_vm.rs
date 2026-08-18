@@ -208,18 +208,21 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // reading `.success` gets an attribute error; a caller using the value gets
     // a silently wrong one from an assertion that was supposed to have failed.
     ("eval-okay-tryeval", "WRONG-VALUE:tryEval-misses-assert-and-returns-unwrapped-body"),
-    // ── DECLARED (1) — `CompileError::Unsupported`, the VM saying so. ──────
+    // ── DECLARED (0) — deliberately EMPTY, and that is the claim. ─────────
     //
-    // Was FIVE. The other four were all
-    // `declared:unsupported-interpolated-string-attr-keys` and all closed on
-    // 2026-08-18 with the plan adoption, as a side effect rather than a fix:
-    // the compiler's own `static_attr_name` classifier refused an interpolated
-    // string key outright, while `sui_normalize::fold_attr` folds one to a
-    // STATIC key when it has no interpolation left after normalization
-    // (`''`-stripping and escapes included, so `"a\tb"` folds to a TAB) and
-    // classifies it dynamic otherwise. Retiring the classifier retired the
-    // refusal.
-    ("eval-okay-dynamic-attrs-3", "declared:unsupported-dynamic-attr-keys"),
+    // Was FIVE. All five closed on 2026-08-18 with the plan adoption, as a
+    // side effect rather than as a fix: the compiler's own `static_attr_name`
+    // classifier refused interpolated and dynamic attr keys outright, while
+    // `sui_normalize::fold_attr` FOLDS an interpolated key to a STATIC one
+    // when normalization leaves no interpolation (`''`-stripping and escapes
+    // included, so `"a\tb"` folds to a TAB) and classifies it dynamic
+    // otherwise. Retiring the classifier retired the refusal.
+    //
+    // The bucket is kept because its emptiness is a statement: the VM no
+    // longer REFUSES to compile anything in this corpus. Every remaining gap
+    // is a runtime one. An entry landing back here means a construct became
+    // uncompilable, which is a different kind of regression from a wrong
+    // answer and should not be filed alongside one.
     // ── UNDECLARED ERROR, root A (14) — one bug, fourteen fixtures. ─────────
     //
     // Every one of these opens `with import ./lib.nix;`, and `lib.nix` opens
@@ -732,7 +735,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        40,
+        39,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \
