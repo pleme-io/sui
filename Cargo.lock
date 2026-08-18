@@ -6791,6 +6791,7 @@ dependencies = [
  "sui-compat",
  "sui-graph-store",
  "sui-intern",
+ "sui-normalize",
  "sui-resolve",
  "sui-spec",
  "sui-store",

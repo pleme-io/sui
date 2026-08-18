@@ -179,6 +179,7 @@ gen-nix = "0.1"
 sui-intern = { path = "sui-intern", version = "0.1.210" }
 sui-fmt = { path = "sui-fmt", version = "0.1.210" }
 sui-resolve = { path = "sui-resolve", version = "0.1.210" }
+sui-normalize = { path = "sui-normalize", version = "0.1.210" }
 sui-bytecode = { path = "sui-bytecode", version = "0.1.210" }
 sui-cache = { path = "sui-cache", version = "0.1.210" }
 sui-compat = { path = "sui-compat", version = "0.1.210" }

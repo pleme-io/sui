@@ -32,6 +32,7 @@ pub mod perf;
 /// ENV-RESOLVE M0 flag + per-source resolution-table plumbing (the
 /// tree-walker's consume side of the `sui-resolve` side-table).
 pub mod resolve_env;
+pub mod normalize_env;
 /// Infinite recursion debugging tools (force chain, trace, depth limit, stats).
 pub mod trace;
 /// Nix value types, environments, thunks, and error types.

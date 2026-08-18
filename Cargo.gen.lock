@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "a1988466e35e2c5e94c66e20e438e70a5ce122a4ea3ab5654efda0f8d1213a84",
+  "cargo_lock_sha256": "55be53642834c607fd54f41e5c2c91adcb9725d5ef59383da62af95df6bf2592",
   "manifest_sha256": {
-    "Cargo.toml": "3c89e2ac07f2d47dfb7d36a18f3a92d654ca055b4d10cb6f136d3046252f4507",
+    "Cargo.toml": "d7daebb526c1f6c27b2c9f49d352b3d557681e3b45c794967b6b5445e868d212",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -19,7 +19,7 @@
     "sui-dockerfile-prewarmer/Cargo.toml": "d5a84d137aadbc380818f25d4d59f728939cc523837eb1c232104e1dec315b5e",
     "sui-dockerfile-verify/Cargo.toml": "1b4114c0abb7761a054f8c20cc59885ef75bbbad021df12341177bf87f2f55f0",
     "sui-dockerfile-wrapper/Cargo.toml": "b0e69fd6d4f62718b891000d3e61cb869cb0089f758888a378630e0d1e309261",
-    "sui-eval/Cargo.toml": "1151aa4d551e8894b666a75cae5fab110f7fefabc997bb50817fbf6c738a62fb",
+    "sui-eval/Cargo.toml": "a6c04097f9b7f9ef1f1ebb441db82e6b071820ad7bf3d2fe7bd035b4149335d6",
     "sui-fmt/Cargo.toml": "c6b3ceec3b679871e1a63b78790e5a2cd8d7b40fa960fedd5575d9c4f969bd4b",
     "sui-graph-store/Cargo.toml": "a947a9ea34bb09798ae6433ac21d01deb57b2d854bc9774122ad7583f8fda257",
     "sui-intern/Cargo.toml": "50af7772869b3fb3118e90ef309e64dee2f65a443c4dee63554c9da212e959bc",
@@ -25973,6 +25973,16 @@
           {
             "name": "sui_intern",
             "package_key": "sui-intern-0.1.210",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_normalize",
+            "package_key": "sui-normalize-0.1.210",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

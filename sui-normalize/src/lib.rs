@@ -365,6 +365,13 @@ impl NormalizeTable {
         self.by_offset.is_empty()
     }
 
+    /// Iterate the recorded `(text_offset, plan)` pairs. Consumers merge these
+    /// into their own per-`(source_id, offset)` table, exactly as
+    /// `sui-resolve`'s consumers do.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &GroupPlan)> {
+        self.by_offset.iter().map(|(o, p)| (*o, p))
+    }
+
     fn insert(&mut self, offset: u32, plan: GroupPlan) {
         self.by_offset.insert(offset, plan);
     }

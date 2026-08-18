@@ -553,6 +553,16 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         let table = sui_resolve::resolve(&parse.tree());
         crate::resolve_env::populate(src_id, &table);
     }
+    // The attrset-binding plan (`SUI_NORMALIZE=1`). A rejection here is nix's
+    // PARSE-time duplicate-attribute error, so it surfaces as a parse error
+    // rather than an eval one — but only once the rejection tier lands; for
+    // now a rejected tree simply records no plan and every group keeps its
+    // existing path.
+    if crate::normalize_env::enabled() {
+        if let Ok(table) = sui_normalize::normalize(&parse.tree()) {
+            crate::normalize_env::populate(src_id, &table);
+        }
+    }
     // Register this parse tree's file + text so a static key's byte offset
     // (recorded by `eval_attrset`) resolves to a file/line/column for
     // `builtins.unsafeGetAttrPos`. The file flows through the eval-file
@@ -2517,6 +2527,26 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
     crate::perf::inc(crate::perf::Counter::Attrset);
     let mut attrs = NixAttrs::new();
     let is_rec = set.rec_token().is_some();
+
+    // ── plan-driven construction (`SUI_NORMALIZE=1`) ──────────────────────
+    //
+    // Wired for `rec` FIRST, deliberately. The `rec` branch is WRONG today —
+    // its Phase 1b does a destructive `attrs.insert` where the non-rec branch
+    // merges, so `rec { o = {e=1;}; o.x = 2; }` drops `e` — which means any
+    // change here can only improve it. The non-rec branch is the one path
+    // that is currently correct on keys and carries every fleet evaluation,
+    // so it is wired last and separately.
+    //
+    // A `None` here is a POSITIVE statement, not a fallback: `sui-normalize`
+    // records a group only when it has a duplicate static key or a dotted
+    // path, so no plan means this group is already built correctly.
+    if is_rec && crate::normalize_env::enabled() {
+        let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+        let offset = u32::from(set.syntax().text_range().start());
+        if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+            return eval_plan_group(&plan, env);
+        }
+    }
 
     if is_rec {
         let mut rec_env = env.child();
@@ -8885,4 +8915,87 @@ mod tests {
         assert_eq!(ev("true -> true"), Value::Bool(true));
         assert_eq!(ev("true -> false"), Value::Bool(false));
     }
+}
+
+/// Build an attrset from a `sui-normalize` [`GroupPlan`].
+///
+/// This is the plan-driven replacement for the entry loops in
+/// [`eval_attrset`] / the `LetIn` arm / `eval_entries`. It exists because
+/// nix's duplicate-key merge is a **parse-time splice into the first-declared
+/// node**, not a value-level union: the second side's bindings become
+/// bindings *of the first node*, so they are scoped by it and the later
+/// `rec` is discarded. `sui-normalize` performed that splice; this function
+/// only evaluates the result.
+///
+/// The consequence worth stating: there is no merging here, and no collision
+/// to resolve. `attrs.insert` is a plain insert because the plan's
+/// postcondition is that no name appears twice. That is what retires
+/// `merge_nested_insert` from the construction path — and with it the
+/// force-to-WHNF-on-collision that turned
+/// `let f = x: x+1; a.b = {x = f 1;}; a.b.y = 2; in a.b.x` into
+/// `UndefinedVar 'f'` on an expression nix evaluates to `2`.
+pub fn eval_plan_group(
+    plan: &sui_normalize::GroupPlan,
+    env: &Env,
+) -> Result<Value, EvalError> {
+    use sui_normalize::Binding;
+
+    let mut attrs = NixAttrs::new();
+    // A recursive group binds its own names; a non-recursive one does not.
+    // `rec`-ness came from the FIRST declaration — see `sui-normalize`.
+    let mut scope_env = if plan.recursive { env.child() } else { env.clone() };
+    let mut thunks: Vec<Thunk> = Vec::new();
+
+    // `inherit (e)` sources: ONE thunk per clause, shared across every name
+    // that clause binds, so `e` is evaluated at most once. Built against the
+    // group's OWN scope — measured on nix: `rec { b = {x=99;}; inherit (b) x; }`
+    // is `x = 99`, so the source sees the group it is being bound into.
+    let from_thunks: Vec<Thunk> = plan
+        .inherit_froms
+        .iter()
+        .map(|e| Thunk::new_suspended(e.clone(), scope_env.clone()))
+        .collect();
+
+    for b in &plan.statics {
+        let name = sui_intern::resolve(b.name).to_string();
+        let value = match &b.binding {
+            Binding::Leaf(expr) => {
+                let t = Thunk::new_suspended(expr.clone(), scope_env.clone());
+                thunks.push(t.clone());
+                Value::Thunk(t)
+            }
+            Binding::Group(sub) => {
+                let t = Thunk::new_plan_group(sub.clone(), scope_env.clone());
+                thunks.push(t.clone());
+                Value::Thunk(t)
+            }
+            // `inherit x` resolves in the ENCLOSING scope, never the group's
+            // own rec scope — that is what makes it shadow rather than
+            // self-reference, and why it can never merge.
+            Binding::Inherit => env
+                .lookup(&name)
+                .ok_or_else(|| EvalError::UndefinedVar(format!("'{name}'")))?,
+            Binding::InheritFrom { from } => {
+                let t = Thunk::new_inherit_select(from_thunks[*from].clone(), &name);
+                thunks.push(t.clone());
+                Value::Thunk(t)
+            }
+        };
+        // PLAIN insert: the plan guarantees no repeated name.
+        attrs.insert(name.clone(), value.clone());
+        if plan.recursive {
+            scope_env.bind(name, value);
+        }
+    }
+
+    // Phase 2: re-point every thunk at the completed scope, so a binding that
+    // references a LATER sibling resolves. `PlanGroup` is re-pointable for
+    // exactly this reason.
+    if plan.recursive {
+        for t in &thunks {
+            t.update_env(&scope_env);
+        }
+    }
+
+    Ok(Value::Attrs(std::rc::Rc::new(attrs)))
 }

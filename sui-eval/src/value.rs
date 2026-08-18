@@ -1253,6 +1253,21 @@ pub enum ThunkRepr {
         source_thunk: Thunk,
         name: SmolStr,
     },
+    /// A not-yet-built attrset described by a `sui-normalize` [`GroupPlan`]
+    /// rather than by an AST node.
+    ///
+    /// ★ WHY THIS IS A VARIANT AND NOT A `Native` CLOSURE. A group created by
+    /// a dotted path (`{ a.b = 1; }` invents the node bound to `a`) has NO
+    /// `ast::Expr` to hang a `Suspended` on. A `Native` closure would hold the
+    /// work, but `Native` is NOT re-pointable by `update_env` — so inside a
+    /// `rec` it would capture the pre-fixpoint environment and every sibling
+    /// reference from within an implicit group would resolve to the outer
+    /// scope. `PlanGroup` is both lazy and re-pointable, which is exactly what
+    /// CppNix's `mkThunk(env, ExprAttrs*)` is.
+    PlanGroup {
+        plan: sui_normalize::GroupPlan,
+        env: Env,
+    },
     /// A lazy value backed by a Rust closure.  Used for flake input
     /// evaluation: the closure calls `evaluate_flake` on first access
     /// instead of eagerly during flake setup, matching CppNix semantics
@@ -1360,6 +1375,22 @@ pub struct Thunk(pub(crate) Rc<ThunkInner>);
 
 impl Thunk {
     /// Create a thunk that will evaluate `expr` in `env` when forced.
+    /// A thunk that builds an attrset from a `sui-normalize` plan.
+    ///
+    /// Used for a nested group — including an IMPLICIT one invented by a
+    /// dotted path, which has no `ast::Expr` and therefore cannot be a
+    /// `Suspended`.
+    #[must_use]
+    pub fn new_plan_group(plan: sui_normalize::GroupPlan, env: Env) -> Self {
+        crate::trace::inc_thunks_created();
+        census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
+        Self(Rc::new(ThunkInner {
+            cache: OnceCell::new(),
+            repr: UnsafeCell::new(ThunkRepr::PlanGroup { plan, env }),
+            recursive: false,
+        }))
+    }
+
     pub fn new_suspended(expr: rnix::ast::Expr, env: Env) -> Self {
         crate::trace::inc_thunks_created();
         census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
@@ -1510,6 +1541,10 @@ impl Thunk {
             }
             ThunkRepr::InheritSelect { source_thunk, .. } => {
                 source_thunk.update_env(new_env);
+            }
+            // Re-pointable, which is the whole reason it is not a `Native`.
+            ThunkRepr::PlanGroup { env, .. } => {
+                *env = new_env.clone();
             }
             _ => {}
         }
@@ -1917,6 +1952,39 @@ impl Thunk {
                     }
                 }
             }
+            ThunkRepr::PlanGroup { plan, env } => {
+                let tracing = crate::trace::trace_enabled();
+                crate::trace::push_force(crate::trace::ForceFrame {
+                    defined_in: env.eval_file().cloned(),
+                    description: if tracing { "<plan-group>".into() } else { String::new() },
+                    thunk_id,
+                });
+                if tracing {
+                    crate::trace::trace_force_enter(None, "<plan-group>");
+                }
+                crate::trace::inc_thunks_forced_unique();
+                // UNLIKE `Native`, a plan is RETRYABLE — it is data, not a
+                // consumed `FnOnce` — so a failure restores the repr exactly
+                // as `Suspended` does. Leaving a Blackhole here would turn a
+                // recoverable error (e.g. one caught by `tryEval`) into a
+                // permanent one for every later reader of the same thunk.
+                match crate::eval::eval_plan_group(&plan, &env) {
+                    Ok(value) => {
+                        *unsafe { &mut *self.0.repr.get() } =
+                            ThunkRepr::Evaluated(Box::new(value.clone()));
+                        crate::trace::pop_force();
+                        crate::trace::trace_force_exit();
+                        Ok(value)
+                    }
+                    Err(e) => {
+                        *unsafe { &mut *self.0.repr.get() } =
+                            ThunkRepr::PlanGroup { plan, env };
+                        crate::trace::pop_force();
+                        crate::trace::trace_force_exit();
+                        Err(e)
+                    }
+                }
+            }
             ThunkRepr::Native(f) => {
                 let tracing = crate::trace::trace_enabled();
                 crate::trace::push_force(crate::trace::ForceFrame {
@@ -2206,6 +2274,7 @@ impl fmt::Debug for Thunk {
             ThunkRepr::Suspended { .. } => write!(f, "<thunk>"),
             ThunkRepr::InheritSelect { name, .. } => write!(f, "<inherit-select {name}>"),
             ThunkRepr::Native(_) => write!(f, "<native-thunk>"),
+            ThunkRepr::PlanGroup { .. } => write!(f, "<plan-group>"),
             ThunkRepr::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
             ThunkRepr::Blackhole => write!(f, "<blackhole>"),
             ThunkRepr::Promise(_) => write!(f, "<promise>"),

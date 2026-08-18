@@ -25,6 +25,7 @@ sui-intern.workspace = true
 # per-lookup re-intern on the tree-walker's hot Ident arm. Parity by
 # construction — see `sui-resolve`'s crate docs + `docs/ENV-RESOLVE-DESIGN.md`.
 sui-resolve.workspace = true
+sui-normalize.workspace = true
 sui-store.workspace = true
 sui-spec.workspace = true
 # L1 substrate — optional cross-process / fleet-shared eval-cache tier.
