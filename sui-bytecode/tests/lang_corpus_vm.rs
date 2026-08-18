@@ -136,6 +136,36 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ("eval-okay-equal-function-attrset-identical", "WRONG-VALUE:no-value-identity-optimization"),
     // Same defect, list-shaped: `[ f ] == [ f ]`.
     ("eval-okay-equal-function-list-identical", "WRONG-VALUE:no-value-identity-optimization"),
+    // Same defect again, and the widest instance of it: 14 rows covering every
+    // shape in which a shared function reaches a nested comparison (list,
+    // attrs, `inherit`, nested path, `with`-scope, `builtins.elem`,
+    // `builtins.filter`, a merged attrset literal). nix says `true` to all 14
+    // — its pointer hack fires because a nested element really is one `Value*`
+    // on both sides — and the walker matches. The VM answers `false` to ALL
+    // 14, uniformly, because `deep_eq` forces at every level and has no
+    // identity arm at all.
+    //
+    // Landed 2026-08-18 as the CALIBRATION for the walker's `eq_operator`
+    // split (`f == f` false at the operator, true nested). It is listed here
+    // rather than weakened: the VM needs the OPPOSITE addition to the walker's
+    // — a pre-force identity arm, not an entry-point split — and a fixture
+    // that both engines can satisfy today would not have caught the walker bug
+    // it was written for.
+    ("eval-okay-equal-function-alias-nested", "WRONG-VALUE:no-value-identity-optimization"),
+    // `builtins.toXML` on any function. nix writes
+    // `<function><varpat name="x" /></function>` (and `<attrspat>` with
+    // `ellipsis="1"` / `name="args"` for a pattern); the walker and the IR now
+    // match it byte-for-byte. The VM renders `<null />`.
+    //
+    // Root is the BRIDGE CROSSING, not toXML: `toXML` is bridge-dispatched
+    // (`vm.rs`), the value is flattened through `to_string_keyed`, and
+    // `StringKeyedValue::Lambda` maps to `Value::Null` in
+    // `sui-eval/src/convert.rs` — "bare lambdas cannot cross the boundary".
+    // By then the parameter names are already gone, so this cannot be fixed in
+    // the renderer; the crossing has to stop discarding the lambda. Recorded
+    // rather than papered over, because a function rendered as `null` is a
+    // silent wrong value at a GENERAL crossing, not a toXML quirk.
+    ("eval-okay-toxml-functions", "WRONG-VALUE:bridge-crossing-maps-lambda-to-null"),
     // The most dangerous of the five. `builtins.tryEval (assert false; "y")`
     // must be `{ success = false; value = false; }`. The VM returns the string
     // `"y"` — the body's value, UNWRAPPED, with the failing assertion never
@@ -663,7 +693,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        40,
+        42,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \
