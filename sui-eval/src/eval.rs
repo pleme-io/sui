@@ -553,16 +553,6 @@ pub fn eval_with_file(input: &str, file: Option<std::path::PathBuf>) -> Result<V
         let table = sui_resolve::resolve(&parse.tree());
         crate::resolve_env::populate(src_id, &table);
     }
-    // The attrset-binding plan (`SUI_NORMALIZE=1`). A rejection here is nix's
-    // PARSE-time duplicate-attribute error, so it surfaces as a parse error
-    // rather than an eval one — but only once the rejection tier lands; for
-    // now a rejected tree simply records no plan and every group keeps its
-    // existing path.
-    if crate::normalize_env::enabled() {
-        if let Ok(table) = sui_normalize::normalize(&parse.tree()) {
-            crate::normalize_env::populate(src_id, &table);
-        }
-    }
     // Register this parse tree's file + text so a static key's byte offset
     // (recorded by `eval_attrset`) resolves to a file/line/column for
     // `builtins.unsafeGetAttrPos`. The file flows through the eval-file
@@ -1562,7 +1552,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if crate::normalize_env::enabled() {
                 let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
                 let offset = u32::from(letin.syntax().text_range().start());
-                if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+                if let Some(plan) =
+                    crate::normalize_env::plan_for_node(letin, true, src_id, offset)
+                {
                     let (_attrs, scope) = bind_plan_group(&plan, env)?;
                     let body = letin.body().ok_or_else(|| {
                         EvalError::ParseError("let missing body".to_string())
@@ -1973,7 +1965,9 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             if crate::normalize_env::enabled() {
                 let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
                 let offset = u32::from(ll.syntax().text_range().start());
-                if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+                if let Some(plan) =
+                    crate::normalize_env::plan_for_node(ll, true, src_id, offset)
+                {
                     let (_attrs, scope) = bind_plan_group(&plan, env)?;
                     return scope.lookup("body").ok_or_else(|| {
                         EvalError::AttrNotFound(format!(
@@ -2594,7 +2588,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
     if crate::normalize_env::enabled() {
         let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
         let offset = u32::from(set.syntax().text_range().start());
-        if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+        if let Some(plan) = crate::normalize_env::plan_for_node(set, is_rec, src_id, offset) {
             return eval_plan_group(&plan, env);
         }
     }

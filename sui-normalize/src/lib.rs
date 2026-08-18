@@ -112,7 +112,12 @@ pub enum Binding {
     Leaf(ast::Expr),
     /// A syntactic attrset literal, or an implicit one created by a dotted
     /// path. Mergeable — and merging splices into THIS node.
-    Group(GroupPlan),
+    ///
+    /// `Rc` because a consumer clones a sub-plan every time it builds the
+    /// nested group lazily; owned, that is a DEEP copy of the whole subtree on
+    /// each evaluation. During construction the `Rc` is uniquely owned, so
+    /// `Rc::make_mut` below is a no-op rather than a copy.
+    Group(std::rc::Rc<GroupPlan>),
     /// `inherit x` — resolve `x` in the group's ENCLOSING scope, never its own
     /// rec scope. That is what makes an inherited binding shadow rather than
     /// self-reference, and why it can never merge.
@@ -289,6 +294,34 @@ pub fn strip_parens(expr: &ast::Expr) -> ast::Expr {
 }
 
 /// Constant-fold an attribute-path component, per the rule on [`AttrKey`].
+/// The TEXT-level half of [`fold_attr`]: the static name an attribute folds
+/// to, or `None` if it is genuinely dynamic.
+///
+/// Split out because [`needs_plan`] runs on every attribute of every attrset in
+/// every parsed file just to decide whether a plan is needed, and interning
+/// there costs a `String` allocation plus a hash into the intern table per
+/// attribute — measured as the dominant parse-time cost of this pass. This
+/// borrows the token's text instead.
+///
+/// `fold_attr` is defined in terms of this, so the fold rule still has exactly
+/// ONE implementation.
+#[must_use]
+pub fn fold_attr_name(attr: &ast::Attr) -> Option<String> {
+    match attr {
+        // `ident_token()` borrows; `syntax().text().to_string()` allocates.
+        ast::Attr::Ident(ident) => Some(
+            ident
+                .ident_token()
+                .map_or_else(|| ident.syntax().text().to_string(), |t| t.text().to_string()),
+        ),
+        ast::Attr::Str(s) => literal_str_text(s),
+        ast::Attr::Dynamic(dy) => match dy.expr().as_ref().map(strip_parens) {
+            Some(ast::Expr::Str(ref s)) => literal_str_text(s),
+            _ => None,
+        },
+    }
+}
+
 #[must_use]
 pub fn fold_attr(attr: &ast::Attr) -> Option<AttrKey> {
     match attr {
@@ -456,7 +489,7 @@ fn add_attr(
                 add_attr(&mut sub, rest, value, pos, trail)?;
                 group.dynamics.push(DynamicBinding {
                     key: key.clone(),
-                    value: Binding::Group(sub),
+                    value: Binding::Group(std::rc::Rc::new(sub)),
                 });
             }
             return Ok(());
@@ -481,7 +514,10 @@ fn add_attr(
                 // the incoming one's is dropped on the floor — which is exactly
                 // why a later `rec`'s internal references break.
                 match (&mut group.statics[idx].binding, value) {
-                    (Binding::Group(existing), Binding::Group(incoming)) => {
+                    (Binding::Group(existing_rc), Binding::Group(incoming_rc)) => {
+                        let existing = std::rc::Rc::make_mut(existing_rc);
+                        let incoming = std::rc::Rc::try_unwrap(incoming_rc)
+                            .unwrap_or_else(|rc| (*rc).clone());
                         // The incoming group's `inherit (e)` clauses move into
                         // the existing group, so every `InheritFrom` index in
                         // its members must be REBASED onto the existing
@@ -526,14 +562,14 @@ fn add_attr(
             None => {
                 group.statics.push(StaticBinding {
                     name: sym,
-                    binding: Binding::Group(GroupPlan::default()),
+                    binding: Binding::Group(std::rc::Rc::new(GroupPlan::default())),
                     pos,
                 });
                 group.statics.len() - 1
             }
         };
         let first = group.statics[idx].pos;
-        let Binding::Group(sub) = &mut group.statics[idx].binding else {
+        let Binding::Group(sub_rc) = &mut group.statics[idx].binding else {
             // The path descends THROUGH a non-mergeable binding, e.g.
             // `{ a = 1; a.b = 2; }`. nix names the SHALLOWEST level where a
             // side is not a literal — which is the trail as it stands now.
@@ -543,7 +579,7 @@ fn add_attr(
                 second: pos,
             });
         };
-        add_attr(sub, rest, value, pos, trail)?;
+        add_attr(std::rc::Rc::make_mut(sub_rc), rest, value, pos, trail)?;
     }
     Ok(())
 }
@@ -555,7 +591,7 @@ fn rebase_inherit_from(binding: &mut Binding, base: usize) {
     match binding {
         Binding::InheritFrom { from } => *from += base,
         Binding::Group(sub) => {
-            for m in &mut sub.statics {
+            for m in &mut std::rc::Rc::make_mut(sub).statics {
                 rebase_inherit_from(&mut m.binding, base);
             }
         }
@@ -571,7 +607,10 @@ fn rebase_inherit_from(binding: &mut Binding, base: usize) {
 /// rule is decided.
 fn lower_value(expr: &ast::Expr) -> Result<Binding, NormalizeError> {
     match as_attrset_literal(expr) {
-        Some(set) => Ok(Binding::Group(plan_for_entries(&set, set.rec_token().is_some())?)),
+        Some(set) => Ok(Binding::Group(std::rc::Rc::new(plan_for_entries(
+            &set,
+            set.rec_token().is_some(),
+        )?))),
         None => Ok(Binding::Leaf(expr.clone())),
     }
 }
@@ -640,39 +679,48 @@ fn plan_for_entries<N: HasEntry>(node: &N, recursive: bool) -> Result<GroupPlan,
 /// parse-time rejection.
 pub fn normalize(root: &ast::Root) -> Result<NormalizeTable, NormalizeError> {
     let mut table = NormalizeTable::new();
-    let Some(expr) = root.expr() else {
-        return Ok(table);
-    };
-    walk(&expr, &mut table)?;
+    record_plans(root, &mut table)?;
     Ok(table)
 }
 
 /// Does this group need a plan at all? True iff some entry has a dotted path
 /// or two entries share a folded static key.
 fn needs_plan<N: HasEntry>(node: &N) -> bool {
+    // Interns and compares SYMBOLS (u32), not text. Measured: swapping this for
+    // borrowed text to "avoid the intern" made a real nixpkgs eval SLOWER —
+    // interning buys cheap integer comparison in `seen`, and the replacement
+    // paid a `String` allocation per attribute plus O(n) string compares. The
+    // intern is the optimization, not the cost.
+    //
+    // The cheap discriminator still runs first: a dotted path returns `true`
+    // with no allocation at all, and most attrsets exit there or with `seen`
+    // never growing past a few entries.
     let mut seen: Vec<Symbol> = Vec::new();
     for entry in node.entries() {
         match entry {
             ast::Entry::AttrpathValue(av) => {
                 let Some(attrpath) = av.attrpath() else { continue };
-                let attrs: Vec<_> = attrpath.attrs().collect();
-                if attrs.len() > 1 {
+                // Cheapest discriminator first: a dotted path always needs a
+                // plan, and answering that costs no allocation at all.
+                let mut attrs = attrpath.attrs();
+                let Some(first) = attrs.next() else { continue };
+                if attrs.next().is_some() {
                     return true;
                 }
-                if let Some(AttrKey::Static(s)) = attrs.first().and_then(fold_attr) {
-                    if seen.contains(&s) {
+                if let Some(AttrKey::Static(sym)) = fold_attr(&first) {
+                    if seen.contains(&sym) {
                         return true;
                     }
-                    seen.push(s);
+                    seen.push(sym);
                 }
             }
             ast::Entry::Inherit(inh) => {
                 for attr in inh.attrs() {
-                    if let Some(AttrKey::Static(s)) = fold_attr(&attr) {
-                        if seen.contains(&s) {
+                    if let Some(AttrKey::Static(sym)) = fold_attr(&attr) {
+                        if seen.contains(&sym) {
                             return true;
                         }
-                        seen.push(s);
+                        seen.push(sym);
                     }
                 }
             }
@@ -681,32 +729,91 @@ fn needs_plan<N: HasEntry>(node: &N) -> bool {
     false
 }
 
-/// Recursively visit every expression, recording plans for binding groups.
-fn walk(expr: &ast::Expr, table: &mut NormalizeTable) -> Result<(), NormalizeError> {
-    if let ast::Expr::AttrSet(set) = expr {
-        if needs_plan(set) {
-            let plan = plan_for_entries(set, set.rec_token().is_some())?;
-            table.insert(offset_of(set.syntax()), plan);
-        }
-    } else if let ast::Expr::LetIn(letin) = expr {
-        if needs_plan(letin) {
-            // A `let` binds recursively by construction.
-            let plan = plan_for_entries(letin, true)?;
-            table.insert(offset_of(letin.syntax()), plan);
-        }
-    } else if let ast::Expr::LegacyLet(ll) = expr {
-        // `let { … body = …; }` — the deprecated form. Also recursive, and
-        // also subject to the merge rule; the tree-walker silently DISCARDED
-        // every multi-segment attrpath here.
-        if needs_plan(ll) {
-            let plan = plan_for_entries(ll, true)?;
-            table.insert(offset_of(ll.syntax()), plan);
-        }
+/// The plan for ONE binding group, computed on demand.
+///
+/// `None` means the group needs no normalization — no duplicate static key and
+/// no dotted path — so the caller keeps its existing construction path.
+///
+/// ★ THIS IS THE PREFERRED ENTRY POINT. [`normalize`] walks a whole file and
+/// plans every binder in it, including the ones laziness never evaluates;
+/// measured on a real nixpkgs eval that is a ~4% wall-clock tax for work that
+/// is mostly discarded. Planning a group when it is first EVALUATED moves the
+/// cost onto the groups that actually matter, and the result is identical: a
+/// group's plan depends only on its own entries.
+///
+/// # Errors
+///
+/// Returns the group's [`NormalizeError`] if its bindings are a duplicate nix
+/// rejects.
+pub fn plan_for_group<N: HasEntry>(
+    node: &N,
+    recursive: bool,
+) -> Result<Option<GroupPlan>, NormalizeError> {
+    if !needs_plan(node) {
+        return Ok(None);
     }
+    plan_for_entries(node, recursive).map(Some)
+}
 
-    for child in expr.syntax().children() {
-        if let Some(child_expr) = ast::Expr::cast(child) {
-            walk(&child_expr, table)?;
+/// Record a plan for every binding group in the tree.
+///
+/// ★ ITERATES `descendants()`, NOT a recursion over `ast::Expr` children.
+///
+/// The first cut recursed with
+/// `for child in expr.syntax().children() { if let Some(e) = ast::Expr::cast(child) { … } }`,
+/// which looks total and is not: an attrset's children are `AttrpathValue` and
+/// `Inherit` nodes, and NEITHER casts to `ast::Expr`. So the walk stopped at
+/// the first attrset and never descended into a binding's VALUE. Only a binder
+/// that was itself an expression-child of the root ever got a plan; everything
+/// nested silently kept the old, wrong construction path:
+///
+/// ```text
+/// { outer = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }
+///   nix     {"outer":{"a":{"b":6,"c":5,"d":2}}}
+///   sui     Error: Eval(UndefinedVar("'c'"))
+/// ```
+///
+/// Every test written for the walker's adoption used a TOP-LEVEL binder, which
+/// is exactly why none of them caught it — and almost all real nix nests. The
+/// lesson is in the shape of the bug, not the fix: a traversal that filters by
+/// node type while recursing can be silently non-total, because the filter
+/// hides the nodes it refuses to descend through.
+///
+/// `descendants()` visits every node in the tree exactly once, so totality is
+/// structural rather than argued.
+fn record_plans(root: &ast::Root, table: &mut NormalizeTable) -> Result<(), NormalizeError> {
+    for node in root.syntax().descendants() {
+        // Dispatch on `kind()` — ONE enum compare — before attempting any
+        // cast. `descendants()` visits every node in the file and the
+        // overwhelming majority are not binders, so three speculative `cast`
+        // calls per node is three kind-checks where one will do.
+        if !matches!(
+            node.kind(),
+            rnix::SyntaxKind::NODE_ATTR_SET
+                | rnix::SyntaxKind::NODE_LET_IN
+                | rnix::SyntaxKind::NODE_LEGACY_LET
+        ) {
+            continue;
+        }
+        if let Some(set) = ast::AttrSet::cast(node.clone()) {
+            if needs_plan(&set) {
+                let plan = plan_for_entries(&set, set.rec_token().is_some())?;
+                table.insert(offset_of(set.syntax()), plan);
+            }
+        } else if let Some(letin) = ast::LetIn::cast(node.clone()) {
+            // A `let` binds recursively by construction.
+            if needs_plan(&letin) {
+                let plan = plan_for_entries(&letin, true)?;
+                table.insert(offset_of(letin.syntax()), plan);
+            }
+        } else if let Some(ll) = ast::LegacyLet::cast(node) {
+            // `let { … body = …; }` — the deprecated form. Also recursive, and
+            // also subject to the merge rule; the tree-walker silently
+            // DISCARDED every multi-segment attrpath here.
+            if needs_plan(&ll) {
+                let plan = plan_for_entries(&ll, true)?;
+                table.insert(offset_of(ll.syntax()), plan);
+            }
         }
     }
     Ok(())

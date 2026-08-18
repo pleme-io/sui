@@ -36,7 +36,9 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use sui_normalize::{GroupPlan, NormalizeTable};
+use std::rc::Rc;
+
+use sui_normalize::GroupPlan;
 
 /// One-time read of `SUI_NORMALIZE`. Default ON; `SUI_NORMALIZE=0` opts out.
 static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -67,7 +69,10 @@ pub fn enabled() -> bool {
 thread_local! {
     /// `(source_id << 32) | text_offset` -> the binder's plan. Same keying as
     /// `resolve_env::RESOLVE_TABLE` and `value::intern_cached`.
-    static PLAN_TABLE: RefCell<rustc_hash::FxHashMap<u64, GroupPlan>> =
+    /// `Rc` because a lookup happens on EVERY evaluation of a planned attrset.
+    /// Storing the plan by value made `plan_for` a deep copy of the whole plan
+    /// subtree per evaluation; refcounted, it is a pointer bump.
+    static PLAN_TABLE: RefCell<rustc_hash::FxHashMap<u64, Memo>> =
         RefCell::new(rustc_hash::FxHashMap::default());
 }
 
@@ -76,30 +81,48 @@ fn key(source_id: u32, text_offset: u32) -> u64 {
     (u64::from(source_id) << 32) | u64::from(text_offset)
 }
 
-/// Merge a freshly-computed [`NormalizeTable`] into the thread-local table.
-/// No-op when the flag is off.
-pub fn populate(source_id: u32, table: &NormalizeTable) {
-    if !enabled() {
-        return;
-    }
-    PLAN_TABLE.with(|t| {
-        let mut t = t.borrow_mut();
-        for (offset, plan) in table.iter() {
-            t.insert(key(source_id, offset), plan.clone());
-        }
-    });
-}
-
-/// The plan for the binder node at `text_offset` in `source_id`, if one was
-/// recorded. `None` means the group needs no normalization — see the module
-/// docs on why that is a positive statement rather than a fallback.
-#[must_use]
-pub fn plan_for(source_id: u32, text_offset: u32) -> Option<GroupPlan> {
+/// The plan for one binder node, computed ON DEMAND and memoized.
+///
+/// ★ Replaces a parse-door walk that planned every binder in every parsed
+/// file. Laziness means most of those are never evaluated, so that work was
+/// mostly discarded — measured as a ~4% wall-clock tax on a real nixpkgs eval.
+/// Planning at first evaluation is identical in result (a group's plan depends
+/// only on its own entries) and pays only for groups that are reached.
+///
+/// The memo is keyed exactly as before, so a plan computed for a node at
+/// offset `o` in one parse tree is never read for a different (imported) tree
+/// with a binder at the same offset.
+///
+/// A `None` return is a POSITIVE statement — the group has no duplicate static
+/// key and no dotted path, so the caller's existing path is already correct.
+/// See the module docs on why that is not a fallback.
+pub fn plan_for_node<N>(node: &N, recursive: bool, source_id: u32, offset: u32) -> Option<Rc<GroupPlan>>
+where
+    N: rnix::ast::HasEntry,
+{
     if !enabled() {
         return None;
     }
-    PLAN_TABLE.with(|t| t.borrow().get(&key(source_id, text_offset)).cloned())
+    let k = key(source_id, offset);
+    if let Some(hit) = PLAN_TABLE.with(|t| t.borrow().get(&k).cloned()) {
+        return hit.0;
+    }
+    // A rejected group records `None` — matching the walker's parse-door
+    // behaviour of swallowing `NormalizeError` until the rejection tier lands.
+    let computed = sui_normalize::plan_for_group(node, recursive)
+        .ok()
+        .flatten()
+        .map(Rc::new);
+    PLAN_TABLE.with(|t| t.borrow_mut().insert(k, Memo(computed.clone())));
+    computed
 }
+
+/// A memo entry. `Memo(None)` records "this group needs no plan", which must be
+/// remembered too — otherwise every evaluation of an ordinary attrset re-runs
+/// `needs_plan`, which is the cost this change exists to remove.
+#[derive(Clone)]
+struct Memo(Option<Rc<GroupPlan>>);
+
 
 /// Drop every recorded plan. Wired into the same lifecycle point as
 /// `resolve_env::clear`.

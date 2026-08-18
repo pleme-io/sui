@@ -1265,7 +1265,7 @@ pub enum ThunkRepr {
     /// scope. `PlanGroup` is both lazy and re-pointable, which is exactly what
     /// CppNix's `mkThunk(env, ExprAttrs*)` is.
     PlanGroup {
-        plan: sui_normalize::GroupPlan,
+        plan: std::rc::Rc<sui_normalize::GroupPlan>,
         env: Env,
     },
     /// A lazy value backed by a Rust closure.  Used for flake input
@@ -1381,7 +1381,7 @@ impl Thunk {
     /// dotted path, which has no `ast::Expr` and therefore cannot be a
     /// `Suspended`.
     #[must_use]
-    pub fn new_plan_group(plan: sui_normalize::GroupPlan, env: Env) -> Self {
+    pub fn new_plan_group(plan: std::rc::Rc<sui_normalize::GroupPlan>, env: Env) -> Self {
         crate::trace::inc_thunks_created();
         census::made(&census::THUNK_MADE, &census::THUNK_LIVE);
         Self(Rc::new(ThunkInner {

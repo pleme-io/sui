@@ -99,6 +99,27 @@ const REC_MERGE_CASES: &[&str] = &[
     // boundary — nothing short of a real splice produces it. sui answered
     // `UndefinedVar 'c'`.
     "{ a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b",
+
+    // ── ★ AT DEPTH. The splice originally worked ONLY at the top level ────
+    //
+    // `record_plans` recursed through children that cast to `ast::Expr`, but an
+    // attrset's children are `AttrpathValue`/`Inherit` nodes, which do not — so
+    // the walk stopped at the first attrset and never descended into a
+    // binding's VALUE. Everything nested silently kept the old, wrong path:
+    //
+    //     { outer = { a = rec { b = c+1; d = 2; }; a.c = d+3; }; }
+    //       nix  {"outer":{"a":{"b":6,"c":5,"d":2}}}
+    //       sui  Error: Eval(UndefinedVar("'c'"))
+    //
+    // Every test above was a top-level binder, which is exactly why none of
+    // them caught it — and almost all real nix nests. These rows exist so
+    // "works at the root only" cannot come back.
+    "{ outer = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }",
+    "{ p = { q = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }; }",
+    "[ { a = rec { b = c + 1; d = 2; }; a.c = d + 3; } ]",
+    "let f = x: x; in { z = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }",
+    "{ w = rec { o = { e = 1; }; o.x = 2; }; }",
+    "{ w = (let a = { b = 1; }; a = { c = 2; }; in a); }",
 ];
 
 #[test]
@@ -136,7 +157,7 @@ fn the_flag_is_load_bearing() {
         .filter(|e| sui_eval(e, false) != sui_eval(e, true))
         .count();
     assert!(
-        differing >= 10,
+        differing >= 14,
         "only {differing} of {} cases differ between SUI_NORMALIZE off and on. \
          These cases exist because the flag CHANGES them; if they now agree \
          either the wiring is dead or the cases stopped covering the defect.",
