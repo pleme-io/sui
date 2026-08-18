@@ -853,19 +853,44 @@ impl Compiler {
     }
 
     /// Compile a thunk with 0 upvalues (deferred patching via PatchThunkUpvalues).
-    fn compile_thunk_deferred(&mut self, expr: &ast::Expr) -> Result<Vec<UpvalueDesc>, CompileError> {
+    /// The shared body of every deferred thunk: a child compiler parented to
+    /// this one, the `with`-scope preamble, `body`, the matching `PopWith`s, a
+    /// `Return`, and the `MakeThunk` whose upvalue count the caller patches
+    /// later via `PatchThunkUpvalues`.
+    ///
+    /// ★ Extracted because this preamble/epilogue was written out THREE times
+    /// verbatim (expression, `inherit (src) name`, nested attrset) and the plan
+    /// path needs a fourth. Three identical copies of an eight-line protocol
+    /// where the only difference is one middle line is a helper that was not
+    /// written; a fourth copy would be the point at which a `with`-scope fix
+    /// starts landing in three places out of four.
+    ///
+    /// `body` receives the CHILD compiler. Nothing it needs comes from `self`,
+    /// which is what makes the closure form work at all — the parent is
+    /// reachable from the child only through the raw `enclosing` pointer, and
+    /// that is set up here.
+    fn compile_deferred_thunk<F>(&mut self, body: F) -> Result<Vec<UpvalueDesc>, CompileError>
+    where
+        F: FnOnce(&mut Compiler) -> Result<(), CompileError>,
+    {
         let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
         tc.scope_depth = 1;
         tc.enclosing = Some(self as *mut Compiler);
         tc.with_depth = 0;
         tc.base_dir = self.base_dir.clone();
         let with_count = self.emit_with_scope_preamble(&mut tc);
-        tc.compile_expr(expr)?;
-        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
+        body(&mut tc)?;
+        for _ in 0..with_count {
+            tc.emit(OpCode::PopWith);
+        }
         tc.emit(OpCode::Return);
         let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
         let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None, formals: Vec::new(),
+            chunk: Rc::new(tc.chunk),
+            upvalues: Vec::new(),
+            arity: 0,
+            name: None,
+            formals: Vec::new(),
         });
         let idx = self.chunk.add_constant(closure)?;
         self.emit(OpCode::MakeThunk);
@@ -873,6 +898,10 @@ impl Compiler {
         self.emit_u16(idx);
         self.emit_u16(0); // 0 upvalues, patched later
         Ok(uv_descs)
+    }
+
+    fn compile_thunk_deferred(&mut self, expr: &ast::Expr) -> Result<Vec<UpvalueDesc>, CompileError> {
+        self.compile_deferred_thunk(|tc| tc.compile_expr(expr))
     }
 
     /// Compile a function argument with call-by-need semantics.
@@ -904,31 +933,13 @@ impl Compiler {
         source_expr: &ast::Expr,
         attr_name: &str,
     ) -> Result<Vec<UpvalueDesc>, CompileError> {
-        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
-        tc.scope_depth = 1;
-        tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = 0;
-        tc.base_dir = self.base_dir.clone();
-        let with_count = self.emit_with_scope_preamble(&mut tc);
-        tc.compile_expr(source_expr)?;
-        let key_idx = tc.add_attr_key(attr_name.to_string())?;
-        tc.emit(OpCode::GetAttr);
-        tc.emit_u16(key_idx);
-        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
-        tc.emit(OpCode::Return);
-        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
-        let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk),
-            upvalues: Vec::new(),
-            arity: 0, formals: Vec::new(),
-            name: None,
-        });
-        let idx = self.chunk.add_constant(closure)?;
-        self.emit(OpCode::MakeThunk);
-        self.stack_depth += 1; // MakeThunk pushes one thunk
-        self.emit_u16(idx);
-        self.emit_u16(0); // 0 upvalues, patched later
-        Ok(uv_descs)
+        self.compile_deferred_thunk(|tc| {
+            tc.compile_expr(source_expr)?;
+            let key_idx = tc.add_attr_key(attr_name.to_string())?;
+            tc.emit(OpCode::GetAttr);
+            tc.emit_u16(key_idx);
+            Ok(())
+        })
     }
 
     /// Compile a deferred thunk for a dotted binding in rec attrsets.
@@ -941,25 +952,7 @@ impl Compiler {
         &mut self,
         sub_bindings: &[(Vec<String>, ast::Expr)],
     ) -> Result<Vec<UpvalueDesc>, CompileError> {
-        let mut tc = Compiler::with_interner(Rc::clone(&self.interner));
-        tc.scope_depth = 1;
-        tc.enclosing = Some(self as *mut Compiler);
-        tc.with_depth = 0;
-        tc.base_dir = self.base_dir.clone();
-        let with_count = self.emit_with_scope_preamble(&mut tc);
-        tc.compile_nested_attrset_lazy(sub_bindings)?;
-        for _ in 0..with_count { tc.emit(OpCode::PopWith); }
-        tc.emit(OpCode::Return);
-        let uv_descs: Vec<UpvalueDesc> = tc.upvalues.clone();
-        let closure = VMValue::Closure(VMClosure {
-            chunk: Rc::new(tc.chunk), upvalues: Vec::new(), arity: 0, name: None, formals: Vec::new(),
-        });
-        let idx = self.chunk.add_constant(closure)?;
-        self.emit(OpCode::MakeThunk);
-        self.stack_depth += 1; // MakeThunk pushes one thunk
-        self.emit_u16(idx);
-        self.emit_u16(0); // 0 upvalues, patched later
-        Ok(uv_descs)
+        self.compile_deferred_thunk(|tc| tc.compile_nested_attrset_lazy(sub_bindings))
     }
 
     /// Emit with-scope preamble in a child compiler: for each with-scope

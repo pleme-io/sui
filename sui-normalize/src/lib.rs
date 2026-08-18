@@ -755,6 +755,37 @@ pub fn plan_for_group<N: HasEntry>(
     plan_for_entries(node, recursive).map(Some)
 }
 
+/// The plan for a group, **whether or not it needs one** — the total sibling
+/// of [`plan_for_group`].
+///
+/// The two exist because their consumers want opposite things and only one of
+/// them can be right for both.
+///
+/// [`plan_for_group`] is GATED, and that gate is what bounds a consumer's blast
+/// radius: a `None` says "no duplicate static key, no dotted path", i.e.
+/// exactly the groups whose existing construction path is already correct, so
+/// adopting it can only change the answers that were wrong. The tree-walker
+/// and `eval_ir` both want that — they keep their entry loops for the other
+/// 67% of the fleet.
+///
+/// A consumer that intends to RETIRE its entry loops wants this one instead. A
+/// gated planner cannot retire anything, because the un-planned groups still
+/// need the code path that would be deleted; and keeping both forever is two
+/// implementations of one rule, which is how the two halves drift. The bytecode
+/// compiler is that consumer: its five entry buckets are the defect (a key
+/// reaching two buckets is emitted twice), so it routes EVERY group through the
+/// plan and deletes them.
+///
+/// # Errors
+///
+/// Same as [`plan_for_group`] — a group nix itself rejects.
+pub fn plan_for_group_total<N: HasEntry>(
+    node: &N,
+    recursive: bool,
+) -> Result<GroupPlan, NormalizeError> {
+    plan_for_entries(node, recursive)
+}
+
 /// Record a plan for every binding group in the tree.
 ///
 /// ★ ITERATES `descendants()`, NOT a recursion over `ast::Expr` children.

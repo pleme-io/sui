@@ -6531,6 +6531,7 @@ dependencies = [
  "sui-compat",
  "sui-eval",
  "sui-intern",
+ "sui-normalize",
  "sui-spec",
  "tempfile",
  "thiserror 2.0.18",
