@@ -225,11 +225,28 @@ sui:  /nix/store/009ac2i4pw5yj82zg45avvw6qz3n6687-nixos-system-minimal-25.11.202
 Same name, different content. At least one more divergence lives inside that
 derivation.
 
-**Note the trap in reproducing it:** `sui eval …drvPath` does **not write the
-.drv**, so the two files cannot be diffed directly. You need sui to
-instantiate first. Generalising `bisect_drv` (which today descends only the
-first child) into a visit-all closure differential is the tool that turns a
-red 20,827-node result into a located one — build that before hunting by hand.
+**Corrected 2026-08-18 — the trap recorded here was wrong in both halves.**
+
+This said `sui eval …drvPath` does **not write the .drv** and that you must
+instantiate first. Measured: it DOES write it, during eval
+(`write_derivation_to_store`, called from the `derivation` builtin). It just
+does not always land in `/nix/store` — that directory is `root:nixbld` and the
+operator is not in `nixbld`, so on `PermissionDenied` it falls back to
+`$TMPDIR/sui-drv-cache/<basename>`. Both `read_drv_bytes` sites already apply
+that same fallback rule, so the two sides are diffable after a plain eval.
+There is no `sui instantiate` subcommand and none is needed.
+
+One real caveat survives: when sui's path EQUALS an existing nix store path the
+write is skipped (`if !drv_file.exists()`), so nothing new appears — but the
+file is readable at `/nix/store` anyway. Divergent paths always get cached.
+
+**The visit-all walk this paragraph asked for LANDED 2026-08-18.**
+`bisect_drv_all` visits every diverging node with a pair seen-set and a
+path-keyed `parsed` memo. It fixed a second false negative nobody had named:
+inputs were paired with `BTreeMap<name, path>`, so a repeated name kept only
+the last path — and `source.drv` occurs 188 times in the NixOS minimal
+toplevel, with the toplevel's own immediate `inputDrvs` carrying duplicates.
+Nodes were being dropped at the root of this very subject.
 
 ---
 
