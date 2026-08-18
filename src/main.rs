@@ -7337,8 +7337,28 @@ async fn main() -> Result<(), CliError> {
                 // and every consumer gets it; copy one here and the next fix
                 // reaches the tests and nothing else.
                 let _vm_bridges = sui_eval::install_vm_bridges();
-                        let sk = match sui_bytecode::eval_full(&expr_clone) {
-                            Ok(r) => r.to_string_keyed(),
+                        let output = match sui_bytecode::eval_full(&expr_clone) {
+                            Ok(r) => {
+                                let sk = r.to_string_keyed();
+                                if json_flag {
+                                    let json_val = string_keyed_to_json(&sk);
+                                    serde_json::to_string(&json_val)?
+                                } else if raw_flag {
+                                    // nix parity: `--raw` prints a string's
+                                    // bytes verbatim, no surrounding quotes.
+                                    // The tree-walker has honoured this since
+                                    // the marquee drvPath comparison depended
+                                    // on it; the VM path silently ignored the
+                                    // flag and printed the quoted Display form,
+                                    // so the DEFAULT engine did not match nix.
+                                    match &sk {
+                                        sui_bytecode::StringKeyedValue::String(v) => v.clone(),
+                                        other => format!("{other}"),
+                                    }
+                                } else {
+                                    format!("{sk}")
+                                }
+                            }
                             Err(e) => {
                                 // VM failed — fall back to tree-walker, unless
                                 // SUI_VM_STRICT says not to.
@@ -7363,25 +7383,17 @@ async fn main() -> Result<(), CliError> {
                                         message: e.to_string(),
                                     }
                                 })?;
-                                sui_eval::eval_to_string_keyed(&tw_result)
+                                // ★ Render with the WALKER's own renderer —
+                                // do not convert back through
+                                // `eval_to_string_keyed`. That conversion is
+                                // deliberately lazy and nothing downstream
+                                // forced it, so every value at depth >= 1 came
+                                // out as `<<thunk>>` and a `throw` at depth
+                                // came out as a VALUE at exit 0. This arm now
+                                // routes to the walker's ANSWER, not merely to
+                                // its evaluation.
+                                render_walker_value(&tw_result, json_flag, raw_flag)?
                             }
-                        };
-                        let output = if json_flag {
-                            let json_val = string_keyed_to_json(&sk);
-                            serde_json::to_string(&json_val)?
-                        } else if raw_flag {
-                            // nix parity: `--raw` prints a string's bytes
-                            // verbatim, no surrounding quotes. The tree-walker
-                            // has honoured this since the marquee drvPath
-                            // comparison depended on it; the VM path silently
-                            // ignored the flag and printed the quoted Display
-                            // form, so the DEFAULT engine did not match nix.
-                            match &sk {
-                                sui_bytecode::StringKeyedValue::String(v) => v.clone(),
-                                other => format!("{other}"),
-                            }
-                        } else {
-                            format!("{sk}")
                         };
                         // SUI_PERF_TRACE / IFD diagnostics were wired only into
                         // the tree-walker's eval_render_threaded, so on the
@@ -9327,6 +9339,62 @@ fn emit_eval_output(output: &str, raw_flag: bool) {
     }
 }
 
+/// Render a tree-walker `Value` for the CLI — the ONE place the three output
+/// modes are decided.
+///
+/// ★ EXTRACTED so the VM's whole-expression fallback can use it. That arm used
+/// to convert the walker's value back through `sui_eval::eval_to_string_keyed`,
+/// which is DELIBERATELY lazy (`sui-eval/src/lib.rs` — forcing a flake's inputs
+/// would trigger git clones), and nothing downstream forced it. The result was
+/// that a `CompileError` routed to the walker's EVALUATION but not to the
+/// walker's ANSWER:
+///
+/// ```text
+/// sui --vm eval -E '{ a = rec { b = c+1; d = 2; }; a.c = d+3; }'
+///   { a = <<thunk>>; }        walker: { a = { b = 6; c = 5; d = 2; }; }
+/// ```
+///
+/// The rule was DEPTH, not shape — `e = 1 + 1` at depth 1 laundered too — and
+/// it turned errors into values: `{ a = rec { b = throw "boom"; … }; a.c = … }`
+/// gave `{"a":"<thunk>"}` at exit 0 where nix and the walker exit 1. That is the
+/// exact divergence class the `try_to_json` comment below was written to kill,
+/// reintroduced on the VM arm.
+///
+/// The fix is NOT to make `eval_to_string_keyed` eager — its laziness is
+/// load-bearing for the `getFlake` bridge. It is to stop converting at all.
+fn render_walker_value(
+    value: &sui_eval::Value,
+    json_flag: bool,
+    raw_flag: bool,
+) -> Result<String, CliError> {
+    Ok(if json_flag {
+        // `try_to_json`, not `to_json`: the latter renders a lambda as
+        // "<lambda>" and a FAILED force as "<thunk:error>", producing
+        // valid JSON and exit 0 where nix exits non-zero. Measured:
+        //   nix eval --json --expr '{ x = throw "boom"; }'  -> exit 1
+        //   sui (before)                                    -> exit 0
+        //                                       {"x":"<thunk:error>"}
+        // An evaluation error becoming a VALUE is the sharpest silent
+        // divergence this CLI had: a consumer parsing that JSON sees a
+        // string where nix refused outright.
+        sui_compat::versions::nix_json_to_string(&value.try_to_json()?)?
+    } else if raw_flag {
+        // `nix eval --raw` prints a string value's bytes verbatim (no
+        // surrounding quotes). The default `Display` wraps strings in
+        // Nix-source quotes, so `--raw` MUST special-case a forced
+        // string to be byte-identical to nix (load-bearing for the
+        // marquee: a drvPath printed with `--raw` must equal nix's).
+        // Non-string values keep the Display fallback (unchanged).
+        let forced = sui_eval::eval::force_value(value).unwrap_or_else(|_| value.clone());
+        match &forced {
+            sui_eval::Value::String(s) => s.as_str().to_string(),
+            other => format!("{other}"),
+        }
+    } else {
+        format!("{value}")
+    })
+}
+
 fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<String, CliError> {
     let expr_clone = expr.to_string();
     let handle = std::thread::Builder::new()
@@ -9336,32 +9404,7 @@ fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<S
             // IFD: reads of a derivation output mid-eval realize it.
             let _ifd_guard = install_ifd_hook();
             let value = sui_eval::eval(&expr_clone)?;
-            let output = if json_flag {
-                // `try_to_json`, not `to_json`: the latter renders a lambda as
-                // "<lambda>" and a FAILED force as "<thunk:error>", producing
-                // valid JSON and exit 0 where nix exits non-zero. Measured:
-                //   nix eval --json --expr '{ x = throw "boom"; }'  -> exit 1
-                //   sui (before)                                    -> exit 0
-                //                                       {"x":"<thunk:error>"}
-                // An evaluation error becoming a VALUE is the sharpest silent
-                // divergence this CLI had: a consumer parsing that JSON sees a
-                // string where nix refused outright.
-                sui_compat::versions::nix_json_to_string(&value.try_to_json()?)?
-            } else if raw_flag {
-                // `nix eval --raw` prints a string value's bytes verbatim (no
-                // surrounding quotes). The default `Display` wraps strings in
-                // Nix-source quotes, so `--raw` MUST special-case a forced
-                // string to be byte-identical to nix (load-bearing for the
-                // marquee: a drvPath printed with `--raw` must equal nix's).
-                // Non-string values keep the Display fallback (unchanged).
-                let forced = sui_eval::eval::force_value(&value).unwrap_or_else(|_| value.clone());
-                match &forced {
-                    sui_eval::Value::String(s) => s.as_str().to_string(),
-                    other => format!("{other}"),
-                }
-            } else {
-                format!("{value}")
-            };
+            let output = render_walker_value(&value, json_flag, raw_flag)?;
             // SUI_PARITY_STRICT: drain the thread-local swallowed-force-error
             // ledger on THIS worker thread (no-op unless the env is set).
             report_parity_strict();
