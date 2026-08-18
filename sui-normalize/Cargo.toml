@@ -1,0 +1,21 @@
+[package]
+name = "sui-normalize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parse-time attrset-binding normalizer for sui — reproduces CppNix's ExprAttrs::addAttr, which merges duplicate attribute paths by SPLICING into the first-declared node (whose rec flag governs) and rejects everything else at parse time"
+keywords = ["nix", "evaluator", "parser", "attrset", "normalizer"]
+categories = ["compilers", "parser-implementations"]
+
+[dependencies]
+sui-intern.workspace = true
+rnix.workspace = true
+rowan.workspace = true
+rustc-hash = "2"
+
+[dev-dependencies]
+
+[lints.clippy]
+pedantic = "warn"

@@ -25,6 +25,19 @@ members = [
     # re-intern. Fail-safe to Dynamic — parity-by-construction over the
     # identical im_rc map + identical lookup_fast fallback.
     "sui-resolve",
+    # Parse-time attrset-binding normalizer — CppNix's `ExprAttrs::addAttr`.
+    # sui decided duplicate-key merge-vs-overwrite at EVAL time from the
+    # runtime VALUE; nix decides it at PARSE time from SYNTAX, as a
+    # destructive SPLICE into the first-declared node whose `rec` flag
+    # governs. That mismatch produced silent wrong answers on legal nix in
+    # all three engines. Emits a side-table of per-group plans, modelled on
+    # sui-resolve: an absent entry means "nothing to normalize", so the
+    # engines' existing fast paths are untouched for almost every attrset.
+    #
+    # Sits at sui-resolve's level (sui-intern + rnix + rowan) so all three
+    # engines can reach it; must NOT depend on sui-eval, which would close
+    # the publish cycle sui-bytecode's path-only dev-dep exists to break.
+    "sui-normalize",
     # L3 lower-once flat IR (SPEED.md L3). Per source file one
     # `Program { exprs: Vec<Ir>, spans }` with `ExprId(u32)` indices,
     # lowered from the rnix/rowan AST exactly once. This slice is the IR

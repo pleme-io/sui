@@ -6883,6 +6883,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-normalize"
+version = "0.1.209"
+dependencies = [
+ "rnix",
+ "rowan",
+ "rustc-hash 2.1.2",
+ "sui-intern",
+]
+
+[[package]]
 name = "sui-orchestrate"
 version = "0.1.209"
 dependencies = [

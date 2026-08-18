@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "3623262d8b934a086cf7e41f480203d2d850207ee83c3673a013676ca2a0b204",
+  "cargo_lock_sha256": "262ccb42141201f44db33ffd578aa503a9da1763d89dd276416f6766108c7689",
   "manifest_sha256": {
-    "Cargo.toml": "cfaa1804a1d3c7d8cc4fe30d303a80f10a9cb3cee95e52e4bf9939ac0cc1dda3",
+    "Cargo.toml": "bbf03270b1686a4622d2e0ca4749657fb92988aa3635765cd7fafcd5ba6955eb",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -26,6 +26,7 @@
     "sui-ir/Cargo.toml": "8f8f1ae5c85cbd47531e003690af936a9302a649257030bed5963d39e9b77467",
     "sui-lsp/Cargo.toml": "0f855980721f0d727edfb01e559daf3c46690c3dffea0e4542ab03ccacc79b8d",
     "sui-nix-wrap/Cargo.toml": "49b662142a60fdcde71413be49d2aa38b3eb705e3567e2fa2cded887873d26df",
+    "sui-normalize/Cargo.toml": "66f4852a80efeca3bd1b7f84e746823c2419cae5696222d98a177b519d821a79",
     "sui-orchestrate/Cargo.toml": "b474092b7e9b5723ad3dc466ad43708524fa6ad7da71bfa8bb6d239c4bd4213f",
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
     "sui-registry/Cargo.toml": "20bc7698f123bb590dec8dbd527f55e85a99d2f7bf41ffc16c4080685bdc79cf",
@@ -26460,6 +26461,52 @@
         "build_dependencies": [],
         "features": []
       },
+      "sui-normalize-0.1.209": {
+        "runtime_dependencies": [
+          {
+            "name": "rnix",
+            "package_key": "rnix-0.14.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rowan",
+            "package_key": "rowan-0.16.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustc_hash",
+            "package_key": "rustc-hash-2.1.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_intern",
+            "package_key": "sui-intern-0.1.209",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sui-orchestrate-0.1.209": {
         "runtime_dependencies": [
           {
@@ -40885,6 +40932,13 @@
           "path": "src/main.rs"
         }
       ]
+    },
+    "sui-normalize-0.1.209": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "sui_normalize",
+        "path": "src/lib.rs"
+      }
     },
     "sui-orchestrate-0.1.209": {
       "edition": "2024",
