@@ -650,7 +650,8 @@ impl BuiltinRegistry {
 
         self.register("toJSON", 1, |args| {
             let json = vm_value_to_json(&args[0])?;
-            let s = serde_json::to_string(&json)
+            // Nix-value JSON — see sui_compat::versions::nix_json_to_string.
+            let s = sui_compat::versions::nix_json_to_string(&json)
                 .unwrap_or_else(|_| "null".to_string());
             Ok(VMValue::String(s))
         });

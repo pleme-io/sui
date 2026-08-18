@@ -1483,7 +1483,9 @@ fn run_saturated(
         // ── slice 4: convert ──────────────────────────────────────────────
         B::ToJson => {
             let json = ir_to_json(&arg)?;
-            let s = serde_json::to_string(&json).unwrap_or_else(|_| "null".to_string());
+            // Nix-value JSON — see sui_compat::versions::nix_json_to_string.
+            let s = sui_compat::versions::nix_json_to_string(&json)
+                .unwrap_or_else(|_| "null".to_string());
             Ok(IrValue::string(s))
         }
         B::FromJson => {

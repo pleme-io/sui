@@ -9346,7 +9346,7 @@ fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<S
                 // An evaluation error becoming a VALUE is the sharpest silent
                 // divergence this CLI had: a consumer parsing that JSON sees a
                 // string where nix refused outright.
-                serde_json::to_string(&value.try_to_json()?)?
+                sui_compat::versions::nix_json_to_string(&value.try_to_json()?)?
             } else if raw_flag {
                 // `nix eval --raw` prints a string value's bytes verbatim (no
                 // surrounding quotes). The default `Display` wraps strings in

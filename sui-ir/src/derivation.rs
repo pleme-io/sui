@@ -209,7 +209,8 @@ fn construct_derivation(input: &IrAttrs, name: &str) -> Result<Derivation, IrEva
             }
         }
         let json =
-            serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+            sui_compat::versions::nix_json_to_string(&serde_json::Value::Object(obj))
+                .unwrap_or_default();
         env_vars.insert("__json".to_string(), json);
     } else {
         // `input.iter()` is BTreeMap-sorted, matching the walker's env self-sort.

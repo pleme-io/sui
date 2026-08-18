@@ -163,6 +163,111 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
 /// Used by every engine's float Display impl (`Value::Float`,
 /// `VMValue::Float`, `StringKeyedValue::Float`) so probe JSON
 /// round-trips byte-identically against cppnix.
+/// Format an `f64` the way CppNix's JSON writer does — which is NOT the way
+/// [`cppnix_format_float`] formats a Nix *value*, and NOT what `serde_json`
+/// emits either.
+///
+/// Measured against real nix 2.31.5 on 2026-08-18. The rule is `%g`-like but
+/// with its own thresholds, and it is independent of the digit count:
+///
+/// | value | nix JSON |
+/// |---|---|
+/// | `1.5` | `1.5` |
+/// | `1.0` | `1.0`  (an integral value keeps a `.0`) |
+/// | `3.0e10` | `30000000000.0` |
+/// | `1.0e14` | `100000000000000.0` |
+/// | `1.0e15` | `1e+15`  ← the large-side switch |
+/// | `1.0e-4` | `0.0001` |
+/// | `1.0e-5` | `1e-05`  ← the small-side switch, and note the ZERO PAD |
+/// | `2.5e-5` | `2.5e-05` |
+/// | `-0.0`   | `0.0`   ← the sign on a zero is dropped |
+///
+/// So: **fixed iff the scientific exponent is in `[-4, 14]`**, scientific
+/// otherwise, with the exponent always signed and padded to at least two
+/// digits. Digits are shortest-round-trip (`0.30000000000000004` prints in
+/// full), which is what Rust's own `Display`/`LowerExp` already give.
+///
+/// # Why this is not cosmetic
+///
+/// `__structuredAttrs` serializes a derivation's attributes to JSON and puts
+/// the result in the derivation's environment, where it is hashed into the
+/// drvPath. A float that renders one byte differently there produces a
+/// different store path for the same expression. `serde_json` renders
+/// `0.00001` as `0.00001` and `1.0e-6` as `1e-6`, both of which nix writes
+/// differently — so any derivation carrying such a float in a structured attr
+/// diverged.
+#[must_use]
+pub fn cppnix_format_json_float(f: f64) -> String {
+    // Non-finite has no JSON representation; `serde_json` writes `null` and so
+    // does nix's writer. Keep that, rather than inventing a token.
+    if !f.is_finite() {
+        return "null".to_string();
+    }
+    // `-0.0 == 0.0` is true in IEEE, so this drops the sign exactly as nix does.
+    if f == 0.0 {
+        return "0.0".to_string();
+    }
+
+    // `{:e}` gives the shortest round-trip mantissa plus a decimal exponent,
+    // which is precisely the pair the threshold rule is stated over.
+    let sci = format!("{f:e}");
+    let (mantissa, exp_str) = sci
+        .split_once('e')
+        .expect("LowerExp for f64 always emits an exponent");
+    let exp: i32 = exp_str
+        .parse()
+        .expect("LowerExp for f64 always emits a parseable exponent");
+
+    if (-4..=14).contains(&exp) {
+        // Rust's `Display` for f64 never uses scientific notation, so within
+        // this window it already produces exactly the fixed form nix wants.
+        let fixed = format!("{f}");
+        if fixed.contains('.') {
+            fixed
+        } else {
+            // An integral float keeps a `.0` in JSON, or it would read back as
+            // an integer and change the value's TYPE on round-trip.
+            format!("{fixed}.0")
+        }
+    } else {
+        let (sign, digits) = match exp_str.strip_prefix('-') {
+            Some(d) => ('-', d),
+            None => ('+', exp_str),
+        };
+        format!("{mantissa}e{sign}{digits:0>2}")
+    }
+}
+
+/// Serialize a `serde_json::Value` with CppNix's float formatting.
+///
+/// ★ THE HOOK IS AT THE SERIALIZATION BOUNDARY, ON PURPOSE. There are six
+/// places in this workspace that build a `serde_json::Value` from a Nix value
+/// (three engines' `builtins.toJSON`, plus two `__structuredAttrs` emitters,
+/// plus the CLI's `--json`), and every one of them constructs floats with
+/// `serde_json::json!(f)`. Patching those six construction sites would leave
+/// the seventh — and a float nested three levels inside a list inside an
+/// attrset still has to render correctly. `Formatter::write_f64` is a single
+/// funnel that every float in the tree passes through regardless of depth.
+///
+/// Anything that is NOT a Nix value (the eval cache, fetcher metadata, the
+/// perf seal) must keep using plain `serde_json`: those are sui's own files,
+/// not bytes compared against nix.
+pub fn nix_json_to_string(value: &serde_json::Value) -> Result<String, serde_json::Error> {
+    struct NixFloats;
+    impl serde_json::ser::Formatter for NixFloats {
+        fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> std::io::Result<()>
+        where
+            W: ?Sized + std::io::Write,
+        {
+            writer.write_all(cppnix_format_json_float(value).as_bytes())
+        }
+    }
+    let mut buf = Vec::with_capacity(128);
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, NixFloats);
+    serde::Serialize::serialize(value, &mut ser)?;
+    Ok(String::from_utf8(buf).expect("serde_json emits UTF-8"))
+}
+
 /// Escape a string for an XML attribute value, exactly as CppNix's `XMLWriter`
 /// does: `& < > "` **and** the newline.
 ///
@@ -343,6 +448,92 @@ mod tests {
         assert_eq!(cppnix_format_float(0.0), "0");
         assert_eq!(cppnix_format_float(-3.14), "-3.14");
         assert_eq!(cppnix_format_float(-3.0), "-3");
+    }
+
+    /// CppNix's JSON float format, which is a DIFFERENT rule from the value
+    /// format pinned above — same input, different bytes, and conflating them
+    /// is the mistake this pair of tests exists to prevent. Every expected
+    /// value read off real `nix eval --raw --expr 'builtins.toJSON …'`
+    /// on 2026-08-18.
+    #[test]
+    fn cppnix_json_float_switches_at_exponent_minus_four_and_fourteen() {
+        // Fixed window: exponent in [-4, 14].
+        assert_eq!(cppnix_format_json_float(1.5), "1.5");
+        assert_eq!(cppnix_format_json_float(0.1), "0.1");
+        assert_eq!(cppnix_format_json_float(0.0001), "0.0001");
+        assert_eq!(cppnix_format_json_float(0.00015), "0.00015");
+        assert_eq!(cppnix_format_json_float(3.0e10), "30000000000.0");
+        assert_eq!(cppnix_format_json_float(1.0e14), "100000000000000.0");
+        // An integral float KEEPS its `.0`, or it reads back as an integer and
+        // the value changes type on round-trip.
+        assert_eq!(cppnix_format_json_float(1.0), "1.0");
+        assert_eq!(cppnix_format_json_float(1_000_000.0), "1000000.0");
+        assert_eq!(cppnix_format_json_float(123_456_789.0), "123456789.0");
+
+        // Outside it: scientific, exponent signed and padded to two digits.
+        // `1e-05` and `1e-06` are the rows serde_json got wrong in BOTH ways —
+        // it kept fixed notation for the first and dropped the pad on the
+        // second.
+        assert_eq!(cppnix_format_json_float(0.00001), "1e-05");
+        assert_eq!(cppnix_format_json_float(1.0e-6), "1e-06");
+        assert_eq!(cppnix_format_json_float(2.5e-5), "2.5e-05");
+        assert_eq!(cppnix_format_json_float(9.9e-5), "9.9e-05");
+        assert_eq!(cppnix_format_json_float(1.0e15), "1e+15");
+        assert_eq!(cppnix_format_json_float(1.23e15), "1.23e+15");
+        assert_eq!(cppnix_format_json_float(1.0e100), "1e+100");
+        assert_eq!(cppnix_format_json_float(1.0e-100), "1e-100");
+        assert_eq!(cppnix_format_json_float(1_234_567_890_123_456.0), "1.234567890123456e+15");
+
+        // Digits are shortest-round-trip, not a fixed precision.
+        assert_eq!(cppnix_format_json_float(0.300_000_000_000_000_04), "0.30000000000000004");
+
+        // nix drops the sign on a zero; `serde_json` would write `-0.0`.
+        assert_eq!(cppnix_format_json_float(0.0), "0.0");
+        assert_eq!(cppnix_format_json_float(-0.0), "0.0");
+        assert_eq!(cppnix_format_json_float(-1.5), "-1.5");
+        assert_eq!(cppnix_format_json_float(-2.5e-5), "-2.5e-05");
+    }
+
+    /// ★ CALIBRATION: the JSON rule and the VALUE rule must stay DISTINCT.
+    ///
+    /// The obvious "simplification" is to make one call the other. These rows
+    /// are the counterexamples: the same f64 renders differently in the two
+    /// contexts, so collapsing them silently corrupts one surface.
+    #[test]
+    fn json_and_value_float_formats_are_not_interchangeable() {
+        // Only values where the two rules genuinely disagree belong here.
+        // `0.0001` renders as `0.0001` under BOTH and was in this list until
+        // the test itself said so — a calibration row that cannot distinguish
+        // the two is worse than absent, because it looks like coverage.
+        // Verified against nix: value vs JSON respectively —
+        //   3.0e10   `3e+10` vs `30000000000.0`
+        //   1.0      `1`     vs `1.0`
+        //   1.0e14   `1e+14` vs `100000000000000.0`
+        //   1000000  `1e+06` vs `1000000.0`
+        // `0.0001` and `1.0e15` render IDENTICALLY under both and were in this
+        // list until the test said so — twice. A calibration row that cannot
+        // distinguish the two rules is worse than absent: it looks like
+        // coverage while proving nothing.
+        for v in [3.0e10, 1.0, 1.0e14, 1_000_000.0] {
+            assert_ne!(
+                cppnix_format_json_float(v),
+                cppnix_format_float(v),
+                "the JSON and value float formats agree on {v}, so this \
+                 calibration no longer distinguishes them — check whether one \
+                 was made to call the other"
+            );
+        }
+    }
+
+    /// The float hook must apply at every DEPTH, which is why it is a
+    /// `Formatter` and not a patch at each construction site.
+    #[test]
+    fn nix_json_to_string_formats_floats_at_any_depth() {
+        let v = serde_json::json!({ "a": [1.0e-6, { "b": 2.5e-5 }], "c": 1.0e15 });
+        assert_eq!(
+            nix_json_to_string(&v).expect("serialize"),
+            r#"{"a":[1e-06,{"b":2.5e-05}],"c":1e+15}"#
+        );
     }
 
     /// Scientific notation — the case the block above never covered, which is

@@ -17,7 +17,8 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         // non-store path throws, rather than emitting a placeholder string).
         let mut ctx = crate::value::StringContext::default();
         let json = args[0].to_json_with_context(&mut ctx)?;
-        let s = serde_json::to_string(&json)
+        // Nix-value JSON: floats must render as CppNix writes them.
+        let s = sui_compat::versions::nix_json_to_string(&json)
             .unwrap_or_else(|_| "null".to_string());
         Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
     });

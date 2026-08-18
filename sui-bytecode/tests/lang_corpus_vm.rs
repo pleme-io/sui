@@ -187,6 +187,18 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // corpus was blind to it until this fixture landed; it is listed here so
     // the blindness is recorded rather than restored.
     ("eval-okay-tofile-refs", "WRONG-VALUE:vm-has-no-string-context"),
+    // The VM cannot serialize an ATTRSET to JSON at all — `toJSON` on a list
+    // or a scalar works natively, but an attrset raises
+    // `toJSON: attrset conversion requires interner` and falls through to the
+    // whole-expression boundary, which strict mode then refuses.
+    //
+    // Pre-existing and verified as such by re-running the probe with the
+    // day's JSON-formatter change stashed: the same error. It is an
+    // UNDECLARED-ERROR, not a WRONG-VALUE, which is the honest failure mode —
+    // the VM says it cannot rather than answering wrongly. Listed so the
+    // distinction is on the record and the fixture keeps its coverage of the
+    // walker and IR, which both match nix byte-for-byte here.
+    ("eval-okay-tojson-floats", "UNDECLARED-ERROR:vm-tojson-attrset-needs-interner"),
     // The most dangerous of the five. `builtins.tryEval (assert false; "y")`
     // must be `{ success = false; value = false; }`. The VM returns the string
     // `"y"` — the body's value, UNWRAPPED, with the failing assertion never
@@ -714,7 +726,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        43,
+        44,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

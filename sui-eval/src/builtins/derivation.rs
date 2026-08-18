@@ -308,7 +308,11 @@ fn construct_derivation(
                 }
             }
         }
-        let json = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+        // ★ drvPath-CRITICAL: this JSON goes into the derivation env as
+        // `__json` and is hashed into the store path, so a float rendered one
+        // byte differently from nix forks the whole derivation graph.
+        let json = sui_compat::versions::nix_json_to_string(&serde_json::Value::Object(obj))
+            .unwrap_or_default();
         env_vars.insert("__json".to_string(), json);
     } else {
         // Feeds `env_vars: BTreeMap` which self-sorts, so the sorted `iter()`
