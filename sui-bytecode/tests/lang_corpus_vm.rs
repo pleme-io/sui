@@ -199,18 +199,6 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // distinction is on the record and the fixture keeps its coverage of the
     // walker and IR, which both match nix byte-for-byte here.
     ("eval-okay-tojson-floats", "UNDECLARED-ERROR:vm-tojson-attrset-needs-interner"),
-    // ★ The tree-walker adopted `sui-normalize`'s parse-time splice on
-    // 2026-08-18 and this fixture graduated out of quarantine; the VM has not
-    // been wired yet, so it is now the engine that is behind.
-    //
-    //     { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b
-    //     walker 6 (= nix)   vm  compile error: unresolved variable: c
-    //
-    // The VM's error is the defect stated precisely: `c` exists only AFTER
-    // the dotted binding `a.c` is spliced INTO the `rec` literal, so an
-    // engine that never splices cannot resolve it. Not a VM regression — the
-    // walker moved. Closes when the VM adopts the plan.
-    ("eval-okay-regrettable-rec-attrset-merge", "declared:vm-has-no-attrset-splice"),
     // The most dangerous of the five. `builtins.tryEval (assert false; "y")`
     // must be `{ success = false; value = false; }`. The VM returns the string
     // `"y"` — the body's value, UNWRAPPED, with the failing assertion never
@@ -220,12 +208,18 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // reading `.success` gets an attribute error; a caller using the value gets
     // a silently wrong one from an assertion that was supposed to have failed.
     ("eval-okay-tryeval", "WRONG-VALUE:tryEval-misses-assert-and-returns-unwrapped-body"),
-    // ── DECLARED (5) — `CompileError::Unsupported`, the VM saying so. ───────
-    ("eval-okay-dynamic-attrs", "declared:unsupported-interpolated-string-attr-keys"),
-    ("eval-okay-dynamic-attrs-2", "declared:unsupported-interpolated-string-attr-keys"),
+    // ── DECLARED (1) — `CompileError::Unsupported`, the VM saying so. ──────
+    //
+    // Was FIVE. The other four were all
+    // `declared:unsupported-interpolated-string-attr-keys` and all closed on
+    // 2026-08-18 with the plan adoption, as a side effect rather than a fix:
+    // the compiler's own `static_attr_name` classifier refused an interpolated
+    // string key outright, while `sui_normalize::fold_attr` folds one to a
+    // STATIC key when it has no interpolation left after normalization
+    // (`''`-stripping and escapes included, so `"a\tb"` folds to a TAB) and
+    // classifies it dynamic otherwise. Retiring the classifier retired the
+    // refusal.
     ("eval-okay-dynamic-attrs-3", "declared:unsupported-dynamic-attr-keys"),
-    ("eval-okay-dynamic-attrs-bare", "declared:unsupported-interpolated-string-attr-keys"),
-    ("eval-okay-merge-dynamic-attrs", "declared:unsupported-interpolated-string-attr-keys"),
     // ── UNDECLARED ERROR, root A (14) — one bug, fourteen fixtures. ─────────
     //
     // Every one of these opens `with import ./lib.nix;`, and `lib.nix` opens
@@ -738,7 +732,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        45,
+        40,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

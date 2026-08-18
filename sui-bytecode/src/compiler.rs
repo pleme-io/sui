@@ -1088,7 +1088,28 @@ impl Compiler {
     // ── Attribute sets ─────────────────────────────────────────
 
     fn compile_attrset(&mut self, set: &ast::AttrSet) -> Result<(), CompileError> {
-        if set.rec_token().is_some() {
+        let rec = set.rec_token().is_some();
+
+        // ★ EVERY group goes through the plan — `plan_for_group_total`, not the
+        // gated `plan_for_group` the walker uses. The gated one bounds a
+        // consumer's blast radius by returning `None` for groups whose existing
+        // path is already correct, which is right when you are KEEPING that
+        // path; here the entry buckets below are the defect, so routing only
+        // the broken groups away from them would leave two implementations of
+        // one rule.
+        //
+        // The fallback is reached ONLY for a group nix itself rejects (a
+        // genuine duplicate like `{ a = 1; a = 2; }`, where `sui-normalize`
+        // returns a typed `NormalizeError`). sui still accepts those, so
+        // today's permissive answer is preserved rather than silently becoming
+        // a compile error on one engine only; the rejection tier owns that
+        // change, and deletes this fallback with it.
+        match sui_normalize::plan_for_group_total(set, rec) {
+            Ok(plan) => return self.compile_plan_group(&plan),
+            Err(_) => { /* nix rejects this group — see above */ }
+        }
+
+        if rec {
             return self.compile_rec_attrset(set);
         }
 
@@ -1422,6 +1443,252 @@ impl Compiler {
         // Clean up scope: move the attrset result down past the locals.
         self.end_scope(binding_count);
 
+        Ok(())
+    }
+
+    // ── plan-driven binding groups ────────────────────────────────────────
+    //
+    // nix decides duplicate-key merge-vs-overwrite at PARSE time from SYNTAX,
+    // as a destructive splice into the FIRST-declared node whose `rec` flag
+    // governs and into whose scope the second side is re-scoped.
+    // `sui-normalize` performs that splice; these functions only emit it.
+    //
+    // ★ What this replaces, and why it was wrong. `compile_attrset` sorted
+    // entries into FIVE buckets (flat / dotted / inherit / dynamic /
+    // dynamic-dotted) drained by five sequential emission loops. A key
+    // reaching two buckets — `{ a = {b=1;}; a.c = 2; }` puts `a` in both flat
+    // and dotted — was therefore emitted TWICE, and `MakeAttrs` kept one of
+    // them. Not a merge, a coin toss with a fixed outcome: measured, the VM
+    // answered `{"a":{"b":1}}` where nix says `{"a":{"b":1,"c":2}}`, at exit 0.
+    //
+    // A plan's postcondition is that no static name repeats, so there is no
+    // merge to perform and no collision to resolve. `MakeAttrs` needs no
+    // change, and in particular its pop order must NOT be reversed: it pops
+    // LIFO and `BTreeMap::insert`s, so the FIRST-emitted pair wins. Flipping
+    // that turns first-wins into last-wins, and nix's rule is neither — it is
+    // a splice, which is why this had to be fixed in the compiler and not in
+    // the opcode.
+
+    /// Emit one binding group from a [`GroupPlan`], leaving one attrset on the
+    /// stack.
+    fn compile_plan_group(&mut self, plan: &sui_normalize::GroupPlan) -> Result<(), CompileError> {
+        if plan.recursive {
+            self.compile_plan_group_rec(plan)
+        } else {
+            self.compile_plan_group_flat(plan)
+        }
+    }
+
+    /// A non-recursive group: every value is emitted in the ENCLOSING scope.
+    fn compile_plan_group_flat(
+        &mut self,
+        plan: &sui_normalize::GroupPlan,
+    ) -> Result<(), CompileError> {
+        let mut count: u16 = 0;
+        for b in &plan.statics {
+            let name = sui_intern::resolve(b.name);
+            self.emit_plan_binding(&b.binding, &name, plan)?;
+            self.emit_constant(VMValue::String(name))?;
+            count += 1;
+        }
+        count += self.emit_plan_dynamics(plan)?;
+        self.emit(OpCode::MakeAttrs);
+        self.emit_u16(count);
+        // MakeAttrs pops 2*count (value+key pairs) and pushes 1 attrset.
+        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
+        Ok(())
+    }
+
+    /// One binding's VALUE, for a non-recursive group.
+    fn emit_plan_binding(
+        &mut self,
+        binding: &sui_normalize::Binding,
+        name: &str,
+        plan: &sui_normalize::GroupPlan,
+    ) -> Result<(), CompileError> {
+        use sui_normalize::Binding;
+        match binding {
+            Binding::Leaf(expr) => {
+                if Self::is_trivial_value(expr) {
+                    self.compile_expr(expr)
+                } else {
+                    self.compile_thunk_immediate(expr)
+                }
+            }
+            // A nested group — a merged literal, or one a dotted path invented.
+            // Emitted in place with lazy leaves, which is what
+            // `compile_nested_attrset` did for the dotted bucket; the
+            // difference is that this one can be `rec` and can hold any
+            // binding kind, neither of which a `(path, value)` list can say.
+            Binding::Group(sub) => self.compile_plan_group(sub),
+            // `inherit x` resolves in the ENCLOSING scope, never the group's
+            // own rec scope — that is what makes it shadow rather than
+            // self-reference, and why it can never merge.
+            Binding::Inherit => self.emit_variable_load(name),
+            Binding::InheritFrom { from } => {
+                let src = plan.inherit_froms.get(*from).ok_or_else(|| {
+                    CompileError::Unsupported(format!(
+                        "inherit-from index {from} out of range for '{name}'"
+                    ))
+                })?;
+                let src = src.clone();
+                self.compile_inherit_from_thunk(&src, name)
+            }
+        }
+    }
+
+    /// `${e}` keys that did not constant-fold, emitted AFTER every static key
+    /// and in source order — nix's ordering, and the reason a dynamic key can
+    /// never take part in the parse-time merge.
+    fn emit_plan_dynamics(
+        &mut self,
+        plan: &sui_normalize::GroupPlan,
+    ) -> Result<u16, CompileError> {
+        use sui_normalize::Binding;
+        let mut count: u16 = 0;
+        for d in &plan.dynamics {
+            match &d.value {
+                Binding::Leaf(expr) => {
+                    if Self::is_trivial_value(expr) {
+                        self.compile_expr(expr)?;
+                    } else {
+                        self.compile_thunk_immediate(expr)?;
+                    }
+                }
+                Binding::Group(sub) => self.compile_plan_group(sub)?,
+                // Refused rather than guessed: an inherited name is resolved
+                // BY that name, and a dynamic key has no name until run time.
+                // nix rejects `inherit` under a dynamic key at parse time, so
+                // this is unreachable from source — but a silent wrong answer
+                // here would be indistinguishable from a correct one.
+                Binding::Inherit | Binding::InheritFrom { .. } => {
+                    return Err(CompileError::Unsupported(
+                        "an inherited binding cannot have a dynamic key".to_string(),
+                    ))
+                }
+            }
+            self.compile_expr(&d.key)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// A recursive group: each binding gets a local slot, values are compiled
+    /// as DEFERRED thunks, and `PatchThunkUpvalues` re-points them once every
+    /// sibling exists.
+    ///
+    /// The two-phase shape is `compile_rec_attrset`'s and is preserved
+    /// deliberately — it is what makes a lambda that captures a later sibling
+    /// work, since `MakeClosure` captures upvalues at emission time and the
+    /// slot is still null then. What changes is only WHAT is emitted: the plan
+    /// has already collapsed duplicate names, so `add_local` can no longer be
+    /// called twice with the same name (which produced two locals, of which
+    /// `resolve_local` found one).
+    fn compile_plan_group_rec(
+        &mut self,
+        plan: &sui_normalize::GroupPlan,
+    ) -> Result<(), CompileError> {
+        use sui_normalize::Binding;
+        self.begin_scope();
+
+        let local_count =
+            u16::try_from(plan.statics.len()).map_err(|_| CompileError::TooManyLocals)?;
+
+        // Phase 1: allocate a local slot per name, null-initialised.
+        for b in &plan.statics {
+            self.emit(OpCode::Null); // emit() tracks stack_depth
+            self.add_local(sui_intern::resolve(b.name))?;
+        }
+
+        // Phase 2: compile each value into its slot.
+        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
+        for b in &plan.statics {
+            let name = sui_intern::resolve(b.name);
+            let local_idx = self
+                .resolve_local(&name)
+                .ok_or_else(|| CompileError::Unsupported(format!("rec local '{name}' vanished")))?;
+            let slot = self.locals[local_idx as usize].slot;
+            match &b.binding {
+                Binding::Leaf(expr) => {
+                    if Self::is_trivial_value_for_rec(expr) {
+                        self.compile_expr(expr)?;
+                    } else {
+                        let uv = self.compile_thunk_deferred(expr)?;
+                        if !uv.is_empty() {
+                            thunk_slots.push((slot, uv));
+                        }
+                    }
+                }
+                Binding::Group(sub) => {
+                    // Deferred, like the dotted bucket was: a leaf inside the
+                    // sub-group may reference a rec sibling, which is only
+                    // populated after `PatchThunkUpvalues` runs.
+                    let sub = sub.clone();
+                    let uv = self.compile_deferred_thunk(|tc| tc.compile_plan_group(&sub))?;
+                    if !uv.is_empty() {
+                        thunk_slots.push((slot, uv));
+                    }
+                }
+                Binding::Inherit => {
+                    // Hide this local so the lookup finds the OUTER binding of
+                    // the same name — an inherit shadows, it does not recurse.
+                    let saved_depth = self.locals[local_idx as usize].depth;
+                    self.locals[local_idx as usize].depth = u32::MAX;
+                    self.emit_variable_load_restore(&name, local_idx, saved_depth)?;
+                    self.locals[local_idx as usize].depth = saved_depth;
+                }
+                Binding::InheritFrom { from } => {
+                    let src = plan
+                        .inherit_froms
+                        .get(*from)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "inherit-from index {from} out of range for '{name}'"
+                            ))
+                        })?
+                        .clone();
+                    let uv = self.compile_inherit_from_thunk_deferred(&src, &name)?;
+                    if !uv.is_empty() {
+                        thunk_slots.push((slot, uv));
+                    }
+                }
+            }
+            self.emit(OpCode::SetLocal);
+            self.emit_u16(slot);
+            self.emit(OpCode::Pop);
+        }
+
+        // Phase 2b: patch thunk upvalues now that every sibling exists.
+        for (slot, uv_descs) in &thunk_slots {
+            self.emit(OpCode::PatchThunkUpvalues);
+            self.emit_u16(*slot);
+            self.emit_u16(u16::try_from(uv_descs.len()).map_err(|_| CompileError::TooManyLocals)?);
+            for uv in uv_descs {
+                self.chunk
+                    .write_byte(u8::from(uv.is_local), self.current_line);
+                self.emit_u16(uv.index);
+            }
+        }
+
+        // Build the attrset from the locals.
+        let mut count = local_count;
+        for b in &plan.statics {
+            let name = sui_intern::resolve(b.name);
+            let slot = self.find_local_slot(&name);
+            self.emit(OpCode::GetLocal);
+            self.emit_u16(slot);
+            self.emit_constant(VMValue::String(name))?;
+        }
+        // Dynamic keys resolve in the group's OWN scope, so they are emitted
+        // here, while the locals are still live.
+        count += self.emit_plan_dynamics(plan)?;
+
+        self.emit(OpCode::MakeAttrs);
+        self.emit_u16(count);
+        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
+
+        // Move the attrset down past the locals.
+        self.end_scope(local_count);
         Ok(())
     }
 
