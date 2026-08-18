@@ -1,6 +1,7 @@
 //! Conversion builtins: toJSON, fromJSON, fromTOML, toXML, convertHash, hashFile.
 
 use super::*;
+use sui_compat::versions::xml_escape;
 
 pub(crate) fn register(builtins: &mut NixAttrs) {
     register_builtin(builtins, "toJSON", |args| {
@@ -168,41 +169,207 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::string(hex))
     });
 
-    // toXML — convert value to XML representation
+    // toXML — CppNix `printValueAsXML(state, strict=true, location=false, …)`.
+    //
+    // Three shipped defects this shape exists to prevent:
+    //
+    //  1. sui emitted `<thunk />` — an element CppNix CANNOT produce — for
+    //     every unforced value, yielding a well-formed document that parsed
+    //     fine and was wrong. `value_to_xml` therefore renders `Concrete`,
+    //     whose enum has NO `Thunk` variant, so that arm is UNWRITABLE rather
+    //     than merely unreached. Demanding at each node as we descend is
+    //     exactly what CppNix's `strict = true` means.
+    //  2. The `<expr>` root wrapper was missing, so EVERY call was wrong —
+    //     including the ones whose bodies looked correct. That is why nothing
+    //     caught it: all seven existing tests are substring `contains` checks
+    //     against the body, and none of them looks at the root.
+    //  3. `xml_escape` left LF raw inside an attribute value, where XML
+    //     attribute-value normalization turns it into a space on the way back
+    //     out. Data loss, not cosmetics — CppNix's XMLWriter emits `&#xA;`.
     register_builtin(builtins, "toXML", |args| {
-        fn value_to_xml(v: &Value, indent: usize) -> String {
-            let pad = " ".repeat(indent);
-            match v {
-                Value::Null => format!("{pad}<null />"),
-                Value::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
-                Value::Int(n) => format!("{pad}<int value=\"{n}\" />"),
-                Value::Float(f) => format!("{pad}<float value=\"{f}\" />"),
-                Value::String(ns) => format!("{pad}<string value=\"{}\" />", xml_escape(&ns.chars)),
-                Value::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
-                Value::List(items) => {
-                    let mut out = format!("{pad}<list>\n");
-                    for item in items.iter() { out.push_str(&value_to_xml(item, indent + 2)); out.push('\n'); }
-                    out.push_str(&format!("{pad}</list>"));
-                    out
-                }
-                Value::Attrs(attrs) => {
-                    let mut out = format!("{pad}<attrs>\n");
-                    for (k, v) in attrs.iter() {
-                        out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(&k)));
-                        out.push_str(&value_to_xml(v, indent + 4)); out.push('\n');
-                        out.push_str(&format!("{pad}  </attr>\n"));
-                    }
-                    out.push_str(&format!("{pad}</attrs>"));
-                    out
-                }
-                Value::Lambda(_) | Value::Builtin(_) => format!("{pad}<function />"),
-                Value::Thunk(_) => format!("{pad}<thunk />"),
-            }
-        }
-        fn xml_escape(s: &str) -> String {
-            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-        }
-        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{}\n", value_to_xml(&args[0], 0));
-        Ok(Value::string(xml))
+        let mut drvs_seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut ancestors: Vec<usize> = Vec::new();
+        let body = value_to_xml(&args[0], 2, &mut drvs_seen, &mut ancestors)?;
+        Ok(Value::string(format!(
+            "<?xml version='1.0' encoding='utf-8'?>\n<expr>\n{body}\n</expr>\n"
+        )))
     });
+}
+
+/// `Some((drvPath, outPath))` when this attrset is a derivation — CppNix's
+/// `isDerivation` test, which gates the `<derivation>` element.
+fn derivation_ids(attrs: &NixAttrs) -> Result<Option<(String, String)>, EvalError> {
+    let Some(ty) = attrs.get("type") else {
+        return Ok(None);
+    };
+    let Concrete::String(ty) = ty.demand()? else {
+        return Ok(None);
+    };
+    if &*ty.chars != "derivation" {
+        return Ok(None);
+    }
+    let (Some(drv), Some(out)) = (attrs.get("drvPath"), attrs.get("outPath")) else {
+        return Ok(None);
+    };
+    let Concrete::String(drv) = drv.demand()? else {
+        return Ok(None);
+    };
+    let Concrete::String(out) = out.demand()? else {
+        return Ok(None);
+    };
+    Ok(Some((drv.chars.to_string(), out.chars.to_string())))
+}
+
+/// CppNix has NO cycle protection in `printValueAsXML`: `builtins.toXML` on a
+/// self-referential value SIGSEGVs (measured 2026-08-18, rc=139). sui refuses
+/// with a typed error instead — a segfault and an invented element are both
+/// worse than saying so, and there is no parity cost, because the oracle emits
+/// no bytes to be unequal to.
+///
+/// The guard is an ANCESTOR stack, not a seen-set. CppNix re-expands a shared
+/// non-cyclic value in full, so a seen-set would break DAG parity:
+/// `let a = { n = 1; }; in builtins.toXML { p = a; q = a; }` must render `a`
+/// twice. Only a genuine ancestor is a cycle.
+fn enter_cycle_guard(ancestors: &mut Vec<usize>, key: usize) -> Result<(), EvalError> {
+    if ancestors.contains(&key) {
+        return Err(EvalError::InfiniteRecursion(
+            "toXML: value contains a cycle".into(),
+        ));
+    }
+    ancestors.push(key);
+    Ok(())
+}
+
+/// Render one node, byte-for-byte as CppNix's `printValueAsXML` does.
+///
+/// Takes `&Value` but immediately demands it to [`Concrete`] — see defect (1)
+/// on the registration above. Every recursion re-demands, so laziness resolves
+/// top-down exactly as `strict = true` prescribes, and a forcing failure
+/// propagates out of `toXML` (CppNix does not contain the error either).
+fn value_to_xml(
+    v: &Value,
+    indent: usize,
+    drvs_seen: &mut std::collections::HashSet<String>,
+    ancestors: &mut Vec<usize>,
+) -> Result<String, EvalError> {
+    let pad = " ".repeat(indent);
+    Ok(match v.demand()? {
+        Concrete::Null => format!("{pad}<null />"),
+        Concrete::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
+        Concrete::Int(n) => format!("{pad}<int value=\"{n}\" />"),
+        // The SHARED cross-engine formatter, never Rust's `{}` Display:
+        // `format!("{f}")` renders 3.0e10 as `30000000000` where CppNix
+        // (and sui's own value printer) say `3e+10`. Re-deriving a
+        // cross-engine fact locally is how the two answers drift.
+        Concrete::Float(f) => format!(
+            "{pad}<float value=\"{}\" />",
+            sui_compat::versions::cppnix_format_float(f)
+        ),
+        Concrete::String(ns) => {
+            format!("{pad}<string value=\"{}\" />", xml_escape(&ns.chars))
+        }
+        Concrete::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(&p)),
+        Concrete::List(items) => {
+            enter_cycle_guard(ancestors, Rc::as_ptr(&items) as usize)?;
+            let mut out = format!("{pad}<list>\n");
+            for item in items.iter() {
+                out.push_str(&value_to_xml(item, indent + 2, drvs_seen, ancestors)?);
+                out.push('\n');
+            }
+            out.push_str(&format!("{pad}</list>"));
+            ancestors.pop();
+            out
+        }
+        Concrete::Attrs(attrs) => {
+            let drv = derivation_ids(&attrs)?;
+            // CppNix's seen-set is DERIVATIONS ONLY, and `<repeated />` is a
+            // CHILD of `<derivation>`, not a replacement for it — the open tag
+            // keeps both attributes either way. (Measured; the natural reading
+            // of "emits <repeated /> for a seen derivation" is wrong.)
+            if let Some((drv_path, out_path)) = &drv
+                && !drvs_seen.insert(drv_path.clone())
+            {
+                return Ok(format!(
+                    "{pad}<derivation drvPath=\"{}\" outPath=\"{}\">\n\
+                     {pad}  <repeated />\n\
+                     {pad}</derivation>",
+                    xml_escape(drv_path),
+                    xml_escape(out_path)
+                ));
+            }
+            enter_cycle_guard(ancestors, Rc::as_ptr(&attrs) as usize)?;
+            let (open, close) = match &drv {
+                Some((d, o)) => (
+                    format!(
+                        "{pad}<derivation drvPath=\"{}\" outPath=\"{}\">\n",
+                        xml_escape(d),
+                        xml_escape(o)
+                    ),
+                    format!("{pad}</derivation>"),
+                ),
+                None => (format!("{pad}<attrs>\n"), format!("{pad}</attrs>")),
+            };
+            let mut out = open;
+            for (k, val) in attrs.iter() {
+                out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(&k)));
+                out.push_str(&value_to_xml(val, indent + 4, drvs_seen, ancestors)?);
+                out.push('\n');
+                out.push_str(&format!("{pad}  </attr>\n"));
+            }
+            out.push_str(&close);
+            ancestors.pop();
+            out
+        }
+        // CppNix distinguishes THREE function shapes. Collapsing them to a bare
+        // `<function />` discarded the parameter names entirely.
+        Concrete::Lambda(cl) => {
+            let inner = match &cl.param {
+                rnix::ast::Param::IdentParam(ip) => ip
+                    .ident()
+                    .map(|i| {
+                        format!(
+                            "{pad}  <varpat name=\"{}\" />\n",
+                            xml_escape(&crate::eval::ident_text(&i))
+                        )
+                    })
+                    .unwrap_or_default(),
+                rnix::ast::Param::Pattern(pat) => {
+                    let name = pat
+                        .pat_bind()
+                        .and_then(|b| b.ident())
+                        .map(|i| {
+                            format!(
+                                " name=\"{}\"",
+                                xml_escape(&crate::eval::ident_text(&i))
+                            )
+                        })
+                        .unwrap_or_default();
+                    let ellipsis = if pat.ellipsis_token().is_some() {
+                        " ellipsis=\"1\""
+                    } else {
+                        ""
+                    };
+                    // CppNix writes `ellipsis` BEFORE `name`
+                    // (`<attrspat ellipsis="1" name="args">`); the
+                    // opposite order is well-formed XML and not
+                    // byte-parity, which is the bar here.
+                    let mut s = format!("{pad}  <attrspat{ellipsis}{name}>\n");
+                    for e in pat.pat_entries() {
+                        if let Some(id) = e.ident() {
+                            s.push_str(&format!(
+                                "{pad}    <attr name=\"{}\" />\n",
+                                xml_escape(&crate::eval::ident_text(&id))
+                            ));
+                        }
+                    }
+                    s.push_str(&format!("{pad}  </attrspat>\n"));
+                    s
+                }
+            };
+            format!("{pad}<function>\n{inner}{pad}</function>")
+        }
+        // A primop, or a partial application of one, is `<unevaluated />`.
+        Concrete::Builtin(_) => format!("{pad}<unevaluated />"),
+    })
 }

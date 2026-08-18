@@ -1492,7 +1492,7 @@ fn run_saturated(
                 .map_err(|e| IrEvalError::TypeError(format!("fromJSON: {e}")))?;
             Ok(json_to_ir(&json))
         }
-        B::ToXml => Ok(IrValue::string(to_xml(&arg))),
+        B::ToXml => Ok(IrValue::string(to_xml(&arg)?)),
     }
 }
 
@@ -2113,56 +2113,128 @@ fn json_to_ir(json: &serde_json::Value) -> IrValue {
 }
 
 // ── toXML (mirroring the walker's `convert::toXML` byte-for-byte) ─────────
+//
+// LOCKSTEP: `sui-ir/tests/eval_differential.rs` compares this against the
+// tree-walker's `builtins/convert.rs`, so the two move together or CI goes
+// red. The escape table and the float formatter are NOT mirrored — they are
+// shared outright via `sui_compat::versions`, because a re-derived
+// cross-engine fact is exactly how these two drifted (both were missing the
+// newline escape, identically and therefore invisibly).
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+use sui_compat::versions::xml_escape;
+
+/// CppNix has no cycle protection in `printValueAsXML` — it SIGSEGVs. sui
+/// refuses with a typed error instead; see the walker's `enter_cycle_guard`
+/// for why this is an ANCESTOR stack and not a seen-set (CppNix re-expands
+/// shared non-cyclic values, so a seen-set would break DAG parity).
+fn enter_cycle_guard(ancestors: &mut Vec<usize>, key: usize) -> Result<(), IrEvalError> {
+    if ancestors.contains(&key) {
+        return Err(IrEvalError::Unsupported(
+            "toXML: value contains a cycle",
+        ));
+    }
+    ancestors.push(key);
+    Ok(())
 }
 
-/// One XML node — mirrors the walker's `value_to_xml`, which does NOT force
-/// nested values (a thunked list element renders `<thunk />`); the pure
-/// subset only ever calls this on a WHNF-forced scalar in practice.
-fn value_to_xml(v: &IrValue, indent: usize) -> String {
+/// One XML node, byte-for-byte as CppNix's `printValueAsXML` writes it.
+///
+/// Forces at every node — `builtins.toXML` is `strict = true`, so `<thunk />`
+/// (an element CppNix cannot produce) must never be reachable. The previous
+/// version pattern-matched `IrValue::Thunk` and emitted exactly that.
+fn value_to_xml(
+    v: &IrValue,
+    indent: usize,
+    ancestors: &mut Vec<usize>,
+) -> Result<String, IrEvalError> {
     let pad = " ".repeat(indent);
-    match v {
+    Ok(match v.force()? {
         IrValue::Null => format!("{pad}<null />"),
         IrValue::Bool(b) => format!("{pad}<bool value=\"{b}\" />"),
         IrValue::Int(n) => format!("{pad}<int value=\"{n}\" />"),
-        IrValue::Float(f) => format!("{pad}<float value=\"{f}\" />"),
-        IrValue::Str(s, _) => format!("{pad}<string value=\"{}\" />", xml_escape(s)),
-        IrValue::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(p)),
+        IrValue::Float(f) => {
+            format!("{pad}<float value=\"{}\" />", cppnix_format_float(f))
+        }
+        IrValue::Str(s, _) => format!("{pad}<string value=\"{}\" />", xml_escape(&s)),
+        IrValue::Path(p) => format!("{pad}<path value=\"{}\" />", xml_escape(&p)),
         IrValue::List(items) => {
+            enter_cycle_guard(ancestors, Rc::as_ptr(&items) as usize)?;
             let mut out = format!("{pad}<list>\n");
             for item in items.iter() {
-                out.push_str(&value_to_xml(item, indent + 2));
+                out.push_str(&value_to_xml(item, indent + 2, ancestors)?);
                 out.push('\n');
             }
             out.push_str(&format!("{pad}</list>"));
+            ancestors.pop();
             out
         }
         IrValue::Attrs(attrs) => {
+            enter_cycle_guard(ancestors, Rc::as_ptr(&attrs) as usize)?;
             let mut out = format!("{pad}<attrs>\n");
             for (k, val) in attrs.iter() {
                 out.push_str(&format!("{pad}  <attr name=\"{}\">\n", xml_escape(k)));
-                out.push_str(&value_to_xml(val, indent + 4));
+                out.push_str(&value_to_xml(val, indent + 4, ancestors)?);
                 out.push('\n');
                 out.push_str(&format!("{pad}  </attr>\n"));
             }
             out.push_str(&format!("{pad}</attrs>"));
+            ancestors.pop();
             out
         }
-        IrValue::Lambda(_) | IrValue::Builtin(..) => format!("{pad}<function />"),
-        IrValue::Thunk(_) => format!("{pad}<thunk />"),
-    }
+        // CppNix distinguishes three function shapes; a bare `<function />`
+        // discarded the parameter names. The IR keeps them on `Param`.
+        IrValue::Lambda(cl) => {
+            let inner = match &cl.param {
+                crate::ir::Param::Ident(sym) => format!(
+                    "{pad}  <varpat name=\"{}\" />\n",
+                    xml_escape(&sui_intern::resolve(*sym))
+                ),
+                crate::ir::Param::Pattern {
+                    entries,
+                    ellipsis,
+                    bind,
+                } => {
+                    // CppNix writes `ellipsis` BEFORE `name`.
+                    let ell = if *ellipsis { " ellipsis=\"1\"" } else { "" };
+                    let name = bind
+                        .map(|b| {
+                            format!(" name=\"{}\"", xml_escape(&sui_intern::resolve(b)))
+                        })
+                        .unwrap_or_default();
+                    let mut s = format!("{pad}  <attrspat{ell}{name}>\n");
+                    for e in entries {
+                        s.push_str(&format!(
+                            "{pad}    <attr name=\"{}\" />\n",
+                            xml_escape(&sui_intern::resolve(e.name))
+                        ));
+                    }
+                    s.push_str(&format!("{pad}  </attrspat>\n"));
+                    s
+                }
+            };
+            format!("{pad}<function>\n{inner}{pad}</function>")
+        }
+        // A primop, or a partial application of one, is `<unevaluated />`.
+        IrValue::Builtin(..) => format!("{pad}<unevaluated />"),
+        // Unreachable: `force()` above resolves every thunk, and emitting
+        // `<thunk />` here WAS the defect. Kept as a typed refusal rather than
+        // a panic, so a future `force()` change fails loudly instead of
+        // quietly re-inventing the element.
+        IrValue::Thunk(_) => {
+            return Err(IrEvalError::Unsupported(
+                "toXML: force() returned a thunk",
+            ));
+        }
+    })
 }
 
-/// `builtins.toXML` — the `<?xml …?>` prologue + the rendered tree, mirroring
-/// the walker's `toXML`.
-fn to_xml(v: &IrValue) -> String {
-    format!(
-        "<?xml version='1.0' encoding='utf-8'?>\n{}\n",
-        value_to_xml(v, 0)
-    )
+/// `builtins.toXML` — prologue, the `<expr>` root CppNix always writes, and
+/// the rendered tree. The root wrapper was missing, which made every call
+/// wrong including the ones whose bodies looked right.
+fn to_xml(v: &IrValue) -> Result<String, IrEvalError> {
+    let mut ancestors: Vec<usize> = Vec::new();
+    let body = value_to_xml(v, 2, &mut ancestors)?;
+    Ok(format!(
+        "<?xml version='1.0' encoding='utf-8'?>\n<expr>\n{body}\n</expr>\n"
+    ))
 }

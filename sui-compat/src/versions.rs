@@ -163,6 +163,25 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
 /// Used by every engine's float Display impl (`Value::Float`,
 /// `VMValue::Float`, `StringKeyedValue::Float`) so probe JSON
 /// round-trips byte-identically against cppnix.
+/// Escape a string for an XML attribute value, exactly as CppNix's `XMLWriter`
+/// does: `& < > "` **and** the newline.
+///
+/// The LF is the one people leave out, and it is data loss rather than
+/// cosmetics — XML attribute-value normalization turns a raw LF into a space
+/// on the way back out, so the string does not round-trip. Both `toXML`
+/// implementations (`sui-eval`'s tree-walker and `sui-ir`'s) had the four-char
+/// table and neither had the newline, which is precisely the drift that lands
+/// when a cross-engine fact is re-derived per engine instead of shared. It
+/// lives here beside [`cppnix_format_float`] for that reason.
+#[must_use]
+pub fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\n', "&#xA;")
+}
+
 #[must_use]
 pub fn cppnix_format_float(f: f64) -> String {
     if f.is_nan() {
@@ -212,12 +231,22 @@ pub fn cppnix_format_float(f: f64) -> String {
                     mantissa.to_string()
                 };
             // CppNix emits `e+NN` for positive, `e-NN` for negative.
-            // Rust's `{:e}` formatter omits the `+`; restore it.
-            let exp_part_signed = if exp_part.starts_with('-') {
-                exp_part.to_string()
-            } else {
-                format!("+{exp_part}")
+            // Rust's `{:e}` formatter omits the `+` AND does not pad;
+            // C's `%g` writes a sign plus a MINIMUM of two exponent digits,
+            // so `1e8` must print as `1e+08` while `1e100` keeps all three.
+            //
+            // The padding half was missing for as long as this function has
+            // existed, even though the comment here already said `e+NN`. It
+            // survived because the test block below has no scientific-notation
+            // case at all — every example is fixed-point. Since this formatter
+            // is shared by all three engines' float Display impls, the same
+            // wrong byte was emitted everywhere, consistently, which is the
+            // shape that reads as correct.
+            let (sign, digits) = match exp_part.strip_prefix('-') {
+                Some(d) => ('-', d),
+                None => ('+', exp_part),
             };
+            let exp_part_signed = format!("{sign}{digits:0>2}");
             format!("{mantissa_trimmed}e{exp_part_signed}")
         } else {
             raw
@@ -314,6 +343,25 @@ mod tests {
         assert_eq!(cppnix_format_float(0.0), "0");
         assert_eq!(cppnix_format_float(-3.14), "-3.14");
         assert_eq!(cppnix_format_float(-3.0), "-3");
+    }
+
+    /// Scientific notation — the case the block above never covered, which is
+    /// exactly why the missing exponent zero-pad survived. Every value here was
+    /// read off real `nix eval` on 2026-08-18.
+    #[test]
+    fn cppnix_format_float_pads_exponent_to_two_digits() {
+        // Single-digit exponents pad; this is the regression.
+        assert_eq!(cppnix_format_float(123_456_789.0), "1.23457e+08");
+        assert_eq!(cppnix_format_float(1_000_000.0), "1e+06");
+        assert_eq!(cppnix_format_float(0.000_01), "1e-05");
+        // Two digits are already wide enough — must NOT gain a third.
+        assert_eq!(cppnix_format_float(3.0e10), "3e+10");
+        // Three-digit exponents keep all three — a fixed width would truncate.
+        assert_eq!(cppnix_format_float(1.0e100), "1e+100");
+        assert_eq!(cppnix_format_float(1.0e-100), "1e-100");
+        // The fixed-point/scientific boundary stays where %g puts it.
+        assert_eq!(cppnix_format_float(999_999.0), "999999");
+        assert_eq!(cppnix_format_float(-123_456_789.0), "-1.23457e+08");
     }
 
     #[test]

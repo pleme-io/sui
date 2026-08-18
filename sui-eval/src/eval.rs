@@ -2425,7 +2425,7 @@ fn eval_attr_maybe_null(attr: &ast::Attr, env: &Env) -> Result<Option<String>, E
 }
 
 /// Get the text of an rnix Ident node.
-fn ident_text(ident: &ast::Ident) -> String {
+pub(crate) fn ident_text(ident: &ast::Ident) -> String {
     // Fast path: a `NODE_IDENT` holds a single `TOKEN_IDENT`, whose `text()`
     // borrows the source `&str` directly from the green node — no
     // `PreorderWithTokens` cursor tree-walk and none of the `NodeData::new`
