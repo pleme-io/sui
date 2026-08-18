@@ -355,6 +355,27 @@ A new `Surface` variant with no arm does not COMPILE; a dropped row fails the as
 
 **M5 — S2 closure walk (bounded).** Visit-all generalization of `bisect_drv` + `NodeCoverage` + `Divergence::MissingNode` + `(defclosure-subject)`; run against a SMALL pinned closure (leaf drvPath), NOT cid — the cid subject stays `CannotComplete/MemoryWall`.
 
+> **★ RE-MEASURED 2026-08-17 — "a leaf drvPath" is now understated, and the
+> MemoryWall row is still right.** A full NixOS toplevel
+> (`nixosConfigurations.minimal…build.toplevel.drvPath`, **3,489** requisites)
+> completes on `sui` 0.1.202 **release** in **19.1 s / 9.99 GB** and is
+> **byte-identical to nix** (`xqc77nw9…`; nix: 4.99 s / 0.91 GB). That is 5.4×
+> richer than a leaf and is the correct M5 subject — use it.
+>
+> The cid row is unchanged and confirmed: at the measured **2.94 MB per closure
+> node**, cid's **18,995** requisites (re-counted today; this doc says 20,827)
+> extrapolate to **≈ 56 GB** against 48 GiB of RAM.
+>
+> **Beware the arithmetic, not just the conclusion.** A first pass measured only
+> a DEBUG build and deflated it by a doc-sourced 2.3× to argue the same verdict
+> — which would have given ≈ 23 GB at cid scale, i.e. it FITS, contradicting the
+> verdict it was offered for. Measured against the real release binary the
+> constant is **~14× on wall and 1.12× the WRONG WAY on memory** (release peaks
+> HIGHER than debug here). Optimisation buys time, not footprint. Never deflate
+> a memory figure by a speed ratio.
+>
+> Full numbers + method: `docs/SILENT-DIVERGENCE-HUNT.md` §VI.1–VI.3.
+
 **M6 — S5 config parser.** The genuinely-large new build: `nix.conf`/`NIX_CONFIG`/`--option`/`NIX_PATH` typed parser + `(defnix-setting)` + `nix show-config --json` oracle adapter. Flip S5's board row `Absent`→`Enumerated`.
 
 **The compounding law across every phase:** the moment a per-surface catalog ships, its `NixSurface` row flips up a tier — and `every_surface_is_honest` REFUSES the flip until a real bijection gate for that surface exists. The matrix mechanically pulls each surface's own gate into being, one honest tier at a time.

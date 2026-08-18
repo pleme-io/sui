@@ -32,7 +32,7 @@ system on the fleet. Neither would ever have been caught by the corpus.
 | real nixpkgs drvPaths | **10/10 byte-identical** | `sui eval --impure --raw --expr '(import <nixpkgs> {}).<pkg>.drvPath'` |
 | flake w/ `github:` input + lock | **byte-identical drvPath** | trivial flake, `sui eval --raw .#…drvPath` |
 | fleet gate (781 assertions) | **29 = nix** *(was 776/781)* | `sui eval .#kataFleetGate` in `pleme-io/nix` |
-| NixOS toplevel eval | **completes**, correct name, **hash still differs** | `sui eval --no-eval-cache --raw .#nixosConfigurations.minimal…drvPath` |
+| NixOS toplevel eval | **completes, and the hash MATCHES nix** (2026-08-17; was "hash still differs" — see §VI.1) | `sui eval --no-eval-cache --raw .#nixosConfigurations.minimal…drvPath` |
 | `sui-eval` suite | 1377 pass / 11 fail (pre-existing) | `cargo test --release -p sui-eval` |
 
 **Two corrections to `CLAUDE.md`, which is stale on both.** It says the parity
@@ -230,6 +230,68 @@ derivation.
 instantiate first. Generalising `bisect_drv` (which today descends only the
 first child) into a visit-all closure differential is the tool that turns a
 red 20,827-node result into a located one — build that before hunting by hand.
+
+---
+
+## ★ VI.1 — CLOSED, 2026-08-17. Re-measure before believing anything above.
+
+**The divergence in §VI no longer exists.** Same subject
+(`nixosConfigurations.minimal` at `pleme-io/nix` `parts/nixos.nix:47`), same
+nixpkgs pin (the drv name still ends `25.11.20260630.b6018f8`), measured
+independently by two agents and re-run by hand:
+
+```
+nix:  /nix/store/xqc77nw99kzdqnqly2lfjmm8mlljk5sp-nixos-system-minimal-25.11.20260630.b6018f8.drv
+sui:  /nix/store/xqc77nw99kzdqnqly2lfjmm8mlljk5sp-nixos-system-minimal-25.11.20260630.b6018f8.drv
+```
+
+sui produces **neither** of the two hashes recorded above — it produces nix's.
+Run with `--no-eval-cache` on both sides, on the tree-walker (the default
+engine since 2026-08-17), `sui` 0.1.202 release.
+
+**What is NOT claimed:** that any specific commit closed it. The flake tree
+moved between 2026-08-09 and today, and no bisect was run. What is proven is
+that *today*, on *this* tree, the two agree.
+
+### VI.2 — the cost, measured on the release binary
+
+| | sui 0.1.202 release | nix 2.31.5 | ratio |
+|---|---|---|---|
+| peak RSS | **9.99 GB** (two runs, identical) | 0.91 GB | **11.0×** |
+| wall | 19.1 s | 4.99 s | 3.8× |
+
+`nix-store -q --requisites` on that drv → **3,489 nodes**, so sui costs
+**2.94 MB per closure node**.
+
+**★ The debug→release constant is not 2.3×, and it is not one constant.**
+A first pass measured only a DEBUG build (263 s / 8.94 GB) and deflated it by a
+factor taken from a doc, concluding release ≈ 4.2 GB here and ≈ 23 GB at cid
+scale — which would FIT in this machine's 48 GiB and therefore contradict the
+MemoryWall verdict it was offered in support of. Measured properly:
+
+* **wall: ~14× faster in release** (263 s → 19.1 s)
+* **memory: 1.12× WORSE in release** (8.94 GB → 9.99 GB)
+
+Optimisation buys time, not footprint, and here it costs footprint. Do not
+deflate a memory figure by a speed ratio.
+
+### VI.3 — the MemoryWall verdict stands, for the opposite reason
+
+At 2.94 MB/node, cid's **18,995** requisites (re-measured today; `STRATOSPHERE`
+says 20,827) extrapolate to **≈ 56 GB** against 48 GiB of RAM. So
+`STRATOSPHERE.md:300`'s `CANNOT-COMPLETE at cid scale (memory wall,
+swap-death)` is **still correct** — but the arithmetic offered for it pointed
+the other way, and a reader who checked only the conclusion would have banked a
+right answer resting on a wrong model.
+
+`STRATOSPHERE.md:356` is now **understated**, though: it says to run the closure
+walk against "a SMALL pinned closure (leaf drvPath), NOT cid". A full NixOS
+toplevel at 3,489 nodes completes in 19 s and 10 GB and is byte-identical to
+nix — 5.4× richer than a leaf, and the correct M5 subject.
+
+And this file's own §II table row — *"NixOS toplevel eval **completes**, correct
+name, **hash still differs**"* — is stale in its second half. Fix the row rather
+than citing it.
 
 ---
 
