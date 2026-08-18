@@ -899,10 +899,56 @@ impl PartialEq for Concrete {
                 }
                 fa == fb
             }
+            // Pointer-equal closures compare EQUAL here, and this arm is
+            // load-bearing — see `eq_operator` below for why it must NOT be
+            // deleted, and why the `==` operator nonetheless must not use it.
             (Concrete::Lambda(a), Concrete::Lambda(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
+}
+
+/// Nix `==` / `!=` at the OPERATOR, which is not the same relation as the one
+/// used for nested comparisons.
+///
+/// CppNix's `eqValues` opens with a pointer-identity hack (`if (&v1 == &v2)
+/// return true;`) sitting ABOVE the type switch, whose `nFunction` arm is
+/// unconditionally `false`. That produces an asymmetry which looks like an
+/// inconsistency and is not:
+///
+/// ```text
+/// let f = x: x; in  f  ==  f    -> false   (two distinct stack Values)
+/// let f = x: x; in [f] == [f]   -> TRUE    (one shared Value*, hack fires)
+/// ```
+///
+/// `ExprOpEq::eval` evaluates each operand into its own stack `Value`, so at
+/// the top level the two are never the same object and the hack is
+/// structurally unreachable. A nested element, by contrast, really is the same
+/// `Value*` on both sides.
+///
+/// sui has no cell identity — `Value` is a 16-byte enum — so `Rc::ptr_eq` on
+/// the closure is standing in for CppNix's `Value*` identity, and in several
+/// places it is the ONLY thing carrying it (sui binds `{ f = x: x; }` as an
+/// eager `Value::Lambda`, with no thunk to share). Measured: making the lambda
+/// arm unconditionally `false` is net +8/-4 against the oracle. It breaks
+/// `let e = { f = x: x; }; in (e // {}) == (e // {})` — an attrset literal of
+/// functions, merged, which is everywhere in nixpkgs — and it is the guard
+/// that stops nixpkgs `stdenv` looping forever on `crossSystem != localSystem`
+/// (see the tests below titled "Lambda identity equality").
+///
+/// So the fix is not to weaken the relation but to reproduce the asymmetry
+/// where CppNix gets it for free: the operator is the one place sui can PROVE
+/// the operands are distinct cells, because `eval_binop` just materialized
+/// each one through its own independent `force_concrete`.
+///
+/// Nested callers (list/attrs recursion, `builtins.elem`) must keep using
+/// `PartialEq` — `builtins.elem f [f]` is `true` in nix.
+#[must_use]
+pub fn eq_operator(l: &Value, r: &Value) -> bool {
+    if let (Ok(Concrete::Lambda(_)), Ok(Concrete::Lambda(_))) = (l.demand(), r.demand()) {
+        return false;
+    }
+    l == r
 }
 
 /// Concatenate two Nix lists: `left ++ right_elems`.

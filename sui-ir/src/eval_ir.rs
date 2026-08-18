@@ -1662,8 +1662,9 @@ fn eval_binop(
             }
             num_op(&l, &r, i64::checked_div, |a, b| a / b, "dividing", '/')
         }
-        BinOp::Equal => Ok(IrValue::Bool(ir_eq(&l, &r))),
-        BinOp::NotEqual => Ok(IrValue::Bool(!ir_eq(&l, &r))),
+        // `ir_eq_operator`, NOT `ir_eq` — the operator proves distinct cells.
+        BinOp::Equal => Ok(IrValue::Bool(ir_eq_operator(&l, &r))),
+        BinOp::NotEqual => Ok(IrValue::Bool(!ir_eq_operator(&l, &r))),
         BinOp::Less => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
         BinOp::LessOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Greater),
         BinOp::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
@@ -1810,9 +1811,29 @@ pub fn ir_eq(l: &IrValue, r: &IrValue) -> bool {
                 && a.iter()
                     .all(|(k, v)| b.get(k).is_some_and(|w| ir_eq(v, w)))
         }
+        // Load-bearing; see `ir_eq_operator` for why it stays and why the
+        // `==` operator must not use it.
         (IrValue::Lambda(a), IrValue::Lambda(b)) => Rc::ptr_eq(a, b),
         _ => false,
     }
+}
+
+/// Nix `==` / `!=` at the OPERATOR — the IR mirror of
+/// `sui_eval::value::eq_operator`, and it must move in lockstep with it
+/// (`tests/eval_differential.rs` compares the two engines row by row and this
+/// exact expression, `let f = x: x; in f == f`, is one of the rows).
+///
+/// CppNix answers `false` for two functions at the top level because
+/// `ExprOpEq::eval` gives each operand its own stack `Value`, so the
+/// pointer-identity hack at the head of `eqValues` cannot fire. Nested, the
+/// two really are one `Value*`, so it does fire and `[f] == [f]` is `true`.
+/// `ir_eq` keeps the nested relation; this reproduces the top-level one.
+#[must_use]
+pub fn ir_eq_operator(l: &IrValue, r: &IrValue) -> bool {
+    if let (Ok(IrValue::Lambda(_)), Ok(IrValue::Lambda(_))) = (l.force(), r.force()) {
+        return false;
+    }
+    ir_eq(l, r)
 }
 
 fn derivation_out_path(attrs: &IrAttrs) -> Option<String> {

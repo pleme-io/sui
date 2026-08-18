@@ -3494,8 +3494,13 @@ fn eval_binop(
                 |a, b| int_overflow("dividing", a, '/', b),
             )
         }
-        ast::BinOpKind::Equal => Ok(Value::Bool(l == r)),
-        ast::BinOpKind::NotEqual => Ok(Value::Bool(l != r)),
+        // `eq_operator`, NOT `==`: at the operator both operands were just
+        // materialized by independent `force_concrete` calls, so sui can prove
+        // they are distinct cells and must answer `false` for two lambdas —
+        // exactly as CppNix's `ExprOpEq::eval` does. Nested comparisons keep
+        // `PartialEq`. See `value::eq_operator`.
+        ast::BinOpKind::Equal => Ok(Value::Bool(crate::value::eq_operator(&l, &r))),
+        ast::BinOpKind::NotEqual => Ok(Value::Bool(!crate::value::eq_operator(&l, &r))),
         ast::BinOpKind::Less => compare(&l, &r, |o| o == std::cmp::Ordering::Less),
         ast::BinOpKind::LessOrEq => compare(&l, &r, |o| o != std::cmp::Ordering::Greater),
         ast::BinOpKind::More => compare(&l, &r, |o| o == std::cmp::Ordering::Greater),
