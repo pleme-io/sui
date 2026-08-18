@@ -15,10 +15,7 @@
 use rnix::ast::{self, AstToken, HasEntry};
 use rowan::ast::AstNode;
 
-use crate::ir::{
-    AttrName, Binding, ExprId, Ir, Param, PathKind, PathPart, PatternEntry, Program, Span,
-    StrPart,
-};
+use crate::ir::{AttrName, Binding, ExprId, Ir, IrBound, IrDynamicBinding, IrGroupPlan, IrStaticBinding, Param, PathKind, PathPart, PatternEntry, PlanId, Program, Span, StrPart};
 
 /// Typed lowering failure. Every variant names the construct it came from —
 /// a `LowerError` is a mechanical "this exact spot in the parse surface is
@@ -38,6 +35,18 @@ pub enum LowerError {
         construct: &'static str,
         field: &'static str,
     },
+    /// A binding plan referenced an AST node that the ordinary lowering did
+    /// not produce an `ExprId` for.
+    ///
+    /// A HARD ERROR, never a fallback. `sui-eval`'s consume side can treat a
+    /// missing plan as "this group needs none", because it still holds the
+    /// rowan tree and can rebuild. The IR cannot: it has no rowan at eval time,
+    /// so silently dropping a plan here would reinstate the wrong-answer class
+    /// the plan exists to remove — invisibly. If this fires, the range index
+    /// and the plan disagree about which nodes were lowered, which is a bug in
+    /// this file.
+    #[error("binding plan references an unlowered node at bytes {start}..{end}")]
+    PlanUnresolved { start: u32, end: u32 },
     /// An integer literal that does not fit `i64`.
     #[error("integer literal `{text}` does not fit i64")]
     IntOutOfRange { text: String },
@@ -78,6 +87,10 @@ pub fn lower(expr: &ast::Expr) -> Result<Program, LowerError> {
     let mut lo = Lowerer {
         exprs: Vec::new(),
         spans: Vec::new(),
+        by_range: rustc_hash::FxHashMap::default(),
+        attr_by_range: rustc_hash::FxHashMap::default(),
+        plans: Vec::new(),
+        plan_of: rustc_hash::FxHashMap::default(),
     };
     let root = lo.lower_expr(expr)?;
     debug_assert_eq!(root.index() + 1, lo.exprs.len());
@@ -85,12 +98,27 @@ pub fn lower(expr: &ast::Expr) -> Result<Program, LowerError> {
         exprs: lo.exprs,
         spans: lo.spans,
         root,
+        plans: lo.plans,
+        plan_of: lo.plan_of,
     })
 }
 
 struct Lowerer {
     exprs: Vec<Ir>,
     spans: Vec<Span>,
+    /// `(start, end)` -> the `ExprId` lowered from that node. The bridge from
+    /// `sui-normalize`'s plan (which holds rowan handles) to IR indices.
+    ///
+    /// Keyed on the FULL range, not the start offset: a `Paren` and its inner
+    /// expression share a start but differ in end, and post-order lowering
+    /// would otherwise let one silently shadow the other.
+    by_range: rustc_hash::FxHashMap<(u32, u32), ExprId>,
+    /// `(start, end)` -> the `AttrName` lowered from that attr node. The
+    /// sibling of `by_range` for keys: a dynamic key may be an interpolated
+    /// `Attr::Str`, which has an `AttrName` but no `ExprId`.
+    attr_by_range: rustc_hash::FxHashMap<(u32, u32), AttrName>,
+    plans: Vec<IrGroupPlan>,
+    plan_of: rustc_hash::FxHashMap<ExprId, PlanId>,
 }
 
 fn span_of(node: &rnix::SyntaxNode) -> Span {
@@ -114,9 +142,116 @@ fn ident_text(ident: &ast::Ident) -> String {
 impl Lowerer {
     fn push(&mut self, ir: Ir, node: &rnix::SyntaxNode) -> ExprId {
         let id = ExprId(u32::try_from(self.exprs.len()).expect("program exceeds u32 exprs"));
+        let sp = span_of(node);
         self.exprs.push(ir);
-        self.spans.push(span_of(node));
+        self.spans.push(sp);
+        self.by_range.insert((sp.start, sp.end), id);
         id
+    }
+
+    /// The `ExprId` the ordinary lowering produced for `node`.
+    ///
+    /// Never invents one: the arena invariant `root.index() + 1 == exprs.len()`
+    /// (asserted by `tests/differential.rs`) means nothing may be appended
+    /// after lowering, so a plan may only reference ids that already exist.
+    fn expr_id_of(&self, node: &ast::Expr) -> Result<ExprId, LowerError> {
+        let r = node.syntax().text_range();
+        let key = (u32::from(r.start()), u32::from(r.end()));
+        self.by_range
+            .get(&key)
+            .copied()
+            .ok_or(LowerError::PlanUnresolved {
+                start: key.0,
+                end: key.1,
+            })
+    }
+
+    fn lower_bound(&mut self, b: &sui_normalize::Binding) -> Result<IrBound, LowerError> {
+        Ok(match b {
+            sui_normalize::Binding::Leaf(e) => IrBound::Expr(self.expr_id_of(e)?),
+            sui_normalize::Binding::Group(sub) => IrBound::Group(self.lower_plan(sub)?),
+            sui_normalize::Binding::Inherit => IrBound::Inherit,
+            sui_normalize::Binding::InheritFrom { from } => IrBound::InheritFrom { from: *from },
+        })
+    }
+
+    /// Lower one `GroupPlan` into the side arena, returning its index.
+    fn lower_plan(&mut self, plan: &sui_normalize::GroupPlan) -> Result<PlanId, LowerError> {
+        let mut statics = Vec::with_capacity(plan.statics.len());
+        for b in &plan.statics {
+            statics.push(IrStaticBinding {
+                name: b.name,
+                value: self.lower_bound(&b.binding)?,
+            });
+        }
+        let mut dynamics = Vec::with_capacity(plan.dynamics.len());
+        for d in &plan.dynamics {
+            // The plan holds the key EXPRESSION; the IR wants the attr name
+            // that was lowered for it. Both cases resolve by range: a bare
+            // `${e}` key stores the inner expr (whose range is the attr's
+            // inner node), an interpolated `"${e}"` stores the `Str` node
+            // (whose range is the attr itself).
+            let kr = d.key.syntax().text_range();
+            let kk = (u32::from(kr.start()), u32::from(kr.end()));
+            let key = self
+                .attr_by_range
+                .get(&kk)
+                .cloned()
+                .or_else(|| {
+                    // A bare `${e}`: the attr node wraps the expr, so look one
+                    // level out before giving up.
+                    d.key.syntax().parent().and_then(|par| {
+                        let pr = par.text_range();
+                        self.attr_by_range
+                            .get(&(u32::from(pr.start()), u32::from(pr.end())))
+                            .cloned()
+                    })
+                })
+                .ok_or(LowerError::PlanUnresolved {
+                    start: kk.0,
+                    end: kk.1,
+                })?;
+            dynamics.push(IrDynamicBinding {
+                key,
+                value: self.lower_bound(&d.value)?,
+            });
+        }
+        let mut inherit_froms = Vec::with_capacity(plan.inherit_froms.len());
+        for e in &plan.inherit_froms {
+            inherit_froms.push(self.expr_id_of(e)?);
+        }
+        let id = PlanId(u32::try_from(self.plans.len()).expect("program exceeds u32 plans"));
+        self.plans.push(IrGroupPlan {
+            recursive: plan.recursive,
+            statics,
+            dynamics,
+            inherit_froms,
+        });
+        Ok(id)
+    }
+
+    /// Compute and record the plan for a binder, if it needs one.
+    ///
+    /// Called AFTER the binder's entries are lowered and AFTER it is pushed, so
+    /// every node the plan references already has an `ExprId` and the binder
+    /// itself has one to key on. `lower_entries` already walks these entries,
+    /// so the only added cost is `needs_plan` plus construction for the few
+    /// groups that need it.
+    fn record_plan<N: ast::HasEntry>(
+        &mut self,
+        node: &N,
+        recursive: bool,
+        id: ExprId,
+    ) -> Result<(), LowerError> {
+        // A rejected group records NO plan, matching the walker's behaviour
+        // until the rejection tier lands. `{ a = 1; a = 2; }` is generatable by
+        // this crate's own proptest generators, so rejecting here would turn
+        // the generated differentials red on a seed rnix accepts.
+        if let Ok(Some(plan)) = sui_normalize::plan_for_group(node, recursive) {
+            let pid = self.lower_plan(&plan)?;
+            self.plan_of.insert(id, pid);
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -238,16 +373,22 @@ impl Lowerer {
                     field: "body",
                 })?;
                 let body = self.lower_expr(&body_ast)?;
-                Ok(self.push(Ir::LetIn { bindings, body }, li.syntax()))
+                let id = self.push(Ir::LetIn { bindings, body }, li.syntax());
+                self.record_plan(li, true, id)?;
+                Ok(id)
             }
             ast::Expr::LegacyLet(ll) => {
                 let bindings = self.lower_entries(ll)?;
-                Ok(self.push(Ir::LegacyLet { bindings }, ll.syntax()))
+                let id = self.push(Ir::LegacyLet { bindings }, ll.syntax());
+                self.record_plan(ll, true, id)?;
+                Ok(id)
             }
             ast::Expr::AttrSet(set) => {
                 let rec = set.rec_token().is_some();
                 let bindings = self.lower_entries(set)?;
-                Ok(self.push(Ir::AttrSet { rec, bindings }, set.syntax()))
+                let id = self.push(Ir::AttrSet { rec, bindings }, set.syntax());
+                self.record_plan(set, rec, id)?;
+                Ok(id)
             }
             ast::Expr::List(list) => {
                 let mut items = Vec::new();
@@ -438,6 +579,14 @@ impl Lowerer {
     }
 
     fn lower_attr(&mut self, attr: &ast::Attr) -> Result<AttrName, LowerError> {
+        let name = self.lower_attr_inner(attr)?;
+        let r = attr.syntax().text_range();
+        self.attr_by_range
+            .insert((u32::from(r.start()), u32::from(r.end())), name.clone());
+        Ok(name)
+    }
+
+    fn lower_attr_inner(&mut self, attr: &ast::Attr) -> Result<AttrName, LowerError> {
         match attr {
             ast::Attr::Ident(ident) => {
                 Ok(AttrName::Ident(sui_intern::intern(&ident_text(ident))))

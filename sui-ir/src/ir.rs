@@ -86,6 +86,87 @@ pub enum Binding {
     },
 }
 
+/// Index into a [`Program`]'s plan arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlanId(pub u32);
+
+impl PlanId {
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A binding group after `sui-normalize`'s parse-time splice, lowered to IR
+/// indices.
+///
+/// ★ THIS LIVES IN A SIDE ARENA THAT NEITHER RENDERER READS, and that is the
+/// whole design. `sui-ir/src/render.rs` says `render_ast` *"deliberately does
+/// **not** call `lower()`, so comparing the two renders proves the lowering
+/// preserved every child … Structure loss (a dropped/reordered/collapsed child)
+/// shows up as a text diff"*, and `tests/differential.rs` byte-compares them.
+/// A splice IS a collapsed child, so rewriting `Ir::AttrSet::bindings` would
+/// turn that differential red on every merge seed. Keeping the plan beside the
+/// tree instead of in it means the differential stays green BY CONSTRUCTION.
+///
+/// Normalizing in BOTH walks was rejected: it keeps the bytes equal but makes
+/// the splice shared structure, so both sides would agree on a plan that dropped
+/// a binding — and that is a real bug this pass has already produced once. It
+/// would delete the last independent structural check on the pre-splice tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrGroupPlan {
+    /// Effective recursiveness — the FIRST definition's, never an OR.
+    pub recursive: bool,
+    /// Static bindings after the splice, in insertion order. No name repeats.
+    pub statics: Vec<IrStaticBinding>,
+    /// `${e}` keys that did not constant-fold, resolved after the statics.
+    pub dynamics: Vec<IrDynamicBinding>,
+    /// One entry per `inherit (e) …;` clause, indexed by
+    /// [`IrBound::InheritFrom`] so a clause's source evaluates once and is
+    /// shared across the names it binds.
+    pub inherit_froms: Vec<ExprId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrStaticBinding {
+    pub name: Symbol,
+    pub value: IrBound,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrDynamicBinding {
+    /// The key, as an [`AttrName`] rather than an `ExprId`.
+    ///
+    /// A key IS an attr name, and the distinction is load-bearing here: an
+    /// interpolated `Attr::Str` lowers to `AttrName::Str(parts)` and never
+    /// produces an `Expr` node at all, so there is no `ExprId` to point at —
+    /// and the arena invariant forbids creating one after lowering. Reusing
+    /// the `AttrName` the ordinary lowering already produced is both correct
+    /// and free.
+    pub key: AttrName,
+    pub value: IrBound,
+}
+
+/// What a planned binding binds.
+///
+/// Every arm is an INDEX. No `rnix` type appears here, deliberately:
+/// `file_eval.rs` caches `Rc<Program>` per canonical path for the process
+/// lifetime, so a rowan handle in the arena would pin every imported file's
+/// whole green tree — the memory the lower-once design exists to release.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrBound {
+    /// Evaluate this expression in the owning group's scope.
+    Expr(ExprId),
+    /// A nested group — a merged literal, or one invented by a dotted path.
+    Group(PlanId),
+    /// `inherit x` — resolve in the group's ENCLOSING scope, never its own rec
+    /// scope, which is what makes it shadow rather than self-reference.
+    Inherit,
+    /// `inherit (e) x` — force `inherit_froms[from]` in the group's OWN scope,
+    /// then select.
+    InheritFrom { from: usize },
+}
+
 /// One `{ name ? default }` entry of a lambda pattern.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternEntry {
@@ -285,12 +366,36 @@ pub struct Program {
     pub exprs: Vec<Ir>,
     pub spans: Vec<Span>,
     pub root: ExprId,
+    /// Binding-group plans, in a side arena. See [`IrGroupPlan`] for why this
+    /// is beside the tree rather than in it.
+    ///
+    /// Note the arena invariant `root.index() + 1 == exprs.len()` (asserted by
+    /// `tests/differential.rs`) covers `exprs`/`spans` only — nothing may be
+    /// APPENDED to `exprs` after lowering, which is why every `ExprId` a plan
+    /// references is one the ordinary walk already produced.
+    pub plans: Vec<IrGroupPlan>,
+    /// The binder `ExprId` -> its plan. An ABSENT entry is a positive
+    /// statement: that group has no duplicate static key and no dotted path,
+    /// so the existing construction path is already correct for it.
+    pub plan_of: rustc_hash::FxHashMap<ExprId, PlanId>,
 }
 
 impl Program {
     #[must_use]
     pub fn expr(&self, id: ExprId) -> &Ir {
         &self.exprs[id.index()]
+    }
+
+    /// The plan for the binder at `id`, if it needed one.
+    #[must_use]
+    pub fn plan(&self, id: ExprId) -> Option<&IrGroupPlan> {
+        self.plan_of.get(&id).map(|p| &self.plans[p.index()])
+    }
+
+    /// A nested plan by index.
+    #[must_use]
+    pub fn plan_at(&self, id: PlanId) -> &IrGroupPlan {
+        &self.plans[id.index()]
     }
 
     #[must_use]

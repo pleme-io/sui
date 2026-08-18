@@ -27,6 +27,7 @@ serde_json.workspace = true
 # builtins bridge shares them by construction. sui-compat has no pleme-io
 # deps, so no cycle; nothing depends on sui-ir.
 sui-compat.workspace = true
+sui-normalize.workspace = true
 # `derivation`/`derivationStrict` route their input-addressed drvPath +
 # output-path computation through the SAME Lisp-authored spec interpreter the
 # tree-walker uses (`sui_spec::derivation::apply` over `sui-spec/specs/
