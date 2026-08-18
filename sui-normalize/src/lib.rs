@@ -113,22 +113,32 @@ pub enum Binding {
     /// A syntactic attrset literal, or an implicit one created by a dotted
     /// path. Mergeable — and merging splices into THIS node.
     Group(GroupPlan),
-    /// `inherit x` / `inherit (e) x`. Never mergeable in either direction, so
-    /// it is its own arm rather than a `Leaf`: an inherited binding colliding
-    /// with anything is a reject, in both orders.
-    Inherit {
-        /// `Some(e)` for `inherit (e) x`; `None` for plain `inherit x`.
-        from: Option<ast::Expr>,
+    /// `inherit x` — resolve `x` in the group's ENCLOSING scope, never its own
+    /// rec scope. That is what makes an inherited binding shadow rather than
+    /// self-reference, and why it can never merge.
+    Inherit,
+    /// `inherit (e) x` — force `GroupPlan::inherit_froms[from]`, then select.
+    ///
+    /// ★ An INDEX, not a cloned expression. One `inherit (e) a b c;` clause
+    /// must evaluate `e` AT MOST ONCE and share the result across all three
+    /// names; cloning the expr per name evaluates it three times, which is
+    /// observable through `builtins.trace` and through any impure source. The
+    /// index is per-GROUP because the splice moves a clause between groups.
+    InheritFrom {
+        /// Index into the owning [`GroupPlan::inherit_froms`].
+        from: usize,
     },
 }
 
 /// A dynamic-keyed binding, kept out of the static map.
 #[derive(Clone, Debug)]
 pub struct DynamicBinding {
-    /// The key expression, evaluated at force time.
+    /// The key expression, evaluated at force time in the owning group's scope.
     pub key: ast::Expr,
-    /// The bound value.
-    pub value: ast::Expr,
+    /// The bound value. A [`Binding`], not a bare expression: a dynamic key
+    /// can bind an attrset literal (`{ ${k} = {a=1;}; }`), which is already
+    /// lowered to a `Group` by the time it arrives here.
+    pub value: Binding,
 }
 
 /// One static binding, with the source position of its FIRST definition.
@@ -159,6 +169,15 @@ pub struct GroupPlan {
     /// Dynamic-keyed bindings. Collisions among these — and against
     /// `statics` — are an EVAL-time error, and only when forced.
     pub dynamics: Vec<DynamicBinding>,
+    /// One entry per `inherit (e) …;` clause that landed on this group,
+    /// INCLUDING clauses spliced in from a later side. Referenced by index
+    /// from [`Binding::InheritFrom`] so a clause's source is evaluated once
+    /// and shared across its names.
+    ///
+    /// Evaluated in the group's OWN scope, which is rec-visible when the group
+    /// is recursive — measured: `rec { b = {x=99;}; inherit (b) x; }` is
+    /// `x = 99`, so the source sees the group it is being bound into.
+    pub inherit_froms: Vec<ast::Expr>,
 }
 
 impl GroupPlan {
@@ -390,13 +409,19 @@ fn add_attr(
     let sym = match head {
         AttrKey::Static(s) => *s,
         AttrKey::Dynamic(key) => {
-            // A dynamic component never participates in a parse-time merge, and
+            // A dynamic component never participates in a parse-time merge and
             // never rejects at parse. It is deferred wholesale: nix checks it
-            // when the attrset is FORCED, and not at all if it never is.
-            if let Binding::Leaf(expr) | Binding::Inherit { from: Some(expr) } = &value {
+            // when the attrset is FORCED, and not at all if it never is —
+            // `let s = { "${"a"}" = 1; a = 2; }; in 42` is `42`, no error.
+            //
+            // Only a TRAILING dynamic component can bind a value here. An
+            // intermediate one (`a.${k}.b = 1`) mints a fresh implicit group
+            // every time and so can never collide, which is why a reported
+            // duplicate path is always all-static.
+            if rest.is_empty() {
                 group.dynamics.push(DynamicBinding {
                     key: key.clone(),
-                    value: expr.clone(),
+                    value,
                 });
             }
             return Ok(());
@@ -422,7 +447,22 @@ fn add_attr(
                 // why a later `rec`'s internal references break.
                 match (&mut group.statics[idx].binding, value) {
                     (Binding::Group(existing), Binding::Group(incoming)) => {
-                        for member in incoming.statics {
+                        // The incoming group's `inherit (e)` clauses move into
+                        // the existing group, so every `InheritFrom` index in
+                        // its members must be REBASED onto the existing
+                        // group's arena. Missing this silently points a
+                        // spliced inherit at the wrong source expression.
+                        let base = existing.inherit_froms.len();
+                        existing.inherit_froms.extend(incoming.inherit_froms);
+                        let incoming_statics: Vec<StaticBinding> = incoming
+                            .statics
+                            .into_iter()
+                            .map(|mut m| {
+                                rebase_inherit_from(&mut m.binding, base);
+                                m
+                            })
+                            .collect();
+                        for member in incoming_statics {
                             let mut sub_trail = trail.clone();
                             add_attr(
                                 existing,
@@ -473,6 +513,21 @@ fn add_attr(
     Ok(())
 }
 
+/// Shift every `InheritFrom` index in `binding` (and, recursively, in any
+/// nested group) by `base`. Used when a group is spliced into another and its
+/// `inherit_froms` arena is appended to the survivor's.
+fn rebase_inherit_from(binding: &mut Binding, base: usize) {
+    match binding {
+        Binding::InheritFrom { from } => *from += base,
+        Binding::Group(sub) => {
+            for m in &mut sub.statics {
+                rebase_inherit_from(&mut m.binding, base);
+            }
+        }
+        Binding::Leaf(_) | Binding::Inherit => {}
+    }
+}
+
 /// Lower one value expression to a [`Binding`].
 ///
 /// A syntactic attrset literal becomes a `Group` — recursively normalized —
@@ -510,7 +565,13 @@ fn plan_for_entries<N: HasEntry>(node: &N, recursive: bool) -> Result<GroupPlan,
                 add_attr(&mut plan, &path, binding, pos, &mut trail)?;
             }
             ast::Entry::Inherit(inh) => {
-                let from = inh.from().and_then(|f| f.expr());
+                // Register the clause's source ONCE; every name it binds
+                // refers to it by index. Cloning the expr per name would
+                // evaluate the source N times.
+                let from_idx = inh.from().and_then(|f| f.expr()).map(|e| {
+                    plan.inherit_froms.push(e);
+                    plan.inherit_froms.len() - 1
+                });
                 for attr in inh.attrs() {
                     let Some(AttrKey::Static(sym)) = fold_attr(&attr) else {
                         // A dynamic key in `inherit` is rejected by nix at
@@ -520,15 +581,11 @@ fn plan_for_entries<N: HasEntry>(node: &N, recursive: bool) -> Result<GroupPlan,
                     };
                     let pos = offset_of(attr.syntax());
                     let mut trail = Vec::new();
-                    add_attr(
-                        &mut plan,
-                        &[AttrKey::Static(sym)],
-                        Binding::Inherit {
-                            from: from.clone(),
-                        },
-                        pos,
-                        &mut trail,
-                    )?;
+                    let binding = match from_idx {
+                        Some(from) => Binding::InheritFrom { from },
+                        None => Binding::Inherit,
+                    };
+                    add_attr(&mut plan, &[AttrKey::Static(sym)], binding, pos, &mut trail)?;
                 }
             }
         }
@@ -651,7 +708,7 @@ mod tests {
                 let name = sui_intern::resolve(b.name);
                 match &b.binding {
                     Binding::Leaf(_) => name.to_string(),
-                    Binding::Inherit { .. } => format!("inherit {name}"),
+                    Binding::Inherit | Binding::InheritFrom { .. } => format!("inherit {name}"),
                     Binding::Group(sub) => format!("{name} = {}", render(sub)),
                 }
             })
@@ -796,6 +853,61 @@ mod tests {
         assert!(plan("let x = 1; in { inherit x; x = 2; }").is_err());
         assert!(plan("let x = 1; in { x = 2; inherit x; }").is_err());
         assert!(plan("{ inherit (s) a; a = 1; }").is_err());
+    }
+
+    /// ★ One `inherit (e) a b c;` registers its source EXACTLY ONCE, and all
+    /// three names index it. A source cloned per name is evaluated per name —
+    /// observable through `builtins.trace`, and through any impure source.
+    #[test]
+    fn an_inherit_from_clause_shares_one_source() {
+        let table = plan("{ inherit (src) a b c; d.e = 1; }").expect("ok");
+        let mut offs: Vec<u32> = table.by_offset.keys().copied().collect();
+        offs.sort_unstable();
+        let g = table.get(offs[0]).expect("recorded");
+        assert_eq!(
+            g.inherit_froms.len(),
+            1,
+            "one clause must yield one arena entry, got {}",
+            g.inherit_froms.len()
+        );
+        let idxs: Vec<usize> = g
+            .statics
+            .iter()
+            .filter_map(|b| match b.binding {
+                Binding::InheritFrom { from } => Some(from),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(idxs, vec![0, 0, 0], "all three names must share index 0");
+    }
+
+    /// And when a group carrying an `inherit (e)` is SPLICED into another that
+    /// already has one, the incoming indices must be REBASED onto the
+    /// survivor's arena. Without the rebase a spliced inherit silently points
+    /// at the wrong source expression — a wrong value, not an error.
+    #[test]
+    fn a_spliced_inherit_from_is_rebased_onto_the_survivor() {
+        let table = plan("{ a = { inherit (p) x; }; a = { inherit (q) y; }; }").expect("ok");
+        let mut offs: Vec<u32> = table.by_offset.keys().copied().collect();
+        offs.sort_unstable();
+        let outer = table.get(offs[0]).expect("recorded");
+        let Binding::Group(merged) = &outer.statics[0].binding else {
+            panic!("expected a merged group");
+        };
+        assert_eq!(merged.inherit_froms.len(), 2, "both clauses must survive");
+        let idxs: Vec<usize> = merged
+            .statics
+            .iter()
+            .filter_map(|b| match b.binding {
+                Binding::InheritFrom { from } => Some(from),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            idxs,
+            vec![0, 1],
+            "the spliced clause must point at its OWN source, not the survivor's"
+        );
     }
 
     // ── the constant-fold boundary ───────────────────────────────────────
