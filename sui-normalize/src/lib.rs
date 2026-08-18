@@ -295,8 +295,19 @@ pub fn fold_attr(attr: &ast::Attr) -> Option<AttrKey> {
         ast::Attr::Ident(ident) => Some(AttrKey::Static(sui_intern::intern(
             &ident.syntax().text().to_string(),
         ))),
-        // A quoted key folds iff it has no interpolation.
-        ast::Attr::Str(s) => literal_str_text(s).map(|t| AttrKey::Static(sui_intern::intern(&t))),
+        // A quoted key folds to STATIC iff it has no interpolation; with
+        // interpolation it is DYNAMIC.
+        //
+        // ★ It must never yield `None`. The caller skips a `None` component,
+        // which DROPS it from the attrpath — so `a."${"b"}" = 1; a."${"c"}" = 2;`
+        // collapsed to two bindings of plain `a` and was rejected as a
+        // duplicate, on input nix ACCEPTS. A false reject is the dangerous
+        // direction: it refuses working code. Caught by scanning the fleet,
+        // where it hit two of sui's own corpus fixtures.
+        ast::Attr::Str(s) => Some(literal_str_text(s).map_or_else(
+            || AttrKey::Dynamic(ast::Expr::Str(s.clone())),
+            |t| AttrKey::Static(sui_intern::intern(&t)),
+        )),
         // `${e}` folds iff `e` is a pure string literal — AFTER stripping
         // parens. `${("a")}` and `${''a''}` both fold in nix; a fold that
         // only looks for a bare `Expr::Str` misses them and demotes a
@@ -952,6 +963,48 @@ mod tests {
         assert!(
             plan(r#"{ ${"a"+""} = 1; a = 2; }"#).is_ok(),
             "a non-Str dynamic key stays dynamic"
+        );
+    }
+
+    /// ★ An interpolated key must stay in the PATH, not vanish from it.
+    ///
+    /// `fold_attr` returning `None` made the caller skip the component, so
+    /// `a."${"b"}" = 1; a."${"c"}" = 2;` collapsed to two bindings of plain
+    /// `a` and was rejected as a duplicate — on input nix ACCEPTS. A false
+    /// reject is the dangerous direction: it refuses working code. Both of
+    /// these are real sui corpus fixtures that a fleet scan caught.
+    #[test]
+    fn an_interpolated_key_stays_in_the_path() {
+        for src in [
+            r#"{ a."${"b"}" = true; a."${"c"}" = false; }"#,
+            r#"{ set3.a = 1; set3."${"b" + ""}" = 2; }"#,
+            // The trailing-dynamic case at depth.
+            r#"{ x.y."${"z"}" = 1; x.y."${"w"}" = 2; }"#,
+        ] {
+            assert!(
+                plan(src).is_ok(),
+                "{src}: nix accepts this; rejecting it refuses working code"
+            );
+        }
+    }
+
+    /// And the component must be preserved as DYNAMIC, not silently folded to
+    /// some static name — otherwise two different interpolations would
+    /// collide with each other.
+    #[test]
+    fn two_different_interpolated_keys_do_not_collide() {
+        let table = plan(r#"{ a."${"b"}" = 1; a."${"c"}" = 2; }"#).expect("ok");
+        let mut offs: Vec<u32> = table.by_offset.keys().copied().collect();
+        offs.sort_unstable();
+        let outer = table.get(offs[0]).expect("recorded");
+        let Binding::Group(inner) = &outer.statics[0].binding else {
+            panic!("expected `a` to be an implicit group");
+        };
+        assert_eq!(
+            inner.dynamics.len(),
+            2,
+            "both interpolated keys must survive as dynamics, got {}",
+            inner.dynamics.len()
         );
     }
 

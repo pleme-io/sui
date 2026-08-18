@@ -9063,6 +9063,40 @@ fn bind_plan_group(
         }
     }
 
+    // ── dynamic keys ─────────────────────────────────────────────────────
+    //
+    // `${e}` keys that did not constant-fold. They are resolved AFTER every
+    // static key, in source order, in the group's own scope — nix's ordering,
+    // and the reason a dynamic key can never participate in the parse-time
+    // merge. Omitting this dropped them entirely: two corpus fixtures built
+    // `{ a = {}; }` where nix builds `{ a = { b = …; c = …; }; }`.
+    //
+    // A key evaluating to `null` SKIPS the binding (CppNix), rather than
+    // inserting a `"null"` name.
+    for d in &plan.dynamics {
+        let key_val = eval_expr(&d.key, &scope_env)?;
+        let key_concrete = key_val.demand()?;
+        if matches!(key_concrete, Concrete::Null) {
+            continue;
+        }
+        let name = key_concrete.into_value().as_string()?.to_string();
+        let value = match &d.value {
+            sui_normalize::Binding::Leaf(expr) => {
+                Value::Thunk(Thunk::new_suspended(expr.clone(), scope_env.clone()))
+            }
+            sui_normalize::Binding::Group(sub) => {
+                Value::Thunk(Thunk::new_plan_group(sub.clone(), scope_env.clone()))
+            }
+            sui_normalize::Binding::Inherit => env
+                .lookup(&name)
+                .ok_or_else(|| EvalError::UndefinedVar(format!("'{name}'")))?,
+            sui_normalize::Binding::InheritFrom { from } => {
+                Value::Thunk(Thunk::new_inherit_select(from_thunks[*from].clone(), &name))
+            }
+        };
+        attrs.insert(name, value);
+    }
+
     // ★ Positions, which `builtins.unsafeGetAttrPos` reads. Dropping this was
     // a real regression caught by `every_binding_form_carries_a_position` —
     // the plan path built the right VALUES with every key position NULL.
