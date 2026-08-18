@@ -70,6 +70,18 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // failure mode: contrast the bytecode VM, which computes a WRONG path for
     // the same fixture because it silently drops string context.
     ("eval-okay-tofile-refs", "unsupported:store-effecting-builtin"),
+    // ★ The tree-walker adopted `sui-normalize`'s parse-time splice on
+    // 2026-08-18 and this fixture graduated out of quarantine; eval_ir has
+    // not been wired yet, so it is now the engine that is behind.
+    //
+    //     { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b
+    //     walker 6 (= nix)   eval_ir  undefined variable 'c'
+    //
+    // The error states the defect exactly: `c` exists only AFTER the dotted
+    // binding `a.c` is spliced INTO the `rec` literal, so an engine that
+    // never splices cannot resolve it. Not an eval_ir regression — the walker
+    // moved. Closes when eval_ir adopts the plan.
+    ("eval-okay-regrettable-rec-attrset-merge", "unsupported:no-attrset-splice"),
     ("eval-okay-attrs", "unsupported:legacy-let"),
     ("eval-okay-attrs2", "unsupported:construct"),
     ("eval-okay-flatten", "unsupported:construct"),
@@ -290,7 +302,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        20,
+        21,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means eval_ir regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

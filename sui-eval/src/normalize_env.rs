@@ -26,26 +26,42 @@
 //! and that is what bounds this change's blast radius to the groups that are
 //! wrong today.
 //!
-//! # Flag-gated on purpose
+//! # Default ON since 2026-08-18
 //!
-//! `SUI_NORMALIZE=1` opts in. Off, every consume site takes today's exact
-//! unchanged path, so landing this cannot move a single byte for anyone until
-//! the flag is proven and the default flipped.
+//! `SUI_NORMALIZE=0` opts OUT, restoring the pre-plan construction path. The
+//! latch survives the flip on purpose — a divergence suspected to come from
+//! this pass is then one command away from being confirmed or cleared, which
+//! is worth more than the tidiness of deleting it.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use sui_normalize::{GroupPlan, NormalizeTable};
 
-/// One-time read of `SUI_NORMALIZE`. `true` iff `SUI_NORMALIZE=1`.
+/// One-time read of `SUI_NORMALIZE`. Default ON; `SUI_NORMALIZE=0` opts out.
 static ENABLED: OnceLock<bool> = OnceLock::new();
 
-/// Whether plan-driven attrset construction is enabled (`SUI_NORMALIZE=1`).
+/// Whether plan-driven attrset construction is enabled. **Default: yes.**
 ///
-/// Read once and cached — matches `resolve_env::enabled()`'s one-way latch.
+/// Flipped from opt-in to opt-out on 2026-08-18, on this evidence:
+///
+/// * every wrong-answer shape in the class matches nix, including the
+///   acceptance case `{ a = rec { b = c+1; d = 2; }; a.c = d+3; }.a.b` -> 6,
+///   which needs mutual recursion ACROSS the merge boundary;
+/// * a fleet scan of 4562 `.nix` files found ZERO false rejects — the one
+///   rejection is a file `nix-instantiate --parse` also refuses;
+/// * `sui perf-seal` moved DOWN or held on all three attr-merge rows
+///   (`dotted full-set leaf deep-merge` 6 -> 5), which is what confirms the
+///   splice happens at PARSE time rather than adding eval work;
+/// * the suites are green both ways.
+///
+/// The latch is KEPT, deliberately, in the `SUI_SCOPE_NARROW` spirit:
+/// `SUI_NORMALIZE=0` restores the pre-plan construction path, so a divergence
+/// suspected to come from this pass can be bisected in one command instead of
+/// a revert. That is also why the old entry loops are not deleted yet.
 #[must_use]
 pub fn enabled() -> bool {
-    *ENABLED.get_or_init(|| std::env::var("SUI_NORMALIZE").ok().as_deref() == Some("1"))
+    *ENABLED.get_or_init(|| std::env::var("SUI_NORMALIZE").ok().as_deref() != Some("0"))
 }
 
 thread_local! {

@@ -42,11 +42,13 @@ fn nix_eval(expr: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// `normalize = false` must now set `SUI_NORMALIZE=0` explicitly: the default
+/// FLIPPED to on (2026-08-18), so "no env var" means ON. Leaving this as
+/// "unset the var" would have quietly turned every off-vs-on comparison into
+/// on-vs-on — the anti-vacuity row below is what catches that.
 fn sui_eval(expr: &str, normalize: bool) -> String {
     let mut cmd = Command::cargo_bin("sui").expect("cargo_bin sui");
-    if normalize {
-        cmd.env("SUI_NORMALIZE", "1");
-    }
+    cmd.env("SUI_NORMALIZE", if normalize { "1" } else { "0" });
     let out = cmd.args(["eval", "-E", expr]).output().expect("run sui");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
@@ -118,10 +120,11 @@ fn rec_attrsets_merge_like_nix_under_the_flag() {
     }
 }
 
-/// ★ ANTI-VACUITY. If the flag changed nothing, the test above would pass by
-/// coincidence — so assert the flag is load-bearing: at least one case must
-/// differ with it OFF. Without this row, deleting the wiring entirely would
-/// leave the suite green the moment sui happened to agree for other reasons.
+/// ★ ANTI-VACUITY, and it now guards two things. If plan-driven construction
+/// changed nothing, the test above would pass by coincidence — so at least ten
+/// cases must differ with `SUI_NORMALIZE=0`. Since the default flipped, this
+/// row ALSO proves the opt-out latch is still live: if `SUI_NORMALIZE=0`
+/// stopped disabling the pass, every case would agree and this fails.
 #[test]
 fn the_flag_is_load_bearing() {
     let Some(_) = nix_eval("1") else {
@@ -141,8 +144,10 @@ fn the_flag_is_load_bearing() {
     );
 }
 
-/// The default must be unchanged. Landing the normalizer behind a flag is only
-/// safe if the flag is genuinely off by default — this is the row that says so.
+/// A group that needs no normalization must be identical either way — and
+/// identical to nix. The pass may only touch groups with a duplicate key or a
+/// dotted path; this is the row that says the other 66% of the fleet's
+/// attrsets are untouched.
 #[test]
 fn the_default_path_is_untouched() {
     // A plain attrset nobody normalizes: identical either way, and identical

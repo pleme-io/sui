@@ -31,7 +31,7 @@
     "Gate: `corpus_denominator_is_pinned` in tests/lang_corpus.rs.",
     "Promotion procedure: known_broken/README.md."
   ],
-  "active": 127,
-  "quarantined": 19,
+  "active": 128,
+  "quarantined": 18,
   "helpers": 3
 }

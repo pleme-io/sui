@@ -2,10 +2,10 @@
   "tolerance": 0.15,
   "rows": {
     "attr-merge order1 (dotted then fullset)": {
-      "eval_expr": 10
+      "eval_expr": 8
     },
     "dotted full-set leaf deep-merge": {
-      "eval_expr": 6
+      "eval_expr": 5
     },
     "foldl' sum over range (arith hot loop)": {
       "eval_expr": 2513

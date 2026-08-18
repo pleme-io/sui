@@ -432,14 +432,31 @@ fn add_attr(
             // when the attrset is FORCED, and not at all if it never is —
             // `let s = { "${"a"}" = 1; a = 2; }; in 42` is `42`, no error.
             //
-            // Only a TRAILING dynamic component can bind a value here. An
-            // intermediate one (`a.${k}.b = 1`) mints a fresh implicit group
-            // every time and so can never collide, which is why a reported
+            // An INTERMEDIATE dynamic component (`a.${k}.b = 1`) mints a
+            // fresh implicit group and the REST OF THE PATH GOES INSIDE IT.
+            //
+            // ★ Returning here without recording anything silently DROPPED
+            // the binding: `let k = "z"; in { a.${k}.b = 1; }` built
+            // `{ a = { }; }` where nix builds `{ a = { z = { b = 1; }; }; }`.
+            // That is the exact failure class this crate exists to remove,
+            // reintroduced by its own fix — and the pre-existing path had it
+            // RIGHT. Caught by `sui-ir`'s eval differential, which is the
+            // only gate that compares the two engines on this shape.
+            //
+            // A fresh group per occurrence is also why an intermediate
+            // dynamic can never collide, and therefore why a reported
             // duplicate path is always all-static.
             if rest.is_empty() {
                 group.dynamics.push(DynamicBinding {
                     key: key.clone(),
                     value,
+                });
+            } else {
+                let mut sub = GroupPlan::default();
+                add_attr(&mut sub, rest, value, pos, trail)?;
+                group.dynamics.push(DynamicBinding {
+                    key: key.clone(),
+                    value: Binding::Group(sub),
                 });
             }
             return Ok(());
@@ -1005,6 +1022,34 @@ mod tests {
             2,
             "both interpolated keys must survive as dynamics, got {}",
             inner.dynamics.len()
+        );
+    }
+
+    /// ★ An INTERMEDIATE dynamic component must keep the rest of its path.
+    ///
+    /// `let k = "z"; in { a.${k}.b = 1; }` is `{ a = { z = { b = 1; }; }; }`
+    /// in nix. An earlier cut returned without recording anything for an
+    /// intermediate dynamic, silently building `{ a = { }; }` — the very
+    /// failure class this crate removes, reintroduced by its own fix, on a
+    /// shape the PRE-EXISTING walker got right.
+    #[test]
+    fn an_intermediate_dynamic_keeps_the_rest_of_its_path() {
+        let table = plan(r#"{ a.${k}.b = 1; }"#).expect("ok");
+        let mut offs: Vec<u32> = table.by_offset.keys().copied().collect();
+        offs.sort_unstable();
+        let outer = table.get(offs[0]).expect("recorded");
+        let Binding::Group(a) = &outer.statics[0].binding else {
+            panic!("expected `a` to be an implicit group");
+        };
+        assert_eq!(a.dynamics.len(), 1, "the dynamic component must be recorded");
+        let Binding::Group(inner) = &a.dynamics[0].value else {
+            panic!("an intermediate dynamic must carry a GROUP, not a leaf — \
+                   otherwise the `.b` tail is dropped");
+        };
+        assert_eq!(
+            inner.statics.len(),
+            1,
+            "the `.b` tail must live inside the dynamic's group"
         );
     }
 
