@@ -1549,6 +1549,30 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
         }
 
         ast::Expr::LetIn(letin) => {
+            // ── plan-driven binding (`SUI_NORMALIZE=1`) ──────────────────
+            //
+            // `let` obeys the SAME merge rule as an attrset literal, and sui
+            // never implemented it: `let a = {b=1;}; a = {c=2;}; in a` is
+            // `{b=1;c=2;}` in nix and was `{c=2;}` here — silent key loss on
+            // legal nix. A `let` takes the SCOPE rather than the attrset,
+            // because it is a binder for a body and produces no attrset.
+            //
+            // A `None` means the group has no duplicate and no dotted path,
+            // so the existing path is already correct — see `normalize_env`.
+            if crate::normalize_env::enabled() {
+                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let offset = u32::from(letin.syntax().text_range().start());
+                if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+                    let (_attrs, scope) = bind_plan_group(&plan, env)?;
+                    let body = letin.body().ok_or_else(|| {
+                        EvalError::ParseError("let missing body".to_string())
+                    })?;
+                    cur_expr = body;
+                    cur_env = scope;
+                    continue;
+                }
+            }
+
             let mut new_env = env.child();
 
             // Phase 1: Create thunks with a dummy env and bind them.
@@ -1938,6 +1962,28 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
         }
 
         ast::Expr::LegacyLet(ll) => {
+            // ── plan-driven binding (`SUI_NORMALIZE=1`) ──────────────────
+            //
+            // `eval_entries` carries the comment "Multi-key paths in let are
+            // not standard; skip for now" and does exactly that — it SILENTLY
+            // DISCARDS every multi-segment attrpath, so
+            // `let { a.b = 1; a.c = 2; body = a; }` loses both. The bytecode
+            // VM has always handled this correctly, which makes the walker
+            // the engine that is behind here.
+            if crate::normalize_env::enabled() {
+                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let offset = u32::from(ll.syntax().text_range().start());
+                if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
+                    let (_attrs, scope) = bind_plan_group(&plan, env)?;
+                    return scope.lookup("body").ok_or_else(|| {
+                        EvalError::AttrNotFound(format!(
+                            "'body' in legacy let{}",
+                            eval_file_ctx()
+                        ))
+                    });
+                }
+            }
+
             let mut new_env = env.child();
             eval_entries(ll, &mut new_env)?;
             // legacy let returns the `body` attr from its bindings
@@ -2530,17 +2576,22 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
 
     // ── plan-driven construction (`SUI_NORMALIZE=1`) ──────────────────────
     //
-    // Wired for `rec` FIRST, deliberately. The `rec` branch is WRONG today —
-    // its Phase 1b does a destructive `attrs.insert` where the non-rec branch
-    // merges, so `rec { o = {e=1;}; o.x = 2; }` drops `e` — which means any
-    // change here can only improve it. The non-rec branch is the one path
-    // that is currently correct on keys and carries every fleet evaluation,
-    // so it is wired last and separately.
+    // Wired for `rec` first and the non-rec branch last, deliberately. The
+    // `rec` branch was WRONG (its Phase 1b does a destructive `attrs.insert`
+    // where the non-rec branch merges), so any change there could only
+    // improve it. The non-rec branch is the one path that was already correct
+    // ON KEYS — it merges VALUES via `merge_nested_insert` — and it carries
+    // every fleet evaluation, so it went last and on its own.
+    //
+    // Correct-on-keys is not correct: a value merge gets the key set right and
+    // the SCOPE wrong, which is why `let b=5; in { a=rec{c=b;}; a={b=9;}; }`
+    // answered `c=5` where nix says `c=9`. The second side's `b=9` belongs to
+    // the FIRST node's rec scope, and no value-level merge can put it there.
     //
     // A `None` here is a POSITIVE statement, not a fallback: `sui-normalize`
     // records a group only when it has a duplicate static key or a dotted
     // path, so no plan means this group is already built correctly.
-    if is_rec && crate::normalize_env::enabled() {
+    if crate::normalize_env::enabled() {
         let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
         let offset = u32::from(set.syntax().text_range().start());
         if let Some(plan) = crate::normalize_env::plan_for(src_id, offset) {
@@ -8938,6 +8989,21 @@ pub fn eval_plan_group(
     plan: &sui_normalize::GroupPlan,
     env: &Env,
 ) -> Result<Value, EvalError> {
+    let (attrs, _scope) = bind_plan_group(plan, env)?;
+    Ok(Value::Attrs(std::rc::Rc::new(attrs)))
+}
+
+/// Build a plan's bindings, returning BOTH the attrset and the scope they were
+/// bound in.
+///
+/// Two consumers need different halves of this. An attrset literal wants the
+/// attrs; a `let` wants the scope, because a `let` is a binder for a body and
+/// produces no attrset at all. Legacy-`let` (`let { … body = …; }`) wants the
+/// attrs and then selects `body` from them.
+fn bind_plan_group(
+    plan: &sui_normalize::GroupPlan,
+    env: &Env,
+) -> Result<(NixAttrs, Env), EvalError> {
     use sui_normalize::Binding;
 
     let mut attrs = NixAttrs::new();
@@ -8997,5 +9063,23 @@ pub fn eval_plan_group(
         }
     }
 
-    Ok(Value::Attrs(std::rc::Rc::new(attrs)))
+    // ★ Positions, which `builtins.unsafeGetAttrPos` reads. Dropping this was
+    // a real regression caught by `every_binding_form_carries_a_position` —
+    // the plan path built the right VALUES with every key position NULL.
+    //
+    // `StaticBinding::pos` is already the offset the AST path records: an
+    // `AttrpathValue` starts at its head attr (`a` in `a.b = 1`, which is what
+    // CppNix reports for the outer key), and an inherited name carries its own
+    // ident's offset. And because the splice keeps the FIRST declaration's
+    // `pos`, a merged key reports where it was first defined — which is what
+    // nix reports too.
+    if !plan.statics.is_empty() {
+        let mut table = crate::pos::AttrPositions::new(current_eval_file());
+        for b in &plan.statics {
+            table.insert(b.name, b.pos.into());
+        }
+        attrs.set_positions(std::rc::Rc::new(table));
+    }
+
+    Ok((attrs, scope_env))
 }

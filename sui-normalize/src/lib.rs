@@ -666,6 +666,14 @@ fn walk(expr: &ast::Expr, table: &mut NormalizeTable) -> Result<(), NormalizeErr
             let plan = plan_for_entries(letin, true)?;
             table.insert(offset_of(letin.syntax()), plan);
         }
+    } else if let ast::Expr::LegacyLet(ll) = expr {
+        // `let { … body = …; }` — the deprecated form. Also recursive, and
+        // also subject to the merge rule; the tree-walker silently DISCARDED
+        // every multi-segment attrpath here.
+        if needs_plan(ll) {
+            let plan = plan_for_entries(ll, true)?;
+            table.insert(offset_of(ll.syntax()), plan);
+        }
     }
 
     for child in expr.syntax().children() {

@@ -67,6 +67,36 @@ const REC_MERGE_CASES: &[&str] = &[
     // The merged node must stay rec: `y` reads a sibling introduced by the
     // OTHER half of the merge.
     "rec { a = {b=1;}; a = {c=2;}; y = a.b + a.c; }",
+
+    // ── `let` — same rule, and sui never implemented it ──────────────────
+    "let a = {b=1;}; a = {c=2;}; in a",
+    "let a = {b=1;}; a.c = 2; in a",
+    "let a.c = 2; a = {b=1;}; in a",
+
+    // ── legacy `let { … }` — silently DISCARDED multi-segment paths, and
+    // two of these were hard `UndefinedVar` errors, not just lost keys ────
+    "let { a.b = 1; a.c = 2; body = a; }",
+    "let { a = {b=1;}; a.c = 2; body = a; }",
+    "let { body = a; a.b = 1; }",
+
+    // ── the non-rec branch: RE-SCOPING, which no value merge can do ──────
+    //
+    // The second side's bindings become bindings OF THE FIRST NODE, so they
+    // are scoped by it. The first was `c=99` (reading the merged-in `b`
+    // instead of the outer one, because the later `rec` must be DISCARDED);
+    // the second was `c=5` (missing that the second side's `b=9` lands in the
+    // first node's rec scope).
+    "let b=1; in { a={x=2;}; a=rec{b=99;c=b;}; }",
+    "let b=5; in { a=rec{c=b;}; a={b=9;}; }",
+
+    // ★ THE ACCEPTANCE CASE, vendored in the corpus as
+    // `known_broken/eval-okay-regrettable-rec-attrset-merge.nix` with
+    // `.exp = 6`. A dotted path splices INTO a `rec` literal; the spliced
+    // member resolves `d` from inside that rec scope; and the rec body's `b`
+    // reads `c` from the spliced-in member. Mutual recursion ACROSS the merge
+    // boundary — nothing short of a real splice produces it. sui answered
+    // `UndefinedVar 'c'`.
+    "{ a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b",
 ];
 
 #[test]
@@ -103,7 +133,7 @@ fn the_flag_is_load_bearing() {
         .filter(|e| sui_eval(e, false) != sui_eval(e, true))
         .count();
     assert!(
-        differing >= 3,
+        differing >= 10,
         "only {differing} of {} cases differ between SUI_NORMALIZE off and on. \
          These cases exist because the flag CHANGES them; if they now agree \
          either the wiring is dead or the cases stopped covering the defect.",
