@@ -154,7 +154,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.212"
+version = "0.1.213"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT"
@@ -176,34 +176,34 @@ pedantic = "warn"
 # mirror. Published on crates.io.
 gen-nix = "0.1"
 # Internal crates
-sui-intern = { path = "sui-intern", version = "0.1.212" }
-sui-fmt = { path = "sui-fmt", version = "0.1.212" }
-sui-resolve = { path = "sui-resolve", version = "0.1.212" }
-sui-normalize = { path = "sui-normalize", version = "0.1.212" }
-sui-bytecode = { path = "sui-bytecode", version = "0.1.212" }
-sui-cache = { path = "sui-cache", version = "0.1.212" }
-sui-compat = { path = "sui-compat", version = "0.1.212" }
-sui-store = { path = "sui-store", version = "0.1.212" }
-sui-eval = { path = "sui-eval", version = "0.1.212" }
-sui-ir = { path = "sui-ir", version = "0.1.212" }
-sui-build = { path = "sui-build", version = "0.1.212" }
-sui-daemon = { path = "sui-daemon", version = "0.1.212" }
-sui-orchestrate = { path = "sui-orchestrate", version = "0.1.212" }
-sui-cache-eval = { path = "sui-cache-eval", version = "0.1.212" }
-sui-spec = { path = "sui-spec", version = "0.1.212" }
-sui-graph-store = { path = "sui-graph-store", version = "0.1.212" }
-sui-protocol = { path = "sui-protocol", version = "0.1.212" }
-sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.212" }
-sui-daemon-client = { path = "sui-daemon-client", version = "0.1.212" }
-canteiro-types = { path = "canteiro-types", version = "0.1.212" }
-sui-supercacheci = { path = "sui-supercacheci", version = "0.1.212" }
-sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.212" }
-sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.212" }
-sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.212" }
-sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.212" }
-sui-bigorna = { path = "sui-bigorna", version = "0.1.212" }
-sui-castore = { path = "sui-castore", version = "0.1.212" }
-sui-lsp = { path = "sui-lsp", version = "0.1.212" }
+sui-intern = { path = "sui-intern", version = "0.1.213" }
+sui-fmt = { path = "sui-fmt", version = "0.1.213" }
+sui-resolve = { path = "sui-resolve", version = "0.1.213" }
+sui-normalize = { path = "sui-normalize", version = "0.1.213" }
+sui-bytecode = { path = "sui-bytecode", version = "0.1.213" }
+sui-cache = { path = "sui-cache", version = "0.1.213" }
+sui-compat = { path = "sui-compat", version = "0.1.213" }
+sui-store = { path = "sui-store", version = "0.1.213" }
+sui-eval = { path = "sui-eval", version = "0.1.213" }
+sui-ir = { path = "sui-ir", version = "0.1.213" }
+sui-build = { path = "sui-build", version = "0.1.213" }
+sui-daemon = { path = "sui-daemon", version = "0.1.213" }
+sui-orchestrate = { path = "sui-orchestrate", version = "0.1.213" }
+sui-cache-eval = { path = "sui-cache-eval", version = "0.1.213" }
+sui-spec = { path = "sui-spec", version = "0.1.213" }
+sui-graph-store = { path = "sui-graph-store", version = "0.1.213" }
+sui-protocol = { path = "sui-protocol", version = "0.1.213" }
+sui-daemon-frame = { path = "sui-daemon-frame", version = "0.1.213" }
+sui-daemon-client = { path = "sui-daemon-client", version = "0.1.213" }
+canteiro-types = { path = "canteiro-types", version = "0.1.213" }
+sui-supercacheci = { path = "sui-supercacheci", version = "0.1.213" }
+sui-dockerfile-wrapper = { path = "sui-dockerfile-wrapper", version = "0.1.213" }
+sui-dockerfile-prewarmer = { path = "sui-dockerfile-prewarmer", version = "0.1.213" }
+sui-dockerfile-verify = { path = "sui-dockerfile-verify", version = "0.1.213" }
+sui-dockerfile-node-cache-daemon = { path = "sui-dockerfile-node-cache-daemon", version = "0.1.213" }
+sui-bigorna = { path = "sui-bigorna", version = "0.1.213" }
+sui-castore = { path = "sui-castore", version = "0.1.213" }
+sui-lsp = { path = "sui-lsp", version = "0.1.213" }
 # tower-lsp — the LSP SERVER framework. The fleet split is deliberate: a server
 # takes tower-lsp (caixa-lsp set that precedent), a client hand-rolls its
 # framing, because the client side of tower-lsp assumes it owns the runtime.
