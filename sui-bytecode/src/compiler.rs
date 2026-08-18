@@ -1584,39 +1584,58 @@ impl Compiler {
         &mut self,
         sub_bindings: &[(Vec<String>, ast::Expr)],
     ) -> Result<(), CompileError> {
-        self.compile_nested_attrset_inner(sub_bindings, false)
+        self.compile_nested_attrset_inner(sub_bindings, false, &[])
     }
 
     fn compile_nested_attrset_lazy(
         &mut self,
         sub_bindings: &[(Vec<String>, ast::Expr)],
     ) -> Result<(), CompileError> {
-        self.compile_nested_attrset_inner(sub_bindings, true)
+        self.compile_nested_attrset_inner(sub_bindings, true, &[])
     }
 
+    /// `prefix` is the dotted path already consumed by outer recursions. It
+    /// exists only so a duplicate can be NAMED; it does not affect codegen.
     fn compile_nested_attrset_inner(
         &mut self,
         sub_bindings: &[(Vec<String>, ast::Expr)],
         lazy_leaves: bool,
+        prefix: &[String],
     ) -> Result<(), CompileError> {
         // Group by next key.
         let mut groups: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
             std::collections::BTreeMap::new();
 
         for (path, expr) in sub_bindings {
-            if path.len() == 1 {
-                // Leaf binding.
-                groups
-                    .entry(path[0].clone())
-                    .or_default()
-                    .push((vec![], expr.clone()));
-            } else {
-                // Nested further.
-                groups
-                    .entry(path[0].clone())
-                    .or_default()
-                    .push((path[1..].to_vec(), expr.clone()));
-            }
+            // ★ `split_first`, NOT `path[0]`.
+            //
+            // Two bindings at the SAME dotted path (`{ a.b = 1; a.b = 2; }`)
+            // both land in group `a` carrying the remainder `["b"]`, recurse,
+            // both land in group `b` carrying `[]`, and recurse AGAIN — at
+            // which point `path` is empty and `path[0]` panicked with
+            // `index out of bounds: the len is 0 but the index is 0`.
+            //
+            // It panicked on the `sui-vm-eval` thread, where the CLI's
+            // whole-expression fallback then rescued the run and returned the
+            // walker's answer with exit 0 — so a compiler PANIC was invisible
+            // in normal use and surfaced only under `SUI_VM_STRICT`. A crash
+            // that presents as a clean success is the worst available shape.
+            let Some((head, rest)) = path.split_first() else {
+                let full = if prefix.is_empty() {
+                    "<unknown>".to_string()
+                } else {
+                    prefix.join(".")
+                };
+                return Err(CompileError::Unsupported(format!(
+                    "attribute '{full}' is defined more than once; CppNix \
+                     rejects this at parse time and the bytecode compiler \
+                     cannot represent it"
+                )));
+            };
+            groups
+                .entry(head.clone())
+                .or_default()
+                .push((rest.to_vec(), expr.clone()));
         }
 
         let mut count: u16 = 0;
@@ -1630,7 +1649,9 @@ impl Compiler {
                 }
             } else {
                 // Recurse for deeper nesting.
-                self.compile_nested_attrset_inner(nested, lazy_leaves)?;
+                let mut deeper = prefix.to_vec();
+                deeper.push(key.clone());
+                self.compile_nested_attrset_inner(nested, lazy_leaves, &deeper)?;
             }
             self.emit_constant(VMValue::String(key.clone()))?;
             count += 1;
@@ -2876,6 +2897,64 @@ mod tests {
         let (chunk, _interner) =
             Compiler::compile(input).unwrap_or_else(|e| panic!("compile failed for '{input}': {e}"));
         chunk
+    }
+
+    /// ★ A duplicate dotted path must return a typed error, NOT panic.
+    ///
+    /// `{ a.b = 1; a.b = 2; }` recursed until the remaining path was empty and
+    /// then indexed `path[0]`:
+    ///
+    /// ```text
+    /// thread 'sui-vm-eval' panicked at compiler.rs:1616:32:
+    /// index out of bounds: the len is 0 but the index is 0
+    /// ```
+    ///
+    /// The panic fired on the VM's own thread, where the CLI's
+    /// whole-expression fallback caught the dead thread and returned the
+    /// tree-walker's answer with **exit 0** — so a compiler crash presented as
+    /// a clean success and was reachable from a five-token expression. Only
+    /// `SUI_VM_STRICT=1` exposed it. That is why this is a test and not just a
+    /// bounds fix: the failure mode was indistinguishable from working.
+    ///
+    /// CppNix rejects this input outright (`attribute 'a.b' already defined`),
+    /// so refusing to compile it is the correct interim behaviour until the
+    /// AST normalizer rejects it at parse.
+    #[test]
+    fn duplicate_dotted_path_errors_instead_of_panicking() {
+        for src in [
+            "{ a.b = 1; a.b = 2; }",
+            "{ a.b.c = 1; a.b.c = 2; }",
+            "{ a.b.c.d = 1; a.b.c.d = 2; }",
+        ] {
+            let err = Compiler::compile(src)
+                .err()
+                .unwrap_or_else(|| panic!("{src} compiled; it must be refused, not accepted"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("defined more than once"),
+                "{src}: expected a duplicate-attribute refusal, got: {msg}"
+            );
+        }
+    }
+
+    /// CALIBRATION for the row above. Legal nested paths — including a merge
+    /// of a dotted path with a sibling — must STILL compile. A "fix" that
+    /// rejected any repeated first component would satisfy the test above
+    /// while breaking ordinary nix.
+    #[test]
+    fn legal_nested_paths_still_compile() {
+        for src in [
+            "{ a.b = 1; a.c = 2; }",
+            "{ a.b.c = 1; a.b.d = 2; }",
+            "{ a.b = 1; a = { c = 2; }; }",
+            "{ x.y.z = 1; }",
+            "{ a = { b = 1; }; }",
+        ] {
+            assert!(
+                Compiler::compile(src).is_ok(),
+                "{src} must still compile — it is legal nix"
+            );
+        }
     }
 
     #[test]
