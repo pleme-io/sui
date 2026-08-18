@@ -62,6 +62,14 @@ use sui_ir::file_eval::clear_file_caches;
 /// - **WRONG VALUE (1)** — the serious one. See `merge-dynamic-attrs`.
 const KNOWN_GAPS: &[(&str, &str)] = &[
     // ── DECLARED: typed Unsupported, outside the pure subset by design ──
+    // `builtins.toFile` is store-effecting — it computes a content-addressed
+    // store path and writes the object — so it is outside the pure subset by
+    // construction, not a missing implementation. eval_ir REFUSES it with a
+    // typed `Unsupported` ("builtin not implemented by the pure-subset IR
+    // evaluator: toFile") rather than computing a path, which is the honest
+    // failure mode: contrast the bytecode VM, which computes a WRONG path for
+    // the same fixture because it silently drops string context.
+    ("eval-okay-tofile-refs", "unsupported:store-effecting-builtin"),
     ("eval-okay-attrs", "unsupported:legacy-let"),
     ("eval-okay-attrs2", "unsupported:construct"),
     ("eval-okay-flatten", "unsupported:construct"),
@@ -282,7 +290,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        19,
+        20,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means eval_ir regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

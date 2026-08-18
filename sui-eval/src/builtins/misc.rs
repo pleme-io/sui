@@ -254,8 +254,63 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "toFile", |name_val, content_val| {
         let name = name_val.as_string()?;
         let content = content_val.as_string()?;
+        // ★ The content's STRING CONTEXT is the reference set, and passing
+        // `&[]` here silently produced a wrong store path for every `toFile`
+        // whose content interpolates another store path — i.e. exactly the
+        // non-trivial ones. A wrong store path is a wrong drvPath for every
+        // derivation that consumes the file.
+        //
+        // CppNix sorts the reference set (it is a `StorePathSet`, ordered by
+        // the full path string), so the fingerprint is order-independent
+        // across evaluations.
+        let ctx_elems: Vec<crate::value::ContextElement> = match content_val.demand()? {
+            Concrete::String(ns) => ns.context.iter().cloned().collect(),
+            _ => Vec::new(),
+        };
+        // ★ CppNix REFUSES a derivation reference here — a text store object
+        // has no way to depend on something that has not been built yet:
+        //
+        //   error: files created by builtins.toFile may not reference
+        //          derivations, but t references !out!…-d.drv
+        //
+        // sui returned a store path instead, so `toFile "t" "${drv}"` produced
+        // a legal-looking path for a file whose reference set nix considers
+        // unrepresentable. Refuse loudly rather than invent one.
+        //
+        // Only `Plain` (an already-realised store path) is admissible;
+        // `Output` and `DrvDeep` are both derivation references.
+        for e in &ctx_elems {
+            let rendered = match e {
+                crate::value::ContextElement::Output { drv, output } => {
+                    // nix renders this as `!<output>!<drv-basename>`; sui's
+                    // own Display is `<drv>!<output>`, so render nix's shape
+                    // here rather than reuse Display for the message.
+                    let base = drv.rsplit('/').next().unwrap_or(drv);
+                    format!("!{output}!{base}")
+                }
+                crate::value::ContextElement::DrvDeep(d) => {
+                    let base = d.rsplit('/').next().unwrap_or(d);
+                    format!("={base}")
+                }
+                crate::value::ContextElement::Plain(_) => continue,
+            };
+            return Err(EvalError::TypeError(format!(
+                "files created by builtins.toFile may not reference \
+                 derivations, but {name} references {rendered}"
+            )));
+        }
+        let mut references: Vec<String> = ctx_elems
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        references.sort();
+        references.dedup();
         let store_path =
-            sui_compat::content_address::compute_text_store_path(&name, content.as_bytes(), &[])
+            sui_compat::content_address::compute_text_store_path(
+                &name,
+                content.as_bytes(),
+                &references,
+            )
                 .map_err(|e| EvalError::TypeError(
                     format!("toFile: store-path computation failed: {e}"),
                 ))?

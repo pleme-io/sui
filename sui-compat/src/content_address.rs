@@ -122,12 +122,27 @@ pub fn compute_text_store_path(
 ) -> Result<StorePath, StorePathError> {
     let content_hash = Sha256::digest(contents);
 
-    let mut fingerprint = String::from("text:sha256:");
-    fingerprint.push_str(&hex::encode(&content_hash));
+    // ★ FIELD ORDER. CppNix composes this as `makeType` + `makeStorePath`:
+    // `makeType` yields `text:<ref1>:<ref2>…` — the references come
+    // IMMEDIATELY after the type word — and `makeStorePath` then appends
+    // `:sha256:<hex>:/nix/store:<name>`. So the layout is
+    //
+    //     text:<refs…>:sha256:<hex>:/nix/store:<name>
+    //
+    // not `text:sha256:<hex>:<refs…>`, which is what this built.
+    //
+    // The bug was INVISIBLE for as long as it existed, and not by luck: the
+    // only caller (`builtins.toFile`) passed an empty reference slice, so the
+    // loop never ran and both orders produce identical bytes. Two wrongs in
+    // series, each masking the other — fixing either one alone still diverges
+    // from nix, which is why neither showed up as a regression.
+    let mut fingerprint = String::from("text");
     for r in references {
         fingerprint.push(':');
         fingerprint.push_str(r);
     }
+    fingerprint.push_str(":sha256:");
+    fingerprint.push_str(&hex::encode(&content_hash));
     fingerprint.push_str(":/nix/store:");
     fingerprint.push_str(name);
 
@@ -160,6 +175,50 @@ fn parse_hash_with_algo(s: &str) -> Result<NixHash, ContentAddressError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// ★ The reference set goes IMMEDIATELY after `text`, before `sha256`.
+    ///
+    /// Read off real nix 2.31.5 on 2026-08-18:
+    ///
+    /// ```text
+    /// $ nix eval --impure --raw --expr 'builtins.toFile "a" "aaa"'
+    /// /nix/store/mwq47shl5x56hf8wz24fkh24l9ckb0bp-a
+    /// $ nix eval --impure --raw --expr \
+    ///     'let a = builtins.toFile "a" "aaa"; in builtins.toFile "t" "ref ${a}"'
+    /// /nix/store/gxdnzkz1qg91ysm2839msxkyx8rnzw6s-t
+    /// ```
+    ///
+    /// This case did not exist before, and its absence is the whole reason the
+    /// order bug survived: the only caller passed an EMPTY reference slice, so
+    /// both layouts produced identical bytes and every existing test agreed
+    /// with both. A no-references test cannot distinguish them — this one must
+    /// carry at least one reference or it is measuring nothing.
+    #[test]
+    fn text_fingerprint_places_references_before_the_digest() {
+        let a = "/nix/store/mwq47shl5x56hf8wz24fkh24l9ckb0bp-a";
+        let got = compute_text_store_path("t", format!("ref {a}").as_bytes(), &[a.to_string()])
+            .expect("text store path")
+            .to_absolute_path();
+        assert_eq!(
+            got, "/nix/store/gxdnzkz1qg91ysm2839msxkyx8rnzw6s-t",
+            "reference-carrying text store path diverges from nix. The layout \
+             is `text:<refs…>:sha256:<hex>:/nix/store:<name>` — CppNix's \
+             `makeType` puts the references straight after the type word and \
+             `makeStorePath` appends the digest after them."
+        );
+    }
+
+    /// CALIBRATION: the no-reference path must be unchanged by the reordering.
+    /// Without this row, moving the references could be "fixed" in a way that
+    /// also shifted the empty case, silently breaking every plain `toFile`.
+    #[test]
+    fn text_fingerprint_without_references_is_unchanged() {
+        let got = compute_text_store_path("t", b"hello", &[])
+            .expect("text store path")
+            .to_absolute_path();
+        assert_eq!(got, "/nix/store/vqpn17r03lqabwk0wksgpbgy620zwfd4-t");
+    }
+
     use super::*;
 
     #[test]

@@ -166,6 +166,27 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // rather than papered over, because a function rendered as `null` is a
     // silent wrong value at a GENERAL crossing, not a toXML quirk.
     ("eval-okay-toxml-functions", "WRONG-VALUE:bridge-crossing-maps-lambda-to-null"),
+    // ★ THE VM'S WORST DEFECT, and until 2026-08-18 NO fixture exercised it.
+    //
+    // `VMValue::String` carries no string context ("context tracking deferred
+    // to Phase 2"), so a string that interpolates a store path forgets that it
+    // did. `builtins.toFile` hashes its content's REFERENCE SET into the store
+    // path, so the VM computes a different — and wrong — path for every
+    // toFile whose content interpolates anything.
+    //
+    // The rows say it precisely: `none` (no context) AGREES, and every
+    // reference-carrying row differs. The VM's `oneRef` is
+    // `vfzawb40l19d2i4n49grnfm3wrkiq63g`, which is exactly the value the
+    // TREE-WALKER produced before its own context bug was fixed the same day —
+    // i.e. the VM is reproducing the context-less hash, which is the defect
+    // stated as a byte.
+    //
+    // This is the same root that makes every VM-computed drvPath wrong for a
+    // derivation that interpolates another (`inputDrvs`/`inputSrcs` come from
+    // string context). It is why `--vm` is no longer the default engine. The
+    // corpus was blind to it until this fixture landed; it is listed here so
+    // the blindness is recorded rather than restored.
+    ("eval-okay-tofile-refs", "WRONG-VALUE:vm-has-no-string-context"),
     // The most dangerous of the five. `builtins.tryEval (assert false; "y")`
     // must be `{ success = false; value = false; }`. The VM returns the string
     // `"y"` — the body's value, UNWRAPPED, with the failing assertion never
@@ -693,7 +714,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        42,
+        43,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \
