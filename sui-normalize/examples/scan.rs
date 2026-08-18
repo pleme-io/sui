@@ -6,10 +6,19 @@
 //! * **planned** — files containing at least one binding group with a
 //!   duplicate static key or a dotted path. These are the only files whose
 //!   answers can change, so this IS the blast radius.
-//! * **rejected** — files the normalizer would refuse. Every one of these is
-//!   a file nix itself rejects, so a non-zero count is either a real
-//!   duplicate in the wild or a bug in this pass. It must be ZERO before the
-//!   rejection tier (stage 4) can flip, and each one inspected by hand.
+//! * **rejected** — files the normalizer refuses. Every one of these must be a
+//!   file nix itself rejects; a rejection nix ACCEPTS is a false reject, which
+//!   is the direction that breaks working code.
+//!
+//!   ★ This used to say the count "must be ZERO before the rejection tier
+//!   (stage 4) can flip". That was the wrong predicate and it was written
+//!   against a wrong number. The tier flipped on 2026-08-18 with the count at
+//!   **4**, not 0 — jitsi, keycloak, macos-developer and composed.nix — and
+//!   flipping was correct, because `nix-instantiate --parse` refuses all four
+//!   and names the same attribute path. The gate is not "zero rejections", it
+//!   is "zero rejections nix accepts": a real duplicate in the wild is a
+//!   finding about the fleet, not a blocker for this pass. Inspect each one by
+//!   hand against `nix-instantiate --parse` — that check is the gate.
 //!
 //! Usage: `cargo run -p sui-normalize --example scan -- <dir> [<dir>…]`
 //!
@@ -89,7 +98,7 @@ fn main() {
     println!("scanned    {}", files.len());
     println!("  clean      {clean}   (no duplicate key, no dotted path — untouched)");
     println!("  planned    {planned}   ({groups} binding groups — THE BLAST RADIUS)");
-    println!("  rejected   {rejected}   (must be 0 before the rejection tier flips)");
+    println!("  rejected   {rejected}   (each MUST be one `nix-instantiate --parse` also refuses)");
     println!("  unparseable {unparseable}   (rnix could not read; not this pass's business)");
 
     for (p, e) in rejects.iter().take(25) {

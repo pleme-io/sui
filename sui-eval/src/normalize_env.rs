@@ -71,6 +71,15 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 /// `SUI_NORMALIZE=0` restores the pre-plan construction path, so a divergence
 /// suspected to come from this pass can be bisected in one command instead of
 /// a revert. That is also why the old entry loops are not deleted yet.
+///
+/// ★ SINCE THE REJECTION TIER (2026-08-18) THE LATCH ALSO DISABLES REFUSAL,
+/// and that makes the engines disagree ON PURPOSE. `plan_for_node` returns
+/// `Ok(None)` when disabled, so with `SUI_NORMALIZE=0` the walker goes back to
+/// silently ACCEPTING `{ a = 1; a = 2; }` while the bytecode VM — which has no
+/// such latch and always plans — still refuses it. That is a bisect tool
+/// behaving as intended, not a bug; but it means an engine comparison run with
+/// `SUI_NORMALIZE=0` is not measuring what it looks like it is measuring.
+/// Clear the variable before comparing engines.
 #[must_use]
 pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("SUI_NORMALIZE").ok().as_deref() != Some("0"))
