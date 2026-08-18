@@ -1554,6 +1554,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 let offset = u32::from(letin.syntax().text_range().start());
                 if let Some(plan) =
                     crate::normalize_env::plan_for_node(letin, true, src_id, offset)
+                        .map_err(reject)?
                 {
                     let (_attrs, scope) = bind_plan_group(&plan, env)?;
                     let body = letin.body().ok_or_else(|| {
@@ -1967,6 +1968,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 let offset = u32::from(ll.syntax().text_range().start());
                 if let Some(plan) =
                     crate::normalize_env::plan_for_node(ll, true, src_id, offset)
+                        .map_err(reject)?
                 {
                     let (_attrs, scope) = bind_plan_group(&plan, env)?;
                     return scope.lookup("body").ok_or_else(|| {
@@ -2588,7 +2590,9 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
     if crate::normalize_env::enabled() {
         let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
         let offset = u32::from(set.syntax().text_range().start());
-        if let Some(plan) = crate::normalize_env::plan_for_node(set, is_rec, src_id, offset) {
+        if let Some(plan) =
+            crate::normalize_env::plan_for_node(set, is_rec, src_id, offset).map_err(reject)?
+        {
             return eval_plan_group(&plan, env);
         }
     }
@@ -8004,30 +8008,34 @@ mod tests {
     }
 
     #[test]
-    fn let_inherit_from_plus_dotted_overrides() {
-        // inherit-from and dotted bindings for the same key in a let
-        // block: CppNix rejects this as a duplicate definition.  Sui
-        // currently lets the dotted binding win (last-write-wins).
-        // This test documents the current behaviour -- when we add
-        // duplicate detection it should change to assert an error.
-        let v = ev(r#"
+    fn let_inherit_from_plus_dotted_is_rejected() {
+        // `inherit (src) types;` and `types.added = true;` in one `let` are two
+        // definitions of `types`, and an inherited name can never merge — it
+        // binds the name outright. CppNix rejects it at parse time:
+        //
+        //     error: attribute 'types' already defined at «string»:1:60
+        //
+        // ★ THIS TEST USED TO ASSERT THE WRONG ANSWER, on purpose, and said so:
+        // "Sui currently lets the dotted binding win (last-write-wins). This
+        // test documents the current behaviour -- when we add duplicate
+        // detection it should change to assert an error." That is this change.
+        // The old expectation was `added = true` with `existing` SILENTLY GONE,
+        // at exit 0.
+        let err = eval(
+            r#"
             let
               src = { types = { existing = true; }; };
               inherit (src) types;
               types.added = true;
             in types
-        "#);
-        if let Value::Attrs(attrs) = v {
-            // Dotted binding overwrites the inherited value
-            assert_eq!(
-                force_value(attrs.get("added").unwrap()).unwrap(),
-                Value::Bool(true)
-            );
-            // Inherited 'existing' is lost because dotted replaced it
-            assert!(attrs.get("existing").is_none());
-        } else {
-            panic!("expected attrs");
-        }
+        "#,
+        )
+        .expect_err("a duplicate definition must be refused, not resolved by last-write-wins");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("attribute 'types' already defined"),
+            "the refusal must name the attribute: {msg}"
+        );
     }
 
     // ── Function pattern variations ────────────────────────
@@ -8960,6 +8968,22 @@ mod tests {
         assert_eq!(ev("true -> true"), Value::Bool(true));
         assert_eq!(ev("true -> false"), Value::Bool(false));
     }
+}
+
+/// A `sui-normalize` rejection, as the walker's error.
+///
+/// ★ `ParseError`, not a new variant, and not an eval error: nix rejects a
+/// duplicate attribute during PARSING. Measured — `nix-instantiate --parse`
+/// on `{ a = 1; a = 2; }` fails with `attribute 'a' already defined` and never
+/// evaluates it. Filing this as an eval error would misreport WHEN it happens.
+///
+/// The message carries the attribute PATH but not nix's `«string»:1:3`
+/// position or its caret block. That is a source-span formatter sui does not
+/// have, and coupling it here would turn a small change into an
+/// error-rendering project; the contract this stage signs up to is the exit
+/// code and the attribute path.
+fn reject(e: sui_normalize::NormalizeError) -> EvalError {
+    EvalError::ParseError(format!("{e}{}", eval_file_ctx()))
 }
 
 /// Build an attrset from a `sui-normalize` [`GroupPlan`].

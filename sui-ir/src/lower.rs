@@ -15,7 +15,7 @@
 use rnix::ast::{self, AstToken, HasEntry};
 use rowan::ast::AstNode;
 
-use crate::ir::{AttrName, Binding, ExprId, Ir, IrBound, IrDynamicBinding, IrGroupPlan, IrStaticBinding, Param, PathKind, PathPart, PatternEntry, PlanId, Program, Span, StrPart};
+use crate::ir::{AttrName, Binding, ExprId, Ir, IrBound, IrDynamicBinding, IrGroupPlan, IrStaticBinding, PlanEntry, Param, PathKind, PathPart, PatternEntry, PlanId, Program, Span, StrPart};
 
 /// Typed lowering failure. Every variant names the construct it came from —
 /// a `LowerError` is a mechanical "this exact spot in the parse surface is
@@ -115,7 +115,7 @@ struct Lowerer {
     /// sibling of `by_range` for keys: a dynamic key may be an interpolated
     /// `Attr::Str`, which has an `AttrName` but no `ExprId`.
     attr_by_range: rustc_hash::FxHashMap<(u32, u32), AttrName>,
-    plans: Vec<IrGroupPlan>,
+    plans: Vec<PlanEntry>,
 }
 
 fn span_of(node: &rnix::SyntaxNode) -> Span {
@@ -218,12 +218,12 @@ impl Lowerer {
             inherit_froms.push(self.expr_id_of(e)?);
         }
         let id = PlanId(u32::try_from(self.plans.len()).expect("program exceeds u32 plans"));
-        self.plans.push(IrGroupPlan {
+        self.plans.push(PlanEntry::Plan(IrGroupPlan {
             recursive: plan.recursive,
             statics,
             dynamics,
             inherit_froms,
-        });
+        }));
         Ok(id)
     }
 
@@ -240,19 +240,28 @@ impl Lowerer {
         recursive: bool,
         id: ExprId,
     ) -> Result<(), LowerError> {
-        // A rejected group records NO plan, matching the walker's behaviour
-        // until the rejection tier lands. `{ a = 1; a = 2; }` is generatable by
-        // this crate's own proptest generators, so rejecting here would turn
-        // the generated differentials red on a seed rnix accepts.
-        if let Ok(Some(plan)) = sui_normalize::plan_for_group(node, recursive) {
-            let pid = self.lower_plan(&plan)?;
-            // Write it back onto the node the ordinary walk just pushed. The
-            // binder is always one of these two — `record_plan` is only ever
-            // called with the id it returned for an `AttrSet`/`LetIn`.
-            match &mut self.exprs[id.index()] {
-                Ir::AttrSet { plan, .. } | Ir::LetIn { plan, .. } => *plan = pid,
-                other => unreachable!("record_plan on a non-binder: {other:?}"),
+        // ★ A REJECTED group records a `PlanEntry::Rejected`, it does not fail
+        // lowering. `lower()` must stay total on anything rnix parses, because
+        // `tests/differential.rs` renders every lowered tree — including the
+        // proptest seeds, which DO generate `{ a = 1; a = 2; }`. `eval_ir`
+        // raises it when the group is evaluated, which is also when nix's own
+        // error reaches a user.
+        let pid = match sui_normalize::plan_for_group(node, recursive) {
+            Ok(None) => return Ok(()),
+            Ok(Some(plan)) => self.lower_plan(&plan)?,
+            Err(e) => {
+                let pid =
+                    PlanId(u32::try_from(self.plans.len()).expect("program exceeds u32 plans"));
+                self.plans.push(PlanEntry::Rejected(e.to_string()));
+                pid
             }
+        };
+        // Write it back onto the node the ordinary walk just pushed. The binder
+        // is always one of these two — `record_plan` is only ever called with
+        // the id it returned for an `AttrSet`/`LetIn`.
+        match &mut self.exprs[id.index()] {
+            Ir::AttrSet { plan, .. } | Ir::LetIn { plan, .. } => *plan = pid,
+            other => unreachable!("record_plan on a non-binder: {other:?}"),
         }
         Ok(())
     }

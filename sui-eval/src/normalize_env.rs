@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 
 use std::rc::Rc;
 
-use sui_normalize::GroupPlan;
+use sui_normalize::{GroupPlan, NormalizeError};
 
 /// One-time read of `SUI_NORMALIZE`. Default ON; `SUI_NORMALIZE=0` opts out.
 static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -50,8 +50,18 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 /// * every wrong-answer shape in the class matches nix, including the
 ///   acceptance case `{ a = rec { b = c+1; d = 2; }; a.c = d+3; }.a.b` -> 6,
 ///   which needs mutual recursion ACROSS the merge boundary;
-/// * a fleet scan of 4562 `.nix` files found ZERO false rejects — the one
-///   rejection is a file `nix-instantiate --parse` also refuses;
+/// * a fleet scan found ZERO false rejects — every rejection is a file
+///   `nix-instantiate --parse` also refuses. **Corrected 2026-08-18: the
+///   count was FOUR, not "the one".** Re-scanned at 4570 files:
+///   `blackmatter-services/…/jitsi`, `…/keycloak`,
+///   `kindling-profiles/…/macos-developer`, and
+///   `blackmatter/…/enhanced/composed.nix`, each verified individually
+///   against `nix-instantiate --parse`, which refuses all four and names the
+///   same attribute path sui does. The zero-false-rejects claim is unchanged
+///   and is the load-bearing half; the "one" was a coverage figure that
+///   rotted UPWARD — understated, so it read as modest and nothing ever
+///   flagged it. Re-run the scanner rather than trusting this number:
+///   `cargo run --release -p sui-normalize --example scan -- <dir>`;
 /// * `sui perf-seal` moved DOWN or held on all three attr-merge rows
 ///   (`dotted full-set leaf deep-merge` 6 -> 5), which is what confirms the
 ///   splice happens at PARSE time rather than adding eval work;
@@ -96,32 +106,49 @@ fn key(source_id: u32, text_offset: u32) -> u64 {
 /// A `None` return is a POSITIVE statement — the group has no duplicate static
 /// key and no dotted path, so the caller's existing path is already correct.
 /// See the module docs on why that is not a fallback.
-pub fn plan_for_node<N>(node: &N, recursive: bool, source_id: u32, offset: u32) -> Option<Rc<GroupPlan>>
+///
+/// # Errors
+///
+/// [`NormalizeError`] for a group nix itself rejects — a duplicate attribute
+/// (`{ a = 1; a = 2; }`) or a duplicate formal.
+///
+/// ★ This used to swallow that error with `.ok().flatten()`, which silently
+/// turned a rejection into "no plan" and sent the group down the entry loop.
+/// The result was accepting what nix refuses, and — worse — accepting it
+/// DIFFERENTLY from the bytecode VM: measured 2026-08-18, `{ a = 1; a = 2; }`
+/// is `{ a = 2; }` on the walker and `{ a = 1; }` on the VM, both at exit 0
+/// where nix exits 1. Neither answer is right, so no choice of winner
+/// reconciles the engines; only refusing does.
+pub fn plan_for_node<N>(
+    node: &N,
+    recursive: bool,
+    source_id: u32,
+    offset: u32,
+) -> Result<Option<Rc<GroupPlan>>, NormalizeError>
 where
     N: rnix::ast::HasEntry,
 {
     if !enabled() {
-        return None;
+        return Ok(None);
     }
     let k = key(source_id, offset);
     if let Some(hit) = PLAN_TABLE.with(|t| t.borrow().get(&k).cloned()) {
         return hit.0;
     }
-    // A rejected group records `None` — matching the walker's parse-door
-    // behaviour of swallowing `NormalizeError` until the rejection tier lands.
-    let computed = sui_normalize::plan_for_group(node, recursive)
-        .ok()
-        .flatten()
-        .map(Rc::new);
+    let computed = sui_normalize::plan_for_group(node, recursive).map(|p| p.map(Rc::new));
     PLAN_TABLE.with(|t| t.borrow_mut().insert(k, Memo(computed.clone())));
     computed
 }
 
-/// A memo entry. `Memo(None)` records "this group needs no plan", which must be
+/// A memo entry.
+///
+/// `Memo(Ok(None))` records "this group needs no plan", which must be
 /// remembered too — otherwise every evaluation of an ordinary attrset re-runs
-/// `needs_plan`, which is the cost this change exists to remove.
+/// `needs_plan`, which is the cost the memo exists to remove. A rejection is
+/// memoized for the same reason: a group nix refuses is refused on every
+/// evaluation, and re-deriving that is pure waste.
 #[derive(Clone)]
-struct Memo(Option<Rc<GroupPlan>>);
+struct Memo(Result<Option<Rc<GroupPlan>>, NormalizeError>);
 
 
 /// Drop every recorded plan. Wired into the same lifecycle point as

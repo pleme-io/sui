@@ -93,8 +93,8 @@ use sui_intern::{intern, resolve, Symbol};
 pub use crate::builtins::IrBuiltin;
 use crate::file_eval::{current_eval_dir, push_eval_file};
 use crate::ir::{
-    AttrName, BinOp, Binding, ExprId, Ir, IrBound, Param, PathKind, PathPart, PlanId, Program,
-    StrPart, UnaryOp,
+    AttrName, BinOp, Binding, ExprId, Ir, IrBound, Param, PathKind, PathPart, PlanEntry, PlanId,
+    Program, StrPart, UnaryOp,
 };
 
 // ── overlay-fixpoint promotion state (the M2.6 rec-semantics mirror) ────────
@@ -194,6 +194,16 @@ fn push_force_frame(thunk_id: usize) -> ForceStackGuard {
 /// and errors by class only).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IrEvalError {
+    /// A binding group nix itself rejects — a duplicate attribute. Carries
+    /// `sui-normalize`'s rendered message, which names the attribute path.
+    ///
+    /// Its own variant rather than folded into `TypeError`/`Unsupported`,
+    /// because the three make different claims: this one says the PROGRAM is
+    /// illegal, `Unsupported` says the pure-subset evaluator will not do it,
+    /// and a type error says the program is legal but wrong at run time. The
+    /// corpus differential classifies on exactly that distinction.
+    #[error("{0}")]
+    Rejected(String),
     #[error("undefined variable '{0}'")]
     UndefinedVar(String),
     #[error("type error: {0}")]
@@ -2173,7 +2183,13 @@ fn bind_plan_group(
     plan_id: PlanId,
     env: &IrEnv,
 ) -> Result<(IrAttrs, IrEnv), IrEvalError> {
-    let plan = prog.plan_at(plan_id);
+    // A group nix itself rejects. Raised HERE rather than at lowering because
+    // `lower()` stays total (see `PlanEntry`) — and because this is when nix's
+    // own error reaches a user too.
+    let plan = match prog.plan_at(plan_id) {
+        PlanEntry::Plan(p) => p,
+        PlanEntry::Rejected(msg) => return Err(IrEvalError::Rejected(msg.clone())),
+    };
     let mut attrs = IrAttrs::new();
     // `rec`-ness came from the FIRST declaration, never an OR of the two sides.
     let mut scope_env = if plan.recursive { env.child() } else { env.clone() };

@@ -430,7 +430,31 @@ pub struct Program {
     /// `tests/differential.rs`) covers `exprs`/`spans` only — nothing may be
     /// APPENDED to `exprs` after lowering, which is why every `ExprId` a plan
     /// references is one the ordinary walk already produced.
-    pub plans: Vec<IrGroupPlan>,
+    pub plans: Vec<PlanEntry>,
+}
+
+/// One entry in a [`Program`]'s plan arena.
+///
+/// ★ A REJECTED group is carried as DATA rather than failing `lower()`, and
+/// that is deliberate. `lower()` is total on anything rnix parses, because
+/// `tests/differential.rs` renders every lowered tree and byte-compares it
+/// against the rowan render — including the proptest-generated seeds, which
+/// DO emit `{ a = 1; a = 2; }`. Making lowering fail would panic that suite,
+/// and "fixing" it by filtering duplicates out of the generators would delete
+/// structural coverage of exactly the trees most at risk.
+///
+/// So the split mirrors the real architecture: rnix parses it, `sui-normalize`
+/// rejects it, the IR carries the rejection, and `eval_ir` raises it when the
+/// group is actually evaluated — which is also when nix's own error surfaces
+/// to a user.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanEntry {
+    /// A normalized binding group.
+    Plan(IrGroupPlan),
+    /// A group nix itself rejects, as the rendered message. A `String` rather
+    /// than the typed `NormalizeError` because raising it is all eval needs,
+    /// and it keeps `sui-normalize`'s error type out of the IR's public shape.
+    Rejected(String),
 }
 
 impl Program {
@@ -446,7 +470,7 @@ impl Program {
     /// whole point of moving the field onto the node. This is for callers
     /// holding only an `ExprId`.
     #[must_use]
-    pub fn plan(&self, id: ExprId) -> Option<&IrGroupPlan> {
+    pub fn plan(&self, id: ExprId) -> Option<&PlanEntry> {
         self.plan_id(id).map(|p| &self.plans[p.index()])
     }
 
@@ -461,7 +485,7 @@ impl Program {
 
     /// A nested plan by index.
     #[must_use]
-    pub fn plan_at(&self, id: PlanId) -> &IrGroupPlan {
+    pub fn plan_at(&self, id: PlanId) -> &PlanEntry {
         &self.plans[id.index()]
     }
 

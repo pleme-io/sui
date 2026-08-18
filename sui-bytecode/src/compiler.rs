@@ -42,28 +42,6 @@ struct UpvalueDesc {
     index: u16,
 }
 
-/// A let-binding entry (for the two-pass compilation).
-enum LetBinding {
-    /// A regular `name = expr;` binding.
-    Value(ast::Expr),
-    /// A bare `inherit name;` from the enclosing scope.
-    Inherit,
-    /// An `inherit (source) name;` — copies from source expression.
-    InheritFrom(ast::Expr, String),
-}
-
-/// A rec attrset binding entry.
-enum RecAttrBinding {
-    /// A regular `name = expr;` binding.
-    Value(ast::Expr),
-    /// A bare `inherit name;` from the enclosing scope.
-    Inherit,
-    /// An `inherit (source) name;`.
-    InheritFrom(ast::Expr, String),
-    /// Dotted bindings grouped under this top-level key.
-    Dotted(Vec<(Vec<String>, ast::Expr)>),
-}
-
 /// The bytecode compiler.
 ///
 /// Compiles a single expression (which may contain nested lambdas)
@@ -654,188 +632,32 @@ impl Compiler {
 
     fn compile_let(&mut self, letin: &ast::LetIn) -> Result<(), CompileError> {
         // ★ A `let` is a RECURSIVE binder, so the plan is built with
-        // `recursive = true`. This is what gives `let` dotted bindings and
-        // duplicate-key merging, both of which the loop below simply refused
-        // or lost:
+        // `recursive = true`. That is what gives `let` dotted bindings and
+        // duplicate-key merging, both of which the hand-rolled loop this
+        // replaces either lost or refused:
         //
         //   let a = {b=1;}; a = {c=2;}; in a    was {"c":2}   nix {"b":1,"c":2}
         //   let a = {b=1;}; a.c = 2;    in a    was a hard `Unsupported("dotted
         //                                       let bindings")` refusal
-        match sui_normalize::plan_for_group_total(letin, true) {
-            Ok(plan) if plan.dynamics.is_empty() => {
-                let body = letin
-                    .body()
-                    .ok_or_else(|| CompileError::MissingNode("let body".to_string()))?;
-                self.begin_scope();
-                let local_count = self.bind_plan_group_locals(&plan)?;
-                // The body's result lands on top of the local slots.
-                self.compile_expr(&body)?;
-                self.end_scope(local_count);
-                return Ok(());
-            }
-            // A dynamic key cannot name a local slot, and nix rejects
-            // `let ${k} = 1; in k` at parse time for exactly that reason. Left
-            // to the loop below, which refuses it — rather than dropped.
-            Ok(_) => {}
-            // A group nix itself rejects; see `compile_attrset`.
-            Err(_) => {}
+        let plan = sui_normalize::plan_for_group_total(letin, true).map_err(reject)?;
+
+        // A dynamic key cannot name a local slot, and nix rejects
+        // `let ${k} = 1; in k` at parse time for exactly that reason. Refused,
+        // never dropped.
+        if !plan.dynamics.is_empty() {
+            return Err(CompileError::Unsupported(
+                "dynamic attribute in a let binding".to_string(),
+            ));
         }
 
-        self.begin_scope();
-
-        // Collect all binding names and value expressions first so we
-        // can allocate all local slots before compiling any values
-        // (enabling mutual references between let-bindings).
-        let mut bindings: Vec<(String, LetBinding)> = Vec::new();
-
-        for entry in letin.entries() {
-            match entry {
-                ast::Entry::AttrpathValue(ref apv) => {
-                    let attrpath = apv.attrpath().ok_or_else(|| {
-                        CompileError::MissingNode("binding attrpath".to_string())
-                    })?;
-                    let keys: Vec<_> = attrpath.attrs().collect();
-                    if keys.len() != 1 {
-                        return Err(CompileError::Unsupported(
-                            "dotted let bindings".to_string(),
-                        ));
-                    }
-                    let key = static_attr_name(&keys[0])?;
-                    let value_expr = apv.value().ok_or_else(|| {
-                        CompileError::MissingNode("binding value".to_string())
-                    })?;
-                    bindings.push((key, LetBinding::Value(value_expr)));
-                }
-                ast::Entry::Inherit(ref inherit) => {
-                    if let Some(from) = inherit.from() {
-                        let source_expr = from.expr().ok_or_else(|| {
-                            CompileError::MissingNode("inherit from expr".to_string())
-                        })?;
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name.clone(), LetBinding::InheritFrom(source_expr.clone(), name)));
-                        }
-                    } else {
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name, LetBinding::Inherit));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Static cycle detection: check for `name = name;` patterns.
-        {
-            let pairs: Vec<(String, &ast::Expr)> = bindings
-                .iter()
-                .filter_map(|(name, binding)| match binding {
-                    LetBinding::Value(expr) => Some((name.clone(), expr as &ast::Expr)),
-                    _ => None,
-                })
-                .collect();
-            for warning in detect_trivial_cycles(&pairs) {
-                eprintln!("{warning}");
-            }
-        }
-
-        let binding_count = u16::try_from(bindings.len())
-            .map_err(|_| CompileError::TooManyLocals)?;
-
-        // Phase 1: Push Null placeholders and register local slots.
-        for (name, _) in &bindings {
-            self.emit(OpCode::Null); // emit() tracks stack_depth
-            self.add_local(name.clone())?;
-        }
-
-        // Phase 2: Compile each binding's value and store into its slot.
-        // Two-pass thunk approach for lazy let-bindings:
-        //   Pass A: Create thunks (0 upvalues), store in slots.
-        //   Pass B: Patch each thunk's upvalues (siblings now exist).
-        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
-
-        for (name, binding) in &bindings {
-            let local_idx = self.resolve_local(name).unwrap();
-            let slot = self.locals[local_idx as usize].slot;
-            match binding {
-                LetBinding::Value(expr) => {
-                    // In let bindings (which are recursive in Nix), lambdas
-                    // must not be inlined as trivial — same issue as rec
-                    // attrsets: MakeClosure captures upvalues eagerly, but
-                    // sibling bindings (especially dotted) may not yet exist.
-                    if Self::is_trivial_value_for_rec(expr) {
-                        self.compile_expr(expr)?;
-                    } else {
-                        let uv_descs = self.compile_thunk_deferred(expr)?;
-                        if !uv_descs.is_empty() {
-                            thunk_slots.push((slot, uv_descs));
-                        }
-                    }
-                    self.emit(OpCode::SetLocal);
-                    self.emit_u16(slot);
-                    self.emit(OpCode::Pop);
-                }
-                LetBinding::Inherit => {
-                    // Temporarily hide this local so lookup finds the outer one.
-                    let saved_depth = self.locals[local_idx as usize].depth;
-                    self.locals[local_idx as usize].depth = u32::MAX;
-                    if let Some(outer_idx) = self.resolve_local(name) {
-                        self.emit(OpCode::GetLocal);
-                        self.emit_u16(self.local_stack_slot(outer_idx));
-                    } else if let Some(uv_idx) = self.resolve_upvalue(name) {
-                        self.emit(OpCode::GetUpvalue);
-                        self.emit_u16(uv_idx as u16);
-                    } else if self.has_with_scope() {
-                        let name_idx = self.chunk.add_constant(VMValue::String(name.clone()))?;
-                        self.emit(OpCode::LookupWith);
-                        self.emit_u16(name_idx);
-                    } else {
-                        self.locals[local_idx as usize].depth = saved_depth;
-                        return Err(CompileError::Unsupported(format!(
-                            "inherit: cannot resolve '{name}' in enclosing scope"
-                        )));
-                    }
-                    self.locals[local_idx as usize].depth = saved_depth;
-                    self.emit(OpCode::SetLocal);
-                    self.emit_u16(slot);
-                    self.emit(OpCode::Pop);
-                }
-                LetBinding::InheritFrom(source_expr, attr_name) => {
-                    // Wrap inherit-from in a thunk to avoid forcing the
-                    // source expression at let-binding time (critical for
-                    // fixpoint patterns like nixpkgs lib's inherit (lib.trivial)).
-                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
-                    if !uv_descs.is_empty() {
-                        thunk_slots.push((slot, uv_descs));
-                    }
-                    self.emit(OpCode::SetLocal);
-                    self.emit_u16(slot);
-                    self.emit(OpCode::Pop);
-                }
-            }
-        }
-
-        // Pass B: Patch thunk upvalues now that all siblings exist in slots.
-        for (slot, uv_descs) in &thunk_slots {
-            self.emit(OpCode::PatchThunkUpvalues);
-            self.emit_u16(*slot);
-            self.emit_u16(uv_descs.len() as u16);
-            for uv in uv_descs {
-                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
-                self.emit_u16(uv.index);
-            }
-        }
-
-        // Compile the body expression. Its result lands on top of the
-        // local variable slots on the stack.
         let body = letin
             .body()
             .ok_or_else(|| CompileError::MissingNode("let body".to_string()))?;
+        self.begin_scope();
+        let local_count = self.bind_plan_group_locals(&plan)?;
+        // The body's result lands on top of the local slots.
         self.compile_expr(&body)?;
-
-        // Clean up: move the body result down past the locals, then pop them.
-        self.end_scope(binding_count);
-
+        self.end_scope(local_count);
         Ok(())
     }
 
@@ -968,19 +790,6 @@ impl Compiler {
             tc.emit_u16(key_idx);
             Ok(())
         })
-    }
-
-    /// Compile a deferred thunk for a dotted binding in rec attrsets.
-    /// Like `compile_thunk_deferred`, but the thunk body is a nested attrset
-    /// rather than a single expression.  Leaf values inside the nested attrset
-    /// are individually wrapped in immediate thunks so that forcing the outer
-    /// thunk doesn't eagerly evaluate all leaves (avoiding infinite recursion
-    /// when dotted bindings cross-reference each other through rec siblings).
-    fn compile_nested_attrset_thunk_deferred(
-        &mut self,
-        sub_bindings: &[(Vec<String>, ast::Expr)],
-    ) -> Result<Vec<UpvalueDesc>, CompileError> {
-        self.compile_deferred_thunk(|tc| tc.compile_nested_attrset_lazy(sub_bindings))
     }
 
     /// Emit with-scope preamble in a child compiler: for each with-scope
@@ -1119,359 +928,16 @@ impl Compiler {
         let rec = set.rec_token().is_some();
 
         // ★ EVERY group goes through the plan — `plan_for_group_total`, not the
-        // gated `plan_for_group` the walker uses. The gated one bounds a
-        // consumer's blast radius by returning `None` for groups whose existing
-        // path is already correct, which is right when you are KEEPING that
-        // path; here the entry buckets below are the defect, so routing only
-        // the broken groups away from them would leave two implementations of
-        // one rule.
+        // gated `plan_for_group`. The gate returns `None` for groups whose
+        // ordinary path is already correct, which is what a consumer KEEPING
+        // that path wants; the five entry buckets that used to live here were
+        // the defect, so they are gone and there is nothing to gate for.
         //
-        // The fallback is reached ONLY for a group nix itself rejects (a
-        // genuine duplicate like `{ a = 1; a = 2; }`, where `sui-normalize`
-        // returns a typed `NormalizeError`). sui still accepts those, so
-        // today's permissive answer is preserved rather than silently becoming
-        // a compile error on one engine only; the rejection tier owns that
-        // change, and deletes this fallback with it.
-        match sui_normalize::plan_for_group_total(set, rec) {
-            Ok(plan) => return self.compile_plan_group(&plan),
-            Err(_) => { /* nix rejects this group — see above */ }
-        }
-
-        if rec {
-            return self.compile_rec_attrset(set);
-        }
-
-        // Collect all entries, handling dotted bindings by merging them.
-        // We need to group dotted bindings by their top-level key.
-        let mut flat_entries: Vec<(String, ast::Expr)> = Vec::new();
-        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
-            std::collections::BTreeMap::new();
-        let mut inherit_entries: Vec<(String, Option<ast::Expr>)> = Vec::new();
-        let mut dynamic_entries: Vec<(ast::Expr, ast::Expr)> = Vec::new();
-        let mut dynamic_dotted_entries: Vec<(ast::Attr, Vec<String>, ast::Expr)> = Vec::new();
-
-        for entry in set.entries() {
-            match entry {
-                ast::Entry::AttrpathValue(ref apv) => {
-                    let attrpath = apv.attrpath().ok_or_else(|| {
-                        CompileError::MissingNode("attrset attrpath".to_string())
-                    })?;
-                    let keys: Vec<_> = attrpath.attrs().collect();
-                    let value_expr = apv.value().ok_or_else(|| {
-                        CompileError::MissingNode("attrset value".to_string())
-                    })?;
-
-                    if keys.len() == 1 {
-                        // Check for dynamic key.
-                        match &keys[0] {
-                            ast::Attr::Dynamic(dyn_attr) => {
-                                let key_expr = dyn_attr.expr().ok_or_else(|| {
-                                    CompileError::MissingNode("dynamic attr key".to_string())
-                                })?;
-                                dynamic_entries.push((key_expr, value_expr));
-                            }
-                            ast::Attr::Str(s) => {
-                                // Try to extract a plain string literal
-                                // (e.g. `"1" = ...`). These are static keys
-                                // and must be compiled like flat entries
-                                // (with lazy thunk-wrapped values) to avoid
-                                // eagerly evaluating throw expressions in
-                                // unaccessed attrset branches.
-                                if let Ok(key) = static_attr_name(&keys[0]) {
-                                    flat_entries.push((key, value_expr));
-                                } else {
-                                    // Interpolated string key — truly dynamic.
-                                    let key_expr = ast::Expr::Str(s.clone());
-                                    dynamic_entries.push((key_expr, value_expr));
-                                }
-                            }
-                            _ => {
-                                let key = static_attr_name(&keys[0])?;
-                                flat_entries.push((key, value_expr));
-                            }
-                        }
-                    } else {
-                        // Dotted binding: group by top-level key.
-                        match static_attr_name(&keys[0]) {
-                            Ok(top_key) => {
-                                let rest_keys: Vec<String> = keys[1..]
-                                    .iter()
-                                    .map(static_attr_name)
-                                    .collect::<Result<_, _>>()?;
-                                dotted_entries
-                                    .entry(top_key)
-                                    .or_default()
-                                    .push((rest_keys, value_expr));
-                            }
-                            Err(_) => {
-                                // Dynamic top-level key in dotted path.
-                                // Collect rest keys as static names for the
-                                // nested attrset; push as a dynamic entry.
-                                let rest_keys: Vec<String> = keys[1..]
-                                    .iter()
-                                    .map(static_attr_name)
-                                    .collect::<Result<_, _>>()?;
-                                // Store for later compilation as dynamic
-                                // dotted entry (key_attr, rest_keys, value).
-                                dynamic_dotted_entries.push((
-                                    keys[0].clone(),
-                                    rest_keys,
-                                    value_expr,
-                                ));
-                            }
-                        }
-                    }
-                }
-                ast::Entry::Inherit(ref inherit) => {
-                    let source_expr = inherit.from().and_then(|f| f.expr());
-                    for attr in inherit.attrs() {
-                        let name = static_attr_name(&attr)?;
-                        inherit_entries.push((name, source_expr.clone()));
-                    }
-                }
-            }
-        }
-
-        let mut count: u16 = 0;
-
-        // Emit flat entries (lazy: wrap non-trivial values in thunks,
-        // except inside with-scopes where thunks can't capture the
-        // dynamic scope).
-        for (key, value_expr) in &flat_entries {
-            if Self::is_trivial_value(value_expr) {
-                self.compile_expr(value_expr)?;
-            } else {
-                self.compile_thunk_immediate(value_expr)?;
-            }
-            self.emit_constant(VMValue::String(key.clone()))?;
-            count += 1;
-        }
-
-        // Emit dotted entries as nested attrsets.
-        for (top_key, sub_bindings) in &dotted_entries {
-            self.compile_nested_attrset(sub_bindings)?;
-            self.emit_constant(VMValue::String(top_key.clone()))?;
-            count += 1;
-        }
-
-        // Emit inherit entries (lazy: wrap inherit-from in thunks to avoid
-        // forcing the source expression at attrset construction time).
-        for (name, source_expr) in &inherit_entries {
-            if let Some(src) = source_expr {
-                // inherit (source) name; — wrap in a thunk that evaluates
-                // source.name lazily (critical for fixpoint patterns like
-                // makeExtensible where the source references `self`).
-                self.compile_inherit_from_thunk(src, name)?;
-            } else {
-                // inherit name; — look up in current scope.
-                self.emit_variable_load(name)?;
-            }
-            self.emit_constant(VMValue::String(name.clone()))?;
-            count += 1;
-        }
-
-        // Emit dynamic entries (lazy: wrap non-trivial values in thunks
-        // to preserve Nix's lazy evaluation semantics).
-        for (key_expr, value_expr) in &dynamic_entries {
-            if Self::is_trivial_value(value_expr) {
-                self.compile_expr(value_expr)?;
-            } else {
-                self.compile_thunk_immediate(value_expr)?;
-            }
-            self.compile_expr(key_expr)?;
-            count += 1;
-        }
-
-        // Emit dynamic dotted entries: dynamic top-level key with static
-        // nested path. Build the nested attrset from rest_keys, then emit
-        // the dynamic key expression.
-        for (key_attr, rest_keys, value_expr) in &dynamic_dotted_entries {
-            // Build nested attrset: { rest_key1.rest_key2... = value; }
-            self.compile_nested_attrset(&[(rest_keys.clone(), value_expr.clone())])?;
-            // Compile the dynamic key expression.
-            self.compile_dynamic_attr_key(key_attr)?;
-            count += 1;
-        }
-
-        self.emit(OpCode::MakeAttrs);
-        self.emit_u16(count);
-        // MakeAttrs pops 2*count (value+key pairs) and pushes 1 attrset.
-        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
-
-        // If there were both flat/dotted and we need to merge, the MakeAttrs
-        // handles it by creating one set. Dotted entries that share top-level
-        // keys with flat entries need merging. For now, dotted entries that
-        // share keys with flat entries override. This matches Nix semantics
-        // where the last definition wins (for simple cases).
-
-        Ok(())
-    }
-
-    /// Compile a `rec { ... }` attrset.
-    fn compile_rec_attrset(&mut self, set: &ast::AttrSet) -> Result<(), CompileError> {
-        self.begin_scope();
-
-        // Collect all binding names and their expressions.
-        let mut bindings: Vec<(String, RecAttrBinding)> = Vec::new();
-        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
-            std::collections::BTreeMap::new();
-
-        for entry in set.entries() {
-            match entry {
-                ast::Entry::AttrpathValue(ref apv) => {
-                    let attrpath = apv.attrpath().ok_or_else(|| {
-                        CompileError::MissingNode("rec attrset attrpath".to_string())
-                    })?;
-                    let keys: Vec<_> = attrpath.attrs().collect();
-                    let value_expr = apv.value().ok_or_else(|| {
-                        CompileError::MissingNode("rec attrset value".to_string())
-                    })?;
-                    if keys.len() == 1 {
-                        let key = static_attr_name(&keys[0])?;
-                        bindings.push((key, RecAttrBinding::Value(value_expr)));
-                    } else {
-                        let top_key = static_attr_name(&keys[0])?;
-                        let rest_keys: Vec<String> = keys[1..]
-                            .iter()
-                            .map(static_attr_name)
-                            .collect::<Result<_, _>>()?;
-                        dotted_entries
-                            .entry(top_key)
-                            .or_default()
-                            .push((rest_keys, value_expr));
-                    }
-                }
-                ast::Entry::Inherit(ref inherit) => {
-                    if let Some(from) = inherit.from() {
-                        let source_expr = from.expr().ok_or_else(|| {
-                            CompileError::MissingNode("inherit from expr".to_string())
-                        })?;
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name.clone(), RecAttrBinding::InheritFrom(source_expr.clone(), name)));
-                        }
-                    } else {
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name, RecAttrBinding::Inherit));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add dotted entries as bindings.
-        for (top_key, sub) in &dotted_entries {
-            bindings.push((top_key.clone(), RecAttrBinding::Dotted(sub.clone())));
-        }
-
-        // Static cycle detection: check for `name = name;` patterns in rec bindings.
-        {
-            let pairs: Vec<(String, &ast::Expr)> = bindings
-                .iter()
-                .filter_map(|(name, binding)| match binding {
-                    RecAttrBinding::Value(expr) => Some((name.clone(), expr as &ast::Expr)),
-                    _ => None,
-                })
-                .collect();
-            for warning in detect_trivial_cycles(&pairs) {
-                eprintln!("{warning}");
-            }
-        }
-
-        let binding_count = u16::try_from(bindings.len())
-            .map_err(|_| CompileError::TooManyLocals)?;
-
-        // Phase 1: Allocate local slots with null placeholders.
-        for (name, _) in &bindings {
-            self.emit(OpCode::Null); // emit() tracks stack_depth
-            self.add_local(name.clone())?;
-        }
-
-        // Phase 2: Compile each binding's value (lazy: use deferred thunks
-        // so rec attrset values are only evaluated when accessed).
-        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
-
-        for (name, binding) in &bindings {
-            let local_idx = self.resolve_local(name).unwrap();
-            let slot = self.locals[local_idx as usize].slot;
-            match binding {
-                RecAttrBinding::Value(expr) => {
-                    // In rec attrsets, lambdas must NOT be treated as trivial
-                    // because MakeClosure captures upvalues at emission time.
-                    // If a lambda captures a sibling binding (especially a
-                    // dotted entry, which is appended last), that slot may still
-                    // be null.  Wrapping in a deferred thunk delays MakeClosure
-                    // until the lambda is actually accessed, when all siblings
-                    // are populated.
-                    if Self::is_trivial_value_for_rec(expr) {
-                        self.compile_expr(expr)?;
-                    } else {
-                        let uv_descs = self.compile_thunk_deferred(expr)?;
-                        if !uv_descs.is_empty() {
-                            thunk_slots.push((slot, uv_descs));
-                        }
-                    }
-                }
-                RecAttrBinding::Inherit => {
-                    // Temporarily hide this local so lookup finds the outer one.
-                    let saved_depth = self.locals[local_idx as usize].depth;
-                    self.locals[local_idx as usize].depth = u32::MAX;
-                    self.emit_variable_load_restore(name, local_idx, saved_depth)?;
-                    self.locals[local_idx as usize].depth = saved_depth;
-                }
-                RecAttrBinding::InheritFrom(source_expr, attr_name) => {
-                    // Wrap inherit-from in deferred thunks for laziness.
-                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
-                    if !uv_descs.is_empty() {
-                        thunk_slots.push((slot, uv_descs));
-                    }
-                }
-                RecAttrBinding::Dotted(sub_bindings) => {
-                    // Wrap dotted bindings in deferred thunks so that leaf
-                    // expressions referencing rec siblings are only evaluated
-                    // after PatchThunkUpvalues has populated upvalues.
-                    // Leaves inside the thunk are also made individually lazy
-                    // to avoid eagerly forcing siblings (which would cause
-                    // infinite recursion for cross-referencing dotted bindings).
-                    let uv_descs = self.compile_nested_attrset_thunk_deferred(sub_bindings)?;
-                    if !uv_descs.is_empty() {
-                        thunk_slots.push((slot, uv_descs));
-                    }
-                }
-            }
-            self.emit(OpCode::SetLocal);
-            self.emit_u16(slot);
-            self.emit(OpCode::Pop);
-        }
-
-        // Phase 2b: Patch thunk upvalues now that all siblings exist.
-        for (slot, uv_descs) in &thunk_slots {
-            self.emit(OpCode::PatchThunkUpvalues);
-            self.emit_u16(*slot);
-            self.emit_u16(uv_descs.len() as u16);
-            for uv in uv_descs {
-                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
-                self.emit_u16(uv.index);
-            }
-        }
-
-        // Build the attrset from the local variables.
-        for (name, _) in &bindings {
-            let slot = self.find_local_slot(name);
-            self.emit(OpCode::GetLocal);
-            self.emit_u16(slot);
-            self.emit_constant(VMValue::String(name.clone()))?;
-        }
-        self.emit(OpCode::MakeAttrs);
-        self.emit_u16(binding_count);
-        // MakeAttrs pops 2*count and pushes 1.
-        self.stack_depth = self.stack_depth.saturating_sub(2 * binding_count) + 1;
-
-        // Clean up scope: move the attrset result down past the locals.
-        self.end_scope(binding_count);
-
-        Ok(())
+        // A `NormalizeError` is a group nix itself rejects, and it is now
+        // RETURNED rather than swallowed into a fallback. That is the whole of
+        // the rejection tier on this engine.
+        let plan = sui_normalize::plan_for_group_total(set, rec).map_err(reject)?;
+        self.compile_plan_group(&plan)
     }
 
     // ── plan-driven binding groups ────────────────────────────────────────
@@ -1747,252 +1213,31 @@ impl Compiler {
     /// The entries are recursive (like `rec { ... }`), and the result
     /// is the `body` attribute.
     fn compile_legacy_let(&mut self, ll: &ast::LegacyLet) -> Result<(), CompileError> {
-        // `let { … }` IS `(rec { … }).body`, so it is the same recursive
-        // binder over the same plan, selecting one member instead of building
-        // an attrset. Same measured defect:
+        // `let { … }` IS `(rec { … }).body`, so it is the same recursive binder
+        // over the same plan, selecting one member instead of building an
+        // attrset. Same measured defect it fixes:
         //
         //   let { a = {b=1;}; a.c = 2; body = a; }   was {"c":2}
         //                                            nix {"b":1,"c":2}
-        match sui_normalize::plan_for_group_total(ll, true) {
-            Ok(plan) if plan.dynamics.is_empty() => {
-                let body_sym = sui_intern::intern("body");
-                if plan.statics.iter().any(|b| b.name == body_sym) {
-                    self.begin_scope();
-                    let local_count = self.bind_plan_group_locals(&plan)?;
-                    let slot = self.find_local_slot("body");
-                    self.emit(OpCode::GetLocal);
-                    self.emit_u16(slot);
-                    self.end_scope(local_count);
-                    return Ok(());
-                }
-                // No `body` member: fall through so the existing path emits
-                // its own diagnostic rather than this one inventing a second.
-            }
-            Ok(_) | Err(_) => {}
+        let plan = sui_normalize::plan_for_group_total(ll, true).map_err(reject)?;
+        if !plan.dynamics.is_empty() {
+            return Err(CompileError::Unsupported(
+                "dynamic attribute in a legacy let".to_string(),
+            ));
+        }
+        let body_sym = sui_intern::intern("body");
+        if !plan.statics.iter().any(|b| b.name == body_sym) {
+            return Err(CompileError::Unsupported(
+                "legacy let without a 'body' attribute".to_string(),
+            ));
         }
 
         self.begin_scope();
-
-        // Collect bindings — same logic as compile_rec_attrset but
-        // operating on a LegacyLet node (which also implements HasEntry).
-        let mut bindings: Vec<(String, RecAttrBinding)> = Vec::new();
-        let mut dotted_entries: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
-            std::collections::BTreeMap::new();
-
-        for entry in ll.entries() {
-            match entry {
-                ast::Entry::AttrpathValue(ref apv) => {
-                    let attrpath = apv.attrpath().ok_or_else(|| {
-                        CompileError::MissingNode("legacy let attrpath".to_string())
-                    })?;
-                    let keys: Vec<_> = attrpath.attrs().collect();
-                    let value_expr = apv.value().ok_or_else(|| {
-                        CompileError::MissingNode("legacy let value".to_string())
-                    })?;
-                    if keys.len() == 1 {
-                        let key = static_attr_name(&keys[0])?;
-                        bindings.push((key, RecAttrBinding::Value(value_expr)));
-                    } else {
-                        let top_key = static_attr_name(&keys[0])?;
-                        let rest_keys: Vec<String> = keys[1..]
-                            .iter()
-                            .map(static_attr_name)
-                            .collect::<Result<_, _>>()?;
-                        dotted_entries
-                            .entry(top_key)
-                            .or_default()
-                            .push((rest_keys, value_expr));
-                    }
-                }
-                ast::Entry::Inherit(ref inherit) => {
-                    if let Some(from) = inherit.from() {
-                        let source_expr = from.expr().ok_or_else(|| {
-                            CompileError::MissingNode("inherit from expr".to_string())
-                        })?;
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name.clone(), RecAttrBinding::InheritFrom(source_expr.clone(), name)));
-                        }
-                    } else {
-                        for attr in inherit.attrs() {
-                            let name = static_attr_name(&attr)?;
-                            bindings.push((name, RecAttrBinding::Inherit));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add dotted entries as bindings.
-        for (top_key, sub) in &dotted_entries {
-            bindings.push((top_key.clone(), RecAttrBinding::Dotted(sub.clone())));
-        }
-
-        let binding_count = u16::try_from(bindings.len())
-            .map_err(|_| CompileError::TooManyLocals)?;
-
-        // Phase 1: Allocate local slots with null placeholders.
-        for (name, _) in &bindings {
-            self.emit(OpCode::Null);
-            self.add_local(name.clone())?;
-        }
-
-        // Phase 2: Compile each binding's value (lazy thunks for non-trivial).
-        let mut thunk_slots: Vec<(u16, Vec<UpvalueDesc>)> = Vec::new();
-
-        for (name, binding) in &bindings {
-            let local_idx = self.resolve_local(name).unwrap();
-            let slot = self.locals[local_idx as usize].slot;
-            match binding {
-                RecAttrBinding::Value(expr) => {
-                    // Same rec-aware trivial check as compile_rec_attrset:
-                    // lambdas must be deferred to avoid capturing null slots.
-                    if Self::is_trivial_value_for_rec(expr) {
-                        self.compile_expr(expr)?;
-                    } else {
-                        let uv_descs = self.compile_thunk_deferred(expr)?;
-                        if !uv_descs.is_empty() {
-                            thunk_slots.push((slot, uv_descs));
-                        }
-                    }
-                }
-                RecAttrBinding::Inherit => {
-                    let saved_depth = self.locals[local_idx as usize].depth;
-                    self.locals[local_idx as usize].depth = u32::MAX;
-                    self.emit_variable_load_restore(name, local_idx, saved_depth)?;
-                    self.locals[local_idx as usize].depth = saved_depth;
-                }
-                RecAttrBinding::InheritFrom(source_expr, attr_name) => {
-                    let uv_descs = self.compile_inherit_from_thunk_deferred(source_expr, attr_name)?;
-                    if !uv_descs.is_empty() {
-                        thunk_slots.push((slot, uv_descs));
-                    }
-                }
-                RecAttrBinding::Dotted(sub_bindings) => {
-                    // Wrap dotted bindings in deferred thunks (same as rec attrset).
-                    let uv_descs = self.compile_nested_attrset_thunk_deferred(sub_bindings)?;
-                    if !uv_descs.is_empty() {
-                        thunk_slots.push((slot, uv_descs));
-                    }
-                }
-            }
-            self.emit(OpCode::SetLocal);
-            self.emit_u16(slot);
-            self.emit(OpCode::Pop);
-        }
-
-        // Phase 2b: Patch thunk upvalues now that all siblings exist.
-        for (slot, uv_descs) in &thunk_slots {
-            self.emit(OpCode::PatchThunkUpvalues);
-            self.emit_u16(*slot);
-            self.emit_u16(uv_descs.len() as u16);
-            for uv in uv_descs {
-                self.chunk.write_byte(if uv.is_local { 1 } else { 0 }, self.current_line);
-                self.emit_u16(uv.index);
-            }
-        }
-
-        // Instead of building an attrset and selecting "body", directly
-        // load the local named "body" — this avoids constructing the
-        // intermediate attrset entirely.
-        let body_slot = self.find_local_slot_opt("body").ok_or_else(|| {
-            CompileError::MissingNode("legacy let missing 'body' binding".to_string())
-        })?;
+        let local_count = self.bind_plan_group_locals(&plan)?;
+        let slot = self.find_local_slot("body");
         self.emit(OpCode::GetLocal);
-        self.emit_u16(body_slot);
-
-        // Clean up scope: move the body value down past the locals.
-        self.end_scope(binding_count);
-
-        Ok(())
-    }
-
-    /// Compile a nested attrset from a list of (remaining-path, value) pairs.
-    /// Used for dotted bindings like `{ a.b = 1; a.c = 2; }`.
-    ///
-    /// When `lazy_leaves` is true, non-trivial leaf values are wrapped in
-    /// immediate thunks (for rec attrsets where leaves may reference siblings
-    /// that aren't fully initialised until after `PatchThunkUpvalues` runs).
-    fn compile_nested_attrset(
-        &mut self,
-        sub_bindings: &[(Vec<String>, ast::Expr)],
-    ) -> Result<(), CompileError> {
-        self.compile_nested_attrset_inner(sub_bindings, false, &[])
-    }
-
-    fn compile_nested_attrset_lazy(
-        &mut self,
-        sub_bindings: &[(Vec<String>, ast::Expr)],
-    ) -> Result<(), CompileError> {
-        self.compile_nested_attrset_inner(sub_bindings, true, &[])
-    }
-
-    /// `prefix` is the dotted path already consumed by outer recursions. It
-    /// exists only so a duplicate can be NAMED; it does not affect codegen.
-    fn compile_nested_attrset_inner(
-        &mut self,
-        sub_bindings: &[(Vec<String>, ast::Expr)],
-        lazy_leaves: bool,
-        prefix: &[String],
-    ) -> Result<(), CompileError> {
-        // Group by next key.
-        let mut groups: std::collections::BTreeMap<String, Vec<(Vec<String>, ast::Expr)>> =
-            std::collections::BTreeMap::new();
-
-        for (path, expr) in sub_bindings {
-            // ★ `split_first`, NOT `path[0]`.
-            //
-            // Two bindings at the SAME dotted path (`{ a.b = 1; a.b = 2; }`)
-            // both land in group `a` carrying the remainder `["b"]`, recurse,
-            // both land in group `b` carrying `[]`, and recurse AGAIN — at
-            // which point `path` is empty and `path[0]` panicked with
-            // `index out of bounds: the len is 0 but the index is 0`.
-            //
-            // It panicked on the `sui-vm-eval` thread, where the CLI's
-            // whole-expression fallback then rescued the run and returned the
-            // walker's answer with exit 0 — so a compiler PANIC was invisible
-            // in normal use and surfaced only under `SUI_VM_STRICT`. A crash
-            // that presents as a clean success is the worst available shape.
-            let Some((head, rest)) = path.split_first() else {
-                let full = if prefix.is_empty() {
-                    "<unknown>".to_string()
-                } else {
-                    prefix.join(".")
-                };
-                return Err(CompileError::Unsupported(format!(
-                    "attribute '{full}' is defined more than once; CppNix \
-                     rejects this at parse time and the bytecode compiler \
-                     cannot represent it"
-                )));
-            };
-            groups
-                .entry(head.clone())
-                .or_default()
-                .push((rest.to_vec(), expr.clone()));
-        }
-
-        let mut count: u16 = 0;
-        for (key, nested) in &groups {
-            if nested.len() == 1 && nested[0].0.is_empty() {
-                // Simple leaf.
-                if lazy_leaves && !Self::is_trivial_value(&nested[0].1) {
-                    self.compile_thunk_immediate(&nested[0].1)?;
-                } else {
-                    self.compile_expr(&nested[0].1)?;
-                }
-            } else {
-                // Recurse for deeper nesting.
-                let mut deeper = prefix.to_vec();
-                deeper.push(key.clone());
-                self.compile_nested_attrset_inner(nested, lazy_leaves, &deeper)?;
-            }
-            self.emit_constant(VMValue::String(key.clone()))?;
-            count += 1;
-        }
-
-        self.emit(OpCode::MakeAttrs);
-        self.emit_u16(count);
-        self.stack_depth = self.stack_depth.saturating_sub(2 * count) + 1;
+        self.emit_u16(slot);
+        self.end_scope(local_count);
         Ok(())
     }
 
@@ -3067,6 +2312,21 @@ fn ident_text(ident: &ast::Ident) -> String {
 
 /// Extract a static attribute name (identifier or plain string literal).
 /// Rejects dynamic/interpolated keys.
+/// A `sui-normalize` rejection, as a compile error.
+///
+/// ★ `ParseError`, matching the tree-walker's `EvalError::ParseError` for the
+/// same input, and for the same measured reason: nix refuses a duplicate
+/// attribute during PARSING — `nix-instantiate --parse` on `{ a = 1; a = 2; }`
+/// fails and never evaluates. Filing it as `Unsupported` would say "the
+/// compiler cannot do this", which is a claim about sui; it is a claim about
+/// the program.
+///
+/// The message carries the attribute PATH, not nix's `«string»:1:3` position
+/// or caret block — that needs a source-span formatter sui does not have.
+fn reject(e: sui_normalize::NormalizeError) -> CompileError {
+    CompileError::ParseError(e.to_string())
+}
+
 fn static_attr_name(attr: &ast::Attr) -> Result<String, CompileError> {
     match attr {
         ast::Attr::Ident(ident) => Ok(ident_text(ident)),
@@ -3249,23 +2509,27 @@ mod tests {
     /// `SUI_VM_STRICT=1` exposed it. That is why this is a test and not just a
     /// bounds fix: the failure mode was indistinguishable from working.
     ///
-    /// CppNix rejects this input outright (`attribute 'a.b' already defined`),
-    /// so refusing to compile it is the correct interim behaviour until the
-    /// AST normalizer rejects it at parse.
+    /// CppNix rejects this input outright, so refusing to compile it is
+    /// correct — and as of 2026-08-18 the refusal comes from the right place.
+    /// This comment used to end "until the AST normalizer rejects it at
+    /// parse"; that interim is over. The message is now `sui-normalize`'s
+    /// (`attribute 'a.b' already defined`) rather than the deleted nested-path
+    /// builder's ("defined more than once"), and it names the FULL dotted
+    /// path, which is what nix names too.
     #[test]
     fn duplicate_dotted_path_errors_instead_of_panicking() {
-        for src in [
-            "{ a.b = 1; a.b = 2; }",
-            "{ a.b.c = 1; a.b.c = 2; }",
-            "{ a.b.c.d = 1; a.b.c.d = 2; }",
+        for (src, path) in [
+            ("{ a.b = 1; a.b = 2; }", "a.b"),
+            ("{ a.b.c = 1; a.b.c = 2; }", "a.b.c"),
+            ("{ a.b.c.d = 1; a.b.c.d = 2; }", "a.b.c.d"),
         ] {
             let err = Compiler::compile(src)
                 .err()
                 .unwrap_or_else(|| panic!("{src} compiled; it must be refused, not accepted"));
             let msg = err.to_string();
             assert!(
-                msg.contains("defined more than once"),
-                "{src}: expected a duplicate-attribute refusal, got: {msg}"
+                msg.contains(&format!("attribute '{path}' already defined")),
+                "{src}: expected a duplicate-attribute refusal naming '{path}', got: {msg}"
             );
         }
     }

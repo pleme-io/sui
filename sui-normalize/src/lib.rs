@@ -166,8 +166,29 @@ pub struct StaticBinding {
 #[derive(Clone, Debug, Default)]
 pub struct GroupPlan {
     /// Effective recursiveness. **The FIRST definition's, never an OR of the
-    /// two** — a later `rec` is discarded, which is what makes
-    /// `{ a = {b=1;}; a = rec {c=2; d=c;}; }` a parse error in nix.
+    /// two** — a later `rec` is discarded.
+    ///
+    /// ★ CORRECTED 2026-08-18. This used to say the discard makes
+    /// `{ a = {b=1;}; a = rec {c=2; d=c;}; }` "a parse error in nix". It is
+    /// not. Measured:
+    ///
+    /// ```text
+    /// { a = {b=1;}; a = rec {c=2; d=c;}; }   exit 1  error: undefined variable 'c'
+    /// { a = {b=1;}; a = rec {c=2;};      }   exit 0  { a = { b = 1; c = 2; }; }
+    /// { a = rec {c=2; d=c;}; a = {b=1;}; }   exit 0  { a = { b=1; c=2; d=2; }; }
+    /// ```
+    ///
+    /// The MECHANISM was right and the CONSEQUENCE was wrong, which is the
+    /// dangerous shape: nix accepts the group, splices it, and only then fails
+    /// to resolve `c` — at EVAL time, because the discarded `rec` left no
+    /// scope for `d` to find it in. Drop `d = c` and the same shape is exit 0.
+    /// Reverse the order and it evaluates fine, because the first
+    /// declaration's `rec` governs.
+    ///
+    /// This matters for the rejection tier: an implementation that read this
+    /// comment literally would refuse row 2 outright, which nix ACCEPTS. A
+    /// false reject refuses working code. (The tree-walker was already correct
+    /// on all three — only the comment was wrong.)
     pub recursive: bool,
     /// Static bindings after the splice, in nix's insertion order.
     pub statics: Vec<StaticBinding>,
