@@ -7056,7 +7056,7 @@ async fn main() -> Result<(), CliError> {
                 }
                 if !served_from_cache {
                     let output = eval_render_threaded(&expr, json, raw)?;
-                    println!("{output}");
+                    emit_eval_output(&output, raw);
                     // Populate the cache after a successful eval (best-effort;
                     // a failed write never changes correctness, only hit rate).
                     if let Some(key) = cache_key {
@@ -7212,7 +7212,7 @@ async fn main() -> Result<(), CliError> {
                     })
                     .expect("failed to spawn VM eval thread");
                 let output = vm_handle.join().expect("VM eval thread panicked")?;
-                println!("{output}");
+                emit_eval_output(&output, raw_flag);
                 // Populate after a successful eval (best-effort: a failed write
                 // costs hit rate, never correctness).
                 if let Some(key) = cache_key {
@@ -9082,6 +9082,39 @@ fn eval_cache_key_for_installable(
 ///
 /// macOS's main thread has a fixed 8 MB stack that stacker can't grow, so the
 /// 256 MB stack is mandatory for deep nixpkgs / module-system fixpoints.
+/// Emit an eval result the way `nix eval` does.
+///
+/// `nix eval --raw` writes the value's bytes and **nothing else** — no
+/// trailing newline. sui appended one, so the two differed by a byte on every
+/// `--raw` invocation:
+///
+/// ```text
+/// sui eval --raw '…drvPath' > f    50 bytes, last byte 0a
+/// nix eval --raw '…drvPath' > f    49 bytes, last byte 76
+/// ```
+///
+/// `--raw` exists precisely so a caller can capture bytes verbatim, so this is
+/// a real parity gap and not a cosmetic one: `$(…)` hides it (the shell strips
+/// trailing newlines) but a redirect, a hash of the output, or a byte-compare
+/// does not. It was found by an adversarial reviewer checking a claim that two
+/// drvPaths were "byte-for-byte" identical — the VALUES were, the CLI output
+/// was not, and the review's own capture method was what exposed it.
+///
+/// Non-raw modes keep the newline: `nix eval` and `nix eval --json` both emit
+/// one, and dropping it there would be a new divergence in the other direction.
+fn emit_eval_output(output: &str, raw_flag: bool) {
+    if raw_flag {
+        print!("{output}");
+        // stdout is line-buffered on a tty and block-buffered on a pipe; with
+        // no newline to trigger a flush, an unflushed tail could be lost at
+        // exit. `println!` got this for free.
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    } else {
+        println!("{output}");
+    }
+}
+
 fn eval_render_threaded(expr: &str, json_flag: bool, raw_flag: bool) -> Result<String, CliError> {
     let expr_clone = expr.to_string();
     let handle = std::thread::Builder::new()
