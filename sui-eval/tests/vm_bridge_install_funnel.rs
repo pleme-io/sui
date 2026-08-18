@@ -90,10 +90,30 @@ fn only_install_vm_bridges_installs_the_bridges() {
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
+        // Match CALLS, not mentions.
+        //
+        // This scanned the raw file with `src.contains(name)` and immediately
+        // produced a false positive on `sui-bytecode/tests/lang_corpus_vm.rs`,
+        // which calls `install_vm_bridges()` correctly and merely NAMES the
+        // three setters in a comment explaining why hand-rolling them is
+        // banned. The guard fired on prose describing the rule it enforces.
+        //
+        // That is not a cosmetic bug. A guard with false positives acquires an
+        // allowlist, and an allowlist is how a guard dies — so the fix is to
+        // narrow the match, never to exempt the file. Two narrowings: skip
+        // comment lines, and require the name to be followed by `(`.
+        let code: String = src
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let names: Vec<&str> = SETTERS
             .iter()
             .copied()
-            .filter(|s| src.contains(*s))
+            .filter(|s| code.contains(&format!("{s}(")))
             .collect();
         if names.is_empty() {
             continue;
@@ -102,9 +122,11 @@ fn only_install_vm_bridges_installs_the_bridges() {
             // Anti-vacuity: the install site must still install ALL THREE.
             // Losing one here is precisely the bug this guard exists for, and
             // it would otherwise leave the offender list empty and green.
+            // `code`, not `src`: a comment mentioning a setter must not be
+            // able to satisfy "the install site still installs all three".
             for s in SETTERS {
                 assert!(
-                    src.contains(s),
+                    code.contains(&format!("{s}(")),
                     "install_vm_bridges() no longer installs `{s}` — that is \
                      the defect this guard exists to catch, seen from the \
                      inside. All three bridges must be installed together or \
