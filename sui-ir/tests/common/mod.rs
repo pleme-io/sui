@@ -127,4 +127,57 @@ pub const SUPPLEMENT: &[&str] = &[
     "let f = { a ? 3 }: a; in f { }",
     "map (x: import ./m.nix { inherit x; }) [ 1 2 ]",
     "let s = rec { a = { b = 1; }; c = a.b or 0; }; in s.c",
+
+    // ── ★ the parse-time splice (`sui-normalize`), EVERY shape with a NESTED
+    //    twin ────────────────────────────────────────────────────────────
+    //
+    // nix decides duplicate-key merge-vs-overwrite at PARSE time from SYNTAX,
+    // as a destructive splice into the FIRST-declared node whose `rec` flag
+    // governs and into whose scope the second side is re-scoped. These rows
+    // are here rather than in a bespoke test because ONE list buys both
+    // proofs: `differential.rs` byte-compares `render_ir` against
+    // `render_ast` on them (the side arena must leave the two renders
+    // identical), and `eval_differential.rs` compares eval_ir's ANSWER
+    // against the tree-walker's.
+    //
+    // ★ Every shape appears twice, at top level and NESTED, and that is not
+    // padding. The walker's adoption shipped working only at the top level
+    // for a day: its descendant walk recursed through children that cast to
+    // `ast::Expr`, but an attrset's children are `AttrpathValue` nodes, which
+    // do not — so the recursion stopped at the first attrset and never
+    // reached a binding's VALUE. Every test written for it was a top-level
+    // binder, which is exactly why none of them caught it, and almost all
+    // real nix nests.
+    "rec { o = {e=1;}; o.x = 2; }",
+    "{ w = rec { o = {e=1;}; o.x = 2; }; }",
+    "rec { a = {b=1;}; a = {c=2;}; }",
+    "{ w = rec { a = {b=1;}; a = {c=2;}; }; }",
+    // reverse order, with a sibling reading THROUGH the merge
+    "rec { a.c = 2; a = {b=1;}; x = a.b; }",
+    "{ w = rec { a.c = 2; a = {b=1;}; x = a.b; }; }",
+    // the merged node stays rec: `y` reads a sibling the OTHER half introduced
+    "rec { a = {b=1;}; a = {c=2;}; y = a.b + a.c; }",
+    // `let` — the same rule, one binder up
+    "let a = {b=1;}; a = {c=2;}; in a",
+    "{ w = (let a = {b=1;}; a = {c=2;}; in a); }",
+    "let a = {b=1;}; a.c = 2; in a",
+    "let a.c = 2; a = {b=1;}; in a",
+    // ★ RE-SCOPING — the half no value-level merge can express. The second
+    // side's bindings become bindings OF THE FIRST NODE, so they are scoped
+    // by it and the LATER `rec` is discarded.
+    "let b=1; in { a={x=2;}; a=rec{b=99;c=b;}; }",
+    "let b=5; in { a=rec{c=b;}; a={b=9;}; }",
+    // ★ THE ACCEPTANCE CASE: a dotted path splices INTO a `rec` literal, the
+    // spliced member resolves `d` from inside that rec scope, and the rec
+    // body's `b` reads `c` from the spliced-in member — mutual recursion
+    // ACROSS the merge boundary. Nothing short of a real splice produces it.
+    "{ a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b",
+    "{ outer = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }",
+    "{ p = { q = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }; }",
+    "[ { a = rec { b = c + 1; d = 2; }; a.c = d + 3; } ]",
+    "let f = x: x; in { z = { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }; }",
+    // plain dotted merge — no duplicate key, correct before AND after, so a
+    // regression in the common case cannot hide behind the fixes above
+    "rec { a.b = 1; a.c = 2; }",
+    "{ w = rec { a.b = 1; a.c = 2; }; }",
 ];

@@ -52,14 +52,23 @@ use sui_ir::file_eval::clear_file_caches;
 /// Measured on first run: **98/117 agree, 19 diverge.** They are NOT one
 /// severity, and the grouping is the useful part:
 ///
-/// - **DECLARED (12)** — `eval_ir` returns a typed
+/// - **DECLARED (13)** — `eval_ir` returns a typed
 ///   `IrEvalError::Unsupported`. It is explicitly a *pure-subset* evaluator
 ///   and these constructs are outside the subset by design. A loud refusal, not
 ///   a wrong answer. This is the good pattern the other engines lack.
 /// - **UNDECLARED ERROR (6)** — `eval_ir` fails where the walker succeeds, but
 ///   not through the `Unsupported` channel. Each is a real gap; the error text
 ///   is recorded so a fix can be matched to it.
-/// - **WRONG VALUE (1)** — the serious one. See `merge-dynamic-attrs`.
+/// - **WRONG VALUE (0)** — ★ **empty since 2026-08-18**, when `eval_ir` adopted
+///   the `sui-normalize` plan. Every remaining gap is now a REFUSAL, so on this
+///   corpus eval_ir has no silent divergence left: it either agrees with the
+///   walker or says out loud that it cannot answer. Keep the bucket — its
+///   emptiness is the claim, and a future entry landing here is a regression of
+///   a different order than one landing above it.
+///
+/// (The per-bucket counts above were stale by 2 before that change; they are
+/// re-counted here. The `assert_eq!` on `KNOWN_GAPS.len()` is the enforced
+/// number — prose counts are not, which is precisely how these drifted.)
 const KNOWN_GAPS: &[(&str, &str)] = &[
     // ── DECLARED: typed Unsupported, outside the pure subset by design ──
     // `builtins.toFile` is store-effecting — it computes a content-addressed
@@ -70,18 +79,6 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // failure mode: contrast the bytecode VM, which computes a WRONG path for
     // the same fixture because it silently drops string context.
     ("eval-okay-tofile-refs", "unsupported:store-effecting-builtin"),
-    // ★ The tree-walker adopted `sui-normalize`'s parse-time splice on
-    // 2026-08-18 and this fixture graduated out of quarantine; eval_ir has
-    // not been wired yet, so it is now the engine that is behind.
-    //
-    //     { a = rec { b = c + 1; d = 2; }; a.c = d + 3; }.a.b
-    //     walker 6 (= nix)   eval_ir  undefined variable 'c'
-    //
-    // The error states the defect exactly: `c` exists only AFTER the dotted
-    // binding `a.c` is spliced INTO the `rec` literal, so an engine that
-    // never splices cannot resolve it. Not an eval_ir regression — the walker
-    // moved. Closes when eval_ir adopts the plan.
-    ("eval-okay-regrettable-rec-attrset-merge", "unsupported:no-attrset-splice"),
     ("eval-okay-attrs", "unsupported:legacy-let"),
     ("eval-okay-attrs2", "unsupported:construct"),
     ("eval-okay-flatten", "unsupported:construct"),
@@ -101,20 +98,20 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     ("eval-okay-getattrpos", "err:expected-set-got-null (unsafeGetAttrPos returns null)"),
     ("eval-okay-sort", "err:lessThan-expected-comparable-types"),
     ("eval-okay-substring-context", "err:empty-substring-drops-string-context"),
-    // ── WRONG VALUE — the one that is a silent divergence, not a refusal ──
+    // ── WRONG VALUE — deliberately EMPTY (see the module docs) ──
     //
-    // `{ set1 = { a = 1; }; set1 = { "${"b"+""}" = 2; }; }` must merge to
-    // `{a=1; b=2;}`; eval_ir yields `{b=2;}` — it DROPS the statically-keyed
-    // half when a brace-merge combines a static attrset with a dynamically-keyed
-    // one. Verified against the vendored CppNix `.exp`, which expects all four
-    // sets to be `{a:1,b:2}`, and the tree-walker matches it.
+    // The two that lived here both closed on 2026-08-18 when eval_ir began
+    // consuming `Program::plan`:
     //
-    // Note `set3`/`set4` in the same fixture use the DOTTED form and are
-    // correct, so the bug is specific to brace-merge, which narrows the fix.
-    //
-    // This is the only row here that produces a plausible wrong ANSWER rather
-    // than an error, and is therefore the one to close first.
-    ("eval-okay-merge-dynamic-attrs", "WRONG-VALUE:brace-merge-drops-static-half"),
+    //   eval-okay-merge-dynamic-attrs        was: brace-merge-drops-static-half
+    //     `{ set1 = {a=1;}; set1 = { "${"b"+""}" = 2; }; }` yielded `{b=2;}`,
+    //     dropping the statically-keyed half. A plan splices the two literals
+    //     at parse time, so there is no merge left to get wrong.
+    //   eval-okay-regrettable-rec-attrset-merge   was: no-attrset-splice
+    //     `{ a = rec { b = c+1; d = 2; }; a.c = d+3; }.a.b` -> `undefined
+    //     variable 'c'`, because `c` exists only AFTER `a.c` is spliced INTO
+    //     the `rec` literal. Mutual recursion across the merge boundary; only
+    //     a real splice produces the 6 that nix and the walker give.
 ];
 
 fn lang_dir() -> PathBuf {
@@ -302,7 +299,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        21,
+        19,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means eval_ir regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

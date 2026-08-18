@@ -265,7 +265,7 @@ fn render_ir_expr(program: &Program, id: ExprId, out: &mut String) {
             render_ir_expr(program, *body, out);
             out.push(')');
         }
-        Ir::LetIn { bindings, body } => {
+        Ir::LetIn { bindings, body, .. } => {
             out.push_str("(let");
             render_ir_bindings(program, bindings, out);
             out.push_str(" (in ");
@@ -277,7 +277,7 @@ fn render_ir_expr(program: &Program, id: ExprId, out: &mut String) {
             render_ir_bindings(program, bindings, out);
             out.push(')');
         }
-        Ir::AttrSet { rec, bindings } => {
+        Ir::AttrSet { rec, bindings, .. } => {
             out.push_str("(attrs");
             if *rec {
                 out.push_str(" rec");

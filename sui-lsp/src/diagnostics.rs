@@ -75,6 +75,18 @@ pub enum Finding {
     IntOutOfRange { text: String },
     #[error("`{text}` is not a valid floating-point literal")]
     BadFloat { text: String },
+    /// A binding group's `sui-normalize` plan referenced a syntax node the
+    /// lowering walk never turned into an expression — an internal
+    /// inconsistency between the plan and the arena, NOT a defect in the
+    /// user's file.
+    ///
+    /// It is surfaced rather than swallowed because the alternative is worse
+    /// than a confusing squiggle: the IR has no rowan tree at eval time, so a
+    /// dropped plan silently reinstates nix's parse-time attrset splice being
+    /// missed, which is a WRONG ANSWER at exit 0. Loud and misattributed beats
+    /// silent and wrong; the wording says whose bug it is.
+    #[error("internal: sui could not resolve a binding-group plan here (this is a sui bug, not an error in your file)")]
+    PlanUnresolved,
 }
 
 impl Finding {
@@ -96,6 +108,7 @@ impl Finding {
             Self::Missing { .. } => "sui/missing-child",
             Self::IntOutOfRange { .. } => "sui/int-out-of-range",
             Self::BadFloat { .. } => "sui/bad-float",
+            Self::PlanUnresolved => "sui/plan-unresolved",
         }
     }
 }
@@ -279,6 +292,15 @@ fn classify_lower_error(e: &LowerError) -> (Finding, Anchor) {
         LowerError::BadFloat { text } => (
             Finding::BadFloat { text: text.clone() },
             Anchor::UniqueOccurrence(text.clone()),
+        ),
+        // Carries a real byte range, so it anchors precisely — the same shape
+        // as `ParseErrorNode`, for a different cause.
+        LowerError::PlanUnresolved { start, end } => (
+            Finding::PlanUnresolved,
+            Anchor::Span {
+                start: *start,
+                end: *end,
+            },
         ),
     }
 }

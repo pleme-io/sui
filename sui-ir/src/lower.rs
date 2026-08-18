@@ -90,7 +90,6 @@ pub fn lower(expr: &ast::Expr) -> Result<Program, LowerError> {
         by_range: rustc_hash::FxHashMap::default(),
         attr_by_range: rustc_hash::FxHashMap::default(),
         plans: Vec::new(),
-        plan_of: rustc_hash::FxHashMap::default(),
     };
     let root = lo.lower_expr(expr)?;
     debug_assert_eq!(root.index() + 1, lo.exprs.len());
@@ -99,7 +98,6 @@ pub fn lower(expr: &ast::Expr) -> Result<Program, LowerError> {
         spans: lo.spans,
         root,
         plans: lo.plans,
-        plan_of: lo.plan_of,
     })
 }
 
@@ -118,7 +116,6 @@ struct Lowerer {
     /// `Attr::Str`, which has an `AttrName` but no `ExprId`.
     attr_by_range: rustc_hash::FxHashMap<(u32, u32), AttrName>,
     plans: Vec<IrGroupPlan>,
-    plan_of: rustc_hash::FxHashMap<ExprId, PlanId>,
 }
 
 fn span_of(node: &rnix::SyntaxNode) -> Span {
@@ -249,7 +246,13 @@ impl Lowerer {
         // the generated differentials red on a seed rnix accepts.
         if let Ok(Some(plan)) = sui_normalize::plan_for_group(node, recursive) {
             let pid = self.lower_plan(&plan)?;
-            self.plan_of.insert(id, pid);
+            // Write it back onto the node the ordinary walk just pushed. The
+            // binder is always one of these two — `record_plan` is only ever
+            // called with the id it returned for an `AttrSet`/`LetIn`.
+            match &mut self.exprs[id.index()] {
+                Ir::AttrSet { plan, .. } | Ir::LetIn { plan, .. } => *plan = pid,
+                other => unreachable!("record_plan on a non-binder: {other:?}"),
+            }
         }
         Ok(())
     }
@@ -373,7 +376,14 @@ impl Lowerer {
                     field: "body",
                 })?;
                 let body = self.lower_expr(&body_ast)?;
-                let id = self.push(Ir::LetIn { bindings, body }, li.syntax());
+                let id = self.push(
+                    Ir::LetIn {
+                        bindings,
+                        body,
+                        plan: PlanId::NONE,
+                    },
+                    li.syntax(),
+                );
                 self.record_plan(li, true, id)?;
                 Ok(id)
             }
@@ -386,7 +396,14 @@ impl Lowerer {
             ast::Expr::AttrSet(set) => {
                 let rec = set.rec_token().is_some();
                 let bindings = self.lower_entries(set)?;
-                let id = self.push(Ir::AttrSet { rec, bindings }, set.syntax());
+                let id = self.push(
+                    Ir::AttrSet {
+                        rec,
+                        bindings,
+                        plan: PlanId::NONE,
+                    },
+                    set.syntax(),
+                );
                 self.record_plan(set, rec, id)?;
                 Ok(id)
             }

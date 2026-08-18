@@ -93,7 +93,8 @@ use sui_intern::{intern, resolve, Symbol};
 pub use crate::builtins::IrBuiltin;
 use crate::file_eval::{current_eval_dir, push_eval_file};
 use crate::ir::{
-    AttrName, BinOp, Binding, ExprId, Ir, Param, PathKind, PathPart, Program, StrPart, UnaryOp,
+    AttrName, BinOp, Binding, ExprId, Ir, IrBound, Param, PathKind, PathPart, PlanId, Program,
+    StrPart, UnaryOp,
 };
 
 // ── overlay-fixpoint promotion state (the M2.6 rec-semantics mirror) ────────
@@ -473,6 +474,20 @@ enum IrThunkState {
         value: ExprId,
         env: IrEnv,
     },
+    /// A `sui-normalize` binding group (`Program::plans`), evaluated lazily.
+    ///
+    /// ★ It has to be BOTH lazy and re-pointable, and neither existing variant
+    /// is both. `Suspended` cannot express it because an implicit group —
+    /// the one a dotted path invents for `b` in `a.b.c = 1` — has no `ExprId`
+    /// of its own to suspend on; it exists only in the plan. And a closure
+    /// capturing the env eagerly would be wrong inside a `rec`, where phase 2
+    /// re-points every sibling at the completed scope: a forward reference
+    /// would resolve against a scope still missing its later siblings.
+    PlanGroup {
+        prog: Rc<Program>,
+        plan: PlanId,
+        env: IrEnv,
+    },
     /// Deferred application — apply `func` to `args` in order on force
     /// (the walker's `Thunk::new_native` in `map` / `mapAttrs`).
     NativeApply { func: IrValue, args: Vec<IrValue> },
@@ -497,6 +512,7 @@ impl std::fmt::Debug for IrThunk {
             IrThunkState::InheritSelect { name, .. } => write!(f, "<inherit {name}>"),
             IrThunkState::WithIdent { name, .. } => write!(f, "<with-ident {name}>"),
             IrThunkState::DeferredTail { .. } => write!(f, "<deferred-tail>"),
+            IrThunkState::PlanGroup { plan, .. } => write!(f, "<plan-group {plan:?}>"),
             IrThunkState::NativeApply { .. } => write!(f, "<native-apply>"),
             IrThunkState::Blackhole => write!(f, "<blackhole>"),
             IrThunkState::Promise(_) => write!(f, "<promise>"),
@@ -547,6 +563,14 @@ impl IrThunk {
         })))
     }
 
+    fn plan_group(prog: Rc<Program>, plan: PlanId, env: IrEnv) -> Self {
+        Self(Rc::new(RefCell::new(IrThunkState::PlanGroup {
+            prog,
+            plan,
+            env,
+        })))
+    }
+
     pub(crate) fn native_apply(func: IrValue, args: Vec<IrValue>) -> Self {
         Self(Rc::new(RefCell::new(IrThunkState::NativeApply {
             func,
@@ -568,6 +592,10 @@ impl IrThunk {
         let mut state = self.0.borrow_mut();
         match &mut *state {
             IrThunkState::Suspended { env, .. } => *env = new_env.clone(),
+            // Phase 2 of a `rec` fixpoint has to reach a sub-group too, or a
+            // nested binding that reads a later sibling of the OUTER group
+            // resolves against the pre-fixpoint scope.
+            IrThunkState::PlanGroup { env, .. } => *env = new_env.clone(),
             IrThunkState::InheritSelect { source, .. } => {
                 let source = source.clone();
                 drop(state);
@@ -608,6 +636,11 @@ impl IrThunk {
             NativeApply {
                 func: IrValue,
                 args: Vec<IrValue>,
+            },
+            PlanGroup {
+                prog: Rc<Program>,
+                plan: PlanId,
+                env: IrEnv,
             },
         }
         // Stable identity of THIS thunk (mirror of the walker's
@@ -690,6 +723,11 @@ impl IrThunk {
                 IrThunkState::NativeApply { func, args } => Todo::NativeApply {
                     func: func.clone(),
                     args: args.clone(),
+                },
+                IrThunkState::PlanGroup { prog, plan, env } => Todo::PlanGroup {
+                    prog: prog.clone(),
+                    plan: *plan,
+                    env: env.clone(),
                 },
             };
             *state = match &todo {
@@ -808,6 +846,13 @@ impl IrThunk {
                     result = result.and_then(|f| apply(f, arg));
                 }
                 result
+            }
+            Todo::PlanGroup { prog, plan, env } => {
+                // Same file-context restoration as `Todo::Eval`: a relative
+                // path literal inside a late-forced group must resolve against
+                // the file that WROTE it, not whoever forced it.
+                let _file_guard = env.eval_file().map(|f| push_eval_file((*f).clone()));
+                eval_plan_group(&prog, plan, &env)
             }
         };
         let mut state = self.0.borrow_mut();
@@ -1108,11 +1153,29 @@ pub fn eval_ir(prog: &Rc<Program>, id: ExprId, env: &IrEnv) -> Result<IrValue, I
                 Traverse::Missing(_) | Traverse::NotAttrs => Ok(IrValue::Bool(false)),
             }
         }
-        Ir::LetIn { bindings, body } => {
-            let new_env = eval_let_bindings(prog, bindings, env)?;
+        Ir::LetIn {
+            bindings,
+            body,
+            plan,
+        } => {
+            // A planned binder takes the splice-aware path; `PlanId::NONE` is
+            // a positive statement that this group has no duplicate static key
+            // and no dotted path, which is exactly when the entry loop below
+            // is already correct. See `sui-normalize`.
+            let new_env = match plan.get() {
+                Some(plan) => bind_plan_group(prog, plan, env)?.1,
+                None => eval_let_bindings(prog, bindings, env)?,
+            };
             eval_ir(prog, *body, &new_env)
         }
-        Ir::AttrSet { rec, bindings } => eval_attrset(prog, *rec, bindings, env),
+        Ir::AttrSet {
+            rec,
+            bindings,
+            plan,
+        } => match plan.get() {
+            Some(plan) => eval_plan_group(prog, plan, env),
+            None => eval_attrset(prog, *rec, bindings, env),
+        },
     }
 }
 
@@ -2079,6 +2142,148 @@ fn attrname_is_dynamic(attr: &AttrName) -> bool {
         AttrName::Dynamic(_) => true,
         AttrName::Str(parts) => parts.iter().any(|p| matches!(p, StrPart::Interp(_))),
     }
+}
+
+/// Build an attrset from a lowered [`IrGroupPlan`] — the IR's mirror of the
+/// walker's `eval_plan_group`.
+///
+/// nix decides duplicate-key merge-vs-overwrite at PARSE time from SYNTAX, as
+/// a destructive splice into the FIRST-declared node whose `rec` flag governs
+/// and into whose scope the second side is re-scoped. `sui-normalize` performed
+/// that splice during lowering; this only evaluates the result.
+///
+/// The consequence worth stating: **there is no merging here.** `insert` is a
+/// plain insert, because the plan's postcondition is that no static name
+/// repeats. That is what removes the force-to-WHNF-on-collision the entry loops
+/// below still do — the step that turns a lazy sibling strict and reports
+/// `UndefinedVar` on expressions nix evaluates fine.
+fn eval_plan_group(
+    prog: &Rc<Program>,
+    plan: PlanId,
+    env: &IrEnv,
+) -> Result<IrValue, IrEvalError> {
+    let (attrs, _scope) = bind_plan_group(prog, plan, env)?;
+    Ok(IrValue::Attrs(Rc::new(attrs)))
+}
+
+/// Build a plan's bindings, returning BOTH the attrset and the scope they were
+/// bound in — an attrset literal wants the attrs, a `let` wants the scope.
+fn bind_plan_group(
+    prog: &Rc<Program>,
+    plan_id: PlanId,
+    env: &IrEnv,
+) -> Result<(IrAttrs, IrEnv), IrEvalError> {
+    let plan = prog.plan_at(plan_id);
+    let mut attrs = IrAttrs::new();
+    // `rec`-ness came from the FIRST declaration, never an OR of the two sides.
+    let mut scope_env = if plan.recursive { env.child() } else { env.clone() };
+    let mut thunks: Vec<IrThunk> = Vec::new();
+
+    // ONE thunk per `inherit (e) …;` clause, shared across every name that
+    // clause binds, so `e` evaluates at most once — and built against the
+    // group's OWN scope, which is measurable on nix:
+    // `rec { b = {x=99;}; inherit (b) x; }` is `x = 99`.
+    let from_thunks: Vec<IrThunk> = plan
+        .inherit_froms
+        .iter()
+        .map(|e| IrThunk::suspended(prog.clone(), *e, scope_env.clone()))
+        .collect();
+
+    // ★ The IR's fixpoint is NOT the walker's, so this is not a straight port.
+    // The walker re-points every thunk and lets `Blackhole` catch cycles; the
+    // IR additionally classifies a binding as construction-recursive up front
+    // (`suspended_recursive` -> a Promise cell rather than a Blackhole), which
+    // is what carries `self:super:` overlay threading. Losing that here would
+    // regress the fixpoint machinery on every planned group, so the classifier
+    // runs over the plan's own names.
+    //
+    // Uses ALL of the group's names, not just the ones already bound — the
+    // `let` binder's rule, not the rec-attrset arm's `defined_so_far`. The two
+    // differ only on a FORWARD reference, where treating it as recursive is
+    // the direction that keeps a legal program evaluating.
+    let group_names: HashSet<Symbol> = plan.statics.iter().map(|b| b.name).collect();
+
+    for b in &plan.statics {
+        let name = resolve(b.name);
+        let value = match &b.value {
+            IrBound::Expr(expr) => {
+                let mut referenced = HashSet::new();
+                referenced_idents(prog, *expr, &mut referenced);
+                let recursive =
+                    plan.recursive && group_names.iter().any(|n| referenced.contains(n));
+                let t = if recursive {
+                    IrThunk::suspended_recursive(prog.clone(), *expr, scope_env.clone())
+                } else {
+                    IrThunk::suspended(prog.clone(), *expr, scope_env.clone())
+                };
+                thunks.push(t.clone());
+                IrValue::Thunk(t)
+            }
+            IrBound::Group(sub) => {
+                let t = IrThunk::plan_group(prog.clone(), *sub, scope_env.clone());
+                thunks.push(t.clone());
+                IrValue::Thunk(t)
+            }
+            // `inherit x` resolves in the ENCLOSING scope, never the group's
+            // own rec scope — that is what makes it shadow rather than
+            // self-reference, and why it can never participate in the merge.
+            IrBound::Inherit => env
+                .lookup(&name)
+                .ok_or_else(|| IrEvalError::UndefinedVar(name.clone()))?,
+            IrBound::InheritFrom { from } => {
+                let t = IrThunk::inherit_select(from_thunks[*from].clone(), name.clone());
+                thunks.push(t.clone());
+                IrValue::Thunk(t)
+            }
+        };
+        // PLAIN insert: the plan guarantees no repeated static name.
+        attrs.insert(name.clone(), value.clone());
+        if plan.recursive {
+            scope_env.bind(&name, value);
+        }
+    }
+
+    // Phase 2: re-point every thunk at the COMPLETED scope, so a binding that
+    // reads a later sibling resolves. `PlanGroup` is re-pointable for this.
+    if plan.recursive {
+        for t in &thunks {
+            t.update_env(&scope_env);
+        }
+    }
+
+    // ── dynamic keys ─────────────────────────────────────────────────────
+    //
+    // `${e}` keys that did not constant-fold, resolved AFTER every static key,
+    // in source order, in the group's own scope — nix's ordering, and the
+    // reason a dynamic key can never take part in the parse-time merge.
+    // Omitting these entirely is a bug this pass has already shipped once: two
+    // fixtures built `{ a = {}; }` where nix builds `{ a = { b = …; c = …; }; }`.
+    //
+    // A key evaluating to `null` SKIPS the binding, rather than inserting a
+    // `"null"` name.
+    for d in &plan.dynamics {
+        let Some(name) = eval_attr_maybe_null(prog, &d.key, &scope_env)? else {
+            continue;
+        };
+        let value = match &d.value {
+            IrBound::Expr(expr) => {
+                IrValue::Thunk(IrThunk::suspended(prog.clone(), *expr, scope_env.clone()))
+            }
+            IrBound::Group(sub) => {
+                IrValue::Thunk(IrThunk::plan_group(prog.clone(), *sub, scope_env.clone()))
+            }
+            IrBound::Inherit => env
+                .lookup(&name)
+                .ok_or_else(|| IrEvalError::UndefinedVar(name.clone()))?,
+            IrBound::InheritFrom { from } => IrValue::Thunk(IrThunk::inherit_select(
+                from_thunks[*from].clone(),
+                name.clone(),
+            )),
+        };
+        attrs.insert(name, value);
+    }
+
+    Ok((attrs, scope_env))
 }
 
 #[allow(clippy::too_many_lines)]

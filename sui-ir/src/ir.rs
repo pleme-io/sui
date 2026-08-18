@@ -91,6 +91,23 @@ pub enum Binding {
 pub struct PlanId(pub u32);
 
 impl PlanId {
+    /// "No plan for this binder." A sentinel rather than `Option<PlanId>`
+    /// because `PlanId` is a plain `u32` with no niche, so the `Option` would
+    /// widen the field to 8 bytes; as a sentinel it fits in padding `Ir`
+    /// already had and `size_of::<Ir>()` is unchanged at 48.
+    pub const NONE: PlanId = PlanId(u32::MAX);
+
+    /// The plan, or `None` when this binder needs none.
+    ///
+    /// A `None` is a POSITIVE statement, not a fallback: `sui-normalize`
+    /// records a group ONLY when it has a duplicate static key or a dotted
+    /// path, so its absence means the group has neither — exactly when the
+    /// ordinary entry loop is already correct.
+    #[must_use]
+    pub fn get(self) -> Option<PlanId> {
+        (self != PlanId::NONE).then_some(self)
+    }
+
     #[must_use]
     pub fn index(self) -> usize {
         self.0 as usize
@@ -325,11 +342,51 @@ pub enum Ir {
     /// `param: body` / `{ … }: body`
     Lambda { param: Param, body: ExprId },
     /// `let …; in body`
-    LetIn { bindings: Vec<Binding>, body: ExprId },
+    /// `plan` is [`PlanId::NONE`] unless `sui-normalize` recorded a splice for
+    /// this binder.
+    ///
+    /// ★ This does NOT weaken the render differential, which is what forbids
+    /// putting the splice in `bindings`: `plan` is an opaque index the
+    /// renderers ignore, `bindings` still holds every pre-splice child, and
+    /// the plan's CONTENT stays in `Program::plans`. `render_ir` vs
+    /// `render_ast` remains an independent structural check on the tree.
+    ///
+    /// It rides on the NODE rather than in a `FxHashMap<ExprId, PlanId>` on
+    /// `Program` for two measured reasons and one design one:
+    ///
+    /// * `size_of::<Ir>()` is **unchanged at 48** — the `u32` lands in padding
+    ///   the enum already had, which is why the sentinel is a `PlanId::NONE`
+    ///   rather than an `Option<PlanId>` (no niche, so that would be 8 bytes).
+    /// * it deletes a whole hash map from `Program`, which `file_eval.rs`
+    ///   caches per canonical path for the PROCESS LIFETIME — memory is the
+    ///   thing the lower-once design exists to conserve.
+    /// * an arena indexes; it does not hash. `eval_ir` reads this field off
+    ///   the `Ir` it is already matching on, so the lookup is not a lookup.
+    ///
+    /// ★ NOT among the reasons: speed. An earlier revision of this comment
+    /// claimed the map cost ~62ns per binder eval for **+8.1%** on an
+    /// attrset-saturated workload. That number was an ARTIFACT and is
+    /// retracted. The A/B differed by more than the variable — the planned
+    /// source carried one extra `let` binding, and `IrEnv::lookup` scans its
+    /// scope, so every variable reference in a 40k-iteration hot loop paid for
+    /// it. The +8% survived deleting the map entirely, which is what exposed
+    /// it. With the binding count matched the delta is +0.65% / +0.98% /
+    /// -0.00% against a ±1% A-vs-A noise floor: **not measurable.**
+    /// `examples/plan_lookup_cost.rs` is that instrument, control included.
+    LetIn {
+        bindings: Vec<Binding>,
+        body: ExprId,
+        plan: PlanId,
+    },
     /// `let { …; body = …; }` (legacy)
     LegacyLet { bindings: Vec<Binding> },
     /// `{ … }` / `rec { … }`
-    AttrSet { rec: bool, bindings: Vec<Binding> },
+    AttrSet {
+        rec: bool,
+        bindings: Vec<Binding>,
+        /// See [`Ir::LetIn`]'s `plan`.
+        plan: PlanId,
+    },
     /// `[ a b c ]`
     List(Vec<ExprId>),
     /// `lhs <op> rhs`
@@ -374,10 +431,6 @@ pub struct Program {
     /// APPENDED to `exprs` after lowering, which is why every `ExprId` a plan
     /// references is one the ordinary walk already produced.
     pub plans: Vec<IrGroupPlan>,
-    /// The binder `ExprId` -> its plan. An ABSENT entry is a positive
-    /// statement: that group has no duplicate static key and no dotted path,
-    /// so the existing construction path is already correct for it.
-    pub plan_of: rustc_hash::FxHashMap<ExprId, PlanId>,
 }
 
 impl Program {
@@ -387,9 +440,23 @@ impl Program {
     }
 
     /// The plan for the binder at `id`, if it needed one.
+    ///
+    /// `eval_ir` does NOT call this — it reads `plan` straight out of the
+    /// `Ir::AttrSet` / `Ir::LetIn` it is already matching on, which is the
+    /// whole point of moving the field onto the node. This is for callers
+    /// holding only an `ExprId`.
     #[must_use]
     pub fn plan(&self, id: ExprId) -> Option<&IrGroupPlan> {
-        self.plan_of.get(&id).map(|p| &self.plans[p.index()])
+        self.plan_id(id).map(|p| &self.plans[p.index()])
+    }
+
+    /// The [`PlanId`] on the binder at `id`, if it needed a plan.
+    #[must_use]
+    pub fn plan_id(&self, id: ExprId) -> Option<PlanId> {
+        match self.expr(id) {
+            Ir::AttrSet { plan, .. } | Ir::LetIn { plan, .. } => plan.get(),
+            _ => None,
+        }
     }
 
     /// A nested plan by index.
@@ -503,7 +570,7 @@ impl Program {
                 }
                 out.push(*body);
             }
-            Ir::LetIn { bindings, body } => {
+            Ir::LetIn { bindings, body, .. } => {
                 push_bindings(&mut out, bindings);
                 out.push(*body);
             }
