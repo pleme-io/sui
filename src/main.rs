@@ -1109,38 +1109,40 @@ fn flake_ref_to_json(s: &str) -> serde_json::Value {
 }
 
 fn key_generate_secret(key_name: &str) -> Result<(), CliError> {
-    use base64::Engine;
-    use ed25519_dalek::SigningKey;
-    let mut csprng = rand::rngs::OsRng;
-    let key = SigningKey::generate(&mut csprng);
-    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
-    let sec_b64 = base64::engine::general_purpose::STANDARD.encode(key.to_bytes());
-    // cppnix format: `<key-name>:<base64-secret>` written to stdout
-    // (operator pipes to a file).
-    println!("{key_name}:{sec_b64}");
-    eprintln!("public key (share this): {key_name}:{pub_b64}");
+    // cppnix layout: `<name>:base64(seed || public)` on stdout (the operator
+    // pipes it to a file), public half on stderr so the pipe stays clean.
+    //
+    // This used to encode `SigningKey::to_bytes()` -- the 32-byte SEED alone --
+    // under a comment claiming it was "cppnix format". It was not, and the
+    // resulting key was rejected by nix AND by sui's own cache signer. The
+    // layout now lives in exactly one place; see sui_compat::signature::SecretKey.
+    let key = sui_compat::signature::SecretKey::generate(key_name);
+    // `print!`, NOT `println!`: cppnix writes the key with NO trailing
+    // newline, and the canonical use is `sui key generate-secret > keyfile`.
+    // A stray 0x0a makes sui's key file differ byte-wise from nix's for the
+    // same operation, which is exactly the drop-in claim we are making.
+    // (sui's own readers trim, so this was invisible from inside sui -- the
+    // same shape as suminuri's `--extract` missing-newline bug.)
+    // The public-key hint stays on STDERR, so the redirected file is clean;
+    // nix prints nothing there, and an extra stderr line breaks no consumer.
+    print!("{}", key.to_secret_string());
+    use std::io::Write;
+    std::io::stdout().flush().ok();
+    eprintln!("public key (share this): {}", key.to_public_string());
     Ok(())
 }
 
 fn key_convert_secret_to_public() -> Result<(), CliError> {
-    use base64::Engine;
     use std::io::Read;
-    use ed25519_dalek::SigningKey;
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)
         .map_err(|e| CliError::NotImplemented(format!("key convert: stdin: {e}")))?;
-    let line = input.trim();
-    let (name, b64) = line.split_once(':').ok_or_else(|| {
-        CliError::NotImplemented(format!("key convert: expected `<name>:<base64>`, got `{line}`"))
-    })?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| CliError::NotImplemented(format!("key convert: base64: {e}")))?;
-    let arr: [u8; 32] = bytes.try_into()
-        .map_err(|_| CliError::NotImplemented("key convert: secret must be 32 bytes".into()))?;
-    let key = SigningKey::from_bytes(&arr);
-    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
-    println!("{name}:{pub_b64}");
+    let key = sui_compat::signature::SecretKey::parse(input.trim())
+        .map_err(|e| CliError::NotImplemented(format!("key convert: {e}")))?;
+    // No trailing newline -- byte-parity with cppnix, as above.
+    print!("{}", key.to_public_string());
+    use std::io::Write;
+    std::io::stdout().flush().ok();
     Ok(())
 }
 
@@ -2516,22 +2518,17 @@ fn store_sign_manifest(
     key_file: &std::path::Path,
 ) -> Result<(), CliError> {
     use base64::Engine;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::Signer;
 
     let manifest_bytes = std::fs::read(manifest)
         .map_err(|e| CliError::NotImplemented(format!("sign-manifest: read {}: {e}", manifest.display())))?;
 
     let key_text = std::fs::read_to_string(key_file)
         .map_err(|e| CliError::NotImplemented(format!("sign-manifest: key: {e}")))?;
-    let (key_name, b64) = key_text.trim().split_once(':').ok_or_else(||
-        CliError::NotImplemented("sign-manifest: expected `<name>:<base64>` key".into())
-    )?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64)
-        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: base64: {e}")))?;
-    let arr: [u8; 32] = bytes.try_into()
-        .map_err(|_| CliError::NotImplemented("sign-manifest: key must be 32 bytes".into()))?;
-    let signing = SigningKey::from_bytes(&arr);
-    let sig = signing.sign(&manifest_bytes);
+    let key = sui_compat::signature::SecretKey::parse(key_text.trim())
+        .map_err(|e| CliError::NotImplemented(format!("sign-manifest: {e}")))?;
+    let key_name = key.key_name();
+    let sig = key.signing_key().sign(&manifest_bytes);
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
 
     let sig_path = manifest.with_extension("json.sig.json");
@@ -6438,17 +6435,13 @@ async fn store_sign(
     // recursive sha256 from sui's hash_path semantics as the
     // signed digest.
     use base64::Engine;
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::Signer;
     let key_text = std::fs::read_to_string(key_file)
         .map_err(|e| CliError::NotImplemented(format!("store sign: read {key_file}: {e}")))?;
-    let (key_name, b64) = key_text.trim().split_once(':').ok_or_else(||
-        CliError::NotImplemented("store sign: key file expected `<name>:<base64>` shape".into())
-    )?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64)
-        .map_err(|e| CliError::NotImplemented(format!("store sign: base64: {e}")))?;
-    let arr: [u8; 32] = bytes.try_into()
-        .map_err(|_| CliError::NotImplemented("store sign: key must be 32 bytes".into()))?;
-    let signing = SigningKey::from_bytes(&arr);
+    let parsed_key = sui_compat::signature::SecretKey::parse(key_text.trim())
+        .map_err(|e| CliError::NotImplemented(format!("store sign: {e}")))?;
+    let key_name = parsed_key.key_name();
+    let signing = parsed_key.signing_key();
 
     let layouts = sui_spec::store_layout::load_canonical()
         .map_err(|e| CliError::NotImplemented(format!("store sign: {e:?}")))?;

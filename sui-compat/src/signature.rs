@@ -211,6 +211,245 @@ fn b64_decode(input: &str) -> Result<Vec<u8>, ()> {
     crate::hash::base64_decode(input).map_err(|_| ())
 }
 
+// ── Secret keys: the `keyname:base64(seed || public)` format ─────────
+//
+// THE ONE PLACE THIS FORMAT IS PARSED OR EMITTED. Before this existed the
+// codebase carried FIVE hand-rolled implementations of it and they did not
+// agree: `sui key generate-secret`, `sui key convert-secret-to-public`,
+// `sui store sign-manifest` and `sui store sign` all used a bare 32-byte
+// seed, while `sui-cache`'s CacheSigner used the correct 64-byte nix layout.
+//
+// The consequence was not a cosmetic split. `sui key generate-secret`
+// emitted a key that sui's OWN cache signer rejected
+// (`expected 64 bytes, got 32`), and that nix rejected too
+// (`error: secret key is not valid`) -- so the pleme-io-native binary could
+// not mint a key for the pleme-io-native cache, and the operator had to keep
+// cppnix installed to do it. Two self-consistent islands, each with passing
+// tests, neither able to read the other.
+//
+// THE LAYOUT (cppnix, `nix key generate-secret`): base64 over 64 bytes,
+// being the 32-byte ed25519 seed followed by its 32-byte public key. The
+// trailing half is redundant -- it is derivable from the seed -- which is
+// exactly why a 32-byte-seed implementation round-trips happily against
+// itself and fails against everything else.
+pub const SECRET_KEY_LEN: usize = 64;
+
+/// Length of a bare ed25519 seed, the legacy sui-only encoding.
+pub const SEED_LEN: usize = 32;
+
+/// A nix-compatible ed25519 secret key: `keyname:base64(seed || public)`.
+#[derive(Clone)]
+pub struct SecretKey {
+    key_name: String,
+    signing_key: ed25519_dalek::SigningKey,
+}
+
+impl core::fmt::Debug for SecretKey {
+    /// Never renders the key material -- a `{:?}` in a log line is one of the
+    /// two ways a signing key escapes (the other is argv).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SecretKey")
+            .field("key_name", &self.key_name)
+            .field("signing_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl SecretKey {
+    /// Generate a fresh key pair from the OS CSPRNG.
+    #[must_use]
+    pub fn generate(key_name: impl Into<String>) -> Self {
+        Self {
+            key_name: key_name.into(),
+            signing_key: ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng),
+        }
+    }
+
+    /// Wrap an existing signing key under a name.
+    #[must_use]
+    pub fn from_signing_key(key_name: impl Into<String>, signing_key: ed25519_dalek::SigningKey) -> Self {
+        Self { key_name: key_name.into(), signing_key }
+    }
+
+    /// Parse `keyname:base64(...)`.
+    ///
+    /// Accepts BOTH encodings, deliberately:
+    ///   * 64 bytes -- the canonical cppnix layout, `seed || public`;
+    ///   * 32 bytes -- a bare seed, which is what sui itself emitted before
+    ///     this type existed. Accepting it keeps every key already minted by
+    ///     an older sui working. Lengths are distinct, so this is unambiguous
+    ///     rather than a guess.
+    ///
+    /// Emission is always canonical (`to_secret_string`), so a legacy key
+    /// upgrades in place the first time it is rewritten -- liberal on read,
+    /// strict on write.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidFormat` when the colon is missing, the base64 is bad, the
+    /// length is neither 32 nor 64, or -- on a 64-byte key -- the trailing
+    /// public half does not match the one derived from the seed. cppnix does
+    /// not make that last check (it recomputes from the seed and ignores the
+    /// stored half), so a corrupted pair silently signs with the wrong
+    /// identity there and is refused here. That is a deliberate strictness,
+    /// not a compatibility gap: no correctly-generated key can trip it.
+    pub fn parse(s: &str) -> Result<Self, SignatureError> {
+        let (key_name, b64) = s.trim().split_once(':').ok_or_else(|| {
+            SignatureError::InvalidFormat("secret key: expected `<name>:<base64>`".to_string())
+        })?;
+
+        let decoded = b64_decode(b64).map_err(|()| SignatureError::Base64Decode)?;
+
+        let seed: [u8; SEED_LEN] = match decoded.len() {
+            SECRET_KEY_LEN | SEED_LEN => decoded[..SEED_LEN]
+                .try_into()
+                .map_err(|_| SignatureError::InvalidFormat("secret key: seed slice".to_string()))?,
+            n => {
+                return Err(SignatureError::InvalidFormat(format!(
+                    "secret key: expected {SECRET_KEY_LEN} bytes (nix) or {SEED_LEN} (bare seed), got {n}"
+                )))
+            }
+        };
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+
+        if decoded.len() == SECRET_KEY_LEN
+            && decoded[SEED_LEN..] != signing_key.verifying_key().to_bytes()[..]
+        {
+            return Err(SignatureError::InvalidFormat(
+                "secret key: trailing public half does not match the seed".to_string(),
+            ));
+        }
+
+        Ok(Self { key_name: key_name.to_string(), signing_key })
+    }
+
+    /// The key name.
+    #[must_use]
+    pub fn key_name(&self) -> &str {
+        &self.key_name
+    }
+
+    /// The underlying signing key.
+    #[must_use]
+    pub fn signing_key(&self) -> &ed25519_dalek::SigningKey {
+        &self.signing_key
+    }
+
+    /// The public half.
+    #[must_use]
+    pub fn verifying_key(&self) -> VerifyingKey {
+        self.signing_key.verifying_key()
+    }
+
+    /// Render as `keyname:base64(seed || public)` -- always the canonical
+    /// 64-byte nix layout, whatever this key was parsed from.
+    #[must_use]
+    pub fn to_secret_string(&self) -> String {
+        let mut combined = Vec::with_capacity(SECRET_KEY_LEN);
+        combined.extend_from_slice(self.signing_key.as_bytes());
+        combined.extend_from_slice(&self.verifying_key().to_bytes());
+        format!("{}:{}", self.key_name, base64_encode(&combined))
+    }
+
+    /// Render the public half as `keyname:base64pubkey`.
+    #[must_use]
+    pub fn to_public_string(&self) -> String {
+        format!("{}:{}", self.key_name, base64_encode(&self.verifying_key().to_bytes()))
+    }
+}
+
+#[cfg(test)]
+mod secret_key_tests {
+    use super::*;
+
+    #[test]
+    fn generated_key_is_canonical_64_bytes() {
+        let k = SecretKey::generate("t");
+        let rendered = k.to_secret_string();
+        let (_, b64) = rendered.split_once(':').unwrap();
+        assert_eq!(b64_decode(b64).unwrap().len(), SECRET_KEY_LEN);
+    }
+
+    #[test]
+    fn round_trips_through_parse() {
+        let k = SecretKey::generate("round");
+        let s = k.to_secret_string();
+        let back = SecretKey::parse(&s).unwrap();
+        assert_eq!(back.to_secret_string(), s);
+        assert_eq!(back.to_public_string(), k.to_public_string());
+        assert_eq!(back.key_name(), "round");
+    }
+
+    #[test]
+    fn legacy_bare_seed_is_accepted_and_upgraded() {
+        // What sui emitted before this type existed: name + base64(seed).
+        let k = SecretKey::generate("legacy");
+        let legacy = format!("legacy:{}", base64_encode(k.signing_key().as_bytes()));
+        let parsed = SecretKey::parse(&legacy).unwrap();
+        // Same identity...
+        assert_eq!(parsed.to_public_string(), k.to_public_string());
+        // ...re-emitted in the canonical layout.
+        assert_eq!(parsed.to_secret_string(), k.to_secret_string());
+        assert_ne!(parsed.to_secret_string(), legacy);
+    }
+
+    #[test]
+    fn rejects_mismatched_public_half() {
+        let a = SecretKey::generate("a");
+        let b = SecretKey::generate("b");
+        let mut bytes = a.signing_key().as_bytes().to_vec();
+        bytes.extend_from_slice(&b.verifying_key().to_bytes()); // wrong half
+        let forged = format!("a:{}", base64_encode(&bytes));
+        assert!(SecretKey::parse(&forged).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_length_and_missing_colon() {
+        assert!(SecretKey::parse("nocolon").is_err());
+        assert!(SecretKey::parse(&format!("x:{}", base64_encode(&[0u8; 16]))).is_err());
+        assert!(SecretKey::parse("x:!!!not-base64!!!").is_err());
+    }
+
+    #[test]
+    fn debug_does_not_leak_key_material() {
+        let k = SecretKey::generate("secretive");
+        let rendered = format!("{k:?}");
+        assert!(rendered.contains("secretive"));
+        assert!(rendered.contains("<redacted>"));
+        let minted = k.to_secret_string();
+        let (_, b64) = minted.split_once(':').unwrap();
+        assert!(!rendered.contains(b64));
+    }
+
+    /// The canonical cppnix layout -- `base64(seed || public)` -- built from a
+    /// FIXED seed rather than a pinned real key.
+    ///
+    /// An earlier draft embedded the literal output of `nix key
+    /// generate-secret` here. The commit hook refused it, correctly: a real
+    /// ed25519 secret in the tree is a real secret regardless of intent, and a
+    /// checked-in key shape trains every future reader and scanner to wave the
+    /// warning through. Constructing it proves the same parse contract, and
+    /// the proof against ACTUAL nix output lives where it belongs -- in
+    /// sui-spec/tests/sui_vs_nix_parity.rs, which runs the nix binary itself.
+    #[test]
+    fn parses_canonical_nix_layout() {
+        let seed = [7u8; SEED_LEN];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let mut raw = seed.to_vec();
+        raw.extend_from_slice(&sk.verifying_key().to_bytes());
+        let encoded = format!("fixture:{}", base64_encode(&raw));
+
+        let k = SecretKey::parse(&encoded).expect("canonical 64-byte layout must parse");
+        assert_eq!(k.key_name(), "fixture");
+        assert_eq!(
+            k.to_secret_string(),
+            encoded,
+            "re-emission of a canonical key must be byte-identical"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

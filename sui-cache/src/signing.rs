@@ -62,14 +62,17 @@ impl CacheSigner {
 
     /// Format the secret key as `keyname:base64(secret||public)` (Nix format).
     ///
-    /// Nix stores signing keys as 64 bytes: the 32-byte secret seed
-    /// concatenated with the 32-byte public key, then base64-encoded.
+    /// Delegates to `sui_compat::signature::SecretKey`, which is the ONE
+    /// place this layout is expressed. This implementation was the only
+    /// correct one of the five that used to exist -- it is kept as a thin
+    /// forwarder rather than deleted so `CacheSigner`'s API is unchanged.
     #[must_use]
     pub fn secret_key_string(&self) -> String {
-        let mut combined = Vec::with_capacity(64);
-        combined.extend_from_slice(self.secret_key.as_bytes());
-        combined.extend_from_slice(self.public_key().as_bytes());
-        format!("{}:{}", self.key_name, base64_encode(&combined))
+        sui_compat::signature::SecretKey::from_signing_key(
+            self.key_name.clone(),
+            self.secret_key.clone(),
+        )
+        .to_secret_string()
     }
 
     /// Parse a secret key from the `keyname:base64(secret||public)` format.
@@ -78,29 +81,11 @@ impl CacheSigner {
     ///
     /// Returns an error if the format is invalid or the base64 decoding fails.
     pub fn from_secret_key_string(s: &str) -> Result<Self, crate::CacheError> {
-        let (key_name, b64) = s
-            .split_once(':')
-            .ok_or_else(|| crate::CacheError::Signing("missing colon in key string".to_string()))?;
-
-        let decoded = sui_compat::hash::base64_decode(b64)
-            .map_err(|_| crate::CacheError::Signing("invalid base64 in key".to_string()))?;
-
-        if decoded.len() != 64 {
-            return Err(crate::CacheError::Signing(format!(
-                "expected 64 bytes, got {}",
-                decoded.len()
-            )));
-        }
-
-        let secret_bytes: [u8; 32] = decoded[..32]
-            .try_into()
-            .map_err(|_| crate::CacheError::Signing("secret key slice error".to_string()))?;
-
-        let secret_key = SigningKey::from_bytes(&secret_bytes);
-
+        let key = sui_compat::signature::SecretKey::parse(s)
+            .map_err(|e| crate::CacheError::Signing(e.to_string()))?;
         Ok(Self {
-            key_name: key_name.to_string(),
-            secret_key,
+            key_name: key.key_name().to_string(),
+            secret_key: key.signing_key().clone(),
         })
     }
 
