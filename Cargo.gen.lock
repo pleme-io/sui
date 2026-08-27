@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "8fc0c8ff2891f9b3523350a85a0d1c76a3383a0a8cfe83c058927d5d785021a7",
+  "cargo_lock_sha256": "24cfed562684df54527b0d2c895226dfd767746a8cbd134f88db3f3c2da80183",
   "manifest_sha256": {
     "Cargo.toml": "bca8c55f2b198e5d1d7fff828f35360ac2ea01de319dde7c995bce933d89fcc4",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -10,7 +10,7 @@
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "9a83d35aacd7e417780f4c5510bb9f2ce6ac8c3cbd0f7fe46edbc8646416fcb0",
     "sui-castore/Cargo.toml": "90b813aabfa836dc85922ee214df654550ca19218d35864baacd821839b7193d",
-    "sui-compat/Cargo.toml": "081c9306750e72df272c438c1206eec2eb79583acfcbdb37d4d2ced88864d5ef",
+    "sui-compat/Cargo.toml": "fc4c928af7eedcae4f8b6ec9d3225f0650f3966836d5ef06a33b797000fd3402",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
     "sui-daemon-frame/Cargo.toml": "391a8e59253c00d6886605ef104794d330d935cab6f7f13d335804258d4144e6",
     "sui-daemon-graph/Cargo.toml": "206356f44f08a819630a8057714643b7f13dfa63b8270759aec804cbcf28e6b6",
@@ -24712,6 +24712,18 @@
             "package_key": "nix-nar-0.3.1",
             "kind": "normal",
             "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rand_core",
+            "package_key": "rand_core-0.6.4",
+            "kind": "normal",
+            "features": [
+              "getrandom"
+            ],
             "uses_default_features": true,
             "optional": false,
             "target": null,
