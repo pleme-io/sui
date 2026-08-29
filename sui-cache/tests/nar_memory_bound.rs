@@ -1,6 +1,6 @@
 //! **The measured gate on NAR peak memory.**
 //!
-//! sui OOMKilled six times in one day on camelot-eks (exit 137, cgroup OOM, not
+//! sui OOMKilled six times in one day in production (exit 137, cgroup OOM, not
 //! node pressure) because the `StorageBackend` NAR verbs took and returned owned
 //! `Vec<u8>`/`&[u8]`: streaming was not expressible, so every NAR was fully
 //! resident while it was written or served, and a Postgres L2 `INSERT` of one

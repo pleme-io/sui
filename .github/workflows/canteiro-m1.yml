@@ -1,9 +1,11 @@
-# canteiro-m1 — the LIVE proof of canteiro M1 on a real camelot ARC worker.
+# canteiro-m1 — the LIVE proof of canteiro M1 on a real self-hosted ARC worker.
 #
-# It builds + runs the `canteiro-run` binary (sui-supercacheci) on the isolated
-# 100%-spot scale-to-zero ARC pool `camelot-builder-pleme-eks` — the exact,
-# proven runner label the camelot image-push jobs use
-# (camelot-bootstrap/.github/workflows/image-push.yml). `canteiro-run`
+# It builds + runs the `canteiro-run` binary (sui-supercacheci) on an isolated
+# 100%-spot scale-to-zero ARC pool. The pool label is NOT hardcoded here: it is
+# read from `vars.PRIVATE_BUILDER_RUNNER`, the fleet-wide variable the
+# image-push jobs already resolve, and falls back to a GitHub-hosted runner when
+# that variable is unset — so neither side of a pool rename is a flag day, and
+# a fork with no self-hosted pool still runs the job. `canteiro-run`
 # decomposes a 2-node `build → test` CiRun (both env=None, trivial `true`
 # actions), drives it through `run_in_process` (decompose → in-process shigoto
 # wave execution), and exits 0 iff BOTH nodes reach the green terminal.
@@ -16,14 +18,15 @@
 # TRIGGER: workflow_dispatch ONLY. There is deliberately NO `on: push` — the
 # live ARC run must be a DELIBERATE operator trigger, never an automatic one.
 #
-# BUILD INVOCATION: the camelot ARC runner does not ship a Rust toolchain; the
-# proven pattern on this exact pool (image-push.yml) is to install Nix
+# BUILD INVOCATION: the self-hosted ARC runner does not ship a Rust toolchain;
+# the proven pattern on that pool (image-push.yml) is to install Nix
 # (DeterminateSystems) and pull tools from nixpkgs via `nix shell`. We reuse
 # that pattern — `nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc` — because
 # nixpkgs' cargo/rustc is well past the workspace's rust-version 1.89.0 /
 # edition 2024 requirement and `gcc` supplies the C linker rustc needs. This is
-# grounded in what actually works on camelot-builder-pleme-eks, not sui's other
-# workflows which run on GitHub-hosted ubuntu-latest with dtolnay/rust-toolchain.
+# grounded in what actually works on the self-hosted builder pool, not sui's
+# other workflows which run on GitHub-hosted ubuntu-latest with
+# dtolnay/rust-toolchain.
 
 name: canteiro-m1
 
@@ -33,12 +36,12 @@ on:
 jobs:
   canteiro-run:
     name: canteiro M1 — in-process wave execution on a live ARC worker
-    runs-on: camelot-builder-pleme-eks
+    runs-on: ${{ vars.PRIVATE_BUILDER_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
 
-      # Install Nix the way the PROVEN camelot pattern does (substrate's
-      # image-push.yml, which runs on this exact pool). Load-bearing:
+      # Install Nix the way the PROVEN self-hosted pattern does (substrate's
+      # image-push.yml, which runs on that same pool). Load-bearing:
       # `determinate: false` installs UPSTREAM nix, not Determinate nix —
       # Determinate's systemd-daemon setup ("Create build users") HANGS on a
       # containerized ARC runner with no systemd (the first live attempt,
@@ -58,7 +61,7 @@ jobs:
       # Build + run in one step: `cargo run` compiles the bin then runs it and
       # propagates its exit code, so a non-zero verdict (any node not green)
       # fails the job. cargo/rustc/gcc come from nixpkgs (edition-2024-capable,
-      # past rust-version 1.89.0) — the proven camelot toolchain source.
+      # past rust-version 1.89.0) — the proven toolchain source on that pool.
       - name: Build + run canteiro-run (fails the job on any non-green node)
         run: |
           # A transitive dep (openssl-sys) needs pkg-config + the openssl .pc

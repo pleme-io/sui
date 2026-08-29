@@ -26,7 +26,7 @@
 //! - `gen_pdc::ContentAddr` as the real dedup/cache identity — **M2** (§7);
 //!   [`ContentAddr`] here is an M0 placeholder over the node's action.
 //! - `EnvClass` beyond `None`: `LocalStack` needs cofre cross-org secrets into
-//!   the camelot-ci runners (§5); `WarmPoolClaim` is the viveiro pool
+//!   the CI runners (§5); `WarmPoolClaim` is the viveiro pool
 //!   (**DESIGN**, §7). Both are typed so the axis exists from M0; neither is wired.
 
 use std::sync::Arc;

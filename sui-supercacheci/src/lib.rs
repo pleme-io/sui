@@ -125,7 +125,7 @@ pub mod backend;
 /// ([`preheat::plan_floor`]). Carries the Viggy `(defpromessa)` "cache stays
 /// warm" as a typed [`preheat::WarmthPromessa`]. Shadow-first
 /// ([`PreheatCfg::dry_run`]); the tick loop that drives it is autorevivy's CLEAN
-/// coordinator (a named LiveTODO) with the `camelot-cache-warm` workflow as the
+/// coordinator (a named LiveTODO) with the scheduled cache-warm workflow as the
 /// running interim — this module ships the brain both derive from, never a
 /// second controller.
 pub mod preheat;
@@ -245,7 +245,7 @@ pub enum GenDomain {
     Swift,
 }
 
-/// A runner architecture the camelot in-cluster GHA fleet builds on.
+/// A runner architecture the in-cluster GHA fleet builds on.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
@@ -376,7 +376,7 @@ pub struct GenCfg {
     pub ci_stale_check: bool,
 }
 
-/// One camelot runner architecture's scale-set posture.
+/// One runner architecture's scale-set posture.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ArchAsg {
     /// The runner architecture.
@@ -385,7 +385,7 @@ pub struct ArchAsg {
     pub min: u32,
     /// Maximum replicas.
     pub max: u32,
-    /// Percent of capacity on spot (camelot posture is `100`).
+    /// Percent of capacity on spot (the prescribed posture is `100`).
     pub spot_pct: u8,
     /// The spot instance families the auction diversifies across (the flat
     /// family-name list; the *memory-axis* posture over them lives in
@@ -402,7 +402,7 @@ pub struct ArchAsg {
     pub cordel_wake: bool,
 }
 
-/// The camelot in-cluster GHA runner fleet posture.
+/// The in-cluster GHA runner fleet posture.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct BuildersCfg {
     /// One entry per built architecture (amd64 + arm64).
@@ -475,7 +475,7 @@ pub struct SuperCacheCiConfig {
     /// Named `gen_domains` (not `gen`) because `gen` is a reserved keyword in
     /// Rust edition 2024.
     pub gen_domains: GenCfg,
-    /// The camelot in-cluster runner fleet posture.
+    /// The in-cluster runner fleet posture.
     pub builders: BuildersCfg,
     /// The lifecycle-breath posture.
     pub breathe: BreatheCfg,
@@ -545,7 +545,7 @@ impl TieredConfig for SuperCacheCiConfig {
     /// Tier 2 — the prescribed destination posture: **service-level sui,
     /// never-touch-durable-disk by construction**. Postgres store + Redis
     /// cache + tmpfs sandbox (`never_touch_disk = true`); 100%-spot,
-    /// scale-to-zero, multi-arch camelot runners; the shipped Cargo gen
+    /// scale-to-zero, multi-arch in-cluster runners; the shipped Cargo gen
     /// domain; the co-opt loop pre-shaped but OFF (M4).
     ///
     /// The bands start `dry_run = true` — breathe's shadow-first safety gate
@@ -602,7 +602,7 @@ impl TieredConfig for SuperCacheCiConfig {
                             "r6i".to_string(),
                         ],
                         // Memory-tuned: reject <8 GiB / >20% reclaim, diversify top 3.
-                        memory_auction: memory::MemoryAuctionCfg::camelot(),
+                        memory_auction: memory::MemoryAuctionCfg::memory_tuned(),
                         cordel_wake: true,
                     },
                     ArchAsg {
@@ -611,7 +611,7 @@ impl TieredConfig for SuperCacheCiConfig {
                         max: 5,
                         spot_pct: 100,
                         spot_families: vec!["c7g".to_string(), "m7g".to_string()],
-                        memory_auction: memory::MemoryAuctionCfg::camelot(),
+                        memory_auction: memory::MemoryAuctionCfg::memory_tuned(),
                         cordel_wake: true,
                     },
                 ],
@@ -639,7 +639,7 @@ impl TieredConfig for SuperCacheCiConfig {
             // objective, scale-to-zero at rest. Targets are supplied by the
             // chart values / discovered tier — an empty set yields an honest
             // empty plan, never a claimed-warm cache.
-            preheat: preheat::PreheatCfg::camelot(),
+            preheat: preheat::PreheatCfg::prescribed(),
         }
     }
 }
@@ -735,28 +735,28 @@ mod tests {
         );
         // scale-to-zero at rest — cost at rest is zero.
         assert_eq!(p.preheat.floor_spin.idle_floor, 0);
-        // 6 h cadence matches the camelot-cache-warm workflow.
+        // 6 h cadence matches the scheduled cache-warm workflow.
         assert_eq!(p.preheat.cadence_secs, 21_600);
     }
 
     #[test]
-    fn camelot_posture_is_hundred_percent_spot_scale_to_zero() {
+    fn prescribed_posture_is_hundred_percent_spot_scale_to_zero() {
         let p = SuperCacheCiConfig::prescribed_default();
         assert!(!p.builders.arches.is_empty());
         for a in &p.builders.arches {
-            assert_eq!(a.spot_pct, 100, "camelot posture is 100% spot");
+            assert_eq!(a.spot_pct, 100, "the prescribed posture is 100% spot");
             assert_eq!(a.min, 0, "scale-to-zero: min replicas 0");
         }
     }
 
     #[test]
-    fn camelot_auction_is_memory_tuned_on_every_arch() {
+    fn prescribed_auction_is_memory_tuned_on_every_arch() {
         // The 100%-spot posture is refined ON THE MEMORY AXIS per arch — a
         // memory floor, a reclaim ceiling, and a never-single-family cap. This
         // guard FAILS if an arch ships the memory-blind `unset()` auction.
         let p = SuperCacheCiConfig::prescribed_default();
         for a in &p.builders.arches {
-            assert_eq!(a.memory_auction, crate::memory::MemoryAuctionCfg::camelot());
+            assert_eq!(a.memory_auction, crate::memory::MemoryAuctionCfg::memory_tuned());
             assert!(
                 a.memory_auction.min_mib > 0,
                 "memory floor: never bid a starved instance (memory is the resource)"

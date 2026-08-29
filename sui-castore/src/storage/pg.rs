@@ -1423,7 +1423,7 @@ mod tests {
     // Every mock above is INFALLIBLE: `MockPg` returns `Ok` from all five
     // trait methods, so no test in this file could observe what the backend
     // does when Postgres refuses. That is not a small gap — it is why the
-    // 2026-07-26 camelot outage class was invisible to a green suite.
+    // 2026-07-26 production outage class was invisible to a green suite.
     //
     // What happened: the `sui-cache-pg` pod was rescheduled at 19:00:06Z with
     // `pgdata: emptyDir`, so its database came up EMPTY. sui had connected

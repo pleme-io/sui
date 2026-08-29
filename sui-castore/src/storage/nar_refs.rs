@@ -190,7 +190,7 @@ pub fn advertised_url_line(narinfo: &str) -> Option<&str> {
 /// bar for both accepting an upload and serving a stored entry.
 ///
 /// ── WHY THIS IS A SHARED PREDICATE, not an `is_empty()` at one call site ────
-/// Measured on camelot-eks 2026-08-05: two rows in the durable tier held a
+/// Measured on one production cluster, 2026-08: two rows in the durable tier held a
 /// ZERO-LENGTH value, and the read path served them as `200` with an empty
 /// body. Nix aborted the whole operation on the first one it met while asking
 /// the destination which paths it already had, so two poisoned rows out of 6898

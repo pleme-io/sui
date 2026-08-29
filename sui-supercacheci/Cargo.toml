@@ -11,7 +11,7 @@ repository.workspace = true
 
 # canteiro M1 live-proof entrypoint (theory/CANTEIRO.md §5). The in-pod binary
 # that constructs a 2-node CiRun and drives it through `run_in_process` on a
-# real camelot ARC worker. The library stays a plain `async fn`; only this bin
+# real self-hosted ARC worker. The library stays a plain `async fn`; only this bin
 # needs a runtime, hence the real (non-dev) tokio dep below.
 [[bin]]
 name = "canteiro-run"
@@ -26,7 +26,7 @@ name = "canteiro-emit-gha"
 path = "src/bin/canteiro-emit-gha.rs"
 
 # canteiro plane-(b) CROSS-PROCESS worker (theory/CANTEIRO.md §7.1-A). The in-pod
-# binary one camelot-eks ARC pod runs: claim a WorkItem from the Postgres
+# binary ONE in-cluster ARC pod runs: claim a WorkItem from the Postgres
 # `PgWorkQueue` -> run it via SubprocessRunner -> report the NodeResult back
 # through PG -> repeat until close. Needs the `postgres` feature for the real
 # SqlxPgQueueConn (a `postgres`-less build compiles a stub main); build with

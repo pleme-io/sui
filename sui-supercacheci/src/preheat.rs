@@ -34,9 +34,9 @@
 //!   mutated until the operator flips the band LIVE (breathe's shadow gate).
 //! - **LiveTODO(loop):** the coordinator that *ticks* this plan tick-by-tick is
 //!   [`autorevivy`]'s CLEAN face (`superCacheCiRef`) — design-stage; the running
-//!   interim actuator is the vendor image repo's `camelot-cache-warm`
-//!   scheduled workflow (6 h cadence + on tracked-input change). This module
-//!   ships the **brain both derive from**, never a second controller.
+//!   interim actuator is the vendor image repo's scheduled cache-warm workflow
+//!   (6 h cadence + on tracked-input change). This module ships the **brain
+//!   both derive from**, never a second controller.
 //! - **LiveTODO(observe-feed):** the real Observe beat reads L1/L2 presence
 //!   (sui Redis + Postgres), the tracked-input hashes (git), and the last-warm
 //!   timestamps. The shipped path takes a hand-built observation — so the tick
@@ -161,22 +161,37 @@ pub struct FloorSpinCfg {
     /// Min runners to raise the floor to **while a warm is in flight** for that
     /// arch. Clamped to [`max_floor`](FloorSpinCfg::max_floor).
     pub warm_floor: u32,
-    /// Min runners at rest — `0` = scale-to-zero (the camelot posture: cost at
-    /// rest is zero).
+    /// Min runners at rest — `0` = scale-to-zero (the prescribed posture: cost
+    /// at rest is zero).
     pub idle_floor: u32,
     /// The ceiling the floor never climbs past (the ARC `maxRunners` wall).
     pub max_floor: u32,
 }
 
 impl FloorSpinCfg {
-    /// The camelot default: raise to 1 while warming, 0 at rest, never past 8.
+    /// The prescribed default: raise to 1 while warming, 0 at rest, never past
+    /// 8 — cost at rest is zero, which is the whole point of the posture.
     #[must_use]
-    pub fn camelot() -> Self {
+    pub fn scale_to_zero() -> Self {
         Self {
             warm_floor: 1,
             idle_floor: 0,
             max_floor: 8,
         }
+    }
+
+    /// Deprecated alias for [`scale_to_zero`](Self::scale_to_zero).
+    ///
+    /// The old name carried the estate that first ran this floor; scale-to-zero
+    /// is the property. Identical value, kept so a downstream consumer keeps
+    /// compiling across the rename.
+    #[must_use]
+    #[deprecated(
+        since = "0.1.220",
+        note = "named an estate, not a posture; use `FloorSpinCfg::scale_to_zero()`"
+    )]
+    pub fn camelot() -> Self {
+        Self::scale_to_zero()
     }
 
     /// The zeroed floor (no opinion) — the honest [`bare`](crate::SuperCacheCiConfig::bare)
@@ -226,22 +241,35 @@ impl PreheatCfg {
         }
     }
 
-    /// The prescribed camelot destination posture — enabled, 6 h cadence, a
-    /// 99% warm-fraction objective, **shadow-first** (`dry_run = true`). Targets
+    /// The prescribed destination posture — enabled, 6 h cadence, a 99%
+    /// warm-fraction objective, **shadow-first** (`dry_run = true`). Targets
     /// are left empty here rather than fabricate the microservice image names;
     /// the operator (or the chart values) supplies the real set — an empty
     /// target list yields an honest empty plan, never a claimed-warm cache.
     #[must_use]
-    pub fn camelot() -> Self {
+    pub fn prescribed() -> Self {
         Self {
             enabled: true,
-            cadence_secs: 21_600, // 6 h — matches the camelot-cache-warm workflow cadence
+            cadence_secs: 21_600, // 6 h — matches the scheduled cache-warm workflow cadence
             warm_fraction_target_pct: 99,
             targets: Vec::new(),
-            floor_spin: FloorSpinCfg::camelot(),
+            floor_spin: FloorSpinCfg::scale_to_zero(),
             // breathe shadow-first: observe ShadowWouldApply before spinning the fleet.
             dry_run: true,
         }
+    }
+
+    /// Deprecated alias for [`prescribed`](Self::prescribed).
+    ///
+    /// The old name carried the estate that first ran this posture. Identical
+    /// value, kept so a downstream consumer keeps compiling across the rename.
+    #[must_use]
+    #[deprecated(
+        since = "0.1.220",
+        note = "named an estate, not a posture; use `PreheatCfg::prescribed()`"
+    )]
+    pub fn camelot() -> Self {
+        Self::prescribed()
     }
 
     /// The staleness ceiling this posture allows — the cadence plus a 1 h slack,
@@ -291,7 +319,7 @@ pub struct TargetObservation {
 #[serde(rename_all = "snake_case")]
 pub enum WarmTrigger {
     /// The closure is absent from the cache (L1 or L2), or never warmed — the
-    /// load-bearing case a fresh camelot floor starts in.
+    /// load-bearing case a fresh builder floor starts in.
     ColdStart,
     /// A tracked input changed: `current_input_hash != warmed_input_hash`. The
     /// cache holds a *stale* closure; the new one must be built + warmed.
@@ -582,12 +610,13 @@ pub fn plan_preheat(cfg: &PreheatCfg, observations: &[TargetObservation]) -> Pre
 // ───────────────────────────────────────────────────────────────────────────
 
 /// The Viggy `(defpromessa)` **"the sui super-cache stays warm"** as a typed
-/// outcome value. This is the typed twin of the `camelot-cache-warm` Promessa
+/// outcome value. This is the typed twin of the cache-warm Promessa
 /// CR: the three business predicates the cluster proves it is holding tick by
 /// tick.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WarmthPromessa {
-    /// The promessa name (`camelot-cache-warm`).
+    /// The promessa name (e.g. `super-cache-warm`) — supplied by the caller,
+    /// never defaulted here, so the CR's real name lives with the CR.
     pub name: String,
     /// The warm-fraction objective — at least this percent of classifiable
     /// targets must be warm.
@@ -600,7 +629,7 @@ pub struct WarmthPromessa {
 }
 
 impl WarmthPromessa {
-    /// The camelot promessa derived from a [`PreheatCfg`] — the objective + the
+    /// The promessa derived from a [`PreheatCfg`] — the objective + the
     /// staleness ceiling + the floor-zero-when-idle cost invariant.
     #[must_use]
     pub fn from_cfg(name: &str, cfg: &PreheatCfg) -> Self {
@@ -807,7 +836,7 @@ mod tests {
                 WarmTarget::flake("auth", Arch::Amd64),
                 WarmTarget::flake("gw", Arch::Arm64),
             ],
-            floor_spin: FloorSpinCfg::camelot(),
+            floor_spin: FloorSpinCfg::scale_to_zero(),
             dry_run: true,
         };
         // auth is cold (warms) → amd64 floor raised; gw is fresh → arm64 idle.
@@ -843,7 +872,7 @@ mod tests {
 
     #[test]
     fn disabled_yields_empty_honest_plan() {
-        let mut cfg = PreheatCfg::camelot();
+        let mut cfg = PreheatCfg::prescribed();
         cfg.enabled = false;
         cfg.targets = vec![WarmTarget::flake("auth", Arch::Amd64)];
         let plan = plan_preheat(&cfg, &[]);
@@ -859,7 +888,7 @@ mod tests {
             cadence_secs: 3600,
             warm_fraction_target_pct: 99,
             targets: vec![WarmTarget::flake("auth", Arch::Amd64)],
-            floor_spin: FloorSpinCfg::camelot(),
+            floor_spin: FloorSpinCfg::scale_to_zero(),
             dry_run: true,
         };
         // No observation supplied ⇒ default (cold) ⇒ warm on cold-start.
@@ -883,7 +912,7 @@ mod tests {
                     inputs: Vec::new(),
                 },
             ],
-            floor_spin: FloorSpinCfg::camelot(),
+            floor_spin: FloorSpinCfg::scale_to_zero(),
             dry_run: true,
         };
         let observations = vec![
@@ -900,8 +929,8 @@ mod tests {
 
     #[test]
     fn promessa_held_when_warm_fresh_and_cost_zero() {
-        let cfg = PreheatCfg::camelot();
-        let promessa = WarmthPromessa::from_cfg("camelot-cache-warm", &cfg);
+        let cfg = PreheatCfg::prescribed();
+        let promessa = WarmthPromessa::from_cfg("super-cache-warm", &cfg);
         // A plan where everything is already warm, idle floors zero.
         let plan = PreheatPlan {
             decisions: vec![WarmDecision {
@@ -928,8 +957,8 @@ mod tests {
 
     #[test]
     fn promessa_breached_when_cold() {
-        let cfg = PreheatCfg::camelot();
-        let promessa = WarmthPromessa::from_cfg("camelot-cache-warm", &cfg);
+        let cfg = PreheatCfg::prescribed();
+        let promessa = WarmthPromessa::from_cfg("super-cache-warm", &cfg);
         // Everything cold ⇒ warm_fraction 0 < 99 ⇒ breach.
         let plan = PreheatPlan {
             decisions: vec![WarmDecision {
@@ -956,8 +985,8 @@ mod tests {
 
     #[test]
     fn promessa_breached_on_staleness() {
-        let cfg = PreheatCfg::camelot();
-        let promessa = WarmthPromessa::from_cfg("camelot-cache-warm", &cfg);
+        let cfg = PreheatCfg::prescribed();
+        let promessa = WarmthPromessa::from_cfg("super-cache-warm", &cfg);
         let plan = PreheatPlan {
             decisions: vec![],
             floors: vec![],
@@ -974,8 +1003,8 @@ mod tests {
 
     #[test]
     fn promessa_breached_on_cost_leak() {
-        let cfg = PreheatCfg::camelot();
-        let promessa = WarmthPromessa::from_cfg("camelot-cache-warm", &cfg);
+        let cfg = PreheatCfg::prescribed();
+        let promessa = WarmthPromessa::from_cfg("super-cache-warm", &cfg);
         // Warm + fresh, but an idle arch has a non-zero floor ⇒ cost leak.
         let plan = PreheatPlan {
             decisions: vec![],
@@ -997,8 +1026,8 @@ mod tests {
 
     #[test]
     fn promessa_breached_when_nothing_classifiable() {
-        let cfg = PreheatCfg::camelot();
-        let promessa = WarmthPromessa::from_cfg("camelot-cache-warm", &cfg);
+        let cfg = PreheatCfg::prescribed();
+        let promessa = WarmthPromessa::from_cfg("super-cache-warm", &cfg);
         let plan = PreheatPlan::empty(true);
         // Vacuous warmth is NOT rounded up to Held.
         let e = promessa.evaluate(&plan, 0);
@@ -1008,7 +1037,7 @@ mod tests {
 
     #[test]
     fn shadow_first_flows_from_dry_run() {
-        let cfg = PreheatCfg::camelot(); // dry_run = true
+        let cfg = PreheatCfg::prescribed(); // dry_run = true
         let mut cfg = cfg;
         cfg.targets = vec![WarmTarget::flake("auth", Arch::Amd64)];
         let plan = plan_preheat(&cfg, &[]);
@@ -1016,10 +1045,10 @@ mod tests {
     }
 
     #[test]
-    fn camelot_cfg_is_shadow_first_six_hour_cadence() {
-        let c = PreheatCfg::camelot();
+    fn prescribed_cfg_is_shadow_first_six_hour_cadence() {
+        let c = PreheatCfg::prescribed();
         assert!(c.enabled);
-        assert!(c.dry_run, "camelot warming is shadow-first");
+        assert!(c.dry_run, "prescribed warming is shadow-first");
         assert_eq!(c.cadence_secs, 21_600);
         assert_eq!(c.floor_spin.idle_floor, 0, "scale-to-zero at rest");
         assert_eq!(c.max_staleness_secs(), 25_200); // 6h + 1h slack
@@ -1052,7 +1081,7 @@ mod tests {
                 cadence_secs: 3600,
                 warm_fraction_target_pct: 99,
                 targets: vec![WarmTarget::flake("auth", Arch::Amd64)],
-                floor_spin: FloorSpinCfg::camelot(),
+                floor_spin: FloorSpinCfg::scale_to_zero(),
                 dry_run: true,
             },
             &[],

@@ -162,7 +162,7 @@ async fn get_narinfo(
     match state.storage.get_narinfo(hash).await {
         // A STORED-BUT-UNUSABLE narinfo is served as a MISS, never as a hit.
         //
-        // Measured on camelot-eks 2026-08-05: two rows in the durable tier held a
+        // Measured on one production cluster, 2026-08: two rows in the durable tier held a
         // zero-length value, and this arm happily returned them as
         // `200 text/x-nix-narinfo` with an empty body. Nix parses that as a
         // narinfo, finds no `StorePath:`, and fails the whole operation:
@@ -560,7 +560,7 @@ mod tests {
 
     /// A zero-length stored narinfo must read as a MISS, not as a 200.
     ///
-    /// This is the exact camelot-eks poison: the durable tier held two
+    /// This is the exact production poison: the durable tier held two
     /// zero-length values and served them as `200` with an empty body, and nix
     /// aborted every `nix copy --to` with "corrupt: StorePath missing". The
     /// entry is written straight through the storage backend, bypassing

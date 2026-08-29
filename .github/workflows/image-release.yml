@@ -43,8 +43,8 @@ jobs:
       # build; the sha keeps it traceable. Same shape as hanabi / pangea-operator.
       tag: amd64-r${{ github.run_number }}-${{ github.sha }}
       additionalTags: amd64-latest
-      # Zero-tolerance CVE gate, closed 2026-07-21 -- sui is a real,
-      # actually-running Camelot service (the super-cache daemon) that had
+      # Zero-tolerance CVE gate, closed 2026-07 -- sui is a real,
+      # actually-running in-cluster service (the super-cache daemon) that had
       # never had one, unlike breathe-controller/ensaio/pangea-operator
       # (all three wired the same way). Scans the LOCAL image.tar.gz
       # BEFORE the push step, same shape + same rationale as those three

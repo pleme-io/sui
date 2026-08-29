@@ -1,6 +1,6 @@
 //! `canteiro-worker` — the per-pod cross-process CI worker (CANTEIRO §7.1-A).
 //!
-//! This is what ONE camelot-eks ARC pod runs. It connects to the shared
+//! This is what ONE in-cluster ARC pod runs. It connects to the shared
 //! Postgres transport, then loops: **claim** a [`WorkItem`] from the
 //! `canteiro_work_items` queue (atomic `FOR UPDATE SKIP LOCKED`), **run** the
 //! node's action via the shipped [`SubprocessRunner`], **report** the

@@ -4,7 +4,7 @@
 # schema). It is the DESTINATION posture (Postgres store L2 + Redis cache L1 +
 # tmpfs RAMDISK sandbox, never_touch_disk = true) narrowed to ONE local node:
 # localhost endpoints, bands sized for the 8 GiB podman VM, and the fleet-only
-# surfaces (multi-arch camelot runners, image co-opt) left empty because a
+# surfaces (multi-arch in-cluster runners, image co-opt) left empty because a
 # single node cannot exercise them (tier-honest — do not fabricate a fleet).
 #
 # Consumed by:   sui cache serve --features tiered --supercache-config <this>
@@ -77,7 +77,7 @@ never_touch_disk = true
 domains = ["cargo"]               # absorb-all-languages is M3; only Cargo ships
 ci_stale_check = true
 
-# ── builders — EMPTY: no camelot runner fleet on a single local node ───────────
+# ── builders — EMPTY: no in-cluster runner fleet on a single local node ───────
 # (The 100%-spot multi-arch ASG posture needs the cluster; a single podman VM
 #  cannot exercise it — leaving it empty is the honest floor, not a stub.)
 [builders]

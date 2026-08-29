@@ -21,7 +21,7 @@
 //! [`NodeResult`]; the shipped shigoto `Signal::ExecutionSucceeded/Failed`
 //! mapping is the destination's report shape (reused, not reinvented).
 //!
-//! **NOT done, named as the live gate:** a real run on ≥2 separate camelot-eks
+//! **NOT done, named as the live gate:** a real run on ≥2 separate in-cluster
 //! ARC pods (a `canteiro-worker` `[[bin]]` claiming from a live PG queue). This
 //! module proves the protocol off any cluster. A **fail-fast gate** is also a
 //! follow-up: a `Failed` node is treated as terminal here (its descendants are

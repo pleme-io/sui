@@ -12,7 +12,7 @@ Status as of 2026-08-02.
 
 ## 0. The incident this came from
 
-`sui` on `camelot-eks` OOMKilled six times in one day (exit 137, cgroup OOM, not
+`sui` in production OOMKilled six times in one day (exit 137, cgroup OOM, not
 node pressure). Two operator-side mitigations failed to bound it. The root was
 not a leak or a tuning error — it was a **type signature**:
 

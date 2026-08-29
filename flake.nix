@@ -30,7 +30,7 @@
       };
 
       # dockerImage-amd64 output for the fleet's `ghcr.io/pleme-io/sui` image
-      # (image-release.yml + the super-cache-ci / camelot-builder / prewarmer /
+      # (image-release.yml + the super-cache-ci / builder / prewarmer /
       # node-cache charts consume it). The substrate `rust` dispatcher exposes
       # only tool|workspace|library|service|binary — none emits a dockerImage-*,
       # and `service` is crate2nix-based (sui is gen-native). The image builder

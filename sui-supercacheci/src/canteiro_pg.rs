@@ -33,7 +33,7 @@
 //! state machine but is a single process). That, plus worker-death recovery (a
 //! claimed-but-unreported node currently blocks its descendants; a claim-lease /
 //! visibility-timeout is the named follow-up), is the **live gate**: a real
-//! Postgres + ≥2 `canteiro-worker` pods on camelot-eks. This module does NOT
+//! Postgres + ≥2 `canteiro-worker` pods in a real cluster. This module does NOT
 //! prove that; it proves the protocol + the SQL translation shape off any
 //! cluster.
 

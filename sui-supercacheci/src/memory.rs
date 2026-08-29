@@ -361,16 +361,32 @@ impl MemoryAuctionCfg {
         }
     }
 
-    /// The prescribed camelot memory-tuned posture: reject a candidate below
-    /// 8 GiB or churnier than 20%, and diversify 100%-spot across the top 3
-    /// memory-ranked families.
+    /// The prescribed memory-tuned posture: reject a candidate below 8 GiB or
+    /// churnier than 20%, and diversify 100%-spot across the top 3
+    /// memory-ranked families. The sibling of [`unset`](Self::unset), which is
+    /// memory-blind.
     #[must_use]
-    pub fn camelot() -> Self {
+    pub fn memory_tuned() -> Self {
         Self {
             min_mib: 8192,
             max_interrupt_rate: 20,
             diversify_top_n: 3,
         }
+    }
+
+    /// Deprecated alias for [`memory_tuned`](Self::memory_tuned).
+    ///
+    /// The old name carried the estate that first ran this posture; the posture
+    /// itself is memory-tuning, and applies wherever a 100%-spot auction is
+    /// bid on MiB-per-dollar. Kept — with the identical value — so a downstream
+    /// consumer keeps compiling across the rename.
+    #[must_use]
+    #[deprecated(
+        since = "0.1.220",
+        note = "named an estate, not a posture; use `MemoryAuctionCfg::memory_tuned()`"
+    )]
+    pub fn camelot() -> Self {
+        Self::memory_tuned()
     }
 }
 
@@ -802,12 +818,12 @@ pub const CONTROLLER_ELEMENTS: [ControllerElement; 7] = [
         // super-cache HOT so a build substitutes warm instead of cold-compiling.
         // The pure classify/plan/floor/promessa brain ships + is tested; the tick
         // LOOP is autorevivy's CLEAN face (superCacheCiRef), with the
-        // camelot-cache-warm workflow as the running interim actuator.
+        // scheduled cache-warm workflow as the running interim actuator.
         element: "perpetual-cache-warming",
         decision_fn: "plan_preheat / classify_target / plan_floor",
         pure_core_shipped: true,
         loop_tier: LoopTier::DesignLiveTodo,
-        composes: "camelot-cache-warm workflow (interim) + autorevivy CLEAN (superCacheCiRef) + breathe floor spin",
+        composes: "scheduled cache-warm workflow (interim) + autorevivy CLEAN (superCacheCiRef) + breathe floor spin",
     },
 ];
 
@@ -941,7 +957,7 @@ mod tests {
 
     #[test]
     fn auction_filters_below_the_memory_floor() {
-        let cfg = MemoryAuctionCfg::camelot(); // min 8192 MiB
+        let cfg = MemoryAuctionCfg::memory_tuned(); // min 8192 MiB
         let cands = vec![
             SpotCandidate { family: "small".into(), mib: 4096, vcpu: 4, price_milli: 200, interrupt_rate: 0 },
             SpotCandidate { family: "big".into(), mib: 32768, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
@@ -954,7 +970,7 @@ mod tests {
 
     #[test]
     fn auction_rejects_churny_families_and_escalates_when_empty() {
-        let cfg = MemoryAuctionCfg::camelot(); // max_interrupt 20
+        let cfg = MemoryAuctionCfg::memory_tuned(); // max_interrupt 20
         let cands = vec![SpotCandidate {
             family: "churny".into(),
             mib: 16384,
@@ -972,7 +988,7 @@ mod tests {
 
     #[test]
     fn auction_diversifies_across_top_n_never_single_family() {
-        let cfg = MemoryAuctionCfg::camelot(); // top 3
+        let cfg = MemoryAuctionCfg::memory_tuned(); // top 3
         let cands = vec![
             SpotCandidate { family: "a".into(), mib: 32768, vcpu: 4, price_milli: 500, interrupt_rate: 0 },
             SpotCandidate { family: "b".into(), mib: 16384, vcpu: 4, price_milli: 500, interrupt_rate: 0 },

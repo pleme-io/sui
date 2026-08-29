@@ -9,7 +9,7 @@
 //! ## What this proves — and what it deliberately does NOT
 //!
 //! This is the **leanest live proof** that the canteiro machinery runs green on
-//! a real camelot ARC worker: *decompose → in-process wave execution → both
+//! a real self-hosted ARC worker: *decompose → in-process wave execution → both
 //! nodes Succeeded*. The node actions are intentionally trivial (`true`) — this
 //! proves the **orchestration substrate on a live worker**, NOT "a real build +
 //! test with real compilation work". Replacing `true` with a real `cargo build`
@@ -19,7 +19,7 @@
 //!
 //! Run locally with `cargo run -p sui-supercacheci --bin canteiro-run`; the GHA
 //! workflow `.github/workflows/canteiro-m1.yml` (workflow_dispatch-only) is what
-//! runs it on the `camelot-builder-pleme-eks` ARC pool.
+//! runs it on the self-hosted ARC pool `vars.PRIVATE_BUILDER_RUNNER` names.
 
 use std::process::ExitCode;
 

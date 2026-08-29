@@ -259,7 +259,7 @@ mod tests {
     }
 
     /// (c) THE FULL LOOP: a `(defci)`-authored form → `compile_typed` →
-    /// `to_ci_run` → `emit_gha` yields a 2-job camelot GHA workflow with
+    /// `to_ci_run` → `emit_gha` yields a 2-job GHA workflow with
     /// `test.needs == [build]`. This is the authoring half of leg 2 proven end
     /// to end against the shipped multi-worker emitter.
     #[test]
@@ -278,12 +278,14 @@ mod tests {
         assert!(build.needs.is_empty(), "build is a root — no needs");
         assert_eq!(test.needs, vec!["build".to_string()], "test needs build");
 
-        // Both jobs target the camelot ARC pool — asserted through the rendered
-        // YAML (the `runs-on` field is private on the typed job).
+        // Both jobs resolve the self-hosted ARC pool — asserted through the
+        // rendered YAML (the `runs-on` field is private on the typed job), and
+        // against the EMITTER'S OWN const rather than a re-typed literal that
+        // is free to disagree with it.
         let yaml = emit_gha_yaml(&run).expect("render yaml");
         assert!(
-            yaml.contains("camelot-builder-pleme-eks"),
-            "jobs must target the camelot ARC pool"
+            yaml.contains(crate::canteiro_gha::RUNNER_VAR),
+            "jobs must resolve the builder pool through the runner variable"
         );
         // The real cargo actions carried through from the authored (defci) form.
         assert!(yaml.contains("cargo build -p sui-supercacheci"), "authored build action");

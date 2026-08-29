@@ -3,7 +3,7 @@
 #
 # TIER-HONEST — WHERE THIS APPLIES:
 #   A breathe MemoryBand is reconciled by the breathe controller, which runs in a
-#   Kubernetes cluster (rio / camelot). On the single LOCAL podman VM the
+#   Kubernetes cluster. On the single LOCAL podman VM the
 #   ground-truth run uses (see run.sh), there is NO breathe controller — the
 #   sui daemon's memory ceiling is a STATIC cap applied by hand (the container
 #   `--memory` / redis `--maxmemory` / `--tmpfs …:size=` in the recipe), i.e. the

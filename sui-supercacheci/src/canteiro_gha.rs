@@ -3,9 +3,10 @@
 //!
 //! [`emit_gha`] projects a decomposed [`CiRun`] onto a GitHub Actions workflow:
 //! **one job per [`CiNode`]**, each job's `needs:` = that node's DAG edges, each
-//! `runs-on: camelot-builder-pleme-eks`. GitHub Actions then schedules those jobs
-//! onto **separate** ARC workers, ordered by `needs:` — so a 2-node `build→test`
-//! run lands `build` and `test` on two different workers, `test` after `build`.
+//! `runs-on` resolving the self-hosted pool from [`RUNNER_VAR`]. GitHub Actions
+//! then schedules those jobs onto **separate** ARC workers, ordered by `needs:`
+//! — so a 2-node `build→test` run lands `build` and `test` on two different
+//! workers, `test` after `build`.
 //!
 //! ## HONEST SCOPE — plane (a), stated on the record (never rounded up)
 //!
@@ -21,7 +22,7 @@
 //! The YAML is emitted through serde structs via `serde_yaml_ng` (★★ TYPED
 //! EMISSION — no `format!()` of YAML). The one string built by hand is each
 //! job's shell `run:` body (a shell script is inherently a string, assembled via
-//! `push_str`, never `format!`), reusing the PROVEN camelot nix setup from
+//! `push_str`, never `format!`), reusing the PROVEN self-hosted nix setup from
 //! `.github/workflows/canteiro-m1.yml` verbatim (upstream nix via
 //! `determinate: false`; `pkg-config`+`openssl` for `openssl-sys`).
 
@@ -29,15 +30,25 @@ use serde::Serialize;
 
 use crate::canteiro::{ActionRef, CiRun, DecomposeError, decompose};
 
-/// The ARC runner pool every canteiro CI job targets — the proven camelot label
-/// (see `.github/workflows/canteiro-m1.yml`).
-const CAMELOT_RUNNER: &str = "camelot-builder-pleme-eks";
+/// The GitHub Actions variable naming the self-hosted ARC pool. Its VALUE is
+/// the consumer's cluster topology, which a public repo must not ship — so the
+/// repo carries the variable NAME and the cluster carries the label.
+pub const RUNNER_VAR: &str = "PRIVATE_BUILDER_RUNNER";
+
+/// The `runs-on` expression every canteiro CI job carries — the fleet-standard
+/// GRANT-BEFORE-REVOKE form: read [`RUNNER_VAR`] first, fall back to a
+/// billing-safe GitHub-hosted runner when it is unset. Neither side of a pool
+/// rename is a flag day, and a fork with no self-hosted pool still runs.
+///
+/// A bare label here would be a second place the pool's name lives, free to
+/// disagree with the cluster that actually registers it.
+pub const RUNS_ON: &str = "${{ vars.PRIVATE_BUILDER_RUNNER || 'ubuntu-latest' }}";
 
 /// The `access-tokens`/`github-token` expression the nix installer + private
 /// fetches use (mirrors `canteiro-m1.yml`).
 const GH_TOKEN_EXPR: &str = "${{ secrets.BOT_PAT || secrets.GITHUB_TOKEN }}";
 
-/// The exact `extra-conf` the proven camelot nix install uses.
+/// The exact `extra-conf` the proven self-hosted nix install uses.
 const NIX_EXTRA_CONF: &str = "experimental-features = nix-command flakes\n\
      accept-flake-config = true\n\
      sandbox = relaxed\n\
@@ -55,7 +66,7 @@ const HEADER: &str = "\
 # canteiro plane (a), the multi-worker dispatch crux (theory/CANTEIRO.md §5):\n\
 # `emit_gha` projects a decomposed CiRun onto this job graph — one job per\n\
 # CiNode, `needs:` = the DAG edges — and GitHub Actions schedules the jobs onto\n\
-# SEPARATE camelot ARC workers. HONEST SCOPE: canteiro DERIVES the graph;\n\
+# SEPARATE self-hosted ARC workers. HONEST SCOPE: canteiro DERIVES the graph;\n\
 # GitHub SCHEDULES the workers; canteiro is the DAG source + emitter, NOT the\n\
 # cross-worker runtime scheduler (that harder plane is the named remaining\n\
 # crux). workflow_dispatch-only: a live run is a deliberate operator trigger.\n";
@@ -102,7 +113,7 @@ pub struct GhaJob {
 enum GhaStep {
     /// `- uses: actions/checkout@v4`
     Uses { uses: String },
-    /// The proven camelot nix install (upstream nix, `determinate: false`).
+    /// The proven self-hosted nix install (upstream nix, `determinate: false`).
     InstallNix {
         name: String,
         uses: String,
@@ -141,7 +152,7 @@ fn job_display_name(node: &str) -> String {
     s
 }
 
-/// The shell `run:` body for a node's action — the PROVEN camelot build-env from
+/// The shell `run:` body for a node's action — the PROVEN build-env from
 /// `canteiro-m1.yml` (upstream nix already installed by the InstallNix step;
 /// `pkg-config`+`openssl` for `openssl-sys`), then the node's own command+args.
 /// A shell script is inherently a string; assembled via `push_str`, never
@@ -149,7 +160,7 @@ fn job_display_name(node: &str) -> String {
 fn run_script(action: &ActionRef) -> String {
     let mut s = String::new();
     s.push_str(
-        "# Proven camelot build env (see canteiro-m1.yml): openssl-sys needs\n\
+        "# Proven build env (see canteiro-m1.yml): openssl-sys needs\n\
          # pkg-config + the openssl .pc; a bare `nix shell` with only cargo/rustc/gcc\n\
          # lacks them. OPENSSL_NO_VENDOR=1 uses nix's openssl, not a vendored build.\n",
     );
@@ -201,8 +212,8 @@ fn steps_for(action: &ActionRef) -> Vec<GhaStep> {
 
 /// **The plane-(a) morphism.** Project a [`CiRun`] onto a typed GitHub Actions
 /// job graph: one [`GhaJob`] per [`CiNode`] (job key = node name), each job's
-/// `needs:` = the node's `deps` (the DAG edges), each `runs-on` the camelot ARC
-/// pool. The run is `decompose`d first so an invalid DAG (dup / dangling /
+/// `needs:` = the node's `deps` (the DAG edges), each `runs-on` the self-hosted
+/// ARC pool. The run is `decompose`d first so an invalid DAG (dup / dangling /
 /// cycle) is rejected before any graph is emitted.
 ///
 /// # Errors
@@ -218,7 +229,7 @@ pub fn emit_gha(run: &CiRun) -> Result<GhaWorkflow, EmitError> {
             node.name.clone(),
             GhaJob {
                 name: job_display_name(&node.name),
-                runs_on: CAMELOT_RUNNER.to_string(),
+                runs_on: RUNS_ON.to_string(),
                 // `needs:` IS the DAG edge set — a projection of the typed
                 // `CiNode.deps`, never a hand-written list.
                 needs: node.deps.clone(),
@@ -288,13 +299,13 @@ mod tests {
     }
 
     #[test]
-    fn two_node_run_emits_two_jobs_on_camelot_with_derived_needs() {
+    fn two_node_run_emits_two_jobs_on_the_builder_pool_with_derived_needs() {
         let wf = emit_gha(&sui_crux_run()).expect("emit");
         assert_eq!(wf.jobs.len(), 2, "one job per CiNode");
         let build = wf.jobs.get("build").expect("build job");
         let test = wf.jobs.get("test").expect("test job");
-        assert_eq!(build.runs_on, CAMELOT_RUNNER);
-        assert_eq!(test.runs_on, CAMELOT_RUNNER);
+        assert_eq!(build.runs_on, RUNS_ON);
+        assert_eq!(test.runs_on, RUNS_ON);
         // The DAG edge build→test is projected onto test.needs; build is a root.
         assert!(build.needs.is_empty(), "build is a root node — no needs");
         assert_eq!(test.needs, vec!["build".to_string()], "test needs build");
@@ -347,8 +358,11 @@ mod tests {
             yaml.contains("cargo test -p sui-supercacheci canteiro"),
             "real cargo test"
         );
-        // Both jobs target the camelot ARC pool.
-        assert!(yaml.contains(CAMELOT_RUNNER));
+        // Both jobs resolve the self-hosted ARC pool through the variable —
+        // asserted on RUNNER_VAR, not on a re-typed label, so the YAML's own
+        // quoting of the expression can never make this row vacuous.
+        assert!(RUNS_ON.contains(RUNNER_VAR), "the expression reads the variable");
+        assert!(yaml.contains(RUNNER_VAR));
         // Determinate is off (the containerless-runner fix).
         assert!(yaml.contains("determinate: false"));
         // The header states it is generated + plane (a).

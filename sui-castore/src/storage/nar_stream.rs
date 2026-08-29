@@ -15,7 +15,7 @@
 //! as long as it took to write or serve it — and a Postgres L2 `INSERT` of one
 //! measured **12.712 s** in production. With a 6 GiB pod limit, the peak was set
 //! by the largest NAR in flight and nothing bounded it. sui OOMKilled six times
-//! in one day on camelot-eks.
+//! in one day in production.
 //!
 //! The fix is a vocabulary, not a patch: a NAR moves as a sequence of
 //! [`NAR_CHUNK_BYTES`]-sized [`Bytes`] chunks, and the thing a writer is handed
