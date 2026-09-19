@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "24cfed562684df54527b0d2c895226dfd767746a8cbd134f88db3f3c2da80183",
+  "cargo_lock_sha256": "b6868032a85fad7633b2dedb3030fb4cf0385f9c25055a4d2aef6c1d9dfa5f3c",
   "manifest_sha256": {
-    "Cargo.toml": "bca8c55f2b198e5d1d7fff828f35360ac2ea01de319dde7c995bce933d89fcc4",
+    "Cargo.toml": "28563900034ff8fab4bb11146057820e1a95cb960891efdc135a9303aaf584f7",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -33,7 +33,7 @@
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
     "sui-spec/Cargo.toml": "2d0bba9184a9482a333e7cc8e07588eba5e634b56d367aea195533bd2ed4fce7",
     "sui-store/Cargo.toml": "bfa3b32c514f2c21174ae90a9bb62a32e374434e9ec08fdd382e72f3e236b983",
-    "sui-supercacheci/Cargo.toml": "9191709df80f9b1c1333da288d4b8579422da4a2304c66fbd9e0cb9abcdcfbb1"
+    "sui-supercacheci/Cargo.toml": "61210201deeff582137cd9156faba2a52c9c73335397f835a107a49b22b03b01"
   },
   "target_resolves": {
     "base": {
@@ -12460,95 +12460,6 @@
         "build_dependencies": [],
         "features": []
       },
-      "hyper-tls-0.6.0": {
-        "runtime_dependencies": [
-          {
-            "name": "bytes",
-            "package_key": "bytes-1.12.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "http_body_util",
-            "package_key": "http-body-util-0.1.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "hyper",
-            "package_key": "hyper-1.10.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "hyper_util",
-            "package_key": "hyper-util-0.1.20",
-            "kind": "normal",
-            "features": [
-              "client-legacy",
-              "tokio"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "native_tls",
-            "package_key": "native-tls-0.2.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio",
-            "package_key": "tokio-1.52.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio_native_tls",
-            "package_key": "tokio-native-tls-0.3.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tower_service",
-            "package_key": "tower-service-0.3.3",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
       "icu_collections-2.2.0": {
         "runtime_dependencies": [
           {
@@ -18095,16 +18006,6 @@
             "tree": "target"
           },
           {
-            "name": "hyper_tls",
-            "package_key": "hyper-tls-0.6.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": true,
-            "target": "cfg(not(target_arch = \"wasm32\"))",
-            "tree": "target"
-          },
-          {
             "name": "hyper_util",
             "package_key": "hyper-util-0.1.20",
             "kind": "normal",
@@ -18133,16 +18034,6 @@
           {
             "name": "mime",
             "package_key": "mime-0.3.17",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": true,
-            "target": "cfg(not(target_arch = \"wasm32\"))",
-            "tree": "target"
-          },
-          {
-            "name": "native_tls_crate",
-            "package_key": "native-tls-0.2.18",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -18271,16 +18162,6 @@
             "tree": "target"
           },
           {
-            "name": "tokio_native_tls",
-            "package_key": "tokio-native-tls-0.3.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": true,
-            "target": "cfg(not(target_arch = \"wasm32\"))",
-            "tree": "target"
-          },
-          {
             "name": "tokio_rustls",
             "package_key": "tokio-rustls-0.26.4",
             "kind": "normal",
@@ -18367,8 +18248,6 @@
           "__rustls-ring",
           "__tls",
           "charset",
-          "default",
-          "default-tls",
           "h2",
           "http2",
           "json",
@@ -25368,11 +25247,15 @@
             "package_key": "reqwest-0.12.28",
             "kind": "normal",
             "features": [
+              "charset",
+              "http2",
               "json",
               "rustls-tls",
-              "stream"
+              "rustls-tls-native-roots",
+              "stream",
+              "system-proxy"
             ],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -26618,11 +26501,15 @@
             "package_key": "reqwest-0.12.28",
             "kind": "normal",
             "features": [
+              "charset",
+              "http2",
               "json",
               "rustls-tls",
-              "stream"
+              "rustls-tls-native-roots",
+              "stream",
+              "system-proxy"
             ],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -27275,11 +27162,15 @@
             "package_key": "reqwest-0.12.28",
             "kind": "normal",
             "features": [
+              "charset",
+              "http2",
               "json",
               "rustls-tls",
-              "stream"
+              "rustls-tls-native-roots",
+              "stream",
+              "system-proxy"
             ],
-            "uses_default_features": true,
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
@@ -28594,32 +28485,6 @@
             "features": [
               "full"
             ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
-      "tokio-native-tls-0.3.1": {
-        "runtime_dependencies": [
-          {
-            "name": "native_tls",
-            "package_key": "native-tls-0.2.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tokio",
-            "package_key": "tokio-1.52.3",
-            "kind": "normal",
-            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -32174,54 +32039,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-3.7.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "tempfile",
-                "package_key": "tempfile-3.27.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -33017,27 +32834,6 @@
               "zeroize"
             ]
           },
-          "foreign-types-0.3.2": {
-            "runtime_dependencies": [
-              {
-                "name": "foreign_types_shared",
-                "package_key": "foreign-types-shared-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "foreign-types-shared-0.1.1": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -33379,54 +33175,6 @@
               "os-poll"
             ]
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "log",
-                "package_key": "log-0.4.33",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl",
-                "package_key": "openssl-0.10.80",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.2.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_sys",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -33618,162 +33366,9 @@
               "mio"
             ]
           },
-          "openssl-0.10.80": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "cfg_if",
-                "package_key": "cfg-if-1.0.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "foreign_types",
-                "package_key": "foreign-types-0.3.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "openssl_macros",
-                "package_key": "openssl-macros-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "ffi",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
-          "openssl-macros-0.1.1": {
-            "runtime_dependencies": [
-              {
-                "name": "proc_macro2",
-                "package_key": "proc-macro2-1.0.106",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "quote",
-                "package_key": "quote-1.0.46",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "syn",
-                "package_key": "syn-2.0.118",
-                "kind": "normal",
-                "features": [
-                  "full"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
-            "features": []
-          },
-          "openssl-sys-0.9.116": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [
-              {
-                "name": "cc",
-                "package_key": "cc-1.2.65",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "pkg_config",
-                "package_key": "pkg-config-0.3.33",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "vcpkg",
-                "package_key": "vcpkg-0.2.15",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              }
-            ],
             "features": []
           },
           "ring-0.17.14": {
@@ -34253,27 +33848,6 @@
               "zeroize"
             ]
           },
-          "foreign-types-0.3.2": {
-            "runtime_dependencies": [
-              {
-                "name": "foreign_types_shared",
-                "package_key": "foreign-types-shared-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "foreign-types-shared-0.1.1": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -34615,54 +34189,6 @@
               "os-poll"
             ]
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "log",
-                "package_key": "log-0.4.33",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl",
-                "package_key": "openssl-0.10.80",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.2.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_sys",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -34854,162 +34380,9 @@
               "mio"
             ]
           },
-          "openssl-0.10.80": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "cfg_if",
-                "package_key": "cfg-if-1.0.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "foreign_types",
-                "package_key": "foreign-types-0.3.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "openssl_macros",
-                "package_key": "openssl-macros-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "ffi",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
-          "openssl-macros-0.1.1": {
-            "runtime_dependencies": [
-              {
-                "name": "proc_macro2",
-                "package_key": "proc-macro2-1.0.106",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "quote",
-                "package_key": "quote-1.0.46",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "syn",
-                "package_key": "syn-2.0.118",
-                "kind": "normal",
-                "features": [
-                  "full"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
-            "features": []
-          },
-          "openssl-sys-0.9.116": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [
-              {
-                "name": "cc",
-                "package_key": "cc-1.2.65",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "pkg_config",
-                "package_key": "pkg-config-0.3.33",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "vcpkg",
-                "package_key": "vcpkg-0.2.15",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              }
-            ],
             "features": []
           },
           "ring-0.17.14": {
@@ -35870,54 +35243,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "security_framework",
-                "package_key": "security-framework-3.7.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "security_framework_sys",
-                "package_key": "security-framework-sys-2.17.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_vendor = \"apple\")",
-                "tree": "target"
-              },
-              {
-                "name": "tempfile",
-                "package_key": "tempfile-3.27.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -36735,27 +36060,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "foreign-types-0.3.2": {
-            "runtime_dependencies": [
-              {
-                "name": "foreign_types_shared",
-                "package_key": "foreign-types-shared-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "foreign-types-shared-0.1.1": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -37086,54 +36390,6 @@
               "os-poll"
             ]
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "log",
-                "package_key": "log-0.4.33",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl",
-                "package_key": "openssl-0.10.80",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.2.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_sys",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -37325,162 +36581,9 @@
               "mio"
             ]
           },
-          "openssl-0.10.80": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "cfg_if",
-                "package_key": "cfg-if-1.0.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "foreign_types",
-                "package_key": "foreign-types-0.3.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "openssl_macros",
-                "package_key": "openssl-macros-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "ffi",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
-          "openssl-macros-0.1.1": {
-            "runtime_dependencies": [
-              {
-                "name": "proc_macro2",
-                "package_key": "proc-macro2-1.0.106",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "quote",
-                "package_key": "quote-1.0.46",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "syn",
-                "package_key": "syn-2.0.118",
-                "kind": "normal",
-                "features": [
-                  "full"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
-            "features": []
-          },
-          "openssl-sys-0.9.116": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [
-              {
-                "name": "cc",
-                "package_key": "cc-1.2.65",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "pkg_config",
-                "package_key": "pkg-config-0.3.33",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "vcpkg",
-                "package_key": "vcpkg-0.2.15",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              }
-            ],
             "features": []
           },
           "ring-0.17.14": {
@@ -37982,27 +37085,6 @@
             "build_dependencies": [],
             "features": []
           },
-          "foreign-types-0.3.2": {
-            "runtime_dependencies": [
-              {
-                "name": "foreign_types_shared",
-                "package_key": "foreign-types-shared-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "foreign-types-shared-0.1.1": {
-            "runtime_dependencies": [],
-            "build_dependencies": [],
-            "features": []
-          },
           "hyper-util-0.1.20": {
             "runtime_dependencies": [
               {
@@ -38333,54 +37415,6 @@
               "os-poll"
             ]
           },
-          "native-tls-0.2.18": {
-            "runtime_dependencies": [
-              {
-                "name": "log",
-                "package_key": "log-0.4.33",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl",
-                "package_key": "openssl-0.10.80",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_probe",
-                "package_key": "openssl-probe-0.2.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              },
-              {
-                "name": "openssl_sys",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(not(any(target_os = \"windows\", target_vendor = \"apple\")))",
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
           "notify-6.1.1": {
             "runtime_dependencies": [
               {
@@ -38572,162 +37606,9 @@
               "mio"
             ]
           },
-          "openssl-0.10.80": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.13.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "cfg_if",
-                "package_key": "cfg-if-1.0.4",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "foreign_types",
-                "package_key": "foreign-types-0.3.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "openssl_macros",
-                "package_key": "openssl-macros-0.1.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "ffi",
-                "package_key": "openssl-sys-0.9.116",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": [
-              "default"
-            ]
-          },
-          "openssl-macros-0.1.1": {
-            "runtime_dependencies": [
-              {
-                "name": "proc_macro2",
-                "package_key": "proc-macro2-1.0.106",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "quote",
-                "package_key": "quote-1.0.46",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "syn",
-                "package_key": "syn-2.0.118",
-                "kind": "normal",
-                "features": [
-                  "full"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
           "openssl-probe-0.2.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
-            "features": []
-          },
-          "openssl-sys-0.9.116": {
-            "runtime_dependencies": [
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [
-              {
-                "name": "cc",
-                "package_key": "cc-1.2.65",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "pkg_config",
-                "package_key": "pkg-config-0.3.33",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              },
-              {
-                "name": "vcpkg",
-                "package_key": "vcpkg-0.2.15",
-                "kind": "build",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "host"
-              }
-            ],
             "features": []
           },
           "ring-0.17.14": {
@@ -39520,12 +38401,6 @@
     "foldhash-0.2.0": {
       "edition": "2021"
     },
-    "foreign-types-0.3.2": {
-      "edition": "2015"
-    },
-    "foreign-types-shared-0.1.1": {
-      "edition": "2015"
-    },
     "form_urlencoded-1.2.2": {
       "edition": "2018"
     },
@@ -39854,9 +38729,6 @@
     "hyper-timeout-0.5.2": {
       "edition": "2018"
     },
-    "hyper-tls-0.6.0": {
-      "edition": "2018"
-    },
     "hyper-util-0.1.20": {
       "edition": "2021"
     },
@@ -40083,10 +38955,6 @@
       "edition": "2021",
       "proc_macro": true
     },
-    "native-tls-0.2.18": {
-      "edition": "2021",
-      "build_script": "build.rs"
-    },
     "nix-0.29.0": {
       "edition": "2021",
       "build_script": "build.rs"
@@ -40166,21 +39034,8 @@
     "oorandom-11.1.5": {
       "edition": "2018"
     },
-    "openssl-0.10.80": {
-      "edition": "2021",
-      "build_script": "build.rs"
-    },
-    "openssl-macros-0.1.1": {
-      "edition": "2018",
-      "proc_macro": true
-    },
     "openssl-probe-0.2.1": {
       "edition": "2021"
-    },
-    "openssl-sys-0.9.116": {
-      "edition": "2021",
-      "build_script": "build/main.rs",
-      "links": "openssl"
     },
     "option-ext-0.2.0": {
       "edition": "2015"
@@ -41166,9 +40021,6 @@
     "tokio-macros-2.7.0": {
       "edition": "2021",
       "proc_macro": true
-    },
-    "tokio-native-tls-0.3.1": {
-      "edition": "2018"
     },
     "tokio-rustls-0.26.4": {
       "edition": "2021"

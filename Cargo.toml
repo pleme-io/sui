@@ -287,8 +287,31 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# HTTP client (for binary cache, fetchers)
-reqwest = { version = "0.12", features = ["rustls-tls", "json", "stream"] }
+# HTTP client (for binary cache, fetchers). rustls only.
+#
+# `default-features = false` is load-bearing. reqwest's default set includes
+# `default-tls` (native-tls), which links OpenSSL through openssl-sys on Linux
+# and makes it the runtime backend: with `default-tls` on, reqwest's
+# `TlsBackend::default()` picks native-tls even when `rustls-tls` is also
+# listed. The C dependency then reached every crate that depends on sui,
+# engenho included. On darwin native-tls uses Security.framework, so a
+# host-only `cargo tree -i openssl-sys` prints nothing there; ask with
+# `--target all`.
+#
+# The other defaults (`charset`, `http2`, `system-proxy`) are named back so
+# only the TLS backend changes. `rustls-tls-native-roots` keeps the OS trust
+# store that native-tls read (private CAs keep working); `rustls-tls` adds the
+# bundled webpki roots. `tests/no_c_tls.rs` fails if native-tls or OpenSSL
+# re-enters Cargo.lock.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "charset",
+    "http2",
+    "system-proxy",
+    "json",
+    "stream",
+] }
 
 # Git operations (pure Rust, no C dependencies) — published version
 # on crates.io.  Upstream gix has caught up with the edition-2024
