@@ -22,6 +22,8 @@ thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 sha2.workspace = true
+# CppNix names an indirect GC root gcroots/auto/<nix32(sha1(link))>.
+sha1 = "0.10"
 xz2 = "0.1"
 zstd = "0.13"
 ed25519-dalek.workspace = true

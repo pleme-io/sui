@@ -4,6 +4,7 @@
 //! No vendored code from any GPL-licensed project.
 
 pub mod content_address;
+pub mod cppnix;
 pub mod derivation;
 pub mod flake;
 pub mod flake_ref;

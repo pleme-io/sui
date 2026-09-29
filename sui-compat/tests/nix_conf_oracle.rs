@@ -17,19 +17,7 @@ use sui_compat::nix_conf::{ConfigSources, NixConfig};
 static ENV: Mutex<()> = Mutex::new(());
 
 fn nix_bin() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("SUI_ORACLE_NIX") {
-        return Some(PathBuf::from(p));
-    }
-    let candidates = [
-        "/nix/var/nix/profiles/default/bin/nix",
-        "/run/current-system/sw/bin/nix",
-    ];
-    if let Some(c) = candidates.iter().map(PathBuf::from).find(|p| p.exists()) {
-        return Some(c);
-    }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|d| d.join("nix")).find(|p| p.exists())
-    })
+    sui_compat::cppnix::locate("nix")
 }
 
 const VARS: &[&str] = &[

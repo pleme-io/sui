@@ -297,15 +297,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     ),
     // ── build ───────────────────────────────────────────────────────────
     (&["build"], "installable", H),
-    (
-        &["build"],
-        "no_link",
-        Honour::Refused {
-            since: NOW,
-            reason: "suppresses the `result` symlink; sui reads it nowhere, so a caller that \
-                     asked for no filesystem side-effect may get one",
-        },
-    ),
+    // Suppresses the `result` links `link_build_outputs` otherwise creates.
+    (&["build"], "no_link", H),
     (
         &["build"],
         "print_out_paths",
@@ -326,16 +319,9 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     ),
     // `--dry-run` was wired on both arms before this pass; it is read.
     (&["build"], "dry_run", H),
-    (
-        &["build"],
-        "out_link",
-        Honour::Refused {
-            since: NOW,
-            reason: "`-o/--out-link <p>` names where the result symlink goes; sui reads it \
-                     nowhere, so the link lands at the default path and the caller's next step \
-                     reads a stale or absent `p`",
-        },
-    ),
+    // Names the link base `link_build_outputs` creates and registers as an
+    // indirect GC root (CppNix `addPermRoot`).
+    (&["build"], "out_link", H),
     (
         &["build"],
         "rebuild",

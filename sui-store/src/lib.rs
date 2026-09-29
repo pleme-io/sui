@@ -23,6 +23,7 @@ pub mod daemon_realize;
 pub mod daemon_session;
 pub mod drv_write;
 pub mod entity;
+pub mod gc_roots;
 pub mod http;
 pub mod local;
 pub mod nar;

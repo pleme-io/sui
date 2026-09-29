@@ -342,6 +342,14 @@ fn realize_blocking(
         e @ WorkerError::Config(_) => DaemonRealizeError::Protocol(e.to_string()),
     };
 
+    // Root the drv and the output on the process's long-lived connection BEFORE
+    // realizing. This connection closes when the realize returns, taking any
+    // roots it held with it; the session's roots last until the process exits,
+    // so a collector cannot delete the output between "built" and "linked".
+    // Rooting a path that does not exist yet is allowed, as in CppNix.
+    crate::daemon_session::add_temp_root(socket, drv_path).map_err(proto)?;
+    crate::daemon_session::add_temp_root(socket, out_root).map_err(proto)?;
+
     let mut conn = WorkerConn::connect(socket, io_timeout).map_err(proto)?;
 
     // Fast path: already realized (a prior build, or substituted out-of-band).

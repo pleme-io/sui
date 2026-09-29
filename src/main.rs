@@ -107,14 +107,14 @@ enum Commands {
     },
     Build {
         installable: Option<String>,
-        /// [REFUSED] Do not create the `result` symlink.
+        /// Do not create the `result` symlink.
         #[arg(long)] no_link: bool,
         /// [REFUSED] Print the output paths to stdout.
         #[arg(long)] print_out_paths: bool,
         /// [REFUSED] Emit machine-readable JSON.
         #[arg(long)] json: bool,
         #[arg(long)] dry_run: bool,
-        /// [REFUSED] Path for the result symlink.
+        /// Path for the result symlink (default `result`), registered as a GC root.
         #[arg(short = 'o', long)] out_link: Option<String>,
         /// [REFUSED] Force a rebuild to check reproducibility.
         #[arg(long)] rebuild: bool,
@@ -5711,6 +5711,33 @@ fn report_parity_strict() {
     }
 }
 
+/// Leave `nix build`'s links behind: `<out_link>` for the `out` output and
+/// `<out_link>-<name>` for each other output realized, each registered as an
+/// indirect GC root (`sui_store::gc_roots::add_perm_root`), so the outputs
+/// outlive this process the way CppNix's `./result` keeps its output alive.
+///
+/// sui realizes every declared output, where `nix build` of a flake attribute
+/// realizes `meta.outputsToInstall`; a multi-output package therefore gets more
+/// links here than there. The `out` link is identical.
+fn link_build_outputs(drv_path: &str, outputs: &[String], out_link: &str) -> Result<(), CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "build", message };
+    let bytes = std::fs::read(drv_path).map_err(|e| err(format!("read {drv_path}: {e}")))?;
+    let drv = sui_compat::derivation::Derivation::parse(&bytes)
+        .map_err(|e| err(format!("parse {drv_path}: {e}")))?;
+    for path in outputs {
+        let name = drv
+            .outputs
+            .iter()
+            .find(|(_, o)| &o.path == path)
+            .map(|(n, _)| n.as_str())
+            .ok_or_else(|| err(format!("{path} is not an output of {drv_path}")))?;
+        let link = if name == "out" { out_link.to_string() } else { format!("{out_link}-{name}") };
+        sui_store::gc_roots::add_perm_root(path, std::path::Path::new(&link))
+            .map_err(|e| err(e.to_string()))?;
+    }
+    Ok(())
+}
+
 fn cmd_parity_bisect(nix: &std::path::Path, expr: &str) -> Result<(), CliError> {
     use sui_spec::style::{body, error, glyph_snowflake, header, ident, muted, success, warn};
     use std::collections::BTreeSet;
@@ -7447,7 +7474,7 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable: installable_opt, no_link: _, print_out_paths: _, json: _, dry_run, out_link: _, rebuild: _ } => {
+        Commands::Build { installable: installable_opt, no_link, print_out_paths: _, json: _, dry_run, out_link, rebuild: _ } => {
             let installable = installable_opt.unwrap_or_else(|| ".#default".to_string());
 
             // The realize path is daemon-aware: `sui_orchestrate::realize_drv`
@@ -7483,6 +7510,9 @@ async fn main() -> Result<(), CliError> {
                     })?;
                 for output in &outputs {
                     println!("{output}");
+                }
+                if !no_link {
+                    link_build_outputs(&installable, &outputs, out_link.as_deref().unwrap_or("result"))?;
                 }
             } else {
                 // Parse as a flake reference, evaluate, extract drvPath, build.
@@ -7552,6 +7582,9 @@ async fn main() -> Result<(), CliError> {
                         })?;
                     for output in &outputs {
                         println!("{output}");
+                    }
+                    if !no_link {
+                        link_build_outputs(&drv_path, &outputs, out_link.as_deref().unwrap_or("result"))?;
                     }
                 } else {
                     // Not a derivation — just display the evaluated value.

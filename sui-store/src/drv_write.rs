@@ -230,9 +230,7 @@ pub fn write_drv_to(
             let name = sui_compat::source::strip_store_hash_prefix(base);
             let text = drv.serialize();
             let refs = drv_references(drv);
-            let stored = crate::daemon_session::with_session(socket, |conn| {
-                conn.add_text_to_store(name, text.as_bytes(), &refs)
-            })
+            let stored = crate::daemon_session::add_text_to_store(socket, name, text.as_bytes(), &refs)
             .map_err(|cause| DrvWriteError::Daemon {
                 drv_path: drv_path.to_string(),
                 socket: socket.clone(),
@@ -251,8 +249,11 @@ pub fn write_drv_to(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Serializes tests in this crate that set `SUI_STORE_DIR`.
+    pub(crate) static STORE_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use std::collections::BTreeMap;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 

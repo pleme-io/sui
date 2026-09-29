@@ -738,7 +738,7 @@ where
 /// (`/nix/store` → `/nix/var/nix`, `<X>/nix/store` → `<X>/nix/var/nix`). If the
 /// store dir does not end in `/store` we fall back to the canonical system
 /// state dir so real-world behavior is never regressed.
-fn state_dir_for_store(store_dir: &str) -> String {
+pub(crate) fn state_dir_for_store(store_dir: &str) -> String {
     match store_dir.strip_suffix("/store") {
         Some(prefix) => format!("{prefix}/var/nix"),
         None => "/nix/var/nix".to_string(),
