@@ -1044,9 +1044,12 @@ fn drv_write_into_unwritable_store_is_an_error() {
     std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
     let expr = r#"(builtins.derivation { name = "ro-probe-c1"; system = "x86_64-linux"; builder = "/bin/sh"; }).drvPath"#;
-    unsafe { std::env::set_var("SUI_STORE_DIR", &store_dir) };
-    let result = eval(expr).and_then(|v| crate::eval::force_value(&v));
-    unsafe { std::env::remove_var("SUI_STORE_DIR") };
+    // Scoped to this thread: SUI_STORE_DIR is process-global, and tests that do
+    // not take DRV_WRITE_LOCK would instantiate into the refusing dir too.
+    let result = sui_store::drv_write::with_destination(
+        sui_store::drv_write::DrvDestination::Dir(store_dir.clone()),
+        || eval(expr).and_then(|v| crate::eval::force_value(&v)),
+    );
     std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _ = std::fs::remove_dir_all(&store_dir);
 

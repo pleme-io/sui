@@ -159,6 +159,9 @@ pub fn write_drv(drv_path: &str, drv: &Derivation) -> Result<DrvWritten, DrvWrit
 /// # Errors
 /// [`DrvWriteError::UnsupportedRemote`] or [`DrvWriteError::NoWritePath`].
 pub fn detect_destination(drv_path: &str) -> Result<DrvDestination, DrvWriteError> {
+    if let Some(dest) = SCOPED.with(|s| s.borrow().clone()) {
+        return Ok(dest);
+    }
     if let Ok(dir) = std::env::var("SUI_STORE_DIR")
         && dir != "/nix/store"
     {
@@ -190,6 +193,26 @@ pub fn detect_destination(drv_path: &str) -> Result<DrvDestination, DrvWriteErro
         return Err(DrvWriteError::NoWritePath { drv_path: drv_path.to_string(), socket });
     };
     Ok(AUTO.get_or_init(|| dest).clone())
+}
+
+thread_local! {
+    static SCOPED: std::cell::RefCell<Option<DrvDestination>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with this thread's `.drv`s going to `dest`, ahead of every other
+/// rule. Unlike `SUI_STORE_DIR`, which is process-global, the scope is this
+/// thread's alone, so a test can stage a refusing store without other threads
+/// evaluating into it.
+pub fn with_destination<T>(dest: DrvDestination, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<DrvDestination>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            SCOPED.with(|s| *s.borrow_mut() = prev);
+        }
+    }
+    let _restore = Restore(SCOPED.with(|s| s.borrow_mut().replace(dest)));
+    f()
 }
 
 /// Instantiate `drv` at `drv_path` into an explicit destination.
