@@ -4419,6 +4419,7 @@ dependencies = [
  "futures-core",
  "gen-nix",
  "http-body-util",
+ "libc",
  "mimalloc",
  "predicates",
  "prost",

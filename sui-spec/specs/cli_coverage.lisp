@@ -628,6 +628,12 @@
   :substrate ("hash" "nar")
   :notes "Operator-facing continuous nix-vs-sui parity sweep: 7 byte-equivalent probes (hash conv x4, hash file, NAR sha256, ATerm round-trip). Exits non-zero on divergence. JSON or Nord output.")
 (defsui-command
+  :name "flip-probe"
+  :nix-equivalent ""
+  :maturity SuiNative
+  :substrate ("derivation" "flake")
+  :notes "Evaluate <flake>#<attr>.drvPath with sui and CppNix as separate processes; emit the sui.flip-probe/v1 JSON receipt (versions, both drvPaths, wall, peak RSS, verdict) and, on a mismatch, the first differing drv and its fields. Schema: docs/FLIP-PROBE.md.")
+(defsui-command
   :name "store inventory"
   :nix-equivalent ""
   :maturity SuiNative

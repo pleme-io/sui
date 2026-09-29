@@ -6,6 +6,8 @@
 //! `sui-daemon`, `sui-orchestrate`).
 
 pub mod api;
+pub mod child_usage;
+pub mod flip_probe;
 
 /// Default path to the Nix `SQLite` database.
 pub const NIX_DB_PATH: &str = "/nix/var/nix/db/db.sqlite";

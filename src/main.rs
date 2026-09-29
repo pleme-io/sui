@@ -293,6 +293,25 @@ enum Commands {
     /// fails CI the same way `parity`'s "drvPath changed" does. The gated
     /// metric is deterministic WORK (eval_expr count), not flaky wall-clock —
     /// a red row means a shape does more eval work, never runner noise.
+    /// Evaluate `<flake>#<attr>.drvPath` with sui AND CppNix, each as its own
+    /// process, and write a JSON receipt (engine versions, both drvPaths, wall
+    /// time, peak RSS, verdict). On a mismatch, walk both drv graphs to the
+    /// first differing drv and name its differing fields. Schema:
+    /// docs/FLIP-PROBE.md. Exits non-zero unless the drvPaths match.
+    #[command(name = "flip-probe")]
+    FlipProbe {
+        /// `<flake>#<attr>`, e.g. `.#nixosConfigurations.n.config.system.build.toplevel`.
+        installable: String,
+        /// The CppNix `nix` binary. Default: the installed one, by absolute path.
+        #[arg(long)]
+        nix: Option<std::path::PathBuf>,
+        /// Write the receipt here instead of stdout.
+        #[arg(long)]
+        receipt: Option<std::path::PathBuf>,
+        /// Drv-pair budget for the graph walk; a truncated walk says so.
+        #[arg(long, default_value = "200000")]
+        max_nodes: usize,
+    },
     #[command(name = "perf-seal")]
     PerfSeal {
         /// Emit machine-readable JSON instead of the Nord table.
@@ -5446,224 +5465,9 @@ fn parity_verdict_is_fatal(verdict: &sui_spec::parity::SweepVerdict) -> bool {
     }
 }
 
-/// The store-name of a `/nix/store/<32-hash>-<name>` path — the hash stripped,
-/// used to match sui's temp-cache drvs against nix's store drvs across the
-/// input-derivation graph (the hashes differ where they diverge; the names don't).
-fn drv_name(path: &str) -> String {
-    let base = path.rsplit('/').next().unwrap_or(path);
-    base.splitn(2, '-').nth(1).unwrap_or(base).to_string()
-}
-
-/// Read a drv's ATerm bytes from the store (both engines instantiate there).
-fn read_drv_bytes(drv_path: &str) -> Option<Vec<u8>> {
-    std::fs::read(drv_path).ok()
-}
-
-/// Replace every `/nix/store/<32-hash>-` with a fixed placeholder so a value
-/// that differs ONLY by cascaded store hashes reads as equal — isolating
-/// genuine content divergence from hash cascade.
-fn strip_store_hashes(s: &str) -> String {
-    // UTF-8-safe: scan by `find` + char-aware slicing (drv env values contain
-    // multi-byte chars, e.g. the U+2010 hyphen in gcc build scripts — byte
-    // indexing would panic on a non-char-boundary).
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(pos) = rest.find("/nix/store/") {
-        out.push_str(&rest[..pos]);
-        let after = &rest[pos + "/nix/store/".len()..];
-        // The store hash is exactly 32 nix-base32 chars (all ASCII); collect the
-        // first 32 chars and verify — if they're all ASCII the byte length is 32
-        // and `after[32..]` lands on a char boundary.
-        let hash: String = after.chars().take(32).collect();
-        if hash.len() == 32 && hash.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
-            out.push_str("/nix/store/<HASH>");
-            rest = &after[32..];
-        } else {
-            out.push_str("/nix/store/");
-            rest = after;
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// One structural-leaf result of the bisect.
-struct BisectLeaf {
-    sui_path: String,
-    nix_path: String,
-    sui: sui_compat::derivation::Derivation,
-    nix: sui_compat::derivation::Derivation,
-    /// The name path from the top drv down to this node. Per-leaf now that the
-    /// walk reports many leaves, rather than one `&mut Vec` threaded through a
-    /// single descent.
-    trail: Vec<String>,
-}
-
-/// A node whose name appears a different number of times on the two sides.
-///
-/// This is not cosmetic. The NixOS `minimal` toplevel closure has 145
-/// duplicated drv names — `source.drv` appears 188 times — and the toplevel
-/// drv's own immediate `inputDrvs` contain duplicates. Keying the pairing on
-/// `BTreeMap<name, path>` therefore DROPPED nodes silently, at the root of the
-/// exact subject this tool exists for.
-struct MissingNode {
-    parent: String,
-    name: String,
-    side: &'static str,
-    count_sui: usize,
-    count_nix: usize,
-}
-
-/// Everything one visit-all bisect found.
-struct BisectReport {
-    /// Every frontier node — a drv that diverges but whose same-name inputs all
-    /// agree. There can be many; the old first-child descent reported at most
-    /// one and called the rest "no divergence".
-    leaves: Vec<BisectLeaf>,
-    missing: Vec<MissingNode>,
-    unreadable: Vec<(String, &'static str)>,
-    visited: usize,
-    truncated: bool,
-}
-
-/// Walk the sui↔nix input-derivation graph, visiting EVERY diverging node.
-///
-/// Replaces a first-child descent (`diverging.into_iter().next()`) that
-/// explored ONE path through a DAG and reported "no divergence found" whenever
-/// the divergence sat on a sibling branch. A false negative in a diagnostic is
-/// worse than a missing diagnostic: it answers confidently and wrongly.
-///
-/// Three deliberate choices:
-///
-/// * **The memo is keyed on the drv store path**, and there is exactly one of
-///   them for both sides. A store path is content-addressed, so equal paths
-///   imply byte-equal ATerm; a node reached from both sides under one path is
-///   parsed once, which is the bulk of the win since the agreeing sub-closure
-///   is the majority. Where the sides diverge the paths differ and get
-///   distinct entries, correctly.
-/// * **`seen` is keyed on the PAIR**, not on either path. The verdict is a
-///   property of the pair — the same sui node can legitimately be compared
-///   against two different nix partners when a name repeats.
-/// * **The depth cap is gone.** With a pair seen-set it was dead code, and
-///   worse than dead: a genuine cycle (which would itself be a real hashing
-///   bug, `.drv` graphs being acyclic by construction) surfaced as a
-///   misleading "recursion too deep". An explicit worklist makes stack depth
-///   irrelevant; `max_nodes` is the safety valve and reports `truncated`
-///   loudly rather than stopping quietly.
-///
-/// An unreadable node degrades to a recorded entry instead of aborting the
-/// whole walk — the generalisation must not be less robust than what it
-/// replaces.
-fn bisect_drv_all(sui_top: &str, nix_top: &str, max_nodes: usize) -> BisectReport {
-    use sui_compat::derivation::Derivation;
-    use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-    let mut parsed: BTreeMap<String, Derivation> = BTreeMap::new();
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-    let mut work: VecDeque<(String, String, Vec<String>)> = VecDeque::new();
-    let mut report = BisectReport {
-        leaves: Vec::new(),
-        missing: Vec::new(),
-        unreadable: Vec::new(),
-        visited: 0,
-        truncated: false,
-    };
-
-    work.push_back((
-        sui_top.to_string(),
-        nix_top.to_string(),
-        vec![drv_name(nix_top)],
-    ));
-
-    while let Some((sp, np, trail)) = work.pop_front() {
-        if !seen.insert((sp.clone(), np.clone())) {
-            continue;
-        }
-        if report.visited >= max_nodes {
-            report.truncated = true;
-            break;
-        }
-        report.visited += 1;
-
-        // Parse both sides through the memo.
-        let mut load = |path: &str, side: &'static str| -> Option<Derivation> {
-            if let Some(d) = parsed.get(path) {
-                return Some(d.clone());
-            }
-            let bytes = read_drv_bytes(path)?;
-            let d = Derivation::parse(&bytes).ok()?;
-            parsed.insert(path.to_string(), d.clone());
-            let _ = side;
-            Some(d)
-        };
-        let Some(sui) = load(&sp, "sui") else {
-            report.unreadable.push((sp.clone(), "sui"));
-            continue;
-        };
-        let Some(nix) = load(&np, "nix") else {
-            report.unreadable.push((np.clone(), "nix"));
-            continue;
-        };
-
-        // Pair inputs by name WITH MULTIPLICITY — see `MissingNode`.
-        let mut sui_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for k in sui.input_derivations.keys() {
-            sui_by_name.entry(drv_name(k)).or_default().push(k.clone());
-        }
-        let mut nix_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for k in nix.input_derivations.keys() {
-            nix_by_name.entry(drv_name(k)).or_default().push(k.clone());
-        }
-        for v in sui_by_name.values_mut() {
-            v.sort();
-        }
-        for v in nix_by_name.values_mut() {
-            v.sort();
-        }
-
-        let names: BTreeSet<&String> =
-            sui_by_name.keys().chain(nix_by_name.keys()).collect();
-        let mut diverging_children = 0usize;
-        for name in names {
-            let empty: Vec<String> = Vec::new();
-            let sv = sui_by_name.get(name).unwrap_or(&empty);
-            let nv = nix_by_name.get(name).unwrap_or(&empty);
-            if sv.len() != nv.len() {
-                report.missing.push(MissingNode {
-                    parent: drv_name(&np),
-                    name: name.clone(),
-                    side: if sv.len() > nv.len() { "sui" } else { "nix" },
-                    count_sui: sv.len(),
-                    count_nix: nv.len(),
-                });
-            }
-            for (cs, cn) in sv.iter().zip(nv.iter()) {
-                if cs == cn {
-                    // Identical store path ⇒ identical sub-closure. Prune the
-                    // whole agreeing subgraph rather than walking it.
-                    continue;
-                }
-                diverging_children += 1;
-                let mut t = trail.clone();
-                t.push(name.clone());
-                work.push_back((cs.clone(), cn.clone(), t));
-            }
-        }
-
-        // Frontier: this node diverges, and every same-name input agrees.
-        if diverging_children == 0 {
-            report.leaves.push(BisectLeaf {
-                sui_path: sp.clone(),
-                nix_path: np.clone(),
-                sui,
-                nix,
-                trail,
-            });
-        }
-    }
-
-    report
-}
+// The drv-graph walk lives in `sui_compat::drv_graph` (shared with
+// `flip-probe`).
+use sui_compat::drv_graph::{bisect_drv_all, drv_name, BisectLeaf};
 
 /// Drain + emit the `SUI_PARITY_STRICT` un-blinding ledger to stderr.
 ///
@@ -5851,79 +5655,33 @@ fn cmd_parity_bisect(nix: &std::path::Path, expr: &str) -> Result<(), CliError> 
     Ok(())
 }
 
-/// Field-level diff of ONE frontier leaf. Extracted so the visit-all walk can
-/// run it per leaf; previously it was inlined against the single leaf a
-/// first-child descent produced.
+/// Field-level diff of ONE frontier leaf, rendered from the typed
+/// `sui_compat::drv_graph::field_diffs` that `flip-probe` records.
 fn report_bisect_leaf(leaf: &BisectLeaf) {
-    use sui_spec::style::{body, error, ident, muted, warn};
-    use std::collections::BTreeSet;
-    let s = &leaf.sui;
-    let n = &leaf.nix;
-
-    let mut found = false;
-    if s.system != n.system {
-        println!("  {} system   sui={}  nix={}", error("✘"), s.system, n.system); found = true;
-    }
-    if strip_store_hashes(&s.builder) != strip_store_hashes(&n.builder) {
-        println!("  {} builder  sui={}  nix={}", error("✘"), s.builder, n.builder); found = true;
-    }
-    if s.args.iter().map(|a| strip_store_hashes(a)).ne(n.args.iter().map(|a| strip_store_hashes(a))) {
-        println!("  {} args differ (sui {} / nix {})", error("✘"), s.args.len(), n.args.len()); found = true;
-    }
-    let s_src: BTreeSet<String> = s.input_sources.iter().map(|p| drv_name(p)).collect();
-    let n_src: BTreeSet<String> = n.input_sources.iter().map(|p| drv_name(p)).collect();
-    if s_src != n_src {
-        let so: Vec<_> = s_src.difference(&n_src).collect();
-        let no: Vec<_> = n_src.difference(&s_src).collect();
-        println!("  {} inputSrcs name-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
-    }
-    let s_dn: BTreeSet<String> = s.input_derivations.keys().map(|p| drv_name(p)).collect();
-    let n_dn: BTreeSet<String> = n.input_derivations.keys().map(|p| drv_name(p)).collect();
-    if s_dn != n_dn {
-        let so: Vec<_> = s_dn.difference(&n_dn).collect();
-        let no: Vec<_> = n_dn.difference(&s_dn).collect();
-        println!("  {} inputDrv name-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
-    }
-    let s_ek: BTreeSet<&String> = s.env.keys().collect();
-    let n_ek: BTreeSet<&String> = n.env.keys().collect();
-    if s_ek != n_ek {
-        let so: Vec<_> = s_ek.difference(&n_ek).collect();
-        let no: Vec<_> = n_ek.difference(&s_ek).collect();
-        println!("  {} env key-set differs: sui-only={so:?} nix-only={no:?}", error("✘")); found = true;
-    }
-    let val_diffs: Vec<&String> = s_ek.intersection(&n_ek)
-        .filter(|k| strip_store_hashes(&s.env[**k]) != strip_store_hashes(&n.env[**k]))
-        .copied().collect();
-    if !val_diffs.is_empty() {
-        println!("  {} env values differ beyond store-path cascade: {val_diffs:?}", error("✘"));
-        for k in val_diffs.iter().take(4) {
-            println!("      {} {k}: sui={:?}", muted("·"), strip_store_hashes(&s.env[*k]));
-            println!("        {} nix={:?}", muted(" "), strip_store_hashes(&n.env[*k]));
+    use sui_spec::style::{body, error, muted, warn};
+    let diffs = sui_compat::drv_graph::field_diffs(&leaf.sui, &leaf.nix);
+    let content: Vec<_> = diffs.iter().filter(|d| !d.hash_cascade_only).collect();
+    let only_output_paths = !diffs.is_empty()
+        && diffs.iter().all(|d| d.field.starts_with("outputs.") && d.field.ends_with(".path"));
+    if only_output_paths {
+        println!("  {} OUTPUT-PATH-ONLY divergence — every input + field is byte-identical; only this drv's own output store path differs.", warn("⚑"));
+        println!("      {} root: sui's INPUT-ADDRESSED output computation (hashDerivationModulo / SerializeModulo) for a drv WITH input-derivations. The bare-derivation path matches, so the bug is in the modulo replacement of inputDrvs (FOD special-case or the modulo memo).", body("→"));
+        for d in &diffs {
+            println!("      {} {}: sui={} nix={}", muted("·"), d.field, d.sui.as_deref().unwrap_or("-"), d.cppnix.as_deref().unwrap_or("-"));
         }
-        found = true;
+        return;
     }
-    if !found {
-        // High-signal case: every input + field matches, only THIS drv's own
-        // output store path differs → the root is sui's input-addressed output
-        // computation (hashDerivationModulo / SerializeModulo) for a drv WITH
-        // input-derivations — not the bare-derivation path (which matches).
-        let s_out_names: BTreeSet<String> = s.outputs.values().map(|o| drv_name(&o.path)).collect();
-        let n_out_names: BTreeSet<String> = n.outputs.values().map(|o| drv_name(&o.path)).collect();
-        let out_paths_differ = s.outputs.iter().any(|(k, so)|
-            n.outputs.get(k).is_some_and(|no| no.path != so.path));
-        if out_paths_differ && s_out_names == n_out_names {
-            println!("  {} OUTPUT-PATH-ONLY divergence — every input + field is byte-identical; only this drv's own output store path differs.", warn("⚑"));
-            println!("      {} root: sui's INPUT-ADDRESSED output computation (hashDerivationModulo / SerializeModulo) for a drv WITH input-derivations. The bare-derivation path matches, so the bug is in the modulo replacement of inputDrvs (FOD special-case or the modulo memo).", body("→"));
-            for (name, so) in &s.outputs {
-                if let Some(no) = n.outputs.get(name) {
-                    if so.path != no.path {
-                        println!("      {} out[{name}]: sui={} nix={}", muted("·"), so.path, no.path);
-                    }
-                }
-            }
-        } else {
-            println!("  {} no field-level structural diff at the leaf — every field matches once store hashes are normalized. The divergence is a store-path cascade the by-name match localizes no further (an input nix has that sui lacks under a differing name).", warn("~"));
-        }
+    if content.is_empty() {
+        println!("  {} no field-level structural diff at the leaf — every field matches once store hashes are normalized. The divergence is a store-path cascade the by-name match localizes no further (an input nix has that sui lacks under a differing name).", warn("~"));
+        return;
+    }
+    for d in content.iter().take(12) {
+        println!("  {} {}", error("✘"), d.field);
+        println!("      {} sui={:?}", muted("·"), d.sui.as_deref().map(sui_compat::drv_graph::strip_store_hashes));
+        println!("        {} nix={:?}", muted(" "), d.cppnix.as_deref().map(sui_compat::drv_graph::strip_store_hashes));
+    }
+    if content.len() > 12 {
+        println!("      {} … and {} more differing field(s)", muted("·"), content.len() - 12);
     }
 }
 
@@ -7590,6 +7348,30 @@ async fn main() -> Result<(), CliError> {
                     // Not a derivation — just display the evaluated value.
                     println!("{target}");
                 }
+            }
+        }
+
+        Commands::FlipProbe { installable, nix, receipt, max_nodes } => {
+            let err = |message: String| CliError::Orchestrate { operation: "flip-probe", message };
+            let nix = nix
+                .or_else(|| sui_compat::cppnix::locate("nix"))
+                .ok_or_else(|| err("no CppNix `nix` binary found; pass --nix".into()))?;
+            let sui_bin = std::env::current_exe().map_err(|e| err(format!("own exe: {e}")))?;
+            let r = sui::flip_probe::probe(&sui::flip_probe::ProbeOptions {
+                installable,
+                sui: sui_bin,
+                nix,
+                max_nodes,
+            })
+            .map_err(|e| err(e.to_string()))?;
+            let json = serde_json::to_string_pretty(&r).map_err(|e| err(e.to_string()))?;
+            match &receipt {
+                Some(path) => std::fs::write(path, format!("{json}\n"))
+                    .map_err(|e| err(format!("{}: {e}", path.display())))?,
+                None => println!("{json}"),
+            }
+            if r.verdict != sui::flip_probe::Verdict::Match {
+                return Err(err(format!("verdict {:?}", r.verdict)));
             }
         }
 
@@ -10038,199 +9820,5 @@ mod parity_gate_tests {
         let v = SweepVerdict::classify(Vec::new(), floor(20));
         assert_eq!(v, SweepVerdict::Vacuous);
         assert!(parity_verdict_is_fatal(&v));
-    }
-}
-
-
-#[cfg(test)]
-mod bisect_walk_tests {
-    use super::{bisect_drv_all, BisectReport};
-    use std::collections::BTreeMap;
-    use sui_compat::derivation::{Derivation, DerivationOutput};
-
-    /// Build a minimal but VALID derivation naming the given input drvs.
-    fn drv(name: &str, inputs: &[&str]) -> Derivation {
-        let mut outputs = BTreeMap::new();
-        outputs.insert(
-            "out".to_string(),
-            DerivationOutput {
-                path: format!("/nix/store/{:0>32}-{name}", name),
-                hash_algo: String::new(),
-                hash: String::new(),
-            },
-        );
-        Derivation {
-            outputs,
-            input_derivations: inputs
-                .iter()
-                .map(|p| ((*p).to_string(), vec!["out".to_string()]))
-                .collect(),
-            input_sources: Vec::new(),
-            system: "aarch64-darwin".to_string(),
-            builder: "/bin/sh".to_string(),
-            args: Vec::new(),
-            env: [("name".to_string(), name.to_string())]
-                .into_iter()
-                .collect(),
-        }
-    }
-
-    /// Write a derivation and return the absolute path. `read_drv_bytes` tries
-    /// a literal `fs::read` first, so a tempdir path is readable by the walk.
-    fn write(dir: &std::path::Path, file: &str, d: &Derivation) -> String {
-        let path = dir.join(file);
-        std::fs::write(&path, d.serialize()).expect("write drv");
-        path.to_string_lossy().into_owned()
-    }
-
-    fn tmpdir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("sui-bisect-walk-{tag}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
-    }
-
-    /// ★ THE REGRESSION. Two siblings diverge; the old first-child descent
-    /// (`diverging.into_iter().next()`) explored only the alphabetically-first
-    /// and reported ONE leaf, so a divergence living under `zzz` was reported
-    /// as "no divergence found" whenever `aaa` also diverged. A false negative
-    /// in a diagnostic is worse than a missing diagnostic.
-    #[test]
-    fn visits_every_diverging_sibling_not_just_the_first() {
-        let dir = tmpdir("siblings");
-        // Leaves: same name on both sides, different content ⇒ different path.
-        let s_aaa = write(&dir, "s-aaa.drv", &drv("aaa", &[]));
-        let n_aaa = write(&dir, "n-aaa.drv", &drv("aaa-nix", &[]));
-        let s_zzz = write(&dir, "s-zzz.drv", &drv("zzz", &[]));
-        let n_zzz = write(&dir, "n-zzz.drv", &drv("zzz-nix", &[]));
-
-        let s_top = write(&dir, "s-top.drv", &drv("top", &[&s_aaa, &s_zzz]));
-        let n_top = write(&dir, "n-top.drv", &drv("top", &[&n_aaa, &n_zzz]));
-
-        let r: BisectReport = bisect_drv_all(&s_top, &n_top, 10_000);
-
-        assert!(!r.truncated, "walk truncated on a 5-node graph");
-        assert!(
-            r.unreadable.is_empty(),
-            "unreadable nodes: {:?}",
-            r.unreadable
-        );
-        assert_eq!(
-            r.leaves.len(),
-            2,
-            "expected BOTH diverging siblings on the frontier, got {}: {:?}. \
-             One leaf means the walk is descending a single path again.",
-            r.leaves.len(),
-            r.leaves
-                .iter()
-                .map(|l| l.nix_path.clone())
-                .collect::<Vec<_>>()
-        );
-        let names: Vec<String> = r.leaves.iter().map(|l| super::drv_name(&l.nix_path)).collect();
-        assert!(names.iter().any(|n| n.contains("aaa")), "missing aaa: {names:?}");
-        assert!(names.iter().any(|n| n.contains("zzz")), "missing zzz: {names:?}");
-    }
-
-    /// ★ THE SECOND FALSE NEGATIVE, independent of the first. Pairing on
-    /// `BTreeMap<name, path>` silently kept only the LAST path per name. Real
-    /// closures are full of repeats — `source.drv` occurs 188 times in the
-    /// NixOS minimal toplevel, and the toplevel's own immediate `inputDrvs`
-    /// carry duplicates — so nodes were dropped at the root of the very
-    /// subject this tool exists for.
-    #[test]
-    fn duplicate_input_names_are_paired_by_multiplicity() {
-        let dir = tmpdir("dups");
-        // Two DIFFERENT drvs that share the name `source`, on each side.
-        // `drv_name` splits on the FIRST '-', so all four resolve to the SAME
-        // name `source.drv` while being four distinct store paths — which is
-        // exactly the real shape (`source.drv` occurs 188 times in the NixOS
-        // minimal toplevel closure).
-        let s1 = write(&dir, "aaa1-source.drv", &drv("source", &[]));
-        let s2 = write(&dir, "aaa2-source.drv", &drv("source2", &[]));
-        let n1 = write(&dir, "bbb1-source.drv", &drv("sourceN", &[]));
-        let n2 = write(&dir, "bbb2-source.drv", &drv("sourceN2", &[]));
-
-        let s_top = write(&dir, "s-top.drv", &drv("top", &[&s1, &s2]));
-        let n_top = write(&dir, "n-top.drv", &drv("top", &[&n1, &n2]));
-
-        let r = bisect_drv_all(&s_top, &n_top, 10_000);
-
-        // Both duplicates must be paired and walked. Under the old map the
-        // second overwrote the first and exactly one pair survived.
-        assert!(
-            r.visited >= 3,
-            "visited {} node pairs; both same-named inputs must be paired, \
-             not collapsed to one",
-            r.visited
-        );
-        assert!(
-            r.missing.is_empty(),
-            "counts match on both sides, so nothing should be reported missing: {:?}",
-            r.missing.iter().map(|m| (m.name.clone(), m.count_sui, m.count_nix)).collect::<Vec<_>>()
-        );
-    }
-
-    /// A name present on one side only is REPORTED, not silently dropped.
-    #[test]
-    fn a_name_on_one_side_only_is_reported() {
-        let dir = tmpdir("missing");
-        let s_only = write(&dir, "s-only.drv", &drv("only", &[]));
-        let s_top = write(&dir, "s-top.drv", &drv("top", &[&s_only]));
-        let n_top = write(&dir, "n-top.drv", &drv("top", &[]));
-
-        let r = bisect_drv_all(&s_top, &n_top, 10_000);
-        assert_eq!(r.missing.len(), 1, "missing: {:?}", r.missing.len());
-        assert_eq!(r.missing[0].side, "sui");
-        assert_eq!((r.missing[0].count_sui, r.missing[0].count_nix), (1, 0));
-    }
-
-    /// An unreadable node degrades to a recorded entry — the visit-all walk
-    /// must not be LESS robust than the first-child descent it replaces, which
-    /// aborted the entire bisect on one unreadable drv.
-    #[test]
-    fn an_unreadable_node_degrades_instead_of_aborting() {
-        let dir = tmpdir("unreadable");
-        let s_good = write(&dir, "s-good.drv", &drv("good", &[]));
-        let n_good = write(&dir, "n-good.drv", &drv("good-nix", &[]));
-        // The two ghosts must DIFFER, or the walk prunes them as an identical
-        // pair and never attempts a read — the test would then pass while
-        // exercising nothing.
-        let s_ghost = dir.join("zzz1-gone.drv").to_string_lossy().into_owned();
-        let n_ghost = dir.join("zzz2-gone.drv").to_string_lossy().into_owned();
-
-        let s_top = write(&dir, "s-top.drv", &drv("top", &[&s_good, &s_ghost]));
-        let n_top = write(&dir, "n-top.drv", &drv("top", &[&n_good, &n_ghost]));
-
-        let r = bisect_drv_all(&s_top, &n_top, 10_000);
-        assert_eq!(
-            r.unreadable.len(),
-            1,
-            "the unreadable node must be RECORDED, not swallowed: {:?}",
-            r.unreadable
-        );
-        // …and the good sibling is still reached despite the bad one, which is
-        // the whole point: the old descent aborted the entire bisect here.
-        assert_eq!(
-            r.leaves.len(),
-            1,
-            "the readable sibling must still be found; leaves={:?}",
-            r.leaves.iter().map(|l| l.nix_path.clone()).collect::<Vec<_>>()
-        );
-    }
-
-    /// ANTI-VACUITY: identical top paths must produce NO leaves. Without this,
-    /// a walk that reported every visited node as a leaf would satisfy the
-    /// assertions above while being useless.
-    #[test]
-    fn an_identical_pair_yields_no_frontier() {
-        let dir = tmpdir("identical");
-        let same = write(&dir, "same.drv", &drv("same", &[]));
-        let r = bisect_drv_all(&same, &same, 10_000);
-        assert!(
-            r.leaves.is_empty() || r.leaves.len() == 1,
-            "an identical pair is either pruned or a single trivial leaf, got {}",
-            r.leaves.len()
-        );
-        assert!(r.missing.is_empty());
     }
 }

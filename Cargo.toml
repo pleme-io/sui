@@ -424,6 +424,8 @@ path = "src/main.rs"
 
 [dependencies]
 gen-nix.workspace = true
+# `wait4`, for a child's peak RSS (src/child_usage.rs, the one seam).
+libc = "0.2"
 sui-bytecode.workspace = true
 sui-cache.workspace = true
 sui-compat.workspace = true

@@ -266,6 +266,11 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // ── serve ───────────────────────────────────────────────────────────
     (&["serve"], "listen", H),
     (&["serve"], "grpc_listen", H),
+    // ── flip-probe ──────────────────────────────────────────────────────
+    (&["flip-probe"], "installable", H),
+    (&["flip-probe"], "nix", H),
+    (&["flip-probe"], "receipt", H),
+    (&["flip-probe"], "max_nodes", H),
     // ── eval ────────────────────────────────────────────────────────────
     (&["eval"], "expression", H),
     (&["eval"], "json", H),

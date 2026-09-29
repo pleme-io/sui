@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "2aaf217bb2d9d2dd6e2429a233c7ed879dbd2d09b9ef20757d1998e59d21bd1f",
+  "cargo_lock_sha256": "e61ecea4cc9734339f154ce238048a0d1ff07c466fb6fd148ebb0c858fd45a9c",
   "manifest_sha256": {
-    "Cargo.toml": "28563900034ff8fab4bb11146057820e1a95cb960891efdc135a9303aaf584f7",
+    "Cargo.toml": "926551ea888b7f01f6c39e93c002450f4c8ef18b9a1c8fad01afc1c10f003e33",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
@@ -15623,6 +15623,16 @@
           {
             "name": "gen_nix",
             "package_key": "gen-nix-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
