@@ -596,7 +596,10 @@ fn parse_outputs_list(input: &NixAttrs) -> Result<Vec<String>, EvalError> {
     }
 }
 
-/// Write the final .drv file to the store (with fallback for permission errors).
+/// Fill the final output paths into `drv` and instantiate it in the store
+/// (`sui_store::drv_write`): the `.drv` reaches the store, the evaluator runs
+/// read-only by explicit selection, or this returns an error naming the path
+/// and the cause.
 fn write_derivation_to_store(
     drv_path: &str,
     out_paths: &std::collections::BTreeMap<String, String>,
@@ -609,42 +612,10 @@ fn write_derivation_to_store(
             }
         drv.env.insert(output_name.clone(), output_path.clone());
     }
-
-    let drv_content_final = drv.serialize();
-
-    let store_dir = std::env::var("SUI_STORE_DIR")
-        .unwrap_or_else(|_| "/nix/store".to_string());
-    let disk_path = if store_dir != "/nix/store" {
-        drv_path.replacen("/nix/store", &store_dir, 1)
-    } else {
-        drv_path.to_string()
-    };
-
-    let drv_file = std::path::Path::new(&disk_path);
-    if !drv_file.exists() {
-        if let Some(parent) = drv_file.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        match std::fs::write(drv_file, drv_content_final.as_bytes()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
-                std::fs::create_dir_all(&fallback_dir).ok();
-                let fallback_path = fallback_dir.join(drv_file.file_name().unwrap_or_default());
-                if let Err(e2) = std::fs::write(&fallback_path, drv_content_final.as_bytes()) {
-                    tracing::warn!("failed to write .drv to both {} and {}: {e}, {e2}", drv_path, fallback_path.display());
-                } else {
-                    tracing::debug!("wrote .drv to fallback: {}", fallback_path.display());
-                }
-            }
-            Err(e) => {
-                return Err(EvalError::IoError {
-                    context: format!("writing derivation {drv_path}"),
-                    message: e.to_string(),
-                });
-            }
-        }
-    }
+    sui_store::drv_write::write_drv(drv_path, drv).map_err(|e| EvalError::IoError {
+        context: format!("instantiating derivation {drv_path}"),
+        message: e.to_string(),
+    })?;
     Ok(())
 }
 

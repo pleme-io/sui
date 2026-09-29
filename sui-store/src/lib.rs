@@ -20,6 +20,8 @@
 pub mod binary_cache;
 pub mod convergence;
 pub mod daemon_realize;
+pub mod daemon_session;
+pub mod drv_write;
 pub mod entity;
 pub mod http;
 pub mod local;
@@ -28,6 +30,7 @@ pub mod pg;
 pub mod profile;
 pub mod substitute;
 pub mod traits;
+pub mod worker_client;
 
 pub use binary_cache::{BinaryCacheError, BinaryCacheStore, BinaryCacheStoreBuilder};
 pub use daemon_realize::{

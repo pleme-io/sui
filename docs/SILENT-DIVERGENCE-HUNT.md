@@ -227,6 +227,14 @@ derivation.
 
 **Corrected 2026-08-18 — the trap recorded here was wrong in both halves.**
 
+> **Superseded 2026-09-29.** The `$TMPDIR/sui-drv-cache` fallback is gone.
+> Both engines instantiate through `sui_store::drv_write`: the `.drv` goes to the
+> daemon (`AddTextToStore`, on one connection held for the process) or a
+> writable store, `sui eval --read-only` computes paths without writing, and any
+> other outcome is an error naming the path and the cause. The readers look in
+> the store only.
+
+
 This said `sui eval …drvPath` does **not write the .drv** and that you must
 instantiate first. Measured: it DOES write it, during eval
 (`write_derivation_to_store`, called from the `derivation` builtin). It just

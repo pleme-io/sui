@@ -273,6 +273,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["eval"], "expr_flag", H),
     (&["eval"], "max_force_depth", H),
     (&["eval"], "no_eval_cache", H),
+    // Selects `sui_store::drv_write::DrvWriteMode::ReadOnly`.
+    (&["eval"], "read_only", H),
     (
         &["eval"],
         "apply",

@@ -87,45 +87,15 @@ impl BuildClosure {
         self.derivations.is_empty()
     }
 
-    /// Recursively parse derivation files, building the dependency graph.
-    /// Read a `.drv`'s bytes, falling back to `$TMPDIR/sui-drv-cache`.
-    ///
-    /// On a MULTI-USER (root-owned) store — every real fleet machine — sui
-    /// cannot write into `/nix/store`, so
-    /// `sui-eval`'s `write_derivation_to_store` takes its PermissionDenied
-    /// branch and leaves the `.drv` in `$TMPDIR/sui-drv-cache` instead. Reading
-    /// only the store path therefore failed for every derivation CppNix had not
-    /// already instantiated:
-    ///
-    /// ```text
-    /// sui build <fresh aarch64-linux drv>
-    ///   cannot read /nix/store/…-sui-remote-probe-fresh.drv: No such file or directory
-    /// ```
-    ///
-    /// while the same flake with a drv nix HAD built succeeded — i.e. every
-    /// apparent success was a cache hit on CppNix's instantiation.
-    /// `sui-store`'s `collect_drv_closure` already resolved this way; this is
-    /// the same rule for the other reader, so the two cannot disagree about
-    /// where a derivation lives.
+    /// Read a `.drv`'s bytes from the store. Evaluation instantiates every
+    /// `.drv` it computes (`sui_store::drv_write`), so the store is the only
+    /// place to look.
     fn read_drv_bytes(drv_path: &str) -> Result<Vec<u8>, BuildError> {
-        match std::fs::read(drv_path) {
-            Ok(d) => Ok(d),
-            Err(store_err) => {
-                let name = std::path::Path::new(drv_path)
-                    .file_name()
-                    .unwrap_or_default();
-                let fallback = std::env::temp_dir().join("sui-drv-cache").join(name);
-                std::fs::read(&fallback).map_err(|fb_err| {
-                    BuildError::Derivation(format!(
-                        "cannot read {drv_path}: {store_err} \
-                         (also absent from the sui-drv-cache fallback at {}: {fb_err})",
-                        fallback.display()
-                    ))
-                })
-            }
-        }
+        std::fs::read(drv_path)
+            .map_err(|e| BuildError::Derivation(format!("cannot read {drv_path}: {e}")))
     }
 
+    /// Recursively parse derivation files, building the dependency graph.
     fn parse_recursive(
         drv_path: &str,
         parsed: &mut BTreeMap<String, Derivation>,

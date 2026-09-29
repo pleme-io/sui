@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "b6868032a85fad7633b2dedb3030fb4cf0385f9c25055a4d2aef6c1d9dfa5f3c",
+  "cargo_lock_sha256": "25c32f7780170a63cc537701977e76043d5bad769d566d9f5889ed7861b20b11",
   "manifest_sha256": {
     "Cargo.toml": "28563900034ff8fab4bb11146057820e1a95cb960891efdc135a9303aaf584f7",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
     "sui-bigorna/Cargo.toml": "c97c5d91369fe30b894299aaf4baac763f3a1f23d9ad51cb74d30cdeb7b8dc48",
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
-    "sui-bytecode/Cargo.toml": "9868c53eab964e0c0de7004b9822092f54fecceb976c45cc68d1059853f97cb5",
+    "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
     "sui-cache/Cargo.toml": "9a83d35aacd7e417780f4c5510bb9f2ce6ac8c3cbd0f7fe46edbc8646416fcb0",
     "sui-castore/Cargo.toml": "90b813aabfa836dc85922ee214df654550ca19218d35864baacd821839b7193d",
@@ -24146,6 +24146,16 @@
           {
             "name": "sui_spec",
             "package_key": "sui-spec-0.1.219",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sui_store",
+            "package_key": "sui-store-0.1.219",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

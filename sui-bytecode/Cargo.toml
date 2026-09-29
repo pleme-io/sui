@@ -18,6 +18,7 @@ sui-compat.workspace = true
 sui-intern.workspace = true
 sui-normalize.workspace = true
 sui-spec.workspace = true
+sui-store.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -37,25 +37,11 @@
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
-
-use sui_compat::wire::{PROTOCOL_VERSION, StderrMsg, WORKER_MAGIC_1, WORKER_MAGIC_2, WorkerOp};
+use crate::worker_client::{WorkerConn, WorkerError};
 
 /// The default nix daemon socket (mirrors `sui_daemon::DEFAULT_SOCKET_PATH`,
 /// duplicated here to avoid a `sui-store → sui-daemon` dependency edge).
 pub const DEFAULT_DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket/socket";
-
-/// The fallback directory `sui-eval`'s `write_derivation_to_store` uses when the
-/// real `/nix/store` is not writable (`PermissionDenied`). On a multi-user store
-/// every computed `.drv` lands here, keyed by its store basename.
-const DRV_FALLBACK_DIR: &str = "sui-drv-cache";
-
-// Worker-protocol stderr frame tags — the canonical values live in
-// `sui_compat::wire::StderrMsg`; aliased here as plain `u64`s for match arms.
-const STDERR_LAST: u64 = StderrMsg::Last as u64;
-const STDERR_ERROR: u64 = StderrMsg::Error as u64;
-const STDERR_WRITE: u64 = StderrMsg::Write as u64;
 
 /// Errors from a daemon-mediated realize.
 #[derive(Debug, thiserror::Error)]
@@ -73,7 +59,7 @@ pub enum DaemonRealizeError {
     #[error("realize of {drv} completed but expected output {out} is not valid in the store")]
     OutputAbsent { drv: String, out: String },
     /// A `.drv` in the closure could not be located on disk to hand to the daemon.
-    #[error("derivation {0} not present on disk (neither /nix/store nor the sui-drv-cache fallback)")]
+    #[error("derivation not readable from the store: {0}")]
     DrvMissing(String),
     /// The realize did not complete within its wall-clock bound. A daemon
     /// `BuildPaths` is external, non-cancellable I/O (it may substitute or build
@@ -307,10 +293,14 @@ impl Realized {
 /// Sequence (mirroring CppNix `remote-store.cc`):
 /// 1. handshake + `SetOptions`.
 /// 2. If `out_path` is already valid, return the proof immediately.
-/// 3. `AddToStore` every `.drv` in the closure (found on disk in `/nix/store`
-///    or the `sui-drv-cache` fallback) so the daemon can build them.
+/// 3. `AddTextToStore` every `.drv` in the closure the daemon does not have yet.
+///    Evaluation instantiates every `.drv` it computes ([`crate::drv_write`]),
+///    so this only fires for a closure evaluated elsewhere.
 /// 4. `BuildPaths [<drv_path>]` — the daemon substitutes-or-builds.
 /// 5. `IsValidPath out_path` → mint the [`Realized`] proof.
+///
+/// The protocol exchange is the blocking [`WorkerConn`], run on tokio's
+/// blocking pool.
 ///
 /// # Errors
 /// Any protocol/build failure, or an absent output after a reported success.
@@ -319,40 +309,81 @@ pub async fn realize_via_daemon(
     drv_path: &str,
     out_path: &str,
 ) -> Result<Realized, DaemonRealizeError> {
+    realize_on_blocking_pool(store, drv_path, out_path, None).await
+}
+
+async fn realize_on_blocking_pool(
+    store: &DaemonStore,
+    drv_path: &str,
+    out_path: &str,
+    io_timeout: Option<std::time::Duration>,
+) -> Result<Realized, DaemonRealizeError> {
+    let socket = store.socket().to_path_buf();
+    let (drv, out) = (drv_path.to_string(), out_path.to_string());
+    tokio::task::spawn_blocking(move || realize_blocking(&socket, &drv, &out, io_timeout))
+        .await
+        .map_err(|e| DaemonRealizeError::Protocol(format!("realize task: {e}")))?
+}
+
+fn realize_blocking(
+    socket: &Path,
+    drv_path: &str,
+    out_path: &str,
+    io_timeout: Option<std::time::Duration>,
+) -> Result<Realized, DaemonRealizeError> {
     // The demanded read path may carry a subpath (`readFile "${drv}/data.txt"`).
     // The daemon speaks in store-path ROOTS — `IsValidPath`/`QueryPathInfo`
     // reject a path inside an output. Query on the root; the eval side already
     // reads the full subpath once the root is valid.
     let out_root = store_path_root(out_path);
+    let proto = |e: WorkerError| match e {
+        WorkerError::Unreachable { socket, .. } => DaemonRealizeError::Unreachable(socket),
+        WorkerError::Protocol(m) | WorkerError::Daemon(m) => DaemonRealizeError::Protocol(m),
+    };
 
-    let mut conn = DaemonConn::connect(store.socket()).await?;
-    conn.handshake().await?;
-    conn.set_options().await?;
+    let mut conn = WorkerConn::connect(socket, io_timeout).map_err(proto)?;
 
     // Fast path: already realized (a prior build, or substituted out-of-band).
-    if conn.is_valid_path(out_root).await? {
-        let nar = conn.query_nar_hash(out_root).await.ok().flatten();
+    if conn.is_valid_path(out_root).map_err(proto)? {
+        let nar = conn.query_nar_hash(out_root).ok().flatten();
         return Realized::attested(drv_path, out_path, true, nar);
     }
 
     // Feed the daemon every `.drv` in the closure it doesn't already have, so
     // `BuildPaths` can resolve the graph. sui's `.drv` bytes are byte-identical
-    // to nix's (the parity guarantee), so `AddToStore` yields the exact same
-    // `.drv` store path the build graph references.
-    let drv_closure = collect_drv_closure(drv_path)?;
-    for drv in &drv_closure {
-        if !conn.is_valid_path(&drv.store_path).await? {
-            conn.add_drv_to_store(&drv.store_path, &drv.disk_path).await?;
+    // to nix's (the parity guarantee), so the daemon files each at the exact
+    // path the build graph references.
+    for drv in &collect_drv_closure(drv_path)? {
+        if !conn.is_valid_path(&drv.store_path).map_err(proto)? {
+            add_drv_from_disk(&mut conn, drv).map_err(proto)?;
         }
     }
 
-    // Build (substitute-or-build) the target derivation.
-    conn.build_paths(&[drv_path]).await?;
+    // Build (substitute-or-build) the target derivation. An error frame here is
+    // a build failure, not a protocol fault.
+    conn.build_paths(&[drv_path]).map_err(|e| match e {
+        WorkerError::Daemon(m) => DaemonRealizeError::Build(m),
+        other => proto(other),
+    })?;
 
     // Mint the proof from the daemon's own validity attestation on the root.
-    let valid = conn.is_valid_path(out_root).await?;
-    let nar = if valid { conn.query_nar_hash(out_root).await.ok().flatten() } else { None };
+    let valid = conn.is_valid_path(out_root).map_err(proto)?;
+    let nar = if valid { conn.query_nar_hash(out_root).ok().flatten() } else { None };
     Realized::attested(drv_path, out_path, valid, nar)
+}
+
+/// `AddTextToStore` one `.drv` read from disk, under its NAME (the daemon
+/// computes `<hash>-<name>` itself; passing the basename would hash the hash,
+/// the same class as the store-path double-prefix bug fixed in
+/// `sui-compat::source`).
+fn add_drv_from_disk(conn: &mut WorkerConn, drv: &DrvOnDisk) -> Result<(), WorkerError> {
+    let basename = Path::new(&drv.store_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| WorkerError::Protocol(format!("bad drv path {}", drv.store_path)))?;
+    let name = sui_compat::source::strip_store_hash_prefix(basename);
+    let refs = crate::drv_write::drv_references(&drv.parsed);
+    conn.add_text_to_store(name, &drv.bytes, &refs).map(|_| ())
 }
 
 /// Realize `drv_path`'s output `out_path` through the daemon **within a
@@ -369,7 +400,9 @@ pub async fn realize_via_daemon(
 /// This wrapper makes the hang **unrepresentable at the realize boundary**: the
 /// call either resolves (a `Realized` proof or a typed daemon error) or, on
 /// elapse of `bound`, returns [`DaemonRealizeError::Timeout`]. There is no code
-/// path that returns neither within `bound`.
+/// path that returns neither within `bound`. The socket carries an I/O timeout
+/// just past `bound`, so the blocking worker behind an elapsed realize also
+/// ends rather than lingering.
 ///
 /// # Tier
 ///
@@ -390,7 +423,9 @@ pub async fn realize_via_daemon_bounded(
     out_path: &str,
     bound: std::time::Duration,
 ) -> Result<Realized, DaemonRealizeError> {
-    match tokio::time::timeout(bound, realize_via_daemon(store, drv_path, out_path)).await {
+    let io_timeout = bound + std::time::Duration::from_secs(1);
+    let realize = realize_on_blocking_pool(store, drv_path, out_path, Some(io_timeout));
+    match tokio::time::timeout(bound, realize).await {
         Ok(result) => result,
         Err(_elapsed) => Err(DaemonRealizeError::Timeout {
             drv: drv_path.to_string(),
@@ -416,421 +451,44 @@ fn store_path_root(path: &str) -> &str {
     }
 }
 
-/// One `.drv` in a closure and where its bytes live on disk.
+/// One `.drv` in a closure, read from the store.
 struct DrvOnDisk {
-    /// The canonical `/nix/store/…​.drv` path (the daemon-side name).
     store_path: String,
-    /// Where the bytes actually are on disk (store path or fallback cache).
-    disk_path: PathBuf,
+    bytes: Vec<u8>,
+    parsed: sui_compat::derivation::Derivation,
 }
 
-/// Walk `drv_path`'s input-derivation closure, resolving each `.drv` to the
-/// bytes on disk. Reads the `.drv` from `/nix/store` when present, else from the
-/// `sui-drv-cache` fallback where `sui-eval` parked it on a read-only store.
-///
-/// Leaves-first order is not required for `BuildPaths` (the daemon resolves the
-/// graph itself once every `.drv` is added), but we still add drvs bottom-up so
-/// the daemon never sees a reference to an unadded input.
+/// Walk `drv_path`'s input-derivation closure, reading each `.drv` from the
+/// store, inputs before the drvs that reference them (the daemon never sees a
+/// reference to an input it has not been given).
 fn collect_drv_closure(drv_path: &str) -> Result<Vec<DrvOnDisk>, DaemonRealizeError> {
     use std::collections::BTreeSet;
     use sui_compat::derivation::Derivation;
 
-    let fallback = std::env::temp_dir().join(DRV_FALLBACK_DIR);
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut ordered: Vec<DrvOnDisk> = Vec::new();
-
-    // Depth-first post-order so inputs precede the drvs that reference them.
     fn visit(
         drv_path: &str,
-        fallback: &Path,
         seen: &mut BTreeSet<String>,
         ordered: &mut Vec<DrvOnDisk>,
     ) -> Result<(), DaemonRealizeError> {
         if !seen.insert(drv_path.to_string()) {
             return Ok(());
         }
-        let disk_path = resolve_drv_on_disk(drv_path, fallback)
-            .ok_or_else(|| DaemonRealizeError::DrvMissing(drv_path.to_string()))?;
-        let bytes = std::fs::read(&disk_path)
-            .map_err(|e| DaemonRealizeError::Protocol(format!("read {disk_path:?}: {e}")))?;
-        let drv = Derivation::parse(&bytes)
+        let bytes = std::fs::read(drv_path)
+            .map_err(|e| DaemonRealizeError::DrvMissing(format!("{drv_path}: {e}")))?;
+        let parsed = Derivation::parse(&bytes)
             .map_err(|e| DaemonRealizeError::Protocol(format!("parse {drv_path}: {e}")))?;
-        for input_drv in drv.input_derivations.keys() {
-            visit(input_drv, fallback, seen, ordered)?;
+        let inputs: Vec<String> = parsed.input_derivations.keys().cloned().collect();
+        for input_drv in &inputs {
+            visit(input_drv, seen, ordered)?;
         }
-        ordered.push(DrvOnDisk { store_path: drv_path.to_string(), disk_path });
+        ordered.push(DrvOnDisk { store_path: drv_path.to_string(), bytes, parsed });
         Ok(())
     }
 
-    visit(drv_path, &fallback, &mut seen, &mut ordered)?;
+    let mut seen = BTreeSet::new();
+    let mut ordered = Vec::new();
+    visit(drv_path, &mut seen, &mut ordered)?;
     Ok(ordered)
-}
-
-/// Find a `.drv`'s bytes on disk: the real store path if present, else the
-/// `sui-eval` fallback cache keyed by basename.
-fn resolve_drv_on_disk(drv_path: &str, fallback: &Path) -> Option<PathBuf> {
-    let real = PathBuf::from(drv_path);
-    if real.exists() {
-        return Some(real);
-    }
-    let base = real.file_name()?;
-    let cached = fallback.join(base);
-    if cached.exists() {
-        return Some(cached);
-    }
-    None
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Worker-protocol client connection.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A connected, handshaked worker-protocol client over a Unix socket.
-struct DaemonConn {
-    stream: UnixStream,
-}
-
-impl DaemonConn {
-    async fn connect(socket: &Path) -> Result<Self, DaemonRealizeError> {
-        let stream = UnixStream::connect(socket)
-            .await
-            .map_err(|_| DaemonRealizeError::Unreachable(socket.to_path_buf()))?;
-        Ok(Self { stream })
-    }
-
-    fn proto(e: std::io::Error) -> DaemonRealizeError {
-        DaemonRealizeError::Protocol(format!("io: {e}"))
-    }
-
-    async fn w_u64(&mut self, v: u64) -> Result<(), DaemonRealizeError> {
-        self.stream.write_all(&v.to_le_bytes()).await.map_err(Self::proto)
-    }
-
-    async fn r_u64(&mut self) -> Result<u64, DaemonRealizeError> {
-        let mut b = [0u8; 8];
-        self.stream.read_exact(&mut b).await.map_err(Self::proto)?;
-        Ok(u64::from_le_bytes(b))
-    }
-
-    async fn w_str(&mut self, v: &str) -> Result<(), DaemonRealizeError> {
-        self.w_bytes(v.as_bytes()).await
-    }
-
-    /// Write a length-prefixed, 8-byte-aligned byte buffer (the worker-protocol
-    /// `writeString`/byte-buffer primitive). Used for both UTF-8 strings and
-    /// raw binary payloads (e.g. a `.drv`'s text).
-    async fn w_bytes(&mut self, b: &[u8]) -> Result<(), DaemonRealizeError> {
-        self.w_u64(b.len() as u64).await?;
-        self.stream.write_all(b).await.map_err(Self::proto)?;
-        let pad = (8 - (b.len() % 8)) % 8;
-        if pad > 0 {
-            self.stream.write_all(&[0u8; 8][..pad]).await.map_err(Self::proto)?;
-        }
-        Ok(())
-    }
-
-    async fn r_str(&mut self) -> Result<String, DaemonRealizeError> {
-        let len = self.r_u64().await? as usize;
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await.map_err(Self::proto)?;
-        let pad = (8 - (len % 8)) % 8;
-        if pad > 0 {
-            let mut p = [0u8; 8];
-            self.stream.read_exact(&mut p[..pad]).await.map_err(Self::proto)?;
-        }
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    }
-
-    async fn w_str_list(&mut self, items: &[&str]) -> Result<(), DaemonRealizeError> {
-        self.w_u64(items.len() as u64).await?;
-        for item in items {
-            self.w_str(item).await?;
-        }
-        Ok(())
-    }
-
-    async fn flush(&mut self) -> Result<(), DaemonRealizeError> {
-        self.stream.flush().await.map_err(Self::proto)
-    }
-
-    /// Client side of the worker-protocol handshake.
-    async fn handshake(&mut self) -> Result<(), DaemonRealizeError> {
-        self.w_u64(WORKER_MAGIC_1).await?;
-        self.flush().await?;
-        let magic2 = self.r_u64().await?;
-        if magic2 != WORKER_MAGIC_2 {
-            return Err(DaemonRealizeError::Protocol(format!("bad server magic {magic2:#x}")));
-        }
-        let _server_ver = self.r_u64().await?;
-        self.w_u64(PROTOCOL_VERSION).await?;
-        self.w_u64(0).await?; // cpu affinity (obsolete)
-        self.w_u64(0).await?; // reserve space (obsolete)
-        self.flush().await?;
-        let _daemon_ver = self.r_str().await?;
-        let _trust = self.r_u64().await?;
-        // Handshake terminates with STDERR_LAST.
-        let end = self.r_u64().await?;
-        if end != STDERR_LAST {
-            return Err(DaemonRealizeError::Protocol(format!(
-                "handshake missing STDERR_LAST (got {end:#x})"
-            )));
-        }
-        Ok(())
-    }
-
-    /// `SetOptions` with the version-gated fields the negotiated 1.37 daemon
-    /// reads. All zero / empty overrides, but with `useSubstitutes = 1` so the
-    /// daemon substitutes from configured caches before building (the
-    /// substitute-first posture the pivot requires).
-    async fn set_options(&mut self) -> Result<(), DaemonRealizeError> {
-        self.w_u64(WorkerOp::SetOptions as u64).await?;
-        for _ in 0..6 {
-            self.w_u64(0).await?; // base 6 fields
-        }
-        self.w_u64(0).await?; // useBuildHook (>=2)
-        self.w_u64(0).await?; // verboseBuild (>=4)
-        self.w_u64(0).await?; // logType (>=6)
-        self.w_u64(0).await?; // printBuildTrace (>=6)
-        self.w_u64(0).await?; // buildCores (>=10)
-        self.w_u64(1).await?; // useSubstitutes (>=11) — substitute-first
-        self.w_u64(0).await?; // overrides count (>=12)
-        self.flush().await?;
-        self.drain_stderr().await
-    }
-
-    /// `IsValidPath path` → bool.
-    async fn is_valid_path(&mut self, path: &str) -> Result<bool, DaemonRealizeError> {
-        self.w_u64(WorkerOp::IsValidPath as u64).await?;
-        self.w_str(path).await?;
-        self.flush().await?;
-        self.drain_stderr().await?;
-        Ok(self.r_u64().await? != 0)
-    }
-
-    /// `QueryPathInfo path` → NAR hash (best-effort; `None` if the daemon
-    /// reports the path invalid or omits the info). Used only to *record* the
-    /// attested hash on [`Realized`]; never to weaken the proof.
-    async fn query_nar_hash(&mut self, path: &str) -> Result<Option<String>, DaemonRealizeError> {
-        self.w_u64(WorkerOp::QueryPathInfo as u64).await?;
-        self.w_str(path).await?;
-        self.flush().await?;
-        self.drain_stderr().await?;
-        // Protocol >= 17: a leading `bool valid` precedes the info fields.
-        let valid = self.r_u64().await?;
-        if valid == 0 {
-            return Ok(None);
-        }
-        // ValidPathInfo layout (proto 1.37): deriver, narHash, references,
-        // registrationTime, narSize, ultimate, sigs, ca.
-        let _deriver = self.r_str().await?;
-        let nar_hash = self.r_str().await?;
-        // Drain the remaining fields so the connection stays framed for reuse.
-        let refs = self.r_u64().await? as usize;
-        for _ in 0..refs {
-            let _ = self.r_str().await?;
-        }
-        let _registration_time = self.r_u64().await?;
-        let _nar_size = self.r_u64().await?;
-        let _ultimate = self.r_u64().await?;
-        let sigs = self.r_u64().await? as usize;
-        for _ in 0..sigs {
-            let _ = self.r_str().await?;
-        }
-        let _ca = self.r_str().await?;
-        Ok(Some(nar_hash))
-    }
-
-    /// `AddTextToStore` a `.drv` file from `disk_path` under the store name
-    /// derived from `store_path`'s basename.
-    ///
-    /// A `.drv` is a **text** store object (text-addressed with references to
-    /// its input drvs + srcs), so it is added via `AddTextToStore` (opcode 8) —
-    /// which takes the raw text bytes directly (no NAR wrapping) — NOT
-    /// `AddToStore` (opcode 7, which NAR-dumps an arbitrary path). sui's
-    /// serialized `.drv` bytes are byte-identical to nix's, so the daemon
-    /// computes the exact same `text:sha256` store path the build graph
-    /// references.
-    async fn add_drv_to_store(
-        &mut self,
-        store_path: &str,
-        disk_path: &Path,
-    ) -> Result<(), DaemonRealizeError> {
-        // The NAME, not the basename. `AddTextToStore` takes the store object's
-        // name and computes `<hash>-<name>` itself, so passing the basename —
-        // which already carries the hash — makes the daemon hash the hash:
-        //
-        //   sent:     hcz4z4s0…-sui-remote-probe-fresh.drv
-        //   daemon:   "should be /nix/store/f7ysdivla…-hcz4z4s0…-sui-remote-probe-fresh"
-        //                                    ^^^^^^^^^^ ^^^^^^^^^ two hashes
-        //
-        // and it then rejects the build because the recomputed output path does
-        // not match the one the derivation declares. Same class as the
-        // store-path double-prefix bug fixed in `sui-compat::source`, which is
-        // why that helper is reused here rather than re-deriving the rule.
-        let basename = Path::new(store_path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| DaemonRealizeError::Protocol(format!("bad drv path {store_path}")))?;
-        let name = sui_compat::source::strip_store_hash_prefix(basename);
-
-        let bytes = std::fs::read(disk_path)
-            .map_err(|e| DaemonRealizeError::Protocol(format!("read {disk_path:?}: {e}")))?;
-
-        // Recover the references (input drvs + input srcs) — the daemon needs
-        // them to compute the `text:` store path and validate the closure.
-        let drv = sui_compat::derivation::Derivation::parse(&bytes)
-            .map_err(|e| DaemonRealizeError::Protocol(format!("parse {store_path}: {e}")))?;
-        let mut refs: Vec<String> = drv.input_derivations.keys().cloned().collect();
-        refs.extend(drv.input_sources.iter().cloned());
-        refs.sort();
-        refs.dedup();
-        let ref_strs: Vec<&str> = refs.iter().map(String::as_str).collect();
-
-        self.w_u64(WorkerOp::AddTextToStore as u64).await?;
-        self.w_str(name).await?;
-        self.w_bytes(&bytes).await?; // the raw `.drv` text, length-prefixed + padded
-        self.w_str_list(&ref_strs).await?;
-        self.flush().await?;
-        self.drain_stderr().await?;
-        // Reply is the resulting store path; read and discard it so the
-        // connection stays framed for the next op.
-        let _added_path = self.r_str().await?;
-        Ok(())
-    }
-
-    /// `BuildPaths [<drv!*>...]` with `bmNormal` mode — the daemon
-    /// substitutes-or-builds each derivation.
-    async fn build_paths(&mut self, drv_paths: &[&str]) -> Result<(), DaemonRealizeError> {
-        // Protocol >= 30 sends derivation paths with a `!outputs` selector; a
-        // bare `.drv` path means "all outputs", which is what nix sends for a
-        // wildcard IFD realize.
-        let with_all: Vec<String> = drv_paths.iter().map(|d| format!("{d}!*")).collect();
-        let refs: Vec<&str> = with_all.iter().map(String::as_str).collect();
-
-        self.w_u64(WorkerOp::BuildPaths as u64).await?;
-        self.w_str_list(&refs).await?;
-        self.w_u64(0).await?; // buildMode = bmNormal (>=15)
-        self.flush().await?;
-        // BuildPaths streams build logs on stderr; an Error frame is a build
-        // failure. On STDERR_LAST the reply is a single `1` (success ack).
-        self.drain_stderr_build().await?;
-        let _ok = self.r_u64().await?;
-        Ok(())
-    }
-
-    /// Drain worker-protocol stderr frames until STDERR_LAST. An Error frame
-    /// becomes a `Protocol` error.
-    async fn drain_stderr(&mut self) -> Result<(), DaemonRealizeError> {
-        loop {
-            let msg = self.r_u64().await?;
-            match msg {
-                m if m == STDERR_LAST => return Ok(()),
-                m if m == STDERR_ERROR => {
-                    let text = self.read_error_frame().await?;
-                    return Err(DaemonRealizeError::Protocol(text));
-                }
-                m if m == STDERR_WRITE => {
-                    let _ = self.r_str().await?;
-                }
-                other => {
-                    // Unknown activity/result frames (proto >= 20) carry a
-                    // structured payload; treating anything unexpected on a
-                    // non-build op as a hard error keeps the framing honest.
-                    return Err(DaemonRealizeError::Protocol(format!(
-                        "unexpected stderr frame {other:#x}"
-                    )));
-                }
-            }
-        }
-    }
-
-    /// Like [`drain_stderr`] but tolerant of the richer activity/log frame set
-    /// the daemon emits during a build (proto >= 20). An Error frame is a build
-    /// failure.
-    async fn drain_stderr_build(&mut self) -> Result<(), DaemonRealizeError> {
-        // Frame tags for the structured logger (worker-protocol.hh, proto >= 20).
-        const STDERR_START_ACTIVITY: u64 = StderrMsg::StartActivity as u64;
-        const STDERR_STOP_ACTIVITY: u64 = StderrMsg::StopActivity as u64;
-        const STDERR_RESULT: u64 = StderrMsg::Result as u64;
-        loop {
-            let msg = self.r_u64().await?;
-            match msg {
-                m if m == STDERR_LAST => return Ok(()),
-                m if m == STDERR_ERROR => {
-                    let text = self.read_error_frame().await?;
-                    return Err(DaemonRealizeError::Build(text));
-                }
-                m if m == STDERR_WRITE => {
-                    let _ = self.r_str().await?;
-                }
-                m if m == STDERR_START_ACTIVITY => {
-                    // act(u64), lvl(u64), type(u64), s(string), fields, parent(u64)
-                    let _act = self.r_u64().await?;
-                    let _lvl = self.r_u64().await?;
-                    let _typ = self.r_u64().await?;
-                    let _s = self.r_str().await?;
-                    self.read_fields().await?;
-                    let _parent = self.r_u64().await?;
-                }
-                m if m == STDERR_STOP_ACTIVITY => {
-                    let _act = self.r_u64().await?;
-                }
-                m if m == STDERR_RESULT => {
-                    let _act = self.r_u64().await?;
-                    let _typ = self.r_u64().await?;
-                    self.read_fields().await?;
-                }
-                other => {
-                    return Err(DaemonRealizeError::Protocol(format!(
-                        "unexpected build stderr frame {other:#x}"
-                    )));
-                }
-            }
-        }
-    }
-
-    /// Read a structured `Fields` payload (a count-prefixed list of typed
-    /// fields: type tag + either a u64 or a string).
-    async fn read_fields(&mut self) -> Result<(), DaemonRealizeError> {
-        let n = self.r_u64().await? as usize;
-        for _ in 0..n {
-            let ty = self.r_u64().await?;
-            match ty {
-                0 => {
-                    let _ = self.r_u64().await?; // int
-                }
-                1 => {
-                    let _ = self.r_str().await?; // string
-                }
-                other => {
-                    return Err(DaemonRealizeError::Protocol(format!(
-                        "unknown log field type {other}"
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Read the body of an STDERR_ERROR frame → its message text.
-    async fn read_error_frame(&mut self) -> Result<String, DaemonRealizeError> {
-        // proto >= 26: a serialized `Error` struct; older: type + msg + havePos.
-        // The daemon we negotiate (1.37) sends the struct form:
-        //   type(string) level(u64) name(string) msg(string) havePos(u64)
-        //   traces(list of {havePos(u64) hint(string)})
-        // We only need `msg`; read the whole struct to stay framed.
-        let _type = self.r_str().await?;
-        let _level = self.r_u64().await?;
-        let _name = self.r_str().await?;
-        let msg = self.r_str().await?;
-        let _have_pos = self.r_u64().await?;
-        let ntraces = self.r_u64().await? as usize;
-        for _ in 0..ntraces {
-            let _have_pos = self.r_u64().await?;
-            let _hint = self.r_str().await?;
-        }
-        Ok(msg)
-    }
 }
 
 #[cfg(test)]
@@ -971,22 +629,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_drv_prefers_store_then_fallback() {
-        let tmp = tempfile::tempdir().unwrap();
-        let fallback = tmp.path().join(DRV_FALLBACK_DIR);
-        std::fs::create_dir_all(&fallback).unwrap();
-
-        // A drv whose store path is absent but whose bytes are in the fallback.
-        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-probe.drv";
-        let base = Path::new(store_path).file_name().unwrap();
-        let cached = fallback.join(base);
-        std::fs::write(&cached, b"Derive([])").unwrap();
-
-        let resolved = resolve_drv_on_disk(store_path, &fallback);
-        assert_eq!(resolved.as_deref(), Some(cached.as_path()));
-
-        // A drv absent everywhere resolves to None.
-        assert!(resolve_drv_on_disk("/nix/store/zzz-missing.drv", &fallback).is_none());
+    fn a_drv_absent_from_the_store_is_missing_not_looked_up_elsewhere() {
+        let err = collect_drv_closure("/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-missing.drv")
+            .err()
+            .expect("an absent drv must not resolve");
+        assert!(matches!(err, DaemonRealizeError::DrvMissing(_)), "{err}");
     }
 
     /// LIVE GATE-2 PROBE — proves sui's worker-protocol client handshakes and

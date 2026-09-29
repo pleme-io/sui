@@ -96,6 +96,10 @@ enum Commands {
         #[arg(long, default_value = "0")] max_force_depth: usize,
         #[arg(long)]
         no_eval_cache: bool,
+        /// Compute store paths without instantiating derivations (CppNix's
+        /// `--read-only`): no `.drv` is written, so none can be built from.
+        #[arg(long)]
+        read_only: bool,
         /// [REFUSED] Apply a function to the evaluated value.
         #[arg(long)] apply: Option<String>,
         /// [REFUSED] Evaluate this file instead of the positional expression.
@@ -5450,15 +5454,9 @@ fn drv_name(path: &str) -> String {
     base.splitn(2, '-').nth(1).unwrap_or(base).to_string()
 }
 
-/// Read a drv's ATerm bytes — the nix store first, then sui's temp-cache
-/// fallback (`$TMPDIR/sui-drv-cache/`, where sui writes drvs it can't put in a
-/// read-only /nix/store).
+/// Read a drv's ATerm bytes from the store (both engines instantiate there).
 fn read_drv_bytes(drv_path: &str) -> Option<Vec<u8>> {
-    if let Ok(b) = std::fs::read(drv_path) {
-        return Some(b);
-    }
-    let base = drv_path.rsplit('/').next()?;
-    std::fs::read(std::env::temp_dir().join("sui-drv-cache").join(base)).ok()
+    std::fs::read(drv_path).ok()
 }
 
 /// Replace every `/nix/store/<32-hash>-` with a fixed placeholder so a value
@@ -7104,7 +7102,10 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, apply: _, file_flag: _ } => {
+        Commands::Eval { expression, json, raw, expr_flag, max_force_depth, no_eval_cache, read_only, apply: _, file_flag: _ } => {
+            if read_only {
+                sui_store::drv_write::set_process_mode(sui_store::drv_write::DrvWriteMode::ReadOnly);
+            }
             // Two input shapes (mirrors `nix eval`):
             //  - `--expr "EXPR"`   → raw Nix expression
             //  - positional INSTALLABLE (`flake-ref#attr.path`) → desugars to

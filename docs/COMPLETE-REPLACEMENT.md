@@ -1648,6 +1648,13 @@ hit on CppNix's work.**
 
 ### Root cause, and it is a silent fallback
 
+> **Superseded 2026-09-29.** The `$TMPDIR/sui-drv-cache` fallback is gone.
+> Both engines instantiate through `sui_store::drv_write`: the `.drv` goes to the
+> daemon (`AddTextToStore`, on one connection held for the process) or a
+> writable store, `sui eval --read-only` computes paths without writing, and any
+> other outcome is an error naming the path and the cause. The readers look in
+> the store only.
+
 `sui-eval/src/builtins/derivation.rs:570` `write_derivation_to_store` writes the
 ATerm with a plain `std::fs::write` into `/nix/store`. On a MULTI-USER store —
 root-owned, which is every real fleet machine including cid — that is

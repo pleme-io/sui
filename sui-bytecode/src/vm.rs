@@ -2812,36 +2812,10 @@ impl<'a> VM<'a> {
             }
             drv.env.insert(output_name.clone(), output_path.clone());
         }
-        let drv_content_final = drv.serialize();
-        let store_dir = std::env::var("SUI_STORE_DIR")
-            .unwrap_or_else(|_| "/nix/store".to_string());
-        let disk_path = if store_dir != "/nix/store" {
-            drv_path.replacen("/nix/store", &store_dir, 1)
-        } else {
-            drv_path.clone()
-        };
-        let drv_file = std::path::Path::new(&disk_path);
-        if !drv_file.exists() {
-            if let Some(parent) = drv_file.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            match std::fs::write(drv_file, drv_content_final.as_bytes()) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    let fallback_dir = std::env::temp_dir().join("sui-drv-cache");
-                    std::fs::create_dir_all(&fallback_dir).ok();
-                    let fallback_path = fallback_dir.join(
-                        drv_file.file_name().unwrap_or_default(),
-                    );
-                    let _ = std::fs::write(&fallback_path, drv_content_final.as_bytes());
-                }
-                Err(e) => {
-                    return Err(VMError::Throw(format!(
-                        "derivation: failed to write {drv_path}: {e}"
-                    )));
-                }
-            }
-        }
+        // One writer for both engines: the .drv reaches the store, or the
+        // evaluation fails naming the path and the cause.
+        sui_store::drv_write::write_drv(&drv_path, &drv)
+            .map_err(|e| VMError::Throw(format!("derivation: {e}")))?;
         // Assemble result attrset (CppNix-compatible).
         let mut result: BTreeMap<Symbol, NanBox> = attrs.clone();
         let type_sym = self.interner.intern("type");

@@ -6445,6 +6445,7 @@ dependencies = [
  "sui-intern",
  "sui-normalize",
  "sui-spec",
+ "sui-store",
  "tempfile",
  "thiserror 2.0.18",
 ]

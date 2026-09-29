@@ -1027,6 +1027,61 @@ fn drv_write_is_idempotent() {
     let _ = std::fs::remove_dir_all(&store_dir);
 }
 
+/// A store that refuses the `.drv` write must fail the eval, naming the path
+/// and the cause. The old behaviour parked the file in `$TMPDIR/sui-drv-cache`,
+/// logged at debug and returned the drvPath as if it were in the store: a
+/// path that exists nowhere a consumer looks, reported as success.
+#[test]
+fn drv_write_into_unwritable_store_is_an_error() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let store_dir = make_drv_temp_dir("readonly");
+    // Root ignores directory permissions, so the refusal cannot be staged.
+    if std::fs::metadata(&store_dir).unwrap().uid() == 0 {
+        eprintln!("skip drv_write_into_unwritable_store_is_an_error: running as root");
+        return;
+    }
+    std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let expr = r#"(builtins.derivation { name = "ro-probe-c1"; system = "x86_64-linux"; builder = "/bin/sh"; }).drvPath"#;
+    unsafe { std::env::set_var("SUI_STORE_DIR", &store_dir) };
+    let result = eval(expr).and_then(|v| crate::eval::force_value(&v));
+    unsafe { std::env::remove_var("SUI_STORE_DIR") };
+    std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&store_dir);
+
+    let err = match result {
+        Ok(v) => panic!("an unwritable store must fail the eval, got Ok({v})"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("ro-probe-c1.drv"), "error must name the drv path: {err}");
+    assert!(err.contains("ermission denied"), "error must name the cause: {err}");
+}
+
+/// Against the real daemon: a derivation sui evaluates is instantiated in the
+/// store (the daemon checks the `.drv` text and its output paths before
+/// accepting it), which is what CppNix's `nix eval …drvPath` leaves behind.
+/// Skipped, and says so, where no daemon runs.
+#[test]
+fn drv_write_through_the_daemon_instantiates_in_the_store() {
+    let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let socket = std::path::Path::new(sui_store::DEFAULT_DAEMON_SOCKET);
+    if !socket.exists() || std::env::var_os("NIX_REMOTE").is_some() {
+        eprintln!("skip drv_write_through_the_daemon_instantiates_in_the_store: no default daemon");
+        return;
+    }
+    let nonce = format!("{}-{}", std::process::id(), std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let expr = format!(
+        r#"(builtins.derivation {{ name = "sui-c1-oracle"; nonce = "{nonce}"; system = "x86_64-linux"; builder = "/bin/sh"; }}).drvPath"#
+    );
+    let drv = eval(&expr).and_then(|v| crate::eval::force_value(&v)).unwrap();
+    let drv = drv.as_string().unwrap().to_string();
+    assert!(std::path::Path::new(&drv).exists(), "{drv} must exist in the store");
+    let mut conn = sui_store::worker_client::WorkerConn::connect(socket, None).unwrap();
+    assert!(conn.is_valid_path(&drv).unwrap(), "{drv} must be VALID, not just a file");
+}
+
 #[test]
 fn drv_write_path_matches_filename() {
     let _g = DRV_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
