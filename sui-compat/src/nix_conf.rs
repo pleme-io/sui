@@ -204,6 +204,13 @@ impl NixConfig {
         &self.assignments
     }
 
+    /// The value of scalar setting `name`: its last assignment, as CppNix's
+    /// `set` replaces. `None` when never assigned.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.assignments.iter().rev().find(|a| a.name == name).map(|a| a.value.as_str())
+    }
+
     /// Files that exist but could not be read (skipped, as CppNix skips them).
     #[must_use]
     pub fn unreadable(&self) -> &[(PathBuf, std::io::ErrorKind)] {
@@ -393,6 +400,14 @@ mod tests {
             let (_d, cfg) = load(&[("etc/nix.conf", bad)], &[], None);
             assert!(matches!(cfg, Err(NixConfError::IllegalLine { .. })), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_scalar_setting_is_its_last_assignment() {
+        let (_d, cfg) = load(&[("etc/nix.conf", "max-jobs = 2\nmax-jobs = auto\n")], &[], None);
+        let cfg = cfg.unwrap();
+        assert_eq!(cfg.get("max-jobs"), Some("auto"));
+        assert_eq!(cfg.get("cores"), None);
     }
 
     #[test]

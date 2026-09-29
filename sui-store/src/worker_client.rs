@@ -34,6 +34,99 @@ pub enum WorkerError {
     /// The daemon answered an operation with an error frame.
     #[error("daemon refused: {0}")]
     Daemon(String),
+    /// nix's configuration could not be read, so the options to send are unknown.
+    #[error("nix configuration: {0}")]
+    Config(#[from] sui_compat::nix_conf::NixConfError),
+}
+
+/// The client settings CppNix's `RemoteStore::setOptions` sends, from nix's
+/// configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientOptions {
+    /// `max-jobs` (default 1; `auto` is the number of CPUs).
+    pub max_jobs: u64,
+    /// `max-silent-time` (default 0).
+    pub max_silent_time: u64,
+    /// `cores` (default 0: every core).
+    pub build_cores: u64,
+}
+
+impl ClientOptions {
+    /// Read the options from nix's configuration ([`sui_compat::nix_conf`]).
+    ///
+    /// # Errors
+    /// A configuration CppNix would refuse.
+    pub fn from_nix_config() -> Result<Self, WorkerError> {
+        Ok(Self::from_config(&sui_compat::nix_conf::NixConfig::load()?))
+    }
+
+    /// Read the options from an already-loaded configuration. A value that does
+    /// not parse falls back to CppNix's default for it.
+    #[must_use]
+    pub fn from_config(cfg: &sui_compat::nix_conf::NixConfig) -> Self {
+        let int = |name: &str, default: u64| {
+            cfg.get(name).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+        };
+        let max_jobs = match cfg.get("max-jobs").map(str::trim) {
+            Some("auto") => std::thread::available_parallelism().map_or(1, |n| n.get() as u64),
+            _ => int("max-jobs", 1),
+        };
+        Self { max_jobs, max_silent_time: int("max-silent-time", 0), build_cores: int("cores", 0) }
+    }
+
+    /// The `SetOptions` fields after the op code, before the overrides map, in
+    /// wire order (protocol 1.37).
+    #[must_use]
+    pub fn fields(&self) -> [u64; 12] {
+        [
+            0,                    // keepFailed
+            0,                    // keepGoing
+            0,                    // tryFallback
+            0,                    // verbosity (lvlError)
+            self.max_jobs,        // maxBuildJobs
+            self.max_silent_time, // maxSilentTime
+            1,                    // useBuildHook: remote builders stay available
+            0,                    // build verbosity (lvlError)
+            0,                    // obsolete log type
+            0,                    // obsolete print build trace
+            self.build_cores,     // buildCores
+            1,                    // useSubstitutes
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(text: &str) -> sui_compat::nix_conf::NixConfig {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("nix.conf"), text).unwrap();
+        sui_compat::nix_conf::NixConfig::load_from(&sui_compat::nix_conf::ConfigSources {
+            system: dir.path().join("nix.conf"),
+            user: vec![],
+            nix_config: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn set_options_carries_the_configured_build_limits_and_the_build_hook() {
+        let f = ClientOptions::from_config(&cfg("max-jobs = 14\ncores = 3\nmax-silent-time = 3600\n")).fields();
+        assert_eq!(f[4], 14, "maxBuildJobs");
+        assert_eq!(f[5], 3600, "maxSilentTime");
+        assert_eq!(f[6], 1, "useBuildHook");
+        assert_eq!(f[10], 3, "buildCores");
+        assert_eq!(f[11], 1, "useSubstitutes");
+    }
+
+    #[test]
+    fn unset_options_take_cppnix_defaults_never_zero_jobs() {
+        let f = ClientOptions::from_config(&cfg("")).fields();
+        assert_eq!(f[4], 1, "max-jobs defaults to 1; 0 would forbid local builds");
+        let auto = ClientOptions::from_config(&cfg("max-jobs = auto\n")).fields();
+        assert!(auto[4] >= 1);
+    }
 }
 
 impl From<std::io::Error> for WorkerError {
@@ -129,19 +222,16 @@ impl WorkerConn {
         self.drain_stderr()
     }
 
-    /// `SetOptions` with zero overrides and `useSubstitutes = 1`, so a build the
-    /// daemon runs for us substitutes before it builds.
+    /// `SetOptions`, carrying what CppNix's client sends ([`ClientOptions`]).
+    /// The daemon applies these to the connection, so sending `maxBuildJobs = 0`
+    /// and `useBuildHook = 0` (as sui once did) forbids every local and remote
+    /// build: only substitutable paths could be realized.
     fn set_options(&mut self) -> Result<(), WorkerError> {
+        let opts = ClientOptions::from_nix_config()?;
         self.call(WorkerOp::SetOptions, |c| {
-            for _ in 0..6 {
-                c.u64(0)?; // base fields
+            for field in opts.fields() {
+                c.u64(field)?;
             }
-            c.u64(0)?; // useBuildHook
-            c.u64(0)?; // verboseBuild
-            c.u64(0)?; // logType
-            c.u64(0)?; // printBuildTrace
-            c.u64(0)?; // buildCores
-            c.u64(1)?; // useSubstitutes
             c.u64(0) // overrides count
         })
     }

@@ -339,6 +339,7 @@ fn realize_blocking(
     let proto = |e: WorkerError| match e {
         WorkerError::Unreachable { socket, .. } => DaemonRealizeError::Unreachable(socket),
         WorkerError::Protocol(m) | WorkerError::Daemon(m) => DaemonRealizeError::Protocol(m),
+        e @ WorkerError::Config(_) => DaemonRealizeError::Protocol(e.to_string()),
     };
 
     let mut conn = WorkerConn::connect(socket, io_timeout).map_err(proto)?;
