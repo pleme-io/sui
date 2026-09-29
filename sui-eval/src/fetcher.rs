@@ -48,6 +48,10 @@ pub enum FetchError {
     /// the four typed variants below.
     #[error("download failed: {0}")]
     Download(String),
+    /// nix's configuration could not be read, so the credential for an
+    /// authenticated fetch is unknown. CppNix refuses to run in this state.
+    #[error("nix configuration: {0}")]
+    Config(#[from] sui_compat::nix_conf::NixConfError),
     /// The upstream refused to serve content it has: HTTP 429, or a 403 whose
     /// body names a secondary rate limit. `retry_after` carries the server's
     /// own `Retry-After` in seconds when it sent one — the only authority on
@@ -839,7 +843,7 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
     // sources plus the common `GITHUB_TOKEN` env (gh CLI, nix-darwin
     // shell init).  Without this the operator's private flake
     // inputs (e.g. `arnes`) 404 unauthenticated.
-    if let Some(token) = github_token_for_url(url) {
+    if let Some(token) = github_token_for_url(url)? {
         req = req.header("Authorization", &format!("token {token}"));
     }
 
@@ -916,66 +920,61 @@ fn retry_after_seconds(headers: &ureq::http::HeaderMap) -> Option<u64> {
         .ok()
 }
 
-/// Resolve a host-appropriate auth token for outgoing requests.
+/// Resolve the credential for an outgoing request, the way CppNix does first.
 ///
-/// Sources, in order:
-///   1. `GITHUB_TOKEN` env var (covers gh CLI exports + CI tokens).
-///   2. `NIX_CONFIG` env var, parsed for `access-tokens` line.
-///   3. `~/.config/nix/nix.conf` parsed for `access-tokens` line.
-///   4. `~/.config/gh/hosts.yml` (`oauth_token:` field for github.com).
+/// 1. nix's configuration (`sui_compat::nix_conf`: the system nix.conf, the
+///    user files and `NIX_CONFIG`, with `include`/`!include`), matched by
+///    CppNix's `getAccessToken` rule: the longest `access-tokens` key found in
+///    `github.com/<owner>/<repo>`, else the `github.com` key.
+/// 2. Only when CppNix would send nothing, two sources CppNix does not read:
+///    the `GITHUB_TOKEN` env var and `~/.config/gh/hosts.yml`.
 ///
-/// Returns `Some(token)` only for github.com URLs in this iteration —
-/// gitlab / sr.ht / private git hosts can be added when needed.
-fn github_token_for_url(url: &str) -> Option<String> {
-    if !url.starts_with("https://github.com/")
-        && !url.starts_with("https://api.github.com/")
+/// Returns a token only for github.com URLs. A config file that exists but
+/// cannot be read is skipped, as CppNix skips it, with a warning naming the
+/// file (never its contents).
+///
+/// # Errors
+/// A malformed nix configuration, which CppNix refuses outright.
+fn github_token_for_url(url: &str) -> Result<Option<String>, FetchError> {
+    let Some(repo_key) = github_repo_key(url) else {
+        return Ok(None);
+    };
+    let cfg = sui_compat::nix_conf::NixConfig::load()?;
+    for (file, kind) in cfg.unreadable() {
+        tracing::warn!(file = %file.display(), error = ?kind, "nix configuration file unreadable; skipped");
+    }
+    if let Some(t) = cfg.access_tokens().for_url("github.com", &repo_key) {
+        return Ok(Some(t.to_string()));
+    }
+    if let Ok(t) = std::env::var("GITHUB_TOKEN")
+        && !t.is_empty()
     {
-        return None;
+        return Ok(Some(t));
     }
-    if let Ok(t) = std::env::var("GITHUB_TOKEN") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+        && let Ok(yml) = std::fs::read_to_string(home.join(".config/gh/hosts.yml"))
+        && let Some(t) = parse_gh_hosts_token(&yml, "github.com")
+    {
+        return Ok(Some(t));
     }
-    if let Ok(cfg) = std::env::var("NIX_CONFIG") {
-        if let Some(t) = parse_access_tokens(&cfg, "github.com") {
-            return Some(t);
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let nix_conf = home.join(".config/nix/nix.conf");
-        if let Ok(cfg) = std::fs::read_to_string(&nix_conf) {
-            if let Some(t) = parse_access_tokens(&cfg, "github.com") {
-                return Some(t);
-            }
-        }
-        let gh_hosts = home.join(".config/gh/hosts.yml");
-        if let Ok(yml) = std::fs::read_to_string(&gh_hosts) {
-            if let Some(t) = parse_gh_hosts_token(&yml, "github.com") {
-                return Some(t);
-            }
-        }
-    }
-    None
+    Ok(None)
 }
 
-/// Parse a `~/.config/nix/nix.conf`-style `access-tokens = host=TOKEN ...`
-/// line and return the token for `host` if present.
-fn parse_access_tokens(cfg: &str, host: &str) -> Option<String> {
-    for line in cfg.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("access-tokens") {
-            let rest = rest.trim_start().trim_start_matches('=').trim();
-            for pair in rest.split_whitespace() {
-                if let Some((h, t)) = pair.split_once('=') {
-                    if h == host {
-                        return Some(t.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+/// `github.com/<owner>/<repo>` for a github.com or api.github.com URL — the
+/// string CppNix matches `access-tokens` keys against. `None` for any other
+/// host.
+fn github_repo_key(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("https://api.github.com/repos/")
+        .or_else(|| url.strip_prefix("https://github.com/"))?;
+    let mut parts = path.split('/');
+    let owner = parts.next().filter(|s| !s.is_empty());
+    let repo = parts.next().filter(|s| !s.is_empty());
+    Some(match (owner, repo) {
+        (Some(o), Some(r)) => format!("github.com/{o}/{r}"),
+        (Some(o), None) => format!("github.com/{o}"),
+        _ => "github.com".to_string(),
+    })
 }
 
 /// Parse `~/.config/gh/hosts.yml` and return the `oauth_token:` value
@@ -1341,6 +1340,43 @@ mod status_classification_tests {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// A private input's token lives where the fleet puts it: the SYSTEM
+    /// nix.conf, behind an `!include` of a secrets file. CppNix reads it; sui
+    /// read neither, so every private input 404'd unauthenticated.
+    #[test]
+    fn a_token_included_from_the_system_nix_conf_is_used() {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("nix.conf"), "!include access-tokens\n").unwrap();
+        std::fs::write(
+            dir.path().join("access-tokens"),
+            "access-tokens = github.com=fixture-token-c5\n",
+        )
+        .unwrap();
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["NIX_CONF_DIR", "NIX_USER_CONF_FILES", "NIX_CONFIG", "GITHUB_TOKEN"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+        unsafe {
+            std::env::set_var("NIX_CONF_DIR", dir.path());
+            std::env::set_var("NIX_USER_CONF_FILES", dir.path().join("absent-user.conf"));
+            std::env::remove_var("NIX_CONFIG");
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+        let token = github_token_for_url("https://api.github.com/repos/o/r/tarball/deadbeef").unwrap();
+        for (k, v) in saved {
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        assert_eq!(token.as_deref(), Some("fixture-token-c5"));
+    }
 
     /// Helper: build a `LockedInput` with the given fields.
     fn make_locked(source_type: &str) -> LockedInput {

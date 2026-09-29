@@ -48,11 +48,11 @@
   :id       S5Config
   :covers   "nix.conf / NIX_CONFIG / --option / NIX_PATH typed parsing"
   :row-form ""
-  :reflects None                       ;; no parser exists; nix show-config is the future gate
+  :reflects None                       ;; a reader exists (sui_compat::nix_conf), no typed rows yet
   :oracle   Absent
   :tier     Absent                     ;; 0 rows, no parser — honestly nothing yet
   :blocker  NoParser
-  :notes    "nix.conf/NIX_PATH never parsed. SuiDaemonConfig (sui.yaml) is orthogonal and MUST NOT be counted. The parser is the largest new build (M6); reflects nix show-config --json keys once it exists.")
+  :notes    "2026-09-29: sui_compat::nix_conf reads nix.conf with CppNix's sources, precedence and include/!include rules, and resolves access-tokens; the fetcher uses it, and sui-compat/tests/nix_conf_oracle.rs checks it against nix config show. Only access-tokens is typed; every other setting is parsed but unread, and NIX_PATH / --option are untouched, so the tier stays Absent until rows exist. SuiDaemonConfig (sui.yaml) is orthogonal and MUST NOT be counted. The parser is the largest new build (M6); reflects nix show-config --json keys once it exists.")
 
 ;; ── S6 — the daemon worker protocol (server side) ─────────────────
 (defnix-surface

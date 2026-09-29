@@ -10,6 +10,7 @@ pub mod flake_ref;
 pub mod hash;
 pub mod nar;
 pub mod narinfo;
+pub mod nix_conf;
 pub mod signature;
 pub mod source;
 pub mod store_path;
