@@ -188,8 +188,8 @@ against that list until nix drives sui's socket. *Exit:* `nix build`, `nix copy`
 
 **Phase 4 — R5, R6, R8.** Store state, real-package NAR parity (single-user store
 or the row is void), activation bytes. NixOS additionally requires
-`switch-to-configuration` and a bootloader entry — absent today (`system.rs:508`),
-and the reason a NixOS `switch` half-converges and `boot` boots the old generation.
+`switch-to-configuration` and a bootloader entry. Both are present and VM-proven
+since 2026-09-29 (§ "NixOS arm, run in a VM" below); no real host has run them.
 
 **Phase 5 — R9 per node, then absence.** Order by blast radius: **ryn** (physical
 access, cid is a peer rebuilder) → **cid** → **zek** → **ceu** once provisioned →
@@ -2044,3 +2044,27 @@ doc records and which §V.1 now reproduces in seconds on `minimal`.
 **Still unverified:** whether the `minimal` overflow and the cid OOM are one
 defect or two. They are assumed related here and that assumption is NOT
 evidence.
+
+## NixOS arm, run in a VM (2026-09-29)
+
+`checks.x86_64-linux.nixos-switch` (`nix/tests/nixos-switch.nix`) boots a NixOS
+VM and drives `sui system rebuild {switch,boot,test} --toplevel <path>` and
+`sui system rollback`, asserting on the machine: `/run/current-system`, the
+system profile's generation links, a changed unit's restart, and what a
+recording bootloader hook was handed (including `NIXOS_INSTALL_BOOTLOADER`).
+Green on an x86_64-linux builder.
+
+Before it passed, the per-verb contract was wrong in three places, each fixed
+in `sui-orchestrate/src/system.rs` with a unit test that failed first:
+
+| verb | was | now (as `nixos-rebuild`) |
+|---|---|---|
+| `test` | advanced the profile, so a trial became the boot default | activates only |
+| `boot` | set the profile and never ran `switch-to-configuration boot`, so the bootloader never learned the generation | sets the profile and runs `boot` |
+| rollback | moved the profile back, then minted a NEW generation for it | moves the profile and activates, no new generation |
+
+`--toplevel` activates a toplevel built elsewhere (`nixos-rebuild --store-path`)
+and refuses a path without this platform's entry point before mutating.
+
+**Tier: VM-proven.** The VM activates toplevels CppNix built; sui evaluating a
+real node is the flip probe's claim, and no fleet host has been switched by sui.

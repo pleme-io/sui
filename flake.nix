@@ -97,6 +97,20 @@
     base // {
       packages = allPackages;
 
+      # The NixOS activation arm, proven in a VM (nix/tests/nixos-switch.nix).
+      # Linux only: a nixosTest needs a Linux builder with kvm.
+      checks = builtins.foldl'
+        (acc: sys: acc // {
+          ${sys} = (acc.${sys} or { }) // {
+            nixos-switch = import ./nix/tests/nixos-switch.nix {
+              pkgs = substrate.inputs.nixpkgs.legacyPackages.${sys};
+              sui = allPackages.${sys}.sui;
+            };
+          };
+        })
+        (base.checks or { })
+        [ "x86_64-linux" "aarch64-linux" ];
+
       # Re-attached after the bare substrate.rust.workspace migration (b1b9e09)
       # dropped the module trio. `overlays.default` + `packages` are still auto-emitted
       # by the builder; only the modules were lost. The fleet nix repo consumes

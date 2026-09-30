@@ -216,6 +216,21 @@ impl std::str::FromStr for Platform {
     }
 }
 
+/// The steps one activation performs, computed before any of them runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActivationPlan {
+    /// Advance the system profile to the toplevel (a new generation).
+    set_profile: bool,
+    /// The entry point to exec, as (program, args).
+    exec: Option<(String, Vec<String>)>,
+    /// Also run a non-deprecated nix-darwin `activate-user`.
+    activate_user: bool,
+}
+
+impl ActivationPlan {
+    const NOTHING: Self = Self { set_profile: false, exec: None, activate_user: false };
+}
+
 /// System orchestrator.
 pub struct SystemOrchestrator {
     platform: Platform,
@@ -244,6 +259,10 @@ pub enum SystemError {
     /// `activate must be run as root` exit-2). The activate output is included.
     #[error("activate script failed (exit {exit:?}): {log}")]
     ActivateFailed { exit: Option<i32>, log: String },
+    /// A `--toplevel` path that lacks this platform's activation entry point:
+    /// not a built system, or a system for the other platform.
+    #[error("{path} is not a toplevel for this platform: {entrypoint} does not exist")]
+    NotAToplevel { path: String, entrypoint: String },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("command error: {0}")]
@@ -304,11 +323,50 @@ impl SystemOrchestrator {
         // value) surfaces as `Err(RebuildFailed)` here, which the CLI wraps.
         let system_path = self.build_toplevel(flake_ref_str).await?;
 
+        self.finish_rebuild(&system_path, action, start).await
+    }
+
+    /// Activate an ALREADY-BUILT toplevel with the same verbs as a rebuild,
+    /// skipping evaluation and realization.
+    ///
+    /// This is `nixos-rebuild --store-path`: the caller built the system
+    /// elsewhere (a CI job, a remote builder, the nixosTest that proves this
+    /// arm) and hands sui the store path. The path must carry this
+    /// platform's activation entry point, checked before anything mutates, so
+    /// a wrong path is refused rather than half-installed.
+    ///
+    /// # Errors
+    ///
+    /// [`SystemError::NotAToplevel`] when the entry point is missing, then the
+    /// same errors as [`rebuild_native`](Self::rebuild_native)'s activation.
+    pub async fn rebuild_toplevel(
+        &self,
+        system_path: &str,
+        action: RebuildAction,
+    ) -> Result<RebuildResult, SystemError> {
+        let start = std::time::Instant::now();
+        let (entrypoint, _) = Self::activation_entrypoint(self.platform, system_path, action);
+        if !std::path::Path::new(&entrypoint).exists() {
+            return Err(SystemError::NotAToplevel {
+                path: system_path.to_string(),
+                entrypoint,
+            });
+        }
+        self.finish_rebuild(system_path, action, start).await
+    }
+
+    /// Steps 4–6 of a rebuild, shared by the flake and store-path forms.
+    async fn finish_rebuild(
+        &self,
+        system_path: &str,
+        action: RebuildAction,
+        start: std::time::Instant,
+    ) -> Result<RebuildResult, SystemError> {
         // 4. DryActivate short-circuits here: the toplevel is BUILT, but instead
         // of touching the profile or running the activate script we compute the
         // switch plan and print it. Nothing on the real system is mutated.
         if action == RebuildAction::DryActivate {
-            let plan = self.compute_switch_plan(&system_path)?;
+            let plan = self.compute_switch_plan(system_path)?;
             return Ok(RebuildResult {
                 success: true,
                 generation: plan.current_generation.map(i64::from),
@@ -322,7 +380,7 @@ impl SystemOrchestrator {
         // root inside `activate_system` — a non-root mutating activation has no
         // code path, so cid's real system can never be touched by an
         // unprivileged run.
-        self.activate_system(&system_path, action).await?;
+        self.activate_system(system_path, action).await?;
 
         // 6. Get the new generation
         let current_gen = self.current_generation().await.ok();
@@ -537,10 +595,72 @@ impl SystemOrchestrator {
         }
     }
 
+    /// What an activation DOES for a (platform, action) pair, as data.
+    ///
+    /// Computed before anything runs, so the whole per-verb contract is one
+    /// pure function a test can read without root or a live machine.
+    fn activation_plan(
+        platform: Platform,
+        system_path: &str,
+        action: RebuildAction,
+    ) -> ActivationPlan {
+        let exec = || Some(Self::activation_entrypoint(platform, system_path, action));
+        match (platform, action) {
+            (_, RebuildAction::Build | RebuildAction::DryActivate) => ActivationPlan::NOTHING,
+            // NixOS follows `nixos-rebuild`: `switch` and `boot` advance the
+            // profile and hand the verb to switch-to-configuration (`boot` is
+            // what installs the bootloader entry); `test` activates WITHOUT
+            // advancing the profile, so the boot default is left alone.
+            (Platform::NixOS, _) => ActivationPlan {
+                set_profile: action != RebuildAction::Test,
+                exec: exec(),
+                activate_user: false,
+            },
+            // nix-darwin has no boot default and no `test` verb of its own:
+            // switch/test advance the profile and exec `activate`; boot only
+            // advances the profile.
+            (Platform::Darwin, RebuildAction::Switch | RebuildAction::Test) => ActivationPlan {
+                set_profile: true,
+                exec: exec(),
+                activate_user: action == RebuildAction::Switch,
+            },
+            (Platform::Darwin, _) => ActivationPlan {
+                set_profile: true,
+                exec: None,
+                activate_user: false,
+            },
+        }
+    }
+
     async fn activate_system(
         &self,
         system_path: &str,
         action: RebuildAction,
+    ) -> Result<(), SystemError> {
+        let plan = Self::activation_plan(self.platform, system_path, action);
+        self.execute_activation(system_path, action, &plan).await
+    }
+
+    /// Activate a generation the profile ALREADY points at (rollback).
+    ///
+    /// The profile was moved by `ProfileManager::rollback`/`switch_generation`,
+    /// so the switch must not advance it again: doing so minted a new
+    /// generation on every rollback, and a second rollback then returned to
+    /// the generation the first one had left.
+    async fn activate_generation(&self, system_path: &str) -> Result<(), SystemError> {
+        let action = RebuildAction::Switch;
+        let plan = ActivationPlan {
+            set_profile: false,
+            ..Self::activation_plan(self.platform, system_path, action)
+        };
+        self.execute_activation(system_path, action, &plan).await
+    }
+
+    async fn execute_activation(
+        &self,
+        system_path: &str,
+        action: RebuildAction,
+        plan: &ActivationPlan,
     ) -> Result<(), SystemError> {
         // Fail-closed root gate for every mutating action. This is the safety
         // seal: a non-root process cannot reach the profile-set or activate exec.
@@ -548,75 +668,53 @@ impl SystemOrchestrator {
             return Err(SystemError::RootRequired { action });
         }
 
-        match action {
-            RebuildAction::Switch | RebuildAction::Test => {
-                // Set the system profile natively (root-owned; the root gate
-                // above guarantees we have permission).
-                let pm = sui_store::ProfileManager::system();
-                pm.set(std::path::Path::new(system_path))
-                    .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
+        if plan.set_profile {
+            // Set the system profile natively (root-owned; the root gate above
+            // guarantees we have permission).
+            let pm = sui_store::ProfileManager::system();
+            pm.set(std::path::Path::new(system_path))
+                .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
+        }
 
-                // Run the activation entry point and CHECK its result — the
-                // script's own `id -u` root check exits 2 otherwise, which must
-                // surface.
-                //
-                // ── THE ENTRY POINT IS PER-PLATFORM, NOT UNIVERSAL ──────────
-                // This used to exec `${toplevel}/activate` unconditionally.
-                // That is nix-darwin's entry point and NixOS does not have it:
-                // NixOS activates through `${toplevel}/bin/switch-to-configuration
-                // <action>`. So sui could BUILD a NixOS system and then fail to
-                // install it — the gap `nix/lib/build-engine.nix` records by
-                // giving `registry.sui` no `activationEntrypoint.nixos` key.
-                let (activate, args) = Self::activation_entrypoint(
-                    self.platform,
-                    system_path,
-                    action,
-                );
-                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        // Run the activation entry point and CHECK its result — the script's
+        // own root check exits non-zero otherwise, which must surface.
+        //
+        // ── THE ENTRY POINT IS PER-PLATFORM, NOT UNIVERSAL ──────────────────
+        // This used to exec `${toplevel}/activate` unconditionally. That is
+        // nix-darwin's entry point and NixOS does not have it: NixOS activates
+        // through `${toplevel}/bin/switch-to-configuration <verb>`.
+        if let Some((program, args)) = &plan.exec {
+            let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+            let output = self
+                .runner
+                .run(program, &argv)
+                .await
+                .map_err(|e| SystemError::RebuildFailed(format!("activate: {e}")))?;
+            if !output.success {
+                return Err(SystemError::ActivateFailed {
+                    exit: output.exit_code,
+                    log: output.combined_log(),
+                });
+            }
+        }
+
+        // Only a darwin Switch runs activate-user, and only when it is
+        // genuinely active (not the deprecated nix-darwin stub).
+        if plan.activate_user {
+            let (present, deprecated) = classify_activate_user(system_path);
+            if present && !deprecated {
+                let activate_user = format!("{system_path}/activate-user");
                 let output = self
                     .runner
-                    .run(&activate, &argv)
+                    .run(&activate_user, &[])
                     .await
-                    .map_err(|e| SystemError::RebuildFailed(format!("activate: {e}")))?;
+                    .map_err(|e| SystemError::RebuildFailed(format!("activate-user: {e}")))?;
                 if !output.success {
                     return Err(SystemError::ActivateFailed {
                         exit: output.exit_code,
                         log: output.combined_log(),
                     });
                 }
-
-                // Only Switch runs activate-user, and only when it is genuinely
-                // active (not the deprecated nix-darwin stub).
-                if action == RebuildAction::Switch && self.platform == Platform::Darwin {
-                    let (present, deprecated) = classify_activate_user(system_path);
-                    if present && !deprecated {
-                        let activate_user = format!("{system_path}/activate-user");
-                        let output = self
-                            .runner
-                            .run(&activate_user, &[])
-                            .await
-                            .map_err(|e| {
-                                SystemError::RebuildFailed(format!("activate-user: {e}"))
-                            })?;
-                        if !output.success {
-                            return Err(SystemError::ActivateFailed {
-                                exit: output.exit_code,
-                                log: output.combined_log(),
-                            });
-                        }
-                    }
-                }
-            }
-            RebuildAction::Boot => {
-                // Set profile but don't activate — takes effect on next boot.
-                let pm = sui_store::ProfileManager::system();
-                pm.set(std::path::Path::new(system_path))
-                    .map_err(|e| SystemError::RebuildFailed(format!("profile set: {e}")))?;
-            }
-            RebuildAction::Build | RebuildAction::DryActivate => {
-                // Build-only / dry-activate never reach here (rebuild_native
-                // short-circuits DryActivate before activation and Build has
-                // nothing to activate). Present for exhaustiveness.
             }
         }
         Ok(())
@@ -740,6 +838,11 @@ impl SystemOrchestrator {
     /// Rollback to the previous generation.
     pub async fn rollback(&self) -> Result<RebuildResult, SystemError> {
         let start = std::time::Instant::now();
+        // Gate BEFORE the profile moves: the activation's own gate comes too
+        // late for a rollback, whose first step is the profile swap.
+        if !running_as_root() {
+            return Err(SystemError::RootRequired { action: RebuildAction::Switch });
+        }
         let pm = sui_store::ProfileManager::system();
 
         let prev_gen = pm
@@ -751,11 +854,7 @@ impl SystemOrchestrator {
         let system_path = std::fs::read_link(&gen_link)
             .map_err(|e| SystemError::RebuildFailed(format!("read gen link: {e}")))?;
 
-        self.activate_system(
-            &system_path.to_string_lossy(),
-            RebuildAction::Switch,
-        )
-        .await?;
+        self.activate_generation(&system_path.to_string_lossy()).await?;
 
         let duration = start.elapsed().as_secs_f64();
         Ok(RebuildResult {
@@ -770,6 +869,11 @@ impl SystemOrchestrator {
     /// Rollback to a specific numbered generation.
     pub async fn rollback_to(&self, generation: u32) -> Result<RebuildResult, SystemError> {
         let start = std::time::Instant::now();
+        // Gate BEFORE the profile moves: the activation's own gate comes too
+        // late for a rollback, whose first step is the profile swap.
+        if !running_as_root() {
+            return Err(SystemError::RootRequired { action: RebuildAction::Switch });
+        }
         tracing::info!("rolling back to generation {generation}");
 
         let pm = sui_store::ProfileManager::system();
@@ -781,11 +885,7 @@ impl SystemOrchestrator {
         let system_path = std::fs::read_link(&gen_link)
             .map_err(|e| SystemError::RebuildFailed(format!("read gen link: {e}")))?;
 
-        self.activate_system(
-            &system_path.to_string_lossy(),
-            RebuildAction::Switch,
-        )
-        .await?;
+        self.activate_generation(&system_path.to_string_lossy()).await?;
 
         let duration = start.elapsed().as_secs_f64();
         Ok(RebuildResult {
@@ -1179,6 +1279,85 @@ mod tests {
                 SystemOrchestrator::activation_entrypoint(Platform::NixOS, top, action);
             assert_eq!(args, vec!["dry-activate".to_string()], "{action:?} must not switch");
         }
+    }
+
+    /// The NixOS per-verb contract, as `nixos-rebuild` defines it.
+    ///
+    /// | verb   | advances the profile | runs switch-to-configuration |
+    /// |--------|----------------------|------------------------------|
+    /// | switch | yes                  | `switch`                     |
+    /// | boot   | yes                  | `boot` (installs the bootloader) |
+    /// | test   | NO                   | `test`                       |
+    ///
+    /// Two rows were wrong until the nixosTest in `nix/tests/nixos-switch.nix`
+    /// first ran the arm on a machine: `test` advanced the profile (so the
+    /// generation you only meant to try became the boot default) and `boot`
+    /// set the profile but never ran `switch-to-configuration boot`, so the
+    /// bootloader was never told about the new generation.
+    #[test]
+    fn nixos_activation_plan_matches_nixos_rebuild() {
+        let top = "/nix/store/deadbeef-system";
+        let stc = "/nix/store/deadbeef-system/bin/switch-to-configuration".to_string();
+        for (action, set_profile, verb) in [
+            (RebuildAction::Switch, true, "switch"),
+            (RebuildAction::Boot, true, "boot"),
+            (RebuildAction::Test, false, "test"),
+        ] {
+            let plan = SystemOrchestrator::activation_plan(Platform::NixOS, top, action);
+            assert_eq!(plan.set_profile, set_profile, "{action:?}: profile advance");
+            assert_eq!(
+                plan.exec,
+                Some((stc.clone(), vec![verb.to_string()])),
+                "{action:?}: entry point"
+            );
+            assert!(!plan.activate_user, "{action:?}: activate-user is darwin-only");
+        }
+        for action in [RebuildAction::Build, RebuildAction::DryActivate] {
+            assert_eq!(
+                SystemOrchestrator::activation_plan(Platform::NixOS, top, action),
+                ActivationPlan::NOTHING,
+                "{action:?} must not touch the machine"
+            );
+        }
+    }
+
+    /// `--toplevel` refuses a path without this platform's entry point
+    /// before anything mutates, and accepts one that has it.
+    #[tokio::test]
+    async fn rebuild_toplevel_requires_the_platform_entry_point() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().to_str().unwrap().to_string();
+        let sys = SystemOrchestrator::with_runner(Platform::NixOS, Box::new(MockCommandRunner::new()));
+
+        let err = sys.rebuild_toplevel(&top, RebuildAction::Switch).await.unwrap_err();
+        match err {
+            SystemError::NotAToplevel { path, entrypoint } => {
+                assert_eq!(path, top);
+                assert_eq!(entrypoint, format!("{top}/bin/switch-to-configuration"));
+            }
+            other => panic!("expected NotAToplevel, got {other:?}"),
+        }
+
+        std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+        std::fs::write(dir.path().join("bin/switch-to-configuration"), "").unwrap();
+        let ok = sys.rebuild_toplevel(&top, RebuildAction::Build).await.unwrap();
+        assert!(ok.success);
+    }
+
+    /// Darwin keeps the behaviour it had before the NixOS arm was fixed.
+    #[test]
+    fn darwin_activation_plan_is_unchanged() {
+        let top = "/nix/store/deadbeef-system";
+        let activate = Some(("/nix/store/deadbeef-system/activate".to_string(), Vec::new()));
+        let switch = SystemOrchestrator::activation_plan(Platform::Darwin, top, RebuildAction::Switch);
+        assert_eq!(
+            switch,
+            ActivationPlan { set_profile: true, exec: activate.clone(), activate_user: true }
+        );
+        let test = SystemOrchestrator::activation_plan(Platform::Darwin, top, RebuildAction::Test);
+        assert_eq!(test, ActivationPlan { set_profile: true, exec: activate, activate_user: false });
+        let boot = SystemOrchestrator::activation_plan(Platform::Darwin, top, RebuildAction::Boot);
+        assert_eq!(boot, ActivationPlan { set_profile: true, exec: None, activate_user: false });
     }
 
     /// A mock command runner for testing.

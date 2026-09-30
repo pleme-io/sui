@@ -708,6 +708,11 @@ enum SystemCommands {
         #[arg(value_enum, default_value_t = CliRebuildAction::Switch)]
         action: CliRebuildAction,
         #[arg(long)] flake: Option<String>,
+        /// Activate this already-built toplevel store path instead of
+        /// evaluating a flake (`nixos-rebuild --store-path`). It must carry
+        /// this platform's entry point (`bin/switch-to-configuration` on
+        /// NixOS, `activate` on darwin), checked before anything mutates.
+        #[arg(long, conflicts_with = "flake")] toplevel: Option<String>,
         /// Force a non-mutating dry-activate preview (overrides `action`).
         /// Nothing on the real system is touched.
         #[arg(long)] dry_run: bool,
@@ -7565,7 +7570,7 @@ async fn main() -> Result<(), CliError> {
                 }
             })?;
             match command {
-                SystemCommands::Rebuild { action, flake, dry_run } => {
+                SystemCommands::Rebuild { action, flake, toplevel, dry_run } => {
                     // `--dry-run` forces the non-mutating dry-activate preview,
                     // overriding whatever positional action was given — so it is
                     // impossible to ask for a preview and accidentally get a real
@@ -7576,8 +7581,14 @@ async fn main() -> Result<(), CliError> {
                         action.into()
                     };
                     let is_dry = action == sui_orchestrate::RebuildAction::DryActivate;
-                    let flake_ref = flake.unwrap_or_else(|| ".".to_string());
-                    let result = sys.rebuild_native(&flake_ref, action).await.map_err(|e| {
+                    let result = match toplevel {
+                        Some(path) => sys.rebuild_toplevel(&path, action).await,
+                        None => {
+                            let flake_ref = flake.unwrap_or_else(|| ".".to_string());
+                            sys.rebuild_native(&flake_ref, action).await
+                        }
+                    };
+                    let result = result.map_err(|e| {
                         CliError::Orchestrate {
                             operation: "rebuild",
                             message: e.to_string(),
