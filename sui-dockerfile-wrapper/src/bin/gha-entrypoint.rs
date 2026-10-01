@@ -4,7 +4,7 @@
 //! convention for shipping a GitHub Actions integration point is a
 //! typed `pleme-io/actions` action (Rust binary + `action.yml`,
 //! possibly a `(defaction ...)` tatara-lisp form — per the
-//! `pleme-actions` skill). That repo exists locally
+//! `pleme-io-pattern-core` skill). That repo exists locally
 //! (`~/code/github/pleme-io/actions`), but wiring a new action into it
 //! (crate + `action.yml` + flake + release plumbing) is out of scope
 //! for this pass; this binary is the equivalent detection-and-fallback
