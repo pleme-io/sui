@@ -5,7 +5,7 @@
 //! stays consistent across `sui`, `sui-sweep`, `sui-spec-inventory`,
 //! and any future binary that lands in this workspace.
 //!
-//! Palette: Arctic Ice Studio's Nord (https://www.nordtheme.com/).
+//! Palette: Arctic Ice Studio's Nord (<https://www.nordtheme.com/>).
 //! Four typed groups:
 //!
 //! - **Polar Night** (bg-leaning dark grays — `nord0`..`nord3`)
@@ -14,8 +14,9 @@
 //! - **Aurora** (warm signal colors — red/orange/yellow/green/purple,
 //!   `nord11`..`nord15`)
 //!
-//! All colors are ANSI 24-bit (truecolor).  Honors `$NO_COLOR`
-//! (https://no-color.org/) — when set, every helper emits the
+//! Colors resolve through kazari roles over `irodori::NORD` and degrade
+//! truecolor → 256 → 16 → plain with the terminal.  Honors `$NO_COLOR`
+//! (<https://no-color.org/>) — when set, every helper emits the
 //! payload unchanged with zero escape sequences.  Also drops
 //! styling when stdout isn't a TTY (so pipes get clean output).
 //!
@@ -33,28 +34,44 @@
 
 use std::sync::OnceLock;
 
-// ── Palette constants (24-bit RGB) ────────────────────────────────
+use kazari::style::StyleAtom;
+use kazari::{Role, Theme};
 
-pub const NORD0: Rgb = Rgb(0x2e, 0x34, 0x40); // Polar Night (darkest bg)
-pub const NORD1: Rgb = Rgb(0x3b, 0x42, 0x52); // Polar Night (panel)
-pub const NORD2: Rgb = Rgb(0x43, 0x4c, 0x5e); // Polar Night (hover)
-pub const NORD3: Rgb = Rgb(0x4c, 0x56, 0x6a); // Polar Night (comment)
-pub const NORD4: Rgb = Rgb(0xd8, 0xde, 0xe9); // Snow Storm (dim text)
-pub const NORD5: Rgb = Rgb(0xe5, 0xe9, 0xf0); // Snow Storm
-pub const NORD6: Rgb = Rgb(0xec, 0xef, 0xf4); // Snow Storm (brightest text)
-pub const NORD7: Rgb = Rgb(0x8f, 0xbc, 0xbb); // Frost (sea green)
-pub const NORD8: Rgb = Rgb(0x88, 0xc0, 0xd0); // Frost (ice cyan — primary accent)
-pub const NORD9: Rgb = Rgb(0x81, 0xa1, 0xc1); // Frost (light blue)
-pub const NORD10: Rgb = Rgb(0x5e, 0x81, 0xac); // Frost (deep blue)
-pub const NORD11: Rgb = Rgb(0xbf, 0x61, 0x6a); // Aurora (red — error)
-pub const NORD12: Rgb = Rgb(0xd0, 0x87, 0x70); // Aurora (orange — warning)
-pub const NORD13: Rgb = Rgb(0xeb, 0xcb, 0x8b); // Aurora (yellow — pending)
-pub const NORD14: Rgb = Rgb(0xa3, 0xbe, 0x8c); // Aurora (green — success)
-pub const NORD15: Rgb = Rgb(0xb4, 0x8e, 0xad); // Aurora (purple — info)
+// ── Palette constants (irodori::NORD) ─────────────────────────────
+
+pub const NORD0: Rgb = Rgb::from_irodori(irodori::NORD.polar_night[0]); // Polar Night (darkest bg)
+pub const NORD1: Rgb = Rgb::from_irodori(irodori::NORD.polar_night[1]); // Polar Night (panel)
+pub const NORD2: Rgb = Rgb::from_irodori(irodori::NORD.polar_night[2]); // Polar Night (hover)
+pub const NORD3: Rgb = Rgb::from_irodori(irodori::NORD.polar_night[3]); // Polar Night (comment)
+pub const NORD4: Rgb = Rgb::from_irodori(irodori::NORD.snow_storm[0]); // Snow Storm (dim text)
+pub const NORD5: Rgb = Rgb::from_irodori(irodori::NORD.snow_storm[1]); // Snow Storm
+pub const NORD6: Rgb = Rgb::from_irodori(irodori::NORD.snow_storm[2]); // Snow Storm (brightest text)
+pub const NORD7: Rgb = Rgb::from_irodori(irodori::NORD.frost[0]); // Frost (sea green)
+pub const NORD8: Rgb = Rgb::from_irodori(irodori::NORD.frost[1]); // Frost (ice cyan — primary accent)
+pub const NORD9: Rgb = Rgb::from_irodori(irodori::NORD.frost[2]); // Frost (light blue)
+pub const NORD10: Rgb = Rgb::from_irodori(irodori::NORD.frost[3]); // Frost (deep blue)
+pub const NORD11: Rgb = Rgb::from_irodori(irodori::NORD.aurora[0]); // Aurora (red — error)
+pub const NORD12: Rgb = Rgb::from_irodori(irodori::NORD.aurora[1]); // Aurora (orange — warning)
+pub const NORD13: Rgb = Rgb::from_irodori(irodori::NORD.aurora[2]); // Aurora (yellow — pending)
+pub const NORD14: Rgb = Rgb::from_irodori(irodori::NORD.aurora[3]); // Aurora (green — success)
+pub const NORD15: Rgb = Rgb::from_irodori(irodori::NORD.aurora[4]); // Aurora (purple — info)
 
 /// 24-bit RGB tuple.  Used by [`fg`] to emit truecolor ANSI escapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
+
+impl Rgb {
+    #[must_use]
+    pub const fn from_irodori(c: irodori::Color) -> Self {
+        Self(c.r, c.g, c.b)
+    }
+}
+
+impl From<kazari::Rgb> for Rgb {
+    fn from(c: kazari::Rgb) -> Self {
+        Self(c.r, c.g, c.b)
+    }
+}
 
 // ── Style detection (NO_COLOR + TTY) ──────────────────────────────
 
@@ -143,6 +160,10 @@ fn kz(color: Rgb) -> kazari::Rgb {
     kazari::Rgb::new(color.0, color.1, color.2)
 }
 
+fn role(r: Role, text: &str, bold: bool, dim: bool) -> String {
+    StyleAtom::resolve(r, Theme::default(), &paint_caps(), bold, dim).paint(text)
+}
+
 /// Wrap text in a foreground color.  Routes through kazari — typed SGR via
 /// anstyle (no `format!()` of an escape), capability-honest degradation.
 /// When styling is disabled, returns the text unchanged.
@@ -167,43 +188,43 @@ pub fn dim_fg(color: Rgb, text: &str) -> String {
 
 /// Section header — bold ice-cyan (Nord8).
 #[must_use]
-pub fn header(text: &str) -> String { bold_fg(NORD8, text) }
+pub fn header(text: &str) -> String { role(Role::Primary, text, true, false) }
 
 /// Success message — Aurora green (Nord14).
 #[must_use]
-pub fn success(text: &str) -> String { fg(NORD14, text) }
+pub fn success(text: &str) -> String { role(Role::Ok, text, false, false) }
 
 /// Warning — Aurora orange (Nord12).
 #[must_use]
-pub fn warn(text: &str) -> String { fg(NORD12, text) }
+pub fn warn(text: &str) -> String { role(Role::Warn, text, false, false) }
 
 /// Error — Aurora red (Nord11).
 #[must_use]
-pub fn error(text: &str) -> String { fg(NORD11, text) }
+pub fn error(text: &str) -> String { role(Role::Error, text, false, false) }
 
 /// Pending / in-flight — Aurora yellow (Nord13).
 #[must_use]
-pub fn pending(text: &str) -> String { fg(NORD13, text) }
+pub fn pending(text: &str) -> String { role(Role::Pending, text, false, false) }
 
 /// Informational accent — Frost light blue (Nord9).
 #[must_use]
-pub fn info(text: &str) -> String { fg(NORD9, text) }
+pub fn info(text: &str) -> String { role(Role::Info, text, false, false) }
 
 /// Subtle / muted — Polar Night comment color (Nord3).
 #[must_use]
-pub fn muted(text: &str) -> String { dim_fg(NORD3, text) }
+pub fn muted(text: &str) -> String { role(Role::TextDim, text, false, true) }
 
 /// Secondary accent — Aurora purple (Nord15).  Used for type
 /// names + identifiers.
 #[must_use]
-pub fn ident(text: &str) -> String { fg(NORD15, text) }
+pub fn ident(text: &str) -> String { role(Role::Ident, text, false, false) }
 
 /// Primary text — Snow Storm bright (Nord6).  The default for body
 /// copy; usually you don't need to call this since uncolored text
 /// renders fine, but useful when composing inside a larger styled
 /// span.
 #[must_use]
-pub fn body(text: &str) -> String { fg(NORD6, text) }
+pub fn body(text: &str) -> String { role(Role::Text, text, false, false) }
 
 // ── Glyphs (Unicode + ASCII fallback) ─────────────────────────────
 
@@ -237,7 +258,7 @@ pub fn glyph_arrow() -> String { info(if styling_enabled() { "▸" } else { ">" 
 /// `❄` / `*` — Nord snowflake.  Brand glyph; used sparingly for
 /// the top-level banner.
 #[must_use]
-pub fn glyph_snowflake() -> String { fg(NORD8, if styling_enabled() { "❄" } else { "*" }) }
+pub fn glyph_snowflake() -> String { role(Role::Primary, if styling_enabled() { "❄" } else { "*" }, false, false) }
 
 // ── Box-drawing helpers (Nord-styled tables) ──────────────────────
 
@@ -256,26 +277,26 @@ pub fn box_top(width: usize, title: Option<&str>) -> String {
                 "┌{}{}{}┐",
                 "─".repeat(half),
                 {
-                    let t = format!(" {} ", t);
-                    bold_fg(NORD8, &t)
+                    let t = format!(" {t} ");
+                    role(Role::Primary, &t, true, false)
                 },
                 "─".repeat(other_half),
             )
         }
     };
-    dim_fg(NORD3, &raw)
+    role(Role::Border, &raw, false, true)
 }
 
 /// Mid-separator row inside a box.
 #[must_use]
 pub fn box_mid(width: usize) -> String {
-    dim_fg(NORD3, &format!("├{}┤", "─".repeat(width.saturating_sub(2))))
+    role(Role::Border, &format!("├{}┤", "─".repeat(width.saturating_sub(2))), false, true)
 }
 
 /// Bottom of a styled box.
 #[must_use]
 pub fn box_bottom(width: usize) -> String {
-    dim_fg(NORD3, &format!("└{}┘", "─".repeat(width.saturating_sub(2))))
+    role(Role::Border, &format!("└{}┘", "─".repeat(width.saturating_sub(2))), false, true)
 }
 
 // ── LabeledTable — typed builder for "kv / opt / section / list" rows ──
@@ -415,7 +436,7 @@ impl LabeledTable {
 }
 
 fn right_align(s: &str, w: usize) -> String {
-    format!("{:>w$}", s, w = w)
+    format!("{s:>w$}")
 }
 
 #[cfg(test)]
@@ -431,32 +452,37 @@ mod tests {
     }
 
     #[test]
-    fn nord_palette_is_complete() {
-        // Sanity — every nord<N> is a well-formed Rgb.
+    fn nord_palette_is_irodori_in_canonical_order() {
         let all = [
             NORD0, NORD1, NORD2, NORD3, NORD4, NORD5, NORD6, NORD7,
             NORD8, NORD9, NORD10, NORD11, NORD12, NORD13, NORD14, NORD15,
         ];
-        assert_eq!(all.len(), 16);
-        for c in all {
-            // All channels are valid bytes by Rust type system; the
-            // semantic check is that we didn't fat-finger 0xff vs 0x00
-            // on a known color.
-            let _ = c;
+        for (ours, theirs) in all.iter().zip(irodori::NORD.all_colors()) {
+            assert_eq!(*ours, Rgb::from_irodori(theirs));
         }
-        // Sanity: NORD0 is dark, NORD6 is light.
-        assert!(NORD0.0 < NORD6.0);
-        assert!(NORD0.1 < NORD6.1);
-        assert!(NORD0.2 < NORD6.2);
+        let t = Theme::default();
+        assert_eq!(NORD8, Rgb::from(t.color(Role::Primary)));
+        assert_eq!(NORD14, Rgb::from(t.color(Role::Ok)));
+        assert_eq!(NORD11, Rgb::from(t.color(Role::Error)));
+        assert_eq!(NORD3, Rgb::from(t.color(Role::Border)));
     }
 
     #[test]
-    fn fg_emits_truecolor_escape_when_enabled() {
+    fn fg_paints_through_kazari_when_enabled() {
         ensure_styling_on();
+        let caps = paint_caps();
+        assert!(caps.level.is_colored());
         let s = fg(NORD8, "hello");
-        assert!(s.contains("\x1b[38;2;136;192;208m"), "wrong escape: {s:?}");
+        assert_eq!(s, kazari::paint_at("hello", Role::Primary, &caps));
+        assert_ne!(s, "hello");
         assert!(s.contains("hello"));
-        assert!(s.ends_with("\x1b[0m"), "must reset at end: {s:?}");
+        assert_eq!(
+            header("h"),
+            StyleAtom::resolve(Role::Primary, Theme::default(), &caps, true, false).paint("h"),
+        );
+        assert_eq!(muted("m"), dim_fg(NORD3, "m"));
+        assert_eq!(body("b"), fg(NORD6, "b"));
+        assert_eq!(ident("i"), fg(NORD15, "i"));
     }
 
     #[test]

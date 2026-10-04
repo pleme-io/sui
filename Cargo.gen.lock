@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "e61ecea4cc9734339f154ce238048a0d1ff07c466fb6fd148ebb0c858fd45a9c",
+  "cargo_lock_sha256": "2b13fa69a52adcd3aecf5ea86a103a0a5b3e4b60167e5b330f15808c7e2b2a98",
   "manifest_sha256": {
     "Cargo.toml": "926551ea888b7f01f6c39e93c002450f4c8ef18b9a1c8fad01afc1c10f003e33",
     "canteiro-types/Cargo.toml": "140edf011d225b89a3a8b8cc15d5212e84c056493e7c8a5b488d1c7e88847388",
@@ -31,7 +31,7 @@
     "sui-protocol/Cargo.toml": "1a7982ade5ce90d483969a23704b8f8858427ec7b575c766484175bb1632f6bd",
     "sui-registry/Cargo.toml": "20bc7698f123bb590dec8dbd527f55e85a99d2f7bf41ffc16c4080685bdc79cf",
     "sui-resolve/Cargo.toml": "4c0e6027421517fe0f767296a0f468f7bd20fd8f396ea129aca19304cc2c6b50",
-    "sui-spec/Cargo.toml": "2d0bba9184a9482a333e7cc8e07588eba5e634b56d367aea195533bd2ed4fce7",
+    "sui-spec/Cargo.toml": "399b422687d3f829655470bcf19217eb4028aac56751573d37911e4de0c538b1",
     "sui-store/Cargo.toml": "9c0e9261212f0d6415868b677dd5bf6130bdfbe510973b02d984593fa38cdc9a",
     "sui-supercacheci/Cargo.toml": "61210201deeff582137cd9156faba2a52c9c73335397f835a107a49b22b03b01"
   },
@@ -15483,7 +15483,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "pleme-io-kazari-0.1.3": {
+      "pleme-io-kazari-0.2.2": {
         "runtime_dependencies": [
           {
             "name": "anstyle",
@@ -26993,6 +26993,16 @@
             "tree": "target"
           },
           {
+            "name": "irodori",
+            "package_key": "irodori-0.2.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "libc",
             "package_key": "libc-0.2.186",
             "kind": "normal",
@@ -27004,7 +27014,7 @@
           },
           {
             "name": "kazari",
-            "package_key": "pleme-io-kazari-0.1.3",
+            "package_key": "pleme-io-kazari-0.2.2",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -39141,7 +39151,7 @@
     "pkg-config-0.3.33": {
       "edition": "2018"
     },
-    "pleme-io-kazari-0.1.3": {
+    "pleme-io-kazari-0.2.2": {
       "edition": "2024",
       "lib_target": {
         "name": "kazari",

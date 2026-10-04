@@ -21,7 +21,8 @@ handan = "0.1"
 # unchanged. A crates.io version dep (not git) so sui-spec itself is publishable
 # — a git dep here is exactly what froze sui-spec at 0.1.118 and auto-deferred
 # every crate downstream of it.
-kazari = { package = "pleme-io-kazari", version = "0.1" }
+kazari = { package = "pleme-io-kazari", version = "0.2" }
+irodori = "0.2"
 # The derive macros come in through this one crate as
 # `tatara_lisp::DeriveTataraDomain` — never a second `tatara-lisp-derive`
 # dependency, which is what the lib/derive version skew fed on.

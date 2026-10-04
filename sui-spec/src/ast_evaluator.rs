@@ -2290,7 +2290,7 @@ mod tests {
     #[test]
     fn int_and_float_literals() {
         assert_eq!(eval("42"), EvalValue::Int(42));
-        assert_eq!(eval("3.14"), EvalValue::Float(3.14));
+        assert_eq!(eval("2.5"), EvalValue::Float(2.5));
     }
 
     // Note on `true`/`false`/`null`: rnix parses these as plain
