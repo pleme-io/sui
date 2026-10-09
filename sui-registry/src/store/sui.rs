@@ -27,7 +27,7 @@ use sui_castore::StorageBackend;
 
 use crate::digest::Digest;
 
-use super::{Referrer, RegistryStore, StoreError, StoredManifest, TagPage};
+use super::{Referrer, RegistryStore, RepoAccess, StoreError, StoredManifest, TagPage};
 
 /// Per-repository mutable pointer state (the non-content-addressed part).
 ///
@@ -87,6 +87,18 @@ impl SuiCacheStore {
 
 #[async_trait]
 impl RegistryStore for SuiCacheStore {
+    fn access(&self, _name: &str) -> RepoAccess {
+        RepoAccess::ReadWrite
+    }
+
+    /// The repositories known to the in-memory pointer index — the same
+    /// non-durable seam as tags (see the module docs): after a restart the
+    /// catalog is empty until something is pushed again.
+    async fn list_repositories(&self) -> Result<Vec<String>, StoreError> {
+        let pointers = self.pointers.lock().map_err(poisoned)?;
+        Ok(pointers.keys().cloned().collect())
+    }
+
     async fn get_blob(&self, digest: &Digest) -> Result<Option<Vec<u8>>, StoreError> {
         // An empty object is a delete-tombstone (see `delete_blob`: the
         // content-addressed backend owns GC separately, so a delete overwrites
@@ -214,18 +226,7 @@ impl RegistryStore for SuiCacheStore {
         let Some(repo) = pointers.get(name) else {
             return Ok(TagPage { tags: Vec::new(), next_last: None });
         };
-        let mut all: Vec<String> = repo.tags.keys().cloned().collect();
-        if let Some(last) = last {
-            all.retain(|t| t.as_str() > last);
-        }
-        let (page, more) = match n {
-            Some(limit) if all.len() > limit => {
-                (all.into_iter().take(limit).collect::<Vec<_>>(), true)
-            }
-            _ => (all, false),
-        };
-        let next_last = if more { page.last().cloned() } else { None };
-        Ok(TagPage { tags: page, next_last })
+        Ok(super::paginate(repo.tags.keys().cloned(), n, last))
     }
 
     async fn add_referrer(

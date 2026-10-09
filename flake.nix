@@ -64,6 +64,18 @@
         toolName = "sui-lsp";
       };
 
+      # porto — the OCI registry server (crate `sui-registry`, `[[bin]] porto`).
+      # Installable so a NixOS module can run it natively: serving Nix-built
+      # OCI image layouts (Helm charts first) read-only, with tags derived
+      # from each layout's index.json. Same `rust.workspace` shape as the
+      # other members; `toolName` names the attribute after the binary,
+      # because `porto` is what an operator and a module call it.
+      portoServer = substrate.rust.workspace {
+        src = ./.;
+        member = "sui-registry";
+        toolName = "porto";
+      };
+
       # Fold one member flake's package into the accumulating set, per system,
       # without clobbering what is already there.
       #
@@ -92,6 +104,7 @@
           { flake = imageFlake; attr = "dockerImage-amd64"; }
           { flake = dockerfileWrapper; attr = "sui-dockerfile-wrapper"; }
           { flake = lspServer; attr = "sui-lsp"; }
+          { flake = portoServer; attr = "porto"; }
         ];
     in
     base // {

@@ -27,6 +27,8 @@ pub enum OciRoute {
     Tags { name: String },
     /// `/v2/<name>/referrers/<digest>`
     Referrers { name: String, digest: String },
+    /// `/v2/_catalog` — the repository list.
+    Catalog,
     /// A `/v2/...` path matching no known resource shape.
     Unknown,
 }
@@ -39,6 +41,11 @@ impl OciRoute {
     /// slash-containing name is captured whole.
     #[must_use]
     pub fn parse(tail: &str) -> Self {
+        // `_catalog` cannot collide with a repository: a name component must
+        // start with `[a-z0-9]`.
+        if tail == "_catalog" {
+            return OciRoute::Catalog;
+        }
         // `blobs/uploads/` and `blobs/uploads/<uuid>` — check before the plain
         // `blobs/<digest>` shape, since `uploads` would otherwise look like a
         // digest.
@@ -92,6 +99,23 @@ impl OciRoute {
             }
         }
         OciRoute::Unknown
+    }
+}
+
+impl OciRoute {
+    /// The repository a route addresses (`None` for the catalog and unknown
+    /// paths) — what the read-only guard checks before any write.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            OciRoute::Blob { name, .. }
+            | OciRoute::UploadStart { name }
+            | OciRoute::Upload { name, .. }
+            | OciRoute::Manifest { name, .. }
+            | OciRoute::Tags { name }
+            | OciRoute::Referrers { name, .. } => Some(name),
+            OciRoute::Catalog | OciRoute::Unknown => None,
+        }
     }
 }
 
@@ -176,6 +200,13 @@ mod tests {
             OciRoute::UploadStart { .. } => {}
             other => panic!("expected UploadStart, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_catalog() {
+        assert_eq!(OciRoute::parse("_catalog"), OciRoute::Catalog);
+        assert_eq!(OciRoute::Catalog.name(), None);
+        assert_eq!(OciRoute::parse("a/b/tags/list").name(), Some("a/b"));
     }
 
     #[test]

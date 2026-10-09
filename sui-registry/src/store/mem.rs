@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use crate::digest::Digest;
 
-use super::{Referrer, RegistryStore, StoreError, StoredManifest, TagPage};
+use super::{Referrer, RegistryStore, RepoAccess, StoreError, StoredManifest, TagPage};
 
 /// A repository's tag map and referrers reverse-index.
 #[derive(Default)]
@@ -45,6 +45,16 @@ impl MemStore {
 
 #[async_trait]
 impl RegistryStore for MemStore {
+    fn access(&self, _name: &str) -> RepoAccess {
+        RepoAccess::ReadWrite
+    }
+
+    async fn list_repositories(&self) -> Result<Vec<String>, StoreError> {
+        let repos = self.repos.lock().map_err(poisoned)?;
+        // BTreeMap keys are already lexically ordered.
+        Ok(repos.keys().cloned().collect())
+    }
+
     async fn get_blob(&self, digest: &Digest) -> Result<Option<Vec<u8>>, StoreError> {
         let blobs = self.blobs.lock().map_err(poisoned)?;
         Ok(blobs.get(&digest.to_wire()).cloned())
@@ -144,20 +154,7 @@ impl RegistryStore for MemStore {
             return Ok(TagPage { tags: Vec::new(), next_last: None });
         };
         // BTreeMap keys are already lexically ordered — the OCI ordering.
-        let mut all: Vec<String> = repo.tags.keys().cloned().collect();
-        if let Some(last) = last {
-            all.retain(|t| t.as_str() > last);
-        }
-        let (page, more) = match n {
-            Some(limit) if all.len() > limit => {
-                let page: Vec<String> = all.into_iter().take(limit).collect();
-                let more = true;
-                (page, more)
-            }
-            _ => (all, false),
-        };
-        let next_last = if more { page.last().cloned() } else { None };
-        Ok(TagPage { tags: page, next_last })
+        Ok(super::paginate(repo.tags.keys().cloned(), n, last))
     }
 
     async fn add_referrer(

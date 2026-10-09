@@ -104,6 +104,33 @@ impl Digest {
         Self { algo, hex: data_encoding::HEXLOWER.encode(&raw) }
     }
 
+    /// Hash everything `reader` yields under `algo`, streaming in fixed-size
+    /// chunks — the same digest [`Digest::of`] computes over the whole buffer,
+    /// without holding a multi-GB layer in memory to verify it.
+    ///
+    /// # Errors
+    ///
+    /// Any read failure from `reader`.
+    pub fn of_reader(algo: HashAlgorithm, mut reader: impl std::io::Read) -> std::io::Result<Self> {
+        use sha2::{Digest as _, Sha256, Sha512};
+        fn pump<H: sha2::Digest>(mut h: H, r: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = r.read(&mut buf)?;
+                if n == 0 {
+                    return Ok(h.finalize().to_vec());
+                }
+                h.update(&buf[..n]);
+            }
+        }
+        let (algo, raw) = if matches!(algo, HashAlgorithm::Sha512) {
+            (HashAlgorithm::Sha512, pump(Sha512::new(), &mut reader)?)
+        } else {
+            (HashAlgorithm::Sha256, pump(Sha256::new(), &mut reader)?)
+        };
+        Ok(Self { algo, hex: data_encoding::HEXLOWER.encode(&raw) })
+    }
+
     /// The algorithm component.
     #[must_use]
     pub fn algorithm(&self) -> HashAlgorithm {
@@ -219,6 +246,17 @@ mod tests {
         assert_eq!(d.algorithm(), HashAlgorithm::Sha256);
         assert_eq!(d.hex().len(), 64);
         assert_eq!(d.to_wire(), sha256_zero());
+    }
+
+    #[test]
+    fn streaming_digest_equals_buffered_digest() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        for algo in [HashAlgorithm::Sha256, HashAlgorithm::Sha512] {
+            assert_eq!(
+                Digest::of_reader(algo, bytes.as_slice()).unwrap(),
+                Digest::of(algo, &bytes)
+            );
+        }
     }
 
     #[test]

@@ -22,9 +22,9 @@ use sui_compat::hash::HashAlgorithm;
 use crate::config::RegistryConfig;
 use crate::digest::{is_valid_name, Digest, Reference};
 use crate::error::OciError;
-use crate::oci::{Descriptor, ManifestView, ReferrersIndex, TagsList};
+use crate::oci::{Catalog, CatalogLinkNext, Descriptor, ManifestView, ReferrersIndex, TagsList};
 use crate::route::OciRoute;
-use crate::store::{Referrer, RegistryStore, StoreError, StoredManifest};
+use crate::store::{Referrer, RegistryStore, RepoAccess, StoreError, StoredManifest};
 use crate::upload::{parse_content_range, UploadError, UploadSessions};
 
 /// The OCI API version header value every `/v2/` response advertises.
@@ -60,12 +60,18 @@ impl AppState {
     }
 }
 
-/// A store-layer error is a server-internal failure, not a client error — it
-/// becomes a bare 500 at the edge (never a fake OCI success code that would
-/// mislead a client into thinking its request was malformed).
+/// Map a store-layer error to the wire. A read-only refusal is the client's
+/// `DENIED`; anything else (a backend failure, content that no longer hashes
+/// to its digest) is a server-internal failure — a bare, logged 500, never a
+/// fake OCI success and never the corrupt bytes.
 fn store_err(e: StoreError) -> Response {
-    tracing::error!("registry store error: {e}");
-    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    match e {
+        StoreError::ReadOnly(why) => OciError::Denied(why).into_response(),
+        other => {
+            tracing::error!("registry store error: {other}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// Build the OCI `/v2/` router.
@@ -158,7 +164,23 @@ async fn dispatch(
     body: Bytes,
 ) -> Response {
     let q = parse_query(query.as_deref());
-    match OciRoute::parse(&path) {
+    let route = OciRoute::parse(&path);
+    // The read-only guard: ONE check ahead of every write arm. A write to a
+    // repository the store marks read-only (a mounted OCI image layout) is
+    // DENIED before it can open an upload session or touch the store.
+    if !matches!(method, Method::GET | Method::HEAD) {
+        if let Some(name) = route.name() {
+            if state.store.access(name) == RepoAccess::ReadOnly {
+                return OciError::Denied(format!("repository {name} is read-only"))
+                    .into_response();
+            }
+        }
+    }
+    match route {
+        OciRoute::Catalog => match method {
+            Method::GET => catalog(&state, &q).await,
+            _ => method_not_allowed(),
+        },
         OciRoute::Blob { name, digest } => match method {
             Method::GET => get_blob(&state, &name, &digest).await,
             Method::HEAD => head_blob(&state, &name, &digest).await,
@@ -778,6 +800,29 @@ async fn list_tags(state: &AppState, name: &str, q: &HashMap<String, String>) ->
                 name: name.clone(),
                 tags: page.tags,
             };
+            (StatusCode::OK, headers, axum::Json(body)).into_response()
+        }
+        Err(e) => store_err(e),
+    }
+}
+
+// ─────────────────────────── catalog ───────────────────────────
+
+/// `GET /v2/_catalog` — the repository list, with `?n=`/`?last=` pagination.
+async fn catalog(state: &AppState, q: &HashMap<String, String>) -> Response {
+    let n = q.get("n").and_then(|v| v.parse::<usize>().ok());
+    let last = q.get("last").map(String::as_str);
+    match state.store.list_repositories().await {
+        Ok(repos) => {
+            let page = crate::store::paginate(repos, n, last);
+            let mut headers = HeaderMap::new();
+            if let Some(next_last) = &page.next_last {
+                let link = CatalogLinkNext { n, last: next_last }.to_string();
+                if let Ok(hv) = HeaderValue::from_str(&link) {
+                    headers.insert(header::LINK, hv);
+                }
+            }
+            let body = Catalog { repositories: page.tags };
             (StatusCode::OK, headers, axum::Json(body)).into_response()
         }
         Err(e) => store_err(e),

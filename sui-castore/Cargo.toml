@@ -13,6 +13,7 @@ categories = ["caching", "filesystem"]
 sui-compat.workspace = true
 tokio.workspace = true
 serde.workspace = true
+schemars.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true

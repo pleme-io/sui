@@ -129,7 +129,9 @@ impl NarSource for TierNarSource {
 
 /// How a `put` propagates across the tiers. See the module docs for the full
 /// contract; every policy persists **both durable tiers before returning**.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WritePolicy {
     /// Durable tiers (L2, L3) first, then warm L1. Crash-safe. The default.

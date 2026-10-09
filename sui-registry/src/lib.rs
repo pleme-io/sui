@@ -15,13 +15,17 @@
 //!   with parse-at-boundary (a malformed digest is `DIGEST_INVALID`, never a
 //!   constructed-wrong value).
 //! - [`store::RegistryStore`] — the mockable storage seam (the testability
-//!   contract). Two impls: [`store::MemStore`] (in-memory, tests) and
-//!   [`store::SuiCacheStore`] (production, over sui-cache).
+//!   contract). Writable impls: [`store::MemStore`] (in-memory, tests) and
+//!   [`store::SuiCacheStore`] (production, over sui-cache). Read-only:
+//!   [`store::LayoutStore`] serves Nix-built OCI image layouts (tags derived
+//!   from `index.json`, every write `DENIED`), composed over an optional
+//!   writable store by [`store::OverlayStore`].
 //! - [`upload::UploadSessions`] — the blob-upload typestate FSM.
 //! - [`error::OciError`] — the typed OCI error surface (code + status + JSON).
 //! - [`oci`] — the typed OCI wire structs (never hand-built JSON).
 //! - [`server`] — the axum router + the end-1 … end-14 handlers.
-//! - [`config::RegistryConfig`] — the typed config surface (shikumi-shaped).
+//! - [`config::RegistryConfig`] — the typed config surface (a
+//!   `shikumi::TieredConfig` with a `schemars` JSON Schema).
 //!
 //! ## Where lacre and doca sit
 //!
@@ -43,9 +47,12 @@ pub mod server;
 pub mod store;
 pub mod upload;
 
-pub use config::RegistryConfig;
+pub use config::{BlobVerification, LayoutMount, RegistryConfig};
 pub use digest::{Digest, DigestError, Reference};
 pub use error::OciError;
 pub use server::{build_router, serve, AppState};
-pub use store::{MemStore, Referrer, RegistryStore, StoreError, StoredManifest, SuiCacheStore, TagPage};
+pub use store::{
+    LayoutError, LayoutStore, MemStore, OverlayStore, Referrer, RegistryStore, RepoAccess,
+    StoreError, StoredManifest, SuiCacheStore, TagPage,
+};
 pub use upload::{UploadError, UploadId, UploadSessions};

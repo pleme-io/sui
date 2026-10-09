@@ -50,6 +50,13 @@ pub enum OciError {
     /// intentionally never fakes a 200).
     #[error("unsupported: {0}")]
     Unsupported(String),
+    /// `DENIED` — the requested access to the resource is denied. Returned
+    /// for every write (`POST`/`PUT`/`PATCH`/`DELETE`) against a READ-ONLY
+    /// repository — one served from an immutable OCI image layout
+    /// ([`crate::store::LayoutStore`]). 403, so a pushing client stops instead
+    /// of retrying a request that can never succeed.
+    #[error("denied: {0}")]
+    Denied(String),
 }
 
 impl OciError {
@@ -66,6 +73,7 @@ impl OciError {
             OciError::NameUnknown(_) => "NAME_UNKNOWN",
             OciError::SizeInvalid(_) => "SIZE_INVALID",
             OciError::Unsupported(_) => "UNSUPPORTED",
+            OciError::Denied(_) => "DENIED",
         }
     }
 
@@ -85,6 +93,7 @@ impl OciError {
             // registry (not 501) — a client must be able to distinguish a
             // real registry that refuses the op from a non-registry host.
             OciError::Unsupported(_) => StatusCode::BAD_REQUEST,
+            OciError::Denied(_) => StatusCode::FORBIDDEN,
         }
     }
 
@@ -149,6 +158,7 @@ mod tests {
         assert_eq!(OciError::BlobUnknown("x".into()).code(), "BLOB_UNKNOWN");
         assert_eq!(OciError::DigestInvalid("x".into()).code(), "DIGEST_INVALID");
         assert_eq!(OciError::Unsupported("x".into()).code(), "UNSUPPORTED");
+        assert_eq!(OciError::Denied("x".into()).code(), "DENIED");
     }
 
     #[test]
@@ -158,6 +168,7 @@ mod tests {
         assert_eq!(OciError::DigestInvalid("x".into()).status(), StatusCode::BAD_REQUEST);
         assert_eq!(OciError::SizeInvalid("x".into()).status(), StatusCode::BAD_REQUEST);
         assert_eq!(OciError::Unsupported("x".into()).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(OciError::Denied("x".into()).status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

@@ -34,8 +34,9 @@ git-fetch-with-cli = true
 # The count is floored separately in the workflow, BEFORE clippy runs, because
 # cargo validates the names it is given and cannot notice names it was not.
 #
-# ── scope, and why it is 8 and not 28 ────────────────────────────────────
-# These eight are the crates measured green at deny tier on 2026-08-17. The
+# ── scope, and why it is 10 and not 30 ───────────────────────────────────
+# The first eight are the crates measured green at deny tier on 2026-08-17;
+# sui-registry and sui-castore joined 2026-10-09. The
 # remaining workspace members are grandfathered, with the measurement that is
 # missing for each, in .github/workflows/clippy-gate-baseline.txt. That file
 # is the ratchet: entries leave it, none are added.
@@ -54,4 +55,8 @@ clippy-gate = [
   "-p", "sui-store",
   "-p", "sui-spec",
   "-p", "sui-graph-store",
+  # Graduated 2026-10-09 (porto's read-only OCI-layout mode): both measured
+  # green at deny tier, lib targets, nixpkgs clippy 1.91.1.
+  "-p", "sui-registry",
+  "-p", "sui-castore",
 ]

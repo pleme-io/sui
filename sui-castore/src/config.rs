@@ -17,7 +17,7 @@ use crate::storage::WritePolicy;
 /// tier test proves that a YAML overlay changed the one field it named and
 /// nothing else. Every field is a `String`/`PathBuf`/integer/`Box<Self>`, so
 /// structural equality is the right notion here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum BackendConfig {
     /// Local filesystem storage.

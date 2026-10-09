@@ -38,7 +38,6 @@ sui-bigorna
 sui-build
 sui-cache
 sui-cache-eval
-sui-castore
 sui-daemon
 sui-daemon-client
 sui-daemon-frame
@@ -53,7 +52,6 @@ sui-lsp
 sui-nix-wrap
 sui-orchestrate
 sui-protocol
-sui-registry
 sui-supercacheci
 
 # ── target-kind debt: --all-targets is NOT gated ─────────────────────────

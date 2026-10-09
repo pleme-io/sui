@@ -8,6 +8,13 @@
 //! Media-type constants.
 pub const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 pub const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+/// Docker's manifest list — an index by another name.
+pub const MEDIA_TYPE_DOCKER_MANIFEST_LIST: &str =
+    "application/vnd.docker.distribution.manifest.list.v2+json";
+/// The OCI image-layout annotation naming a manifest's reference.
+pub const ANNOTATION_REF_NAME: &str = "org.opencontainers.image.ref.name";
+/// The only `imageLayoutVersion` the OCI image-layout spec defines.
+pub const IMAGE_LAYOUT_VERSION: &str = "1.0.0";
 
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +86,73 @@ impl fmt::Display for LinkNext<'_> {
         }
         write!(f, "last={}>; rel=\"next\"", self.last)
     }
+}
+
+/// RFC-5988 `Link` header for catalog pagination:
+/// `</v2/_catalog?[n={n}&]last={last}>; rel="next"`.
+pub struct CatalogLinkNext<'a> {
+    pub n: Option<usize>,
+    pub last: &'a str,
+}
+impl fmt::Display for CatalogLinkNext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "</v2/_catalog?")?;
+        if let Some(n) = self.n {
+            write!(f, "n={n}&")?;
+        }
+        write!(f, "last={}>; rel=\"next\"", self.last)
+    }
+}
+
+/// The catalog response body (`GET /v2/_catalog`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Catalog {
+    pub repositories: Vec<String>,
+}
+
+/// The `oci-layout` marker file at an image layout's root.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageLayoutMarker {
+    #[serde(rename = "imageLayoutVersion")]
+    pub image_layout_version: String,
+}
+
+/// A descriptor as it appears in a layout's `index.json` or an image index:
+/// the wire descriptor plus its annotations (where `ref.name` lives).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnnotatedDescriptor {
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    pub digest: String,
+    pub size: u64,
+    #[serde(default)]
+    pub annotations: std::collections::BTreeMap<String, String>,
+}
+
+/// An image index (a layout's `index.json`, or an index manifest): only the
+/// child descriptors are read.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IndexView {
+    #[serde(default)]
+    pub manifests: Vec<AnnotatedDescriptor>,
+}
+
+/// The blob-bearing part of an image manifest: its config and layers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestBlobs {
+    #[serde(rename = "mediaType", default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub config: Option<AnnotatedDescriptor>,
+    #[serde(default)]
+    pub layers: Vec<AnnotatedDescriptor>,
+}
+
+/// Whether a media type names an index (whose children are manifests), as
+/// opposed to an image manifest (whose children are blobs).
+#[must_use]
+pub fn is_index_media_type(media_type: &str) -> bool {
+    media_type == MEDIA_TYPE_OCI_INDEX || media_type == MEDIA_TYPE_DOCKER_MANIFEST_LIST
 }
 
 /// A content descriptor (the OCI `descriptor` shape). Only the fields porto

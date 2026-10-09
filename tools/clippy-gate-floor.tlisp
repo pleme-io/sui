@@ -85,7 +85,7 @@
 
 (define (main)
   (let* ((cfg ".cargo/config.toml")
-         (floor 8)
+         (floor 10)
          (named (map crate-name (crate-lines cfg)))
          (crates (distinct named))
          (n (length crates)))

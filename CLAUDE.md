@@ -141,6 +141,29 @@ carries a comment per non-obvious crate; count there, never here.
 | `sui-daemon` | Daemon mode (worker protocol) |
 | `sui-orchestrate` | System rebuild + fleet deployment |
 | `sui-lsp` | Nix language server over sui's own parser + lowering (M0: diagnostics) |
+| `sui-registry` | porto — OCI Distribution v1.1 registry (`nix build .#porto`) |
+
+### `sui-registry` (porto) — writable store + read-only OCI image layouts
+
+porto serves `/v2/` over two kinds of storage. Pushed content goes to a
+sui-castore `StorageBackend`, where tags are still held in memory (sui-store is
+the durable fix, still open). Nix-built **OCI image layouts** in `/nix/store`
+are served read-only, from the `layouts: [{repository, layout, verify}]` config.
+Their tags come from `index.json` `ref.name` (`<tag>` or `<path>:<tag>`), so
+they survive a restart without being stored.
+
+Layout mode rules:
+- Every write to a layout repository returns `DENIED` (403). The check happens
+  once in the dispatcher, through `RegistryStore::access`.
+- A tag that two layouts bind to different digests is a startup error.
+- A corrupt blob is refused, either at load (`eager`) or on first read
+  (`lazy`, result cached).
+
+The config is a `shikumi::TieredConfig` (`PORTO_TIER`) with a schemars schema
+(`porto config-schema`), which a NixOS module can be generated from. `porto
+check` validates layouts at build or deploy time. Use `sui-registry/README.md`
+for anything more specific. The `helm pull` test is `#[ignore]` and needs
+`helm`; run it with `--include-ignored`.
 
 ### `sui-lsp` — the editor face, and why it is not a third front end
 

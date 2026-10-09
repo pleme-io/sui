@@ -64,8 +64,9 @@
 # months (see the header of perf-seal.yml).
 #
 # ── scope, stated rather than implied ────────────────────────────────────
-# 8 of 31 packages (25.8%), default targets only (no `--all-targets`). The
-# other 23 packages and the `--all-targets` debt are itemised, with the
+# 10 of 31 packages (32.3%, counted 2026-10-09; 8 at the 2026-08-17 launch),
+# default targets only (no `--all-targets`). The
+# other 21 packages and the `--all-targets` debt are itemised, with the
 # measurement missing for each, in clippy-gate-baseline.txt. That file may
 # only shrink.
 #

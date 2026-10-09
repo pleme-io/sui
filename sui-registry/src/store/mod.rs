@@ -19,10 +19,14 @@
 //!   a lacre signature / SBOM / attestation manifest attaches to the image it
 //!   describes.
 
+mod layout;
 mod mem;
+mod overlay;
 mod sui;
 
+pub use layout::{LayoutError, LayoutStore, TagConflict};
 pub use mem::MemStore;
+pub use overlay::OverlayStore;
 pub use sui::SuiCacheStore;
 
 use async_trait::async_trait;
@@ -71,10 +75,52 @@ pub struct TagPage {
     pub next_last: Option<String>,
 }
 
+/// Whether a repository accepts writes.
+///
+/// Answered by the store, consulted by the dispatcher BEFORE any write handler
+/// runs: a write (`POST`/`PUT`/`PATCH`/`DELETE`) on a [`RepoAccess::ReadOnly`]
+/// repository is a typed `DENIED` on the wire and never reaches the upload FSM
+/// or the store. The variant is the decision, so a handler cannot "forget" to
+/// check a flag — the check lives in one place, ahead of every write arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoAccess {
+    /// Pushes, deletes and tag moves are accepted.
+    ReadWrite,
+    /// Served from immutable content (an OCI image layout in the Nix store);
+    /// every write is refused.
+    ReadOnly,
+}
+
+/// Apply OCI `?n=`/`?last=` pagination to an already lexically-ordered
+/// sequence of names — the one implementation behind every store's tags list
+/// and the catalog.
+pub(crate) fn paginate<I>(ordered: I, n: Option<usize>, last: Option<&str>) -> TagPage
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut all: Vec<String> = ordered
+        .into_iter()
+        .filter(|t| last.is_none_or(|last| t.as_str() > last))
+        .collect();
+    let more = n.is_some_and(|limit| all.len() > limit);
+    if let Some(limit) = n {
+        all.truncate(limit);
+    }
+    let next_last = if more { all.last().cloned() } else { None };
+    TagPage { tags: all, next_last }
+}
+
 /// The porto storage seam. Errors are typed as [`StoreError`]; the handler
 /// layer maps them to [`crate::error::OciError`] wire codes.
 #[async_trait]
 pub trait RegistryStore: Send + Sync {
+    /// Whether `name` accepts writes. See [`RepoAccess`].
+    fn access(&self, name: &str) -> RepoAccess;
+
+    /// Every repository this store can serve, lexically ordered — the
+    /// `GET /v2/_catalog` source.
+    async fn list_repositories(&self) -> Result<Vec<String>, StoreError>;
+
     /// Fetch a blob's bytes by digest, or `None` if absent.
     async fn get_blob(&self, digest: &Digest) -> Result<Option<Vec<u8>>, StoreError>;
 
@@ -149,6 +195,17 @@ pub enum StoreError {
     /// The underlying durable backend failed.
     #[error("backend error: {0}")]
     Backend(String),
+    /// A write reached a read-only store (the dispatcher's [`RepoAccess`]
+    /// guard normally refuses it first; this is the store's own refusal, so a
+    /// content-addressed op that names no repository — a blob delete — is
+    /// refused too). Rendered as `DENIED`.
+    #[error("read-only: {0}")]
+    ReadOnly(String),
+    /// Bytes on disk no longer hash to the digest they are served under. The
+    /// blob is REFUSED, never served; rendered as a 500 (the server's content
+    /// is broken, the client's request is not).
+    #[error("corrupt content: {0}")]
+    Corrupt(String),
 }
 
 impl From<sui_castore::StoreError> for StoreError {
