@@ -8,7 +8,7 @@
     "sui-build/Cargo.toml": "23c66ecbe429ed7f94032f080c4e28e3b4b5104cb2978b0b2f02bec31e2e81dc",
     "sui-bytecode/Cargo.toml": "fea40d7d2b922a8987a8dcb3d35bb4072641f0d1fe95f6c6b6b9449c6659ee4b",
     "sui-cache-eval/Cargo.toml": "f16c2a3764aebcbc7d0583a9618dfadd596883dd4842c32b65843999034e5589",
-    "sui-cache/Cargo.toml": "9a83d35aacd7e417780f4c5510bb9f2ce6ac8c3cbd0f7fe46edbc8646416fcb0",
+    "sui-cache/Cargo.toml": "850c76ff1e7e4f20964245c633e176df5b44c0c70698e36dd3e8d8398c0b7472",
     "sui-castore/Cargo.toml": "4b22d6e29f4c2ed57df3ffe024600c13464b4dba5afdeaff6d8ce9118a389298",
     "sui-compat/Cargo.toml": "fc4c928af7eedcae4f8b6ec9d3225f0650f3966836d5ef06a33b797000fd3402",
     "sui-daemon-client/Cargo.toml": "d8acc61441eadccaf9bb426aa83dfdb71bc628ac13eb23bd2e73ac5fdfb0e477",
@@ -24463,6 +24463,24 @@
             "tree": "target"
           },
           {
+            "name": "reqwest",
+            "package_key": "reqwest-0.12.28",
+            "kind": "normal",
+            "features": [
+              "charset",
+              "http2",
+              "json",
+              "rustls-tls",
+              "rustls-tls-native-roots",
+              "stream",
+              "system-proxy"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -24517,6 +24535,16 @@
           {
             "name": "sui_compat",
             "package_key": "sui-compat-0.1.219",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tempfile",
+            "package_key": "tempfile-3.27.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,

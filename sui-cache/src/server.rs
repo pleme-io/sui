@@ -65,6 +65,11 @@ pub async fn serve(
 ) -> Result<(), crate::CacheError> {
     let listen = config.listen.clone();
 
+    for key in &config.upload_keys {
+        crate::signing::parse_public_key(key)
+            .map_err(|e| crate::CacheError::Signing(format!("upload key {key:?}: {e}")))?;
+    }
+
     // Load the ed25519 signing key (if configured) at startup. The key is
     // sourced from a file path — in production that path is a cofre/ESO-
     // materialized Kubernetes Secret mount, never a plaintext literal. When
@@ -91,6 +96,22 @@ pub async fn serve(
             None
         }
     };
+
+    if config.upload_keys.is_empty() {
+        if signer.is_some() {
+            tracing::warn!(
+                "sui-cache uploads are UNAUTHENTICATED (no upload_keys configured) and every \
+                 ingested narinfo is signed by this origin: any peer that can reach PUT can \
+                 publish a path the origin vouches for. Pass --upload-key to gate writes.",
+            );
+        }
+    } else {
+        tracing::info!(
+            upload_keys = config.upload_keys.len(),
+            "sui-cache uploads GATED: a narinfo is accepted only when signed by an upload key; \
+             NAR blobs are write-once",
+        );
+    }
 
     let state = AppState {
         storage,
@@ -267,6 +288,15 @@ async fn put_narinfo(
         }
     }
 
+    if !state.config.upload_keys.is_empty() && !upload_is_authorized(&state.config, hash, &content)
+    {
+        tracing::warn!(
+            hash = %hash,
+            "put_narinfo: refusing a narinfo not signed by any upload key for this path",
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     // Sign at ingest when a signer is configured, so the durable tier stores
     // the signed narinfo and every serving tier inherits the `Sig:`.
     let to_store = match &state.signer {
@@ -307,6 +337,19 @@ async fn put_narinfo(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+fn upload_is_authorized(config: &CacheConfig, hash: &str, content: &str) -> bool {
+    let Ok(info) = NarInfo::parse(content) else {
+        return false;
+    };
+    let names_this_hash = info
+        .store_path
+        .rsplit('/')
+        .next()
+        .and_then(|base| base.split_once('-'))
+        .is_some_and(|(path_hash, _)| path_hash == hash);
+    names_this_hash && crate::signing::narinfo_signed_by_any(&info, &config.upload_keys)
 }
 
 /// The NAR media type implied by a URL suffix.
@@ -372,6 +415,22 @@ async fn put_nar(
     body: Body,
 ) -> impl IntoResponse {
     let nar_path = format!("nar/{path}");
+
+    if !state.config.upload_keys.is_empty() {
+        match state.storage.get_nar_stream(&nar_path).await {
+            Ok(Some(_)) => return StatusCode::OK.into_response(),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(
+                    nar_path = %nar_path,
+                    error = %e,
+                    "put_nar: cannot tell whether the blob exists, and a gated cache never \
+                     overwrites one — nothing stored",
+                );
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
 
     let src = match sui_castore::spool_or_buffer(
         body.into_data_stream(),
@@ -1019,6 +1078,184 @@ mod tests {
             StatusCode::NOT_FOUND,
             "a rejected narinfo must not have been stored",
         );
+    }
+
+    fn gated_app(
+        dir: &std::path::Path,
+        upload_keys: Vec<String>,
+        signer: Option<Arc<CacheSigner>>,
+    ) -> Router {
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir));
+        build_router(AppState {
+            storage,
+            config: CacheConfig {
+                upload_keys,
+                ..CacheConfig::default()
+            },
+            signer,
+        })
+    }
+
+    fn gate_narinfo() -> NarInfo {
+        NarInfo::parse(
+            "StorePath: /nix/store/gate-pkg\nURL: nar/gate.nar.zst\nCompression: zstd\n\
+             FileHash: sha256:a\nFileSize: 1\nNarHash: sha256:b\nNarSize: 2\nReferences: \n",
+        )
+        .unwrap()
+    }
+
+    async fn put(app: &Router, uri: &str, body: impl Into<Body>) -> StatusCode {
+        let req = axum::http::Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .body(body.into())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    async fn get(app: &Router, uri: &str) -> axum::http::Response<Body> {
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn gated_put_narinfo_refuses_an_unsigned_narinfo() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let app = gated_app(dir.path(), vec![uploader.public_key_string()], None);
+
+        let status = put(&app, "/gate.narinfo", gate_narinfo().serialize()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            get(&app, "/gate.narinfo").await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_put_narinfo_refuses_a_narinfo_signed_by_a_non_upload_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let stranger = CacheSigner::generate("ci-1".to_string());
+        let app = gated_app(dir.path(), vec![uploader.public_key_string()], None);
+
+        let mut info = gate_narinfo();
+        info.signatures.push(stranger.sign_narinfo(&info));
+        assert_eq!(
+            put(&app, "/gate.narinfo", info.serialize()).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            get(&app, "/gate.narinfo").await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_put_narinfo_refuses_a_signed_narinfo_under_another_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let app = gated_app(dir.path(), vec![uploader.public_key_string()], None);
+
+        let mut info = gate_narinfo();
+        info.signatures.push(uploader.sign_narinfo(&info));
+        assert_eq!(
+            put(&app, "/other.narinfo", info.serialize()).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_put_narinfo_accepts_an_upload_key_signature_and_adds_the_origin_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let origin = Arc::new(CacheSigner::generate("origin-1".to_string()));
+        let app = gated_app(
+            dir.path(),
+            vec![uploader.public_key_string()],
+            Some(origin.clone()),
+        );
+
+        let mut info = gate_narinfo();
+        info.signatures.push(uploader.sign_narinfo(&info));
+        assert_eq!(
+            put(&app, "/gate.narinfo", info.serialize()).await,
+            StatusCode::OK
+        );
+
+        let resp = get(&app, "/gate.narinfo").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let stored = NarInfo::parse(&body_string(resp).await).unwrap();
+        assert_eq!(stored.signatures.len(), 2);
+        let origin_pk = origin.public_key_string();
+        assert!(stored.signatures.iter().any(|s| {
+            crate::signing::verify_narinfo_signature(&stored, s, &origin_pk).unwrap_or(false)
+        }));
+        assert!(crate::signing::narinfo_signed_by_any(
+            &stored,
+            &[uploader.public_key_string()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn gated_put_nar_never_overwrites_an_existing_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let app = gated_app(dir.path(), vec![uploader.public_key_string()], None);
+
+        assert_eq!(
+            put(&app, "/nar/gate.nar.zst", b"first".to_vec()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            put(&app, "/nar/gate.nar.zst", b"second".to_vec()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            body_bytes(get(&app, "/nar/gate.nar.zst").await).await,
+            b"first"
+        );
+    }
+
+    #[tokio::test]
+    async fn ungated_put_nar_still_overwrites_and_unsigned_narinfo_is_still_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path());
+
+        assert_eq!(
+            put(&app, "/nar/gate.nar.zst", b"first".to_vec()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            put(&app, "/nar/gate.nar.zst", b"second".to_vec()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            body_bytes(get(&app, "/nar/gate.nar.zst").await).await,
+            b"second"
+        );
+        assert_eq!(
+            put(&app, "/gate.narinfo", gate_narinfo().serialize()).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_refuses_a_malformed_upload_key_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn StorageBackend> = Arc::new(LocalStorage::new(dir.path()));
+        let config = CacheConfig {
+            listen: "127.0.0.1:0".to_string(),
+            upload_keys: vec!["not-a-key".to_string()],
+            ..CacheConfig::default()
+        };
+        let err = serve(config, storage)
+            .await
+            .expect_err("a bad key must refuse startup");
+        assert!(err.to_string().contains("not-a-key"), "{err}");
     }
 
     #[tokio::test]

@@ -800,6 +800,7 @@ enum CacheCommands {
         /// consumers can verify integrity; when absent the cache serves
         /// unsigned (legacy fail-open).
         #[arg(long)] signing_key: Option<String>,
+        #[arg(long)] upload_key: Vec<String>,
     },
     Push {
         paths: Vec<String>,
@@ -7721,7 +7722,13 @@ async fn main() -> Result<(), CliError> {
         },
 
         Commands::Cache { command } => match command {
-            CacheCommands::Serve { listen, store_path, priority, backend_config, supercache_config, signing_key } => {
+            CacheCommands::Serve { listen, store_path, priority, backend_config, supercache_config, signing_key, upload_key } => {
+                for key in &upload_key {
+                    sui_cache::signing::parse_public_key(key).map_err(|e| CliError::Orchestrate {
+                        operation: "cache serve",
+                        message: format!("--upload-key {key:?}: {e}"),
+                    })?;
+                }
                 // Config-select the storage backend, in precedence order:
                 //   1. --backend-config  → a raw BackendConfig file (any tier shape)
                 //   2. --supercache-config → a SuperCacheCiConfig posture, translated
@@ -7748,6 +7755,7 @@ async fn main() -> Result<(), CliError> {
                     priority,
                     signing_key: signing_key.map(std::path::PathBuf::from),
                     require_sigs: config_require_sigs,
+                    upload_keys: upload_key,
                     ..sui_cache::CacheConfig::resolve()
                 };
                 let storage = sui_cache::build_backend(&config.backend)
@@ -7763,13 +7771,24 @@ async fn main() -> Result<(), CliError> {
                     }
                 })?;
             }
-            // `cache_url` is REFUSED by `cli_contract` before dispatch, so it
-            // can only ever be absent here. It used to be discarded silently
-            // while this handler wrote to the LOCAL `store_path` below and
-            // printed `pushed <path>` — the operator believed the artifact was
-            // on the shared cache, and only its consumers found out otherwise,
-            // as 404s. See src/cli_contract.rs.
-            CacheCommands::Push { paths, cache_url: _, store_path, signing_key, recursive } => {
+            CacheCommands::Push { paths, cache_url, store_path, signing_key, recursive } => {
+                if cache_url.is_some() && signing_key.is_none() {
+                    return Err(CliError::Orchestrate {
+                        operation: "cache push",
+                        message: "--cache-url needs --signing-key: an unsigned upload is refused by a \
+                                  gated origin and unverifiable on an open one"
+                            .to_string(),
+                    });
+                }
+                let remote = cache_url
+                    .as_deref()
+                    .map(sui_cache::remote::RemoteCache::new)
+                    .transpose()
+                    .map_err(|e| CliError::Orchestrate {
+                        operation: "cache push",
+                        message: e.to_string(),
+                    })?;
+                let (mut pushed, mut present, mut failed) = (0usize, 0usize, 0usize);
                 let storage: Arc<dyn sui_cache::StorageBackend> =
                     Arc::new(sui_cache::LocalStorage::new(&store_path));
                 // How this origin packs NARs — typed configuration, resolved
@@ -7819,7 +7838,10 @@ async fn main() -> Result<(), CliError> {
                 for p in &paths {
                     match sui_compat::store_path::StorePath::from_absolute_path(p) {
                         Ok(sp) => roots.push(sp),
-                        Err(e) => eprintln!("skipping {p}: not a store path ({e})"),
+                        Err(e) => {
+                            eprintln!("skipping {p}: not a store path ({e})");
+                            failed += 1;
+                        }
                     }
                 }
 
@@ -7859,10 +7881,12 @@ async fn main() -> Result<(), CliError> {
                         Ok(Some(i)) => i,
                         Ok(None) => {
                             eprintln!("skipping {path}: not registered in the nix database");
+                            failed += 1;
                             continue;
                         }
                         Err(e) => {
                             eprintln!("skipping {path}: query_path_info failed: {e}");
+                            failed += 1;
                             continue;
                         }
                     };
@@ -7886,6 +7910,34 @@ async fn main() -> Result<(), CliError> {
                         info.references.iter().map(|r| basename(r)).collect();
                     let deriver = info.deriver.as_deref().map(basename);
 
+                    if let Some(remote) = &remote {
+                        match sui_cache::remote::push_path_remote(
+                            remote,
+                            &signer,
+                            &path,
+                            &hash,
+                            &references,
+                            deriver.as_deref(),
+                            nar_codec,
+                        )
+                        .await
+                        {
+                            Ok(sui_cache::remote::RemoteOutcome::Present) => {
+                                println!("present {path}");
+                                present += 1;
+                            }
+                            Ok(sui_cache::remote::RemoteOutcome::Pushed(_)) => {
+                                println!("pushed {path} -> {}", remote.base_url());
+                                pushed += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("error pushing {path}: {e}");
+                                failed += 1;
+                            }
+                        }
+                        continue;
+                    }
+
                     match sui_cache::push::push_path(
                         storage.as_ref(),
                         &signer,
@@ -7906,6 +7958,19 @@ async fn main() -> Result<(), CliError> {
                         Err(e) => {
                             eprintln!("error pushing {path}: {e}");
                         }
+                    }
+                }
+
+                if let Some(remote) = &remote {
+                    println!(
+                        "remote push to {}: {pushed} pushed, {present} present, {failed} failed",
+                        remote.base_url()
+                    );
+                    if failed > 0 {
+                        return Err(CliError::Orchestrate {
+                            operation: "cache push",
+                            message: format!("{failed} path(s) failed to reach {}", remote.base_url()),
+                        });
                     }
                 }
             }

@@ -613,6 +613,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // ── system … ────────────────────────────────────────────────────────
     (&["system", "rebuild"], "action", H),
     (&["system", "rebuild"], "flake", H),
+    (&["system", "rebuild"], "toplevel", H),
     (&["system", "rebuild"], "dry_run", H),
     (&["system", "converge"], "flake", H),
     (&["system", "converge"], "watch", H),
@@ -628,26 +629,9 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["cache", "serve"], "backend_config", H),
     (&["cache", "serve"], "supercache_config", H),
     (&["cache", "serve"], "signing_key", H),
+    (&["cache", "serve"], "upload_key", H),
     (&["cache", "push"], "paths", H),
-    // PRIORITY 1. This is a PUBLISH path, which is why it is the first row that
-    // mattered. `--cache-url` was destructured to `_`; the handler built a
-    // `LocalStorage` over `--store-path` and printed `pushed <path>` per path.
-    // The operator reads a success line and believes the artifact is on the
-    // shared cache; it is on local disk, and every consumer 404s. The failure is
-    // silent on the producing side and only ever surfaces on the consuming one.
-    (
-        &["cache", "push"],
-        "cache_url",
-        Honour::Refused {
-            since: NOW,
-            reason: "`cache push` writes to the LOCAL --store-path only; --cache-url was \
-                     discarded while the command still printed `pushed <path>`, so an artifact \
-                     the operator believes is on the shared cache is not — and only its \
-                     consumers find out, as 404s. Push locally then serve, or use \
-                     `sui cache serve` as the origin; remote push needs an HTTP backend that \
-                     does not exist yet",
-        },
-    ),
+    (&["cache", "push"], "cache_url", H),
     (&["cache", "push"], "store_path", H),
     (&["cache", "push"], "signing_key", H),
     (&["cache", "push"], "recursive", H),
@@ -1059,12 +1043,36 @@ mod tests {
 
     #[test]
     fn refuses_a_supplied_refused_flag() {
-        let m = matches_from(&["sui", "cache", "push", "/nix/store/x", "--cache-url", "http://c"]);
-        let err = enforce(&m).expect_err("--cache-url must be refused");
+        let m = matches_from(&["sui", "-L", "store", "ping"]);
+        let err = enforce(&m).expect_err("-L must be refused");
         let msg = err.to_string();
-        assert!(msg.contains("cache_url"), "{msg}");
-        assert!(msg.contains("sui cache push"), "{msg}");
-        assert!(msg.contains("404"), "the reason must survive to the operator: {msg}");
+        assert!(msg.contains("print_build_logs"), "{msg}");
+        assert!(msg.contains("silence"), "the reason must survive to the operator: {msg}");
+    }
+
+    #[test]
+    fn cache_push_cache_url_is_honoured() {
+        assert_eq!(honour_of(&["cache", "push"], "cache_url"), Some(Honour::Honoured));
+        let m = matches_from(&[
+            "sui", "cache", "push", "/nix/store/x", "--cache-url", "http://c", "--signing-key", "k",
+        ]);
+        enforce(&m).expect("--cache-url is honoured");
+    }
+
+    #[test]
+    fn cache_serve_upload_key_is_honoured_and_repeatable() {
+        assert_eq!(honour_of(&["cache", "serve"], "upload_key"), Some(Honour::Honoured));
+        let m = matches_from(&[
+            "sui", "cache", "serve", "--upload-key", "a:AAAA", "--upload-key", "b:BBBB",
+        ]);
+        enforce(&m).expect("--upload-key is honoured");
+        let keys: Vec<&String> = m
+            .subcommand_matches("cache")
+            .and_then(|c| c.subcommand_matches("serve"))
+            .and_then(|s| s.get_many::<String>("upload_key"))
+            .expect("upload_key parsed")
+            .collect();
+        assert_eq!(keys.len(), 2);
     }
 
     /// THE `value_source` GUARD, tested rather than asserted.

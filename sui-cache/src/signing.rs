@@ -117,31 +117,11 @@ pub fn verify_narinfo_signature(
     let parsed_sig = StorePathSignature::parse(signature)
         .map_err(|e| crate::CacheError::Signing(format!("bad signature: {e}")))?;
 
-    let (pk_name, pk_b64) = public_key_str
-        .split_once(':')
-        .ok_or_else(|| crate::CacheError::Signing("bad public key format".to_string()))?;
+    let (pk_name, verifying_key) = parse_public_key(public_key_str)?;
 
-    // Key names must match.
     if parsed_sig.key_name != pk_name {
         return Ok(false);
     }
-
-    let pk_bytes = sui_compat::hash::base64_decode(pk_b64)
-        .map_err(|_| crate::CacheError::Signing("bad base64 in public key".to_string()))?;
-
-    if pk_bytes.len() != 32 {
-        return Err(crate::CacheError::Signing(format!(
-            "public key: expected 32 bytes, got {}",
-            pk_bytes.len()
-        )));
-    }
-
-    let pk_array: [u8; 32] = pk_bytes
-        .try_into()
-        .map_err(|_| crate::CacheError::Signing("public key conversion error".to_string()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&pk_array)
-        .map_err(|_| crate::CacheError::Signing("invalid public key".to_string()))?;
 
     let fingerprint = compute_fingerprint(
         &info.store_path,
@@ -160,6 +140,40 @@ pub fn verify_narinfo_signature(
     Ok(verifying_key
         .verify(fingerprint.as_bytes(), &ed_sig)
         .is_ok())
+}
+
+#[allow(clippy::missing_errors_doc)]
+pub fn parse_public_key(public_key_str: &str) -> Result<(&str, VerifyingKey), crate::CacheError> {
+    let (pk_name, pk_b64) = public_key_str
+        .split_once(':')
+        .ok_or_else(|| crate::CacheError::Signing("bad public key format".to_string()))?;
+
+    let pk_bytes = sui_compat::hash::base64_decode(pk_b64)
+        .map_err(|_| crate::CacheError::Signing("bad base64 in public key".to_string()))?;
+
+    if pk_bytes.len() != 32 {
+        return Err(crate::CacheError::Signing(format!(
+            "public key: expected 32 bytes, got {}",
+            pk_bytes.len()
+        )));
+    }
+
+    let pk_array: [u8; 32] = pk_bytes
+        .try_into()
+        .map_err(|_| crate::CacheError::Signing("public key conversion error".to_string()))?;
+
+    let verifying_key = VerifyingKey::from_bytes(&pk_array)
+        .map_err(|_| crate::CacheError::Signing("invalid public key".to_string()))?;
+
+    Ok((pk_name, verifying_key))
+}
+
+#[must_use]
+pub fn narinfo_signed_by_any(info: &NarInfo, keys: &[String]) -> bool {
+    info.signatures.iter().any(|sig| {
+        keys.iter()
+            .any(|key| verify_narinfo_signature(info, sig, key).unwrap_or(false))
+    })
 }
 
 #[cfg(test)]
@@ -329,6 +343,36 @@ mod tests {
         let sig = signer.sign_narinfo(&info);
         let result = verify_narinfo_signature(&info, &sig, "no-colon-pk");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_public_key_accepts_a_signer_public_key() {
+        let signer = CacheSigner::generate("ci-1".to_string());
+        let public = signer.public_key_string();
+        let (name, key) = parse_public_key(&public).unwrap();
+        assert_eq!(name, "ci-1");
+        assert_eq!(key, signer.public_key());
+    }
+
+    #[test]
+    fn parse_public_key_rejects_malformed_keys() {
+        assert!(parse_public_key("no-colon").is_err());
+        assert!(parse_public_key("k:!!!").is_err());
+        assert!(parse_public_key("k:AAAA").is_err());
+    }
+
+    #[test]
+    fn signed_by_any_needs_a_matching_key() {
+        let uploader = CacheSigner::generate("ci-1".to_string());
+        let stranger = CacheSigner::generate("ci-1".to_string());
+        let mut info = make_test_narinfo();
+        let keys = vec![uploader.public_key_string()];
+        assert!(!narinfo_signed_by_any(&info, &keys));
+        info.signatures.push("garbage".to_string());
+        info.signatures.push(stranger.sign_narinfo(&info));
+        assert!(!narinfo_signed_by_any(&info, &keys));
+        info.signatures.push(uploader.sign_narinfo(&info));
+        assert!(narinfo_signed_by_any(&info, &keys));
     }
 
     #[test]

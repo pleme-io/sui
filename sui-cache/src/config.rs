@@ -78,6 +78,9 @@ pub struct CacheConfig {
     /// so flipping this changes only what *new* pushes look like.
     #[serde(default)]
     pub nar_codec: NarCodec,
+
+    #[serde(default)]
+    pub upload_keys: Vec<String>,
 }
 
 impl Default for CacheConfig {
@@ -124,6 +127,7 @@ impl TieredConfig for CacheConfig {
             nar_codec: NarCodec::Xz {
                 level: XzLevel::default(),
             },
+            upload_keys: Vec::new(),
         }
     }
 
@@ -185,6 +189,7 @@ mod tests {
             store_dir: "/nix/store".to_string(),
             require_sigs: true,
             nar_codec: NarCodec::default(),
+            upload_keys: vec!["ci-1:AAAA".to_string()],
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: CacheConfig = serde_json::from_str(&json).unwrap();
@@ -192,6 +197,7 @@ mod tests {
         assert_eq!(parsed.priority, 30);
         assert!(!parsed.want_mass_query);
         assert!(parsed.require_sigs);
+        assert_eq!(parsed.upload_keys, vec!["ci-1:AAAA".to_string()]);
         assert!(matches!(parsed.backend, BackendConfig::S3 { .. }));
     }
 
@@ -209,6 +215,7 @@ mod tests {
         }"#;
         let parsed: CacheConfig = serde_json::from_str(json).unwrap();
         assert!(!parsed.require_sigs);
+        assert!(parsed.upload_keys.is_empty());
     }
 
     #[test]
