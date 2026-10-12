@@ -322,6 +322,20 @@ impl InputFetcher {
         format!("https://github.com/{owner}/{repo}/archive/{rev}.tar.gz")
     }
 
+    #[must_use]
+    pub fn github_api_tarball_url(owner: &str, repo: &str, rev: &str) -> String {
+        format!("https://api.github.com/repos/{owner}/{repo}/tarball/{rev}")
+    }
+
+    pub fn github_download_url(owner: &str, repo: &str, rev: &str) -> Result<String, FetchError> {
+        let archive = Self::github_archive_url(owner, repo, rev);
+        Ok(if github_token_for_url(&archive)?.is_some() {
+            Self::github_api_tarball_url(owner, repo, rev)
+        } else {
+            archive
+        })
+    }
+
     /// GitLab archive URL.  Shape differs from GitHub — the file
     /// name embeds the repo + rev and lives under `/-/archive/{rev}/`.
     /// Honors `host` so self-hosted gitlab instances (e.g.
@@ -355,7 +369,7 @@ impl InputFetcher {
         let repo = locked.repo.as_deref().ok_or(FetchError::MissingField("repo"))?;
         let rev = locked.rev.as_deref().ok_or(FetchError::MissingField("rev"))?;
 
-        let url = Self::github_archive_url(owner, repo, rev);
+        let url = Self::github_download_url(owner, repo, rev)?;
         // Was a hand-inlined copy of `fetch_archive`'s body — the only copy of
         // the three that lacked a cache guard, which is exactly how it came to
         // re-download on every invocation. Sharing the body is the fix for the
@@ -496,7 +510,9 @@ impl InputFetcher {
         // Try GitHub tarball first (avoids git CLI dependency in containers).
         // Most git-type inputs in flake.lock are GitHub repos that support
         // archive downloads via /archive/{rev}.tar.gz.
-        if let Some(tarball_url) = github_tarball_from_git_url(url, rev) {
+        if let Some(tarball_url) = github_owner_repo_from_git_url(url)
+            .and_then(|(owner, repo)| Self::github_download_url(owner, repo, rev).ok())
+        {
             std::fs::create_dir_all(&staging)?;
             match download_bytes(&tarball_url) {
                 Ok(bytes) => {
@@ -606,21 +622,22 @@ impl InputFetcher {
 ///
 /// `https://github.com/NixOS/nixpkgs.git` + rev → `https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz`
 /// Returns `None` for non-GitHub URLs.
+#[cfg(test)]
 fn github_tarball_from_git_url(url: &str, rev: &str) -> Option<String> {
+    github_owner_repo_from_git_url(url)
+        .map(|(owner, repo)| InputFetcher::github_archive_url(owner, repo, rev))
+}
+
+fn github_owner_repo_from_git_url(url: &str) -> Option<(&str, &str)> {
     let stripped = url
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("git+https://github.com/"))
         .or_else(|| url.strip_prefix("http://github.com/"))?;
     let stripped = stripped.strip_suffix(".git").unwrap_or(stripped);
-    // Validate it looks like owner/repo (no extra path segments)
-    let parts: Vec<&str> = stripped.split('/').collect();
-    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-        Some(format!(
-            "https://github.com/{}/{}/archive/{rev}.tar.gz",
-            parts[0], parts[1]
-        ))
-    } else {
-        None
+    let mut parts = stripped.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => Some((owner, repo)),
+        _ => None,
     }
 }
 
@@ -1346,27 +1363,55 @@ mod tests {
     /// read neither, so every private input 404'd unauthenticated.
     #[test]
     fn a_token_included_from_the_system_nix_conf_is_used() {
+        let token = with_nix_conf(Some("access-tokens = github.com=fixture-token-c5\n"), || {
+            github_token_for_url("https://api.github.com/repos/o/r/tarball/deadbeef").unwrap()
+        });
+        assert_eq!(token.as_deref(), Some("fixture-token-c5"));
+    }
+
+    #[test]
+    fn a_private_input_is_fetched_where_github_honours_the_token() {
+        let url = with_nix_conf(Some("access-tokens = github.com/pleme-io=fixture-token\n"), || {
+            InputFetcher::github_download_url("pleme-io", "nix", "deadbeef").unwrap()
+        });
+        assert_eq!(url, "https://api.github.com/repos/pleme-io/nix/tarball/deadbeef");
+    }
+
+    #[test]
+    fn a_public_input_without_a_token_uses_the_unmetered_archive() {
+        let url = with_nix_conf(None, || {
+            InputFetcher::github_download_url("nixos", "nixpkgs", "deadbeef").unwrap()
+        });
+        assert_eq!(url, "https://github.com/nixos/nixpkgs/archive/deadbeef.tar.gz");
+    }
+
+    #[test]
+    fn a_token_for_another_owner_leaves_the_archive_url() {
+        let url = with_nix_conf(Some("access-tokens = github.com/pleme-io=fixture-token\n"), || {
+            InputFetcher::github_download_url("nixos", "nixpkgs", "deadbeef").unwrap()
+        });
+        assert_eq!(url, "https://github.com/nixos/nixpkgs/archive/deadbeef.tar.gz");
+    }
+
+    fn with_nix_conf<T>(tokens: Option<&str>, f: impl FnOnce() -> T) -> T {
         static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("nix.conf"), "!include access-tokens\n").unwrap();
-        std::fs::write(
-            dir.path().join("access-tokens"),
-            "access-tokens = github.com=fixture-token-c5\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("access-tokens"), tokens.unwrap_or("")).unwrap();
         let saved: Vec<(&str, Option<std::ffi::OsString>)> =
-            ["NIX_CONF_DIR", "NIX_USER_CONF_FILES", "NIX_CONFIG", "GITHUB_TOKEN"]
+            ["NIX_CONF_DIR", "NIX_USER_CONF_FILES", "NIX_CONFIG", "GITHUB_TOKEN", "HOME"]
                 .into_iter()
                 .map(|k| (k, std::env::var_os(k)))
                 .collect();
         unsafe {
             std::env::set_var("NIX_CONF_DIR", dir.path());
             std::env::set_var("NIX_USER_CONF_FILES", dir.path().join("absent-user.conf"));
+            std::env::set_var("HOME", dir.path());
             std::env::remove_var("NIX_CONFIG");
             std::env::remove_var("GITHUB_TOKEN");
         }
-        let token = github_token_for_url("https://api.github.com/repos/o/r/tarball/deadbeef").unwrap();
+        let out = f();
         for (k, v) in saved {
             unsafe {
                 match v {
@@ -1375,7 +1420,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(token.as_deref(), Some("fixture-token-c5"));
+        out
     }
 
     /// Helper: build a `LockedInput` with the given fields.
