@@ -122,6 +122,11 @@ struct ComputedDrv {
 /// avoids by never forcing the deps until a store path is demanded.
 fn compute_full_drv(input: &NixAttrs, name: &str) -> Result<ComputedDrv, EvalError> {
     let (_name, drv) = construct_derivation(input)?;
+    if crate::nix_bytes::has_escapes(&drv.serialize()) {
+        return Err(EvalError::NotImplemented(format!(
+            "derivation {name}: a string that is not valid UTF-8 reaches the .drv; sui cannot write those bytes yet"
+        )));
+    }
     let (drv_path, out_paths, mut drv) = compute_derivation_outputs(input, name, drv)?;
     write_derivation_to_store(&drv_path, &out_paths, &mut drv)?;
     // R3 (moved 2026-08-11): the emitter belongs HERE, where the FINAL path and

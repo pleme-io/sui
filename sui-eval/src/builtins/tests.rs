@@ -2805,10 +2805,33 @@ fn builtins_current_time_is_int() {
 // ── substring ─────────────────────────────────────────
 
 #[test]
-fn builtins_substring_that_splits_a_character_is_refused_not_a_panic() {
-    let err = eval(r#"builtins.substring 0 1 "★ x""#).unwrap_err();
-    assert!(err.to_string().contains("splits a UTF-8 character"), "{err}");
-    assert_eq!(ev(r#"builtins.substring 0 3 "★ x""#), ev(r#""★""#));
+fn builtins_substring_is_byte_indexed_like_cppnix() {
+    for (expr, cppnix) in [
+        (r#"builtins.substring 0 1 "★ x" == "/""#, Value::Bool(false)),
+        (r#"builtins.stringLength (builtins.substring 0 1 "★ x")"#, Value::Int(1)),
+        (r#"builtins.stringLength "★""#, Value::Int(3)),
+        (r#"builtins.substring 0 1 "★" + builtins.substring 1 2 "★" == "★""#, Value::Bool(true)),
+        (r#""${builtins.substring 0 2 "★"}${builtins.substring 2 1 "★"}x" == "★x""#, Value::Bool(true)),
+        (r#"builtins.substring 0 1 "★" < "★""#, Value::Bool(true)),
+        (r#"builtins.attrNames { ${builtins.substring 0 1 "★"} = 1; } == [ (builtins.substring 0 1 "★") ]"#, Value::Bool(true)),
+        (
+            r#"builtins.hashString "sha256" (builtins.substring 0 1 "★")"#,
+            Value::string("30a5bfa58e128af9e5a4955725d8ad26d4d574a537b58b7dc6d357acad578572"),
+        ),
+    ] {
+        assert_eq!(ev(expr), cppnix, "{expr}");
+    }
+}
+
+#[test]
+fn bytes_that_are_not_utf8_never_reach_a_store_object() {
+    let err = eval(r#"builtins.toFile "x" (builtins.substring 0 1 "★")"#).unwrap_err();
+    assert!(err.to_string().contains("not valid UTF-8"), "{err}");
+    let err = eval(
+        r#"(derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; f = builtins.substring 0 1 "★"; }).drvPath"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not valid UTF-8"), "{err}");
 }
 
 #[test]

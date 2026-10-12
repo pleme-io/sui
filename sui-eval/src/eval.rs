@@ -3654,7 +3654,7 @@ fn compare(
         (Value::Float(a), Value::Int(b)) => a
             .partial_cmp(&(*b as f64))
             .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.chars.cmp(&b.chars),
+        (Value::String(a), Value::String(b)) => crate::nix_bytes::cmp(&a.chars, &b.chars),
         _ => {
             return Err(EvalError::op_type("compare", l.type_name(), r.type_name()));
         }

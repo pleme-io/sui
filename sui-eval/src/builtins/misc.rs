@@ -254,6 +254,11 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "toFile", |name_val, content_val| {
         let name = name_val.as_string()?;
         let content = content_val.as_string()?;
+        if crate::nix_bytes::has_escapes(&name) || crate::nix_bytes::has_escapes(&content) {
+            return Err(EvalError::NotImplemented(format!(
+                "toFile {name}: content that is not valid UTF-8; sui cannot write those bytes yet"
+            )));
+        }
         // ★ The content's STRING CONTEXT is the reference set, and passing
         // `&[]` here silently produced a wrong store path for every `toFile`
         // whose content interpolates another store path — i.e. exactly the

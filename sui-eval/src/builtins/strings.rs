@@ -61,7 +61,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         Ok(Value::String(Rc::new(NixString::with_context(s, ctx))))
     });
     register_builtin(builtins, "stringLength", |args| {
-        Ok(Value::Int(args[0].as_string()?.len() as i64))
+        Ok(Value::Int(crate::nix_bytes::byte_len(&args[0].as_string()?) as i64))
     });
     register_builtin(builtins, "substring", |args| {
         // Mirror the VM's substring — see sui-bytecode/src/builtins.rs
@@ -92,20 +92,17 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                                 "substring: negative start position".into(),
                             ));
                         }
-                        let s_len = s.len();
+                        let s_len = crate::nix_bytes::byte_len(&s);
                         let start = (start_i as usize).min(s_len);
                         let end = if len_i < 0 {
                             s_len
                         } else {
                             start.saturating_add(len_i as usize).min(s_len)
                         };
-                        if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
-                            return Err(EvalError::NotImplemented(format!(
-                                "substring {start_i} {len_i} splits a UTF-8 character; sui strings are UTF-8, CppNix's are bytes (subject begins {:?})",
-                                s.chars().take(40).collect::<String>()
-                            )));
-                        }
-                        let slice = s[start..end].to_string();
+                        let slice = match crate::nix_bytes::byte_slice(&s, start, end) {
+                            Some(bytes) => bytes,
+                            None => s[start..end].to_string(),
+                        };
                         match ctx {
                             Some(ctx) => Ok(Value::String(Rc::new(
                                 NixString::with_context(slice, ctx),
@@ -258,6 +255,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
     register_curried(builtins, "hashString", |algo, s| {
         let algo_str = algo.as_string()?;
         let input = s.as_string()?;
+        let input_bytes = crate::nix_bytes::decode(&input);
         // CppNix supports md5, sha1, sha256, sha512 at minimum (plus
         // blake3/blake2b/etc. on newer versions via `builtins.convertHash`
         // — which routes elsewhere). Adding the missing three; found
@@ -267,19 +265,19 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
         let hex = match algo_str {
             "md5" => {
                 use md5::{Md5, Digest};
-                format!("{:x}", Md5::digest(input.as_bytes()))
+                format!("{:x}", Md5::digest(&*input_bytes))
             }
             "sha1" => {
                 use sha1::{Sha1, Digest};
-                format!("{:x}", Sha1::digest(input.as_bytes()))
+                format!("{:x}", Sha1::digest(&*input_bytes))
             }
             "sha256" => {
                 use sha2::{Sha256, Digest};
-                format!("{:x}", Sha256::digest(input.as_bytes()))
+                format!("{:x}", Sha256::digest(&*input_bytes))
             }
             "sha512" => {
                 use sha2::{Sha512, Digest};
-                format!("{:x}", Sha512::digest(input.as_bytes()))
+                format!("{:x}", Sha512::digest(&*input_bytes))
             }
             _ => return Err(EvalError::TypeError(format!("hashString: unsupported algorithm: {algo_str}"))),
         };

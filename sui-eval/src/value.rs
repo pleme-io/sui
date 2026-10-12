@@ -471,7 +471,7 @@ impl NixString {
     pub fn plain(s: impl Into<SmolStr>) -> Self {
         census::made(&census::NIXSTR_MADE, &census::NIXSTR_LIVE);
         Self {
-            chars: s.into(),
+            chars: canonical_chars(s.into()),
             context: StringContext::default(),
         }
     }
@@ -480,7 +480,7 @@ impl NixString {
     pub fn with_context(s: impl Into<SmolStr>, ctx: StringContext) -> Self {
         census::made(&census::NIXSTR_MADE, &census::NIXSTR_LIVE);
         Self {
-            chars: s.into(),
+            chars: canonical_chars(s.into()),
             context: ctx,
         }
     }
@@ -495,6 +495,13 @@ impl NixString {
     #[must_use]
     pub fn has_context(&self) -> bool {
         !self.context.is_empty()
+    }
+}
+
+fn canonical_chars(s: SmolStr) -> SmolStr {
+    match crate::nix_bytes::canonical(&s) {
+        Some(c) => SmolStr::from(c),
+        None => s,
     }
 }
 

@@ -33,6 +33,7 @@ pub mod perf;
 /// tree-walker's consume side of the `sui-resolve` side-table).
 pub mod resolve_env;
 pub mod normalize_env;
+pub mod nix_bytes;
 /// Infinite recursion debugging tools (force chain, trace, depth limit, stats).
 pub mod trace;
 /// Nix value types, environments, thunks, and error types.

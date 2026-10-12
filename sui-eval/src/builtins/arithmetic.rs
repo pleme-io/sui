@@ -91,7 +91,9 @@ pub(crate) fn nix_value_less_than(a: &Value, b: &Value) -> Result<bool, EvalErro
         (Value::Float(x), Value::Float(y)) => Ok(x < y),
         (Value::Int(x), Value::Float(y)) => Ok((*x as f64) < *y),
         (Value::Float(x), Value::Int(y)) => Ok(*x < (*y as f64)),
-        (Value::String(x), Value::String(y)) => Ok(x.chars < y.chars),
+        (Value::String(x), Value::String(y)) => {
+            Ok(crate::nix_bytes::cmp(&x.chars, &y.chars) == std::cmp::Ordering::Less)
+        }
         (Value::List(xs), Value::List(ys)) => {
             let (xs, ys) = (&xs.0, &ys.0);
             let n = xs.len().min(ys.len());
