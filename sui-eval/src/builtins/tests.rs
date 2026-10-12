@@ -4832,6 +4832,26 @@ fn import_cache_different_paths_different_entries() {
 }
 
 #[test]
+fn a_planned_attrset_is_built_from_its_own_file_when_called_from_another() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path_a = tmp.path().join("a.nix");
+    let path_b = tmp.path().join("b.nix");
+    std::fs::write(&path_a, "y: { p.u = y; p.v = 2; }").unwrap();
+    std::fs::write(&path_b, "y: { q.u = y; q.w = 3; }").unwrap();
+    super::clear_import_cache();
+    let v = eval(&format!(
+        "let fa = import {}; fb = import {}; in builtins.toJSON [ (fa 1) (fb 1) ]",
+        path_a.display(),
+        path_b.display()
+    ))
+    .unwrap();
+    assert_eq!(
+        v.as_string().unwrap().to_string(),
+        r#"[{"p":{"u":1,"v":2}},{"q":{"u":1,"w":3}}]"#
+    );
+}
+
+#[test]
 fn import_cache_attrs_cached() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("attrs.nix");

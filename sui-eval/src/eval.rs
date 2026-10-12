@@ -1102,7 +1102,7 @@ pub fn eval_expr(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // deferral. The resolver never records keywords, so the
             // true/false/null handling below is untouched on this path.
             if crate::resolve_env::enabled() {
-                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let src_id = env.source_id();
                 let offset = u32::from(ident.syntax().text_range().start());
                 if let sui_resolve::Resolution::Lexical { sym } =
                     crate::resolve_env::resolution_for(src_id, offset)
@@ -1550,7 +1550,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // A `None` means the group has no duplicate and no dotted path,
             // so the existing path is already correct — see `normalize_env`.
             if crate::normalize_env::enabled() {
-                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let src_id = env.source_id();
                 let offset = u32::from(letin.syntax().text_range().start());
                 if let Some(plan) =
                     crate::normalize_env::plan_for_node(letin, true, src_id, offset)
@@ -1964,7 +1964,7 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
             // VM has always handled this correctly, which makes the walker
             // the engine that is behind here.
             if crate::normalize_env::enabled() {
-                let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+                let src_id = env.source_id();
                 let offset = u32::from(ll.syntax().text_range().start());
                 if let Some(plan) =
                     crate::normalize_env::plan_for_node(ll, true, src_id, offset)
@@ -2588,7 +2588,7 @@ fn eval_attrset(set: &ast::AttrSet, env: &Env) -> Result<Value, EvalError> {
     // records a group only when it has a duplicate static key or a dotted
     // path, so no plan means this group is already built correctly.
     if crate::normalize_env::enabled() {
-        let src_id = CURRENT_SOURCE_ID.with(std::cell::Cell::get);
+        let src_id = env.source_id();
         let offset = u32::from(set.syntax().text_range().start());
         if let Some(plan) =
             crate::normalize_env::plan_for_node(set, is_rec, src_id, offset).map_err(reject)?
