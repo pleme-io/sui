@@ -99,6 +99,12 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                         } else {
                             start.saturating_add(len_i as usize).min(s_len)
                         };
+                        if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
+                            return Err(EvalError::NotImplemented(format!(
+                                "substring {start_i} {len_i} splits a UTF-8 character; sui strings are UTF-8, CppNix's are bytes (subject begins {:?})",
+                                s.chars().take(40).collect::<String>()
+                            )));
+                        }
                         let slice = s[start..end].to_string();
                         match ctx {
                             Some(ctx) => Ok(Value::String(Rc::new(

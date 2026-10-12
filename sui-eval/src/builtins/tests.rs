@@ -2805,6 +2805,13 @@ fn builtins_current_time_is_int() {
 // ── substring ─────────────────────────────────────────
 
 #[test]
+fn builtins_substring_that_splits_a_character_is_refused_not_a_panic() {
+    let err = eval(r#"builtins.substring 0 1 "★ x""#).unwrap_err();
+    assert!(err.to_string().contains("splits a UTF-8 character"), "{err}");
+    assert_eq!(ev(r#"builtins.substring 0 3 "★ x""#), ev(r#""★""#));
+}
+
+#[test]
 fn builtins_substring_basic() {
     assert_eq!(
         ev(r#"builtins.substring 0 5 "hello world""#),

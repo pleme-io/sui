@@ -580,6 +580,11 @@ impl BuiltinRegistry {
                             } else {
                                 start.saturating_add(len_i as usize).min(s_len)
                             };
+                            if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
+                                return Err(VMError::Throw(format!(
+                                    "substring {start_i} {len_i} splits a UTF-8 character; sui strings are UTF-8, CppNix's are bytes"
+                                )));
+                            }
                             Ok(VMValue::String(s[start..end].to_string()))
                         }),
                         arity: 1,
