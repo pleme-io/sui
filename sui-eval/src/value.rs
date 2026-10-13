@@ -2808,31 +2808,107 @@ impl fmt::Debug for WithScope {
     }
 }
 
-/// Inner data for an evaluation environment.
+/// One lexical scope's own bindings: a lambda's formals, a `let`'s names, a
+/// `rec` set's keys. Most frames hold one or two names, so they live inline;
+/// a frame past `FRAME_MAP_AT` names switches to a hash map.
+#[derive(Debug, Clone, Default)]
+enum Frame {
+    #[default]
+    Empty,
+    Small(SmallVec<[(Symbol, Value); 2]>),
+    Map(AttrsMap<Symbol, Value>),
+}
+
+const FRAME_MAP_AT: usize = 12;
+
+impl Frame {
+    fn get(&self, sym: &Symbol) -> Option<&Value> {
+        match self {
+            Frame::Empty => None,
+            Frame::Small(v) => v.iter().find(|(k, _)| k == sym).map(|(_, v)| v),
+            Frame::Map(m) => m.get(sym),
+        }
+    }
+
+    fn insert(&mut self, sym: Symbol, value: Value) {
+        match self {
+            Frame::Empty => {
+                let mut v = SmallVec::new();
+                v.push((sym, value));
+                *self = Frame::Small(v);
+            }
+            Frame::Small(v) => {
+                if let Some(slot) = v.iter_mut().find(|(k, _)| *k == sym) {
+                    slot.1 = value;
+                } else if v.len() < FRAME_MAP_AT {
+                    v.push((sym, value));
+                } else {
+                    let mut m: AttrsMap<Symbol, Value> = v.drain(..).collect();
+                    m.insert(sym, value);
+                    *self = Frame::Map(m);
+                }
+            }
+            Frame::Map(m) => {
+                m.insert(sym, value);
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Frame::Empty => true,
+            Frame::Small(v) => v.is_empty(),
+            Frame::Map(m) => m.is_empty(),
+        }
+    }
+
+    fn keys(&self) -> Box<dyn Iterator<Item = Symbol> + '_> {
+        match self {
+            Frame::Empty => Box::new(std::iter::empty()),
+            Frame::Small(v) => Box::new(v.iter().map(|(k, _)| *k)),
+            Frame::Map(m) => Box::new(m.keys().copied()),
+        }
+    }
+}
+
+/// The `with` scopes in force, innermost first, shared between an env and
+/// every child it spawns.
+#[derive(Debug)]
+struct WithNode {
+    scope: WithScope,
+    next: Option<Rc<WithNode>>,
+}
+
+fn with_iter(head: &Option<Rc<WithNode>>) -> impl Iterator<Item = &WithScope> {
+    std::iter::successors(head.as_deref(), |n| n.next.as_deref()).map(|n| &n.scope)
+}
+
+/// Inner data for an evaluation environment: this scope's own frame plus the
+/// enclosing environment, as in CppNix's `Env { up, values }`.
 ///
-/// Wrapped in `Rc` by [`Env`] so that cloning an `Env` is always a
-/// refcount bump — never a deep copy of the binding map.
-///
-/// Uses a flattened `FxHashMap` for bindings: `child()` clones
-/// the parent's map with O(1) structural sharing instead of building
-/// a linked parent chain. Lookups are a single O(log32 n) probe
-/// instead of walking a chain.
+/// The binding map used to be a persistent `im_rc` HAMT flattened into every
+/// child, so a one-argument lambda call path-copied HAMT nodes (~750 B) per
+/// application; on a NixOS module eval those copies were over half the heap at
+/// peak. A frame holds only what this scope binds, and lookups walk outward.
 #[derive(Debug, Clone, Default)]
 struct EnvInner {
-    bindings: FxHashMap<Symbol, Value>,
-    /// Dynamic `with` scopes, innermost last.
-    with_scopes: Vec<WithScope>,
-    /// Source file currently being evaluated, for relative path
-    /// literals (`./foo.nix`) inside function defaults that get
-    /// evaluated *after* control has left the file scope.
-    eval_file: Option<std::path::PathBuf>,
-    /// The `source_id` of the parse tree this env belongs to. Restored
-    /// on thunk force (in lockstep with `eval_file`) so a lazily-forced
-    /// thunk's idents key `IDENT_CACHE` against the file where the thunk
-    /// was DEFINED, not the ambient source at force time. Without this, a
-    /// cross-file force collides on `(source_id, text_offset)` and returns
-    /// a wrong Symbol (the `parse.nix` `cannot select from null` bug).
+    frame: Frame,
+    parent: Option<Env>,
+    with_scopes: Option<Rc<WithNode>>,
+    eval_file: Option<Rc<std::path::PathBuf>>,
     source_id: u32,
+}
+
+impl EnvInner {
+    fn lexical(&self, sym: &Symbol) -> Option<&Value> {
+        let mut cur = self;
+        loop {
+            if let Some(v) = cur.frame.get(sym) {
+                return Some(v);
+            }
+            cur = &cur.parent.as_ref()?.0;
+        }
+    }
 }
 
 /// Evaluation environment — flattened binding map with structural sharing.
@@ -2870,12 +2946,7 @@ impl Env {
     #[must_use]
     pub fn new() -> Self {
         census::made(&census::ENV_MADE, &census::ENV_LIVE);
-        Self(Rc::new(EnvInner {
-            bindings: FxHashMap::default(),
-            with_scopes: Vec::new(),
-            eval_file: None,
-            source_id: 0,
-        }))
+        Self(Rc::new(EnvInner::default()))
     }
 
     /// Create a child environment that inherits from this one.
@@ -2891,8 +2962,14 @@ impl Env {
         // suspended thunk holds one and nixpkgs makes them constantly. The one
         // structure most worth counting was the one the census could not see.
         census::made(&census::ENV_MADE, &census::ENV_LIVE);
+        let parent = if self.0.frame.is_empty() {
+            self.0.parent.clone()
+        } else {
+            Some(self.clone())
+        };
         Self(Rc::new(EnvInner {
-            bindings: self.0.bindings.clone(), // O(1) structural sharing
+            frame: Frame::Empty,
+            parent,
             with_scopes: self.0.with_scopes.clone(),
             // Children inherit the parent's eval file so that
             // path literals nested deep in let-chains still
@@ -2922,10 +2999,14 @@ impl Env {
             }),
             _ => None,
         };
-        Rc::make_mut(&mut self.0).with_scopes.push(WithScope {
-            value,
-            cached: Rc::new(RefCell::new(pre_cached)),
-        });
+        let inner = Rc::make_mut(&mut self.0);
+        inner.with_scopes = Some(Rc::new(WithNode {
+            scope: WithScope {
+                value,
+                cached: Rc::new(RefCell::new(pre_cached)),
+            },
+            next: inner.with_scopes.take(),
+        }));
         self
     }
 
@@ -2934,7 +3015,7 @@ impl Env {
     /// Uses copy-on-write: if the inner `Rc` is shared, clones the
     /// inner data before mutating.
     pub fn bind(&mut self, name: String, value: Value) {
-        Rc::make_mut(&mut self.0).bindings.insert(intern(&name), value);
+        Rc::make_mut(&mut self.0).frame.insert(intern(&name), value);
     }
 
     /// Bind many names in ONE copy-on-write step: a single `Rc::make_mut` on the
@@ -2949,19 +3030,19 @@ impl Env {
     pub fn bind_many(&mut self, pairs: impl IntoIterator<Item = (String, Value)>) {
         let inner = Rc::make_mut(&mut self.0);
         for (name, value) in pairs {
-            inner.bindings.insert(intern(&name), value);
+            inner.frame.insert(intern(&name), value);
         }
     }
 
     /// Get the eval_file for this environment.
     #[must_use]
     pub fn eval_file(&self) -> Option<&std::path::PathBuf> {
-        self.0.eval_file.as_ref()
+        self.0.eval_file.as_deref()
     }
 
     /// Set the eval_file for this environment.
     pub fn set_eval_file(&mut self, file: Option<std::path::PathBuf>) {
-        Rc::make_mut(&mut self.0).eval_file = file;
+        Rc::make_mut(&mut self.0).eval_file = file.map(Rc::new);
     }
 
     /// The `source_id` of the parse tree this env belongs to (0 = top level).
@@ -2979,19 +3060,32 @@ impl Env {
     /// Number of direct bindings in this environment (debug).
     #[must_use]
     pub fn binding_count(&self) -> usize {
-        self.0.bindings.len()
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut cur = Some(self);
+        while let Some(e) = cur {
+            seen.extend(e.0.frame.keys());
+            cur = e.0.parent.as_ref();
+        }
+        seen.len()
     }
 
     /// First N binding names (debug).
     #[must_use]
     pub fn binding_names_preview(&self, n: usize) -> Vec<String> {
-        self.0.bindings.keys().take(n).map(|s| resolve(*s)).collect()
+        let mut out = Vec::new();
+        let mut cur = Some(self);
+        while let Some(e) = cur {
+            out.extend(e.0.frame.keys().map(resolve));
+            cur = e.0.parent.as_ref();
+        }
+        out.truncate(n);
+        out
     }
 
     /// Number of `with` scopes (debug).
     #[must_use]
     pub fn with_scope_count(&self) -> usize {
-        self.0.with_scopes.len()
+        with_iter(&self.0.with_scopes).count()
     }
 
     /// Lookup in LEXICAL scope only (no with-scopes).
@@ -3000,7 +3094,7 @@ impl Env {
     #[must_use]
     pub fn lookup_lexical(&self, name: &str) -> Option<Value> {
         let sym = intern(name);
-        self.0.bindings.get(&sym).cloned()
+        self.0.lexical(&sym).cloned()
     }
 
     /// Lookup in LEXICAL scope only, by pre-interned [`Symbol`] — the
@@ -3015,7 +3109,7 @@ impl Env {
     /// back to today's exact runtime path.
     #[must_use]
     pub fn lookup_lexical_sym(&self, sym: Symbol) -> Option<Value> {
-        self.0.bindings.get(&sym).cloned()
+        self.0.lexical(&sym).cloned()
     }
 
     /// Look up a name using ONLY with-scope caches (no forcing).
@@ -3023,7 +3117,7 @@ impl Env {
     /// Used by maybe_thunk to resolve with-scope idents without forcing fixpoints.
     #[must_use]
     pub fn lookup_with_cache_only(&self, name: &str) -> Option<Value> {
-        for scope in self.0.with_scopes.iter().rev() {
+        for scope in with_iter(&self.0.with_scopes) {
             let cache = scope.cached.borrow();
             if let Some(ref attrs) = *cache {
                 if let Some(v) = attrs.get(name) {
@@ -3056,7 +3150,7 @@ impl Env {
     /// Returns None if there are no with-scopes.
     #[must_use]
     pub fn innermost_with_scope(&self) -> Option<(Rc<RefCell<Option<NixAttrs>>>, Value)> {
-        self.0.with_scopes.last().map(|scope| {
+        with_iter(&self.0.with_scopes).next().map(|scope| {
             (scope.cached.clone(), scope.value.clone())
         })
     }
@@ -3088,10 +3182,10 @@ impl Env {
     #[must_use]
     pub fn lookup_fresh(&self, name: &str) -> Option<Value> {
         let sym = intern(name);
-        if let Some(v) = self.0.bindings.get(&sym) {
+        if let Some(v) = self.0.lexical(&sym) {
             return Some(v.clone());
         }
-        for scope in self.0.with_scopes.iter().rev() {
+        for scope in with_iter(&self.0.with_scopes) {
             if let Ok(Value::Attrs(attrs)) = crate::eval::force_value(&scope.value) {
                 if let Some(v) = attrs.get_sym(&sym) {
                     // Refresh the stale cache with the completed scope so a later
@@ -3108,11 +3202,11 @@ impl Env {
     #[must_use]
     pub fn lookup_fast(&self, sym: Symbol, name: &str) -> Option<Value> {
         crate::perf::inc(crate::perf::Counter::EnvLookup);
-        if let Some(v) = self.0.bindings.get(&sym) {
+        if let Some(v) = self.0.lexical(&sym) {
             return Some(v.clone());
         }
         // 2. With-scope lookup — iterate innermost-first (reverse order).
-        for scope in self.0.with_scopes.iter().rev() {
+        for scope in with_iter(&self.0.with_scopes) {
             // Fast path: use cached forced attrset
             {
                 let cache = scope.cached.borrow();
@@ -3205,11 +3299,11 @@ impl Env {
     pub fn lookup_sym(&self, sym: Symbol) -> Option<Value> {
         crate::perf::inc(crate::perf::Counter::EnvLookup);
         // 1. Flat lexical lookup — single O(1) hash + O(log32 n) probe.
-        if let Some(v) = self.0.bindings.get(&sym) {
+        if let Some(v) = self.0.lexical(&sym) {
             return Some(v.clone());
         }
         // 2. With-scope lookup — iterate innermost-first (reverse order).
-        for scope in self.0.with_scopes.iter().rev() {
+        for scope in with_iter(&self.0.with_scopes) {
             // Fast path: use cached forced attrset
             {
                 let cache = scope.cached.borrow();
@@ -5022,7 +5116,7 @@ mod tests {
         attrs.insert("x".to_string(), Value::Int(42));
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // The binding map itself should not contain "x"
-        assert!(env.0.bindings.get(&intern("x")).is_none());
+        assert!(env.0.lexical(&intern("x")).is_none());
         // But lookup should find it via with-scope
         assert_eq!(env.lookup("x"), Some(Value::Int(42)));
     }
@@ -5033,7 +5127,7 @@ mod tests {
         let mut env = Env::new();
         env.bind("x".to_string(), Value::Int(42));
         // with_scopes should be empty
-        assert!(env.0.with_scopes.is_empty());
+        assert!(env.0.with_scopes.is_none());
         // But lookup finds it via the binding map
         assert_eq!(env.lookup("x"), Some(Value::Int(42)));
     }
@@ -6301,7 +6395,7 @@ mod tests {
             Env::new(),
         );
         let env = Env::new().with_scope(Value::Thunk(thunk));
-        let scope = &env.0.with_scopes[0];
+        let scope = &with_iter(&env.0.with_scopes).next().unwrap();
         assert!(scope.cached.borrow().is_none());
     }
 
@@ -6311,7 +6405,7 @@ mod tests {
         let mut attrs = NixAttrs::new();
         attrs.insert("x".to_string(), Value::Int(1));
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
-        let scope = &env.0.with_scopes[0];
+        let scope = &with_iter(&env.0.with_scopes).next().unwrap();
         assert!(scope.cached.borrow().is_some());
     }
 
@@ -6321,10 +6415,10 @@ mod tests {
         attrs.insert("x".to_string(), Value::Int(42));
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // Cache is pre-populated for concrete attrsets.
-        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+        assert!(with_iter(&env.0.with_scopes).next().unwrap().cached.borrow().is_some());
         // Lookup hits the pre-populated cache.
         let _ = env.lookup("x");
-        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+        assert!(with_iter(&env.0.with_scopes).next().unwrap().cached.borrow().is_some());
     }
 
     #[test]
@@ -6334,7 +6428,7 @@ mod tests {
         let env = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         // First lookup populates cache.
         assert_eq!(env.lookup("x"), Some(Value::Int(10)));
-        assert!(env.0.with_scopes[0].cached.borrow().is_some());
+        assert!(with_iter(&env.0.with_scopes).next().unwrap().cached.borrow().is_some());
         // Second lookup should still work (reads from cache).
         assert_eq!(env.lookup("x"), Some(Value::Int(10)));
     }
@@ -6349,7 +6443,7 @@ mod tests {
         let _ = parent.lookup("shared");
         // Child's with-scope cache should share the same Rc, so
         // it should also show cached.
-        assert!(child.0.with_scopes[0].cached.borrow().is_some());
+        assert!(with_iter(&child.0.with_scopes).next().unwrap().cached.borrow().is_some());
     }
 
     #[test]
@@ -6666,8 +6760,8 @@ mod tests {
     #[test]
     fn env_new_creates_empty_bindings() {
         let env = Env::new();
-        assert!(env.0.bindings.is_empty());
-        assert!(env.0.with_scopes.is_empty());
+        assert!(env.0.frame.is_empty());
+        assert!(env.0.with_scopes.is_none());
         assert!(env.eval_file().is_none());
     }
 
@@ -6688,9 +6782,36 @@ mod tests {
         // Child sees parent's bindings.
         assert_eq!(child.lookup("a"), Some(Value::Int(1)));
         assert_eq!(child.lookup("b"), Some(Value::Int(2)));
-        // Verify bindings are in child's own map (flattened).
-        let sym_a = intern("a");
-        assert!(child.0.bindings.contains_key(&sym_a));
+        assert!(child.0.frame.get(&intern("a")).is_none());
+    }
+
+    #[test]
+    fn env_frame_holds_only_its_own_names() {
+        let mut parent = Env::new();
+        for i in 0..40 {
+            parent.bind(format!("p{i}"), Value::Int(i));
+        }
+        let mut child = parent.child();
+        child.bind("x".to_string(), Value::Int(-1));
+        assert!(matches!(&child.0.frame, Frame::Small(v) if v.len() == 1));
+        assert!(matches!(&parent.0.frame, Frame::Map(m) if m.len() == 40));
+        assert_eq!(child.lookup("p39"), Some(Value::Int(39)));
+        assert_eq!(child.binding_count(), 41);
+    }
+
+    #[test]
+    fn env_inner_stays_a_small_allocation() {
+        assert!(std::mem::size_of::<EnvInner>() <= 96, "{}", std::mem::size_of::<EnvInner>());
+    }
+
+    #[test]
+    fn env_inner_frame_shadows_outer() {
+        let mut parent = Env::new();
+        parent.bind("x".to_string(), Value::Int(1));
+        let mut child = parent.child();
+        child.bind("x".to_string(), Value::Int(2));
+        assert_eq!(child.lookup("x"), Some(Value::Int(2)));
+        assert_eq!(parent.lookup("x"), Some(Value::Int(1)));
     }
 
     #[test]
@@ -6700,7 +6821,7 @@ mod tests {
         let parent = Env::new().with_scope(Value::Attrs(Rc::new(attrs)));
         let child = parent.child();
         // Child should have the same with_scopes as parent.
-        assert_eq!(child.0.with_scopes.len(), parent.0.with_scopes.len());
+        assert_eq!(child.with_scope_count(), parent.with_scope_count());
         assert_eq!(child.lookup("ws"), Some(Value::Int(10)));
     }
 
