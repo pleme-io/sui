@@ -258,6 +258,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 }
             }
         }
+        crate::path::ensure_in_store(&src.store_path, &hash_root)?;
 
         // CppNix's `builtins.path` returns a STRING carrying the store
         // path as opaque (`Plain`) context — NOT a Path value. This is
@@ -333,6 +334,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                 message: e.to_string(),
             }
         })?;
+        crate::path::ensure_in_store(&s.store_path, &hash_root)?;
         Ok(Value::Path(Box::new(SmolStr::from(s.store_path.as_str()))))
     });
 }
@@ -509,7 +511,7 @@ fn materialize_filtered(
 
 /// Read a UTF-8 file, consulting the sui-tofile-cache fallback when
 /// the primary path is missing.  Pairs with
-/// [`super::misc::write_store_text_object`] (toFile) so that
+/// older sui builds' `builtins.toFile` fallback so that
 /// `readFile (toFile name content) == content` even on hosts where
 /// the operator can't write to `/nix/store` directly.
 fn read_file_with_tofile_fallback(path: &str) -> Result<String, std::io::Error> {

@@ -361,6 +361,36 @@ impl WorkerConn {
         self.read_str()
     }
 
+    /// `AddToStore` of a NAR as a recursive sha256 content-addressed path
+    /// with no references, the way CppNix copies a source path into the
+    /// store. Returns the store path the daemon computed.
+    ///
+    /// # Errors
+    /// Any protocol failure or daemon refusal.
+    pub fn add_nar_to_store(&mut self, name: &str, nar: &[u8]) -> Result<String, WorkerError> {
+        self.call(WorkerOp::AddToStore, |c| {
+            c.str(name)?;
+            c.str("fixed:r:sha256")?;
+            wire::write_string_list(&mut c.writer, &[] as &[String])?;
+            c.u64(0)?;
+            for chunk in nar.chunks(1 << 20) {
+                c.u64(chunk.len() as u64)?;
+                c.writer.write_all(chunk)?;
+            }
+            c.u64(0)
+        })?;
+        let path = self.read_str()?;
+        let _deriver = self.read_str()?;
+        let _nar_hash = self.read_str()?;
+        let _refs = wire::read_string_list(&mut self.reader)?;
+        let _registration_time = self.read_u64()?;
+        let _nar_size = self.read_u64()?;
+        let _ultimate = self.read_u64()?;
+        let _sigs = wire::read_string_list(&mut self.reader)?;
+        let _ca = self.read_str()?;
+        Ok(path)
+    }
+
     /// `BuildPaths [<drv>!*]` in normal mode.
     ///
     /// # Errors

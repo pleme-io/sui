@@ -93,6 +93,26 @@ pub fn add_text_to_store(
     Ok(stored)
 }
 
+/// Add `path` to the store as a source unless the daemon already holds it,
+/// and keep it rooted for the life of the process.
+///
+/// # Errors
+/// Any [`WorkerError`], or a NAR that cannot be packed.
+pub fn ensure_source(socket: &Path, store_path: &str, dir: &Path, name: &str) -> Result<String, WorkerError> {
+    let stored = with_session(socket, |c| {
+        if c.is_valid_path(store_path)? {
+            c.add_temp_root(store_path)?;
+            return Ok(store_path.to_string());
+        }
+        let mut nar = Vec::new();
+        sui_compat::nar::NarWriter::write_path(&mut nar, dir)
+            .map_err(|e| WorkerError::Protocol(format!("NAR of {}: {e}", dir.display())))?;
+        c.add_nar_to_store(name, &nar)
+    })?;
+    remember(socket, &stored);
+    Ok(stored)
+}
+
 /// Keep `path` alive against garbage collection for the life of the process.
 /// The path need not exist yet: rooting an output before building it closes
 /// the window between the build finishing and the caller linking it.

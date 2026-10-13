@@ -224,51 +224,106 @@ pub fn write_drv_to(
     drv_path: &str,
     drv: &Derivation,
 ) -> Result<DrvWritten, DrvWriteError> {
+    write_text_to(dest, drv_path, drv.serialize().as_bytes(), &drv_references(drv))
+}
+
+/// Add a text store object (a `.drv`, a `builtins.toFile`) at `path`, which
+/// sui computed from `text` and `references`, to wherever [`detect_destination`]
+/// says objects go. Read-only mode writes nothing.
+///
+/// # Errors
+/// As [`write_drv`].
+pub fn write_text(path: &str, text: &[u8], references: &[String]) -> Result<DrvWritten, DrvWriteError> {
+    if process_mode() == DrvWriteMode::ReadOnly {
+        return Ok(DrvWritten::NotWritten);
+    }
+    let dest = detect_destination(path)?;
+    write_text_to(&dest, path, text, references)
+}
+
+fn write_text_to(
+    dest: &DrvDestination,
+    path: &str,
+    text: &[u8],
+    references: &[String],
+) -> Result<DrvWritten, DrvWriteError> {
     match dest {
         DrvDestination::Dir(dir) | DrvDestination::DirectStore(dir) => {
-            let base = Path::new(drv_path).file_name().unwrap_or_default();
+            let base = Path::new(path).file_name().unwrap_or_default();
             let file = dir.join(base);
             if file.exists() {
                 return Ok(DrvWritten::File(file));
             }
             let file_err = |cause| DrvWriteError::File {
-                drv_path: drv_path.to_string(),
+                drv_path: path.to_string(),
                 file: file.clone(),
                 cause,
             };
             std::fs::create_dir_all(dir).map_err(file_err)?;
-            std::fs::write(&file, drv.serialize().as_bytes()).map_err(file_err)?;
+            std::fs::write(&file, text).map_err(file_err)?;
             Ok(DrvWritten::File(file))
         }
         DrvDestination::Daemon(socket) => {
             static ADDED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
             let mut added = ADDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if added.as_ref().is_some_and(|s| s.contains(drv_path)) {
+            if added.as_ref().is_some_and(|s| s.contains(path)) {
                 return Ok(DrvWritten::Daemon);
             }
-            let base = Path::new(drv_path)
+            let base = Path::new(path)
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
             let name = sui_compat::source::strip_store_hash_prefix(base);
-            let text = drv.serialize();
-            let refs = drv_references(drv);
-            let stored = crate::daemon_session::add_text_to_store(socket, name, text.as_bytes(), &refs)
-            .map_err(|cause| DrvWriteError::Daemon {
-                drv_path: drv_path.to_string(),
-                socket: socket.clone(),
-                cause,
-            })?;
-            if stored != drv_path {
+            let stored = crate::daemon_session::add_text_to_store(socket, name, text, references)
+                .map_err(|cause| DrvWriteError::Daemon {
+                    drv_path: path.to_string(),
+                    socket: socket.clone(),
+                    cause,
+                })?;
+            if stored != path {
                 return Err(DrvWriteError::PathMismatch {
-                    computed: drv_path.to_string(),
+                    computed: path.to_string(),
                     daemon: stored,
                 });
             }
-            added.get_or_insert_with(HashSet::new).insert(drv_path.to_string());
+            added.get_or_insert_with(HashSet::new).insert(path.to_string());
             Ok(DrvWritten::Daemon)
         }
     }
+}
+
+/// Put a source path sui hashed (a path value interpolated into a string,
+/// `builtins.path`, `filterSource`) into the store, as CppNix's
+/// `copyPathToStore` does, so a `.drv` naming it as an input source is
+/// accepted. `dir` holds the bytes and `store_path` is what sui computed from
+/// them. A store sui only writes `.drv` files into (a directory, a writable
+/// single-user store) and read-only mode take nothing.
+///
+/// # Errors
+/// [`DrvWriteError::Daemon`] when the daemon refuses, and
+/// [`DrvWriteError::PathMismatch`] when it stores the bytes elsewhere.
+pub fn ensure_source(store_path: &str, dir: &Path) -> Result<(), DrvWriteError> {
+    if process_mode() == DrvWriteMode::ReadOnly {
+        return Ok(());
+    }
+    static ENSURED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    let mut ensured = ENSURED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ensured.as_ref().is_some_and(|s| s.contains(store_path)) {
+        return Ok(());
+    }
+    let DrvDestination::Daemon(socket) = detect_destination(store_path)? else {
+        return Ok(());
+    };
+    let base = Path::new(store_path).file_name().and_then(|s| s.to_str()).unwrap_or_default();
+    let name = sui_compat::source::strip_store_hash_prefix(base);
+    let stored = crate::daemon_session::ensure_source(&socket, store_path, dir, name).map_err(|cause| {
+        DrvWriteError::Daemon { drv_path: store_path.to_string(), socket: socket.clone(), cause }
+    })?;
+    if stored != store_path {
+        return Err(DrvWriteError::PathMismatch { computed: store_path.to_string(), daemon: stored });
+    }
+    ensured.get_or_insert_with(HashSet::new).insert(store_path.to_string());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -317,6 +372,28 @@ pub(crate) mod tests {
         let file = dir.path().join("cccccccccccccccccccccccccccccccc-t.drv");
         assert_eq!(out, DrvWritten::File(file.clone()));
         assert_eq!(std::fs::read_to_string(file).unwrap(), tiny_drv().serialize());
+    }
+
+    #[test]
+    fn a_hashed_source_reaches_the_store_through_the_daemon() {
+        let socket = Path::new(DEFAULT_DAEMON_SOCKET);
+        if !socket.exists() {
+            eprintln!("no nix daemon at {DEFAULT_DAEMON_SOCKET}; skipped");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sui-ensure-source-probe");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::fs::write(&file, format!("{nonce}\n")).unwrap();
+        let src = sui_compat::source::nar_hash_source_tree(&file, "sui-ensure-source-probe").unwrap();
+        assert!(!Path::new(&src.store_path).exists());
+        crate::daemon_session::ensure_source(socket, &src.store_path, &file, "sui-ensure-source-probe").unwrap();
+        assert!(Path::new(&src.store_path).exists(), "{}", src.store_path);
+        let again = crate::daemon_session::ensure_source(socket, &src.store_path, &file, "sui-ensure-source-probe").unwrap();
+        assert_eq!(again, src.store_path);
     }
 
     #[test]

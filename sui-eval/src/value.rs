@@ -3980,6 +3980,7 @@ impl Value {
                                 canon.display()
                             ))
                         })?;
+                    crate::path::ensure_in_store(&src.store_path, &canon)?;
                     ctx.add_plain(src.store_path.clone());
                     src.store_path
                 } else {

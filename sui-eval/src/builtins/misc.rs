@@ -311,7 +311,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     format!("toFile: store-path computation failed: {e}"),
                 ))?
                 .to_absolute_path();
-        write_store_text_object(&store_path, content.as_bytes())
+        sui_store::drv_write::write_text(&store_path, content.as_bytes(), &references)
             .map_err(|e| EvalError::IoError {
                 context: format!("toFile {store_path}"),
                 message: e.to_string(),
@@ -330,39 +330,4 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             ctx,
         ))))
     });
-}
-
-/// Try to materialize `content` at `store_path`, falling back to a
-/// per-user sui-tofile-cache when /nix/store is read-only.  Idempotent:
-/// writes the file only when missing (or, in the fallback, only when
-/// the cached basename hasn't been materialized yet this session).
-///
-/// Pairs with [`read_store_text_object`] in `paths.rs`, which
-/// transparently consults the same fallback location when reading.
-pub(crate) fn write_store_text_object(
-    store_path: &str,
-    content: &[u8],
-) -> Result<(), std::io::Error> {
-    let primary = std::path::Path::new(store_path);
-    if primary.exists() {
-        return Ok(());
-    }
-    match std::fs::write(primary, content) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            let fallback_dir = std::env::temp_dir().join("sui-tofile-cache");
-            std::fs::create_dir_all(&fallback_dir)?;
-            let basename = primary
-                .file_name()
-                .ok_or_else(|| std::io::Error::other(
-                    format!("toFile: cannot derive basename from {store_path}"),
-                ))?;
-            let fallback_path = fallback_dir.join(basename);
-            if !fallback_path.exists() {
-                std::fs::write(&fallback_path, content)?;
-            }
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
 }

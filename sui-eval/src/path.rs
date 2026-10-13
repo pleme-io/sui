@@ -680,3 +680,12 @@ mod tests {
         );
     }
 }
+
+/// Copy a hashed source into the store, as CppNix's `copyPathToStore` does on
+/// every path coercion, so a derivation naming it as an input is accepted.
+pub(crate) fn ensure_in_store(store_path: &str, dir: &Path) -> Result<(), crate::value::EvalError> {
+    sui_store::drv_write::ensure_source(store_path, dir).map_err(|e| crate::value::EvalError::IoError {
+        context: format!("copying {} to the store", dir.display()),
+        message: e.to_string(),
+    })
+}
