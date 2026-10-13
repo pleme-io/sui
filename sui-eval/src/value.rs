@@ -3983,7 +3983,6 @@ impl Value {
                     ctx.add_plain(src.store_path.clone());
                     src.store_path
                 } else {
-                    ctx.add_plain(raw.to_string());
                     raw.to_string()
                 }
             }
@@ -6018,7 +6017,7 @@ mod tests {
         let v = Value::Path(Box::new("/foo".into()));
         let (s, ctx) = v.coerce_to_string().unwrap();
         assert_eq!(s, "/foo");
-        assert!(!ctx.is_empty()); // should add a Plain context element
+        assert!(ctx.is_empty());
     }
 
     #[test]

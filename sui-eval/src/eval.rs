@@ -1990,7 +1990,11 @@ fn eval_expr_inner(expr: &ast::Expr, env: &Env) -> Result<Value, EvalError> {
                 ));
         }
 
-        ast::Expr::CurPos(_) => return Err(EvalError::NotImplemented("__curPos".to_string())),
+        ast::Expr::CurPos(c) => {
+            let offset = u32::from(c.syntax().text_range().start());
+            return Ok(crate::pos::resolve(current_eval_file().as_deref(), offset)
+                .map_or(Value::Null, crate::pos::ResolvedPos::into_value));
+        }
         ast::Expr::Error(_) => return Err(EvalError::ParseError("parse error node".to_string())),
     } // match
     } // loop — unreachable, all arms either return or continue
@@ -7450,6 +7454,35 @@ mod tests {
         let bol = body[..off].rfind('\n').map_or(0, |i| i + 1);
         assert_eq!(*attrs.get("line").unwrap(), Value::Int(1));
         assert_eq!(*attrs.get("column").unwrap(), Value::Int((off - bol) as i64 + 1));
+    }
+
+    #[test]
+    fn cur_pos_reports_file_line_column_as_cppnix() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "{\n  a = 1;\n  p = __curPos;\n}\n";
+        let f = dir.path().join("cp.nix");
+        std::fs::write(&f, body).unwrap();
+        let v = eval(&format!("(import {}).p", f.display())).unwrap();
+        let attrs = match v {
+            Value::Attrs(a) => a,
+            o => panic!("expected attrs, got {o:?}"),
+        };
+        assert_eq!(*attrs.get("line").unwrap(), Value::Int(3));
+        assert_eq!(*attrs.get("column").unwrap(), Value::Int(7));
+        let file = force_value(attrs.get("file").unwrap()).unwrap();
+        assert!(file.as_string().unwrap().ends_with("cp.nix"), "{file:?}");
+    }
+
+    #[test]
+    fn cur_pos_without_a_file_is_null() {
+        assert_eq!(eval("__curPos").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn to_string_of_a_path_carries_no_context() {
+        let v = eval("builtins.attrNames (builtins.getContext (toString /nix/store/00000000000000000000000000000000-source/nixos/x.nix))").unwrap();
+        let v = force_value(&v).unwrap();
+        assert!(v.as_list().unwrap().is_empty(), "{v:?}");
     }
 
     /// Corpus gate: every attribute-BINDING form carries a position.

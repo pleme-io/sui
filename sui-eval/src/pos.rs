@@ -153,6 +153,17 @@ pub struct ResolvedPos {
     pub column: u64,
 }
 
+impl ResolvedPos {
+    #[must_use]
+    pub fn into_value(self) -> crate::value::Value {
+        let mut attrs = crate::value::NixAttrs::new();
+        attrs.insert("file".to_string(), crate::value::Value::string(self.file));
+        attrs.insert("line".to_string(), crate::value::Value::Int(self.line as i64));
+        attrs.insert("column".to_string(), crate::value::Value::Int(self.column as i64));
+        crate::value::Value::Attrs(Rc::new(attrs))
+    }
+}
+
 /// Resolve `(file, offset)` to a [`ResolvedPos`] — the file is lifted from a
 /// fetcher-cache path to its `/nix/store/<h>-source` store path via
 /// [`crate::path::dematerialize`]. Returns `None` when `file` is `None` (a

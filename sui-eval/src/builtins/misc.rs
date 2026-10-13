@@ -203,16 +203,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
             // paths nixpkgs exercises (it always passes an attrset).
             _ => return Ok(Value::Null),
         };
-        match attrs.pos_for(&name) {
-            Some(p) => {
-                let mut result = NixAttrs::new();
-                result.insert("file".to_string(), Value::string(p.file));
-                result.insert("line".to_string(), Value::Int(p.line as i64));
-                result.insert("column".to_string(), Value::Int(p.column as i64));
-                Ok(Value::Attrs(Rc::new(result)))
-            }
-            None => Ok(Value::Null),
-        }
+        Ok(attrs.pos_for(&name).map_or(Value::Null, crate::pos::ResolvedPos::into_value))
     });
 
     // findFile (curried)
