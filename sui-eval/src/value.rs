@@ -1296,7 +1296,7 @@ pub enum ThunkRepr {
         /// Shared via Rc<RefCell> — all idents from the same `with` scope
         /// reference the same cache.  When ANY lookup forces the scope,
         /// the cache is populated and all subsequent WithIdent forces are O(1).
-        scope_cache: Rc<RefCell<Option<NixAttrs>>>,
+        scope_cache: Rc<RefCell<Option<Rc<NixAttrs>>>>,
         /// The scope value (for initial force if cache is empty)
         scope_value: Value,
         /// Fallback: the full env for lexical+outer-scope lookup if the
@@ -1451,7 +1451,7 @@ impl Thunk {
     /// When forced: O(1) hash lookup in the cache, no Env traversal.
     pub fn new_with_ident(
         name: SmolStr,
-        scope_cache: Rc<RefCell<Option<NixAttrs>>>,
+        scope_cache: Rc<RefCell<Option<Rc<NixAttrs>>>>,
         scope_value: Value,
         env: Env,
     ) -> Self {
@@ -2061,7 +2061,7 @@ impl Thunk {
                 // Cache not populated yet — force the scope value to populate it
                 if let Ok(forced) = crate::eval::force_value(&scope_value) {
                     if let Value::Attrs(ref attrs) = forced {
-                        *scope_cache.borrow_mut() = Some((**attrs).clone());
+                        *scope_cache.borrow_mut() = Some(Rc::clone(attrs));
                         if let Some(v) = attrs.get(&name) {
                             let value = v.clone();
                             unsafe { self.store_evaluated(&value) };
@@ -2796,7 +2796,7 @@ struct WithScope {
     value: Value,
     /// Cached forced attrset.  Shared via Rc so child environments
     /// benefit from a parent having already forced the scope.
-    cached: Rc<RefCell<Option<NixAttrs>>>,
+    cached: Rc<RefCell<Option<Rc<NixAttrs>>>>,
 }
 
 impl fmt::Debug for WithScope {
@@ -2993,9 +2993,9 @@ impl Env {
     pub fn with_scope(mut self, value: Value) -> Self {
         // Pre-populate cache if the value is already resolved
         let pre_cached = match &value {
-            Value::Attrs(attrs) => Some((**attrs).clone()),
+            Value::Attrs(attrs) => Some(Rc::clone(attrs)),
             Value::Thunk(thunk) => thunk.peek().and_then(|v| {
-                if let Concrete::Attrs(attrs) = v { Some((**attrs).clone()) } else { None }
+                if let Concrete::Attrs(attrs) = v { Some(Rc::clone(attrs)) } else { None }
             }),
             _ => None,
         };
@@ -3130,14 +3130,14 @@ impl Env {
                 if let Some(cached_val) = thunk.peek() {
                     if let Concrete::Attrs(ref attrs) = *cached_val {
                         // Populate the with-scope cache for future lookups
-                        *scope.cached.borrow_mut() = Some((**attrs).clone());
+                        *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
                         if let Some(v) = attrs.get(name) {
                             return Some(v.clone());
                         }
                     }
                 }
             } else if let Value::Attrs(ref attrs) = scope.value {
-                *scope.cached.borrow_mut() = Some((**attrs).clone());
+                *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
                 if let Some(v) = attrs.get(name) {
                     return Some(v.clone());
                 }
@@ -3149,7 +3149,7 @@ impl Env {
     /// Get the innermost with-scope's cache and value for creating WithIdent thunks.
     /// Returns None if there are no with-scopes.
     #[must_use]
-    pub fn innermost_with_scope(&self) -> Option<(Rc<RefCell<Option<NixAttrs>>>, Value)> {
+    pub fn innermost_with_scope(&self) -> Option<(Rc<RefCell<Option<Rc<NixAttrs>>>>, Value)> {
         with_iter(&self.0.with_scopes).next().map(|scope| {
             (scope.cached.clone(), scope.value.clone())
         })
@@ -3190,7 +3190,7 @@ impl Env {
                 if let Some(v) = attrs.get_sym(&sym) {
                     // Refresh the stale cache with the completed scope so a later
                     // lookup of a sibling name also sees it.
-                    *scope.cached.borrow_mut() = Some((*attrs).clone());
+                    *scope.cached.borrow_mut() = Some(attrs.clone());
                     return Some(v.clone());
                 }
             }
@@ -3225,8 +3225,8 @@ impl Env {
                 Value::Attrs(attrs) => {
                     // Already concrete — cache and use directly
                     crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
-                    *scope.cached.borrow_mut() = Some((**attrs).clone());
-                    Some((**attrs).clone())
+                    *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
+                    Some(Rc::clone(attrs))
                 }
                 Value::Thunk(thunk) => {
                     // Check if the thunk is already evaluated (OnceCell cache)
@@ -3234,8 +3234,8 @@ impl Env {
                     if let Some(cached_val) = thunk.peek() {
                         if let Concrete::Attrs(ref attrs) = *cached_val {
                             crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
-                            *scope.cached.borrow_mut() = Some((**attrs).clone());
-                            Some((**attrs).clone())
+                            *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
+                            Some(Rc::clone(attrs))
                         } else {
                             None
                         }
@@ -3254,8 +3254,8 @@ impl Env {
                             Ok(forced) => {
                                 if let Value::Attrs(ref attrs) = forced {
                                     crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
-                                    *scope.cached.borrow_mut() = Some((**attrs).clone());
-                                    Some((**attrs).clone())
+                                    *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
+                                    Some(Rc::clone(attrs))
                                 } else {
                                     None
                                 }
@@ -3270,8 +3270,8 @@ impl Env {
                         Ok(forced) => {
                             if let Value::Attrs(ref attrs) = forced {
                                 crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
-                                *scope.cached.borrow_mut() = Some((**attrs).clone());
-                                Some((**attrs).clone())
+                                *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
+                                Some(Rc::clone(attrs))
                             } else {
                                 None
                             }
@@ -3319,7 +3319,7 @@ impl Env {
                 if let Value::Attrs(ref attrs) = forced {
                     let result = attrs.get_sym(&sym).cloned();
                     crate::perf::inc(crate::perf::Counter::WithScopeCacheClone);
-                    *scope.cached.borrow_mut() = Some((**attrs).clone());
+                    *scope.cached.borrow_mut() = Some(Rc::clone(attrs));
                     if result.is_some() {
                         return result;
                     }
