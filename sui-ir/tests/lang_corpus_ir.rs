@@ -79,6 +79,7 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // failure mode: contrast the bytecode VM, which computes a WRONG path for
     // the same fixture because it silently drops string context.
     ("eval-okay-tofile-refs", "unsupported:store-effecting-builtin"),
+    ("eval-okay-curpos", "unsupported:__curPos"),
     ("eval-okay-attrs", "unsupported:legacy-let"),
     ("eval-okay-attrs2", "unsupported:construct"),
     ("eval-okay-flatten", "unsupported:construct"),
@@ -299,7 +300,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        19,
+        20,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means eval_ir regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \

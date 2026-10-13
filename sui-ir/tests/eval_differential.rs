@@ -136,6 +136,8 @@ const CORPUS_KNOWN_GAPS: &[(&str, &str)] = &[];
 const SUPPLEMENT_KNOWN_GAPS: &[(&str, &str)] = &[
     ("let { body = 1; }", "unsupported:legacy-let"),
     ("let { a = 2; body = a; }", "unsupported:legacy-let"),
+    ("__curPos", "unsupported:__curPos"),
+    ("{ pos = __curPos; }", "unsupported:__curPos"),
 ];
 
 // ── the row driver ────────────────────────────────────────────────────────

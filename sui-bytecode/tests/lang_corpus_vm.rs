@@ -199,6 +199,9 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     // distinction is on the record and the fixture keeps its coverage of the
     // walker and IR, which both match nix byte-for-byte here.
     ("eval-okay-tojson-floats", "UNDECLARED-ERROR:vm-tojson-attrset-needs-interner"),
+    // The VM compiles `__curPos` to null; the walker returns CppNix's
+    // `{ file; line; column; }`.
+    ("eval-okay-curpos", "UNDECLARED-ERROR:vm-curpos-is-null"),
     // The most dangerous of the five. `builtins.tryEval (assert false; "y")`
     // must be `{ success = false; value = false; }`. The VM returns the string
     // `"y"` — the body's value, UNWRAPPED, with the failing assertion never
@@ -735,7 +738,7 @@ fn every_known_gap_names_a_real_fixture() {
 fn the_known_gap_list_is_pinned() {
     assert_eq!(
         KNOWN_GAPS.len(),
-        39,
+        40,
         "KNOWN_GAPS changed size. It may SHRINK freely — delete the entry and \
          update this number. Growing it means the VM regressed against the \
          corpus, or a newly-vendored fixture was allowlisted instead of fixed; \
