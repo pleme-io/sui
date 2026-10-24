@@ -106,9 +106,40 @@
           { flake = lspServer; attr = "sui-lsp"; }
           { flake = portoServer; attr = "porto"; }
         ];
+
+      asNixNames = [
+        "nix"
+        "nix-build"
+        "nix-store"
+        "nix-env"
+        "nix-shell"
+        "nix-instantiate"
+        "nix-collect-garbage"
+        "nix-hash"
+        "nix-copy-closure"
+        "nix-channel"
+        "nix-daemon"
+        "nix-prefetch-url"
+        "darwin-rebuild"
+        "nixos-rebuild"
+      ];
+
+      withAsNix = builtins.mapAttrs (
+        sys: pkgsOfSys:
+        pkgsOfSys
+        // {
+          sui-as-nix = substrate.inputs.nixpkgs.legacyPackages.${sys}.linkFarm "sui-as-nix" (
+            map (n: {
+              name = "bin/${n}";
+              path = "${pkgsOfSys.sui}/bin/sui";
+            }) ([ "sui" ] ++ asNixNames)
+          );
+        }
+      ) allPackages;
     in
     base // {
-      packages = allPackages;
+      packages = withAsNix;
+      darwinModules.as-nix = import ./module/darwin-as-nix.nix;
 
       # The NixOS activation arm, proven in a VM (nix/tests/nixos-switch.nix).
       # Linux only: a nixosTest needs a Linux builder with kvm.

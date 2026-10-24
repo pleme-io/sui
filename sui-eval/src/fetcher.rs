@@ -850,6 +850,7 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, FetchError> {
     // failure, which is exactly what `FetchError::Download` should mean.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
         .build()
         .into();
     let mut req = agent.get(url);

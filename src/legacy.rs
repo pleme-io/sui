@@ -44,6 +44,8 @@ pub enum LegacyCmd {
     Channel,
     Daemon,
     PrefetchUrl,
+    DarwinRebuild,
+    NixosRebuild,
 }
 
 impl LegacyCmd {
@@ -63,6 +65,8 @@ impl LegacyCmd {
             Self::Channel         => "nix-channel",
             Self::Daemon          => "nix-daemon",
             Self::PrefetchUrl     => "nix-prefetch-url",
+            Self::DarwinRebuild   => "darwin-rebuild",
+            Self::NixosRebuild    => "nixos-rebuild",
         }
     }
 
@@ -73,7 +77,7 @@ impl LegacyCmd {
             Self::Build, Self::Store, Self::Env, Self::Shell,
             Self::Instantiate, Self::CollectGarbage, Self::Hash,
             Self::CopyClosure, Self::Channel, Self::Daemon,
-            Self::PrefetchUrl,
+            Self::PrefetchUrl, Self::DarwinRebuild, Self::NixosRebuild,
         ]
     }
 
@@ -108,6 +112,8 @@ impl LegacyCmd {
             "nix-channel"         => Some(Self::Channel),
             "nix-daemon"          => Some(Self::Daemon),
             "nix-prefetch-url"    => Some(Self::PrefetchUrl),
+            "darwin-rebuild"      => Some(Self::DarwinRebuild),
+            "nixos-rebuild"       => Some(Self::NixosRebuild),
             _ => None,
         }
     }
@@ -133,7 +139,21 @@ pub fn translate_legacy_argv(cmd: LegacyCmd, args: &[String]) -> Vec<String> {
         LegacyCmd::Channel         => translate_channel(args),
         LegacyCmd::Daemon          => prefix("daemon", args),
         LegacyCmd::PrefetchUrl     => prefix_with_subs(&["store", "prefetch-file"], args),
+        LegacyCmd::DarwinRebuild
+        | LegacyCmd::NixosRebuild  => translate_rebuild(args),
     }
+}
+
+fn translate_rebuild(args: &[String]) -> Vec<String> {
+    let rollback = args.iter().any(|a| a == "--rollback");
+    let rest = args.iter().filter(|a| *a != "--rollback").cloned();
+    let mut out = if rollback {
+        vec!["system".to_string(), "rollback".to_string()]
+    } else {
+        vec!["system".to_string(), "rebuild".to_string()]
+    };
+    out.extend(rest);
+    out
 }
 
 /// `nix-build [-A attr] [path] [flags]` → `sui build <path>#<attr> [flags]`.
@@ -349,8 +369,22 @@ mod tests {
     fn detect_rejects_unknown_basenames() {
         assert_eq!(LegacyCmd::from_basename("sui"), None);
         assert_eq!(LegacyCmd::from_basename("nix"), None);
-        assert_eq!(LegacyCmd::from_basename("nixos-rebuild"), None);
         assert_eq!(LegacyCmd::from_basename(""), None);
+    }
+
+    #[test]
+    fn rebuild_tools_translate_to_system_rebuild() {
+        for cmd in [LegacyCmd::DarwinRebuild, LegacyCmd::NixosRebuild] {
+            assert_eq!(
+                translate_legacy_argv(cmd, &s(&["switch", "--flake", ".#cid"])),
+                s(&["system", "rebuild", "switch", "--flake", ".#cid"])
+            );
+            assert_eq!(
+                translate_legacy_argv(cmd, &s(&["--rollback"])),
+                s(&["system", "rollback"])
+            );
+        }
+        assert_eq!(LegacyCmd::from_basename("darwin-rebuild"), Some(LegacyCmd::DarwinRebuild));
     }
 
     #[test]
