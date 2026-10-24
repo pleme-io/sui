@@ -142,6 +142,25 @@ CacheKey → CachedValue (JSON + timestamp)
 Same input → same output → same key → reusable across evaluations
 ```
 
+## The derivation seam: a fourth caller
+
+The tree-walker, `eval_ir` and the bytecode VM all build a derivation through one function,
+`sui_spec::derivation::apply(algo, Derivation, outputs, name)` (`sui-spec/src/derivation.rs`),
+which runs `sui-spec/specs/derivation.lisp` over a `sui_compat::derivation::Derivation`. Blue is
+the fourth caller (design: `pleme-io/theory` `BLUE-ON-SUI.md`). Blue's `hasei` bidama builds the
+same record in pure blue and gives nix's `.drv` and output paths; blue never lowers into
+`sui-ir`, which is rnix's syntax tree.
+
+What this asks of sui, not yet done:
+
+- `apply` and `specs/derivation.lisp` move into a small crate without sui-spec's IO
+  dependencies (ureq, tar, rkyv, kazari), so a pure runtime can link it.
+- That crate is published on crates.io beside `sui-compat` and `sui-spec` (0.1.219), so blue
+  pins it like any other dependency.
+- Blue declares every dependency edge, because it has no string context, and refuses a store
+  path that no declared input produces. That is the "lost edge" class
+  `sui-ir/src/derivation.rs` records as open, closed at the source for blue callers.
+
 ## Construction Guarantee Roadmap
 
 | Type | Invariant | Status |
