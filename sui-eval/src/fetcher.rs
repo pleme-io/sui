@@ -1062,6 +1062,12 @@ fn url_to_safe_name(url: &str) -> String {
 }
 
 /// Platform-aware cache directory discovery.
+/// `<cache>/sui/<name>`: a fetch or tree cache the OS temp cleaner never prunes.
+#[must_use]
+pub fn sui_cache_dir(name: &str) -> PathBuf {
+    dirs_cache_dir().join("sui").join(name)
+}
+
 fn dirs_cache_dir() -> PathBuf {
     // Try XDG_CACHE_HOME first, then platform default, then /tmp.
     // Absolute, not merely non-empty — see eval_cache.rs for the class.

@@ -99,7 +99,7 @@ fn resolve_corepkg(sub: &str) -> Option<String> {
     static COREPKGS_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
 
     let dir = COREPKGS_DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join("sui-corepkgs");
+        let dir = crate::fetcher::sui_cache_dir("corepkgs");
         std::fs::create_dir_all(&dir).ok()?;
         std::fs::write(
             dir.join("fetchurl.nix"),

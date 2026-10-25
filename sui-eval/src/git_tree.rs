@@ -65,10 +65,13 @@ pub fn tracked_tree(dir: &Path) -> Result<PathBuf, EvalError> {
         key.update(meta.mode().to_le_bytes());
     }
     let key: String = key.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    let root = std::env::temp_dir().join("sui-git-tree");
+    let root = crate::fetcher::sui_cache_dir("git-tree");
     let dest = root.join(&key);
     if dest.exists() {
-        return Ok(dest);
+        if kept.iter().all(|(rel, _)| std::fs::symlink_metadata(dest.join(rel)).is_ok()) {
+            return Ok(dest);
+        }
+        std::fs::remove_dir_all(&dest).map_err(|e| io_error(format!("pruned git tree {}", dest.display()), e))?;
     }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -151,6 +154,23 @@ mod tests {
         assert!(!tree.join("untracked.txt").exists());
         assert!(!tree.join("target").exists());
         assert!(!tree.join(".git").exists());
+    }
+
+    #[test]
+    fn a_cached_tree_missing_a_tracked_file_is_rebuilt() {
+        let repo = tempfile::tempdir().unwrap();
+        let d = repo.path();
+        git(d, &["init", "-q"]);
+        std::fs::create_dir_all(d.join("parts")).unwrap();
+        std::fs::write(d.join("flake.nix"), "{}").unwrap();
+        std::fs::write(d.join("parts/per-system-pkgs.nix"), "1").unwrap();
+        git(d, &["add", "flake.nix", "parts/per-system-pkgs.nix"]);
+
+        let tree = tracked_tree(d).unwrap();
+        std::fs::remove_file(tree.join("parts/per-system-pkgs.nix")).unwrap();
+        let again = tracked_tree(d).unwrap();
+        assert_eq!(again, tree);
+        assert_eq!(std::fs::read_to_string(again.join("parts/per-system-pkgs.nix")).unwrap(), "1");
     }
 
     #[test]

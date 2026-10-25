@@ -40,7 +40,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     "fetchurl: sha256 mismatch: expected {expected}, got {hash}"
                 )));
             }
-        let dir = std::env::temp_dir().join("sui-fetchurl");
+        let dir = crate::fetcher::sui_cache_dir("fetchurl");
         std::fs::create_dir_all(&dir)
             .map_err(|e| EvalError::TypeError(format!("fetchurl: {e}")))?;
         let path = dir.join(&hash);
@@ -80,7 +80,7 @@ pub(crate) fn register(builtins: &mut NixAttrs) {
                     "fetchTarball: sha256 mismatch: expected {expected}, got {hash}"
                 )));
             }
-        let base_dir = std::env::temp_dir().join("sui-fetchTarball");
+        let base_dir = crate::fetcher::sui_cache_dir("fetchTarball");
         let extract_dir = base_dir.join(&hash);
         if !extract_dir.exists() {
             std::fs::create_dir_all(&extract_dir)
@@ -126,8 +126,7 @@ pub(crate) fn fetch_git(arg: &Value) -> Result<Value, EvalError> {
     let key = format!("{url}\n{ref_opt:?}\n{rev_opt:?}\n{submodules}");
     use sha2::{Digest, Sha256};
     let cache_hash = format!("{:x}", Sha256::digest(key.as_bytes()));
-    let target = std::env::temp_dir()
-        .join("sui-fetchGit")
+    let target = crate::fetcher::sui_cache_dir("fetchGit")
         .join(&cache_hash);
     let head_ref = ref_opt.as_deref().unwrap_or("HEAD");
     // The metadata sidecar records the values that were only readable while
@@ -286,8 +285,7 @@ pub(crate) fn fetch_mercurial(arg: &Value) -> Result<Value, EvalError> {
     use sha2::{Digest, Sha256};
     let key = format!("{url}\n{rev_opt:?}");
     let cache_hash = format!("{:x}", Sha256::digest(key.as_bytes()));
-    let target = std::env::temp_dir()
-        .join("sui-fetchMercurial")
+    let target = crate::fetcher::sui_cache_dir("fetchMercurial")
         .join(&cache_hash);
     if !target.exists() {
         if let Some(parent) = target.parent() {
@@ -402,7 +400,7 @@ pub(crate) fn fetch_tree(arg: &Value) -> Result<Value, EvalError> {
                 .map_err(|e| EvalError::TypeError(format!("fetchTree(tarball): {e}")))?;
             use sha2::{Digest, Sha256};
             let hash = format!("{:x}", Sha256::digest(&bytes));
-            let base_dir = std::env::temp_dir().join("sui-fetchTree-tarball");
+            let base_dir = crate::fetcher::sui_cache_dir("fetchTree-tarball");
             let extract_dir = base_dir.join(&hash);
             if !extract_dir.exists() {
                 std::fs::create_dir_all(&extract_dir).map_err(|e| EvalError::IoError {
