@@ -2063,30 +2063,53 @@ async fn substitute_paths(substitutor: &Substitutor, paths: &[String]) -> bool {
     true
 }
 
+fn http_connections() -> usize {
+    std::env::var("SUI_HTTP_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(25)
+}
+
 async fn query_fetches(
     substitutor: &Substitutor,
     paths: &[String],
     fetch: &mut std::collections::BTreeMap<String, (u64, u64)>,
 ) -> bool {
+    use futures::stream::{self, StreamExt};
     let mut found = Vec::new();
-    let mut queue: Vec<String> = paths.to_vec();
+    let mut wave: Vec<String> = paths.to_vec();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    while let Some(path) = queue.pop() {
-        if fetch.contains_key(&path) || !seen.insert(path.clone()) {
-            continue;
-        }
-        let Ok(sp) = StorePath::from_absolute_path(&path) else {
-            return false;
-        };
-        match substitutor.query(&sp).await {
-            Ok(Availability::Present) => {}
-            Ok(Availability::Substitutable { download_size, nar_size, references }) => {
-                queue.extend(references.into_iter().filter(|r| r != &path));
-                found.push((path, (download_size, nar_size)));
+    while !wave.is_empty() {
+        let mut batch = Vec::new();
+        for path in wave.drain(..) {
+            if fetch.contains_key(&path) || !seen.insert(path.clone()) {
+                continue;
             }
-            Ok(Availability::Missing) | Err(_) => {
-                if paths.contains(&path) {
-                    return false;
+            let Ok(sp) = StorePath::from_absolute_path(&path) else {
+                return false;
+            };
+            batch.push((path, sp));
+        }
+        let answers: Vec<(String, Result<Availability, _>)> = stream::iter(batch)
+            .map(|(path, sp)| async move {
+                let answer = substitutor.query(&sp).await;
+                (path, answer)
+            })
+            .buffer_unordered(http_connections())
+            .collect()
+            .await;
+        for (path, answer) in answers {
+            match answer {
+                Ok(Availability::Present) => {}
+                Ok(Availability::Substitutable { download_size, nar_size, references }) => {
+                    wave.extend(references.into_iter().filter(|r| r != &path));
+                    found.push((path, (download_size, nar_size)));
+                }
+                Ok(Availability::Missing) | Err(_) => {
+                    if paths.contains(&path) {
+                        return false;
+                    }
                 }
             }
         }
@@ -2095,50 +2118,92 @@ async fn query_fetches(
     true
 }
 
+enum Decision {
+    Present,
+    Fetched(std::collections::BTreeMap<String, (u64, u64)>),
+    Build,
+}
+
+async fn decide(
+    store: &dyn Store,
+    substitutor: Option<&Substitutor>,
+    mode: PlanMode,
+    paths: &[String],
+) -> Decision {
+    if output_paths_present(store, paths).await {
+        return Decision::Present;
+    }
+    if let Some(sub) = substitutor {
+        let mut fetched = std::collections::BTreeMap::new();
+        let ok = match mode {
+            PlanMode::Realize => substitute_paths(sub, paths).await,
+            PlanMode::Query => query_fetches(sub, paths, &mut fetched).await,
+        };
+        if ok {
+            return Decision::Fetched(fetched);
+        }
+    }
+    Decision::Build
+}
+
 async fn walk_plan(
     store: &dyn Store,
     closure: &BuildClosure,
     substitutor: Option<&Substitutor>,
     mode: PlanMode,
 ) -> Result<ClosurePlan, BuildError> {
+    use futures::stream::{self, StreamExt};
     let index: std::collections::HashMap<&str, &Derivation> =
         closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
     let (target, target_drv) = closure.try_target()?;
     let mut plan = ClosurePlan::default();
     let mut handled: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
         std::collections::HashMap::new();
-    let mut stack: Vec<(String, Vec<String>)> =
+    let mut wave: Vec<(String, Vec<String>)> =
         vec![(target.clone(), target_drv.outputs.keys().cloned().collect())];
-    while let Some((drv_path, wanted)) = stack.pop() {
-        let Some(drv) = index.get(drv_path.as_str()) else {
-            continue;
-        };
-        let seen = handled.entry(drv_path.clone()).or_default();
-        let fresh: Vec<String> = wanted.into_iter().filter(|o| seen.insert(o.clone())).collect();
-        if fresh.is_empty() {
-            continue;
-        }
-        let paths: Vec<String> = fresh
-            .iter()
-            .filter_map(|o| drv.outputs.get(o).map(|out| out.path.clone()))
-            .collect();
-        if output_paths_present(store, &paths).await {
-            plan.present += 1;
-            continue;
-        }
-        if let Some(sub) = substitutor {
-            let fetched = match mode {
-                PlanMode::Realize => substitute_paths(sub, &paths).await,
-                PlanMode::Query => query_fetches(sub, &paths, &mut plan.to_fetch).await,
+    let width = match mode {
+        PlanMode::Realize => 1,
+        PlanMode::Query => http_connections(),
+    };
+    while !wave.is_empty() {
+        let mut work: Vec<(String, Vec<String>)> = Vec::new();
+        for (drv_path, wanted) in wave.drain(..) {
+            let Some(drv) = index.get(drv_path.as_str()) else {
+                continue;
             };
-            if fetched {
-                plan.substituted += 1;
+            let seen = handled.entry(drv_path.clone()).or_default();
+            let fresh: Vec<String> = wanted.into_iter().filter(|o| seen.insert(o.clone())).collect();
+            if fresh.is_empty() {
                 continue;
             }
+            let paths: Vec<String> = fresh
+                .iter()
+                .filter_map(|o| drv.outputs.get(o).map(|out| out.path.clone()))
+                .collect();
+            work.push((drv_path, paths));
         }
-        if plan.to_build.insert(drv_path.clone()) {
-            for (input, outputs) in &drv.input_derivations {
-                stack.push((input.clone(), outputs.clone()));
+        let decided: Vec<(String, Decision)> = stream::iter(work)
+            .map(|(drv_path, paths)| async move {
+                let decision = decide(store, substitutor, mode, &paths).await;
+                (drv_path, decision)
+            })
+            .buffer_unordered(width)
+            .collect()
+            .await;
+        for (drv_path, decision) in decided {
+            match decision {
+                Decision::Present => plan.present += 1,
+                Decision::Fetched(fetched) => {
+                    plan.substituted += 1;
+                    plan.to_fetch.extend(fetched);
+                }
+                Decision::Build => {
+                    if plan.to_build.insert(drv_path.clone()) {
+                        for (input, outputs) in &index[drv_path.as_str()].input_derivations {
+                            wave.push((input.clone(), outputs.clone()));
+                        }
+                    }
+                }
             }
         }
     }

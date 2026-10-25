@@ -6476,6 +6476,7 @@ dependencies = [
  "aho-corasick",
  "async-trait",
  "blake3",
+ "futures",
  "serde_json",
  "sha2",
  "sui-compat",
