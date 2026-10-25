@@ -317,13 +317,8 @@ impl Sandbox for NoSandbox {
         config: &SandboxConfig,
         output: &(dyn Fn(&[u8]) + Sync),
     ) -> Result<SandboxResult, SandboxError> {
-        use std::process::Command;
-
-        let mut cmd = Command::new(&config.builder);
+        let mut cmd = builder_command(&config.builder, config);
         cmd.args(&config.args);
-        for (k, v) in &config.env {
-            cmd.env(k, v);
-        }
 
         let output = run_observed(&mut cmd, output)?;
 
@@ -502,15 +497,8 @@ impl Sandbox for LinuxSandbox {
 
         let args = self.build_unshare_args(config);
 
-        let mut cmd = std::process::Command::new(unshare);
+        let mut cmd = builder_command(unshare, config);
         cmd.args(&args);
-        cmd.env_clear();
-        for (k, v) in &config.env {
-            cmd.env(k, v);
-        }
-        if !config.build_dir.is_empty() {
-            cmd.current_dir(&config.build_dir);
-        }
 
         let output = match run_observed(&mut cmd, observer) {
             Ok(o) => o,
@@ -551,6 +539,22 @@ impl Sandbox for LinuxSandbox {
 }
 
 // ── Darwin sandbox ───────────────────────────────────────────────
+
+/// A builder process as cppnix's `runChild` starts one, in every sandbox mode:
+/// only the derivation's environment, in the build directory.
+fn builder_command(program: impl AsRef<std::ffi::OsStr>, config: &SandboxConfig) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    builder_environment(&mut cmd, config);
+    cmd
+}
+
+fn builder_environment(cmd: &mut std::process::Command, config: &SandboxConfig) {
+    cmd.env_clear();
+    cmd.envs(config.env.iter().map(|(k, v)| (k, v)));
+    if !config.build_dir.is_empty() {
+        cmd.current_dir(&config.build_dir);
+    }
+}
 
 /// The device rules of cppnix's darwin `sandbox-defaults.sb`, verbatim.
 const STANDARD_DEVICES: &str = r#"(allow file*
@@ -830,15 +834,7 @@ impl Sandbox for DarwinSandbox {
             cmd.arg(arg);
         }
 
-        // Strip the parent environment so the build is hermetic by default,
-        // then re-export only what the derivation specifies.
-        cmd.env_clear();
-        for (k, v) in &config.env {
-            cmd.env(k, v);
-        }
-        if !config.build_dir.is_empty() {
-            cmd.current_dir(&config.build_dir);
-        }
+        builder_environment(&mut cmd, config);
 
         let output = run_observed(&mut cmd, observer)
             .map_err(|e| SandboxError::SpawnFailed(format!("sandbox-exec spawn: {e}")))?;
@@ -860,6 +856,21 @@ impl Sandbox for DarwinSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unsandboxed_builder_starts_in_its_build_dir_with_only_the_derivation_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let build_dir = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().into_owned();
+        let config = SandboxConfig {
+            builder: "/bin/sh".into(),
+            args: vec!["-c".into(), "/bin/pwd; echo \"${HOME-unset}\"; echo \"$OWN\"".into()],
+            env: vec![("OWN".to_string(), "kept".to_string())],
+            build_dir: build_dir.clone(),
+            ..SandboxConfig::default()
+        };
+        let result = NoSandbox.execute(&config).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.stdout), format!("{build_dir}\nunset\nkept\n"));
+    }
 
     #[test]
     fn the_sandbox_setting_reads_like_cppnix() {

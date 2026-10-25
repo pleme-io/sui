@@ -86,25 +86,28 @@ impl sui_orchestrate::system::RealizeObserver for BuildFace {
 fn needed_graph(closure: &sui_build::BuildClosure, present: impl Fn(&str) -> bool) -> HashMap<String, Vec<String>> {
     let index: HashMap<&str, &sui_compat::derivation::Derivation> =
         closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
-    let missing = |d: &sui_compat::derivation::Derivation| d.outputs.values().any(|o| !o.path.is_empty() && !present(&o.path));
-    let mut graph = HashMap::new();
-    let mut stack: Vec<&str> = closure.derivations.last().map(|(p, _)| p.as_str()).into_iter().collect();
-    while let Some(path) = stack.pop() {
-        if graph.contains_key(path) {
-            continue;
-        }
+    let missing = |d: &sui_compat::derivation::Derivation, wanted: Option<&[String]>| {
+        d.outputs
+            .iter()
+            .filter(|(name, _)| wanted.is_none_or(|w| w.iter().any(|x| x == *name)))
+            .any(|(_, o)| !o.path.is_empty() && !present(&o.path))
+    };
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    let mut stack: Vec<(&str, Option<&[String]>)> =
+        closure.derivations.last().map(|(p, _)| (p.as_str(), None)).into_iter().collect();
+    while let Some((path, wanted)) = stack.pop() {
         let Some(drv) = index.get(path) else { continue };
-        if !missing(drv) {
+        if graph.contains_key(path) || !missing(drv, wanted) {
             continue;
         }
-        let deps: Vec<&str> = drv
+        let deps: Vec<(&str, &[String])> = drv
             .input_derivations
-            .keys()
-            .map(String::as_str)
-            .filter(|k| index.get(k).is_some_and(|d| missing(d)))
+            .iter()
+            .map(|(k, outs)| (k.as_str(), outs.as_slice()))
+            .filter(|(k, outs)| index.get(k).is_some_and(|d| missing(d, Some(outs))))
             .collect();
-        graph.insert(path.to_string(), deps.iter().map(|d| (*d).to_string()).collect());
-        stack.extend(deps);
+        graph.insert(path.to_string(), deps.iter().map(|(d, _)| (*d).to_string()).collect());
+        stack.extend(deps.into_iter().map(|(d, outs)| (d, Some(outs))));
     }
     graph
 }
@@ -247,15 +250,27 @@ mod tests {
             derivations: vec![
                 ("src.drv".into(), drv("/o/src", &[])),
                 ("built.drv".into(), drv("/o/built", &["src.drv"])),
-                ("leaf.drv".into(), drv("/o/leaf", &[])),
-                ("top.drv".into(), drv("/o/top", &["built.drv", "leaf.drv"])),
+                ("leaf.drv".into(), {
+                    let mut d = drv("/o/leaf", &[]);
+                    d.outputs.insert(
+                        "lib".into(),
+                        sui_compat::derivation::DerivationOutput { path: "/o/leaf-lib".into(), ..Default::default() },
+                    );
+                    d
+                }),
+                ("uses-lib.drv".into(), {
+                    let mut d = drv("/o/uses-lib", &[]);
+                    d.input_derivations.insert("leaf.drv".into(), vec!["lib".into()]);
+                    d
+                }),
+                ("top.drv".into(), drv("/o/top", &["built.drv", "leaf.drv", "uses-lib.drv"])),
             ],
         };
-        let graph = needed_graph(&closure, |p| p == "/o/built");
+        let graph = needed_graph(&closure, |p| p == "/o/built" || p == "/o/leaf-lib");
         let mut keys: Vec<&str> = graph.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["leaf.drv", "top.drv"]);
-        assert_eq!(graph["top.drv"], vec!["leaf.drv".to_string()]);
+        assert_eq!(keys, ["leaf.drv", "top.drv", "uses-lib.drv"]);
+        assert_eq!(graph["uses-lib.drv"], Vec::<String>::new());
     }
 
     #[test]
