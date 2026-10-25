@@ -215,6 +215,138 @@ pub fn get_input_rev(
     Ok(node.locked.as_ref().and_then(|l| l.rev.clone()))
 }
 
+// ── Stale overrides ───────────────────────────────────────────
+
+/// An `inputs.<a>.inputs.<b>.follows` (or `.url`) aimed at an input `<a>`'s
+/// flake does not declare: cppnix's `lockFlake` warning
+/// `input '<a>' has an override for a non-existent input '<b>'`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleOverride {
+    pub input: String,
+    pub missing: String,
+}
+
+impl std::fmt::Display for StaleOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "input '{}' has an override for a non-existent input '{}'", self.input, self.missing)
+    }
+}
+
+/// Every stale override in the flake's input tree, by cppnix's rule
+/// (`computeLocks` in libflake/flake.cc): overrides go into one map, the
+/// outermost declaration kept; at each input path `P`, an override `P/x`
+/// whose `x` is not one of that flake's inputs is stale. A kept input is
+/// walked from its lock entry and its own flake.nix is not read; it is read
+/// only when cppnix would refetch it — an untrusted node holding a `follows`
+/// that no override still declares. A source is never fetched.
+pub fn stale_overrides(flake_dir: &Path) -> Result<Vec<StaleOverride>, FlakeLockUpdateError> {
+    let lock: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(flake_dir.join("flake.lock"))?)?;
+    let nodes = lock.get("nodes").and_then(serde_json::Value::as_object).ok_or(FlakeLockUpdateError::InvalidFormat)?;
+    let root = lock.get("root").and_then(serde_json::Value::as_str).unwrap_or("root");
+    let mut overrides = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    walk_overrides(nodes, root, &[], Some(flake_dir.to_path_buf()), false, &mut overrides, &mut found);
+    Ok(found)
+}
+
+fn walk_overrides(
+    nodes: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    prefix: &[String],
+    source: Option<std::path::PathBuf>,
+    trust_lock: bool,
+    overrides: &mut std::collections::BTreeSet<Vec<String>>,
+    found: &mut Vec<StaleOverride>,
+) {
+    let Some(node) = nodes.get(key) else { return };
+    let empty = serde_json::Map::new();
+    let locked_inputs = node.get("inputs").and_then(serde_json::Value::as_object).unwrap_or(&empty);
+    let declared = source
+        .and_then(|dir| declared_overrides(&dir, prefix, overrides))
+        .unwrap_or_else(|| locked_inputs.keys().cloned().collect());
+    for path in overrides.iter() {
+        if path.len() == prefix.len() + 1 && path[..prefix.len()] == *prefix && !declared.contains(&path[prefix.len()]) {
+            found.push(StaleOverride { input: prefix.join("/"), missing: path[prefix.len()].clone() });
+        }
+    }
+    for (id, target) in locked_inputs {
+        let Some(child) = target.as_str() else { continue };
+        let Some(child_node) = nodes.get(child) else { continue };
+        if child_node.get("flake").and_then(serde_json::Value::as_bool) == Some(false) {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        path.push(id.clone());
+        let must_refetch = !trust_lock
+            && child_node.get("inputs").and_then(serde_json::Value::as_object).is_some_and(|inputs| {
+                inputs.iter().any(|(i, t)| {
+                    let mut over = path.clone();
+                    over.push(i.clone());
+                    t.is_array() && !overrides.contains(&over)
+                })
+            });
+        let source = if must_refetch { locked_source(child_node) } else { None };
+        walk_overrides(nodes, child, &path, source, !must_refetch, overrides, found);
+    }
+}
+
+fn locked_source(node: &serde_json::Value) -> Option<std::path::PathBuf> {
+    let locked = node.get("locked")?;
+    let nar_hash = locked.get("narHash")?.as_str()?;
+    let digest = sui_compat::hash::decode_hash_any(sui_compat::hash::HashAlgorithm::Sha256, nar_hash).ok()?;
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let in_store = std::path::PathBuf::from(sui_compat::store_path::make_source_path(&hex, &[], false, "source"));
+    let base = if in_store.join("flake.nix").exists() || in_store.is_dir() {
+        in_store
+    } else {
+        crate::fetcher::cached_input_dir(nar_hash)?
+    };
+    let dir = locked.get("dir").and_then(serde_json::Value::as_str).map_or(base.clone(), |d| base.join(d));
+    dir.join("flake.nix").exists().then_some(dir)
+}
+
+fn declared_overrides(
+    dir: &Path,
+    prefix: &[String],
+    overrides: &mut std::collections::BTreeSet<Vec<String>>,
+) -> Option<std::collections::BTreeSet<String>> {
+    let flake_nix = dir.join("flake.nix");
+    let source = std::fs::read_to_string(&flake_nix).ok()?;
+    let flake = crate::eval::eval_with_file(&source, Some(flake_nix)).ok()?;
+    let Some(inputs) = flake.to_attrs().ok()?.get("inputs").cloned() else {
+        return Some(std::collections::BTreeSet::new());
+    };
+    let inputs = crate::eval::force_value(&inputs).ok()?.to_attrs().ok()?;
+    let mut names = std::collections::BTreeSet::new();
+    for (id, input) in inputs.iter() {
+        let mut path = prefix.to_vec();
+        path.push(id.clone());
+        collect_overrides(input, &path, overrides);
+        names.insert(id);
+    }
+    Some(names)
+}
+
+fn collect_overrides(input: &crate::Value, path: &[String], overrides: &mut std::collections::BTreeSet<Vec<String>>) {
+    let Ok(input) = crate::eval::force_value(input) else { return };
+    let Ok(attrs) = input.to_attrs() else { return };
+    let Some(nested) = attrs.get("inputs") else { return };
+    let Ok(nested) = crate::eval::force_value(nested) else { return };
+    let Ok(nested) = nested.to_attrs() else { return };
+    for (id, over) in nested.iter() {
+        let mut child = path.to_vec();
+        child.push(id);
+        let is_ref = crate::eval::force_value(over)
+            .ok()
+            .and_then(|o| o.to_attrs().ok())
+            .is_some_and(|o| o.keys().any(|k| k != "inputs" && k != "flake"));
+        if is_ref {
+            overrides.insert(child.clone());
+        }
+        collect_overrides(over, &child, overrides);
+    }
+}
+
 // ── Resolution ────────────────────────────────────────────────
 
 /// Resolve the latest revision for an original input reference.
@@ -417,6 +549,67 @@ fn resolve_git(
 
 #[cfg(test)]
 mod tests {
+    fn stale_fixture(flake_nix: &str, lock: &serde_json::Value) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("flake.nix"), flake_nix).unwrap();
+        std::fs::write(dir.path().join("flake.lock"), serde_json::to_string(lock).unwrap()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_override_of_an_input_the_flake_lacks_is_stale_and_named_by_its_path() {
+        let dir = stale_fixture(
+            r#"{
+              inputs.devenv.url = "github:o/devenv";
+              inputs.devenv.inputs.cachix.follows = "";
+              inputs.devenv.inputs.nixpkgs.follows = "nixpkgs";
+              inputs.m.url = "github:o/m";
+              inputs.m.inputs.h.inputs.forge.follows = "";
+              inputs.nixpkgs.url = "github:o/nixpkgs";
+              outputs = _: {};
+            }"#,
+            &serde_json::json!({
+              "root": "root", "version": 7,
+              "nodes": {
+                "root": {"inputs": {"devenv": "devenv", "m": "m", "nixpkgs": "nixpkgs"}},
+                "devenv": {"inputs": {"nixpkgs": ["nixpkgs"]}},
+                "m": {"inputs": {"h": "h"}},
+                "h": {"inputs": {"nixpkgs": ["nixpkgs"]}},
+                "nixpkgs": {}
+              }
+            }),
+        );
+        let found = stale_overrides(dir.path()).unwrap();
+        assert_eq!(
+            found.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![
+                "input 'devenv' has an override for a non-existent input 'cachix'".to_string(),
+                "input 'm/h' has an override for a non-existent input 'forge'".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_override_of_a_declared_input_is_not_stale() {
+        let dir = stale_fixture(
+            r#"{
+              inputs.a.url = "github:o/a";
+              inputs.a.inputs.nixpkgs.follows = "nixpkgs";
+              inputs.nixpkgs.url = "github:o/nixpkgs";
+              outputs = _: {};
+            }"#,
+            &serde_json::json!({
+              "root": "root", "version": 7,
+              "nodes": {
+                "root": {"inputs": {"a": "a", "nixpkgs": "nixpkgs"}},
+                "a": {"inputs": {"nixpkgs": ["nixpkgs"]}},
+                "nixpkgs": {}
+              }
+            }),
+        );
+        assert!(stale_overrides(dir.path()).unwrap().is_empty());
+    }
+
     use super::*;
 
     #[test]

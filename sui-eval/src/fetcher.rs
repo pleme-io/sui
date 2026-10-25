@@ -1064,6 +1064,11 @@ fn url_to_safe_name(url: &str) -> String {
 /// Platform-aware cache directory discovery.
 /// `<cache>/sui/<name>`: a fetch or tree cache the OS temp cleaner never prunes.
 #[must_use]
+pub fn cached_input_dir(nar_hash: &str) -> Option<PathBuf> {
+    let dir = InputFetcher::new().cache_dir.join(sanitize_hash(nar_hash));
+    dir.is_dir().then_some(dir)
+}
+
 pub fn sui_cache_dir(name: &str) -> PathBuf {
     dirs_cache_dir().join("sui").join(name)
 }

@@ -167,6 +167,15 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     ),
     (
         &[],
+        "offline",
+        Honour::Refused {
+            since: "2026-10-25",
+            reason: "the operator directs sui NOT to use the network; sui reads the flag \
+                     nowhere, so a fetch or a substituter query happens anyway",
+        },
+    ),
+    (
+        &[],
         "accept_flake_config",
         Honour::Refused {
             since: NOW,
@@ -755,6 +764,27 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["registry", "pin"], "entry", H),
 ];
 
+/// A refused global argument that one subcommand honours by construction:
+/// `(invoked subcommand path, arg id)`. The refusal stays on every other
+/// command; only the command whose behaviour already IS what the flag asks is
+/// let through.
+pub const HONOURED_UNDER: &[(&[&str], &str)] = &[
+    // `flake metadata` reads flake.nix, flake.lock and locked sources already
+    // on disk; it writes no lock and fetches nothing.
+    (&["flake", "metadata"], "no_write_lock_file"),
+    (&["flake", "metadata"], "offline"),
+];
+
+fn invoked_path(m: &ArgMatches) -> Vec<&str> {
+    let mut path = Vec::new();
+    let mut node = m;
+    while let Some((name, sub)) = node.subcommand() {
+        path.push(name);
+        node = sub;
+    }
+    path
+}
+
 /// Walk down `matches` following `path`, returning the node for that subcommand
 /// — or `None` when the operator did not invoke it.
 fn descend<'m>(matches: &'m ArgMatches, path: &[&str]) -> Option<&'m ArgMatches> {
@@ -779,10 +809,14 @@ fn descend<'m>(matches: &'m ArgMatches, path: &[&str]) -> Option<&'m ArgMatches>
 /// Returns [`CliError::NotImplemented`] naming the flag, its subcommand path and
 /// the typed reason. `main` renders it and exits **2**.
 pub fn enforce(m: &ArgMatches) -> Result<(), CliError> {
+    let invoked = invoked_path(m);
     for (path, id, honour) in CONTRACT {
         let Honour::Refused { since, reason } = honour else {
             continue;
         };
+        if path.is_empty() && HONOURED_UNDER.iter().any(|(p, i)| *p == invoked.as_slice() && i == id) {
+            continue;
+        }
         let Some(node) = descend(m, path) else {
             continue;
         };
@@ -1124,6 +1158,33 @@ mod tests {
         // …and a two-level subcommand, where propagation has one more hop.
         let m = matches_from(&["sui", "cache", "info", "--quiet"]);
         enforce(&m).expect_err("a global must refuse under a nested subcommand too");
+    }
+
+    #[test]
+    fn a_global_refusal_is_lifted_only_under_the_command_that_honours_it() {
+        let m = matches_from(&["sui", "flake", "metadata", "--offline", "--no-write-lock-file", "--json"]);
+        enforce(&m).expect("flake metadata writes no lock and fetches nothing");
+        for argv in [
+            &["sui", "flake", "update", "--offline"][..],
+            &["sui", "flake", "update", "--no-write-lock-file"][..],
+        ] {
+            enforce(&matches_from(argv)).expect_err("every other command still refuses");
+        }
+    }
+
+    #[test]
+    fn every_scoped_honour_lifts_a_refused_global_on_a_real_subcommand() {
+        let cmd = built();
+        for (path, id) in super::HONOURED_UNDER {
+            assert!(
+                matches!(honour_of(&[], id), Some(Honour::Refused { .. })),
+                "{id} must be a refused global for a scoped honour to mean anything"
+            );
+            let mut node = &cmd;
+            for name in *path {
+                node = node.find_subcommand(name).unwrap_or_else(|| panic!("no subcommand {path:?}"));
+            }
+        }
     }
 
     #[test]

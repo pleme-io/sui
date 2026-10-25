@@ -51,6 +51,8 @@ struct Cli {
     #[arg(long, global = true)] extra_experimental_features: Option<String>,
     /// [REFUSED] nix parse-compat: do not write flake.lock.
     #[arg(long, global = true)] no_write_lock_file: bool,
+    /// [REFUSED] nix parse-compat: do not use the network.
+    #[arg(long, global = true)] offline: bool,
     /// [REFUSED] nix parse-compat: accept the flake's own nixConfig.
     #[arg(long, global = true)] accept_flake_config: bool,
     /// [REFUSED] nix parse-compat: evaluate impurely.
@@ -7607,6 +7609,15 @@ async fn main() -> Result<(), CliError> {
             }
             FlakeCommands::Metadata { flake_ref, json } => {
                 let flake_dir = resolve_flake_dir(flake_ref.as_deref())?;
+                if flake_dir.join("flake.lock").exists() {
+                    let stale = sui_eval::flake_lock::stale_overrides(&flake_dir).map_err(|e| CliError::Orchestrate {
+                        operation: "flake metadata",
+                        message: e.to_string(),
+                    })?;
+                    for s in stale {
+                        eprintln!("warning: {s}");
+                    }
+                }
                 if json {
                     print_flake_metadata_json(&flake_dir)?;
                 } else {
@@ -9681,39 +9692,105 @@ fn type_marker_json(t: &str) -> serde_json::Value {
 /// Field names follow `nix flake metadata --json` (`description`, `path`,
 /// `revision`, `lastModified`, `locks`) so an existing consumer keeps working.
 fn print_flake_metadata_json(flake_dir: &std::path::Path) -> Result<(), CliError> {
+    println!("{}", serde_json::to_string_pretty(&flake_metadata_json(flake_dir)?)?);
+    Ok(())
+}
+
+fn flake_metadata_json(flake_dir: &std::path::Path) -> Result<serde_json::Value, CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "flake metadata", message };
     let flake_nix_path = flake_dir.join("flake.nix");
     let description = if flake_nix_path.exists() {
         extract_description(&std::fs::read_to_string(&flake_nix_path)?)
     } else {
         None
     };
-
     let lock_path = flake_dir.join("flake.lock");
-    // The lock is emitted verbatim under `locks`, as nix does — re-shaping it
-    // here would be a second, divergent definition of a document that already
-    // has one.
     let locks: serde_json::Value = if lock_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&lock_path)?).map_err(|e| {
-            CliError::Orchestrate {
-                operation: "flake metadata",
-                message: format!("parse flake.lock: {e}"),
-            }
-        })?
+        serde_json::from_str(&std::fs::read_to_string(&lock_path)?).map_err(|e| fail(format!("parse flake.lock: {e}")))?
     } else {
         serde_json::Value::Null
     };
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "description":  description,
-            "path":         flake_dir.display().to_string(),
-            "revision":     get_git_revision(flake_dir).ok(),
-            "lastModified": get_last_modified(flake_dir).ok(),
-            "locks":        locks,
-        }))?
-    );
-    Ok(())
+    let tree = sui_eval::git_tree::tracked_tree(flake_dir).map_err(|e| fail(e.to_string()))?;
+    let source = sui_compat::source::nar_hash_source_tree(&tree, "source").map_err(|e| fail(e.to_string()))?;
+    let file_url = format!("file://{}", flake_dir.display());
+    let is_git = flake_dir.join(".git").exists();
+    let scheme = if is_git { "git" } else { "path" };
+    let original = if is_git {
+        serde_json::json!({ "type": "git", "url": file_url })
+    } else {
+        serde_json::json!({ "type": "path", "path": flake_dir.display().to_string() })
+    };
+    let original_url = if is_git { format!("git+{file_url}") } else { format!("path:{}", flake_dir.display()) };
+
+    let mut j = serde_json::Map::new();
+    if let Some(d) = description {
+        j.insert("description".into(), d.into());
+    }
+    j.insert("originalUrl".into(), original_url.clone().into());
+    j.insert("original".into(), original.clone());
+    j.insert("resolvedUrl".into(), original_url.clone().into());
+    j.insert("resolved".into(), original);
+
+    let mut locked = serde_json::Map::new();
+    locked.insert("__final".into(), true.into());
+    locked.insert("narHash".into(), source.nar_hash_sri.clone().into());
+    locked.insert("type".into(), scheme.into());
+    let mut url = original_url;
+    let mut fingerprint_head = None;
+    if is_git {
+        locked.insert("url".into(), file_url.into());
+        let last_modified = sui_eval::git::head_timestamp(flake_dir).unwrap_or(0);
+        locked.insert("lastModified".into(), last_modified.into());
+        if let Some(rev) = sui_eval::git::clean_worktree_rev(flake_dir) {
+            let rev_count = sui_eval::git::rev_count(flake_dir).unwrap_or(0);
+            let ref_name = git_workdir_ref(flake_dir);
+            if let Some(r) = &ref_name {
+                locked.insert("ref".into(), r.clone().into());
+                url = format!("{url}?ref={r}&rev={rev}");
+            } else {
+                url = format!("{url}?rev={rev}");
+            }
+            locked.insert("rev".into(), rev.clone().into());
+            locked.insert("revCount".into(), rev_count.into());
+            j.insert("url".into(), url.into());
+            j.insert("locked".into(), serde_json::Value::Object(locked));
+            j.insert("revision".into(), rev.clone().into());
+            j.insert("revCount".into(), rev_count.into());
+            fingerprint_head = Some((rev, rev_count, last_modified));
+        } else if let Ok(head) = sui_eval::git::head_rev(flake_dir) {
+            let short: String = head.chars().take(7).collect();
+            locked.insert("dirtyRev".into(), format!("{head}-dirty").into());
+            locked.insert("dirtyShortRev".into(), format!("{short}-dirty").into());
+            j.insert("url".into(), url.into());
+            j.insert("locked".into(), serde_json::Value::Object(locked));
+            j.insert("dirtyRevision".into(), format!("{head}-dirty").into());
+        } else {
+            j.insert("url".into(), url.into());
+            j.insert("locked".into(), serde_json::Value::Object(locked));
+        }
+        j.insert("lastModified".into(), last_modified.into());
+    } else {
+        locked.insert("path".into(), flake_dir.display().to_string().into());
+        j.insert("url".into(), url.into());
+        j.insert("locked".into(), serde_json::Value::Object(locked));
+    }
+    j.insert("path".into(), source.store_path.into());
+    if let Some((rev, rev_count, last_modified)) = fingerprint_head.filter(|_| !locks.is_null()) {
+        use sha2::Digest;
+        let lock_text = serde_json::to_string_pretty(&locks)?;
+        let print = format!("{rev};;{lock_text};revCount={rev_count};lastModified={last_modified}");
+        let digest = sha2::Sha256::digest(print.as_bytes());
+        j.insert("fingerprint".into(), digest.iter().map(|b| format!("{b:02x}")).collect::<String>().into());
+    }
+    j.insert("locks".into(), locks);
+    let sorted: std::collections::BTreeMap<String, serde_json::Value> = j.into_iter().collect();
+    Ok(serde_json::Value::Object(sorted.into_iter().collect()))
+}
+
+fn git_workdir_ref(dir: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(dir.join(".git/HEAD")).ok()?;
+    head.trim().strip_prefix("ref: ").map(str::to_string)
 }
 
 fn print_flake_metadata(flake_dir: &std::path::Path) -> Result<(), CliError> {
