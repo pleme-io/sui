@@ -145,16 +145,10 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // any nix flag sui cannot honour; until that lands, refusing is the honest
     // interim. Measured 2026-08-17 across 221,311 fleet files: no `alias
     // nix=sui` exists anywhere, so nothing calls sui with these today.
-    (
-        &[],
-        "extra_experimental_features",
-        Honour::Refused {
-            since: NOW,
-            reason: "nix parse-compat only: sui gates no behaviour behind an experimental \
-                     feature, so enabling one cannot mean anything; destination is cppnix \
-                     fallthrough",
-        },
-    ),
+    // Honoured by value: sui has no feature gates, so a feature it implements is
+    // always on and naming it asks for what is already delivered; a feature it
+    // does not implement is refused by name (`refused_features`).
+    (&[], "extra_experimental_features", H),
     (
         &[],
         "no_write_lock_file",
@@ -826,7 +820,31 @@ fn descend<'m>(matches: &'m ArgMatches, path: &[&str]) -> Option<&'m ArgMatches>
 ///
 /// Returns [`CliError::NotImplemented`] naming the flag, its subcommand path and
 /// the typed reason. `main` renders it and exits **2**.
+/// Experimental features sui implements, always on.
+pub const IMPLEMENTED_FEATURES: &[&str] = &["nix-command", "flakes"];
+
+/// The named features sui does not implement, from a cppnix
+/// `--extra-experimental-features` value (space- or comma-separated).
+#[must_use]
+pub fn refused_features(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|f| !f.is_empty() && !IMPLEMENTED_FEATURES.contains(f))
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn enforce(m: &ArgMatches) -> Result<(), CliError> {
+    if let Some(value) = m.get_one::<String>("extra_experimental_features") {
+        let refused = refused_features(value);
+        if !refused.is_empty() {
+            return Err(CliError::NotImplemented(format!(
+                "experimental feature(s) {} are not implemented in sui; it implements {} and has them always on",
+                refused.join(", "),
+                IMPLEMENTED_FEATURES.join(", ")
+            )));
+        }
+    }
     let invoked = invoked_path(m);
     for (path, id, honour) in CONTRACT {
         let Honour::Refused { since, reason } = honour else {
@@ -858,6 +876,16 @@ pub fn enforce(m: &ArgMatches) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::{CONTRACT, Honour, enforce};
+
+    #[test]
+    fn an_implemented_feature_is_honoured_and_any_other_is_refused_by_name() {
+        assert!(super::refused_features("nix-command flakes").is_empty());
+        assert!(super::refused_features("nix-command,flakes").is_empty());
+        assert_eq!(super::refused_features("flakes ca-derivations"), ["ca-derivations"]);
+        enforce(&matches_from(&["sui", "--extra-experimental-features", "nix-command flakes", "store", "info"])).expect("implemented features");
+        let err = enforce(&matches_from(&["sui", "--extra-experimental-features", "ca-derivations", "store", "info"])).unwrap_err();
+        assert!(err.to_string().contains("ca-derivations"), "{err}");
+    }
     use clap::CommandFactory;
     use std::collections::BTreeSet;
 

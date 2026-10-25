@@ -47,7 +47,7 @@ struct Cli {
     // answer. Destination: fall through to cppnix (`exec_cppnix_passthrough`)
     // for any nix flag sui cannot honour, at which point these become Honoured
     // by delegation. See src/cli_contract.rs.
-    /// [REFUSED] nix parse-compat: enable extra experimental features.
+    /// Experimental features to enable; sui's implemented ones are always on, any other is refused by name.
     #[arg(long, global = true)] extra_experimental_features: Option<String>,
     /// [REFUSED] nix parse-compat: do not write flake.lock.
     #[arg(long, global = true)] no_write_lock_file: bool,
