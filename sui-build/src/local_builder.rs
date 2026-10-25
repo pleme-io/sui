@@ -181,7 +181,7 @@ impl LocalBuilder {
 
             // Verify fixed-output hash if applicable
             if !output.hash.is_empty() {
-                verify_fixed_output(output, &nar_hash)?;
+                verify_fixed_output(output, output_path)?;
             }
 
             // Build PathInfo and register
@@ -196,7 +196,7 @@ impl LocalBuilder {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs() as i64,
-                content_address: None,
+                content_address: fixed_output_ca(output),
             };
 
             self.store.register_path(&info).await.map_err(|e| {
@@ -651,27 +651,56 @@ fn path_to_nar_node(path: &Path) -> Result<NarNode, BuildError> {
     }
 }
 
-/// Verify a fixed-output derivation's hash against the actual NAR hash.
-fn verify_fixed_output(
-    output: &DerivationOutput,
-    actual_nar_hex: &str,
-) -> Result<(), BuildError> {
-    // The output.hash_algo may contain "r:" prefix for recursive mode
-    let algo = output.hash_algo.strip_prefix("r:").unwrap_or(&output.hash_algo);
-
-    if algo != "sha256" {
-        // For now, only verify sha256 FODs
-        return Ok(());
+fn fixed_output_ca(output: &DerivationOutput) -> Option<String> {
+    if output.hash.is_empty() || output.hash.len() % 2 != 0 {
+        return None;
     }
+    let raw: Option<Vec<u8>> = (0..output.hash.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&output.hash[i..i + 2], 16).ok())
+        .collect();
+    let encoded = sui_compat::store_path::nix_base32_encode(&raw?);
+    Some(match output.hash_algo.strip_prefix("r:") {
+        Some(algo) => format!("fixed:r:{algo}:{encoded}"),
+        None => format!("fixed:{}:{encoded}", output.hash_algo),
+    })
+}
 
-    // The expected hash is in output.hash (hex or base32)
-    let expected = &output.hash;
-    if expected != actual_nar_hex {
+fn digest_hex(algo: &str, bytes: &[u8]) -> Option<String> {
+    use sha2::Digest;
+    let digest: Vec<u8> = match algo {
+        "sha256" => sha2::Sha256::digest(bytes).to_vec(),
+        "sha512" => sha2::Sha512::digest(bytes).to_vec(),
+        _ => return None,
+    };
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn verify_fixed_output(output: &DerivationOutput, output_path: &str) -> Result<(), BuildError> {
+    let (recursive, algo) = match output.hash_algo.strip_prefix("r:") {
+        Some(algo) => (true, algo),
+        None => (false, output.hash_algo.as_str()),
+    };
+    let bytes = if recursive {
+        let mut nar = Vec::new();
+        NarWriter::write(&mut nar, &path_to_nar_node(Path::new(output_path))?)
+            .map_err(|e| BuildError::Failed(format!("serialize {output_path}: {e}")))?;
+        nar
+    } else {
+        std::fs::read(output_path)
+            .map_err(|e| BuildError::Failed(format!("read flat fixed output {output_path}: {e}")))?
+    };
+    let actual = digest_hex(algo, &bytes).ok_or_else(|| {
+        BuildError::Failed(format!(
+            "fixed-output {output_path} declares hash algorithm {algo:?}, which sui cannot verify"
+        ))
+    })?;
+    if output.hash != actual {
         return Err(BuildError::Failed(format!(
-            "fixed-output hash mismatch: expected {expected}, got {actual_nar_hex}"
+            "fixed-output hash mismatch for {output_path}: expected {}, got {actual}",
+            output.hash
         )));
     }
-
     Ok(())
 }
 
@@ -900,47 +929,63 @@ mod tests {
 
     // ── verify_fixed_output tests ──────────────────────────────
 
-    #[test]
-    fn verify_fixed_output_matching_hash() {
-        let output = DerivationOutput {
-            path: "/nix/store/abc-src".to_string(),
-            hash_algo: "sha256".to_string(),
-            hash: "abcdef1234567890".to_string(),
-        };
-        assert!(verify_fixed_output(&output, "abcdef1234567890").is_ok());
+    fn fixed(algo: &str, hash: String) -> DerivationOutput {
+        DerivationOutput { path: String::new(), hash_algo: algo.to_string(), hash }
     }
 
     #[test]
-    fn verify_fixed_output_mismatched_hash() {
-        let output = DerivationOutput {
-            path: "/nix/store/abc-src".to_string(),
-            hash_algo: "sha256".to_string(),
-            hash: "expected_hash".to_string(),
-        };
-        let result = verify_fixed_output(&output, "actual_hash");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("hash mismatch"));
+    fn a_flat_fixed_output_is_checked_against_the_file_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("crate.tar.gz");
+        std::fs::write(&file, b"crate bytes").unwrap();
+        let path = file.to_str().unwrap();
+        let good = digest_hex("sha256", b"crate bytes").unwrap();
+        assert!(verify_fixed_output(&fixed("sha256", good), path).is_ok());
+        let err = verify_fixed_output(&fixed("sha256", "0".repeat(64)), path).unwrap_err();
+        assert!(err.to_string().contains("hash mismatch"));
     }
 
     #[test]
-    fn verify_fixed_output_recursive_prefix() {
-        let output = DerivationOutput {
-            path: "/nix/store/abc-src".to_string(),
-            hash_algo: "r:sha256".to_string(),
-            hash: "matchme".to_string(),
-        };
-        assert!(verify_fixed_output(&output, "matchme").is_ok());
+    fn a_recursive_fixed_output_is_checked_against_its_nar() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("src");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("a"), b"x").unwrap();
+        let mut nar = Vec::new();
+        NarWriter::write(&mut nar, &path_to_nar_node(&out).unwrap()).unwrap();
+        let good = digest_hex("sha256", &nar).unwrap();
+        assert!(verify_fixed_output(&fixed("r:sha256", good), out.to_str().unwrap()).is_ok());
+        let flat_digest_of_nothing = digest_hex("sha256", b"").unwrap();
+        assert!(verify_fixed_output(&fixed("r:sha256", flat_digest_of_nothing), out.to_str().unwrap()).is_err());
     }
 
     #[test]
-    fn verify_fixed_output_non_sha256_skipped() {
-        let output = DerivationOutput {
-            path: "/nix/store/abc-src".to_string(),
-            hash_algo: "sha512".to_string(),
-            hash: "whatever".to_string(),
-        };
-        // Non-sha256 is currently skipped
-        assert!(verify_fixed_output(&output, "different").is_ok());
+    fn a_sha512_fixed_output_is_verified_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, b"y").unwrap();
+        let path = file.to_str().unwrap();
+        assert!(verify_fixed_output(&fixed("sha512", digest_hex("sha512", b"y").unwrap()), path).is_ok());
+        assert!(verify_fixed_output(&fixed("sha512", "0".repeat(128)), path).is_err());
+    }
+
+    #[test]
+    fn a_fixed_output_registers_its_content_address_as_nix_writes_it() {
+        let hash = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9".to_string();
+        let raw: Vec<u8> = (0..hash.len()).step_by(2).map(|i| u8::from_str_radix(&hash[i..i + 2], 16).unwrap()).collect();
+        let b32 = sui_compat::store_path::nix_base32_encode(&raw);
+        assert_eq!(fixed_output_ca(&fixed("sha256", hash.clone())), Some(format!("fixed:sha256:{b32}")));
+        assert_eq!(fixed_output_ca(&fixed("r:sha256", hash)), Some(format!("fixed:r:sha256:{b32}")));
+        assert_eq!(fixed_output_ca(&fixed("sha256", String::new())), None);
+    }
+
+    #[test]
+    fn an_unverifiable_hash_algorithm_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, b"z").unwrap();
+        let err = verify_fixed_output(&fixed("md5", "x".into()), file.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("cannot verify"));
     }
 
     // ── LocalBuilder + MockStore tests ─────────────────────────

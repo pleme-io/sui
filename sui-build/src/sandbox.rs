@@ -594,15 +594,17 @@ pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
     profile.push_str(")\n");
 
     // Build dir is the only writable disk location.
+    let mut writable: Vec<&str> = Vec::new();
     if !config.build_dir.is_empty() {
-        profile.push_str("(allow file-write*\n    (subpath ");
-        profile.push_str(&sbpl_quote(&config.build_dir));
-        profile.push_str(")\n)\n");
+        writable.push(&config.build_dir);
     }
-    for output in &config.output_paths {
-        profile.push_str("(allow file-write*\n    (subpath ");
-        profile.push_str(&sbpl_quote(output));
-        profile.push_str(")\n)\n");
+    writable.extend(config.output_paths.iter().map(String::as_str));
+    for path in writable {
+        for form in sbpl_path_forms(path) {
+            profile.push_str("(allow file-write*\n    (subpath ");
+            profile.push_str(&sbpl_quote(&form));
+            profile.push_str(")\n)\n");
+        }
     }
 
     // Network operations.
@@ -616,6 +618,22 @@ pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
     }
 
     profile
+}
+
+#[cfg(target_os = "macos")]
+fn sbpl_path_forms(path: &str) -> Vec<String> {
+    let p = std::path::Path::new(path);
+    let resolved = std::fs::canonicalize(p).ok().or_else(|| {
+        let parent = std::fs::canonicalize(p.parent()?).ok()?;
+        Some(parent.join(p.file_name()?))
+    });
+    let mut forms = vec![path.to_owned()];
+    if let Some(r) = resolved.and_then(|r| r.to_str().map(str::to_owned))
+        && r != path
+    {
+        forms.push(r);
+    }
+    forms
 }
 
 /// Escape a path for inclusion as an SBPL string literal.
@@ -1722,6 +1740,22 @@ mod tests {
         assert!(profile.contains("declared input_paths"));
         assert!(profile.contains("/nix/store/abc-foo"));
         assert!(profile.contains("/nix/store/def-bar"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_builder_writes_in_a_build_dir_reached_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let build_dir = dir.path().to_str().unwrap().to_string();
+        assert!(build_dir.starts_with("/var/") || build_dir.starts_with("/tmp/"), "{build_dir}");
+        let config = SandboxConfig::default()
+            .with_build_dir(build_dir.clone())
+            .with_builder("/bin/sh")
+            .with_args(vec!["-c".to_string(), format!("echo ok > {build_dir}/f")]);
+        let sandbox = DarwinSandbox::new();
+        let result = sandbox.execute(&config).unwrap();
+        assert!(result.is_success(), "{}", result.stderr_lossy());
+        assert_eq!(std::fs::read_to_string(dir.path().join("f")).unwrap(), "ok\n");
     }
 
     #[cfg(target_os = "macos")]
