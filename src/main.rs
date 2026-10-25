@@ -217,7 +217,14 @@ enum Commands {
         /// [REFUSED] Show the closure size column.
         #[arg(long)] closure_size: bool,
     },
-    #[command(name = "collect-garbage")] CollectGarbage { #[arg(short = 'd', long)] delete_old: bool, #[arg(long)] delete_older_than: Option<String> },
+    #[command(name = "collect-garbage")] CollectGarbage {
+        #[arg(short = 'd', long)] delete_old: bool,
+        #[arg(long)] delete_older_than: Option<String>,
+        /// Only report which generations would be removed; collect nothing.
+        #[arg(long)] dry_run: bool,
+        /// Stop once this many bytes are freed.
+        #[arg(long)] max_freed: Option<u64>,
+    },
     Derivation { #[command(subcommand)] command: DerivationCommands },
     #[command(name = "show-config")] ShowConfig { #[arg(long)] json: bool },
     Config { #[command(subcommand)] command: ConfigCommands },
@@ -1364,48 +1371,45 @@ fn cmd_path_info(paths: &[String], json: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn cmd_collect_garbage(delete_old: bool, age: Option<&str>) -> Result<(), CliError> {
-    // Top-level alias.  Translate cppnix's `-d` and
-    // `--delete-older-than` into the substrate-backed GC
-    // primitive driven by the store gc subcommand.  We invoke
-    // the substrate gc directly so the operator gets a
-    // typed-error surface, not a shell-out.
-    let max_age_days: Option<u32> = age.and_then(|a| {
-        // Parse `Nd` or just `N` as days.  cppnix syntax allows
-        // `7d`, `2w`, `1m`; we keep the minimum that matters.
-        a.strip_suffix('d').unwrap_or(a).parse().ok()
-    });
-    // If delete_old: pass max_age_days=0 (delete everything not pinned).
-    let effective_age = if delete_old { Some(0) } else { max_age_days };
+async fn cmd_collect_garbage(delete_old: bool, age: Option<&str>, dry_run: bool, max_freed: Option<u64>) -> Result<(), CliError> {
+    let fail = |message: String| CliError::Orchestrate { operation: "collect-garbage", message };
+    if delete_old || age.is_some() {
+        let older_than = age
+            .map(|spec| sui_store::profile::parse_older_than(spec, std::time::SystemTime::now()))
+            .transpose()
+            .map_err(fail)?;
+        for dir in profile_dirs_to_clean() {
+            sui_store::profile::remove_old_generations(&dir, older_than, dry_run).map_err(|e| fail(e.to_string()))?;
+        }
+    }
+    if dry_run {
+        return Ok(());
+    }
+    let store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+    let options = sui_store::GcOptions::default().with_max_freed(max_freed.unwrap_or(0));
+    let result = store.collect_garbage(&options).await.map_err(|e| fail(e.to_string()))?;
+    eprintln!("{} store paths deleted, {:.2} MiB freed", result.paths_deleted, result.bytes_freed as f64 / 1_048_576.0);
+    Ok(())
+}
 
-    // ── ★ THIS COMMAND FREED NOTHING AND REPORTED SUCCESS ─────────────────
-    // It printed "invoking substrate gc", invoked nothing, printed a hint,
-    // and returned Ok(()). `src/legacy.rs` routes `nix-collect-garbage -d`
-    // straight here — so the command an operator reaches for on a FULL DISK
-    // exited 0 having reclaimed zero bytes. "Ran and freed nothing" and
-    // "did not run" are indistinguishable to the caller, and the first
-    // reading is the one the exit code invites.
-    //
-    // Refusing rather than wiring it to `StoreCommands::Gc` is deliberate,
-    // and it is the conservative direction on purpose: this is a DESTRUCTIVE
-    // operation on the operator's live store, the working path is async and
-    // opens a read-write store this sync helper does not hold, and a GC
-    // wired hastily deletes real bytes. An honest refusal that names the
-    // exact working command costs the operator one paste; a hasty
-    // implementation costs them a store.
-    //
-    // The destination is not in doubt: make this arm async, open the store
-    // the way `StoreCommands::Gc` does, and call `rw_store.collect_garbage`
-    // with these same options. Until then this must not claim to have run.
-    Err(CliError::NotImplemented(format!(
-        "collect-garbage is not wired to the garbage collector and would free nothing. \
-         Run `sui store gc{}` instead. \
-         (Refusing rather than exiting 0: this command previously reported success \
-         while reclaiming zero bytes, which is the worst possible answer on a full disk.)",
-        effective_age
-            .map(|d| [" --max-age-days ", &d.to_string()].concat())
-            .unwrap_or_default(),
-    )))
+/// cppnix's `dirsToClean`: the caller's profiles directory (root's is
+/// `per-user/root`), the state directory's profiles, and the directory of the
+/// default profile's target.
+fn profile_dirs_to_clean() -> Vec<std::path::PathBuf> {
+    let state = std::path::PathBuf::from("/nix/var/nix/profiles");
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let user = if sui_orchestrate::system::running_as_root() {
+        state.join("per-user/root")
+    } else {
+        std::env::var_os("XDG_STATE_HOME").map_or_else(|| home.join(".local/state"), std::path::PathBuf::from).join("nix/profiles")
+    };
+    let default = std::fs::read_link(home.join(".nix-profile"))
+        .ok()
+        .and_then(|t| t.parent().map(std::path::Path::to_path_buf));
+    let mut dirs: Vec<std::path::PathBuf> = [Some(user), Some(state), default].into_iter().flatten().collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
 }
 
 async fn store_delete(paths: &[String], ignore_liveness: bool) -> Result<(), CliError> {
@@ -8391,8 +8395,8 @@ async fn main() -> Result<(), CliError> {
         Commands::PathInfo { paths, json, closure_size: _ } => {
             cmd_path_info(&paths, json)?;
         }
-        Commands::CollectGarbage { delete_old, delete_older_than } => {
-            cmd_collect_garbage(delete_old, delete_older_than.as_deref())?;
+        Commands::CollectGarbage { delete_old, delete_older_than, dry_run, max_freed } => {
+            cmd_collect_garbage(delete_old, delete_older_than.as_deref(), dry_run, max_freed).await?;
         }
         Commands::Derivation { command } => match command {
             DerivationCommands::Show { paths, .. } => {

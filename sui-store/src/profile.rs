@@ -40,6 +40,58 @@ pub struct Generation {
     pub current: bool,
 }
 
+/// cppnix's `parseOlderThanTimeSpec`: `<N>d`, N at least 1, counted back
+/// from `now`.
+///
+/// # Errors
+///
+/// A spec that is not a whole number of days.
+pub fn parse_older_than(spec: &str, now: std::time::SystemTime) -> Result<std::time::SystemTime, String> {
+    let days = spec
+        .strip_suffix('d')
+        .ok_or_else(|| ["invalid number of days specifier '", spec, "', expected something like '14d'"].concat())?
+        .parse::<u64>()
+        .ok()
+        .filter(|d| *d >= 1)
+        .ok_or_else(|| ["invalid number of days specifier '", spec, "'"].concat())?;
+    Ok(now - std::time::Duration::from_secs(days * 24 * 3600))
+}
+
+fn older_than_doomed(gens: &[Generation], cutoff: std::time::SystemTime) -> Vec<u32> {
+    let older: Vec<&Generation> = gens.iter().filter(|g| g.created.is_some_and(|c| c < cutoff)).collect();
+    older.iter().rev().skip(1).filter(|g| !g.current).map(|g| g.number).collect()
+}
+
+/// cppnix's `removeOldGenerations`: every profile under `dir` (a symlink
+/// whose target names a `-link`), recursively, by `older_than` or all old.
+///
+/// # Errors
+///
+/// When a profile's generations cannot be read or removed.
+pub fn remove_old_generations(dir: &Path, older_than: Option<std::time::SystemTime>, dry_run: bool) -> Result<(), ProfileError> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() {
+            let Ok(target) = std::fs::read_link(&path) else { continue };
+            if !target.to_string_lossy().contains("link") {
+                continue;
+            }
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { continue };
+            eprintln!("removing old generations of profile {}", path.display());
+            let profile = ProfileManager::new(parent, name.to_string_lossy());
+            match older_than {
+                Some(cutoff) => profile.delete_generations_older_than(cutoff, dry_run)?,
+                None => profile.delete_old_generations(dry_run)?,
+            };
+        } else if meta.is_dir() {
+            remove_old_generations(&path, older_than, dry_run)?;
+        }
+    }
+    Ok(())
+}
+
 /// Manages a Nix-style symlink profile (e.g., system, per-user).
 ///
 /// The profile lives as a symlink at `{profile_dir}/{profile_name}` pointing
@@ -86,7 +138,7 @@ impl ProfileManager {
     /// Returns `Ok(None)` if the profile symlink does not exist yet.
     pub fn current_generation(&self) -> Result<Option<u32>, ProfileError> {
         let profile = self.profile_path();
-        if !profile.exists() {
+        if std::fs::symlink_metadata(&profile).is_err() {
             return Ok(None);
         }
         let target = std::fs::read_link(&profile)?;
@@ -128,7 +180,7 @@ impl ProfileManager {
             let mid = &name_str[prefix.len()..name_str.len() - suffix.len()];
             if let Ok(num) = mid.parse::<u32>() {
                 let path = std::fs::read_link(entry.path())?;
-                let created = entry.metadata().ok().and_then(|m| m.created().ok());
+                let created = std::fs::symlink_metadata(entry.path()).ok().and_then(|m| m.modified().ok());
                 generations.push(Generation {
                     number: num,
                     path,
@@ -204,12 +256,47 @@ impl ProfileManager {
         }
 
         let link = self.generation_link(gen_num);
-        if !link.exists() {
+        if std::fs::symlink_metadata(&link).is_err() {
             return Err(ProfileError::GenerationNotFound(gen_num));
         }
 
         std::fs::remove_file(&link)?;
         Ok(())
+    }
+
+    /// cppnix's `deleteOldGenerations`: every generation but the current one.
+    /// Returns the generations removed (or that would be, with `dry_run`).
+    ///
+    /// # Errors
+    ///
+    /// When the profile directory cannot be read or a link removed.
+    pub fn delete_old_generations(&self, dry_run: bool) -> Result<Vec<u32>, ProfileError> {
+        let doomed: Vec<u32> = self.list_generations()?.iter().filter(|g| !g.current).map(|g| g.number).collect();
+        self.remove(&doomed, dry_run)
+    }
+
+    /// cppnix's `deleteGenerationsOlderThan`: generations created before
+    /// `cutoff`, except the newest of them (it existed at the cutoff, so a
+    /// rollback to it stays possible) and the current one.
+    ///
+    /// # Errors
+    ///
+    /// When the profile directory cannot be read or a link removed.
+    pub fn delete_generations_older_than(&self, cutoff: std::time::SystemTime, dry_run: bool) -> Result<Vec<u32>, ProfileError> {
+        let doomed = older_than_doomed(&self.list_generations()?, cutoff);
+        self.remove(&doomed, dry_run)
+    }
+
+    fn remove(&self, numbers: &[u32], dry_run: bool) -> Result<Vec<u32>, ProfileError> {
+        for n in numbers {
+            if dry_run {
+                eprintln!("would remove profile version {n}");
+            } else {
+                eprintln!("removing profile version {n}");
+                self.delete_generation(*n)?;
+            }
+        }
+        Ok(numbers.to_vec())
     }
 
     // ── Private helpers ──────────────────────────────────────
@@ -251,6 +338,46 @@ fn parse_generation_number(filename: &str, profile_name: &str) -> Result<u32, Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generation(number: u32, days_old: u64, current: bool) -> Generation {
+        let created = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 * 86_400 - days_old * 86_400);
+        Generation { number, path: PathBuf::from("/nix/store/x"), created: Some(created), current }
+    }
+
+    #[test]
+    fn older_than_keeps_the_newest_old_generation_and_the_current_one() {
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 * 86_400);
+        let gens = [generation(1, 10, false), generation(2, 8, true), generation(3, 6, false), generation(4, 3, false), generation(5, 1, false)];
+        let cutoff = parse_older_than("3d", now).unwrap();
+        assert_eq!(older_than_doomed(&gens, cutoff), vec![1], "4 is exactly at the cutoff, not older; 3 is the newest older one, kept; 2 is current");
+        let cutoff = parse_older_than("2d", now).unwrap();
+        assert_eq!(older_than_doomed(&gens, cutoff), vec![3, 1], "4 is the newest older one, kept; 2 is current");
+    }
+
+    #[test]
+    fn the_age_spec_is_whole_days_from_one() {
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(100 * 86_400);
+        assert_eq!(parse_older_than("3d", now).unwrap(), now - std::time::Duration::from_secs(3 * 86_400));
+        for bad in ["3", "0d", "-1d", "3w", "d"] {
+            assert!(parse_older_than(bad, now).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn delete_old_removes_every_generation_but_the_current_one_under_a_walked_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profiles = tmp.path().join("per-user/me");
+        std::fs::create_dir_all(&profiles).unwrap();
+        for n in 1..=3 {
+            std::os::unix::fs::symlink(format!("/nix/store/gone-{n}"), profiles.join(format!("profile-{n}-link"))).unwrap();
+        }
+        std::os::unix::fs::symlink("profile-2-link", profiles.join("profile")).unwrap();
+        remove_old_generations(tmp.path(), None, false).unwrap();
+        let left: Vec<String> = std::fs::read_dir(&profiles).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut left = left;
+        left.sort();
+        assert_eq!(left, ["profile", "profile-2-link"]);
+    }
 
     /// Helper to create a fake store path inside a temp dir.
     fn fake_store_path(tmp: &Path, name: &str) -> PathBuf {

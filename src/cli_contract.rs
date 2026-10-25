@@ -383,6 +383,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     // ── collect-garbage (both arms wired before this pass) ──────────────
     (&["collect-garbage"], "delete_old", H),
     (&["collect-garbage"], "delete_older_than", H),
+    (&["collect-garbage"], "dry_run", H),
+    (&["collect-garbage"], "max_freed", H),
     // ── show-config ─────────────────────────────────────────────────────
     (&["show-config"], "json", H),
     (&["config", "show"], "name", H),
