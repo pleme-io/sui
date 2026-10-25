@@ -10,9 +10,16 @@
 //! - [`handshake`] — magic / version / trust negotiation
 //! - [`dispatch`] — opcode dispatch loop and per-operation handlers
 
+mod add;
+mod build;
 mod dispatch;
+mod gc;
 mod handshake;
+mod query;
 pub(crate) mod wire;
+
+#[cfg(test)]
+mod op_tests;
 
 use std::sync::Arc;
 
@@ -72,6 +79,40 @@ pub enum ConnectionError {
     /// A generic protocol-level error (e.g. invalid UTF-8 in a string frame).
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("{0}")]
+    Refused(String),
+    #[error("{0}")]
+    Op(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignaturePolicy {
+    pub trusted_keys: Vec<String>,
+    pub require_sigs: bool,
+}
+
+impl Default for SignaturePolicy {
+    fn default() -> Self {
+        Self {
+            trusted_keys: vec!["cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=".to_string()],
+            require_sigs: true,
+        }
+    }
+}
+
+impl SignaturePolicy {
+    #[must_use]
+    pub fn from_nix_config(config: &sui_compat::nix_conf::NixConfig) -> Self {
+        let mut policy = Self::default();
+        if let Some(keys) = config.get("trusted-public-keys") {
+            policy.trusted_keys = keys.split_whitespace().map(String::from).collect();
+        }
+        for extra in config.assignments().iter().filter(|a| a.name == "extra-trusted-public-keys") {
+            policy.trusted_keys.extend(extra.value.split_whitespace().map(String::from));
+        }
+        policy.require_sigs = config.get("require-sigs") != Some("false");
+        policy
+    }
 }
 
 /// A single client connection to the daemon.
@@ -81,6 +122,11 @@ pub struct Connection<S, R, W> {
     writer: W,
     trust: TrustLevel,
     client_version: u64,
+    use_substitutes: bool,
+    caches: Vec<Arc<sui_store::BinaryCacheStore>>,
+    signatures: SignaturePolicy,
+    store_dir: std::path::PathBuf,
+    state_dir: std::path::PathBuf,
 }
 
 impl<S, R, W> Connection<S, R, W>
@@ -98,7 +144,39 @@ where
             writer,
             trust,
             client_version: 0,
+            use_substitutes: true,
+            caches: Vec::new(),
+            signatures: SignaturePolicy::default(),
+            store_dir: std::path::PathBuf::from(sui_compat::store_path::DEFAULT_STORE_DIR),
+            state_dir: std::path::PathBuf::from("/nix/var/nix"),
         }
+    }
+
+    #[must_use]
+    pub fn with_caches(mut self, caches: Vec<Arc<sui_store::BinaryCacheStore>>) -> Self {
+        self.caches = caches;
+        self
+    }
+
+    #[must_use]
+    pub fn with_signature_policy(mut self, policy: SignaturePolicy) -> Self {
+        self.signatures = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dirs(mut self, store_dir: impl Into<std::path::PathBuf>, state_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.store_dir = store_dir.into();
+        self.state_dir = state_dir.into();
+        self
+    }
+
+    fn minor(&self) -> u64 {
+        self.client_version & 0xff
+    }
+
+    fn trusted(&self) -> bool {
+        self.trust == TrustLevel::Trusted
     }
 }
 
@@ -674,69 +752,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn query_path_info_full_flow_all_fields() {
-        let test_path = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-hello-2.12.1";
-        let info = PathInfo {
-            path: test_path.to_string(),
-            nar_hash: "sha256:deadbeefcafe".to_string(),
-            nar_size: 226552,
-            references: vec![
-                "/nix/store/3n58xw4373jp0ljirf06d8077j15pc4j-glibc-2.37".to_string(),
-            ],
-            deriver: Some("xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv".to_string()),
-            signatures: vec![
-                "cache.nixos.org-1:sig123==".to_string(),
-                "my-key:sig456==".to_string(),
-            ],
-            registration_time: 1700000000,
-            content_address: None,
-        };
-        let store = Arc::new(RichMockStore::with_info(info));
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
-        wire::write_string(&mut input, test_path).unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        conn.run().await.unwrap();
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        // STDERR_LAST
-        let stderr_last = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(stderr_last, StderrMsg::Last as u64);
-        // valid = true
-        let valid = wire::read_bool(&mut cursor).unwrap();
-        assert!(valid);
-        // deriver
-        let deriver = wire::read_string(&mut cursor).unwrap();
-        assert_eq!(deriver, "xb4y5iklhya4blk42k1cfkb8k07dpp4n-hello-2.12.1.drv");
-        // nar_hash
-        let nar_hash = wire::read_string(&mut cursor).unwrap();
-        assert_eq!(nar_hash, "sha256:deadbeefcafe");
-        // references
-        let refs = wire::read_string_list(&mut cursor).unwrap();
-        assert_eq!(refs.len(), 1);
-        assert!(refs[0].contains("glibc-2.37"));
-        // registration_time
-        let reg_time = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(reg_time, 1700000000);
-        // nar_size
-        let nar_size = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(nar_size, 226552);
-        // ultimate (bool)
-        let ultimate = wire::read_bool(&mut cursor).unwrap();
-        assert!(!ultimate);
-        // signatures
-        let sigs = wire::read_string_list(&mut cursor).unwrap();
-        assert_eq!(sigs.len(), 2);
-        assert_eq!(sigs[0], "cache.nixos.org-1:sig123==");
-        assert_eq!(sigs[1], "my-key:sig456==");
-    }
 
     // ── SetOptions handler tests ──────────────────────────────
 
@@ -840,10 +855,6 @@ mod tests {
 
     // ── Unimplemented opcode tests ──────────────────────────────
 
-    #[tokio::test]
-    async fn an_unimplemented_opcode_is_refused_and_the_connection_closed() {
-        assert_op_unimplemented(WorkerOp::EnsurePath).await;
-    }
 
     #[tokio::test]
     async fn unknown_opcode_error_message_contains_opcode() {
@@ -1023,49 +1034,7 @@ mod tests {
 
     // ── Edge case: invalid store path format ────────────────────
 
-    #[tokio::test]
-    async fn is_valid_path_invalid_store_path_format() {
-        let store = Arc::new(MockStore::new());
 
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
-        wire::write_string(&mut input, "not-a-valid-store-path").unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        conn.run().await.unwrap();
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        let stderr = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(stderr, StderrMsg::Last as u64);
-        let valid = wire::read_bool(&mut cursor).unwrap();
-        assert!(!valid, "invalid store path format should return false, not error");
-    }
-
-    #[tokio::test]
-    async fn query_path_info_invalid_store_path_format() {
-        let store = Arc::new(MockStore::new());
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
-        wire::write_string(&mut input, "/not/nix/store/path").unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        conn.run().await.unwrap();
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        let stderr = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(stderr, StderrMsg::Last as u64);
-        let valid = wire::read_bool(&mut cursor).unwrap();
-        assert!(!valid, "invalid store path should return not-found, not error");
-    }
 
     // ── Store error propagation tests ─────────────────────────
 
@@ -1095,58 +1064,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn is_valid_path_propagates_store_error() {
-        let store = Arc::new(FailingStore);
 
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::IsValidPath as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test").unwrap();
 
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        let result = conn.run().await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
-    }
-
-    #[tokio::test]
-    async fn query_path_info_propagates_store_error() {
-        let store = Arc::new(FailingStore);
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryPathInfo as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/00bgd045z0d4icpbc2yyz4gx48ak44la-test").unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        let result = conn.run().await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
-    }
-
-    #[tokio::test]
-    async fn query_all_valid_paths_propagates_store_error() {
-        let store = Arc::new(FailingStore);
-
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryAllValidPaths as u64).unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        let result = conn.run().await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConnectionError::Store(_)));
-    }
 
     // ── QueryAllValidPaths with empty store ─────────────────────
 
@@ -1179,38 +1098,6 @@ mod tests {
     // variant so that adding a real handler is an explicit, observable
     // change (the test for that opcode will need updating).
 
-    /// Drive `Connection::run` with a single u64 opcode and verify that the
-    /// reply is the standard "not yet implemented" stderr-error frame
-    /// followed by `STDERR_LAST`.
-    async fn assert_op_unimplemented(op: WorkerOp) {
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, op as u64).unwrap();
-
-        let reader = Cursor::new(input);
-        let writer: Vec<u8> = Vec::new();
-        let mut conn = Connection::new(store, reader, writer, TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-
-        conn.run().await.expect("dispatch should not fail");
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        let msg_type = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(
-            msg_type,
-            StderrMsg::Error as u64,
-            "op {op:?} should produce STDERR_ERROR"
-        );
-        let msg = read_error_body(&mut cursor);
-        assert!(
-            msg.contains("not yet implemented"),
-            "op {op:?} message should mention not implemented, got {msg:?}"
-        );
-        assert!(
-            wire::read_u64(&mut cursor).is_err(),
-            "op {op:?}: nothing may follow the refusal; the connection closes as cppnix's daemon does"
-        );
-    }
 
     // ── Newly-implemented read-path ops ──────────────────────────
     //
@@ -1219,125 +1106,11 @@ mod tests {
     // happy-path wire format so a future refactor of the handler
     // can't silently change the response shape.
 
-    #[tokio::test]
-    async fn has_substitutes_returns_false() {
-        // No substituter client yet → always false. Deliberate.
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::HasSubstitutes as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/whatever").unwrap();
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.unwrap();
 
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        assert!(!wire::read_bool(&mut cursor).unwrap());
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_path_hash() {
-        assert_op_unimplemented(WorkerOp::QueryPathHash).await;
-    }
 
-    #[tokio::test]
-    async fn query_references_empty_for_unknown_path() {
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryReferences as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/missing").unwrap();
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.unwrap();
 
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        let count = wire::read_u64(&mut cursor).unwrap();
-        assert_eq!(count, 0, "unknown path should produce empty reference list");
-    }
 
-    #[tokio::test]
-    async fn query_referrers_empty_for_mock_store() {
-        // MockStore inherits the trait default which returns
-        // NotSupported. Our handler catches that and produces an
-        // empty list, which is the expected graceful-degradation
-        // behavior — a client querying referrers on an isolated
-        // store just gets "nothing depends on this."
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryReferrers as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/something").unwrap();
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.unwrap();
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 0);
-    }
-
-    /// `AddToStore` with an unsupported ingestion method returns a
-    /// typed stderr error (never a silently-wrong store path) — and
-    /// still drains the framed NAR off the wire first so the stream
-    /// stays in sync.
-    #[tokio::test]
-    async fn add_to_store_rejects_unsupported_method() {
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
-        wire::write_string(&mut input, "pkg").unwrap();
-        // Non-recursive method: not supported by the realizer.
-        wire::write_string(&mut input, "flat:sha256").unwrap();
-        wire::write_u64(&mut input, 0).unwrap(); // 0 references
-        wire::write_u64(&mut input, 0).unwrap(); // repair = false
-        // Framed NAR: one chunk + zero terminator (raw, unpadded).
-        let chunk = b"nardata";
-        wire::write_u64(&mut input, chunk.len() as u64).unwrap();
-        input.extend_from_slice(chunk);
-        wire::write_u64(&mut input, 0).unwrap(); // terminator
-
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.expect("dispatch should not fail");
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let msg = read_error_body(&mut cursor);
-        assert!(
-            msg.contains("not supported") && msg.contains("flat:sha256"),
-            "should name the unsupported method: {msg:?}"
-        );
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-    }
-
-    /// `AddToStore` on a store that doesn't support writes surfaces the
-    /// store error as a typed stderr error, not a panic or a hang.
-    #[tokio::test]
-    async fn add_to_store_surfaces_store_error() {
-        let store = Arc::new(MockStore::new()); // trait-default add_to_store → NotSupported
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddToStore as u64).unwrap();
-        wire::write_string(&mut input, "pkg").unwrap();
-        wire::write_string(&mut input, "fixed:r:sha256").unwrap();
-        wire::write_u64(&mut input, 0).unwrap(); // 0 references
-        wire::write_u64(&mut input, 0).unwrap(); // repair
-        wire::write_u64(&mut input, 0).unwrap(); // empty framed NAR (just terminator)
-
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.expect("dispatch should not fail");
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let msg = read_error_body(&mut cursor);
-        assert!(msg.contains("store write failed"), "got {msg:?}");
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-    }
 
     fn read_error_body(cursor: &mut Cursor<&[u8]>) -> String {
         assert_eq!(wire::read_string(cursor).unwrap(), "Error");
@@ -1356,22 +1129,6 @@ mod tests {
         conn.writer
     }
 
-    #[tokio::test]
-    async fn add_text_to_store_answers_the_text_content_address_path() {
-        let text = b"hello".to_vec();
-        let expected = sui_compat::content_address::compute_text_store_path("t.txt", &text, &[])
-            .unwrap()
-            .to_absolute_path();
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddTextToStore as u64).unwrap();
-        wire::write_string(&mut input, "t.txt").unwrap();
-        wire::write_bytes(&mut input, &text).unwrap();
-        wire::write_u64(&mut input, 0).unwrap();
-        let out = run_with(MockStore::new().with_path(&expected, "sha256:00"), input).await;
-        let mut cursor = Cursor::new(out.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        assert_eq!(wire::read_string(&mut cursor).unwrap(), expected);
-    }
 
     #[tokio::test]
     async fn build_paths_of_a_valid_output_acks() {
@@ -1386,41 +1143,8 @@ mod tests {
         assert_eq!(wire::read_u64(&mut cursor).unwrap(), 1);
     }
 
-    #[tokio::test]
-    async fn build_paths_refuses_an_absent_output() {
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::BuildPaths as u64).unwrap();
-        wire::write_string_list(&mut input, &["/nix/store/0123456789abcdfghijklmnpqrsvwxyz-x".to_string()]).unwrap();
-        wire::write_u64(&mut input, 0).unwrap();
-        let out = run_with(MockStore::new(), input).await;
-        let mut cursor = Cursor::new(out.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        assert!(read_error_body(&mut cursor).contains("not valid in the store"));
-    }
 
-    #[tokio::test]
-    async fn unimpl_ensure_path() {
-        assert_op_unimplemented(WorkerOp::EnsurePath).await;
-    }
 
-    #[tokio::test]
-    async fn add_temp_root_acks_with_one() {
-        // Client sends the path to pin; we ACK with a u64 1, which
-        // is what CppNix's protocol expects so the client's blocking
-        // call returns.
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddTempRoot as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/anything").unwrap();
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.unwrap();
-
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), 1);
-    }
 
     #[tokio::test]
     async fn add_indirect_root_failure_is_an_error_frame() {
@@ -1433,82 +1157,18 @@ mod tests {
         assert!(read_error_body(&mut cursor).contains("AddIndirectRoot /tmp/result"));
     }
 
-    #[tokio::test]
-    async fn unimpl_sync_with_gc() {
-        assert_op_unimplemented(WorkerOp::SyncWithGC).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_find_roots() {
-        assert_op_unimplemented(WorkerOp::FindRoots).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_export_path() {
-        assert_op_unimplemented(WorkerOp::ExportPath).await;
-    }
 
-    #[tokio::test]
-    async fn query_deriver_empty_string_for_missing_path() {
-        let store = Arc::new(MockStore::new());
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::QueryDeriver as u64).unwrap();
-        wire::write_string(&mut input, "/nix/store/missing").unwrap();
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.unwrap();
 
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-        let deriver = wire::read_string(&mut cursor).unwrap();
-        assert_eq!(deriver, "");
-    }
 
-    #[tokio::test]
-    async fn unimpl_collect_garbage() {
-        assert_op_unimplemented(WorkerOp::CollectGarbage).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_substitutable_path_info() {
-        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfo).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_derivation_outputs() {
-        assert_op_unimplemented(WorkerOp::QueryDerivationOutputs).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_failed_paths() {
-        assert_op_unimplemented(WorkerOp::QueryFailedPaths).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_clear_failed_paths() {
-        assert_op_unimplemented(WorkerOp::ClearFailedPaths).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_import_paths() {
-        assert_op_unimplemented(WorkerOp::ImportPaths).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_derivation_output_names() {
-        assert_op_unimplemented(WorkerOp::QueryDerivationOutputNames).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_path_from_hash_part() {
-        assert_op_unimplemented(WorkerOp::QueryPathFromHashPart).await;
-    }
-
-    #[tokio::test]
-    async fn unimpl_query_substitutable_path_infos() {
-        assert_op_unimplemented(WorkerOp::QuerySubstitutablePathInfos).await;
-    }
 
     #[tokio::test]
     async fn query_valid_paths_filters_to_existing() {
@@ -1537,111 +1197,19 @@ mod tests {
         assert_eq!(first, known);
     }
 
-    #[tokio::test]
-    async fn unimpl_query_substitutable_paths() {
-        assert_op_unimplemented(WorkerOp::QuerySubstitutablePaths).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_valid_derivers() {
-        assert_op_unimplemented(WorkerOp::QueryValidDerivers).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_optimise_store() {
-        assert_op_unimplemented(WorkerOp::OptimiseStore).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_verify_store() {
-        assert_op_unimplemented(WorkerOp::VerifyStore).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_build_derivation() {
-        assert_op_unimplemented(WorkerOp::BuildDerivation).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_add_signatures() {
-        assert_op_unimplemented(WorkerOp::AddSignatures).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_nar_from_path() {
-        assert_op_unimplemented(WorkerOp::NarFromPath).await;
-    }
 
-    /// `AddToStoreNar` reads the full unkeyed-`ValidPathInfo` header +
-    /// the framed NAR, then registers via the realizer. On a
-    /// write-unsupporting store it surfaces a typed error (no response
-    /// body — STDERR_LAST closes the op). This test proves the header
-    /// wire layout is drained in the exact order CppNix sends it.
-    #[tokio::test]
-    async fn add_to_store_nar_reads_full_header_then_surfaces_error() {
-        let store = Arc::new(MockStore::new()); // add_to_store → NotSupported
-        let mut input = Vec::new();
-        wire::write_u64(&mut input, WorkerOp::AddToStoreNar as u64).unwrap();
-        // Unkeyed ValidPathInfo header, in cppnix order:
-        wire::write_string(&mut input, "/nix/store/abc123-hello-2.12.1").unwrap(); // path
-        wire::write_string(&mut input, "").unwrap(); // deriver
-        wire::write_string(&mut input, "sha256:deadbeef").unwrap(); // narHash
-        wire::write_u64(&mut input, 1).unwrap(); // 1 reference
-        wire::write_string(&mut input, "/nix/store/dep").unwrap();
-        wire::write_u64(&mut input, 0).unwrap(); // registrationTime
-        wire::write_u64(&mut input, 42).unwrap(); // narSize
-        wire::write_u64(&mut input, 0).unwrap(); // ultimate
-        wire::write_u64(&mut input, 0).unwrap(); // 0 sigs
-        wire::write_string(&mut input, "").unwrap(); // ca
-        wire::write_u64(&mut input, 0).unwrap(); // repair
-        wire::write_u64(&mut input, 1).unwrap(); // dontCheckSigs
-        // Framed NAR: one chunk + terminator.
-        let chunk = b"narbody";
-        wire::write_u64(&mut input, chunk.len() as u64).unwrap();
-        input.extend_from_slice(chunk);
-        wire::write_u64(&mut input, 0).unwrap();
 
-        let reader = Cursor::new(input);
-        let mut conn = Connection::new(store, reader, Vec::<u8>::new(), TrustLevel::Trusted);
-        conn.client_version = PROTOCOL_VERSION;
-        conn.run().await.expect("dispatch should not fail");
 
-        let mut cursor = Cursor::new(conn.writer.as_slice());
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Error as u64);
-        let msg = read_error_body(&mut cursor);
-        assert!(msg.contains("AddToStoreNar"), "got {msg:?}");
-        assert_eq!(wire::read_u64(&mut cursor).unwrap(), StderrMsg::Last as u64);
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_missing() {
-        assert_op_unimplemented(WorkerOp::QueryMissing).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_derivation_output_map() {
-        assert_op_unimplemented(WorkerOp::QueryDerivationOutputMap).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_register_drv_output() {
-        assert_op_unimplemented(WorkerOp::RegisterDrvOutput).await;
-    }
 
-    #[tokio::test]
-    async fn unimpl_query_realisation() {
-        assert_op_unimplemented(WorkerOp::QueryRealisation).await;
-    }
-
-    #[tokio::test]
-    async fn unimpl_add_multiple_to_store() {
-        assert_op_unimplemented(WorkerOp::AddMultipleToStore).await;
-    }
-
-    #[tokio::test]
-    async fn unimpl_add_build_log() {
-        assert_op_unimplemented(WorkerOp::AddBuildLog).await;
-    }
 
     // ── SetOptions edge cases ──────────────────────────────────
 

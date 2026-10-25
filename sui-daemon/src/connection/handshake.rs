@@ -51,10 +51,10 @@ where
         self.writer.flush().await?;
 
         // 4. Read client protocol version
-        self.client_version = read_u64(&mut self.reader).await?;
+        self.client_version = read_u64(&mut self.reader).await?.min(PROTOCOL_VERSION);
 
         // 5. Obsolete CPU affinity (must still send zero)
-        if self.client_version >= PROTOCOL_MINOR_CPU_AFFINITY {
+        if self.client_version >= PROTOCOL_MINOR_CPU_AFFINITY && read_u64(&mut self.reader).await? != 0 {
             let _cpu_affinity = read_u64(&mut self.reader).await?;
         }
 

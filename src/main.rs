@@ -7637,7 +7637,12 @@ async fn main() -> Result<(), CliError> {
                 source: e,
             })?;
             let config = sui_daemon::DaemonConfig::with_socket_path(&socket);
-            let server = sui_daemon::DaemonServer::new(config, store);
+            let signatures = sui_compat::nix_conf::NixConfig::load()
+                .map(|c| sui_daemon::SignaturePolicy::from_nix_config(&c))
+                .unwrap_or_default();
+            let server = sui_daemon::DaemonServer::new(config, store)
+                .with_caches(sui_orchestrate::build_caches(&sui_orchestrate::get_substituters()))
+                .with_signature_policy(signatures);
             server.run().await.map_err(|e| CliError::Orchestrate {
                 operation: "daemon",
                 message: e.to_string(),

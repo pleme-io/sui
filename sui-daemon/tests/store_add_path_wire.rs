@@ -130,6 +130,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> Self {
+        Self::start_with(&[]).await
+    }
+
+    async fn start_with(registered: &[&str]) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let socket = tmp.path().join("sui.sock");
         let store_dir = tmp.path().join("store");
@@ -138,6 +142,12 @@ impl Fixture {
         let store = LocalStore::open_in_memory_with_dir(store_dir.to_str().unwrap())
             .await
             .expect("open in-memory store with temp dir");
+        for path in registered {
+            store
+                .register_path(&sui_store::traits::PathInfo::new(*path, "sha256:00"))
+                .await
+                .expect("register fixture path");
+        }
 
         let config = DaemonConfig::with_socket_path(&socket);
         let server = DaemonServer::new(config, store);
@@ -263,7 +273,10 @@ async fn add_to_store_wire_path_equals_realizer_oracle() {
         wire_path, oracle_path,
         "AddToStore wire path must equal the sealed realizer oracle path"
     );
-    assert!(nar_hash.starts_with("sha256:"), "nar hash: {nar_hash}");
+    assert!(
+        nar_hash.len() == 64 && nar_hash.bytes().all(|b| b.is_ascii_hexdigit()),
+        "cppnix writes the narHash as unprefixed base16: {nar_hash}"
+    );
     assert_eq!(nar_size, nar.len() as u64, "nar size mismatch");
     assert!(
         wire_path.contains(name),
@@ -284,40 +297,11 @@ async fn add_to_store_wire_path_equals_realizer_oracle() {
 /// registered `ValidPathInfo`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn add_to_store_wire_carries_references() {
-    let fixture = Fixture::start().await;
     let name = "with-refs";
-    let nar = nar_for_file(b"payload");
 
-    // ── ★ THE REFERENCE MUST BE A PATH THAT ACTUALLY EXISTS ───────────────
-    // This used to name `<store>/00000000000000000000000000000000-dep`, a
-    // syntactically-valid path that was never added — so the test only passed
-    // because `register_path` silently DROPPED references it could not
-    // resolve. CppNix rejects that request outright (`registerValidPaths`
-    // calls `queryValidPathId` per reference and throws `path '%s' is not
-    // valid`, rolling back the transaction), so the old fixture asserted a
-    // laxness the tool it mirrors does not have.
-    //
-    // Registering the dependency first keeps the test's real intent — that
-    // references survive the wire round-trip — and additionally proves they
-    // are VALIDATED, which is the property that matters: a store that accepts
-    // a reference to a path it does not have can let a GC collect the
-    // referent out from under the referrer.
-    let dep_nar = nar_for_file(b"dep payload");
-    let mut dep_conn = fixture.connect();
-    write_u64(&mut dep_conn, WorkerOp::AddToStore as u64);
-    write_string(&mut dep_conn, "dep");
-    write_string(&mut dep_conn, "fixed:r:sha256");
-    write_u64(&mut dep_conn, 0); // no references of its own
-    write_u64(&mut dep_conn, 0); // repair
-    write_framed(&mut dep_conn, &dep_nar);
-    dep_conn.flush().unwrap();
-    drain_to_stderr_last(&mut dep_conn);
-    let reference = read_string(&mut dep_conn);
-    assert!(
-        reference.starts_with(&format!("{}/", fixture.store_dir.display())),
-        "the dependency must land in the temp store dir, got {reference}"
-    );
-    drop(dep_conn);
+    let reference = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-dep".to_string();
+    let fixture = Fixture::start_with(&[reference.as_str()]).await;
+    let nar = nar_for_file(b"payload");
 
     let mut c = fixture.connect();
     write_u64(&mut c, WorkerOp::AddToStore as u64);
@@ -345,41 +329,30 @@ async fn add_to_store_wire_carries_references() {
 async fn add_to_store_nar_wire_registers_path() {
     let fixture = Fixture::start().await;
     let nar = nar_for_file(b"nar import body");
-    // The realizer recomputes the path from the NAR; the header path is
-    // the client's assertion. Use a plausible <hash>-<name> basename.
-    let asserted =
-        "/nix/store/00000000000000000000000000000000-imported-pkg".to_string();
+    let asserted = "/nix/store/00000000000000000000000000000000-imported-pkg".to_string();
+    let nar_hash = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(&nar).iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
 
     let mut c = fixture.connect();
     write_u64(&mut c, WorkerOp::AddToStoreNar as u64);
-    // Unkeyed ValidPathInfo header, cppnix order:
-    write_string(&mut c, &asserted); // path
-    write_string(&mut c, ""); // deriver
-    write_string(&mut c, "sha256:00"); // narHash
-    write_u64(&mut c, 0); // 0 references
-    write_u64(&mut c, 0); // registrationTime
-    write_u64(&mut c, nar.len() as u64); // narSize
-    write_u64(&mut c, 0); // ultimate
-    write_u64(&mut c, 0); // 0 sigs
-    write_string(&mut c, ""); // ca
-    write_u64(&mut c, 0); // repair
-    write_u64(&mut c, 1); // dontCheckSigs
+    write_string(&mut c, &asserted);
+    write_string(&mut c, "");
+    write_string(&mut c, &nar_hash);
+    write_u64(&mut c, 0);
+    write_u64(&mut c, 0);
+    write_u64(&mut c, nar.len() as u64);
+    write_u64(&mut c, 0);
+    write_u64(&mut c, 0);
+    write_string(&mut c, "");
+    write_u64(&mut c, 0);
+    write_u64(&mut c, 1);
     write_framed(&mut c, &nar);
     c.flush().unwrap();
 
-    // No response body — completion is STDERR_LAST only.
     drain_to_stderr_last(&mut c);
 
-    // The realizer registers under the NAR-derived path with name
-    // "imported-pkg" (extracted from the asserted basename). Confirm a
-    // file with that name landed in the store dir.
-    let entries: Vec<_> = std::fs::read_dir(&fixture.store_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        entries.iter().any(|n| n.ends_with("-imported-pkg")),
-        "expected an -imported-pkg entry in the store dir, got {entries:?}"
-    );
+    let landed = fixture.store_dir.join("00000000000000000000000000000000-imported-pkg");
+    assert_eq!(std::fs::read(&landed).unwrap(), b"nar import body");
 }

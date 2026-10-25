@@ -70,6 +70,8 @@ pub struct DaemonServer<S> {
     config: DaemonConfig,
     store: Arc<S>,
     start_time: Instant,
+    caches: Vec<Arc<sui_store::BinaryCacheStore>>,
+    signatures: crate::connection::SignaturePolicy,
 }
 
 impl<S> DaemonServer<S>
@@ -79,11 +81,7 @@ where
     /// Create a new daemon server.
     #[must_use]
     pub fn new(config: DaemonConfig, store: S) -> Self {
-        Self {
-            config,
-            store: Arc::new(store),
-            start_time: Instant::now(),
-        }
+        Self::with_store_arc(config, Arc::new(store))
     }
 
     /// Create a daemon server from a pre-wrapped `Arc<S>`.
@@ -93,7 +91,21 @@ where
             config,
             store,
             start_time: Instant::now(),
+            caches: Vec::new(),
+            signatures: crate::connection::SignaturePolicy::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_caches(mut self, caches: Vec<Arc<sui_store::BinaryCacheStore>>) -> Self {
+        self.caches = caches;
+        self
+    }
+
+    #[must_use]
+    pub fn with_signature_policy(mut self, policy: crate::connection::SignaturePolicy) -> Self {
+        self.signatures = policy;
+        self
     }
 
     /// Return a tsunagu health check for the daemon.
@@ -167,12 +179,16 @@ where
             let (stream, _addr) = listener.accept().await.map_err(DaemonError::Accept)?;
 
             let store = Arc::clone(&self.store);
+            let caches = self.caches.clone();
+            let signatures = self.signatures.clone();
 
             tokio::spawn(async move {
                 let trust = resolve_trust(&stream);
                 let (reader, writer) = tokio::io::split(stream);
 
-                let mut conn = Connection::new(store, reader, writer, trust);
+                let mut conn = Connection::new(store, reader, writer, trust)
+                    .with_caches(caches)
+                    .with_signature_policy(signatures);
 
                 if let Err(e) = conn.handshake().await {
                     tracing::warn!("handshake failed: {e}");

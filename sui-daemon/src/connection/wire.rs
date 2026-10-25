@@ -118,7 +118,189 @@ pub(crate) async fn read_framed_source(
     Ok(out)
 }
 
-/// Write `STDERR_LAST` to signal the end of the stderr stream.
+pub(crate) async fn read_string_list(
+    r: &mut (impl AsyncRead + Unpin),
+) -> Result<Vec<String>, ConnectionError> {
+    let count = read_u64(r).await?;
+    let mut out = Vec::with_capacity(usize::try_from(count.min(4096)).unwrap_or(0));
+    for _ in 0..count {
+        out.push(read_string(r).await?);
+    }
+    Ok(out)
+}
+
+pub(crate) async fn write_stderr_data(
+    w: &mut (impl AsyncWrite + Unpin),
+    data: &[u8],
+) -> std::io::Result<()> {
+    use sui_compat::wire::StderrMsg;
+    write_u64(w, StderrMsg::Data as u64).await?;
+    write_bytes(w, data).await
+}
+
+pub(crate) trait ByteSource {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<(), ConnectionError>;
+}
+
+pub(crate) struct Direct<'a, R>(pub &'a mut R);
+
+impl<R: AsyncRead + Unpin> ByteSource for Direct<'_, R> {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<(), ConnectionError> {
+        self.0.read_exact(buf).await?;
+        Ok(())
+    }
+}
+
+pub(crate) struct Tunnel<'a, R, W> {
+    pub reader: &'a mut R,
+    pub writer: &'a mut W,
+    pending: Vec<u8>,
+    pos: usize,
+}
+
+impl<'a, R, W> Tunnel<'a, R, W> {
+    pub fn new(reader: &'a mut R, writer: &'a mut W) -> Self {
+        Self { reader, writer, pending: Vec::new(), pos: 0 }
+    }
+}
+
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> ByteSource for Tunnel<'_, R, W> {
+    async fn fill(&mut self, buf: &mut [u8]) -> Result<(), ConnectionError> {
+        use sui_compat::wire::StderrMsg;
+        let mut filled = 0;
+        while filled < buf.len() {
+            if self.pos == self.pending.len() {
+                write_u64(self.writer, StderrMsg::Read as u64).await?;
+                write_u64(self.writer, 65536).await?;
+                self.writer.flush().await?;
+                self.pending = read_bytes(self.reader).await?;
+                self.pos = 0;
+                if self.pending.is_empty() {
+                    return Err(ConnectionError::Op("unexpected end-of-file".to_string()));
+                }
+            }
+            let n = (buf.len() - filled).min(self.pending.len() - self.pos);
+            buf[filled..filled + n].copy_from_slice(&self.pending[self.pos..self.pos + n]);
+            filled += n;
+            self.pos += n;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn source_u64(src: &mut impl ByteSource) -> Result<u64, ConnectionError> {
+    let mut b = [0u8; 8];
+    src.fill(&mut b).await?;
+    Ok(u64::from_le_bytes(b))
+}
+
+pub(crate) async fn source_bytes(src: &mut impl ByteSource, limit: u64) -> Result<Vec<u8>, ConnectionError> {
+    let len = source_u64(src).await?;
+    if len > limit {
+        return Err(ConnectionError::Op(format!("string of {len} bytes exceeds the {limit} byte limit")));
+    }
+    let len = usize::try_from(len).map_err(|e| ConnectionError::Op(e.to_string()))?;
+    let mut buf = vec![0u8; len + padding(len)];
+    src.fill(&mut buf).await?;
+    buf.truncate(len);
+    Ok(buf)
+}
+
+pub(crate) async fn source_string(src: &mut impl ByteSource) -> Result<String, ConnectionError> {
+    String::from_utf8(source_bytes(src, 1 << 20).await?).map_err(|e| ConnectionError::Op(format!("invalid UTF-8: {e}")))
+}
+
+pub(crate) async fn source_string_list(src: &mut impl ByteSource) -> Result<Vec<String>, ConnectionError> {
+    let n = source_u64(src).await?;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        out.push(source_string(src).await?);
+    }
+    Ok(out)
+}
+
+async fn nar_token(src: &mut impl ByteSource, out: &mut Vec<u8>, limit: u64) -> Result<Vec<u8>, ConnectionError> {
+    let tok = source_bytes(src, limit).await?;
+    out.extend_from_slice(&(tok.len() as u64).to_le_bytes());
+    out.extend_from_slice(&tok);
+    out.extend_from_slice(&ZERO_PAD[..padding(tok.len())]);
+    Ok(tok)
+}
+
+async fn nar_expect(src: &mut impl ByteSource, out: &mut Vec<u8>, want: &[u8]) -> Result<(), ConnectionError> {
+    let tok = nar_token(src, out, 4096).await?;
+    if tok != want {
+        return Err(ConnectionError::Op(format!(
+            "bad archive: expected '{}', got '{}'",
+            String::from_utf8_lossy(want),
+            String::from_utf8_lossy(&tok)
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) async fn read_nar(src: &mut impl ByteSource) -> Result<Vec<u8>, ConnectionError> {
+    const NAME_LIMIT: u64 = 4096;
+    let mut out = Vec::new();
+    let mut dirs = 0usize;
+    nar_expect(src, &mut out, sui_compat::nar::NAR_MAGIC.as_bytes()).await?;
+    'node: loop {
+        nar_expect(src, &mut out, b"(").await?;
+        nar_expect(src, &mut out, b"type").await?;
+        let kind = nar_token(src, &mut out, NAME_LIMIT).await?;
+        let mut finished = true;
+        match kind.as_slice() {
+            b"regular" => {
+                let mut tok = nar_token(src, &mut out, NAME_LIMIT).await?;
+                if tok == b"executable" {
+                    nar_expect(src, &mut out, b"").await?;
+                    tok = nar_token(src, &mut out, NAME_LIMIT).await?;
+                }
+                if tok == b"contents" {
+                    nar_token(src, &mut out, u64::MAX).await?;
+                    nar_expect(src, &mut out, b")").await?;
+                } else if tok != b")" {
+                    return Err(ConnectionError::Op("bad archive: bad regular file".to_string()));
+                }
+            }
+            b"symlink" => {
+                nar_expect(src, &mut out, b"target").await?;
+                nar_token(src, &mut out, NAME_LIMIT).await?;
+                nar_expect(src, &mut out, b")").await?;
+            }
+            b"directory" => {
+                dirs += 1;
+                finished = false;
+            }
+            other => {
+                return Err(ConnectionError::Op(format!("bad archive: unknown file type '{}'", String::from_utf8_lossy(other))));
+            }
+        }
+        loop {
+            if finished {
+                if dirs == 0 {
+                    return Ok(out);
+                }
+                nar_expect(src, &mut out, b")").await?;
+            }
+            let tok = nar_token(src, &mut out, NAME_LIMIT).await?;
+            if tok == b"entry" {
+                nar_expect(src, &mut out, b"(").await?;
+                nar_expect(src, &mut out, b"name").await?;
+                nar_token(src, &mut out, NAME_LIMIT).await?;
+                nar_expect(src, &mut out, b"node").await?;
+                continue 'node;
+            }
+            if tok != b")" {
+                return Err(ConnectionError::Op("bad archive: bad directory entry".to_string()));
+            }
+            dirs -= 1;
+            finished = true;
+        }
+    }
+}
+
+/// Write `STDERR_LAST` to signal the end of the stderr stream./// Write `STDERR_LAST` to signal the end of the stderr stream.
 pub(crate) async fn write_stderr_last(
     w: &mut (impl AsyncWrite + Unpin),
 ) -> std::io::Result<()> {

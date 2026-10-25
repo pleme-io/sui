@@ -40,7 +40,7 @@ pub mod graph_server;
 pub mod hot_cache;
 
 pub use config::SuiDaemonConfig;
-pub use connection::{Connection, ConnectionError};
+pub use connection::{Connection, ConnectionError, SignaturePolicy};
 pub use server::{DaemonConfig, DaemonError, DaemonServer, DEFAULT_SOCKET_PATH, xdg_socket_path};
 pub use trust::{PeerCredentials, SystemPeerCredentials, TrustLevel};
 
