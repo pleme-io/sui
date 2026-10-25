@@ -36,8 +36,11 @@ in
     system.tools.darwin-rebuild.enable = false;
     environment.etc."sui/cppnix-passthrough".text = "off\n";
     environment.systemPackages = [ cppnixAlias ];
-    launchd.daemons.nix-daemon.command = mkIf (cfg.daemon == "cppnix") (
-      mkForce (lib.getExe' cfg.cppnixPackage "nix-daemon")
+    launchd.daemons.nix-daemon.command = mkForce (
+      if cfg.daemon == "cppnix" then
+        lib.getExe' cfg.cppnixPackage "nix-daemon"
+      else
+        "${lib.getExe' cfg.package "sui"} daemon --socket /nix/var/nix/daemon-socket/socket"
     );
   };
 }
