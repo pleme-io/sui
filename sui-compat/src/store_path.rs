@@ -294,6 +294,31 @@ pub fn compute_output_path(inner_hash_hex: &str, output_name: &str, name: &str) 
     compute_store_path_from_fingerprint(&fingerprint, &full_name)
 }
 
+/// cppnix `makeType("source", references)`: `source`, then each reference (sorted, deduplicated)
+/// as `:<path>`, then `:self` when the content refers to itself.
+#[must_use]
+pub fn source_type(references: &[String], has_self: bool) -> String {
+    let mut sorted: Vec<&String> = references.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    let mut kind = String::from("source");
+    for r in sorted {
+        kind.push(':');
+        kind.push_str(r);
+    }
+    if has_self {
+        kind.push_str(":self");
+    }
+    kind
+}
+
+/// The store path of a NAR-hashed `source` in the default store dir.
+#[must_use]
+pub fn make_source_path(nar_sha256_hex: &str, references: &[String], has_self: bool, name: &str) -> String {
+    let kind = source_type(references, has_self);
+    compute_store_path_from_fingerprint(&format!("{kind}:sha256:{nar_sha256_hex}:{DEFAULT_STORE_DIR}:{name}"), name)
+}
+
 /// Compute the output store path for a fixed-output derivation.
 ///
 /// CppNix has two distinct branches in `makeFixedOutputPath`:
@@ -319,10 +344,7 @@ pub fn compute_fixed_output_hash(
     if is_recursive && algo == "sha256" {
         // "source" branch: the user's NAR hash is the inner hash
         // directly. No "fixed:out:" wrapping, no sha256-of-sha256.
-        let fingerprint = format!(
-            "source:sha256:{hash}:{DEFAULT_STORE_DIR}:{name}"
-        );
-        return compute_store_path_from_fingerprint(&fingerprint, name);
+        return make_source_path(hash, &[], false, name);
     }
 
     let mode = if is_recursive { "r:" } else { "" };
@@ -336,6 +358,20 @@ pub fn compute_fixed_output_hash(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_source_path_folds_in_its_references_in_sorted_order() {
+        let hex = "0a430879c266f8b57f4092a0f935cf3facd48bbccde5760d4748ca405171e969";
+        let a = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-a".to_string();
+        let b = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2-b".to_string();
+        let bare = make_source_path(hex, &[], false, "x");
+        assert_eq!(bare, compute_fixed_output_hash("sha256", hex, true, "x"));
+        let ab = make_source_path(hex, &[a.clone(), b.clone()], false, "x");
+        assert_ne!(ab, bare);
+        assert_eq!(ab, make_source_path(hex, &[b, a], false, "x"));
+        assert_ne!(make_source_path(hex, &[], true, "x"), bare);
+        assert_eq!(source_type(&[], true), "source:self");
+    }
 
     #[test]
     fn parse_absolute_path() {

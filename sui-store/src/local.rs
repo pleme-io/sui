@@ -532,7 +532,8 @@ impl Store for LocalStore {
         // Compute the store path.
         // The fingerprint uses the actual store_dir for correct hashing.
         let fingerprint = format!(
-            "source:sha256:{nar_hash_hex}:{}:{name}",
+            "{}:sha256:{nar_hash_hex}:{}:{name}",
+            sui_compat::store_path::source_type(references, false),
             self.store_dir
         );
         let fp_hash = Sha256::digest(fingerprint.as_bytes());
@@ -541,8 +542,16 @@ impl Store for LocalStore {
         let basename = format!("{b32}-{name}");
         let store_path = format!("{}/{basename}", self.store_dir);
 
+        if let Some(existing) = self.find_by_path(&store_path).await? {
+            return self.model_to_path_info(&existing).await;
+        }
+
         // Write the NAR data to the store directory by unpacking.
         let dest = Path::new(&self.store_dir).join(&basename);
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            let cleared = if dest.is_dir() { std::fs::remove_dir_all(&dest) } else { std::fs::remove_file(&dest) };
+            cleared.map_err(StoreError::Io)?;
+        }
         unpack_nar(nar_data, &dest).map_err(|e| StoreError::Io(
             std::io::Error::other(e.to_string()),
         ))?;
@@ -561,7 +570,7 @@ impl Store for LocalStore {
             deriver: None,
             signatures: vec![],
             registration_time: now,
-            content_address: None,
+            content_address: Some(format!("fixed:r:sha256:{}", nix_base32_encode(&nar_hash_raw))),
         };
 
         // Register in the database.
@@ -1981,6 +1990,18 @@ mod tests {
         assert_eq!(store.repair_derivation_outputs(true).await.unwrap(), vec![drv_path.clone()]);
         assert_eq!(store.repair_derivation_outputs(false).await.unwrap(), vec![drv_path]);
         assert!(store.repair_derivation_outputs(false).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn adding_a_path_that_is_already_valid_returns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let node = sui_compat::nar::NarNode::Regular { executable: false, contents: b"hi".to_vec() };
+        let mut nar = Vec::new();
+        sui_compat::nar::NarWriter::write(&mut nar, &node).unwrap();
+        let first = store.add_to_store("src", &nar, &[]).await.unwrap();
+        let second = store.add_to_store("src", &nar, &[]).await.unwrap();
+        assert_eq!(first.path, second.path);
     }
 
     #[tokio::test]
