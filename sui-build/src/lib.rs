@@ -20,5 +20,5 @@ pub mod traits;
 
 pub use closure::BuildClosure;
 pub use convergence_builder::{ConvergenceBuilder, ConvergenceMetadata};
-pub use local_builder::LocalBuilder;
+pub use local_builder::{dry_plan, DryPlan, LocalBuilder};
 pub use traits::{BuildError, BuildLog, BuildOutcome, BuildResult, BuildState, Builder};

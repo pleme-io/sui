@@ -29,6 +29,24 @@ pub enum SubstituteResult {
     NotFound,
 }
 
+/// Where a store path would come from, as [`Substitutor::query`] answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    /// Valid in the local store.
+    Present,
+    /// A trusted cache serves it.
+    Substitutable {
+        /// Compressed bytes the fetch downloads.
+        download_size: u64,
+        /// Bytes the NAR unpacks to.
+        nar_size: u64,
+        /// Absolute store paths it references; each must be present or fetched too.
+        references: Vec<String>,
+    },
+    /// No trusted cache serves it; it must be built.
+    Missing,
+}
+
 impl SubstituteResult {
     /// Returns `true` if the path was already present in the local store.
     #[must_use]
@@ -112,6 +130,42 @@ impl Substitutor {
 
         tracing::debug!(path = %path.to_absolute_path(), "not found in any cache");
         Ok(SubstituteResult::NotFound)
+    }
+
+    /// Where a store path would come from, without fetching or registering it.
+    ///
+    /// The same trust gate as [`Self::substitute`] decides: a narinfo that
+    /// would be refused there is [`Availability::Missing`] here, so a dry run
+    /// never promises a fetch the real run refuses.
+    pub async fn query(&self, path: &StorePath) -> StoreResult<Availability> {
+        if self.local_store.is_valid_path(path).await? {
+            return Ok(Availability::Present);
+        }
+        let hash = path.hash();
+        for cache in &self.caches {
+            let narinfo = match cache.fetch_narinfo(&hash).await {
+                Ok(Some(info)) => info,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(cache_url = cache.base_url(), error = %e, "cache error, trying next");
+                    continue;
+                }
+            };
+            if cache.check_narinfo_acceptable(&narinfo).is_err() {
+                continue;
+            }
+            let store_dir = sui_compat::store_path::DEFAULT_STORE_DIR;
+            return Ok(Availability::Substitutable {
+                download_size: narinfo.file_size,
+                nar_size: narinfo.nar_size,
+                references: narinfo
+                    .references
+                    .iter()
+                    .map(|r| if r.starts_with('/') { r.clone() } else { format!("{store_dir}/{r}") })
+                    .collect(),
+            });
+        }
+        Ok(Availability::Missing)
     }
 
     /// Attempt to fetch and register a store path from a single cache.
@@ -541,6 +595,34 @@ mod tests {
         let result = sub.substitute(&test_store_path()).await.unwrap();
         assert!(result.is_already_present());
         assert_eq!(store.added_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn query_reports_a_cached_path_without_fetching_it() {
+        let narinfo = make_narinfo_text("none");
+        let store = Arc::new(MockLocalStore::new());
+        let cache = make_cache_with_narinfo(
+            "https://cache.example.com",
+            &narinfo,
+            &format!("nar/{TEST_HASH}.nar.none"),
+            make_nar_bytes(),
+        );
+        let sub = Substitutor::new(store.clone(), vec![cache]);
+
+        let answer = sub.query(&test_store_path()).await.unwrap();
+        assert!(matches!(answer, Availability::Substitutable { nar_size: TEST_NAR_SIZE, .. }), "{answer:?}");
+        assert_eq!(store.added_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn query_separates_present_from_missing() {
+        let present = Substitutor::new(Arc::new(MockLocalStore::new().with_valid_path(TEST_PATH)), vec![]);
+        assert_eq!(present.query(&test_store_path()).await.unwrap(), Availability::Present);
+        let missing = Substitutor::new(
+            Arc::new(MockLocalStore::new()),
+            vec![make_empty_cache("https://cache.example.com")],
+        );
+        assert_eq!(missing.query(&test_store_path()).await.unwrap(), Availability::Missing);
     }
 
     #[tokio::test]

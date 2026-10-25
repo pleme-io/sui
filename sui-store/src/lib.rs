@@ -45,7 +45,7 @@ pub use pg::{
     InMemoryPgBackend, PgBackend, PgBlob, PgError, PgPathRow, PgStore, PgStoreTier, PGSTORE_TIER,
 };
 pub use profile::{Generation, ProfileError, ProfileManager};
-pub use substitute::{SubstituteResult, Substitutor};
+pub use substitute::{Availability, SubstituteResult, Substitutor};
 pub use local::{find_gc_roots, optimise_link_over};
 pub use convergence::{ConvergenceStore, DefaultConvergenceStore, GenerationalPath, ImpactReport};
 pub use traits::{CorruptPath, GcOptions, GcResult, OptimiseResult, PathInfo, Store, StoreError, StoreResult, VerifyResult};

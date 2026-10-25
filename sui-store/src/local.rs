@@ -92,6 +92,73 @@ impl LocalStore {
 
     /// Get the store directory path.
     #[must_use]
+    /// Registers the outputs of every valid `.drv` that has none recorded, returning those drvs.
+    ///
+    /// # Errors
+    ///
+    /// When the database cannot be read or written, or a drv file cannot be parsed.
+    pub async fn repair_derivation_outputs(&self, dry_run: bool) -> StoreResult<Vec<String>> {
+        let drvs = valid_path::Entity::find()
+            .filter(valid_path::Column::Path.like("%.drv"))
+            .all(&self.db)
+            .await
+            .map_err(db_err)?;
+        let mut repaired = Vec::new();
+        for drv in drvs {
+            let recorded = derivation_output::Entity::find()
+                .filter(derivation_output::Column::Drv.eq(drv.id))
+                .one(&self.db)
+                .await
+                .map_err(db_err)?;
+            if recorded.is_some() {
+                continue;
+            }
+            let outputs = self.read_derivation_outputs(&drv.path)?;
+            if outputs.is_empty() {
+                continue;
+            }
+            if !dry_run {
+                self.register_derivation_outputs(drv.id, outputs).await?;
+            }
+            repaired.push(drv.path);
+        }
+        Ok(repaired)
+    }
+
+    fn read_derivation_outputs(&self, drv_path: &str) -> StoreResult<Vec<(String, String)>> {
+        let basename = drv_path.rsplit('/').next().unwrap_or_default();
+        let bytes = std::fs::read(Path::new(&self.store_dir).join(basename)).map_err(StoreError::Io)?;
+        let drv = sui_compat::derivation::Derivation::parse(&bytes).map_err(|e| {
+            StoreError::Io(std::io::Error::other(format!("cannot register {drv_path}: {e}")))
+        })?;
+        Ok(drv
+            .outputs
+            .into_iter()
+            .filter(|(_, o)| !o.path.is_empty())
+            .map(|(name, o)| (name, o.path))
+            .collect())
+    }
+
+    async fn register_derivation_outputs(&self, drv_id: i64, outputs: Vec<(String, String)>) -> StoreResult<()> {
+        use sea_orm::sea_query::OnConflict;
+        for (name, path) in outputs {
+            derivation_output::Entity::insert(derivation_output::ActiveModel {
+                drv: Set(drv_id),
+                id: Set(name),
+                path: Set(path),
+            })
+            .on_conflict(
+                OnConflict::columns([derivation_output::Column::Drv, derivation_output::Column::Id])
+                    .update_column(derivation_output::Column::Path)
+                    .to_owned(),
+            )
+            .exec(&self.db)
+            .await
+            .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
     pub fn store_dir(&self) -> &str {
         &self.store_dir
     }
@@ -279,6 +346,12 @@ impl Store for LocalStore {
             Some(info.signatures.join(" "))
         };
 
+        let drv_outputs = if info.path.ends_with(".drv") {
+            Some(self.read_derivation_outputs(&info.path)?)
+        } else {
+            None
+        };
+
         // Insert into ValidPaths.
         let new_path = valid_path::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
@@ -332,19 +405,9 @@ impl Store for LocalStore {
             new_ref.insert(&self.db).await.map_err(db_err)?;
         }
 
-        // If the path has a deriver ending in .drv, insert into DerivationOutputs.
-        if let Some(ref deriver) = info.deriver
-            && deriver.ends_with(".drv") {
-                // Look up the deriver's ValidPaths.id.
-                if let Some(drv_row) = self.find_by_path(deriver).await? {
-                    let drv_output = derivation_output::ActiveModel {
-                        drv: Set(drv_row.id),
-                        id: Set("out".to_string()),
-                        path: Set(info.path.clone()),
-                    };
-                    drv_output.insert(&self.db).await.map_err(db_err)?;
-                }
-            }
+        if let Some(outputs) = drv_outputs {
+            self.register_derivation_outputs(path_id, outputs).await?;
+        }
 
         Ok(())
     }
@@ -1751,11 +1814,19 @@ mod tests {
 
     #[tokio::test]
     async fn register_path_with_deriver_drv() {
-        let store = LocalStore::open_in_memory().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let out = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-hello";
+        let dev = "/nix/store/iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii-hello-dev";
+        let drv_name = "gggggggggggggggggggggggggggggggg-hello.drv";
+        std::fs::write(
+            dir.path().join(drv_name),
+            format!(r#"Derive([("dev","{dev}","",""),("out","{out}","","")],[],[],"aarch64-darwin","/bin/sh",[],[])"#),
+        )
+        .unwrap();
 
-        // Register the .drv first.
         let drv_info = PathInfo {
-            path: "/nix/store/gggggggggggggggggggggggggggggggg-hello.drv".to_string(),
+            path: format!("/nix/store/{drv_name}"),
             nar_hash: "sha256:drv".to_string(),
             nar_size: 500,
             references: vec![],
@@ -1766,9 +1837,8 @@ mod tests {
         };
         store.register_path(&drv_info).await.unwrap();
 
-        // Register an output that references the drv.
         let out_info = PathInfo {
-            path: "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-hello".to_string(),
+            path: out.to_string(),
             nar_hash: "sha256:out".to_string(),
             nar_size: 1000,
             references: vec![],
@@ -1779,10 +1849,71 @@ mod tests {
         };
         store.register_path(&out_info).await.unwrap();
 
-        // Verify the output was registered.
         let sp = StorePath::from_absolute_path(&out_info.path).unwrap();
         let queried = store.query_path_info(&sp).await.unwrap().unwrap();
-        assert_eq!(queried.deriver, Some(drv_info.path));
+        assert_eq!(queried.deriver, Some(drv_info.path.clone()));
+
+        let drv_row = store.find_by_path(&drv_info.path).await.unwrap().unwrap();
+        let mut rows: Vec<(String, String)> = derivation_output::Entity::find()
+            .filter(derivation_output::Column::Drv.eq(drv_row.id))
+            .all(&store.db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.id, r.path))
+            .collect();
+        rows.sort();
+        assert_eq!(rows, vec![("dev".to_string(), dev.to_string()), ("out".to_string(), out.to_string())]);
+    }
+
+    #[tokio::test]
+    async fn repair_registers_the_outputs_of_a_drv_recorded_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let out = "/nix/store/hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh-hello";
+        let drv_name = "gggggggggggggggggggggggggggggggg-hello.drv";
+        std::fs::write(
+            dir.path().join(drv_name),
+            format!(r#"Derive([("out","{out}","","")],[],[],"aarch64-darwin","/bin/sh",[],[])"#),
+        )
+        .unwrap();
+        let drv_path = format!("/nix/store/{drv_name}");
+        valid_path::ActiveModel {
+            id: sea_orm::ActiveValue::NotSet,
+            path: Set(drv_path.clone()),
+            hash: Set("sha256:drv".into()),
+            registration_time: Set(1),
+            deriver: Set(None),
+            nar_size: Set(Some(1)),
+            ultimate: Set(Some(0)),
+            sigs: Set(None),
+            ca: Set(None),
+        }
+        .insert(&store.db)
+        .await
+        .unwrap();
+
+        assert_eq!(store.repair_derivation_outputs(true).await.unwrap(), vec![drv_path.clone()]);
+        assert_eq!(store.repair_derivation_outputs(false).await.unwrap(), vec![drv_path]);
+        assert!(store.repair_derivation_outputs(false).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_drv_whose_file_is_absent_is_not_registered_without_its_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open_in_memory_with_dir(dir.path().to_str().unwrap()).await.unwrap();
+        let info = PathInfo {
+            path: "/nix/store/gggggggggggggggggggggggggggggggg-absent.drv".to_string(),
+            nar_hash: "sha256:drv".to_string(),
+            nar_size: 1,
+            references: vec![],
+            deriver: None,
+            signatures: vec![],
+            registration_time: 1,
+            content_address: None,
+        };
+        assert!(store.register_path(&info).await.is_err());
+        assert!(store.find_by_path(&info.path).await.unwrap().is_none());
     }
 
     #[tokio::test]

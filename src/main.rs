@@ -374,6 +374,7 @@ enum StoreCommands {
     Gc { #[arg(long)] max_age_days: Option<u32>, #[arg(long)] print_roots: bool, #[arg(long)] dry_run: bool },
     Verify,
     Optimise { #[arg(long)] dry_run: bool },
+    RepairDrvOutputs { #[arg(long)] dry_run: bool },
     Info,
     Delete {
         paths: Vec<String>,
@@ -5535,6 +5536,75 @@ fn report_parity_strict() {
 /// sui realizes every declared output, where `nix build` of a flake attribute
 /// realizes `meta.outputsToInstall`; a multi-output package therefore gets more
 /// links here than there. The `out` link is identical.
+struct BuildRequest {
+    no_link: bool,
+    print_out_paths: bool,
+    json: bool,
+    dry_run: bool,
+    out_link: Option<String>,
+}
+
+fn drv_outputs(drv_path: &str) -> Result<std::collections::BTreeMap<String, String>, CliError> {
+    let err = |message: String| CliError::Orchestrate { operation: "build", message };
+    let bytes = std::fs::read(drv_path).map_err(|e| err(format!("{drv_path}: {e}")))?;
+    let drv = sui_compat::derivation::Derivation::parse(&bytes).map_err(|e| err(format!("{drv_path}: {e}")))?;
+    Ok(drv.outputs.into_iter().map(|(name, out)| (name, out.path)).collect())
+}
+
+fn build_json(drv_path: &str, outputs: &std::collections::BTreeMap<String, String>) -> String {
+    serde_json::json!([{ "drvPath": drv_path, "outputs": outputs }]).to_string()
+}
+
+fn dry_run_report(plan: &sui_build::DryPlan) -> String {
+    let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+    let mut text = String::new();
+    match plan.to_build.len() {
+        0 => {}
+        1 => text.push_str("this derivation will be built:\n"),
+        n => text.push_str(&format!("these {n} derivations will be built:\n")),
+    }
+    for drv in &plan.to_build {
+        text.push_str(&format!("  {drv}\n"));
+    }
+    let sizes = format!("({:.2} MiB download, {:.2} MiB unpacked)", mib(plan.download_size), mib(plan.nar_size));
+    match plan.to_fetch.len() {
+        0 => {}
+        1 => text.push_str(&format!("this path will be fetched {sizes}:\n")),
+        n => text.push_str(&format!("these {n} paths will be fetched {sizes}:\n")),
+    }
+    for path in &plan.to_fetch {
+        text.push_str(&format!("  {path}\n"));
+    }
+    text
+}
+
+async fn build_drv(drv_path: &str, request: &BuildRequest) -> Result<(), CliError> {
+    if request.dry_run {
+        let plan = sui_orchestrate::dry_plan_drv(drv_path)
+            .await
+            .map_err(|e| CliError::Orchestrate { operation: "build", message: e.to_string() })?;
+        eprint!("{}", dry_run_report(&plan));
+        if request.json {
+            println!("{}", build_json(drv_path, &drv_outputs(drv_path)?));
+        }
+        return Ok(());
+    }
+    let outputs = sui_orchestrate::realize_drv(drv_path)
+        .await
+        .map_err(|e| CliError::Orchestrate { operation: "build", message: e.to_string() })?;
+    if request.json {
+        println!("{}", build_json(drv_path, &drv_outputs(drv_path)?));
+    } else {
+        for output in &outputs {
+            println!("{output}");
+        }
+    }
+    if !request.no_link {
+        link_build_outputs(drv_path, &outputs, request.out_link.as_deref().unwrap_or("result"))?;
+    }
+    Ok(())
+}
+
 fn link_build_outputs(drv_path: &str, outputs: &[String], out_link: &str) -> Result<(), CliError> {
     let err = |message: String| CliError::Orchestrate { operation: "build", message };
     let bytes = std::fs::read(drv_path).map_err(|e| err(format!("read {drv_path}: {e}")))?;
@@ -6805,6 +6875,15 @@ async fn main() -> Result<(), CliError> {
                     if dry_run { println!("{} files would be linked, {} bytes would be saved", result.files_linked, result.bytes_saved); }
                     else { println!("{} files linked, {} bytes saved", result.files_linked, result.bytes_saved); }
                 }
+                StoreCommands::RepairDrvOutputs { dry_run } => {
+                    let rw_store = LocalStore::open_rw(NIX_DB_PATH).await.map_err(|e| CliError::StoreOpen { path: NIX_DB_PATH, source: e })?;
+                    let repaired = rw_store.repair_derivation_outputs(dry_run).await?;
+                    for drv in &repaired {
+                        println!("{drv}");
+                    }
+                    let verb = if dry_run { "would repair" } else { "repaired" };
+                    eprintln!("{verb} {} derivations registered without their outputs", repaired.len());
+                }
                 StoreCommands::Info => {
                     let paths = store.query_all_valid_paths().await?;
                     println!("Store dir:    /nix/store");
@@ -7259,7 +7338,8 @@ async fn main() -> Result<(), CliError> {
             }
         }
 
-        Commands::Build { installable: installable_opt, no_link, print_out_paths: _, json: _, dry_run, out_link, rebuild: _ } => {
+        Commands::Build { installable: installable_opt, no_link, print_out_paths, json, dry_run, out_link, rebuild: _ } => {
+            let request = BuildRequest { no_link, print_out_paths, json, dry_run, out_link };
             let installable = installable_opt.unwrap_or_else(|| ".#default".to_string());
 
             // The realize path is daemon-aware: `sui_orchestrate::realize_drv`
@@ -7282,23 +7362,7 @@ async fn main() -> Result<(), CliError> {
                 // useful. Hoisting would make it skip evaluation and report
                 // only the installable string back to the caller. Two guards,
                 // because the two arms know different things at this point.
-                if dry_run {
-                    println!("would build: {installable}");
-                    return Ok(());
-                }
-                // Direct .drv path — realize it (daemon-aware).
-                let outputs = sui_orchestrate::realize_drv(&installable)
-                    .await
-                    .map_err(|e| CliError::Orchestrate {
-                        operation: "build",
-                        message: e.to_string(),
-                    })?;
-                for output in &outputs {
-                    println!("{output}");
-                }
-                if !no_link {
-                    link_build_outputs(&installable, &outputs, out_link.as_deref().unwrap_or("result"))?;
-                }
+                build_drv(&installable, &request).await?;
             } else {
                 // Parse as a flake reference, evaluate, extract drvPath, build.
                 let flake_ref =
@@ -7353,24 +7417,7 @@ async fn main() -> Result<(), CliError> {
                     // flag whose entire purpose is to promise the opposite.
                     // `sui system rebuild --dry-run` gets this right and
                     // comments about it; this arm simply never read the flag.
-                    if dry_run {
-                        println!("would build: {drv_path}");
-                        return Ok(());
-                    }
-                    // Realize the flake target's derivation (daemon-aware — same
-                    // `StoreAccess::detect()` dispatch as the direct-.drv branch).
-                    let outputs = sui_orchestrate::realize_drv(&drv_path)
-                        .await
-                        .map_err(|e| CliError::Orchestrate {
-                            operation: "build",
-                            message: e.to_string(),
-                        })?;
-                    for output in &outputs {
-                        println!("{output}");
-                    }
-                    if !no_link {
-                        link_build_outputs(&drv_path, &outputs, out_link.as_deref().unwrap_or("result"))?;
-                    }
+                    build_drv(&drv_path, &request).await?;
                 } else {
                     // Not a derivation — just display the evaluated value.
                     println!("{target}");

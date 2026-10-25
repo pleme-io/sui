@@ -1095,6 +1095,24 @@ pub fn classify_activate_user(system_path: &str) -> (bool, bool) {
 ///
 /// Returns the absolute store paths of the realized outputs (deduplicated, in
 /// declared order).
+/// What [`realize_drv`] would build and fetch for `drv_path`, read without writing the store.
+///
+/// # Errors
+///
+/// When the closure cannot be read or the store cannot be opened.
+pub async fn dry_plan_drv(drv_path: &str) -> Result<sui_build::DryPlan, SystemError> {
+    let closure = sui_build::BuildClosure::compute(drv_path)
+        .map_err(|e| SystemError::RebuildFailed(format!("closure {drv_path}: {e}")))?;
+    let store = sui_store::LocalStore::open(NIX_DB_PATH)
+        .await
+        .map_err(|e| SystemError::RebuildFailed(format!("store open ({NIX_DB_PATH}): {e}")))?;
+    let store: std::sync::Arc<dyn sui_store::Store> = std::sync::Arc::new(store);
+    let substitutor = sui_store::Substitutor::new(store.clone(), build_caches(&get_substituters()));
+    sui_build::dry_plan(store.as_ref(), &closure, Some(&substitutor))
+        .await
+        .map_err(|e| SystemError::RebuildFailed(format!("plan {drv_path}: {e}")))
+}
+
 pub async fn realize_drv(drv_path: &str) -> Result<Vec<String>, SystemError> {
     use sui_store::StoreAccess;
 

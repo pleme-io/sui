@@ -18,7 +18,7 @@ use crate::reference_scan;
 use crate::sandbox::{Sandbox, SandboxConfig};
 use crate::traits::{BuildError, BuildLog, BuildOutcome, BuildResult, Builder};
 
-use sui_store::substitute::{SubstituteResult, Substitutor};
+use sui_store::substitute::{Availability, SubstituteResult, Substitutor};
 use sui_store::traits::{PathInfo, Store};
 
 /// Progress update emitted during [`LocalBuilder::build_closure_with_progress`].
@@ -337,74 +337,12 @@ impl LocalBuilder {
         Ok(())
     }
 
-    async fn output_paths_present(&self, paths: &[String]) -> bool {
-        for path in paths {
-            let Ok(sp) = StorePath::from_absolute_path(path) else {
-                return false;
-            };
-            if !self.store.is_valid_path(&sp).await.unwrap_or(false) {
-                return false;
-            }
-        }
-        true
-    }
-
-    async fn substitute_paths(&self, substitutor: &Substitutor, paths: &[String]) -> bool {
-        for path in paths {
-            let Ok(sp) = StorePath::from_absolute_path(path) else {
-                return false;
-            };
-            match substitutor.substitute(&sp).await {
-                Ok(SubstituteResult::Substituted { .. } | SubstituteResult::AlreadyPresent) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-
     async fn plan_closure(
         &self,
         closure: &BuildClosure,
         substitutor: Option<&Substitutor>,
     ) -> Result<ClosurePlan, BuildError> {
-        let index: std::collections::HashMap<&str, &sui_compat::derivation::Derivation> =
-            closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
-        let (target, target_drv) = closure.try_target()?;
-        let mut plan = ClosurePlan::default();
-        let mut handled: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
-            std::collections::HashMap::new();
-        let mut stack: Vec<(String, Vec<String>)> =
-            vec![(target.clone(), target_drv.outputs.keys().cloned().collect())];
-        while let Some((drv_path, wanted)) = stack.pop() {
-            let Some(drv) = index.get(drv_path.as_str()) else {
-                continue;
-            };
-            let seen = handled.entry(drv_path.clone()).or_default();
-            let fresh: Vec<String> = wanted.into_iter().filter(|o| seen.insert(o.clone())).collect();
-            if fresh.is_empty() {
-                continue;
-            }
-            let paths: Vec<String> = fresh
-                .iter()
-                .filter_map(|o| drv.outputs.get(o).map(|out| out.path.clone()))
-                .collect();
-            if self.output_paths_present(&paths).await {
-                plan.present += 1;
-                continue;
-            }
-            if let Some(sub) = substitutor
-                && self.substitute_paths(sub, &paths).await
-            {
-                plan.substituted += 1;
-                continue;
-            }
-            if plan.to_build.insert(drv_path.clone()) {
-                for (input, outputs) in &drv.input_derivations {
-                    stack.push((input.clone(), outputs.clone()));
-                }
-            }
-        }
-        Ok(plan)
+        walk_plan(self.store.as_ref(), closure, substitutor, PlanMode::Realize).await
     }
 
     pub async fn build_closure(
@@ -1534,6 +1472,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dry_plan_names_what_would_build_and_runs_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dep_out = tmp.path().join("dep");
+        let target_out = tmp.path().join("target");
+        let present = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-present-1.0";
+        let store = MockStore::new().with_path(PathInfo::new(present, "sha256:a"));
+
+        let closure = make_closure(vec![
+            ("present.drv", make_drv("/bin/sh", &["-c", "exit 1"], present)),
+            ("dep.drv", make_drv("/bin/sh", &["-c", &format!("echo d > {}", dep_out.display())], dep_out.to_str().unwrap())),
+            (
+                "target.drv",
+                depends_on(
+                    depends_on(
+                        make_drv("/bin/sh", &["-c", &format!("echo t > {}", target_out.display())], target_out.to_str().unwrap()),
+                        "dep.drv",
+                    ),
+                    "present.drv",
+                ),
+            ),
+        ]);
+
+        let plan = dry_plan(&store, &closure, None).await.unwrap();
+        assert_eq!(plan.to_build, vec!["dep.drv".to_string(), "target.drv".to_string()]);
+        assert!(plan.to_fetch.is_empty());
+        assert!(!dep_out.exists());
+        assert!(!target_out.exists());
+    }
+
+    #[tokio::test]
     async fn build_closure_present_target_never_builds_its_inputs() {
         let out1 = "/nix/store/sn5lbjwwmkbzj7cx0hfnlwf4sh16cll6-dep-1.0";
         let out2 = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-target-1.0";
@@ -1860,6 +1828,151 @@ mod tests {
 #[derive(Default)]
 struct ClosurePlan {
     to_build: std::collections::HashSet<String>,
+    to_fetch: std::collections::BTreeMap<String, (u64, u64)>,
     present: u32,
     substituted: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlanMode {
+    Realize,
+    Query,
+}
+
+/// What realizing a closure would do, decided without writing the store.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DryPlan {
+    /// Derivations that would be built here, sorted.
+    pub to_build: Vec<String>,
+    /// Store paths that would be fetched from a cache, sorted.
+    pub to_fetch: Vec<String>,
+    /// Compressed bytes the fetches download.
+    pub download_size: u64,
+    /// Bytes the fetches unpack to.
+    pub nar_size: u64,
+}
+
+/// The plan [`LocalBuilder::build_closure`] would follow, without substituting or building.
+///
+/// # Errors
+///
+/// When the closure has no target derivation.
+pub async fn dry_plan(
+    store: &dyn Store,
+    closure: &BuildClosure,
+    substitutor: Option<&Substitutor>,
+) -> Result<DryPlan, BuildError> {
+    let plan = walk_plan(store, closure, substitutor, PlanMode::Query).await?;
+    let mut to_build: Vec<String> = plan.to_build.into_iter().collect();
+    to_build.sort();
+    let (download_size, nar_size) =
+        plan.to_fetch.values().fold((0, 0), |(d, n), (dd, nn)| (d + dd, n + nn));
+    Ok(DryPlan { to_build, to_fetch: plan.to_fetch.into_keys().collect(), download_size, nar_size })
+}
+
+async fn output_paths_present(store: &dyn Store, paths: &[String]) -> bool {
+    for path in paths {
+        let Ok(sp) = StorePath::from_absolute_path(path) else {
+            return false;
+        };
+        if !store.is_valid_path(&sp).await.unwrap_or(false) {
+            return false;
+        }
+    }
+    true
+}
+
+async fn substitute_paths(substitutor: &Substitutor, paths: &[String]) -> bool {
+    for path in paths {
+        let Ok(sp) = StorePath::from_absolute_path(path) else {
+            return false;
+        };
+        match substitutor.substitute(&sp).await {
+            Ok(SubstituteResult::Substituted { .. } | SubstituteResult::AlreadyPresent) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+async fn query_fetches(
+    substitutor: &Substitutor,
+    paths: &[String],
+    fetch: &mut std::collections::BTreeMap<String, (u64, u64)>,
+) -> bool {
+    let mut found = Vec::new();
+    let mut queue: Vec<String> = paths.to_vec();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while let Some(path) = queue.pop() {
+        if fetch.contains_key(&path) || !seen.insert(path.clone()) {
+            continue;
+        }
+        let Ok(sp) = StorePath::from_absolute_path(&path) else {
+            return false;
+        };
+        match substitutor.query(&sp).await {
+            Ok(Availability::Present) => {}
+            Ok(Availability::Substitutable { download_size, nar_size, references }) => {
+                queue.extend(references.into_iter().filter(|r| r != &path));
+                found.push((path, (download_size, nar_size)));
+            }
+            Ok(Availability::Missing) | Err(_) => {
+                if paths.contains(&path) {
+                    return false;
+                }
+            }
+        }
+    }
+    fetch.extend(found);
+    true
+}
+
+async fn walk_plan(
+    store: &dyn Store,
+    closure: &BuildClosure,
+    substitutor: Option<&Substitutor>,
+    mode: PlanMode,
+) -> Result<ClosurePlan, BuildError> {
+    let index: std::collections::HashMap<&str, &Derivation> =
+        closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
+    let (target, target_drv) = closure.try_target()?;
+    let mut plan = ClosurePlan::default();
+    let mut handled: std::collections::HashMap<String, std::collections::BTreeSet<String>> =
+        std::collections::HashMap::new();
+    let mut stack: Vec<(String, Vec<String>)> =
+        vec![(target.clone(), target_drv.outputs.keys().cloned().collect())];
+    while let Some((drv_path, wanted)) = stack.pop() {
+        let Some(drv) = index.get(drv_path.as_str()) else {
+            continue;
+        };
+        let seen = handled.entry(drv_path.clone()).or_default();
+        let fresh: Vec<String> = wanted.into_iter().filter(|o| seen.insert(o.clone())).collect();
+        if fresh.is_empty() {
+            continue;
+        }
+        let paths: Vec<String> = fresh
+            .iter()
+            .filter_map(|o| drv.outputs.get(o).map(|out| out.path.clone()))
+            .collect();
+        if output_paths_present(store, &paths).await {
+            plan.present += 1;
+            continue;
+        }
+        if let Some(sub) = substitutor {
+            let fetched = match mode {
+                PlanMode::Realize => substitute_paths(sub, &paths).await,
+                PlanMode::Query => query_fetches(sub, &paths, &mut plan.to_fetch).await,
+            };
+            if fetched {
+                plan.substituted += 1;
+                continue;
+            }
+        }
+        if plan.to_build.insert(drv_path.clone()) {
+            for (input, outputs) in &drv.input_derivations {
+                stack.push((input.clone(), outputs.clone()));
+            }
+        }
+    }
+    Ok(plan)
 }

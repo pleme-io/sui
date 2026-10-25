@@ -300,7 +300,18 @@ fn resolve_github(
         .map_err(|e| FlakeLockUpdateError::FetchFailed(format!("narHash {owner}/{repo}@{sha}: {e}")))?
         .nar_hash_sri;
 
-    Ok(sui_compat::flake::LockedInput {
+    Ok(github_locked(original, owner, repo, sha, nar_hash, last_modified))
+}
+
+fn github_locked(
+    original: &OriginalInput,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    nar_hash: String,
+    last_modified: u64,
+) -> sui_compat::flake::LockedInput {
+    sui_compat::flake::LockedInput {
         source_type: "github".to_string(),
         owner: Some(owner.to_string()),
         repo: Some(repo.to_string()),
@@ -309,11 +320,11 @@ fn resolve_github(
         last_modified: Some(last_modified),
         path: None,
         url: None,
-        git_ref: original.git_ref.clone(),
+        git_ref: None,
         dir: original.dir.clone(),
         host: None,
         extra: std::collections::BTreeMap::new(),
-    })
+    }
 }
 
 fn rfc3339_utc_seconds(date: &str) -> Option<u64> {
@@ -367,6 +378,18 @@ fn resolve_git(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_locked_github_node_carries_rev_and_never_ref() {
+        let original: OriginalInput = serde_json::from_value(serde_json::json!({
+            "type": "github", "owner": "LnL7", "repo": "nix-darwin", "ref": "nix-darwin-25.11"
+        }))
+        .unwrap();
+        let locked = github_locked(&original, "LnL7", "nix-darwin", "ebec37af18215214173c98cf6356d0aca24a2585", "sha256-x".into(), 1);
+        let json = serde_json::to_value(&locked).unwrap();
+        assert_eq!(json["rev"], "ebec37af18215214173c98cf6356d0aca24a2585");
+        assert!(json.get("ref").is_none(), "{json}");
+    }
 
     #[test]
     fn committer_date_converts_to_the_last_modified_nix_records() {

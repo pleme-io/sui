@@ -304,24 +304,8 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["build"], "installable", H),
     // Suppresses the `result` links `link_build_outputs` otherwise creates.
     (&["build"], "no_link", H),
-    (
-        &["build"],
-        "print_out_paths",
-        Honour::Refused {
-            since: NOW,
-            reason: "makes stdout the out-path list a script then consumes; sui reads it \
-                     nowhere, so the script parses whatever sui prints instead",
-        },
-    ),
-    (
-        &["build"],
-        "json",
-        Honour::Refused {
-            since: NOW,
-            reason: "asks for machine-readable output; sui prints human text regardless, so a \
-                     JSON consumer fails to parse — or worse, half-parses",
-        },
-    ),
+    (&["build"], "print_out_paths", H),
+    (&["build"], "json", H),
     // `--dry-run` was wired on both arms before this pass; it is read.
     (&["build"], "dry_run", H),
     // Names the link base `link_build_outputs` creates and registers as an
@@ -497,6 +481,7 @@ pub const CONTRACT: &[(&[&str], &str, Honour)] = &[
     (&["store", "path-info"], "path", H),
     (&["store", "path-info"], "json", H),
     (&["store", "paths"], "limit", H),
+    (&["store", "repair-drv-outputs"], "dry_run", H),
     (&["store", "gc"], "max_age_days", H),
     (&["store", "gc"], "print_roots", H),
     (&["store", "gc"], "dry_run", H),
