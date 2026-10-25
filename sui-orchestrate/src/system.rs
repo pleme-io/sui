@@ -1186,12 +1186,7 @@ async fn realize_closure(
             let caches = build_caches(&get_substituters());
             let substitutor = sui_store::Substitutor::new(store.clone(), caches);
 
-            #[cfg(target_os = "macos")]
-            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
-                Box::new(sui_build::sandbox::DarwinSandbox::new());
-            #[cfg(not(target_os = "macos"))]
-            let sandbox: Box<dyn sui_build::sandbox::Sandbox> =
-                Box::new(sui_build::sandbox::LinuxSandbox::new());
+            let sandbox = sui_build::sandbox::for_host(sui_build::sandbox::SandboxMode::from_nix_conf());
 
             let builder = sui_build::LocalBuilder::new(store, sandbox).with_sink(sink);
             // Substitute-first: the substitutor pulls already-built paths from the

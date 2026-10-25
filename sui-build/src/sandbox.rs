@@ -552,6 +552,67 @@ impl Sandbox for LinuxSandbox {
 
 // ── Darwin sandbox ───────────────────────────────────────────────
 
+/// The device rules of cppnix's darwin `sandbox-defaults.sb`, verbatim.
+const STANDARD_DEVICES: &str = r#"(allow file*
+       (literal "/dev/null")
+       (literal "/dev/random")
+       (literal "/dev/stderr")
+       (literal "/dev/stdin")
+       (literal "/dev/stdout")
+       (literal "/dev/tty")
+       (literal "/dev/urandom")
+       (literal "/dev/zero")
+       (subpath "/dev/fd"))
+(allow file*
+       (literal "/dev/ptmx")
+       (regex #"^/dev/pty[a-z]+")
+       (regex #"^/dev/ttys[0-9]+"))
+(allow file* (literal "/dev/dtracehelper"))
+"#;
+
+/// nix.conf's `sandbox` setting, as cppnix reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxMode {
+    Enabled,
+    Relaxed,
+    Disabled,
+}
+
+impl SandboxMode {
+    /// `true`, `relaxed` or `false`; unset is cppnix's platform default:
+    /// enabled on Linux, disabled elsewhere.
+    #[must_use]
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("true") => Self::Enabled,
+            Some("relaxed") => Self::Relaxed,
+            Some("false") => Self::Disabled,
+            _ if cfg!(target_os = "linux") => Self::Enabled,
+            _ => Self::Disabled,
+        }
+    }
+
+    /// The mode this host's nix.conf names.
+    #[must_use]
+    pub fn from_nix_conf() -> Self {
+        let conf = sui_compat::nix_conf::NixConfig::load().ok();
+        Self::parse(conf.as_ref().and_then(|c| c.get("sandbox")))
+    }
+}
+
+/// The sandbox a build runs in on this host: none when `sandbox` is off,
+/// the platform's otherwise.
+#[must_use]
+pub fn for_host(mode: SandboxMode) -> Box<dyn Sandbox> {
+    match mode {
+        SandboxMode::Disabled => Box::new(NoSandbox),
+        #[cfg(target_os = "macos")]
+        SandboxMode::Enabled | SandboxMode::Relaxed => Box::new(DarwinSandbox::new()),
+        #[cfg(not(target_os = "macos"))]
+        SandboxMode::Enabled | SandboxMode::Relaxed => Box::new(LinuxSandbox::new()),
+    }
+}
+
 /// macOS `sandbox-exec` based sandbox.
 ///
 /// Generates a Sandbox Profile Language (SBPL) profile that:
@@ -663,13 +724,7 @@ pub fn generate_sbpl_profile(config: &SandboxConfig) -> String {
     }
     profile.push_str("(allow file-read*)\n");
 
-    // Writable device nodes.
-    profile.push_str("(allow file-write*\n");
-    profile.push_str("    (literal \"/dev/null\")\n");
-    profile.push_str("    (literal \"/dev/zero\")\n");
-    profile.push_str("    (literal \"/dev/dtracehelper\")\n");
-    profile.push_str("    (literal \"/dev/tty\")\n");
-    profile.push_str(")\n");
+    profile.push_str(STANDARD_DEVICES);
 
     // Build dir is the only writable disk location.
     let mut writable: Vec<&str> = Vec::new();
@@ -805,6 +860,24 @@ impl Sandbox for DarwinSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sandbox_setting_reads_like_cppnix() {
+        assert_eq!(SandboxMode::parse(Some("false")), SandboxMode::Disabled);
+        assert_eq!(SandboxMode::parse(Some("true")), SandboxMode::Enabled);
+        assert_eq!(SandboxMode::parse(Some("relaxed")), SandboxMode::Relaxed);
+        let default = if cfg!(target_os = "linux") { SandboxMode::Enabled } else { SandboxMode::Disabled };
+        assert_eq!(SandboxMode::parse(None), default);
+    }
+
+    #[test]
+    fn the_darwin_profile_lets_a_builder_write_its_standard_streams() {
+        let config = SandboxConfig { build_dir: "/tmp/b".into(), ..SandboxConfig::default() };
+        let profile = generate_sbpl_profile(&config);
+        for device in ["\"/dev/stderr\"", "\"/dev/stdout\"", "(subpath \"/dev/fd\")", "\"/dev/ptmx\""] {
+            assert!(profile.contains(device), "{device} missing from\n{profile}");
+        }
+    }
 
     #[test]
     fn no_sandbox_execute() {

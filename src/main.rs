@@ -9088,12 +9088,7 @@ fn build_ifd_realizer() -> Result<IfdRealizer, String> {
                 sui_orchestrate::build_caches(&sui_orchestrate::get_substituters());
             let substitutor = Substitutor::new(store.clone(), caches);
 
-            #[cfg(target_os = "macos")]
-            let sandbox: Box<dyn sandbox::Sandbox> =
-                Box::new(sandbox::DarwinSandbox::new());
-            #[cfg(not(target_os = "macos"))]
-            let sandbox: Box<dyn sandbox::Sandbox> =
-                Box::new(sandbox::LinuxSandbox::new());
+            let sandbox = sandbox::for_host(sandbox::SandboxMode::from_nix_conf());
 
             let builder = LocalBuilder::new(store, sandbox);
             Ok(IfdRealizer::Direct { rt, builder, substitutor })

@@ -68,19 +68,7 @@ impl Drop for BuildFace {
 
 impl sui_orchestrate::system::RealizeObserver for BuildFace {
     fn planned(&self, closure: &sui_build::BuildClosure) {
-        let pending: HashMap<&str, &sui_compat::derivation::Derivation> = closure
-            .derivations
-            .iter()
-            .filter(|(_, d)| d.outputs.values().any(|o| !o.path.is_empty() && !std::path::Path::new(&o.path).exists()))
-            .map(|(p, d)| (p.as_str(), d))
-            .collect();
-        let inputs = pending
-            .iter()
-            .map(|(p, d)| {
-                let deps = d.input_derivations.keys().filter(|k| pending.contains_key(k.as_str())).cloned().collect();
-                ((*p).to_string(), deps)
-            })
-            .collect();
+        let inputs = needed_graph(closure, |path| std::path::Path::new(path).exists());
         if let Ok(tx) = self.tx.lock() {
             let _ = tx.send(Msg::Plan(inputs));
         }
@@ -90,6 +78,35 @@ impl sui_orchestrate::system::RealizeObserver for BuildFace {
         let tx = self.tx.lock().map(|t| t.clone()).unwrap_or_else(|_| mpsc::channel().0);
         Arc::new(Relay(Mutex::new(tx)))
     }
+}
+
+/// The derivations a realize of the closure's target will build, with their
+/// inputs among them: walked down from the target, entering an input only
+/// while one of its outputs is missing, as the planner does.
+fn needed_graph(closure: &sui_build::BuildClosure, present: impl Fn(&str) -> bool) -> HashMap<String, Vec<String>> {
+    let index: HashMap<&str, &sui_compat::derivation::Derivation> =
+        closure.derivations.iter().map(|(p, d)| (p.as_str(), d)).collect();
+    let missing = |d: &sui_compat::derivation::Derivation| d.outputs.values().any(|o| !o.path.is_empty() && !present(&o.path));
+    let mut graph = HashMap::new();
+    let mut stack: Vec<&str> = closure.derivations.last().map(|(p, _)| p.as_str()).into_iter().collect();
+    while let Some(path) = stack.pop() {
+        if graph.contains_key(path) {
+            continue;
+        }
+        let Some(drv) = index.get(path) else { continue };
+        if !missing(drv) {
+            continue;
+        }
+        let deps: Vec<&str> = drv
+            .input_derivations
+            .keys()
+            .map(String::as_str)
+            .filter(|k| index.get(k).is_some_and(|d| missing(d)))
+            .collect();
+        graph.insert(path.to_string(), deps.iter().map(|d| (*d).to_string()).collect());
+        stack.extend(deps);
+    }
+    graph
 }
 
 fn text_field(fields: &[Field], i: usize) -> Option<&str> {
@@ -211,6 +228,34 @@ mod tests {
     fn a_store_path_shows_its_name_without_hash_or_drv() {
         assert_eq!(display_name("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-rust_tokio-1.47.drv"), "rust_tokio-1.47");
         assert_eq!(display_name("plain"), "plain");
+    }
+
+    #[test]
+    fn only_what_the_target_still_needs_is_planned() {
+        let drv = |out: &str, inputs: &[&str]| {
+            let mut d = sui_compat::derivation::Derivation::default();
+            d.outputs.insert(
+                "out".into(),
+                sui_compat::derivation::DerivationOutput { path: out.into(), ..Default::default() },
+            );
+            for i in inputs {
+                d.input_derivations.insert((*i).to_string(), vec!["out".into()]);
+            }
+            d
+        };
+        let closure = sui_build::BuildClosure {
+            derivations: vec![
+                ("src.drv".into(), drv("/o/src", &[])),
+                ("built.drv".into(), drv("/o/built", &["src.drv"])),
+                ("leaf.drv".into(), drv("/o/leaf", &[])),
+                ("top.drv".into(), drv("/o/top", &["built.drv", "leaf.drv"])),
+            ],
+        };
+        let graph = needed_graph(&closure, |p| p == "/o/built");
+        let mut keys: Vec<&str> = graph.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["leaf.drv", "top.drv"]);
+        assert_eq!(graph["top.drv"], vec!["leaf.drv".to_string()]);
     }
 
     #[test]
