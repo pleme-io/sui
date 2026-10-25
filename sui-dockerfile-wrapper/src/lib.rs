@@ -595,12 +595,12 @@ mod tests {
     #[tokio::test]
     async fn real_docker_build_end_to_end_when_docker_is_available() {
         let docker_available = std::process::Command::new("docker")
-            .arg("--version")
+            .arg("info")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !docker_available {
-            eprintln!("skipping real_docker_build_end_to_end_when_docker_is_available: no docker on PATH");
+            eprintln!("skipping real_docker_build_end_to_end_when_docker_is_available: no reachable docker daemon");
             return;
         }
 

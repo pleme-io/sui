@@ -118,7 +118,7 @@ mod tests {
     use sui_castore::storage::LocalStorage;
 
     const SECRET: &str =
-        "test-key-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+        "test-key-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA7aie8zrakLWKjqNAqbw1zZTIVdx3iQ6Y6wEihi1naKQ==";
 
     fn narinfo_with_sig(sig: Option<&str>) -> String {
         // FileHash and FileSize are REQUIRED by NarInfo::parse — omitting
